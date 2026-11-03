@@ -7,7 +7,6 @@ use crate::strip_quoted_regions::{
     NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, strip_quoted_regions,
 };
 
-pub const MASS_ULW_CUSTOM_TYPE: &str = "omo-mass-ulw:skill-pointer";
 pub const ULW_PLAN_CUSTOM_TYPE: &str = "omo-ulw-plan:skill-pointer";
 pub const ULW_LOOP_CUSTOM_TYPE: &str = "omo-ulw-loop:skill-pointer";
 pub const ULW_RESEARCH_CUSTOM_TYPE: &str = "omo-ulw-research:skill-pointer";
@@ -80,20 +79,6 @@ fn skill_name_pattern(body: &str) -> FancyRegex {
     }
 }
 
-static MASS_ALIAS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw|meth)";
-
-pub static TARGET_MASS_ULW: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
-    skill_name: "mass-ulw",
-    custom_type: MASS_ULW_CUSTOM_TYPE,
-    pattern: LazyLock::new(|| skill_name_pattern(MASS_ALIAS)),
-    expanded_block_pattern: LazyLock::new(|| {
-        Regex::new(r#"(?i)<skill\s+name="mass-ulw""#).expect("valid regex")
-    }),
-    instruction: "dispatch each phase's dependency-ordered lanes as one run of the workflow tool composed in an eval cell, start a new run per phase rather than one graph for the whole job, and when a ulw-loop or ulw-execute contract is active let it own the goal",
-    extra: None,
-    companions: &[],
-});
-
 pub static TARGET_ULW_PLAN: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
     skill_name: "ulw-plan",
     custom_type: ULW_PLAN_CUSTOM_TYPE,
@@ -123,7 +108,7 @@ pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
         skill_name: "ulw-research",
         custom_type: ULW_RESEARCH_CUSTOM_TYPE,
         pattern: LazyLock::new(|| {
-            skill_name_pattern(&format!(r"(?:ulw|{})[\s-]*research", MASS_ALIAS))
+            skill_name_pattern(r"ulw[\s-]*research")
         }),
         expanded_block_pattern: LazyLock::new(|| {
             Regex::new(r#"(?i)<skill\s+name="ulw-research""#).expect("valid regex")
@@ -133,9 +118,8 @@ pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
         companions: &*RESEARCH_COMPANIONS,
     });
 
-pub fn get_targets() -> [&'static SkillPointerTarget; 4] {
+pub fn get_targets() -> [&'static SkillPointerTarget; 3] {
     [
-        &*TARGET_MASS_ULW,
         &*TARGET_ULW_PLAN,
         &*TARGET_ULW_LOOP,
         &*TARGET_ULW_RESEARCH,
@@ -149,18 +133,10 @@ pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
 }
 
 pub fn binds(target: &SkillPointerTarget, visible: &str) -> bool {
-    const MASS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw)";
-    static MASS_BIND: LazyLock<FancyRegex> = LazyLock::new(|| {
-        binding_forms(r"(?:mass-ulw|mulw)", &format!(r"{MASS}(?:[\s-]*research)?"))
-    });
     static RESEARCH_BIND: LazyLock<FancyRegex> = LazyLock::new(|| {
-        binding_forms(
-            r"(?:ulw-research|(?:mass-ulw|mulw)\s+research)",
-            &format!(r"(?:ulw|{MASS})[\s-]*research"),
-        )
+        binding_forms(r"ulw-research", r"ulw[\s-]*research")
     });
     match target.skill_name {
-        "mass-ulw" => MASS_BIND.is_match(visible).unwrap_or(false),
         "ulw-research" => RESEARCH_BIND.is_match(visible).unwrap_or(false),
         _ => false,
     }
@@ -168,26 +144,14 @@ pub fn binds(target: &SkillPointerTarget, visible: &str) -> bool {
 
 pub fn skill_mode(
     target: &SkillPointerTarget,
-    mass_mode: bool,
     scope: Option<&str>,
     root: &str,
 ) -> String {
-    let reads = if target.skill_name == "mass-ulw" {
-        format!("{root}mass-ulw/SKILL.md and its references/planning.md")
-    } else {
-        format!("{root}{}/SKILL.md", target.skill_name)
-    };
-    let dispatch = if target.skill_name == "mass-ulw" {
-        " The work runs as workflow runs started from an eval cell, their nodes executing in dependency-ordered waves; doing the job inline, or through one-off task spawns in place of workflow runs, does not satisfy this request. Where the ultrawork directive's general delegation guidance differs, this mode decides how lanes are dispatched."
-    } else if mass_mode {
-        " mass-ulw mode is active in the same message, so run the research waves as its workflow runs."
-    } else {
-        ""
-    };
+    let reads = format!("{root}{}/SKILL.md", target.skill_name);
     let extra = target.extra.map(|f| f(scope)).unwrap_or_default();
     let name = target.skill_name;
     format!(
-        "<omo-{name}-mode>The user of this session invoked {name} in their own words, so this turn runs in {name} mode. This is binding: the block is produced only for the skill's slash command or a prompt that opens with a request to run it. Before any other tool call this turn, read {reads} in full with the read tool, then follow the skill: {}.{dispatch}{extra}</omo-{name}-mode>",
+        "<omo-{name}-mode>The user of this session invoked {name} in their own words, so this turn runs in {name} mode. This is binding: the block is produced only for the skill's slash command or a prompt that opens with a request to run it. Before any other tool call this turn, read {reads} in full with the read tool, then follow the skill: {}.{extra}</omo-{name}-mode>",
         target.instruction
     )
 }
@@ -266,7 +230,7 @@ pub fn ulw_loop_tool_sentence(session_scope: Option<&str>) -> String {
 }
 
 /// Whether `skill_name` ships under `skills_root`. A pointer to a skill whose directory is
-/// gone (a retired skill such as `mass-ulw`) would send the model to a file that does not
+/// gone (a retired skill) would send the model to a file that does not
 /// exist, so it is withheld. When the root itself is not a readable directory the install
 /// layout is unknown and the pointer is kept.
 pub fn skill_is_shipped(skills_root: &str, skill_name: &str) -> bool {
@@ -423,13 +387,12 @@ impl Extension for SkillPointersComponent {
                         command_skill == Some(skill_name) || expanded_block.is_match(&input.text)
                     };
 
-                    let mass_mode = invoked.iter().any(|target| target.skill_name == "mass-ulw" && binds(target, &visible));
                     let mut pointers: Vec<SkillPointerMessage> = invoked
                         .iter()
                         .filter(|target| !already_loaded(target.skill_name, &target.expanded_block_pattern))
                         .map(|target| SkillPointerMessage {
                             custom_type: target.custom_type,
-                            content: if binds(target, &visible) { skill_mode(target, mass_mode, session_scope.as_deref(), &skills_root) } else { skill_pointer(target, session_scope.as_deref(), &skills_root) },
+                            content: if binds(target, &visible) { skill_mode(target, session_scope.as_deref(), &skills_root) } else { skill_pointer(target, session_scope.as_deref(), &skills_root) },
                         })
                         .collect();
 
@@ -497,37 +460,17 @@ mod tests {
     #[test]
     fn positive_binding_forms_and_exclusions() {
         use super::*;
-        for text in [
-            "/mass-ulw fix",
-            "/skill:mass-ulw fix",
-            "run mass ulw on tests",
-            "use mulw to ship",
-            "mass ulw 돌려줘",
-            "mass ulw로 써줘",
-            "[Image #1] start ulw research now",
-        ] {
+        for text in ["/ulw-research fix", "/skill:ulw-research fix", "start ulw research now", "[Image #1] start ulw research now"] {
             let visible = strip_quoted_regions(text);
-            assert!(
-                binds(&TARGET_MASS_ULW, &visible) || binds(&TARGET_ULW_RESEARCH, &visible),
-                "{text}"
-            );
+            assert!(binds(&TARGET_ULW_RESEARCH, &visible), "{text}");
         }
-        for text in [
-            "mass-ulw the fix",
-            "run meth",
-            "run mass ulw.ts again",
-            "use mass ulw?",
-            "use mass ulw？",
-            "they run mass ulw",
-            "'run mass ulw'",
-            "[lead via coordinator -> lane, PR#1] run mass ulw",
-            "don't use mass ulw",
-        ] {
+        for text in ["ulw-research the fix", "run ulw research.ts again", "use ulw research?", "they run ulw research", "'run ulw research'", "don't use ulw research"] {
             let visible = strip_quoted_regions(text);
-            assert!(!binds(&TARGET_MASS_ULW, &visible), "{text}");
+            assert!(!binds(&TARGET_ULW_RESEARCH, &visible), "{text}");
         }
-        let injected = skill_mode(&TARGET_MASS_ULW, true, None, "skills/");
+        let injected = skill_mode(&TARGET_ULW_RESEARCH, None, "skills/");
         assert!(matched_skill_pointer_names(&injected).is_empty());
+        assert!(!matched_skill_pointer_names("run mass ulw on tests").contains(&"mass-ulw"));
     }
 
     #[test]
@@ -562,11 +505,7 @@ mod tests {
     #[test]
     fn matches_standalone_chains_and_requests_after_clause_breaks() {
         let cases = [
-            ("mass-ulw the migration", vec!["mass-ulw"]),
-            (
-                "mass ulw-loop ship the refactor",
-                vec!["mass-ulw", "ulw-loop"],
-            ),
+            ("mass ulw-loop ship the refactor", vec!["ulw-loop"]),
             ("ulw-plan.", vec!["ulw-plan"]),
             ("explain `ulw-plan`, then run ulw-loop", vec!["ulw-loop"]),
             ("Do not use ulw-plan, but run ulw-loop", vec!["ulw-loop"]),

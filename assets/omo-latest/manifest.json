@@ -4206,9 +4206,39 @@
     "ultrawork": [
       {
         "path": "SKILL.md",
-        "bytes": 26906,
-        "sha256": "38bc89a6c559403c2b6f292f612973cb852b58f4166e6f3a19dbd9810297d001",
+        "bytes": 15164,
+        "sha256": "980de5648012dd25f82ad9c990fc2bc0d9ddccfcf145a6576487b3c22d028b11",
         "source": "lazycodex@75b01747:plugins/omo/skills/ultrawork/SKILL.md (MIT)"
+      },
+      {
+        "path": "references/commits.md",
+        "bytes": 2910,
+        "sha256": "ee9db35f309a5ee3216503017373d05118dfb4f0a852b5e32a556fd5bc76bd89",
+        "source": null
+      },
+      {
+        "path": "references/delegation-and-teams.md",
+        "bytes": 3915,
+        "sha256": "44f139f7482cb6ffd236785038938f1dc666cda0114015952bcf10fab0e34b19",
+        "source": null
+      },
+      {
+        "path": "references/qa-channels.md",
+        "bytes": 4910,
+        "sha256": "2d50225989f61193e76d44ba179656027167dc60b7fb2b6c82a32963b055d7df",
+        "source": null
+      },
+      {
+        "path": "references/review-gate.md",
+        "bytes": 3221,
+        "sha256": "4c8f29343f9f606543003f73461f6cfd964d5d511f73d8f221dbfdb4b764684d",
+        "source": null
+      },
+      {
+        "path": "references/tui-visual-qa.md",
+        "bytes": 3745,
+        "sha256": "0a72e11e56e6b10a9af6d330a3266a3c09ebc18470a3152c320d042327d91d29",
+        "source": null
       }
     ],
     "ulw-execute": [

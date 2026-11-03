@@ -71,3 +71,32 @@ _(to be filled in by the orchestrator)_
 ### Todo 16
 
 _(to be filled in by the orchestrator)_
+
+## Parent integration (todo 17)
+
+Transferred as a delta with `git format-patch 96d132627c49eb730a05294200be9b9d48f22ce1..cleanroom/ulw`
+and `git am -3` (authors and messages preserved). Before `am`, `git diff --name-only <root>..HEAD`
+in the export listed only `crates/maho-ultrawork/**`, `crates/maho-task/**`,
+`assets/omo-latest/skills/ultrawork/**` and `docs/cleanroom/provenance/ulw-implementer-*.md`.
+Patch ids (`git patch-id --stable`) in application order:
+
+| patch-id | commit | subject |
+| --- | --- | --- |
+| `c219f91509478be92127d4a432a1eede414c9b50` | `ddadfb375` | feat(task): cap delegated result transport in the MIT task runtime |
+| `bd20b81e56b0d14c4d16009d6dff851ebf5c37a0` | `f56df94a4` | feat(ultrawork): rewrite the ultrawork contract with on-demand references |
+| `13f30a07de042b3f21cc601608b81d237ccdf962` | `6dd29eade` | fix(task): compile-clean tests and safe batching for result transport |
+| `84f6d0cd8542661ecd3bea4665e718a49fd758d0` | `1f0753d31` | fix(ultrawork): drop the self-check section from the contract |
+| `15070fc8175d749a767a82a03cf4b195a339b319` | `00098a43f` | docs(ultrawork): correct the recorded contract size |
+| `df9292073975196bb6600c62e99cd442cc576b04` | `d238cdcff` | fix(task): coalesce settled results into bounded wake batches |
+| `5bd937a254984c68d79355a0045afddee4d16e5a` | `d61e3d821` | fix(task): coalesce settled results on the current-thread runtime |
+| `8d7077cd1b104c7b47de261898467c81ceb41714` | `21e1ea1ad` | feat(ultrawork): clean-room MIT ultrawork engine |
+| `c97b6f5482ab3d3c2a541fec6ff4cd6ad1718ab6` | `3a74bea78` | fix(ultrawork): tighten arming scope and phrase masking |
+| `4d395dcda9cea96861e3cb28d4b68529c175daf4` | `edef29791` | fix(task): deliver settled results before releasing waiters |
+| `aa3e4911cd22c0c68cc7bd24ffe7d2e1f74e140f` | `13b3b81b9` | test(ultrawork): drop an unused import |
+
+Roles: spec writers and reviewers were SUL readers in `ulw/overhaul`; implementers 14 (engine),
+15 (contract and references) and 16 (task transport) were history-free sessions in the export
+(`docs/cleanroom/provenance/ulw-implementer-*.md`); verifiers read the export; this parent lane
+(`ulw/t17`) wires the result and may read `crates/omo/**` but never changed
+`crates/maho-ultrawork/src/**` behavior. Environment hashes: `ulw-env.sha256` (sha256 of every
+exported file) and `ulw-env.allowlist` / `ulw-env.forbidden` (path lists) in this directory.

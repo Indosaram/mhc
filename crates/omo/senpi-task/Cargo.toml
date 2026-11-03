@@ -37,8 +37,7 @@ rustix = { version = "=1.1.4", features = ["process"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
-maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
-maho-omo-mass-ulw = { path = "../components/maho-omo-mass-ulw" }
+maho-ultrawork = { path = "../../maho-ultrawork" }
 
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
 # The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).

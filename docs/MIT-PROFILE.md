@@ -70,6 +70,12 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 - `pi-comment-checker` user port: links the MIT `maho-comment-checker` crate (hook payload model,
   apply_patch metadata readers, `@code-yeongyu/comment-checker` binary lookup with
   `COMMENT_CHECKER_BINARY`/`PATH` fallbacks).
+- `<builtin:ultrawork>` (`crates/maho-ultrawork`, clean-room from `docs/cleanroom/specs/ultrawork.md`):
+  the `ulw` / `ultrawork` keyword engine. It injects the core contract once per session as a hidden
+  `omo-ultrawork:directive` message (XML wrapper `<omo-ultrawork-directive>`), answers re-mentions
+  with a short notice, re-arms after compaction or a contract revision change, adds the mass block
+  and the todo sizing reminder, and is turned off by the `ultrawork-disabled` flag. The default
+  (`omo`) build mounts the same crate in its component list.
 - `<builtin:task>` (`maho-task`, task model ported from MIT oh-my-pi @ f59bbac): subagent
   delegation tools `task` (one task or a `tasks` batch with a shared `context`; `agent`,
   `category`, `model`, `name`, `background`), `task_output` (result or status, optional bounded
@@ -373,7 +379,8 @@ and every crate under `crates/desktop/` to be MIT.
 
 - The directive dedupe in `maho-ext-anthropic-subscription` and the prompt-border glow in
   `maho-interactive` are neutral: they act only on tags/keywords registered at startup, and only the
-  default (`omo`) build registers `<ultrawork-mode>` and `ulw`/`ultrawork` (`maho-cli` main.rs).
+  `maho-cli` registers `<omo-ultrawork-directive>` and `ulw`/`ultrawork` at startup in both
+  profiles (`register_ultrawork_keywords`, main.rs), for the MIT `maho-ultrawork` engine.
   Still left: ulw tips in `maho-interactive` (hidden without the task command), the `omo` builtin
   id in the extension registry, and the `ultrawork`/`ulw-loop` wording in a `maho-ext-prompt-preset`
   directive and `senpi_install.rs`.

@@ -237,7 +237,7 @@ static RELAY_HEADER: LazyLock<FancyRegex> = LazyLock::new(|| {
     pattern(r"^\s*(?:\[(?:[A-Z][A-Z0-9_-]{2,}|[\w.:@#-]+(?: via [\w.:@#-]+)* -> [\w.:@#-]+[^\]\n]{0,160})\]|[A-Z][\w.-]{0,30} \([^()\s]{1,40}\)(?:, | to )[\w.-]{1,40}:)")
 });
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>")
+    pattern(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
 });
 static INLINE_CODE: LazyLock<FancyRegex> =
     LazyLock::new(|| pattern(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));

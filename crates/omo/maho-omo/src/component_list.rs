@@ -255,7 +255,7 @@ pub fn omo_components(
     ));
     components.push(component(
         "ultrawork",
-        maho_omo_ultrawork::UltraworkComponent::default(),
+        maho_ultrawork::UltraworkExtension::default(),
     ));
     components.push(component(
         "skill-pointers",
@@ -277,10 +277,6 @@ pub fn omo_components(
             };
             component.register(api);
         },
-    ));
-    components.push(component(
-        "todo-fanout-reminder",
-        maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default(),
     ));
     components.push(component(
         "question-gates",
@@ -429,7 +425,6 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "skill-pointers",
         "ulw-execute-continuation",
         "ulw-loop",
-        "todo-fanout-reminder",
         "question-gates",
         "claim-receipt",
         "git-master",

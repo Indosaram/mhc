@@ -17,7 +17,7 @@ maho-core = { path = "../../../maho-core" }
 maho-ext-host = { path = "../../../maho-ext-host" }
 maho-omo-memory = { path = "../maho-omo-memory" }
 maho-omo-task = { path = "../maho-omo-task" }
-maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
+maho-ultrawork = { path = "../../../maho-ultrawork" }
 regex = "=1.12.3"
 senpi-task = { package = "maho-senpi-task", path = "../../senpi-task" }
 tempfile = "=3.27.0"

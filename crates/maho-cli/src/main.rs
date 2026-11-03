@@ -209,8 +209,7 @@ fn run() -> Result<(), String> {
     // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
     maho_tui::native_platform::register_builtin_native_platform_helper();
     maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
-    #[cfg(feature = "omo")]
-    register_omo_keywords();
+    register_ultrawork_keywords();
     #[cfg(feature = "omo")]
     if let Some(result) = run_omo_entry(&argv) {
         return result;
@@ -946,13 +945,13 @@ fn report_startup_settings_diagnostics(cwd: &std::path::Path) -> Result<(), Stri
     maho_cli::cli::runtime::report_startup_settings_diagnostics(&settings);
     Ok(())
 }
-/// The omo port's mode keywords and injected directive tag. The MIT crates only collapse
-/// registered directive tags and light the prompt border for registered keywords, so they name
-/// none of these themselves.
-#[cfg(feature = "omo")]
-fn register_omo_keywords() {
+/// The MIT ultrawork engine's directive tag (the XML wrapper inside the hidden directive message,
+/// not the message `customType` that names the session record) and mode keywords, registered in
+/// both profiles. The MIT crates only collapse registered directive tags and light the prompt
+/// border for registered keywords, so they name none of these themselves.
+fn register_ultrawork_keywords() {
     maho_ext_anthropic_subscription::prompt_directive_dedupe::register_directive_tag(
-        "ultrawork-mode",
+        "omo-ultrawork-directive",
         "ultrawork",
     );
     maho_interactive::components::neon_border::register_glow_keywords(&["ultrawork", "ulw"]);
@@ -1167,5 +1166,54 @@ mod metadata_tests {
         let text = root_metadata_output(&argv, false).expect("metadata response");
         // Then the package command retains ownership of the request.
         assert!(text.is_none());
+    }
+}
+
+/// Runs in both profiles (the registration is profile-independent): `ulw` arms the MIT engine,
+/// lights the prompt border and its replayed directive is collapsed on anthropic-subscription.
+#[cfg(test)]
+mod ultrawork_registration_tests {
+    use super::register_ultrawork_keywords;
+    use maho_ext_api::{InputSource, ToolContent};
+    use maho_ultrawork::{DIRECTIVE_MESSAGE_TYPE, Engine, InputRequest, Sessions};
+    use std::sync::Arc;
+
+    #[test]
+    fn ulw_arms_glows_and_dedupes_when_the_directive_is_replayed() {
+        // Given the startup registration and an engine that armed a session on `ulw hello`.
+        register_ultrawork_keywords();
+        let engine = Engine::new(Arc::new(Sessions::default()));
+        let request = InputRequest {
+            session: "ulw-registration",
+            text: "ulw hello",
+            source: InputSource::Interactive,
+            streaming: false,
+        };
+        let armed = engine.on_input(request, false);
+        let message = engine
+            .on_turn_start("ulw-registration", false)
+            .expect("directive message");
+        let directive = message
+            .content
+            .iter()
+            .find_map(|part| match part {
+                ToolContent::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("directive text");
+
+        // When the same directive is replayed twice in one prompt payload.
+        let blocks = vec![
+            serde_json::json!({"type": "text", "text": directive}),
+            serde_json::json!({"type": "text", "text": directive}),
+        ];
+        let deduped = maho_ext_anthropic_subscription::prompt_directive_dedupe::dedupe_registered_directive_blocks(&blocks);
+
+        // Then it armed, the record type differs from the XML tag, the border glows, one copy collapsed.
+        assert!(armed.classification.effective);
+        assert_eq!(message.custom_type, DIRECTIVE_MESSAGE_TYPE);
+        assert!(!directive.starts_with(&format!("<{DIRECTIVE_MESSAGE_TYPE}>")));
+        assert!(maho_interactive::components::neon_border::has_glow_keyword("ulw hello"));
+        assert_eq!(deduped.collapsed_directives, 1);
     }
 }

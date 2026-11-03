@@ -99,9 +99,9 @@
   `{task_id, status, file_uri, truncated}` per inline task; task text appears once, in the content.
 - `TaskSettings::from_view` in `src/settings.rs` reads `task.completion_transport_limit`
   (default 8,000, clamped [1,000, 64,000]) and `task.completion_batch_limit` (default 24,000,
-  clamped [2,000, 128,000]). They are not configurable yet: the `maho-config` schema does not
-  declare them, so config loading drops them as unknown keys and the defaults apply. They become
-  loadable once `maho-config` registers them (todo 17).
+  clamped [2,000, 128,000]). `maho-config` declares both keys (`task.completion_transport_limit`,
+  integer >= 1000; `task.completion_batch_limit`, integer >= 2000), so config loading keeps them;
+  `tests/config_limits.rs` loads a config file and checks they reach `TaskSettings`.
 - Tests (`tests/transport_cap.rs`): `result_capped_and_spilled` and `batch_capped_with_pointers`,
   surrogate pair bounds, within-budget inlining, below-minimum clamping, wired delivery with capped
   body, visible pointer line, and intact XML envelope (`wired_delivery_caps_body_with_pointer_and_intact_envelope`),

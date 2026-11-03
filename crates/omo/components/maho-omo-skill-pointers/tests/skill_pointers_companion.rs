@@ -54,19 +54,6 @@ async fn given_a_ulw_research_invocation_when_the_prompt_carries_an_expanded_ulw
 }
 
 #[tokio::test]
-async fn given_a_ulw_research_invocation_when_mass_ulw_research_is_mentioned_then_the_companion_is_injected_once_after_every_keyword_pointer() {
-    let harness = setup_harness("/skills/");
-    let result = dispatch_input(&harness, "mass ulw research the gateway options, then ulw research it again", InputSource::Interactive, None, "test-session").await;
-
-    expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: MASS_ULW_CUSTOM_TYPE, skill_name: "mass-ulw" },
-        RESEARCH,
-        BROWSER,
-        COMPANION,
-    ]);
-}
-
-#[tokio::test]
 async fn given_a_ulw_research_invocation_when_the_prompt_is_queued_mid_stream_then_both_pointers_ride_inside_the_transformed_text() {
     let harness = setup_harness("/skills/");
     let result = dispatch_input(&harness, "ulw research the gateway options", InputSource::Interactive, Some(StreamingBehavior::FollowUp), "test-session").await;

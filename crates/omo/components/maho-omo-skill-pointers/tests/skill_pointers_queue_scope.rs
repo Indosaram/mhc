@@ -9,7 +9,7 @@ async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_
     let harness = setup_harness("/skills/");
     let result = dispatch_input(
         &harness,
-        "mass ulw loop queued work",
+        "ulw loop queued work",
         InputSource::Interactive,
         Some(StreamingBehavior::Steer),
         "test-session",
@@ -18,8 +18,7 @@ async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_
     let EventResult::Input(InputEventResult::Transform { text, .. }) = result else {
         panic!("expected Transform");
     };
-    assert!(text.starts_with("mass ulw loop queued work\n"));
-    assert!(text.contains("mass-ulw/SKILL.md"));
+    assert!(text.starts_with("ulw loop queued work\n"));
     assert!(text.contains("ulw-loop/SKILL.md"));
     assert_eq!(harness.actions.messages.lock().expect("messages").len(), 0);
 }
@@ -54,7 +53,7 @@ async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_t
         "previous-session",
     ).await;
 
-    let prompt = "/skill:mass-ulw then ulw-loop";
+    let prompt = "/skill:ulw-plan then ulw-loop";
     let result = dispatch_input(
         &harness,
         prompt,

@@ -15,7 +15,7 @@ These skill directories were replaced with the MIT-licensed copies published in
 | remove-ai-slops | same; restored a top-level heading |
 | git-master | same; frontmatter `description` rewritten by mhc |
 | ast-grep | same |
-| ultrawork | adapted to mhc's tool surface (`task`, `todo`, `eval`, `workflow`); Codex subagent/TOML routing sections replaced by an mhc delegation section; Codex-only `agents/` dropped |
+| ultrawork | rewritten clean-room (todo 15, MIT) as the contract loaded on `/skill:ultrawork`, with on-demand `references/*.md`; the injected directive is `crates/maho-ultrawork/contract/core.md` |
 | ulw-execute | same; Codex harness compatibility table replaced by mhc delegation notes |
 | ulw-loop | same; driven through `mhc ulw-loop` (the `--codex-goal-json` flag keeps its historical name) |
 | ulw-plan | same; planning delegated to `task` children |
@@ -55,7 +55,7 @@ Written by implementers who were given only a functional spec and the MIT base
 
 No whole skill under `assets/omo-latest/skills` is SUL-1.0. One subtree is: `frontend/scripts/detect/**` and `frontend/references/perfection/detect.md` (the detect SDK) are copied unchanged from oh-my-openagent v5.1.52 (`354bcf9fc4`) and stay SUL-1.0 (`frontend/scripts/detect/LICENSE.md`, `frontend/ATTRIBUTION.md` section 7). The MIT profile (`package-native --mit`) stages no skills, so they never ship there. Out of scope
 for this file: the runtime crates under `crates/omo/**` (for example
-`maho-omo-mass-ulw`, `maho-omo-ultrawork`, `maho-omo-skill-pointers`,
+`maho-omo-skill-pointers`,
 `maho-omo-onboarding`, `maho-omo-init-deep-advisor`) remain
 `LicenseRef-SUL-1.0`, as does the pool-root developer doc
 `assets/omo-latest/skills/AGENTS.md` (`poolDocs`), which is not a skill.
