@@ -1,0 +1,121 @@
+name: tmp-rpcboot
+
+on:
+  push:
+    branches: ['ci/fix-main-ci-20261103-rpcboot-*']
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "1"
+  MHC_RELEASE_PUBKEY_FILE: crates/maho-cli/tests/fixtures/release-test-key/test.pub
+  MHC_RELEASE_CHANNEL: candidate
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  PROTOC_VERSION: "29.3"
+  AST_GREP_VERSION: "0.45.0"
+  SENPI_PIN: 59d58cee59d76bbecc83be828b59ff5420eb74df
+  CRATES: -p maho-rpc -p maho-cli -p maho-omo-task -p maho-senpi-task -p maho-browser
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: tmp-rpcboot-ubuntu
+      - name: install bubblewrap (bash sandbox tests)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: allow unprivileged user namespaces for bwrap
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: bwrap smoke
+        run: bwrap --ro-bind / / true
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cargo clippy
+        run: cargo clippy $CRATES --all-targets --locked -- -D warnings
+      - name: build tests
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests
+        timeout-minutes: 40
+        env:
+          MHC_REQUIRE_SANDBOX_TEST: "1"
+        run: cargo nextest run --locked --no-fail-fast $CRATES
+      - name: maho-senpi-task + maho-omo-task repeated 5x (race check)
+        timeout-minutes: 60
+        env:
+          MHC_REQUIRE_SANDBOX_TEST: "1"
+        run: for i in 1 2 3 4 5; do echo "== senpi-task pass $i"; cargo nextest run --locked --no-fail-fast -p maho-senpi-task -p maho-omo-task || exit 1; done
+
+  mit-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: tmp-rpcboot-mit
+      - name: cargo clippy (MIT profile)
+        run: cargo clippy -p maho-cli --no-default-features --all-targets --locked -- -D warnings
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: maho-cli tests (MIT profile)
+        timeout-minutes: 40
+        run: cargo nextest run --locked --no-fail-fast -p maho-cli --no-default-features
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: tmp-rpcboot-macos
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cargo clippy
+        run: cargo clippy $CRATES --all-targets --locked -- -D warnings
+      - name: build tests
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests
+        timeout-minutes: 60
+        run: cargo nextest run --locked --no-fail-fast $CRATES
+      - name: maho-senpi-task + maho-omo-task repeated 5x (race check)
+        if: always()
+        timeout-minutes: 60
+        run: for i in 1 2 3 4 5; do echo "== senpi-task pass $i"; cargo nextest run --locked --no-fail-fast -p maho-senpi-task -p maho-omo-task || exit 1; done
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: tmp-rpcboot-windows
+      - name: cargo clippy
+        run: cargo clippy $CRATES --all-targets --locked -- -D warnings
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: maho-senpi-task + maho-omo-task repeated 5x (race check)
+        timeout-minutes: 60
+        run: for i in 1 2 3 4 5; do echo "== senpi-task pass $i"; cargo nextest run --locked --no-fail-fast -p maho-senpi-task -p maho-omo-task || exit 1; done
