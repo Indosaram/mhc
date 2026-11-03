@@ -95,7 +95,7 @@ async fn recover(
         HarnessEventPayload::MessageStart {
             run_id: Some(drive.operation_id.clone()),
             message: crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                Box::new(message.clone()),
+                std::sync::Arc::new(message.clone()),
             )),
         },
         Some(lane.name().into()),
@@ -104,7 +104,7 @@ async fn recover(
         HarnessEventPayload::MessageEnd {
             run_id: Some(drive.operation_id.clone()),
             message: crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                Box::new(message.clone()),
+                std::sync::Arc::new(message.clone()),
             )),
             entry_id: Some(response_id.clone()),
         },

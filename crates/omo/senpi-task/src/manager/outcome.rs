@@ -35,6 +35,12 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     }
     fn store(&self) -> &TaskRecordStore;
     fn now_iso(&self) -> String;
+    fn exit_confirmation_now(&self) -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+    fn wait_exit_confirmation(&self, remaining_ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(remaining_ms));
+    }
     fn live_handle(&self, task_id: &str) -> Option<Arc<dyn ManagedChildHandle>>;
     fn try_load(&self, task_id: &str) -> Option<TaskRecord>;
     fn run_stats_snapshot(&self, task_id: &str) -> Option<TaskRunStats>;
@@ -194,7 +200,7 @@ fn settle_outcome(
                 run_stats,
                 timestamp,
             };
-            settle_error_outcome(ports, &input);
+            settle_error_outcome(ports, &input, generation);
             return;
         }
         RunnerOutcome::Completed { final_response } => TaskTransition::Complete {
@@ -309,18 +315,21 @@ const STOPPED_RUN_TERMINAL: [TaskStatus; 5] = [
     TaskStatus::Lost,
 ];
 
-fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInput) {
+fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInput, generation: u64) {
     if ports.try_runtime_fallback(input) {
         return;
     }
     if !owns_outcome(ports, &input.task_id, &input.handle, input.epoch) {
         return;
     }
+    if !super::provisional_exit::confirm_exit(ports, input, generation) {
+        return;
+    }
     ports.release_slot(&input.task_id, &input.model, input.epoch);
     settle_isolation_for(ports, &input.task_id, false);
     let owned = ports.try_load(&input.task_id);
     let transition = TaskTransition::Fail {
-        timestamp: input.timestamp.clone(),
+        timestamp: ports.now_iso(),
         error_message: crate::manager::credential_failure::terminal_failure_message(
             owned.as_ref(),
             &input.failure.message,

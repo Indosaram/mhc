@@ -59,11 +59,8 @@ where
     }
     let turn = tokio::select! {
         biased;
-        () = signal.cancelled() => None,
-        guard = queue.lock() => Some(guard),
-    };
-    let Some(turn) = turn else {
-        return Err(unavailable());
+        () = signal.cancelled() => return Err(unavailable()),
+        guard = queue.lock() => guard,
     };
     if signal.is_aborted() {
         return Err(unavailable());

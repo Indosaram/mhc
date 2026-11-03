@@ -75,6 +75,8 @@ mod tests {
             message_count: 0,
             first_message: String::new(),
             all_messages_text: String::new(),
+            repository_identity: None,
+            moved: false,
         }
     }
 

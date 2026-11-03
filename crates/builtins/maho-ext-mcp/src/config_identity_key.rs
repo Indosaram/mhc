@@ -40,7 +40,7 @@ pub fn keyed_identity(agent_dir: Option<&Path>, payload: &str) -> String {
     let agent_dir = agent_dir.map_or_else(default_agent_dir, Path::to_path_buf);
     match installation_key(&agent_dir) {
         Some(key) => hmac(&key, payload),
-        None => format!("{EPHEMERAL_PREFIX}{}", hmac(&PROCESS_KEY, payload)),
+        None => format!("{EPHEMERAL_PREFIX}{}", hmac(&*PROCESS_KEY, payload)),
     }
 }
 

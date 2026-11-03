@@ -243,8 +243,28 @@ pub fn subscribe_structured_session_records(
     maho_core::structured_session_lane::StructuredSubscription,
     maho_core::structured_session_lane::StructuredLaneUnavailableError,
 > {
+    subscribe_structured_session_records_routed(session, output, None, None)
+}
+
+pub fn subscribe_structured_session_records_routed(
+    session: &maho_core::agent_session::AgentSession,
+    output: std::sync::Arc<dyn Fn(Value) + Send + Sync>,
+    route: Option<&str>,
+    last_abort_source: Option<crate::connection_handler::LastAbortSource>,
+) -> Result<
+    maho_core::structured_session_lane::StructuredSubscription,
+    maho_core::structured_session_lane::StructuredLaneUnavailableError,
+> {
     use maho_core::structured_session_lane::AgentSessionStructuredRecord as Record;
     let gate = std::sync::Mutex::new(SeededBlockGate::default());
+    let route_str = route.map(ToOwned::to_owned).unwrap_or_else(|| session.session_id());
+    let last_abort_source = last_abort_source.unwrap_or_default();
+    let weak_session = session.weak_accessor();
+    let carrier_session = session.weak_accessor();
+    let correlated = std::sync::Mutex::new(crate::session_binding::new_client_message_events(
+        output,
+        route_str.clone(),
+    ));
     session.subscribe_structured(std::sync::Arc::new(move |record: &Record| {
         let (value, capture) = match record {
             Record::Progress(progress) => match serde_json::to_value(&**progress) {
@@ -252,7 +272,16 @@ pub fn subscribe_structured_session_records(
                 Err(_) => return,
             },
             Record::Event(event) => {
-                match crate::session_binding::session_event_record(&event.value) {
+                let projected = match weak_session() {
+                    Some(session) => crate::connection_handler::rpc_session_event_record_routed(
+                        &session,
+                        &event.value,
+                        &last_abort_source,
+                        Some(&route_str),
+                    ),
+                    None => crate::session_binding::session_event_record(&event.value),
+                };
+                match projected {
                     Ok(value) => (value, event.capture.as_deref()),
                     Err(_) => return,
                 }
@@ -266,13 +295,17 @@ pub fn subscribe_structured_session_records(
                 crate::json_event::to_seeded_json_event(&value, capture).map_err(|_| SeedFrontier)
             });
         if let Ok(Some(accepted)) = accepted {
-            output(crate::session_record_stream::session_record(accepted));
+            let carrier = carrier_session().and_then(|session| session.recovery_carrier(&accepted));
+            correlated
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .accept(accepted, carrier);
         }
     }))
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn update(kind: &str, index: usize, delta: Option<&str>) -> Value {
@@ -463,7 +496,10 @@ mod tests {
             auto_title_sessions: None,
         };
         let plain = maho_core::agent_session::AgentSession::new(config(maho_agent::Agent::new(
-            maho_agent::AgentOptions::default(),
+            maho_agent::AgentOptions {
+                stream_fn: Some(stream_fn.clone()),
+                ..Default::default()
+            },
         )))
         .expect("session");
         assert!(subscribe_structured_session_records(&plain, Arc::new(|_| {})).is_err());
@@ -487,7 +523,7 @@ mod tests {
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             session
-                .agent
+                .agent()
                 .prompt(maho_agent::AgentPromptInput::text("go")),
         )
         .await
@@ -516,5 +552,579 @@ mod tests {
             .expect("assistant message_end");
         assert!(start < control && control < end, "{kinds:?}");
         assert_eq!(records[control]["phase"], "insert");
+    }
+
+    pub(crate) fn session_of(
+        agent: maho_agent::Agent,
+        channel: Option<maho_agent::InternalAgentChannel>,
+        root: &std::path::Path,
+    ) -> maho_core::agent_session::AgentSession {
+        maho_core::agent_session::AgentSession::new_with_internal_channel(
+            maho_core::agent_session::AgentSessionConfig {
+                agent,
+                session_manager: maho_core::session_manager::SessionManager::in_memory(
+                    &root.to_string_lossy(), None, None,
+                ),
+                settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                    Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                    false,
+                ),
+                cwd: root.to_string_lossy().into_owned(),
+                agent_dir: Some(root.join("agent").to_string_lossy().into_owned()),
+                fallback_now: None,
+                retry_random: None,
+                scoped_models: Vec::new(),
+                favorite_models: Vec::new(),
+                flag_values: Default::default(),
+                custom_tools: Vec::new(),
+                model_runtime: Some(
+                    maho_core::model_runtime::ModelRuntime::create_sync(
+                        maho_core::model_runtime::CreateModelRuntimeOptions {
+                            providers: Some(Vec::new()),
+                            agent_dir: Some(root.join("agent")),
+                            models_path: Some(root.join("models.json")),
+                            auth_path: Some(root.join("auth.json")),
+                            allow_model_network: Some(false),
+                            refresh_on_create: Some(false),
+                            ..Default::default()
+                        },
+                    )
+                    .expect("valid model runtime"),
+                ),
+                model_registry: None,
+                uses_default_stream_function: Some(false),
+                initial_active_tool_names: None,
+                default_tool_names: None,
+                eval_only_tool_names: None,
+                allowed_tool_names: None,
+                excluded_tool_names: None,
+                base_tools_override: None,
+                session_start_event: None,
+                auto_title_sessions: Some(false),
+            },
+            None,
+            channel,
+        )
+        .expect("session")
+    }
+
+    pub(crate) fn scripted_session(
+        root: &std::path::Path,
+        script: impl Fn(&maho_ai::types::AssistantMessageEventStream, maho_ai::types::AssistantMessage)
+            + Send
+            + Sync
+            + 'static,
+    ) -> maho_core::agent_session::AgentSession {
+        let channel = maho_agent::create_internal_agent_channel();
+        let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |_, _, _| {
+            let stream = maho_ai::types::AssistantMessageEventStream::with_capture_blocks(true);
+            let mut partial =
+                maho_ai::providers::faux::faux_assistant_message("", Default::default());
+            partial.content.clear();
+            script(&stream, partial);
+            stream
+        });
+        let agent = maho_agent::Agent::new(maho_agent::AgentOptions {
+            internal_channel: Some(channel.clone()),
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        });
+        session_of(agent, Some(channel), root)
+    }
+
+    fn text(text: &str) -> maho_ai::types::ContentBlock {
+        maho_ai::types::ContentBlock::Text(maho_ai::types::TextContent {
+            text: text.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn lane_turn(session: &maho_core::agent_session::AgentSession) -> Vec<Value> {
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = records.clone();
+        let subscription = subscribe_structured_session_records(
+            session,
+            std::sync::Arc::new(move |record: Value| sink.lock().expect("records").push(record)),
+        )
+        .expect("the session layer owns the channel");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent()
+                .prompt(maho_agent::AgentPromptInput::text("go")),
+        )
+        .await
+        .expect("bounded turn");
+        drop(subscription);
+        let records = records.lock().expect("records").clone();
+        first_assistant_message(&records)
+    }
+
+    fn first_assistant_message(records: &[Value]) -> Vec<Value> {
+        let Some(start) = records
+            .iter()
+            .position(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant")
+        else {
+            return Vec::new();
+        };
+        let Some(end) = records[start..]
+            .iter()
+            .position(|r| r["type"] == "message_end")
+        else {
+            return Vec::new();
+        };
+        records[start..=start + end].to_vec()
+    }
+
+    fn labels(records: &[Value]) -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|record| {
+                let kind = record["type"].as_str()?;
+                if !kind.starts_with("message_") {
+                    return None;
+                }
+                if let Some(event) = record.get("assistantMessageEvent") {
+                    return Some(format!("{kind}:{}", event["type"].as_str().unwrap_or("")));
+                }
+                Some(match record.get("phase").and_then(Value::as_str) {
+                    Some(phase) => format!("{kind}:{phase}"),
+                    None => kind.to_owned(),
+                })
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn invalidates_every_block_at_or_above_a_rewriting_terminals_rewritten_from() {
+        use maho_ai::types::{AssistantMessageEvent as E, ContentBlock, DoneReason, ToolCall};
+        let root = tempfile::tempdir().unwrap();
+        let session = scripted_session(
+            root.path(),
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(text("a"));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "a".into(),
+                    partial: partial.clone(),
+                });
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("a".into(), json!(1));
+                let call = ToolCall {
+                    id: "call_1".into(),
+                    name: "probe".into(),
+                    arguments,
+                    ..Default::default()
+                };
+                partial.content.push(ContentBlock::ToolCall(call.clone()));
+                stream.push(E::ToolcallStart {
+                    content_index: 1,
+                    partial: partial.clone(),
+                });
+                stream.push(E::ToolcallEnd {
+                    content_index: 1,
+                    tool_call: call,
+                    partial: partial.clone(),
+                });
+                partial.content.push(text("b"));
+                stream.push(E::TextStart {
+                    content_index: 2,
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 2,
+                    content: "b".into(),
+                    partial: partial.clone(),
+                });
+                partial
+                    .content
+                    .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+                stream.push_with_hint(
+                    E::Done {
+                        reason: DoneReason::Stop,
+                        message: partial.clone(),
+                    },
+                    maho_ai::utils::assistant_capture::CaptureHint::rewritten_from(Some(1)),
+                );
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_update:toolcall_start",
+                "message_update:toolcall_end",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+        let end = turn.last().expect("message_end");
+        assert_eq!(end["invalidatedBlocks"], json!([1, 2]));
+        assert_eq!(
+            end["message"]["content"],
+            json!([{"type":"text","text":"a"},{"type":"text","text":"b"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidates_every_block_of_a_message_that_ends_without_a_terminal_capture() {
+        use maho_ai::types::AssistantMessageEvent as E;
+        let root = tempfile::tempdir().unwrap();
+        let session = scripted_session(
+            root.path(),
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                for value in ["a", "b"] {
+                    let content_index = partial.content.len();
+                    partial.content.push(text(value));
+                    stream.push(E::TextStart {
+                        content_index,
+                        partial: partial.clone(),
+                    });
+                    stream.push(E::TextEnd {
+                        content_index,
+                        content: value.into(),
+                        partial: partial.clone(),
+                    });
+                }
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+        assert_eq!(
+            turn.last().expect("message_end")["invalidatedBlocks"],
+            json!([0, 1])
+        );
+    }
+
+    #[tokio::test]
+    async fn orders_block_controls_among_seeded_records() {
+        use maho_ai::types::{
+            AssistantMessageEvent as E, ContentBlock, DoneReason, ProviderNativeContent,
+        };
+        use maho_ai::utils::assistant_capture::{
+            AssistantProgress, BlockPhase, push_assistant_progress,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let session = scripted_session(
+            root.path(),
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(text(""));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                partial.content[0] = text("hi");
+                stream.push(E::TextDelta {
+                    content_index: 0,
+                    delta: "hi".into(),
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "hi".into(),
+                    partial: partial.clone(),
+                });
+                let native = ContentBlock::ProviderNative(ProviderNativeContent {
+                    subtype: "fixture".into(),
+                    raw: json!({"value":1}),
+                });
+                partial.content.push(native.clone());
+                push_assistant_progress(
+                    stream,
+                    AssistantProgress::block_state(1, BlockPhase::Insert, &native),
+                );
+                push_assistant_progress(
+                    stream,
+                    AssistantProgress::block_state(1, BlockPhase::End, &native),
+                );
+                stream.push(E::Done {
+                    reason: DoneReason::Stop,
+                    message: partial.clone(),
+                });
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_delta",
+                "message_update:text_end",
+                "message_block_state:insert",
+                "message_block_state:end",
+                "message_end",
+            ]
+        );
+        let update = |kind: &str| {
+            turn.iter()
+                .find(|record| record["assistantMessageEvent"]["type"] == kind)
+                .expect("seeded update")
+        };
+        assert_eq!(
+            update("text_start")["assistantMessageEvent"]["seed"]["coveredCodeUnits"],
+            0
+        );
+        assert_eq!(update("text_delta")["assistantMessageEvent"]["offset"], 0);
+        assert!(
+            turn.last()
+                .expect("message_end")
+                .get("invalidatedBlocks")
+                .is_none()
+        );
+        for key in ["messageId", "turnId", "runtimeItemKey"] {
+            assert!(turn.iter().all(|record| record.get(key).is_none()), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn gives_a_lane_attached_mid_message_no_seed_delta_or_control() {
+        use maho_ai::types::{
+            AssistantMessageEvent as E, ContentBlock, DoneReason, ProviderNativeContent,
+        };
+        use maho_ai::utils::assistant_capture::{
+            AssistantProgress, BlockMetadata, BlockPhase, push_assistant_progress,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (resume_tx, resume_rx) = tokio::sync::watch::channel(false);
+        let turn_index = std::sync::Arc::new(AtomicUsize::new(0));
+        let turn_index_clone = turn_index.clone();
+
+        let channel = maho_agent::create_internal_agent_channel();
+        let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |_, _, _| {
+            let stream = maho_ai::types::AssistantMessageEventStream::with_capture_blocks(true);
+            let mut partial =
+                maho_ai::providers::faux::faux_assistant_message("", Default::default());
+            partial.content.clear();
+            let turn = turn_index_clone.fetch_add(1, Ordering::SeqCst);
+            if turn == 0 {
+                let stream_clone = stream.clone();
+                let mut rx = resume_rx.clone();
+                tokio::spawn(async move {
+                    stream_clone.push(E::Start {
+                        partial: partial.clone(),
+                    });
+                    partial.content.push(text("a"));
+                    stream_clone.push(E::TextStart {
+                        content_index: 0,
+                        partial: partial.clone(),
+                    });
+                    let _ = rx.wait_for(|&v| v).await;
+                    partial.content[0] = text("ab");
+                    stream_clone.push(E::TextDelta {
+                        content_index: 0,
+                        delta: "b".into(),
+                        partial: partial.clone(),
+                    });
+                    push_assistant_progress(
+                        &stream_clone,
+                        AssistantProgress::metadata(BlockMetadata {
+                            content_index: 0,
+                            text_signature: Some("sig".into()),
+                            ..Default::default()
+                        }),
+                    );
+                    let native = ContentBlock::ProviderNative(ProviderNativeContent {
+                        subtype: "fixture".into(),
+                        raw: json!({}),
+                    });
+                    partial.content.push(native.clone());
+                    push_assistant_progress(
+                        &stream_clone,
+                        AssistantProgress::block_state(1, BlockPhase::Insert, &native),
+                    );
+                    push_assistant_progress(
+                        &stream_clone,
+                        AssistantProgress::block_state(1, BlockPhase::End, &native),
+                    );
+                    stream_clone.push(E::TextEnd {
+                        content_index: 0,
+                        content: "ab".into(),
+                        partial: partial.clone(),
+                    });
+                    stream_clone.push(E::Done {
+                        reason: DoneReason::Stop,
+                        message: partial.clone(),
+                    });
+                    stream_clone.end(Some(partial));
+                });
+            } else {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(text("c"));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                partial.content[0] = text("cd");
+                stream.push(E::TextDelta {
+                    content_index: 0,
+                    delta: "d".into(),
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "cd".into(),
+                    partial: partial.clone(),
+                });
+                stream.push(E::Done {
+                    reason: DoneReason::Stop,
+                    message: partial.clone(),
+                });
+                stream.end(Some(partial));
+            }
+            stream
+        });
+        let agent = maho_agent::Agent::new(maho_agent::AgentOptions {
+            internal_channel: Some(channel.clone()),
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        });
+        let root = tempfile::tempdir().unwrap();
+        let session = session_of(agent, Some(channel), root.path());
+
+        let (emitted_tx, emitted_rx) = tokio::sync::oneshot::channel::<()>();
+        let emitted_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(emitted_tx)));
+        let watch_subscription = session.subscribe(std::sync::Arc::new(move |event| {
+            if let maho_ext_api::AgentSessionEvent::Agent(
+                maho_agent::types::AgentEvent::MessageUpdate {
+                    assistant_message_event: maho_ai::types::AssistantMessageEvent::TextStart { .. },
+                    ..
+                },
+            ) = event
+                && let Some(tx) = emitted_tx.lock().unwrap().take()
+            {
+                let _ = tx.send(());
+            }
+        }));
+
+        let early_records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let early_sink = early_records.clone();
+        let early_sub = subscribe_structured_session_records(
+            &session,
+            std::sync::Arc::new(move |record| early_sink.lock().unwrap().push(record)),
+        )
+        .expect("early subscription");
+
+        let late_records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let late_sink = late_records.clone();
+
+        let prompt_session = session.clone();
+        let prompt_task = tokio::spawn(async move {
+            prompt_session
+                .agent()
+                .prompt(maho_agent::AgentPromptInput::text("first"))
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), emitted_rx)
+            .await
+            .expect("text_start emitted")
+            .expect("emitted rx");
+
+        let late_sub = subscribe_structured_session_records(
+            &session,
+            std::sync::Arc::new(move |record| late_sink.lock().unwrap().push(record)),
+        )
+        .expect("late subscription");
+
+        resume_tx.send(true).expect("resume signal");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), prompt_task)
+            .await
+            .expect("first turn bounded")
+            .expect("first turn join");
+
+        let early = early_records.lock().unwrap().clone();
+        assert_eq!(
+            labels(&first_assistant_message(&early)),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_delta",
+                "message_block_metadata",
+                "message_block_state:insert",
+                "message_block_state:end",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+
+        let late = late_records.lock().unwrap().clone();
+        let late_message_labels: Vec<String> = late
+            .iter()
+            .filter_map(|r| {
+                let kind = r["type"].as_str()?;
+                kind.starts_with("message_").then(|| kind.to_string())
+            })
+            .collect();
+        assert_eq!(late_message_labels, ["message_end"]);
+        assert!(
+            late.last()
+                .expect("message_end")
+                .get("invalidatedBlocks")
+                .is_none()
+        );
+
+        late_records.lock().unwrap().clear();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent()
+                .prompt(maho_agent::AgentPromptInput::text("second")),
+        )
+        .await
+        .expect("second turn bounded");
+
+        let late2 = late_records.lock().unwrap().clone();
+        assert_eq!(
+            labels(&first_assistant_message(&late2)),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_delta",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+
+        drop(late_sub);
+        drop(early_sub);
+        drop(watch_subscription);
     }
 }

@@ -2599,6 +2599,45 @@ fn workflow_tool_schema_offers_control_verbs() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn blocking_wait_abort_returns_nonterminal_snapshot() {
+    use senpi_task::dag::handle::{create_dag_wait_surface, DagWaitSurfaceOptions};
+    let f = fixture();
+    let started = run_dag_tool(&deps(&f.manager), serde_json::from_value(json!({
+        "action":"start", "definition":{"key":"abort-test","name":"abort","nodes":[{"id":"one","prompt":"work","category":"quick"}]}
+    })).expect("input")).expect("start");
+    let run_id = started.details.expect("details")["run_id"].as_str().expect("run").to_owned();
+    let (ready, registered) = tokio::sync::oneshot::channel();
+    let ready = Mutex::new(Some(ready));
+    let surface = create_dag_wait_surface(DagWaitSurfaceOptions {
+        store: f.store.clone(),
+        subscribe: Arc::new(move |_, _| {
+            if let Some(ready) = ready.lock().expect("ready").take() { ready.send(()).expect("registration"); }
+            Box::new(|| {})
+        }),
+        cancel: None, read_output: None,
+    });
+    let waiter = surface.clone();
+    let mut dependencies = deps(&f.manager);
+    dependencies.wait = Some(Arc::new(move |run, session| {
+        let result = waiter.wait(&run.to_owned(), session).map_err(|error| ToolError::Message(error.to_string()))?;
+        Ok(json!({"runId": result.run_id, "status": result.status, "snapshot": result.snapshot, "nodes": {}}))
+    }));
+    let signal = maho_ext_api::AbortSignal::default();
+    let abort = signal.clone();
+    let trigger = tokio::spawn(async move { registered.await.expect("registered"); abort.abort(); });
+    let tool = create_dag_tool(dependencies);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), (tool.execute)(maho_ext_api::ToolCall {
+        id: "wait", params: json!({"action":"wait","run_id":run_id,"detach":false}),
+        signal, on_update: None, context: None,
+    })).await.expect("bounded abort").expect("snapshot");
+    trigger.await.expect("trigger");
+    let details = result.details.expect("details");
+    assert_eq!(details["kind"], "waited");
+    assert_eq!(details["result"]["status"], "pending");
+    assert_eq!(surface.waiter_count(&run_id), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn blocking_wait_does_not_starve_the_executor_that_drives_the_run() {
     let f = fixture();
     let started = run_dag_tool(&deps(&f.manager), DagToolInput {

@@ -51,11 +51,20 @@ impl RunnerFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerExit {
+    pub kind: &'static str,
+    pub code: Option<i32>,
+    pub signal: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerFailure {
     pub kind: RunnerFailureKind,
     pub message: String,
     /// The classified `failure.cause` (`classifyStartCause`); only typed facts, never the raw error.
-    pub cause: Option<crate::manager::start_failure_cause::StartCause>,
+    pub cause: Option<Box<crate::manager::start_failure_cause::StartCause>>,
+    /// Boxed so `ManagedRunnerError::Runner` stays small (`clippy::result_large_err`).
+    pub exit: Option<Box<RunnerExit>>,
 }
 
 impl RunnerFailure {
@@ -64,6 +73,7 @@ impl RunnerFailure {
             kind,
             message: message.into(),
             cause: None,
+            exit: None,
         }
     }
 
@@ -71,7 +81,12 @@ impl RunnerFailure {
         mut self,
         cause: Option<crate::manager::start_failure_cause::StartCause>,
     ) -> Self {
-        self.cause = cause;
+        self.cause = cause.map(Box::new);
+        self
+    }
+
+    pub fn with_exit(mut self, exit: RunnerExit) -> Self {
+        self.exit = Some(Box::new(exit));
         self
     }
 }
@@ -169,6 +184,8 @@ pub trait ChildSession: Send + Sync {
         None
     }
     fn abort(&self) -> Result<(), HostError>;
+    /// Drops steering and follow-up messages queued on the session but not yet delivered.
+    fn clear_queued_input(&self) {}
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
     fn park_idle_memory(&self) {}
@@ -657,6 +674,13 @@ impl ManagedChildHandle for InProcessChildHandle {
 
     fn abort(&self) -> Result<(), HostError> {
         self.abort_turn()
+    }
+
+    /// A cancel without abort lets the running turn reach its outcome boundary, but the session's
+    /// queued steering/follow-up messages would each start another turn and keep the cancelled child
+    /// working. Drop them so the turn in flight is the last one.
+    fn mark_stopping(&self) {
+        self.session.clear_queued_input();
     }
 
     fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe {

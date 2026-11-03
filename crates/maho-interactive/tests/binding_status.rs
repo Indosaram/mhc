@@ -92,6 +92,54 @@ async fn a_session_paused_before_binding_shows_its_pause_footer_at_bind() {
 }
 
 #[tokio::test]
+async fn disposed_lifecycle_binding_discards_queued_and_late_records() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = bound_mode().await;
+    assert!(status(&mode, LIFECYCLE_STATUS_KEY).is_some());
+    let seq = session.lifecycle_snapshot()["seq"].as_u64().unwrap_or(0);
+    let record = json!({"type":"session_lifecycle", "sessionId":session.session_id(),
+        "lifecycle":{"state":"waiting_children", "seq":seq + 10,
+            "waitingOn":{"children":2}}});
+    session.emit_extension_event("session_lifecycle", &record);
+    mode.dispose();
+    assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY), None);
+    session.emit_extension_event("session_lifecycle", &record);
+    mode.drain_events();
+    assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY), None);
+}
+
+#[tokio::test]
+async fn reload_preserves_host_lifecycle_status_and_receives_later_records() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = bound_mode().await;
+    let initial = status(&mode, LIFECYCLE_STATUS_KEY);
+    assert!(initial.is_some());
+    mode.extension_ui.set_status("extension-status", Some("temporary"));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        assert_eq!(
+            mode.submit("/reload", Default::default()).await.expect("reload command"),
+            maho_core::agent_session::PromptDisposition::Handled
+        );
+        mode.render(100);
+        assert_eq!(
+            mode.submit_editor().await.expect("queued reload"),
+            Some(maho_core::agent_session::PromptDisposition::Handled)
+        );
+    }).await.expect("reload deadline");
+    assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY), initial);
+    assert_eq!(status(&mode, "extension-status"), None);
+    let seq = session.lifecycle_snapshot()["seq"].as_u64().unwrap_or(0);
+    session.emit_extension_event("session_lifecycle", &json!({
+        "type":"session_lifecycle", "sessionId":session.session_id(),
+        "lifecycle":{"state":"waiting_background", "seq":seq + 1}
+    }));
+    mode.drain_events();
+    assert_eq!(status(&mode, LIFECYCLE_STATUS_KEY).as_deref(), Some("waiting_background"));
+    mode.dispose();
+}
+
+#[tokio::test]
 async fn each_binding_registers_the_terminal_presentation_until_the_terminal_ends() {
     use maho_tui::tui::Component;
     let (mut mode, _directory, _session) = bound_mode().await;

@@ -88,7 +88,7 @@ fn entry_type(record: &Value) -> String {
     }
 }
 
-fn or_default<'a>(value: Option<&'a Value>) -> Option<&'a Value> {
+fn or_default(value: Option<&Value>) -> Option<&Value> {
     value.filter(|value| !value.is_null())
 }
 

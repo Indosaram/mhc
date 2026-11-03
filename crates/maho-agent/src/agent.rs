@@ -1394,7 +1394,7 @@ impl Agent {
         };
         if let Some(internal) = crate::internal_events::dispatch_internal_agent(
             self.inner.internal_channel.as_ref(),
-            crate::internal_events::InternalEvent::Event(captured),
+            crate::internal_events::InternalEvent::Event(Box::new(captured)),
         ) {
             internal.await;
         }
@@ -1720,7 +1720,7 @@ mod queue_ownership_tests {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
             agent.process_events(AgentEvent::TurnEnd {
-                message: maho_ai::types::Message::Assistant(Box::new(message)).into(),
+                message: maho_ai::types::Message::Assistant(std::sync::Arc::new(message)).into(),
                 tool_results: Vec::new(),
             }),
         )

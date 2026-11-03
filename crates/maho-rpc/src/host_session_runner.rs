@@ -829,7 +829,7 @@ mod tests {
                     }
                     vec![ok(json!({}))]
                 }
-                "get_state" => vec![ok(Self::state(&self.sessions[session.unwrap()]))],
+                "get_state" => vec![ok(Self::state(&self.sessions[session.expect("session index")]))],
                 "get_messages" => vec![ok(json!({"messages": self.messages}))],
                 "get_entries" => {
                     let start = match command["since"].as_str() {
@@ -844,7 +844,7 @@ mod tests {
                     vec![ok(json!({ "entries": entries, "leafId": leaf }))]
                 }
                 "prompt" => {
-                    let session = &mut self.sessions[session.unwrap()];
+                    let session = &mut self.sessions[session.expect("session index")];
                     if command["message"]
                         .as_str()
                         .is_some_and(|text| text.len() > 1_000)
@@ -858,17 +858,17 @@ mod tests {
                     vec![ok(json!({"disposition": "started"}))]
                 }
                 "steer" => {
-                    let session = &mut self.sessions[session.unwrap()];
+                    let session = &mut self.sessions[session.expect("session index")];
                     session
                         .steering
-                        .push(command["message"].as_str().unwrap().into());
+                        .push(command["message"].as_str().expect("message text").into());
                     vec![ok(json!({"disposition": "queued"}))]
                 }
                 "abort" => {
                     if self.refuse_abort {
                         return vec![refuse("abort_refused", Some("abort_refused"))];
                     }
-                    self.sessions[session.unwrap()].streaming = false;
+                    self.sessions[session.expect("session index")].streaming = false;
                     vec![ok(json!({}))]
                 }
                 "set_model" => {
@@ -877,7 +877,7 @@ mod tests {
                         Some("mock-claude-rpc-2") => "mock-claude-rpc-2",
                         _ => return vec![refuse("model_not_found", Some("model_not_found"))],
                     };
-                    self.sessions[session.unwrap()].model = model;
+                    self.sessions[session.expect("session index")].model = model;
                     vec![ok(json!({}))]
                 }
                 "unload_session" => vec![ok(self.unload_answer.clone())],
@@ -894,9 +894,9 @@ mod tests {
 
     impl Rig {
         fn new(seed: impl FnOnce(&mut Fake)) -> Self {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir().expect("tempdir for rig");
             let socket = dir.path().join("host.sock");
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let listener = tokio::net::UnixListener::bind(&socket).expect("bind rig listener");
             let mut fake = Fake::default();
             seed(&mut fake);
             let fake = Arc::new(Mutex::new(fake));
@@ -909,8 +909,8 @@ mod tests {
                         let mut lines = BufReader::new(read).lines();
                         let mut attached = Vec::new();
                         while let Ok(Some(line)) = lines.next_line().await {
-                            let command: Value = serde_json::from_str(&line).unwrap();
-                            let frames = fake.lock().unwrap().handle(&command, &mut attached);
+                            let command: Value = serde_json::from_str(&line).expect("parse command JSON");
+                            let frames = fake.lock().expect("lock fake").handle(&command, &mut attached);
                             for frame in frames {
                                 if write
                                     .write_all(format!("{frame}\n").as_bytes())
@@ -947,7 +947,7 @@ mod tests {
             .await
         }
         fn with<R>(&self, f: impl FnOnce(&mut Fake) -> R) -> R {
-            f(&mut self.fake.lock().unwrap())
+            f(&mut self.fake.lock().expect("lock fake"))
         }
         fn seen(&self, kind: &str) -> Vec<Value> {
             self.with(|fake| {

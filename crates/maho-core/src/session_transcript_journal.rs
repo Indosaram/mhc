@@ -222,6 +222,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(unix)]
     fn entries() -> Vec<Value> {
         vec![
             json!({"type":"session","id":"s"}),

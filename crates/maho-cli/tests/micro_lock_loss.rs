@@ -126,6 +126,13 @@ async fn a_lost_session_lock_aborts_the_running_turn_and_no_further_session_writ
         .run_until(async {
             let agent = tempfile::tempdir().expect("agent dir");
             let cwd = tempfile::tempdir().expect("cwd");
+            // chatgpt-subscription impersonates the Codex client, so mhc refuses it until the user
+            // has recorded consent (docs/divergences.md); this fixture stands for a consenting user.
+            std::fs::write(
+                agent.path().join("settings.json"),
+                r#"{"providerRiskConsent":{"chatgpt-subscription":"2026-01-01T00:00:00.000Z"}}"#,
+            )
+            .expect("consent settings");
             // The micro default model, served by a faux provider whose turn stays in flight until
             // it is aborted.
             let faux = faux_provider(RegisterFauxProviderOptions {
@@ -168,6 +175,8 @@ async fn a_lost_session_lock_aborts_the_running_turn_and_no_further_session_writ
                 ))]);
             let mut model_runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
                 providers: Some(Vec::new()),
+                auth_path: Some(agent.path().join("auth.json")),
+                agent_dir: Some(agent.path().to_path_buf()),
                 ..Default::default()
             })
             .expect("model runtime");

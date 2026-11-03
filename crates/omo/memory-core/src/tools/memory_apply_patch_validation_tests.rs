@@ -99,6 +99,29 @@ fn test_rejects_uncommitted_working_tree_changes() {
     assert!(err.message.contains("Memory repo has uncommitted changes"));
 }
 
+#[cfg(unix)]
+#[test]
+fn test_refused_commit_rolls_back_applied_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let memory = "---\ndescription: Kept\n---\noriginal\n";
+    let (_temp, repo) = create_patch_fixture(&[("system/kept.md", memory)]);
+    let hook = repo.dir.join(".git/hooks/pre-commit");
+    fs::create_dir_all(hook.parent().expect("hooks dir")).expect("mkdir hooks");
+    fs::write(&hook, "#!/bin/sh\necho refused by test hook >&2\nexit 1\n").expect("hook");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod hook");
+
+    let patch = "*** Begin Patch\n*** Update File: system/kept.md\n@@\n-original\n+changed\n*** Add File: notes/new/added.md\n+---\n+description: Added\n+---\n+hello\n*** End Patch";
+    let err = memory_apply_patch(&repo, &test_params("refused", patch)).unwrap_err();
+    assert!(err.message.contains("refused by test hook"), "{}", err.message);
+
+    assert_eq!(repo.status(&[] as &[&str]).expect("status"), "");
+    assert_eq!(
+        fs::read_to_string(repo.dir.join("system/kept.md")).expect("kept"),
+        memory
+    );
+    assert!(!repo.dir.join("notes/new/added.md").exists());
+}
+
 #[test]
 fn test_rejects_hunk_context_mismatch_with_diagnostics() {
     let memory = "---\ndescription: Mismatch\n---\nactual content\n";
@@ -289,13 +312,13 @@ fn given_utf16le_source_when_read_then_it_is_rejected_with_conversion_guidance_a
 #[test]
 fn given_duplicate_add_and_existing_add_when_applied_then_each_fails_with_the_tool_prefix() {
     let existing = [("a.md", "---\ndescription: A\n---\none")];
-    let rows: [(&[(&str, &str)], &str, &str); 2] = [
+    let rows = [
         (
-            &[],
+            &existing[..0],
             "*** Add File: a.md\n+one\n*** Add File: a.md\n+two",
             "duplicate add/update target",
         ),
-        (&existing, "*** Add File: a.md\n+two", "cannot add existing"),
+        (existing.as_slice(), "*** Add File: a.md\n+two", "cannot add existing"),
     ];
 
     for (seeds, body, expected) in rows {

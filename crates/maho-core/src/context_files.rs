@@ -172,6 +172,7 @@ pub fn apply_context_file_limits(
             ContextFile {
                 path: file.path,
                 content,
+                scope: file.scope,
             },
         );
     }
@@ -201,6 +202,7 @@ mod tests {
         ContextFile {
             path: path.to_owned(),
             content,
+            scope: None,
         }
     }
 

@@ -729,7 +729,8 @@ impl McpPresenterAuthority {
             .iter()
             .map(|signal| {
                 let combined = combined.clone();
-                let id = signal.add_abort_listener(move |_| combined.abort(None));
+                let on_abort = combined.clone();
+                let id = signal.add_abort_listener(move |_| on_abort.abort(None));
                 if signal.aborted() {
                     combined.abort(None);
                 }

@@ -314,7 +314,7 @@ mod tests {
     fn target(dir: &std::path::Path) -> StopTarget {
         let paths = host_daemon_directory_paths(dir);
         let generation = generation_paths(&paths, "g");
-        std::fs::create_dir_all(&generation.dir).unwrap();
+        std::fs::create_dir_all(&generation.dir).expect("create generation dir");
         StopTarget {
             daemon_dir: dir.to_path_buf(),
             generation,
@@ -324,9 +324,9 @@ mod tests {
         }
     }
     fn dead_pid() -> u32 {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let mut child = std::process::Command::new("true").spawn().expect("spawn dead child");
         let pid = child.id();
-        child.wait().unwrap();
+        child.wait().expect("wait for dead child");
         pid
     }
 

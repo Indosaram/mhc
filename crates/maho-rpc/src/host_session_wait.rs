@@ -176,14 +176,14 @@ mod tests {
     fn wire_rig(
         script: impl Fn(usize, Value) -> Vec<Value> + Send + 'static,
     ) -> (RpcClient, tokio::task::JoinHandle<usize>) {
-        let (client, host) = UnixStream::pair().unwrap();
+        let (client, host) = UnixStream::pair().expect("create UnixStream pair");
         let client = RpcClient::from_stream(client, RpcClientOptions::default());
         let host = tokio::spawn(async move {
             let (read, mut write) = host.into_split();
             let mut lines = BufReader::new(read).lines();
             let mut reads = 0;
             while let Ok(Some(line)) = lines.next_line().await {
-                let command: Value = serde_json::from_str(&line).unwrap();
+                let command: Value = serde_json::from_str(&line).expect("parse command JSON");
                 if command["type"] != "get_state" {
                     continue;
                 }

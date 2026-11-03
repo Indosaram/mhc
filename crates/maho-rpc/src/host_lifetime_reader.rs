@@ -3,6 +3,7 @@
 //! A FIFO is read through the runtime's reactor. Any other descriptor (macOS reopened stdin) is read on its OWN
 //! detached OS thread, never the runtime's blocking pool, so a host that exits on its own is never held in a pool
 //! join (the failure senpi documents for a thread-pool read).
+#[cfg(unix)]
 use crate::host_lifetime_binding::LifetimeEvent;
 
 /// Owns `file`: EOF sends `Gone(reason)`, a read error sends `Unavailable`. Dropping the receiver disarms it.

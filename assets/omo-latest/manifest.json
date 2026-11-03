@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "name": "omo-latest",
   "purpose": "Repository-owned latest skill assets for `bun tools/package-native.mjs --skill-source latest`. Staging reads ONLY this overlay, so the pinned checkout can never silently contribute latest assets.",
-  "commit": "455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b",
-  "sourceRepo": "/home/indo/T9-Mac/maho-code-lanes/upstream-omo-audit-20261006",
-  "pinCommit": "77f3067f157a4f88e6d8ed48b3a6c338654402ed",
-  "pinSenpi": "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407",
+  "commit": "354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9",
+  "sourceRepo": "https://github.com/code-yeongyu/oh-my-openagent",
+  "pinCommit": "354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9",
+  "pinSenpi": "59d58cee59d76bbecc83be828b59ff5420eb74df",
   "versions": {
-    "omoSenpi": "5.1.20",
+    "omoSenpi": "5.1.52",
     "sharedSkills": "0.1.0"
   },
   "precedence": [
@@ -5043,6 +5043,10 @@
     "visual-qa",
     "visualize"
   ],
+  "targetInventoryProvenance": {
+    "commit": "455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b",
+    "note": "The mc:H target rows below retain the historical migration inventory, not the current shipped file set. The skills map is the authoritative current file inventory and hash binding; selection is the current staged skill set. Per-file source fields retain their individual license and revision provenance."
+  },
   "targets": {
     "mc:H1": {
       "title": "builtin skill name list",
@@ -8059,6 +8063,6 @@
     "files": 815,
     "declaredSha256": 815,
     "unbound": 0,
-    "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
+    "mechanism": "The skills map declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every declared sha256 is checked against the overlay bytes before staging."
   }
 }

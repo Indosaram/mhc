@@ -214,7 +214,7 @@ fn generated_ids_are_judged_one_name_at_a_time() {
         ),
     ];
     for (name, names, ids) in cases {
-        let found = sorted(generated_ids(*names).into_iter().collect());
+        let found = sorted(generated_ids(names).into_iter().collect());
         let expected = sorted(ids.iter().map(|s| (*s).to_string()).collect());
         assert_eq!(found, expected, "{name}");
     }

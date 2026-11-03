@@ -52,7 +52,7 @@ impl FakeKernel {
             .expect("close signal");
     }
     fn ran(&self) -> Vec<String> {
-        self.ran.lock().unwrap().clone()
+        self.ran.lock().expect("ran lock poisoned").clone()
     }
 }
 
@@ -64,7 +64,7 @@ impl maho_ext_api::ExtensionKernelTools for FakeTools {
     }
     fn describe<'a>(&'a self, names: &'a [String]) -> maho_ext_api::ExtensionFuture<'a, Value> {
         Box::pin(async move {
-            self.0.described.lock().unwrap().push(names.to_vec());
+            self.0.described.lock().expect("described lock poisoned").push(names.to_vec());
             Ok(json!({"results":[]}))
         })
     }
@@ -74,7 +74,7 @@ impl maho_ext_api::ExtensionKernelTools for FakeTools {
         _: maho_ext_api::KernelToolInvokeOptions,
     ) -> maho_ext_api::ExtensionFuture<'_, Value> {
         Box::pin(async move {
-            let gate = self.0.tool_gate.lock().unwrap().clone();
+            let gate = self.0.tool_gate.lock().expect("tool_gate lock poisoned").clone();
             if let Some(mut gate) = gate {
                 let _ = gate.wait_for(|open| *open).await;
             }
@@ -85,7 +85,7 @@ impl maho_ext_api::ExtensionKernelTools for FakeTools {
 
 impl EvalKernel for FakeKernel {
     fn kernel_tools(self: Arc<Self>) -> Option<Arc<dyn maho_ext_api::ExtensionKernelTools>> {
-        if self.tool_gate.lock().unwrap().is_some() {
+        if self.tool_gate.lock().expect("tool_gate lock poisoned").is_some() {
             Some(Arc::new(FakeTools(self)))
         } else {
             None
@@ -96,8 +96,8 @@ impl EvalKernel for FakeKernel {
             if self.is_closed() {
                 return Err(format!("kernel {} is closed", self.id));
             }
-            self.ran.lock().unwrap().push(input.cell_id.clone());
-            let gate = self.run_gate.lock().unwrap().clone();
+            self.ran.lock().expect("ran lock poisoned").push(input.cell_id.clone());
+            let gate = self.run_gate.lock().expect("run_gate lock poisoned").clone();
             if let Some(mut gate) = gate {
                 let _ = gate.wait_for(|open| *open).await;
             }
@@ -122,7 +122,7 @@ impl EvalKernel for FakeKernel {
         })
     }
     fn queue_snapshot(&self) -> (Option<String>, Vec<String>) {
-        (None, self.queued.lock().unwrap().clone())
+        (None, self.queued.lock().expect("queued lock poisoned").clone())
     }
     fn deliver_tool_reply(&self, _: Value) -> Result<(), String> {
         Ok(())
@@ -132,7 +132,7 @@ impl EvalKernel for FakeKernel {
     }
     fn close(&self) -> EvalKernelFuture<'_, ()> {
         Box::pin(async {
-            let gate = self.close_gate.lock().unwrap().clone();
+            let gate = self.close_gate.lock().expect("close_gate lock poisoned").clone();
             if let Some(mut gate) = gate {
                 let _ = gate.wait_for(|open| *open).await;
             }
@@ -141,7 +141,7 @@ impl EvalKernel for FakeKernel {
         })
     }
     fn list_kernel_tool_names(&self) -> Vec<String> {
-        self.tools.lock().unwrap().clone()
+        self.tools.lock().expect("tools lock poisoned").clone()
     }
 }
 
@@ -155,7 +155,7 @@ fn restarts(
     let restart: RestartParkedKernel =
         Arc::new(move || -> EvalKernelFuture<'static, Arc<dyn EvalKernel>> {
             counter.fetch_add(1, Ordering::SeqCst);
-            let next = queue.lock().unwrap().next().expect("restart configured");
+            let next = queue.lock().expect("queue lock poisoned").next().expect("restart configured");
             Box::pin(async move { next.map(|kernel| kernel as Arc<dyn EvalKernel>) })
         });
     (restart, calls)

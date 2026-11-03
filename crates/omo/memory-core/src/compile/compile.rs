@@ -158,13 +158,11 @@ pub fn compile_memory_block_with_reads(
             })
         })
         .collect();
-    let live = |read: Option<&SystemFileRead>| {
-        read.filter(|read| !is_memory_expired(read.expires_at_ms, as_of_ms))
-            .map(|read| &read.file)
-    };
+    let is_live = |read: &&SystemFileRead| !is_memory_expired(read.expires_at_ms, as_of_ms);
     let live_system_files: Vec<CompiledSystemFile> = system_files
         .iter()
-        .filter_map(|read| live(Some(read)).cloned())
+        .filter(is_live)
+        .map(|read| read.file.clone())
         .collect();
 
     let external_paths: Vec<String> = paths.into_iter().filter(|p| is_external_path(p)).collect();
@@ -187,9 +185,9 @@ pub fn compile_memory_block_with_reads(
         }
     }
     let projection = render_projection(
-        live(persona.as_ref()),
-        live(identity.as_ref()),
-        live(agreements.as_ref()),
+        persona.as_ref().filter(is_live).map(|read| &read.file),
+        identity.as_ref().filter(is_live).map(|read| &read.file),
+        agreements.as_ref().filter(is_live).map(|read| &read.file),
         &live_system_files,
         &external_paths,
         &external,

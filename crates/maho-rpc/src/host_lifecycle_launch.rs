@@ -211,7 +211,7 @@ pub fn spawnable_child_launch(
         .extension()
         .map(|extension| extension.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if platform != "win32" || (extension != ".cmd" && extension != ".bat") {
+    if platform != "win32" || (extension != "cmd" && extension != "bat") {
         return SpawnableLaunch {
             command,
             args: launch.args.clone(),

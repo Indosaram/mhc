@@ -614,7 +614,7 @@ fn senpi_bin(root: &Path, version: Option<&str>) -> String {
 fn cli_spawn_sends_spawned_by_only_when_the_launched_engine_accepts_it() {
     use crate::runners::rpc::spawn::build_rpc_spawn_for_engine;
     // (running engine version, SENPI_BIN manifest: None = no bin, Some(None) = bare file, accepts)
-    let rows: [(Option<&str>, Option<Option<&str>>, bool); 6] = [
+    let rows = [
         (Some(PINNED), None, true),
         (Some(OLDER), None, false),
         (Some(PINNED), Some(Some(OLDER)), false),
@@ -659,4 +659,16 @@ fn cli_spawn_sends_spawned_by_only_when_the_launched_engine_accepts_it() {
             );
         }
     }
+}
+
+#[test]
+fn cli_spawn_omits_spawned_by_when_the_task_has_no_parent_session() {
+    use crate::runners::rpc::spawn::build_rpc_spawn_for_engine;
+    let dir = tempfile::tempdir().expect("scratch");
+    let executable = senpi_bin(dir.path(), Some(PINNED));
+    let runtime = runtime(env(&[("SENPI_BIN", &executable), ("PATH", "")]));
+    let mut spec = ancestry_spec();
+    spec.parent_session_id = None;
+    let descriptor = build_rpc_spawn_for_engine(&spec, &runtime, Some(PINNED));
+    assert!(!descriptor.args.iter().any(|arg| arg == "--spawned-by"));
 }

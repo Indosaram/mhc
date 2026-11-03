@@ -344,7 +344,7 @@ fn handle(
                 };
                 return Ok(EventResult::MessageEnd {
                     message: Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                        Box::new(replacement),
+                        std::sync::Arc::new(replacement),
                     ))),
                 });
             } else if let Some(text) = text {
@@ -733,8 +733,8 @@ mod tests {
             wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
             is_project_trusted_fn: Arc::new(|| true),
             is_compacting_fn: Arc::new(|| false),
-            get_system_prompt_fn: Arc::new(|| String::new()),
-            get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions::default()),
+            get_system_prompt_fn: Arc::new(String::new),
+            get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
             registered_mcp_servers: Vec::new(),
             update_tool_hook_status: None,
             idle_coordinator: None,

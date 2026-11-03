@@ -65,8 +65,8 @@ fn is_type_alias(before: &[Tok]) -> bool {
 fn attributes(tokens: &[Tok], at: usize) -> Vec<&[Tok]> {
     let mut end = at;
     while end > 0
-        && matches!(&tokens[end - 1], Tok::Ident(v) if v == "pub" || v == "crate" || v == "super" || v == "self" || v == "in")
-        || end > 0 && matches!(&tokens[end - 1], Tok::Punct('(' | ')'))
+        && (matches!(&tokens[end - 1], Tok::Ident(v) if v == "pub" || v == "crate" || v == "super" || v == "self" || v == "in")
+            || matches!(&tokens[end - 1], Tok::Punct('(' | ')')))
     {
         end -= 1;
     }

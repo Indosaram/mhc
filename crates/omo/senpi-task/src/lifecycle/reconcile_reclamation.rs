@@ -324,7 +324,7 @@ pub fn revive_claimed(
             "reattach ports unavailable",
         ));
     };
-    let respawned = (ports.respawn)(&fresh, session_path);
+    let respawned = respawn_through_drain(context, &ports.respawn, &fresh, session_path)?;
     if interrupted(&fresh)? {
         if let RespawnResult::Ok(handle) = respawned {
             let owns = || is_same_claim(context, &fresh).unwrap_or(false);
@@ -345,6 +345,15 @@ pub fn revive_claimed(
             code,
             ..
         } => {
+            if matches!(code, RespawnFailureCode::HostDraining { .. }) {
+                context.store.mutate(&fresh.task_id, &mut |current| {
+                    let mut next = current.clone();
+                    if holds_claim(context, current, Some(&fresh)) {
+                        next.suspension_reason = Some(crate::state::SuspensionReason::HostDraining);
+                    }
+                    next
+                })?;
+            }
             return Ok(rollback_or_deferred(
                 context,
                 &fresh.task_id,
@@ -619,6 +628,36 @@ fn is_same_claim(context: &LifecycleContext, claimed: &TaskRecord) -> Result<boo
         && now.status == claimed.status
         && now.notification.run_epoch == claimed.notification.run_epoch
         && now.residency_claim == claimed.residency_claim)
+}
+
+fn respawn_through_drain(
+    context: &LifecycleContext,
+    respawn: &crate::lifecycle::port::RespawnPort,
+    record: &TaskRecord,
+    session_path: Option<&Path>,
+) -> Result<RespawnResult, LifecycleError> {
+    let max_drain_attempts = context.host_retry.max_drain_attempts;
+    let default_retry_after_ms = context.host_retry.default_retry_after_ms;
+    let mut result = respawn(record, session_path);
+    for _attempt in 1..max_drain_attempts {
+        if !reconciliation_active(context) || !is_same_claim(context, record)? {
+            return Ok(result);
+        }
+        let retry_after_ms = match &result {
+            RespawnResult::Failed {
+                disposition: RespawnDisposition::Retryable,
+                code: RespawnFailureCode::HostDraining { retry_after_ms },
+                ..
+            } => retry_after_ms.unwrap_or(default_retry_after_ms),
+            _ => return Ok(result),
+        };
+        (context.host_retry_wait)(retry_after_ms);
+        if !reconciliation_active(context) || !is_same_claim(context, record)? {
+            return Ok(result);
+        }
+        result = respawn(record, session_path);
+    }
+    Ok(result)
 }
 
 pub fn is_claim_held(

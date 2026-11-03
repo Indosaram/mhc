@@ -302,4 +302,64 @@ mod tests {
         assert_eq!(status.text().as_deref(), Some("running"));
         assert!(LifecycleStatus::new().text().is_none());
     }
+
+    #[test]
+    fn activity_replays_and_legacy_tombstones_leave_current_state_intact() {
+        let update = |revision: i64, count: i64| {
+            json!({"state":"running","seq":100,
+                "activity":{"kind":"tool","toolName":"bash","outstanding":count},
+                "activityRevision":{"instanceId":"owner","revision":revision}})
+        };
+        let mut status = LifecycleStatus::new();
+        status.bind("s", &update(0, 0));
+        for (revision, count) in [(1, 1), (2, 2), (3, 1)] {
+            status.accept(&update(revision, count));
+            assert_eq!(status.snapshot.as_ref().expect("snapshot")["activity"]["outstanding"], count);
+        }
+        let current = status.snapshot.clone();
+        let mut older_seq = update(900, 99);
+        older_seq["seq"] = json!(99);
+        let mut foreign = update(900, 99);
+        foreign["activityRevision"]["instanceId"] = json!("foreign");
+        for stale in [update(3, 99), update(2, 99), older_seq, foreign, lifecycle(100, "done")] {
+            status.accept(&stale);
+            assert_eq!(status.snapshot, current);
+        }
+        let mut same_seq = update(4, 2);
+        same_seq["state"] = json!("failed");
+        same_seq["failure"] = json!({"reason":"lost"});
+        status.accept(&same_seq);
+        let snapshot = status.snapshot.as_ref().expect("snapshot");
+        assert_eq!(snapshot["state"], "running");
+        assert!(snapshot.get("failure").is_none());
+        assert_eq!(snapshot["activity"]["outstanding"], 2);
+        status.accept(&lifecycle(101, "done"));
+        let completed = status.snapshot.clone();
+        status.accept(&lifecycle(101, "failed"));
+        assert_eq!(status.snapshot, completed);
+    }
+
+    #[test]
+    fn authoritative_rebinding_preserves_or_resets_activity_watermarks_by_owner() {
+        let update = |owner: &str, revision: i64| {
+            json!({"state":"running","seq":100,"activity":{"kind":"model"},
+                "activityRevision":{"instanceId":owner,"revision":revision}})
+        };
+        let mut status = LifecycleStatus::new();
+        status.bind("s", &update("owner", 5));
+        status.bind("s", &update("owner", 1));
+        assert_eq!(status.activity_revision, 5);
+        let mut replacement = update("replacement", 0);
+        replacement.as_object_mut().expect("snapshot object").remove("activity");
+        status.bind("s", &replacement);
+        assert!(status.snapshot.as_ref().expect("snapshot").get("activity").is_none());
+        status.accept(&update("replacement", 1));
+        let current = status.snapshot.clone();
+        status.accept(&update("owner", 900));
+        assert_eq!(status.snapshot, current);
+        status.accept(&lifecycle(101, "waiting_background"));
+        let snapshot = status.snapshot.as_ref().expect("snapshot");
+        assert_eq!(snapshot["state"], "waiting_background");
+        assert!(snapshot.get("activity").is_none());
+    }
 }

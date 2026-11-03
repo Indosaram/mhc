@@ -150,7 +150,7 @@ async fn pending_assistant_acceptance_is_expected_rejection() {
     let result = lane
         .accept_prompt(
             maho_agent::harness::runtime::lane::PromptInput::Messages(vec![
-                maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(
+                maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     pending,
                 ))),
             ]),

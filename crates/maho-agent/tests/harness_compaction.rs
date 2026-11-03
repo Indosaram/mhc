@@ -41,7 +41,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { credential_served_recently: None,
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage { credential_served_recently: None,
         timing: None,
         failure_source: None,
         prompt_cache_breakpoint: None,
@@ -323,7 +323,7 @@ fn returns_usage_from_the_last_valid_assistant_message() {
 
     let mut aborted = assistant_message("two", usage(9, 9, 9, 9));
     if let AgentMessage::Llm(Message::Assistant(assistant)) = &mut aborted {
-        assistant.stop_reason = StopReason::Aborted;
+        std::sync::Arc::make_mut(assistant).stop_reason = StopReason::Aborted;
     }
     let entries = vec![message_entry("a2", None, aborted, 3)];
     assert_eq!(get_last_assistant_usage(&entries), None);
@@ -355,9 +355,9 @@ fn serializes_a_conversation_for_summarization() {
             content: UserContent::Blocks(vec![ContentBlock::text("hello")]),
             timestamp: 1,
         }),
-        Message::Assistant(Box::new(
+        Message::Assistant(std::sync::Arc::new(
             match assistant_message("world", usage(1, 1, 0, 0)) {
-                AgentMessage::Llm(Message::Assistant(assistant)) => *assistant,
+                AgentMessage::Llm(Message::Assistant(assistant)) => std::sync::Arc::unwrap_or_clone(assistant),
                 _ => unreachable!(),
             },
         )),
@@ -446,7 +446,7 @@ fn tool_result_message(call_id: &str, text: &str, is_error: bool) -> AgentMessag
 fn with_assistant(message: AgentMessage, edit: impl FnOnce(&mut AssistantMessage)) -> AgentMessage {
     let mut message = message;
     if let AgentMessage::Llm(Message::Assistant(assistant)) = &mut message {
-        edit(assistant);
+        edit(std::sync::Arc::make_mut(assistant));
     }
     message
 }

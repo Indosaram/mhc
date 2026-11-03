@@ -10,10 +10,9 @@
 
 /// senpi `createSessionWorkerRegistry`.
 pub fn create_session_worker_registry() -> crate::session_registry::RpcSessionRegistry {
-    crate::session_registry::RpcSessionRegistry {
-        worker_isolate: true,
-        ..Default::default()
-    }
+    let mut registry = crate::session_registry::RpcSessionRegistry::default();
+    registry.worker_isolate = true;
+    registry
 }
 
 #[cfg(test)]

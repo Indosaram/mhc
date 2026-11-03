@@ -138,7 +138,9 @@ pub async fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) 
             let message = format!("Project trust store unreadable; not trusting {}: {error}", options.cwd);
             match options.on_trust_store_error {
                 Some(report) => report(&message),
-                None => crate::output_guard::maho_write_stderr(&format!("Warning: {message}\n")),
+                None => {
+                    let _ = crate::output_guard::maho_write_stderr(&format!("Warning: {message}\n"));
+                }
             }
             return false;
         }

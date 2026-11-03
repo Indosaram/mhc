@@ -1,10 +1,8 @@
 //! `ReleasableSession` over a real `AgentSession` (senpi `session-release.ts` reads `AgentSession` directly; the
 //! Rust release works against the trait in `session_release_interrupt`, and this is the adapter the host lends it).
 //!
-//! Gaps against upstream, named where they sit: `AgentSession` has no `externalAdmission` ledger, so admission
-//! open/closed is only recorded here (`admission_closed`) and no deliveries are ever pending; it has no
-//! `whenQueueClearRecorded` (its `clear_queue` is synchronous), and `SessionManager` has no `persistHeaderNow`, so the
-//! header write is done here from the manager's own header and entries.
+//! Admission is delegated to the session's external-admission ledger. Queue clearing is synchronous;
+//! header persistence uses the manager's own header and entries.
 use crate::session_release_interrupt::{ReleasableSession, ReleaseWriteError, SubscriptionGuard};
 use async_trait::async_trait;
 use maho_core::agent_session::{AgentSession, ClearedQueue};

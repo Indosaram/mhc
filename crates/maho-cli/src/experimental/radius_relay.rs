@@ -443,8 +443,10 @@ impl HostRun {
                     HostControlMessage::Ping => {
                         let (shared, socket) = (self.shared.clone(), self.socket.clone());
                         tokio::spawn(async move {
-                            if shared.send_control(serde_json::json!({"version": 1, "type": "pong"})).await.is_err() {
-                                if let Some(socket) = lock(&socket).as_ref() { socket.close(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay send failed"); }
+                            if shared.send_control(serde_json::json!({"version": 1, "type": "pong"})).await.is_err()
+                                && let Some(socket) = lock(&socket).as_ref()
+                            {
+                                socket.close(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay send failed");
                             }
                         });
                     }

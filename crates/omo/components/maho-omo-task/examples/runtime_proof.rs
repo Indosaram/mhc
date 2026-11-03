@@ -320,7 +320,7 @@ async fn dispatch(
     }
     Ok(())
 }
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let path = root.path().to_path_buf();
@@ -757,6 +757,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     // The next session_start schedules this core-started run (TS recoverPausedRuns -> ensureScheduled).
     // Hold its child start so the run stays live and its scheduler quiescent across the rebind below;
     // otherwise its checkpoint writes race the rebind attach and arm a debounce beside the refresh.
@@ -807,6 +808,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     pending_started.recv_timeout(Duration::from_secs(10))?;
     // The run's ring-1 journal subscribers drain on their own threads and durably commit a coalesced
     // StreamOverflow marker; that checkpoint write reaches DagStatusUi::schedule_sync. Await the
@@ -880,6 +882,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     assert_eq!(
         status_timers.count(),
         1,
@@ -1076,7 +1079,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .status_log
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(statuses.iter().any(|(key, text)| key == "omo-dag" && text.as_deref().is_some_and(|text| text.starts_with("dag "))), "registered DAG did not publish its footer status: {statuses:?}");
+        assert!(statuses.iter().any(|(key, text)| key == "omo-dag" && text.as_deref().is_some_and(|text| serde_json::from_str::<BackgroundTaskStatus>(text).is_ok())), "registered DAG did not publish its footer status: {statuses:?}");
     }
     println!("PASS registered DAG live wake source and shutdown clear");
     component.dispose();

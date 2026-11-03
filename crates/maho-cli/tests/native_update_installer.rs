@@ -120,7 +120,7 @@ async fn install_flat_then_probe(fx: &Fixture, work: &Path) {
 #[tokio::test]
 async fn installer_bootstrap() {
     let fx = fixture();
-    let work = tempfile::tempdir().expect("package workspace");
+    let work = scratch_dir();
     let package = built(work.path(), "real", Payload::RealMhc);
     let output = run(installer(&fx, &package)).await;
     expect_ok(&output, "installer bootstrap");
@@ -137,14 +137,14 @@ async fn installer_bootstrap() {
 #[tokio::test]
 async fn flat_migration() {
     let fx = fixture();
-    let work = tempfile::tempdir().expect("package workspace");
+    let work = scratch_dir();
     install_flat_then_probe(&fx, work.path()).await;
 }
 
 #[tokio::test]
 async fn update_after_migration() {
     let fx = fixture();
-    let work = tempfile::tempdir().expect("package workspace");
+    let work = scratch_dir();
     install_flat_then_probe(&fx, work.path()).await;
 
     let package = built(work.path(), "newer", probe(NEWER_VERSION));

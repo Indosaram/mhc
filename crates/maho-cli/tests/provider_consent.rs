@@ -12,9 +12,10 @@ fn fixture(address: std::net::SocketAddr) -> tempfile::TempDir {
         "api":"openai-completions","baseUrl":format!("http://{address}/v1"),
         "models":[{"id":"fixture","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("models");
-    // An already-expired OAuth credential: any refresh attempt would be a network request.
+    // An unexpired OAuth credential, so the consented request goes straight to the fixture server
+    // instead of refreshing against github.com first.
     std::fs::write(agent.join("auth.json"), serde_json::json!({"github-copilot":{
-        "type":"oauth","access":"tid=fake","refresh":"ghu_fake","expires":1
+        "type":"oauth","access":"tid=fake","refresh":"ghu_fake","expires":4_102_444_800_000_i64
     }}).to_string()).expect("auth");
     dir
 }
@@ -36,13 +37,14 @@ async fn serve() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
             counter.fetch_add(1, Ordering::SeqCst);
             let mut buffer = [0; 4096];
             let _ = socket.read(&mut buffer).await;
-            let _ = socket.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+            let _ = socket.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
         }
     });
     (address, hits)
 }
 
-#[tokio::test]
+// `mhc` runs through blocking `Command::output`, so the fixture server needs its own worker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn consent_gate_blocks_then_allows_github_copilot_requests() {
     let (address, hits) = serve().await;
     let dir = fixture(address);
@@ -53,7 +55,7 @@ async fn consent_gate_blocks_then_allows_github_copilot_requests() {
     assert!(!blocked.status.success(), "-p without consent must exit non-zero: {text}");
     assert!(text.contains("`mhc auth consent github-copilot`"), "{text}");
     assert!(!text.contains("not found") && !text.contains("Unknown model"), "model must resolve to reach the gate: {text}");
-    assert_eq!(hits.load(Ordering::SeqCst), 0, "no request, refresh included, before consent");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "no request before consent");
 
     let consent = mhc(&dir, &["auth", "consent", "github-copilot", "--yes"]);
     assert!(consent.status.success(), "{}", String::from_utf8_lossy(&consent.stderr));

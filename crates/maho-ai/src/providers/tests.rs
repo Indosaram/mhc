@@ -20,7 +20,7 @@ use crate::models::{
 use crate::models_generated::MODELS;
 use crate::types::{
     AssistantMessageEvent, BoxFuture, CacheRetention, ContentBlock, Context, DeferredCancelOptions,
-    DeferredHandle, DeferredOption, Message, Model, ModelThinkingLevel, ProviderEnv,
+    DeferredHandle, DeferredOption, InputModality, Message, Model, ModelThinkingLevel, ProviderEnv,
     ProviderRequestOptions, ProviderStreams, SimpleStreamOptions, StopReason, StreamOptions,
     UserContent, UserMessage,
 };
@@ -169,9 +169,12 @@ fn uses_official_kimi_k3_pricing_for_moonshot_providers() {
     }
 }
 
+type ModelCostTuple = (f64, f64, f64, f64);
+type ExpectedModelCost = (&'static str, ModelCostTuple);
+
 #[test]
 fn uses_official_kimi_k3_1_pro_list_pricing_on_both_moonshot_providers() {
-    let expected: [(&str, (f64, f64, f64, f64)); 2] = [
+    let expected: [ExpectedModelCost; 2] = [
         ("kimi-k3.1-pro", (2.0, 10.0, 0.2, 2.0)),
         ("kimi-k3.1-pro-highspeed", (4.0, 20.0, 0.2, 4.0)),
     ];
@@ -559,7 +562,7 @@ async fn faux_simulates_prompt_caching_per_session_id() {
     assert_eq!(first.usage.cache_read, 0);
     assert!(first.usage.cache_write > 0);
 
-    context.messages.push(Message::Assistant(Box::new(first)));
+    context.messages.push(Message::Assistant(std::sync::Arc::new(first)));
     context.messages.push(user_message("follow up"));
 
     let second = streams

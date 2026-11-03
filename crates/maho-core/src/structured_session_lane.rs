@@ -23,7 +23,7 @@ use maho_ext_api::AgentSessionEvent;
 /// in session order.
 #[derive(Debug, Clone)]
 pub enum AgentSessionStructuredRecord {
-    Event(Captured<AgentSessionEvent>),
+    Event(Box<Captured<AgentSessionEvent>>),
     Progress(FrozenProgress),
 }
 
@@ -136,7 +136,7 @@ impl StructuredSessionLane {
                             InternalEvent::Progress(progress) => {
                                 lane.emit(&AgentSessionStructuredRecord::Progress(progress));
                             }
-                            InternalEvent::Event(event) => lane.state().source = Some(event),
+                            InternalEvent::Event(event) => lane.state().source = Some(*event),
                         }
                     }
                     Box::pin(async {})
@@ -169,7 +169,7 @@ impl StructuredSessionLane {
             }
             _ => Captured::bare(event.clone()),
         };
-        self.emit(&AgentSessionStructuredRecord::Event(record));
+        self.emit(&AgentSessionStructuredRecord::Event(Box::new(record)));
     }
 
     pub fn dispose(&self) {

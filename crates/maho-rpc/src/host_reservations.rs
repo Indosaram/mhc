@@ -577,12 +577,16 @@ pub(crate) struct ZombieChild(std::process::Child);
 impl ZombieChild {
     /// Spawns `/usr/bin/true` and waits for its exit without reaping it.
     pub(crate) fn spawn() -> Self {
-        let child = Self(std::process::Command::new("/usr/bin/true").spawn().unwrap());
+        let child = Self(
+            std::process::Command::new("/usr/bin/true")
+                .spawn()
+                .expect("spawn zombie test child"),
+        );
         rustix::process::waitid(
             rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child.0)),
             rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
         )
-        .unwrap();
+        .expect("waitid for zombie test child");
         child
     }
     pub(crate) fn id(&self) -> u32 {

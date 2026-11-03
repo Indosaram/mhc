@@ -68,7 +68,7 @@ pub async fn load_websearch_config(cwd:&Path,home:&Path)->Result<ConfigLoadResul
     for path in paths { if seen.contains(&path) { continue; } seen.push(path.clone()); if tokio::fs::metadata(&path).await.is_err() { continue; }
         let bytes=tokio::fs::read(&path).await?; let text=String::from_utf8_lossy(&bytes); let source=path.to_string_lossy().into_owned();
         let raw:Value=match serde_json::from_str::<&RawValue>(&text).and_then(|raw|config_value(raw,0)) { Ok(value) if value.is_object()=>value,_=>return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)}) };
-        if raw.get("nativeModel").is_some_and(|value|!value.as_str().is_some_and(|model|!model.is_empty())) { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Websearch config nativeModel in {source} must be a non-empty model id."),source:Some(source)}); }
+        if raw.get("nativeModel").is_some_and(|value| value.as_str().is_none_or(|model| model.is_empty())) { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Websearch config nativeModel in {source} must be a non-empty model id."),source:Some(source)}); }
         let Some(config)=config_from_object(&raw) else { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid provider config in {source}"),source:Some(source)}); };
         return Ok(match validate_websearch_config(&config) { Ok(())=>ConfigLoadResult::Ok{config,source},Err((reason,message))=>ConfigLoadResult::Err{reason,message,source:Some(source)} });
     }

@@ -53,13 +53,15 @@ impl<T> Clone for ComponentRoot<T> {
 }
 
 type LeavesOf<T> = Box<dyn Fn(&T) -> Vec<LeafId> + Send + Sync>;
+type NodeProjection<T> = (std::sync::Weak<IndexNode<Stored<T>>>, ValueRef);
+type ProjectedRefs<T> = Mutex<HashMap<usize, NodeProjection<T>>>;
 
 pub struct CompactComponentRoots<T> {
     store: CompactContentStore,
     values: CompactValues,
     tree: Arc<CompactIndexTree<Stored<T>>>,
     /// Projected pages by node identity (upstream WeakMap); an entry dies with its node.
-    refs: Mutex<HashMap<usize, (std::sync::Weak<IndexNode<Stored<T>>>, ValueRef)>>,
+    refs: ProjectedRefs<T>,
     leaves_of: LeavesOf<T>,
 }
 

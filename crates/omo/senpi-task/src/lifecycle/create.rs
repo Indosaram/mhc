@@ -140,14 +140,44 @@ impl TaskLifecycle {
         if !active() {
             return Ok(ReconcileResult::default());
         }
-        // `retryDeferredHostSessions` predates this sync and is still absent.
-        // Upstream passes the base context: background retries are not fenced by this pass.
+        // Scoped retries retain this generation fence; legacy retries belong to other sessions.
+        if let Some(parent) = parent_session_id {
+            super::deferred_revival::start_scoped_retries(&pass, &outcomes, parent);
+        }
+        super::host_session_revive::retry_deferred_host_sessions(
+            &pass,
+            &outcomes,
+            parent_session_id,
+        );
         super::deferred_owner_reconcile::retry_deferred_legacy_owners(
             &self.context,
             &outcomes,
             parent_session_id,
         );
         Ok(ReconcileResult { outcomes })
+    }
+
+    pub fn park_host_session_on_daemon_loss(
+        &self,
+        task_id: &str,
+    ) -> Result<super::host_session_revive::HostSessionParkOutcome, LifecycleError> {
+        super::host_session_revive::park_host_session_on_daemon_loss(
+            &self.context,
+            task_id,
+            None,
+        )
+    }
+
+    pub fn park_host_session_on_daemon_loss_with_options(
+        &self,
+        task_id: &str,
+        options: super::host_session_revive::HostSessionParkOptions,
+    ) -> Result<super::host_session_revive::HostSessionParkOutcome, LifecycleError> {
+        super::host_session_revive::park_host_session_on_daemon_loss(
+            &self.context,
+            task_id,
+            Some(options),
+        )
     }
 
     pub fn cleanup_expired_records(&self) -> Result<CleanupResult, LifecycleError> {

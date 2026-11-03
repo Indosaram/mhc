@@ -385,7 +385,8 @@ async function parsePins(repoRoot) {
  * Provenance errors for a set of pins, the recorded staging source and the staged skill source. Both
  * expected pins must be full commits in every mode. `pinned` additionally requires the recorded
  * checkout commit to equal the OMO pin. `latest` instead requires the repository-owned overlay's
- * declared latest commit to be a full commit that is NOT the pinned omo commit, plus the overlay
+ * declared latest commit to be a full commit that is NOT the pinned omo commit (unless the overlay
+ * explicitly declares `pinCommit` equal to it: synced exactly at the pin), plus the overlay
  * root and manifest names: the pin must not be mistaken for the latest source. Shared by stage
  * (checked before the destination is cleared, so a bad pin cannot destroy an existing stage) and
  * verify (checked from the manifest alone, without resolving any host path).
@@ -410,7 +411,7 @@ function provenanceErrors(pins, sources, skillsSource) {
 		} else {
 			if (typeof latest.commit !== "string" || !COMMIT_PATTERN.test(latest.commit)) {
 				errors.push(`latestAssets.commit must be a full 40-hex commit (found ${JSON.stringify(latest.commit)})`);
-			} else if (typeof pins?.omo === "string" && latest.commit === pins.omo) {
+			} else if (typeof pins?.omo === "string" && latest.commit === pins.omo && latest.pinCommit !== pins.omo) {
 				errors.push(`latestAssets.commit equals the pinned omo commit ${pins.omo}: the overlay must record the latest source, not the pin`);
 			}
 			if (typeof latest.root !== "string" || latest.root.length === 0) errors.push("latestAssets.root must name the repository-owned overlay root");
@@ -523,10 +524,14 @@ async function readLatestOverlay(latestAssetsRoot) {
 			},
 		};
 	}
+	if (overlay.pinCommit !== undefined && (typeof overlay.pinCommit !== "string" || !COMMIT_PATTERN.test(overlay.pinCommit))) {
+		throw new Error(`latest overlay manifest pinCommit must be a full 40-hex commit (found ${JSON.stringify(overlay.pinCommit)})`);
+	}
 	return {
 		root: latestAssetsRoot,
 		manifestPath,
 		commit: overlay.commit,
+		pinCommit: overlay.pinCommit ?? null,
 		names: [...new Set(selection)].sort(),
 		retired,
 		declared,
@@ -722,6 +727,9 @@ export async function stage(options) {
 		const latestAssets = {
 			root: overlay.root,
 			commit: overlay.commit,
+			// The pin the overlay declares it was synced against; lets an overlay synced exactly at the
+			// pin say so explicitly instead of being mistaken for the pinned checkout.
+			...(overlay.pinCommit === null ? {} : { pinCommit: overlay.pinCommit }),
 			manifest: LATEST_MANIFEST_NAME,
 			loader: { skillsRoot: SKILLS_DIR, env: "OMO_SENPI_SKILLS_ROOT" },
 		};
@@ -1592,6 +1600,11 @@ async function selfTest() {
 
 		await writeOverlay({ commit: omoCommit });
 		await expectReject("latest overlay reusing the pin is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-pin"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "must record the latest source, not the pin");
+		await writeOverlay({ commit: omoCommit, pinCommit: omoCommit });
+		const atPin = await stage({ binary: join(binDir, "mhc"), output: join(root, "latest-at-pin"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) });
+		check("an overlay that declares it was synced at the pin stages and verifies", atPin.manifest.sources.latestAssets.pinCommit === omoCommit && (await verify(join(root, "latest-at-pin"))).ok);
+		await writeOverlay({ commit: omoCommit, pinCommit: "e".repeat(40) });
+		await expectReject("an overlay at the pin declaring a different pin is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-pin-mismatch"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "must record the latest source, not the pin");
 		await writeOverlay();
 		await expectReject("an unknown skill source is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "bad-source"), repoRoot: repo, skillSource: "nightly" }), "--skill-source");
 		await writeOverlay({ selection: ["alpha", "delta", "missing-tree"] });

@@ -784,6 +784,7 @@ fn observability_buckets_failure_vocabulary_and_cold_seed_fields() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );
@@ -801,6 +802,7 @@ fn observability_buckets_failure_vocabulary_and_cold_seed_fields() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );
@@ -1331,6 +1333,7 @@ fn cold_seed_observations_project_telemetry_only_for_cold_seed() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );
@@ -1349,6 +1352,7 @@ fn cold_seed_observations_project_telemetry_only_for_cold_seed() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );
@@ -1578,6 +1582,7 @@ fn telemetry_is_omitted_for_resume_and_delta_observations() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );
@@ -1596,6 +1601,7 @@ fn telemetry_is_omitted_for_resume_and_delta_observations() {
             settings_source: None,
             seat: None,
             seat_changed: None,
+            diverged_path: None,
         },
         &mut pending,
     );

@@ -74,7 +74,7 @@ fn shared_identity_uses_pinned_locale_key_order() {
             "/agent",
             "/cwd"
         ),
-        "cff113b86d05d97b3871ebca3d92a35b4557b734c8d22a4ebe20b83418bf75bb"
+        "043e6fda079fa6a6e83e12ad7323deaebb4dabf05801d7b61a14a12789cf1887"
     );
 }
 #[test]

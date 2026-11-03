@@ -25,7 +25,13 @@ use maho_rpc::session_status::{SessionStatusEntryView, SessionView};
 use maho_rpc::session_status_stream::{
     SessionStatusDelivery, SessionStatusSource, SessionStatusStream,
 };
-use serde_json::{Value, json};
+use maho_rpc::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY;
+use maho_rpc::jsonl::serialize_json_line;
+use maho_rpc::media_placeholders::omit_inline_media;
+use maho_rpc::session_status::{cause_of_record, terminal_of_lifecycle};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -51,17 +57,20 @@ pub struct ControlAttachments {
     pub fanout: Arc<Mutex<SessionEventFanout>>,
     /// This terminal's one-session status stream (senpi `writer.status`), with the source it reads and
     /// the delivery it writes through.
-    pub status: Mutex<SessionStatusStream>,
+    pub status: Arc<Mutex<SessionStatusStream>>,
     pub status_source: TerminalStatusSource,
     pub status_delivery: TerminalStatusDelivery,
     pub roles: Mutex<ConnectionRoles>,
     pub receipts: Mutex<BTreeMap<String, TerminalInputReceipt>>,
     attached: Arc<Mutex<BTreeSet<String>>>,
     records: Mutex<Option<AgentSessionSubscription>>,
+    lifecycle_records: Mutex<Option<maho_core::event_bus::EventSubscription>>,
     session: Arc<AgentSession>,
+    forwarder: EventForwarder,
 }
 
 /// The status rows of this terminal's one session (senpi `writer.status.setSource`).
+#[derive(Clone)]
 pub struct TerminalStatusSource {
     session: Weak<AgentSession>,
     attached: Arc<Mutex<BTreeSet<String>>>,
@@ -109,6 +118,7 @@ impl SessionStatusSource for TerminalStatusSource {
 }
 
 /// The stream's delivery: the fanout's control lane of the subscribing connection.
+#[derive(Clone)]
 pub struct TerminalStatusDelivery {
     fanout: Arc<Mutex<SessionEventFanout>>,
 }
@@ -136,15 +146,110 @@ fn is_targeted(record: &Value) -> bool {
         ))
 }
 
-fn deliver(
-    fanout: &Mutex<SessionEventFanout>,
-    session_id: &str,
-    target: Option<&str>,
-    record: Value,
-) {
-    let targeted = is_targeted(&record);
-    // Records no attached connection takes come back for a stdio lane this endpoint does not have.
-    drop(lock(fanout).deliver_owned(session_id, target, targeted, record));
+#[derive(Clone)]
+struct EventForwarder {
+    fanout: Arc<Mutex<SessionEventFanout>>,
+    status: Arc<Mutex<SessionStatusStream>>,
+    status_source: TerminalStatusSource,
+    status_delivery: TerminalStatusDelivery,
+    attached: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl EventForwarder {
+    fn deliver(&self, session_id: &str, target: Option<&str>, record: Value) {
+        let targeted = is_targeted(&record);
+        let kind = record["type"].as_str().unwrap_or_default();
+        let seal = terminal_of_lifecycle(&record);
+        let cause = cause_of_record(&record);
+        let terminal = matches!(kind, "session_closed" | "session_parked");
+        let by = if target.is_some() { "client" } else { "agent" };
+
+        if matches!(
+            kind,
+            "snapshot_marker" | "ui_request_pending" | "ui_request_settled"
+        ) {
+            let targets = {
+                let status = lock(&self.status);
+                if kind == "snapshot_marker" {
+                    status
+                        .mirror_targets(&self.status_source, session_id, kind)
+                        .into_iter()
+                        .filter(|id| Some(id.as_str()) == target)
+                        .collect::<Vec<_>>()
+                } else {
+                    status.dialog_targets(&self.status_source, session_id)
+                }
+            };
+            if let Ok(line) = serialize_json_line(&record) {
+                let fanout = lock(&self.fanout);
+                for id in targets {
+                    fanout.enqueue_line(&id, &line);
+                }
+            }
+            return;
+        }
+
+        let extra_targets: Vec<String> = if !targeted {
+            let status = lock(&self.status);
+            let mirror_targets = status.mirror_targets(&self.status_source, session_id, kind);
+            let attached = lock(&self.attached);
+            mirror_targets
+                .into_iter()
+                .filter(|id| !attached.contains(id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        {
+            let mut fanout = lock(&self.fanout);
+            drop(fanout.deliver_owned(session_id, target, targeted, record.clone()));
+
+            if !extra_targets.is_empty() {
+                let line_plain = serialize_json_line(&record).ok();
+                let mut line_placeholders = None;
+                for id in extra_targets {
+                    let placeholders = fanout.connection_has(&id, MEDIA_PLACEHOLDERS_CAPABILITY);
+                    let line = if placeholders {
+                        if line_placeholders.is_none() {
+                            let scrubbed = omit_inline_media(&record);
+                            line_placeholders = serialize_json_line(&scrubbed).ok();
+                        }
+                        line_placeholders.as_deref()
+                    } else {
+                        line_plain.as_deref()
+                    };
+                    if let Some(line) = line {
+                        fanout.enqueue_line(&id, line);
+                    }
+                }
+            }
+        }
+
+        match (seal, cause) {
+            (Some(seal), Some(cause)) if terminal => {
+                lock(&self.status).seal(
+                    &self.status_source,
+                    &self.status_delivery,
+                    session_id,
+                    seal,
+                    cause,
+                    by,
+                );
+            }
+            (_, Some(cause)) if !targeted => {
+                lock(&self.status).publish(
+                    &self.status_source,
+                    &self.status_delivery,
+                    session_id,
+                    cause,
+                    by,
+                    false,
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 impl ControlAttachments {
@@ -154,6 +259,7 @@ impl ControlAttachments {
     ) -> Self {
         let fanout = Arc::new(Mutex::new(SessionEventFanout::default()));
         let attached = Arc::new(Mutex::new(BTreeSet::new()));
+        let status = Arc::new(Mutex::new(SessionStatusStream::default()));
         let status_source = TerminalStatusSource {
             session: Arc::downgrade(&session),
             attached: attached.clone(),
@@ -162,7 +268,14 @@ impl ControlAttachments {
         let status_delivery = TerminalStatusDelivery {
             fanout: fanout.clone(),
         };
-        let record_fanout = fanout.clone();
+        let forwarder = EventForwarder {
+            fanout: fanout.clone(),
+            status: status.clone(),
+            status_source: status_source.clone(),
+            status_delivery: status_delivery.clone(),
+            attached: attached.clone(),
+        };
+        let record_forwarder = forwarder.clone();
         let projected = Arc::downgrade(&session);
         let last_abort_source = maho_rpc::connection_handler::LastAbortSource::default();
         let records = session.subscribe(Arc::new(move |event| {
@@ -179,18 +292,35 @@ impl ControlAttachments {
             ) else {
                 return;
             };
-            deliver(&record_fanout, &session.session_id(), None, record);
+            record_forwarder.deliver(&session.session_id(), None, record);
         }));
+        let lifecycle_forwarder = forwarder.clone();
+        let lifecycle_session = Arc::downgrade(&session);
+        let lifecycle_records = session.on_extension_event(
+            "session_lifecycle",
+            Arc::new(move |record| {
+                let Some(session) = lifecycle_session.upgrade() else {
+                    return;
+                };
+                let handle = session.session_id();
+                if record["sessionId"].as_str() == Some(handle.as_str()) {
+                    lifecycle_forwarder.deliver(&handle, None,
+                        maho_rpc::session_record_stream::session_record(record.clone()));
+                }
+            }),
+        );
         Self {
             fanout,
-            status: Mutex::new(SessionStatusStream::default()),
+            status,
             status_source,
             status_delivery,
             roles: Mutex::new(ConnectionRoles::default()),
             receipts: Mutex::new(BTreeMap::new()),
             attached,
             records: Mutex::new(Some(records)),
+            lifecycle_records: Mutex::new(Some(lifecycle_records)),
             session,
+            forwarder,
         }
     }
 
@@ -263,8 +393,7 @@ impl ControlAttachments {
     /// Enqueues a session record with this connection as the current one (its targeted records reach
     /// it), senpi `run(connection, () => writer.enqueue(handle, record))`.
     pub fn enqueue_for(&self, connection: &ControlConnection, record: Value) {
-        deliver(
-            &self.fanout,
+        self.forwarder.deliver(
             &self.handle(),
             Some(&key_of(connection)),
             record,
@@ -288,6 +417,7 @@ impl ControlAttachments {
 
     pub fn dispose(&self) {
         drop(lock(&self.records).take());
+        drop(lock(&self.lifecycle_records).take());
     }
 }
 

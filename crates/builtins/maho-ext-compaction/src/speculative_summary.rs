@@ -190,7 +190,7 @@ pub async fn generate_summary_message(
     // replaying the signatures would then fail the whole request with a 400.
     for message in &mut typed {
         if let maho_ai::types::Message::Assistant(assistant) = message {
-            assistant
+            std::sync::Arc::make_mut(assistant)
                 .content
                 .retain(|block| !matches!(block, maho_ai::types::ContentBlock::Thinking(_)));
         }

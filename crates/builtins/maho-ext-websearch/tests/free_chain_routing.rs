@@ -40,14 +40,14 @@ struct Engines {
 }
 impl Engines {
     async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture listener");
+        let address = listener.local_addr().expect("fixture address");
         let routes: Routes = Arc::default();
         let hits: Arc<Mutex<Vec<String>>> = Arc::default();
         let (server_routes, server_hits) = (routes.clone(), hits.clone());
         tokio::spawn(async move {
             loop {
-                let (mut socket, _) = listener.accept().await.unwrap();
+                let (mut socket, _) = listener.accept().await.expect("accept fixture request");
                 let (routes, hits) = (server_routes.clone(), server_hits.clone());
                 tokio::spawn(async move {
                     let mut bytes = Vec::new();
@@ -57,7 +57,7 @@ impl Engines {
                         {
                             break end + 4;
                         }
-                        let n = socket.read(&mut chunk).await.unwrap();
+                        let n = socket.read(&mut chunk).await.expect("read fixture request headers");
                         if n == 0 {
                             return;
                         }
@@ -74,7 +74,7 @@ impl Engines {
                         })
                         .unwrap_or(0);
                     while bytes.len() < header_end + length {
-                        let n = socket.read(&mut chunk).await.unwrap();
+                        let n = socket.read(&mut chunk).await.expect("read fixture request body");
                         if n == 0 {
                             break;
                         }
@@ -82,8 +82,8 @@ impl Engines {
                     }
                     let target = head.split_whitespace().nth(1).unwrap_or_default();
                     let path = target.split('?').next().unwrap_or_default().to_owned();
-                    hits.lock().unwrap().push(path.clone());
-                    let reply = routes.lock().unwrap().get(path.as_str()).cloned();
+                    hits.lock().expect("fixture hits").push(path.clone());
+                    let reply = routes.lock().expect("fixture routes").get(path.as_str()).cloned();
                     let Some(Reply::Html(status, body)) = reply else {
                         return;
                     };
@@ -102,11 +102,11 @@ impl Engines {
         }
     }
     fn serve(&self, routes: &[(&'static str, Reply)]) {
-        *self.routes.lock().unwrap() = routes.iter().cloned().collect();
-        self.hits.lock().unwrap().clear();
+        *self.routes.lock().expect("fixture routes") = routes.iter().cloned().collect();
+        self.hits.lock().expect("fixture hits").clear();
     }
     fn hits(&self) -> Vec<String> {
-        self.hits.lock().unwrap().clone()
+        self.hits.lock().expect("fixture hits").clone()
     }
     fn entry(&self, provider: SearchProvider, id: Option<&str>, path: &str) -> SearchProviderEntry {
         let mut config = SearchProviderConfig::new(provider);

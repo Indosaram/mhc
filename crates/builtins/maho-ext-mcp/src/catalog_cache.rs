@@ -31,7 +31,7 @@ fn normalize_cached_server(value:&Value) -> Option<McpCachedServerCatalog> {
     for tool in value.get("tools")?.as_array()? {
         let name = tool.get("name")?.as_str()?;
         let schema = tool.get("inputSchema")?;
-        if !schema.is_object() && !(modern && schema.is_boolean()) { return None; }
+        if !(schema.is_object() || modern && schema.is_boolean()) { return None; }
         // A modern tool keeps every field it was listed with; a legacy one only the known ones.
         let mut normalized = if modern { tool.clone() } else { json!({}) };
         normalized["name"]=json!(name); normalized["inputSchema"]=schema.clone();

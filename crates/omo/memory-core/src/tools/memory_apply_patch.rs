@@ -133,11 +133,18 @@ fn apply_and_commit(
                 "made no effective changes; nothing was committed. The patched content matched what was already on disk.",
             ));
         }
-        Err(GitError::Secret(secret)) => {
-            restore_paths(repo, &affected_paths).map_err(|e| err(e.to_string()))?;
-            return Err(err(secret.to_string()));
+        Err(err_val) => {
+            let refused = err(err_val.to_string());
+            // A refused commit (pre-commit hook, git failure) must not leave the applied files
+            // behind, or the next memory write fails clean_check on them.
+            return Err(match restore_paths(repo, &affected_paths) {
+                Ok(()) => refused,
+                Err(restore_error) => MemoryToolError::new(format!(
+                    "{}\nRolling back the written paths also failed: {restore_error}",
+                    refused.message
+                )),
+            });
         }
-        Err(err_val) => return Err(err(err_val.to_string())),
     };
 
     let has_remote = has_configured_remote(repo);

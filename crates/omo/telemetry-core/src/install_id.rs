@@ -119,10 +119,19 @@ mod tests {
         let raw = fs::read_to_string(&path)?;
         assert!(is_install_id(raw.trim()));
         assert_ne!(raw.trim(), first);
+        assert_eq!(first, hex::encode(Sha256::digest(raw.trim().as_bytes())));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+        }
         fs::write(&path, "garbage")?;
         let repaired = get_telemetry_install_distinct_id(dir.path());
         assert_ne!(repaired, first);
-        assert!(is_install_id(fs::read_to_string(&path)?.trim()));
+        let repaired_raw = fs::read_to_string(&path)?;
+        assert!(is_install_id(repaired_raw.trim()));
+        assert_eq!(repaired, hex::encode(Sha256::digest(repaired_raw.trim().as_bytes())));
+        assert_eq!(get_telemetry_install_distinct_id(dir.path()), repaired);
         Ok(())
     }
 

@@ -3691,6 +3691,7 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-utils",
  "maho-workflow",
  "maho-workpool",
  "maho-x-search",
@@ -4616,13 +4617,17 @@ dependencies = [
  "maho-ext-host",
  "maho-interactive",
  "maho-tui",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "url",
 ]
@@ -4631,12 +4636,14 @@ dependencies = [
 name = "maho-ext-prompt-preset"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
  "regex",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -4659,6 +4666,7 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -5380,6 +5388,7 @@ dependencies = [
 name = "maho-omo-config-core"
 version = "0.0.0"
 dependencies = [
+ "dirs",
  "hex",
  "jiff",
  "libc",
@@ -5789,6 +5798,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-omo-agent-home",
+ "maho-omo-bundled-skills",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
  "maho-omo-task",

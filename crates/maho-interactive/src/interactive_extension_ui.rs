@@ -933,7 +933,7 @@ mod tests {
         ui.reset_before_session_invalidate();
         let statuses = ui.statuses.lock().expect("statuses").clone();
         assert_eq!(statuses.get(key).map(String::as_str), Some("Idle"));
-        assert!(statuses.get("ext").is_none());
+        assert!(!statuses.contains_key("ext"));
     }
 
     #[test]

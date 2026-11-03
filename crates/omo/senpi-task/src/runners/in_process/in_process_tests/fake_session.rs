@@ -19,6 +19,7 @@ struct FakeState {
     rejections: Vec<(usize, String)>,
     steer_calls: Vec<String>,
     abort_calls: usize,
+    cleared_queues: usize,
     listeners: Vec<(usize, ChildSessionListener)>,
     next_listener: usize,
     disposed: usize,
@@ -98,6 +99,10 @@ impl FakeSession {
 
     pub(super) fn identities(&self) -> Vec<String> {
         self.lock().identities.clone()
+    }
+
+    pub(super) fn cleared_queues(&self) -> usize {
+        self.lock().cleared_queues
     }
 
     pub(super) fn follow_up_calls(&self) -> Vec<String> {
@@ -189,6 +194,10 @@ impl ChildSession for FakeSession {
     fn abort(&self) -> Result<(), HostError> {
         self.lock().abort_calls += 1;
         Ok(())
+    }
+
+    fn clear_queued_input(&self) {
+        self.lock().cleared_queues += 1;
     }
 
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe {

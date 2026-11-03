@@ -151,3 +151,31 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
     assert!(result.is_ok());
     assert!(!socket.exists(), "the host removes the endpoint it bound");
 }
+
+/// Where the socket listener is not ported, a CLI-built host asked to listen refuses at once with an
+/// error instead of serving nothing until a client gives up.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_cli_built_host_refuses_a_socket_listener_where_sockets_are_unsupported() {
+    use maho_cli::cli::host_runtime::create_host_core;
+    use maho_rpc::multi_session_host::{HostShutdownSignals, run_multi_session_host_with_signals};
+    use std::time::Duration;
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let socket = temp.path().join("rpc.sock");
+    let socket_text = socket.to_string_lossy().into_owned();
+    let core = create_host_core(rpc_config(&cwd, &cwd), &cwd, Some(socket_text.as_str()))
+        .expect("host core");
+    let signals = HostShutdownSignals {
+        watchdog: None,
+        empty_exit_ms: Some(2_000.0),
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_multi_session_host_with_signals(core, Some(socket_text), signals),
+    )
+    .await
+    .expect("the host answered the listen request at once");
+    assert!(result.is_err(), "a host that cannot listen reports it");
+    assert!(!socket.exists(), "a refused listener binds no endpoint");
+}

@@ -165,6 +165,8 @@ pub struct McpFormPresentation {
 }
 
 pub type McpFormUnsubscribe = Box<dyn FnOnce() + Send>;
+pub type McpFormSubscribe =
+    Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> McpFormUnsubscribe + Send + Sync>;
 
 #[derive(Clone)]
 pub struct McpFormBinding {
@@ -173,8 +175,7 @@ pub struct McpFormBinding {
     pub capture: Arc<dyn Fn() -> Option<McpFormPresentation> + Send + Sync>,
     pub dispose: Arc<dyn Fn() + Send + Sync>,
     pub version: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
-    pub subscribe:
-        Option<Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> McpFormUnsubscribe + Send + Sync>>,
+    pub subscribe: Option<McpFormSubscribe>,
 }
 
 type PresentedCallback = Box<dyn FnOnce() + Send>;

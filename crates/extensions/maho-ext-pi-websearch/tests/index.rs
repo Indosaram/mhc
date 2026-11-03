@@ -1,6 +1,6 @@
 use maho_ext_api::*;
 use maho_ext_pi_websearch::index::*;
-use maho_ext_pi_websearch::websearch::types::ConfigLoadResult;
+use maho_ext_pi_websearch::websearch::types::{ConfigLoadFailureReason, ConfigLoadResult};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -226,7 +226,17 @@ async fn start_session(api: &ExtensionApi, ctx: &ExtensionContext) {
 async fn custom_openai_compatible_provider_without_config_reports_missing_config() {
     let temp = tempfile::tempdir().expect("temp");
     let mut api = session_api(temp.path());
-    let state = register_search_lifecycle(&mut api);
+    let missing_message = "Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.";
+    let state = register_search_lifecycle_with(
+        &mut api,
+        Arc::new(move |_, _| {
+            Ok(ConfigLoadResult::Failure {
+                reason: ConfigLoadFailureReason::MissingConfig,
+                message: missing_message.into(),
+                source: None,
+            })
+        }),
+    );
     let ui = Arc::new(Ui {
         state: Arc::clone(&state),
         observed: Mutex::new(Vec::new()),

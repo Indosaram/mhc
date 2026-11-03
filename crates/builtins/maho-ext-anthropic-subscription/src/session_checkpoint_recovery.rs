@@ -60,7 +60,7 @@ where
                 && binding.sent_hashes[..*index] == current_hashes[..*index]
         })
         .collect();
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|right| std::cmp::Reverse(right.0));
     if candidates.is_empty() {
         return None;
     }

@@ -3,6 +3,65 @@ use super::handle::HostSessionHandle;
 use crate::host::HostError;
 use crate::manager::child_handle::ManagedChildHandle;
 use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HostSessionOpenError {
+    #[error("host call failed: {message}")]
+    Host { message: String },
+    #[error("session {session_path} is held by {}: {message}", .owner.as_deref().unwrap_or("another owner"))]
+    SessionPathInUse {
+        session_path: String,
+        owner: Option<String>,
+        retry_after_ms: Option<u64>,
+        message: String,
+    },
+    #[error("host open refused ({code}): {message}")]
+    Refused {
+        code: String,
+        session_path: String,
+        retry_after_ms: Option<u64>,
+        message: String,
+    },
+}
+
+impl HostSessionOpenError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Host { message } => message,
+            Self::SessionPathInUse { message, .. } => message,
+            Self::Refused { message, .. } => message,
+        }
+    }
+
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::SessionPathInUse { retry_after_ms, .. } => *retry_after_ms,
+            Self::Refused { retry_after_ms, .. } => *retry_after_ms,
+            Self::Host { .. } => None,
+        }
+    }
+
+    pub fn is_session_path_in_use(&self) -> bool {
+        matches!(self, Self::SessionPathInUse { .. })
+    }
+}
+
+impl From<HostError> for HostSessionOpenError {
+    fn from(error: HostError) -> Self {
+        Self::Host {
+            message: error.message,
+        }
+    }
+}
+
+impl From<HostSessionOpenError> for HostError {
+    fn from(err: HostSessionOpenError) -> Self {
+        HostError {
+            message: err.to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct HostSessionOpener {
     teardowns: Mutex<Vec<std::thread::JoinHandle<Result<(), HostError>>>>,

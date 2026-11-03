@@ -528,6 +528,7 @@ impl TaskComponent {
             EventKind::SessionBeforeSwitch,
             EventKind::SessionBeforeCompact,
             EventKind::SessionCompact,
+            EventKind::SessionCompactFailed,
             EventKind::SessionShutdown,
             EventKind::ModelSelect,
             EventKind::AgentEnd,
@@ -623,7 +624,10 @@ impl TaskComponent {
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .mark(TransitionReason::Compacting, Some(session)),
-                            ExtensionEvent::SessionCompact(_) => {
+                            // SAFETY-DIVERGENCE(senpi session-transition-bridge.ts): upstream subscribes only to
+                            // session_before_compact/session_compact; resolve failed compactions so transitions clear and flush.
+                            ExtensionEvent::SessionCompact(_)
+                            | ExtensionEvent::SessionCompactFailed { .. } => {
                                 component
                                     .transitions
                                     .lock()
@@ -960,6 +964,11 @@ impl TaskComponent {
                 }
                 drop(waiters);
                 self.notify_owned_terminal(&entry.record);
+                // The store is shared with every other session using this state dir; only the
+                // owning parent session may consume a completion, or the owner never sees it.
+                if !self.owns_completion(&entry.record) {
+                    continue;
+                }
                 // Already-notified terminals are a no-op in `notify_terminal` (AlreadyNotified) after a store load; skip that per-sync.
                 if entry.record.notification.notified_epoch >= entry.record.notification.run_epoch {
                     continue;
@@ -999,32 +1008,34 @@ impl TaskComponent {
                         return;
                     }
                     component.notify_owned_terminal(&record);
-                    let parent_state = component
-                        .engine
-                        .runtime
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .parent_state();
-                    let delivery = component
-                        .delivery
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    if let Err(error) =
-                        component
+                    if component.owns_completion(&record) {
+                        let parent_state = component
                             .engine
-                            .notifier
-                            .notify_terminal(&CompletionRequest {
-                                record,
-                                parent_state,
-                                run_in_background: manager.was_background(&task),
-                                tokens: None,
-                            })
-                    {
-                        maho_ext_api::diagnostic(&format!(
-                            "task terminal delivery failed: {error}"
-                        ));
+                            .runtime
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .parent_state();
+                        let delivery = component
+                            .delivery
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if let Err(error) =
+                            component
+                                .engine
+                                .notifier
+                                .notify_terminal(&CompletionRequest {
+                                    record,
+                                    parent_state,
+                                    run_in_background: manager.was_background(&task),
+                                    tokens: None,
+                                })
+                        {
+                            maho_ext_api::diagnostic(&format!(
+                                "task terminal delivery failed: {error}"
+                            ));
+                        }
+                        drop(delivery);
                     }
-                    drop(delivery);
                     component.channels.emit_if_changed();
                     component.status.schedule_sync();
                     let rpc = component
@@ -1051,6 +1062,14 @@ impl TaskComponent {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+    fn owns_completion(&self, record: &senpi_task::state::TaskRecord) -> bool {
+        self.engine
+            .runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .session_id()
+            .is_some_and(|session| session == record.parent_session_id)
     }
     fn notify_owned_terminal(&self, record: &senpi_task::state::TaskRecord) {
         if crate::member_liveness::liveness_details(record).is_none() {

@@ -29,11 +29,13 @@ struct Principal {
     sessions: Mutex<BTreeSet<u64>>,
 }
 
+type RevokeCallback = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Default)]
 struct ControlState {
     principals: BTreeMap<String, Arc<Principal>>,
     controls: Vec<PrivateChannel>,
-    revokes: BTreeMap<u64, (PrivateChannel, Arc<dyn Fn() + Send + Sync>)>,
+    revokes: BTreeMap<u64, (PrivateChannel, RevokeCallback)>,
     launch_owner: Option<(PrivateChannel, Arc<Principal>, String)>,
     backend_generations: Vec<(PrivateChannel, Arc<Principal>, String)>,
     next: u64,

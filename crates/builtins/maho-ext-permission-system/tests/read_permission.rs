@@ -42,7 +42,7 @@ fn bundled_resource_reads_are_auto_approved_but_still_deniable() {
     let doc_text = doc.to_string_lossy().into_owned();
     let home = base.join("home");
 
-    let requests = parse_read_permission(&doc_text, (&cwd, &home), &[bundled.clone()]);
+    let requests = parse_read_permission(&doc_text, (&cwd, &home), std::slice::from_ref(&bundled));
     assert_eq!(
         requests.len(),
         1,
@@ -53,7 +53,7 @@ fn bundled_resource_reads_are_auto_approved_but_still_deniable() {
         (read.permission.as_str(), read.auto_approve_ask),
         ("read", true)
     );
-    assert_eq!(read.patterns, [doc_text.clone()]);
+    assert_eq!(read.patterns, std::slice::from_ref(&doc_text));
     assert_eq!(read.rule_aliases.as_deref(), Some(&[doc_text.clone()][..]));
 
     // An ask-only ruleset approves the bundled read without prompting.
@@ -193,7 +193,7 @@ fn a_symlinked_root_does_not_auto_approve_reads_through_it() {
     std::os::unix::fs::symlink(&outside, &link).expect("symlink");
     let through = link.join("secret.txt").to_string_lossy().into_owned();
 
-    let requests = parse_read_permission(&through, (&cwd, &home), &[link.clone()]);
+    let requests = parse_read_permission(&through, (&cwd, &home), std::slice::from_ref(&link));
     assert_eq!(
         requests
             .iter()
@@ -206,4 +206,34 @@ fn a_symlinked_root_does_not_auto_approve_reads_through_it() {
         requests[1].patterns,
         [outside.join("secret.txt").to_string_lossy()]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bundled_symlink_resolving_outside_is_not_auto_approved() {
+    let root = tempfile::tempdir().expect("root");
+    let base = root.path().canonicalize().expect("real root");
+    let (cwd, bundle, outside, home) = (
+        base.join("project"),
+        base.join("bundle"),
+        base.join("outside"),
+        base.join("home"),
+    );
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    std::fs::create_dir_all(&bundle).expect("bundle");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("secret.txt"), "secret").expect("secret");
+    let link = bundle.join("outside-link.txt");
+    std::os::unix::fs::symlink(outside.join("secret.txt"), &link).expect("symlink");
+    let link_text = link.to_string_lossy().into_owned();
+
+    let requests = parse_read_permission(&link_text, (&cwd, &home), std::slice::from_ref(&bundle));
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.permission.as_str())
+            .collect::<Vec<_>>(),
+        ["read", "external_directory"]
+    );
+    assert!(requests.iter().all(|request| !request.auto_approve_ask));
 }

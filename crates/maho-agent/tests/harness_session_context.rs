@@ -137,7 +137,7 @@ fn drops_error_and_aborted_assistant_messages_from_context() {
         seq: 1,
         timestamp: 1,
         kind: EntryKind::Message {
-            message: AgentMessage::Llm(Message::Assistant(Box::new(assistant))),
+            message: AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(assistant))),
             terminate: None,
         },
     };

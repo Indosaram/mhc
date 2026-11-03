@@ -1,5 +1,5 @@
 use super::schema_compat::{
-    McpToolNameEntry, build_mcp_tool_names, convert_json_schema_to_type_box, map_mcp_tool_result,
+    McpToolNameEntry, build_mcp_tool_names, map_mcp_tool_result,
 };
 use crate::{
     catalog::McpToolCatalogEntry,

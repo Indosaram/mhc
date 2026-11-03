@@ -12,7 +12,7 @@ pub fn start_credentials_refusal(failure: &RunnerFailure) -> Option<&StartCause>
     }
     failure
         .cause
-        .as_ref()
+        .as_deref()
         .filter(|cause| cause.cause_class == StartCauseClass::CredentialsMissing)
 }
 

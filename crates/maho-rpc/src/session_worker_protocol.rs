@@ -171,7 +171,7 @@ pub enum HostToSessionWorker {
         configuration: serde_json::Value,
         profile: serde_json::Value,
         /// The host store's mirrored records as of the prepare (senpi#3695 `mirrorSnapshot()`).
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         subscription_limits: Vec<serde_json::Value>,
     },
     /// `acceptance`: the host owns an acceptance lane, so the isolate sends a bootstrap and ordered output frames.

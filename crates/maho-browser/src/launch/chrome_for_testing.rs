@@ -83,9 +83,6 @@ impl BrowserPlatform {
         }
     }
 
-    fn is_mac(self) -> bool {
-        matches!(self, Self::Mac | Self::MacArm)
-    }
 }
 
 /// `detectBrowserPlatform` for `(os, arch)` as Rust names them; `None` elsewhere.

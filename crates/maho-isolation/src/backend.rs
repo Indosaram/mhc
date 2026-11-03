@@ -4,7 +4,7 @@
 //! copy-on-write choice (APFS, btrfs, ZFS, reflink, overlayfs, ProjFS, block clone) runs the ported
 //! `pi-iso` backend ([`crate::iso`]) and falls back to the worktree/copy pair when the backend is
 //! unavailable, as upstream `ensureIsolation` walks its candidates.
-use crate::iso::{self, IsoError, IsolationBackend as _};
+use crate::iso::{self, IsoError};
 use crate::settings::BackendChoice;
 use crate::tree;
 use maho_git::{ApplyOptions, Git};

@@ -124,9 +124,9 @@ pub struct HostEnsureRefusedError {
     pub reason: HostRefusalReason,
     detail: String,
     /// The generation in the way, when its registration names one (`foreign_writer`).
-    pub holder: Option<HostHolder>,
+    pub holder: Option<Box<HostHolder>>,
 }
-fn held_by(holder: &Option<HostHolder>) -> String {
+fn held_by(holder: &Option<Box<HostHolder>>) -> String {
     holder.as_ref().map_or_else(String::new, |holder| {
         format!(" (held by {})", describe_host_holder(holder))
     })
@@ -155,7 +155,7 @@ impl HostEnsureRefusedError {
     /// Names the generation in the way; the message then ends with ` (held by <holder>)`.
     #[must_use]
     pub fn with_holder(mut self, holder: HostHolder) -> Self {
-        self.holder = Some(holder);
+        self.holder = Some(Box::new(holder));
         self
     }
     /// The refusal wording, without the socket prefix or the holder clause.

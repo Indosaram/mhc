@@ -598,7 +598,7 @@ pub fn project_otlp_event(event: &str, properties: &Map<String, Value>) -> WireA
 
 /// `projectOtlpEvent` as the transport input's projection callback.
 pub fn otlp_projection() -> OtlpWireProjection {
-    std::sync::Arc::new(|event, properties| project_otlp_event(event, properties))
+    std::sync::Arc::new(project_otlp_event)
 }
 
 #[cfg(test)]

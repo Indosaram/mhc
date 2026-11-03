@@ -7,7 +7,7 @@ use crate::runners::in_process::child_handle::{RunnerFailure, RunnerFailureKind}
 #[error("{}", failure.message)]
 pub struct RunnerError {
     pub failure: RunnerFailure,
-    pub cause: Option<HostError>,
+    pub cause: Option<Box<HostError>>,
 }
 
 impl RunnerError {
@@ -25,7 +25,7 @@ impl RunnerError {
     ) -> Self {
         Self {
             failure: RunnerFailure::new(kind, message),
-            cause: Some(cause),
+            cause: Some(Box::new(cause)),
         }
     }
 

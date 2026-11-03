@@ -62,8 +62,8 @@ pub fn resolve_timeout_ms(value: Option<f64>) -> u64 {
 /// `compileFilter`: `None` without a filter; the JavaScript RegExp dialect maps to fancy-regex.
 pub fn compile_filter(
     filter: Option<&str>,
-) -> Result<Option<fancy_regex::Regex>, fancy_regex::Error> {
-    filter.map(fancy_regex::Regex::new).transpose()
+) -> Result<Option<fancy_regex::Regex>, Box<fancy_regex::Error>> {
+    filter.map(fancy_regex::Regex::new).transpose().map_err(Box::new)
 }
 
 #[cfg(test)]

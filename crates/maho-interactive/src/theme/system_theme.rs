@@ -427,7 +427,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     let mut each = |tokens: &[&'static str], on: Vec<&'static str>, level: Level| {
         for token in tokens {
             rules.push(Rule {
-                token: *token,
+                token,
                 on: on.clone(),
                 level,
             });
@@ -549,7 +549,7 @@ static SOLVE_ORDER: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         for rule in RULES.iter().filter(|rule| rule.token == token) {
             for surface in &rule.on {
                 if *surface != "background" {
-                    visit(*surface, order);
+                    visit(surface, order);
                 }
             }
         }

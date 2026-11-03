@@ -29,7 +29,7 @@ fn spill_files(root: &Path) -> Vec<String> {
         return vec![];
     };
     let mut names: Vec<_> = entries
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .map(|entry| entry.expect("directory entry").file_name().into_string().expect("valid utf-8 file name"))
         .collect();
     names.sort();
     names
@@ -89,8 +89,8 @@ fn settle_foreground(
     id: &str,
     result: AgentToolResult,
 ) {
-    let mut manager = manager.lock().unwrap();
-    let cell = manager.create(id.into(), input(id)).unwrap();
+    let mut manager = manager.lock().expect("manager lock poisoned");
+    let cell = manager.create(id.into(), input(id)).expect("create cell");
     manager.mark_running(&cell);
     assert!(manager.complete(&cell, result));
 }
@@ -100,8 +100,8 @@ fn settle_detached(
     id: &str,
     result: AgentToolResult,
 ) {
-    let mut manager = manager.lock().unwrap();
-    let cell = manager.create(id.into(), input(id)).unwrap();
+    let mut manager = manager.lock().expect("manager lock poisoned");
+    let cell = manager.create(id.into(), input(id)).expect("create cell");
     manager.mark_running(&cell);
     let live = result.clone();
     manager.bind_kernel(
@@ -126,7 +126,7 @@ fn image_data(snapshot: &EvalDetachedCellSnapshot) -> Vec<String> {
 }
 
 fn peek(manager: &Arc<Mutex<EvalDetachedCellManager>>, id: &str) -> EvalDetachedCellSnapshot {
-    manager.lock().unwrap().peek(id).unwrap()
+    manager.lock().expect("manager lock poisoned").peek(id).expect("cell snapshot peek")
 }
 
 #[tokio::test]

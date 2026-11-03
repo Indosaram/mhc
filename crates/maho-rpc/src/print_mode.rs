@@ -121,7 +121,7 @@ pub(crate) fn stripped_message_update(message:&maho_ext_api::AgentMessage,event:
         A::ThinkingDelta{content_index,delta,..}=>json!({"type":"thinking_delta","contentIndex":content_index,"delta":delta,"partial":null}),
         A::ThinkingEnd{content_index,content,..}=>json!({"type":"thinking_end","contentIndex":content_index,"content":content,"partial":null}),
         A::ToolcallDelta{content_index,delta,..}=>json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta,"partial":null}),
-        A::ToolcallEnd{content_index,tool_call,..}=>match serde_json::to_value(tool_call){Ok(tool_call)=>json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":tool_call,"partial":null}),Err(error)=>return Some(Err(error))},
+        A::ToolcallEnd{content_index,tool_call,..}=>match serde_json::to_value(maho_ai::types::ContentBlock::ToolCall(tool_call.clone())){Ok(tool_call)=>json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":tool_call,"partial":null}),Err(error)=>return Some(Err(error))},
         A::ToolcallStart{..}|A::Done{..}|A::Error{..}=>return None,
     };
     Some(serde_json::to_value(assistant.usage).map(|usage|json!({"type":"message_update","message":{"role":"assistant","usage":usage},"assistantMessageEvent":event})))
@@ -191,7 +191,7 @@ mod tests {
     #[test] fn missing_error_uses_terminal_status() { let message=message(json!([]),"aborted",None);assert_eq!(format_print_result(Some(&message)).unwrap().stderr,"Request aborted\n"); }
     #[test] fn stripped_message_update_matches_full_record_json_event() {
         let partial=message(json!([{"type":"text","text":"ab"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"x":1}}]),"stop",None);
-        let agent_message=maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(partial.clone())));
+        let agent_message=maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(partial.clone())));
         let tool_call:maho_ai::types::ToolCall=serde_json::from_value(json!({"id":"c1","name":"bash","arguments":{"x":1}})).unwrap();
         use maho_ai::types::AssistantMessageEvent as A;
         let events=vec![A::Start{partial:partial.clone()},A::TextStart{content_index:0,partial:partial.clone()},A::TextDelta{content_index:0,delta:"b".into(),partial:partial.clone()},A::TextEnd{content_index:0,content:"ab".into(),partial:partial.clone()},A::ThinkingStart{content_index:0,partial:partial.clone()},A::ThinkingDelta{content_index:0,delta:"t".into(),partial:partial.clone()},A::ThinkingEnd{content_index:0,content:"t".into(),partial:partial.clone()},A::ToolcallDelta{content_index:1,delta:"{".into(),partial:partial.clone()},A::ToolcallEnd{content_index:1,tool_call,partial:partial.clone()}];
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(format_print_result(Some(&recovered)).unwrap().exit_code,0);
         assert!(!json_run_failed(Some(&recovered)));
         let final_answer=message(json!([{"type":"text","text":"final answer"}]),"stop",None);
-        let messages=[maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(final_answer)))];
+        let messages=[maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(final_answer)))];
         let last=messages.iter().rev().find_map(|message|message.as_assistant());
         assert_eq!(format_print_result(last).unwrap().stdout,"final answer\n");
     }

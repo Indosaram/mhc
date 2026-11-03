@@ -44,7 +44,7 @@ pub fn with_stable_prefix_checkpoints(messages: &[Message], state: &ContextReduc
     for cut in state.checkpoint_cut.into_iter().chain(std::iter::once(state.cut_index)) {
         for message in marked.iter_mut().take(cut).rev() {
             if let Message::Assistant(assistant) = message {
-                assistant.prompt_cache_breakpoint = Some(true);
+                std::sync::Arc::make_mut(assistant).prompt_cache_breakpoint = Some(true);
                 break;
             }
         }
@@ -106,7 +106,7 @@ mod tests {
     use crate::context_reduction_state::{read_context_reduction_state, snapshot_reduction_state};
     #[test]
     fn checkpoints_copy_old_and_current_prefix_and_round_trip_state() {
-        let assistant = || Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message("reply", Default::default())));
+        let assistant = || Message::Assistant(std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message("reply", Default::default())));
         let messages = vec![assistant(), assistant(), assistant(), assistant()];
         let state = ContextReductionState { engaged:true, checkpoint_cut:Some(1),cut_index:3,..Default::default() };
         let marked = with_stable_prefix_checkpoints(&messages,&state);

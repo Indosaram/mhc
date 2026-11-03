@@ -357,9 +357,9 @@ fn valid_property(property: &Map<String, Value>) -> bool {
             return false;
         }
     }
-    !property
+    property
         .get("default")
-        .is_some_and(|default| !valid_value(property, default))
+        .is_none_or(|default| valid_value(property, default))
 }
 
 #[cfg(test)]

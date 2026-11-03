@@ -304,7 +304,7 @@ pub fn user_message(text: &str) -> AgentMessage {
 }
 
 pub fn assistant_message(message: AssistantMessage) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(message)))
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message)))
 }
 
 pub fn tool_result_message(result: &ToolResultMessage) -> AgentMessage {

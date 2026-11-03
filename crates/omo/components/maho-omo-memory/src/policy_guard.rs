@@ -106,9 +106,12 @@ pub fn build_memory_filesystem_policy(
         Err(error) if missing(&error) => {}
         Err(error) => return Err(error),
     }
+    // A one-shot run binds a transient root; its durable root is still its own (a write-denied
+    // session must not write either).
+    let durable = resolve_path(&context.durable_root)?;
     Ok(FilesystemPolicy {
         denied_roots: stable_roots(&foreign),
-        own_roots: stable_roots(&[own]),
+        own_roots: stable_roots(&[own, durable]),
         agents_roots: stable_roots(&[agents]),
         context: Some(context.clone()),
     })
@@ -127,6 +130,20 @@ impl FilesystemPolicy {
             return Ok(FilesystemPolicyDecision::Allow);
         }
         if self.own_roots.iter().any(|root| within(root, &target)) {
+            // A memory-write-denied session reads its own identity root but never writes it.
+            if self
+                .context
+                .as_ref()
+                .is_some_and(|context| context.memory_write_denied)
+                && matches!(operation, FilesystemOperation::Write)
+            {
+                return Ok(FilesystemPolicyDecision::Deny {
+                    reason: crate::write_policy::memory_write_denied_message(&format!(
+                        "write {}",
+                        path.display()
+                    )),
+                });
+            }
             return Ok(FilesystemPolicyDecision::Allow);
         }
         if self.agents_roots.iter().any(|root| within(root, &target)) {
@@ -349,6 +366,32 @@ mod tests {
         assert_eq!(
             policy
                 .check(FilesystemOperation::Read, &root.path().join("outside.md"))
+                .unwrap(),
+            FilesystemPolicyDecision::Allow
+        );
+    }
+    #[test]
+    fn write_denied_session_reads_but_never_writes_its_own_root() {
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path()).with_memory_write_denied(true);
+        let policy = build_memory_filesystem_policy(&context).unwrap();
+        for path in [
+            context.identity_paths.repo.join("system/persona.md"),
+            context.identity_paths.worktrees.join("run/new.md"),
+        ] {
+            assert!(matches!(
+                policy.check(FilesystemOperation::Write, &path).unwrap(),
+                FilesystemPolicyDecision::Deny { reason }
+                    if reason.starts_with(crate::write_policy::MEMORY_WRITE_DENIED_CODE)
+            ));
+            assert_eq!(
+                policy.check(FilesystemOperation::Read, &path).unwrap(),
+                FilesystemPolicyDecision::Allow
+            );
+        }
+        assert_eq!(
+            policy
+                .check(FilesystemOperation::Write, &root.path().join("outside.md"))
                 .unwrap(),
             FilesystemPolicyDecision::Allow
         );

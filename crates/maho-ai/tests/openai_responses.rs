@@ -212,7 +212,7 @@ fn assistant(model: &Model, content: Vec<ContentBlock>) -> Message {
     let mut message = output(model);
     message.content = content;
     message.stop_reason = StopReason::Stop;
-    Message::Assistant(Box::new(message))
+    Message::Assistant(std::sync::Arc::new(message))
 }
 
 fn items_of<'a>(items: &'a [Value], kind: &str) -> Vec<&'a Value> {
@@ -751,7 +751,7 @@ fn foreign_copilot_tool_item_ids_are_hashed_into_a_bounded_fc_id() {
     )];
     let context = context_with(vec![
         user_message("Use the tool."),
-        Message::Assistant(Box::new(foreign)),
+        Message::Assistant(std::sync::Arc::new(foreign)),
         Message::ToolResult(ToolResultMessage {
             tool_call_id: COPILOT_RAW_TOOL_CALL_ID.into(),
             tool_name: "edit".into(),
@@ -792,7 +792,7 @@ fn fallback_message_ids_are_unique_per_text_block() {
     ];
     let context = context_with(vec![
         user_message("hello"),
-        Message::Assistant(Box::new(foreign)),
+        Message::Assistant(std::sync::Arc::new(foreign)),
     ]);
 
     let input = convert(&model, &context);
@@ -846,7 +846,7 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
 
     let same_model = convert_responses_messages(
         &target_model,
-        &context_with(vec![Message::Assistant(Box::new(produced.clone()))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(produced.clone()))]),
         &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
         &options,
     );
@@ -873,7 +873,7 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
     for target in [other_model, other_provider, other_api] {
         let replayed = convert_responses_messages(
             &target,
-            &context_with(vec![Message::Assistant(Box::new(produced.clone()))]),
+            &context_with(vec![Message::Assistant(std::sync::Arc::new(produced.clone()))]),
             &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
             &options,
         );
@@ -898,7 +898,7 @@ fn ordinary_function_calls_gain_no_namespace() {
 
     let input = convert(
         &model,
-        &context_with(vec![Message::Assistant(Box::new(produced))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(produced))]),
     );
     let function_calls = items_of(&input, "function_call");
     assert_eq!(function_calls.len(), 1);
@@ -1188,7 +1188,7 @@ fn image_provider_native_blocks_are_dropped_from_assistant_replay() {
 
     let input = convert(
         &model,
-        &context_with(vec![Message::Assistant(Box::new(produced))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(produced))]),
     );
     let messages = items_of(&input, "message");
     assert_eq!(messages.len(), 1);
@@ -1256,7 +1256,7 @@ fn function_namespaces_round_trip_from_output_item_done() {
 
     let input = convert(
         &model,
-        &context_with(vec![Message::Assistant(Box::new(message))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(message))]),
     );
     let replayed = items_of(&input, "function_call");
     assert_eq!(replayed.len(), 1);
@@ -1312,7 +1312,7 @@ fn custom_tool_namespaces_round_trip_from_output_item_done() {
     };
     let input = convert_responses_messages(
         &model,
-        &context_with(vec![Message::Assistant(Box::new(message))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(message))]),
         &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
         &convert_options,
     );
@@ -1691,7 +1691,7 @@ fn replay_reasoning(model: &Model, message: AssistantMessage) -> Value {
         system_prompt: None,
         messages: vec![
             user_message("first"),
-            Message::Assistant(Box::new(message)),
+            Message::Assistant(std::sync::Arc::new(message)),
             user_message("follow-up"),
         ],
         tools: None,
@@ -2705,7 +2705,7 @@ fn configuration_updates_place_the_update_immediately_before_the_next_user_messa
     produced.content = vec![ContentBlock::text("answer")];
     produced.stop_reason = StopReason::Stop;
     let messages = vec![
-        Message::Assistant(Box::new(produced)),
+        Message::Assistant(std::sync::Arc::new(produced)),
         configuration_update("high", 2),
         Message::User(UserMessage {
             content: UserContent::Text("next".into()),
@@ -2930,7 +2930,7 @@ async fn compat_omits_standalone_same_model_reasoning_replay_when_no_reasoning_i
         system_prompt: None,
         messages: vec![
             user_message("first turn"),
-            Message::Assistant(Box::new(previous)),
+            Message::Assistant(std::sync::Arc::new(previous)),
             user_message("follow-up"),
         ],
         tools: None,
@@ -3917,7 +3917,7 @@ fn patch_history(source_api: &str) -> Vec<Message> {
     previous.stop_reason = StopReason::ToolUse;
     previous.timestamp = 1;
     vec![
-        Message::Assistant(Box::new(previous)),
+        Message::Assistant(std::sync::Arc::new(previous)),
         Message::ToolResult(ToolResultMessage {
             tool_call_id: "call_patch".into(),
             tool_name: "apply_patch".into(),
@@ -4018,7 +4018,7 @@ fn model_switch_s5b_stringifies_recorded_arguments_that_lack_an_input_string() {
     let Message::Assistant(mut assistant) = history[0].clone() else {
         panic!("assistant fixture")
     };
-    assistant.content = vec![ContentBlock::ToolCall(ToolCall {
+    std::sync::Arc::make_mut(&mut assistant).content = vec![ContentBlock::ToolCall(ToolCall {
         id: "call_patch".into(),
         name: "apply_patch".into(),
         arguments: json!({ "patch": PATCH })
@@ -4051,7 +4051,7 @@ fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_tab
     let Message::Assistant(mut assistant) = history[0].clone() else {
         panic!("assistant fixture")
     };
-    assistant.content = vec![
+    std::sync::Arc::make_mut(&mut assistant).content = vec![
         ContentBlock::ToolCall(ToolCall {
             id: "call_edit".into(),
             name: "edit".into(),

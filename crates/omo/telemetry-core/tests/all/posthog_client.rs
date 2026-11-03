@@ -100,6 +100,65 @@ fn placeholder_default_with_real_env_override_is_enabled() {
     assert!(enabled(&env, UNCONFIGURED_POSTHOG_API_KEY, "OMO_SENPI"));
 }
 
+#[tokio::test]
+async fn terminal_program_capture_keeps_only_published_names() {
+    const CHILD: &str = "MHC_TEST_TERMINAL_CAPTURE";
+    if let Ok(expected) = std::env::var(CHILD) {
+        let recorder = Recorder::new();
+        let env = env(&[("POSTHOG_API_KEY", "test-key")]);
+        let product = product();
+        let client = create_telemetry_client(&CreateTelemetryClientInput {
+            diagnostics: None,
+            env: Some(&env),
+            os_provider: Some(&FakeOs),
+            product: &product,
+            source: "cli",
+            transport_factory: Some(recorder.factory()),
+        });
+        client.track_active(&TrackActiveInput {
+            day_utc: "2026-10-28".into(),
+            distinct_id: "distinct".into(),
+            reason: "cli_run".into(),
+        });
+        let messages = recorder.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].properties.get("terminal").and_then(Value::as_str),
+            (!expected.is_empty()).then_some(expected.as_str())
+        );
+        assert!(!serde_json::to_string(&messages[0]).expect("capture JSON").contains("sentinel-user"));
+        return;
+    }
+
+    let mut cases = telemetry_core::KNOWN_TERMINAL_PROGRAMS
+        .into_iter()
+        .map(|known| (Some(known), known))
+        .collect::<Vec<_>>();
+    cases.extend([
+        (Some("/home/sentinel-user/bin/x"), "other"),
+        (Some("my-private-terminal"), "other"),
+        (Some("iterm.app"), "other"),
+        (Some(" vscode "), "other"),
+        (Some(""), ""),
+        (None, ""),
+    ]);
+    let thread = std::thread::current();
+    let test_name = thread.name().expect("test thread name");
+    for (terminal, expected) in cases {
+        let mut child = tokio::process::Command::new(std::env::current_exe().expect("test binary"));
+        child.args(["--exact", test_name, "--nocapture"]).env(CHILD, expected).kill_on_drop(true);
+        match terminal {
+            Some(value) => { child.env("TERM_PROGRAM", value); }
+            None => { child.env_remove("TERM_PROGRAM"); }
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(10), child.output())
+            .await.expect("capture child deadline").expect("capture test child");
+        assert!(output.status.success(), "terminal {terminal:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+}
+
 #[test]
 fn legacy_shared_key_default_remains_enabled() {
     assert!(enabled(

@@ -54,11 +54,10 @@ impl AgentEffectSession {
 /// The session events the ledgers react to.
 pub fn narrow(event: &AgentSessionEvent) -> Option<EffectSessionEvent> {
     Some(match event {
-        AgentSessionEvent::Agent(AgentEvent::MessageStart { message, .. })
-            if matches!(
-                message,
-                maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(_))
-            ) =>
+        AgentSessionEvent::Agent(AgentEvent::MessageStart {
+            message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::User(_)),
+            ..
+        }) =>
         {
             EffectSessionEvent::UserMessageStart {
                 client_message_id: None,
@@ -294,7 +293,7 @@ mod tests {
             "stopReason": stop, "errorMessage": error, "timestamp": 0
         }))
         .expect("assistant message");
-        maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(message)))
+        maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(message)))
     }
 
     fn agent_end(last: maho_ext_api::AgentMessage, will_retry: bool) -> AgentSessionEvent {

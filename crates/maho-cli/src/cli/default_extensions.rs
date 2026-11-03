@@ -242,6 +242,8 @@ pub fn assembled_factories_with_mcp_registry(
     agent_dir: &str,
 ) -> Vec<NativeAsyncExtensionFactory> {
     let mut assembled = factories_with_mcp_registry(widget_sender, parent.clone(), mcp_registry);
+    // Registers nothing unless the session context asks for `supervisor_tools = "work"`.
+    assembled.push(super::supervisor_work_tools::supervisor_work_tools_factory());
     // The omo mount (task, memory, lsp, ... components from crates/omo) is linked only with the
     // `omo` feature; the MIT profile mounts the builtins alone.
     #[cfg(feature = "omo")]

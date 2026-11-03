@@ -74,30 +74,27 @@ fn parse_task(
     }
 }
 
+pub type McpTaskSend<'a> = dyn Fn(
+    &'static str,
+    Value,
+    Option<AbortSignal>,
+) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>> + Send + Sync + 'a;
+pub type McpTaskInputs<'a> = dyn Fn(
+    Map<String, Value>,
+    AbortSignal,
+) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>> + Send + Sync + 'a;
+pub type McpTaskProgress<'a> =
+    dyn Fn(&str, &str, Option<&str>) -> Result<(), McpMrtrError> + Send + Sync + 'a;
+
 /// What the originating request lends the follower.
 pub struct McpTaskOptions<'a> {
     pub clock: &'a dyn McpClock,
     pub signal: AbortSignal,
     pub timeout_ms: f64,
     /// `signal: None` is the cooperative `tasks/cancel`, which has its own lifetime.
-    pub send: &'a (
-            dyn Fn(
-        &'static str,
-        Value,
-        Option<AbortSignal>,
-    ) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>>
-                + Send
-                + Sync
-        ),
-    pub inputs: &'a (
-            dyn Fn(
-        Map<String, Value>,
-        AbortSignal,
-    ) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>>
-                + Send
-                + Sync
-        ),
-    pub progress: &'a (dyn Fn(&str, &str, Option<&str>) -> Result<(), McpMrtrError> + Send + Sync),
+    pub send: &'a McpTaskSend<'a>,
+    pub inputs: &'a McpTaskInputs<'a>,
+    pub progress: &'a McpTaskProgress<'a>,
 }
 
 /// Polling belongs to the originating request, never to the shared physical client.
@@ -186,6 +183,7 @@ pub async fn follow_mcp_task(
                 task["status"].as_str().unwrap_or_default(),
                 task.get("statusMessage").and_then(Value::as_str),
             )?;
+            tokio::task::yield_now().await;
             // CreateTaskResult is only the seed; inputRequests are authoritative on tasks/get.
             if task["status"] == "input_required"
                 && task.get("resultType").and_then(Value::as_str) != Some("task")

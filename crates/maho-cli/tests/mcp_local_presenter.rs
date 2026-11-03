@@ -176,7 +176,7 @@ async fn presentation_loss(rendered: bool) {
             mark(&options);
         }
         if let Some(started) = started_tx.lock().unwrap().take() {
-            drop(started.send(()));
+            let _ = started.send(());
         }
         Box::pin(async move {
             signal.cancelled().await;
@@ -232,7 +232,7 @@ fn gated(
         }
         let count = forms.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(shown) = shown.lock().unwrap().take() {
-            drop(shown.send(()));
+            let _ = shown.send(());
         }
         let mut submit = submit.clone();
         let hold = hold_every_form || count == 1;

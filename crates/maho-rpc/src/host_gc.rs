@@ -569,6 +569,7 @@ mod tests {
                 instance_id: "g1".into(),
                 generation: 1.0,
                 launch_profile_id: "profile".into(),
+                build: None,
             },
         )
         .expect("registration");

@@ -21,7 +21,7 @@ use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
 use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
+    AssistantMessageEventStream,
 };
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
@@ -518,7 +518,8 @@ async fn drive(
         base_url.trim_end_matches('/')
     );
     let headers = build_azure_headers(model, &api_key, options.request.headers.as_ref());
-    let client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi azure-openai-responses.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let body = Value::Object(params).to_string();
     let timeout_ms = options.request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     let signal = options.request.signal.clone();

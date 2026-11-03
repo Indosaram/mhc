@@ -5,7 +5,11 @@
 //! The native `restore::RestoreDigest` carries counters only; per-monitor results arrive here as
 //! `RestoreDigestInput`, the upstream digest shape this module reads.
 use crate::monitor_status::format_elapsed_seconds;
-use serde::Serialize;
+use maho_ext_host::notice::{
+    adapters::notice_message_renderer,
+    spec::{NoticeLine, NoticeSpec, NoticeTone},
+};
+use serde::{Deserialize, Serialize};
 
 pub const RESTORE_DIGEST_CUSTOM_TYPE: &str = "senpi-terminal:restore-digest";
 const PREFIX: &str = "Terminal state after restart";
@@ -18,7 +22,7 @@ const BUCKETS: [&str; 6] = [
     "expired",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreDigestOutcome {
     Decided,
@@ -26,20 +30,20 @@ pub enum RestoreDigestOutcome {
     Corrupt,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OrphanAction {
     Killed,
     Unverified,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Orphan {
     pub pid: u32,
     pub action: OrphanAction,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorRestoreResult {
     pub monitor_id: String,
@@ -48,23 +52,23 @@ pub struct MonitorRestoreResult {
     pub kind: String,
     /// One of `BUCKETS`.
     pub outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub orphan: Option<Orphan>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackgroundRestoreResult {
     pub id: String,
     pub command: String,
     /// `running` or `exited`.
     pub outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pid: Option<u32>,
 }
 
@@ -76,17 +80,19 @@ pub struct RestoreDigestInput {
     pub downtime_ms: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreDigestDetails {
     pub generation: u64,
     pub outcome: RestoreDigestOutcome,
     pub downtime_ms: f64,
     pub downtime_is_upper_bound: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub holder: Option<serde_json::Value>,
     pub actionable: bool,
+    #[serde(default)]
     pub monitors: Vec<MonitorRestoreResult>,
+    #[serde(default)]
     pub background_sessions: Vec<BackgroundRestoreResult>,
 }
 
@@ -340,6 +346,85 @@ pub fn deliver_restore_digest(
     true
 }
 
+fn monitor_line(result: &MonitorRestoreResult) -> NoticeLine {
+    let reason = result
+        .reason
+        .as_deref()
+        .map_or_else(String::new, |reason| format!(": {reason}"));
+    let orphan = result
+        .orphan
+        .as_ref()
+        .map_or_else(String::new, |orphan| format!(" ({})", orphan_note(orphan)));
+    let tone = if result.outcome == "lost" || result.orphan.is_some() {
+        Some(NoticeTone::Warning)
+    } else {
+        Some(NoticeTone::Dim)
+    };
+    NoticeLine {
+        text: format!(
+            "{} {}{reason}{orphan}",
+            label(result),
+            outcome_name(&result.outcome)
+        ),
+        tone,
+    }
+}
+
+pub fn render_restore_digest() -> maho_ext_api::MessageRenderer {
+    notice_message_renderer(|message| {
+        let details_value = message.details.as_ref()?;
+        let details: RestoreDigestDetails = serde_json::from_value(details_value.clone()).ok()?;
+        let content: String = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let counts = format!(
+            "{} monitors · {} background sessions",
+            details.monitors.len(),
+            details.background_sessions.len()
+        );
+        let why = if details.outcome == RestoreDigestOutcome::Decided {
+            counts
+        } else {
+            content
+                .strip_prefix(PREFIX)
+                .and_then(|s| s.strip_prefix(": "))
+                .unwrap_or(&content)
+                .to_owned()
+        };
+        let mut extra = Vec::new();
+        for monitor in &details.monitors {
+            extra.push(monitor_line(monitor));
+        }
+        for session in &details.background_sessions {
+            extra.push(NoticeLine {
+                text: background_entry(session),
+                tone: Some(NoticeTone::Dim),
+            });
+        }
+        Some(NoticeSpec {
+            title: format!("{PREFIX}{}", downtime_note(details.downtime_ms)),
+            tone: Some(if details.actionable {
+                NoticeTone::Warning
+            } else {
+                NoticeTone::Accent
+            }),
+            why,
+            extra,
+            expanded_line: None,
+        })
+    })
+}
+
+pub fn register_restore_digest_renderer(api: &mut maho_ext_api::ExtensionApi) {
+    api.register_message_renderer(RESTORE_DIGEST_CUSTOM_TYPE, render_restore_digest());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +579,167 @@ mod tests {
                 Some(maho_ext_api::DeliverAs::FollowUp)
             )]
         );
+    }
+
+    #[test]
+    fn quiet_delivery_does_not_wake_and_notification_matches_shipped_content() {
+        let message = build_restore_digest(&RestoreDigestInput::default(), 2,
+            RestoreDigestOutcome::Decided, None);
+        let notified = std::cell::RefCell::new(Vec::new());
+        let notify = |content: &str| notified.borrow_mut().push(content.to_owned());
+        let mut sent = Vec::new();
+        assert!(!deliver_restore_digest(false, Some(&notify), &message,
+            |_, _| panic!("no model must not send")));
+        assert!(notified.borrow().is_empty());
+        assert!(deliver_restore_digest(true, Some(&notify), &message,
+            |custom, options| sent.push((custom, options))));
+        assert_eq!(*notified.borrow(), vec![message.content.clone()]);
+        assert_eq!(sent.len(), 1);
+        assert!(!sent[0].1.trigger_turn);
+        assert_eq!(sent[0].1.deliver_as, Some(maho_ext_api::DeliverAs::NextTurn));
+        assert_eq!(sent[0].0.details, Some(serde_json::to_value(&message.details).expect("details")));
+    }
+
+    #[test]
+    fn orphan_and_live_background_are_independently_actionable() {
+        let mut revived = monitor("orphan", "restored", "command");
+        revived.orphan = Some(Orphan { pid: 42, action: OrphanAction::Unverified });
+        assert!(is_actionable(&RestoreDigestInput {
+            results: vec![revived], ..Default::default()
+        }));
+        for (outcome, expected) in [("running", true), ("exited", false)] {
+            assert_eq!(is_actionable(&RestoreDigestInput {
+                background_sessions: vec![BackgroundRestoreResult {
+                    id: "background".into(), command: "job".into(), outcome: outcome.into(), pid: Some(42)
+                }], ..Default::default()
+            }), expected);
+        }
+    }
+
+    #[test]
+    fn renderer_shows_every_monitor_id_and_every_lost_reason() {
+        let mixed_results = vec![
+            MonitorRestoreResult {
+                monitor_id: "mon_tick".into(),
+                description: "tick loop".into(),
+                kind: "command".into(),
+                outcome: "restored".into(),
+                command: Some("while true; do echo tick; sleep 1; done".into()),
+                path: None,
+                reason: None,
+                orphan: Some(Orphan {
+                    pid: 4242,
+                    action: OrphanAction::Killed,
+                }),
+            },
+            MonitorRestoreResult {
+                monitor_id: "mon_artifact".into(),
+                description: "artifact file".into(),
+                kind: "file".into(),
+                outcome: "restored".into(),
+                command: None,
+                path: Some("/tmp/a.log".into()),
+                reason: None,
+                orphan: None,
+            },
+            MonitorRestoreResult {
+                monitor_id: "mon_missing".into(),
+                description: "missing script".into(),
+                kind: "command".into(),
+                outcome: "lost".into(),
+                command: Some("sh /tmp/nope.sh".into()),
+                path: None,
+                reason: Some("exited with code 127 during the grace window".into()),
+                orphan: None,
+            },
+            MonitorRestoreResult {
+                monitor_id: "mon_quiet".into(),
+                description: "muted watch".into(),
+                kind: "command".into(),
+                outcome: "muted".into(),
+                command: Some("tail -f x".into()),
+                path: None,
+                reason: None,
+                orphan: None,
+            },
+            MonitorRestoreResult {
+                monitor_id: "mon_done".into(),
+                description: "finished watch".into(),
+                kind: "command".into(),
+                outcome: "completed".into(),
+                command: Some("true".into()),
+                path: None,
+                reason: None,
+                orphan: None,
+            },
+            MonitorRestoreResult {
+                monitor_id: "mon_old".into(),
+                description: "stale watch".into(),
+                kind: "file".into(),
+                outcome: "expired".into(),
+                command: None,
+                path: Some("/tmp/old.log".into()),
+                reason: None,
+                orphan: None,
+            },
+        ];
+        let mixed_background = vec![
+            BackgroundRestoreResult {
+                id: "bash_1".into(),
+                command: "npm run dev".into(),
+                outcome: "running".into(),
+                pid: Some(777),
+            },
+            BackgroundRestoreResult {
+                id: "bash_2".into(),
+                command: "make build".into(),
+                outcome: "exited".into(),
+                pid: None,
+            },
+        ];
+        let digest = RestoreDigestInput {
+            results: mixed_results,
+            background_sessions: mixed_background,
+            downtime_ms: 3_900_000.0,
+            ..Default::default()
+        };
+        let message = build_restore_digest(&digest, 2, RestoreDigestOutcome::Decided, None);
+        let custom_message = maho_ext_api::CustomMessage {
+            custom_type: RESTORE_DIGEST_CUSTOM_TYPE.to_owned(),
+            content: vec![maho_tools::definition::ToolContent::text(message.content.clone())],
+            display: true,
+            details: serde_json::to_value(&message.details).ok(),
+        };
+
+        let renderer = render_restore_digest();
+        let options = maho_ext_api::MessageRenderOptions {
+            expanded: false,
+            output_pad: 0,
+        };
+        let theme = maho_ext_api::Theme::default();
+        let mut component = renderer(&custom_message, &options, &theme)
+            .expect("renderer produces a component for restore digest");
+        let rendered = component.render(200);
+        let text = rendered.join("\n");
+        let clean = regex::Regex::new(r"\x1b\[[0-9;]*m")
+            .unwrap()
+            .replace_all(&text, "")
+            .into_owned();
+
+        for id in &[
+            "mon_tick",
+            "mon_artifact",
+            "mon_missing",
+            "mon_quiet",
+            "mon_done",
+            "mon_old",
+        ] {
+            assert!(clean.contains(id), "rendered text must contain {id}: {clean}");
+        }
+        assert!(
+            clean.contains("exited with code 127 during the grace window"),
+            "rendered text must contain lost reason: {clean}"
+        );
+        assert!(clean.contains("bash_1"), "rendered text must contain bash_1: {clean}");
     }
 }

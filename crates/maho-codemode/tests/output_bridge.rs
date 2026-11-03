@@ -398,8 +398,7 @@ async fn invalid_arguments_report_typebox_errors_in_order() {
     ] {
         let error = run_eval_output(args, "task_output", &fixture, ExecuteToolOptions::default())
             .await
-            .err()
-            .expect("invalid arguments");
+            .expect_err("invalid arguments");
         assert_eq!(
             error.to_string(),
             format!("output() received invalid arguments: {summary}")

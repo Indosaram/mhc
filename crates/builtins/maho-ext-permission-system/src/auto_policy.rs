@@ -498,6 +498,7 @@ mod tests {
             permission: permission.into(),
             patterns: vec![path.into()],
             always: vec![],
+            ..PermissionRequest::default()
         }
     }
 
@@ -616,6 +617,7 @@ mod tests {
             permission: "edit".into(),
             patterns: vec![],
             always: vec![],
+            ..PermissionRequest::default()
         };
         let decide = |input: Value| {
             let edit = edit.clone();
@@ -719,6 +721,7 @@ mod tests {
             permission: "edit".into(),
             patterns: vec![],
             always: vec![],
+            ..PermissionRequest::default()
         };
         let moved = |to: &str| json!({"input": format!("*** Begin Patch\n*** Update File: src/index.ts\n*** Move to: {to}\n@@\n-export {{}};\n+export {{}};\n*** End Patch")});
         assert!(

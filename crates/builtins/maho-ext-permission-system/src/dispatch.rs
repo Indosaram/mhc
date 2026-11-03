@@ -105,7 +105,8 @@ struct Approval {
 // dead input drops its entry on the next access.
 static AUTHORIZERS: LazyLock<Mutex<HashMap<String, Arc<Registration>>>> =
     LazyLock::new(Default::default);
-static APPROVALS: LazyLock<Mutex<HashMap<usize, (WeakInvocationInput, Arc<Approval>)>>> =
+type ApprovalMap = Mutex<HashMap<usize, (WeakInvocationInput, Arc<Approval>)>>;
+static APPROVALS: LazyLock<ApprovalMap> =
     LazyLock::new(Default::default);
 
 fn registration_for(session: &Arc<dyn SessionManager>) -> Option<Arc<Registration>> {

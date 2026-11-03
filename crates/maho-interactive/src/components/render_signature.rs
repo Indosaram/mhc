@@ -271,4 +271,19 @@ mod tests {
             create_bounded_render_signature(&object_with("depth-old"))
         );
     }
+
+    #[test]
+    fn large_strings_have_bounded_samples_and_detect_sampled_changes() {
+        let text = "a".repeat(64 * 1024);
+        let units: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(sample_signature_string(&units).encode_utf16().count(), 324);
+        let before = create_bounded_render_signature(&json!({"content": text}));
+        assert!(before.len() < SIGNATURE_STRING_MAX_LENGTH);
+        for index in [0, (units.len() - 64) / 4, (units.len() - 64) / 2,
+            (units.len() - 64) * 3 / 4, units.len() - 1] {
+            let mut changed = text.clone();
+            changed.replace_range(index..=index, "b");
+            assert_ne!(create_bounded_render_signature(&json!({"content": changed})), before);
+        }
+    }
 }
