@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::git::exec::GitExec;
+use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
 
 use super::completion_repair::STABLE_LOG_OUTPUT;
 use super::machine::ReflectionOutcome;
@@ -223,18 +224,20 @@ where
 
         let commit_msg = format!("merge(reflection): {}", input.summary);
         let trailer_msg = format!("Omo-Run: {}", input.run_id);
-        let merge = exec.run_in(
-            parent_dir,
-            &[
-                "merge",
-                "--no-ff",
-                &input.validated.tip_sha,
-                "-m",
-                &commit_msg,
-                "-m",
-                &trailer_msg,
-            ],
-        );
+        // SAFETY-DIVERGENCE(reflection/worktree-integration.ts): upstream disables auto
+        // maintenance on this merge but keeps its 30s budget; the merge commit runs the memory
+        // hooks like any memory commit, so this port gives it the commit budget as well.
+        let mut merge_argv: Vec<&str> = NO_AUTO_MAINTENANCE.to_vec();
+        merge_argv.extend([
+            "merge",
+            "--no-ff",
+            input.validated.tip_sha.as_str(),
+            "-m",
+            commit_msg.as_str(),
+            "-m",
+            trailer_msg.as_str(),
+        ]);
+        let merge = exec.run_in_with_timeout(parent_dir, &merge_argv, COMMIT_TIMEOUT_MS);
 
         match merge {
             Ok(res) if res.code == 0 => {
