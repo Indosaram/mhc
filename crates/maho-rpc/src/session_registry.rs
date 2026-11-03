@@ -281,9 +281,18 @@ impl RpcSessionRegistry {
     /// the opening entry (`takeCrossGenerationClaim` + `buildOpeningEntry`).
     pub fn admit_open(
         &mut self,
+        profile: RpcSessionLaunchProfile,
+        retain: bool,
+        now: f64,
+    ) -> Result<OpenAdmission, RpcSessionRegistryError> {
+        self.admit_open_with_policy(profile, retain, now, false)
+    }
+    pub fn admit_open_with_policy(
+        &mut self,
         mut profile: RpcSessionLaunchProfile,
         retain: bool,
         now: f64,
+        attach_only: bool,
     ) -> Result<OpenAdmission, RpcSessionRegistryError> {
         validate_profile_paths(&profile)?;
         if let Some(path) = &profile.session_path {
@@ -350,6 +359,13 @@ impl RpcSessionRegistry {
                     })
                 }
             };
+        }
+        if attach_only {
+            return Err(RpcSessionRegistryError::new(
+                crate::rpc_types::RPC_ERROR_SESSION_NOT_HELD,
+                None,
+                Some(serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"})),
+            ));
         }
         if profile.session_kind == Some(maho_ext_api::SessionKind::Worker)
             && let Some((rss, retry)) = self.worker_refusal
@@ -674,6 +690,23 @@ impl RpcSessionRegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attach_only_refuses_without_allocating_entries_or_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = root.path().to_string_lossy().into_owned();
+        profile.session_path = Some(root.path().join("unheld.jsonl").to_string_lossy().into_owned());
+        let mut registry = RpcSessionRegistry::default();
+        let error = registry
+            .admit_open_with_policy(profile, false, 0., true)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "session_not_held");
+        assert!(registry.entries.is_empty());
+        assert!(registry.reservations.is_empty());
+        assert!(registry.open_completions.is_empty());
+        assert_eq!(registry.next_handle, 0);
+    }
     #[test]
     fn frozen_profile_isolates_the_caller_copy() {
         let mut profile = RpcSessionLaunchProfile {

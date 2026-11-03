@@ -162,7 +162,7 @@ pub fn restore_configured_command_in(
             deadline_ms: ephemeral_time_left.map(|time_left| now + time_left),
             expires_at: monitor.expires_at,
             // Only durable (restartable-command) watches carry the fire window and runaway guard.
-            fire_window: monitor.persistent.then(|| MonitorFireWindow {
+            fire_window: monitor.persistent.then_some(MonitorFireWindow {
                 start_ms: monitor.fire_window.start_ms,
                 count: monitor.fire_window.count as usize,
             }),

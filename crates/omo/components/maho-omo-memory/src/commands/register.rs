@@ -51,7 +51,8 @@ pub fn register_memory_commands(api: &mut ExtensionApi, deps: Arc<MemoryCommandD
     register_search_command(api, deps.clone());
     register_people_command(api, deps.clone());
     register_facts_command(api, deps.clone());
-    register_agreements_command(api, deps);
+    register_agreements_command(api, deps.clone());
+    crate::write_policy::deny_mutating_memory_commands(api, deps.resolve_context.clone());
 }
 
 pub use super::types::{

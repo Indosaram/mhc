@@ -89,18 +89,30 @@ pub trait ToolContext: Send + Sync {
 
 /// Cloneable abort subscription; receivers observe cancellation even when registered afterwards.
 #[derive(Clone, Debug)]
-pub struct AbortSignal(tokio::sync::watch::Sender<bool>);
+pub struct AbortSignal(tokio::sync::watch::Sender<Option<Option<String>>>);
 impl Default for AbortSignal {
     fn default() -> Self {
-        Self(tokio::sync::watch::channel(false).0)
+        Self(tokio::sync::watch::channel(None).0)
     }
 }
 impl AbortSignal {
     pub fn abort(&self) {
-        self.0.send_replace(true);
+        self.abort_with_reason(None);
+    }
+    pub fn abort_with_reason(&self, reason: Option<String>) {
+        self.0.send_if_modified(|state| {
+            if state.is_some() {
+                return false;
+            }
+            *state = Some(reason);
+            true
+        });
+    }
+    pub fn reason(&self) -> Option<String> {
+        self.0.borrow().as_ref().cloned().flatten()
     }
     pub fn is_aborted(&self) -> bool {
-        *self.0.borrow()
+        self.0.borrow().is_some()
     }
     pub fn check(&self) -> Result<(), ToolError> {
         if self.is_aborted() {
@@ -112,7 +124,7 @@ impl AbortSignal {
     pub async fn cancelled(&self) {
         let mut receiver = self.0.subscribe();
         loop {
-            if *receiver.borrow_and_update() {
+            if receiver.borrow_and_update().is_some() {
                 return;
             }
             if receiver.changed().await.is_err() {

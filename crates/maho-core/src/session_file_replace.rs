@@ -162,7 +162,6 @@ pub fn replace_file_atomically(
     let temp_path = directory.join(format!(".{base}.{}.tmp", uuid::Uuid::new_v4()));
     let Some(temp) = open_temp(&temp_path)? else {
         rewrite_in_place(&target.path, chunks, &mut captured)?;
-        drop(captured);
         if let (Some(capture), Some(identity)) = (capture, identity) {
             capture(identity);
         }
@@ -184,7 +183,6 @@ pub fn replace_file_atomically(
         };
     }
     sync_directory(&directory)?;
-    drop(captured);
     if let (Some(capture), Some(identity)) = (capture, identity) {
         capture(identity);
     }

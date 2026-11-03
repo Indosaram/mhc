@@ -150,7 +150,7 @@ pub fn sync_runtime_metadata(
             reservations.insert(key.clone());
             // A replacement moved this session to another file; the claim follows it, carrying the attachment
             // state it is now held at. A file a live foreign generation holds is left alone by claim() itself.
-            if let Some(claims) = path_reservations.as_deref_mut() {
+            if let Some(claims) = path_reservations {
                 claims.claim(key, entry.attachments > 0);
             }
         }
@@ -232,7 +232,6 @@ mod tests {
         let pending = PendingClaims::default();
         let mut reservations = HashSet::from(["/p".to_owned()]);
         let settle = take_cross_generation_claim(&mut reservations, &pending, &mut claims, "/p")
-            .ok()
             .expect("a free path is claimed");
         assert!(lock(&pending).contains_key("/p"));
         settle();
@@ -323,6 +322,7 @@ mod tests {
         assert_eq!(path, Some(new));
         // Unchanged spelling and key: nothing moves.
         let before = reservations.clone();
+        let same_path = path.clone();
         sync_runtime_metadata(
             RuntimeMetadata {
                 reservation_key: &mut key,
@@ -330,7 +330,7 @@ mod tests {
                 durable_session_id: &mut id,
                 attachments: 0,
             },
-            path.clone(),
+            same_path,
             "next".into(),
             &mut reservations,
             None,

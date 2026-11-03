@@ -5,3 +5,5 @@
 mod composition_adapter;
 #[path = "native_memory.rs"]
 mod native_memory;
+#[path = "supervisor_memory_contract.rs"]
+mod supervisor_memory_contract;

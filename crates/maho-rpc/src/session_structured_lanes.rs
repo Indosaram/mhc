@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub type StructuredReceiver = Arc<dyn Fn(&Value) + Send + Sync>;
+type SessionReceivers = HashMap<String, Vec<(u64, StructuredReceiver)>>;
 
 #[derive(Clone, Default)]
 pub struct SessionStructuredLanes {
-    receivers: Arc<Mutex<HashMap<String, Vec<(u64, StructuredReceiver)>>>>,
+    receivers: Arc<Mutex<SessionReceivers>>,
     next: Arc<Mutex<u64>>,
 }
 

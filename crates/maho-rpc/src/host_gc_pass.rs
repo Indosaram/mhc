@@ -170,7 +170,7 @@ pub async fn gc_host_endpoints_opportunistically(
                 removed += 1;
                 skip.remove(&endpoint.name);
             }
-            Ok(Judged::Kept(_)) | Err(_) => {
+            Ok(Judged::Kept(_)) | Ok(Judged::Stopped { .. }) | Err(_) => {
                 let next = next_skip(skip.get(&endpoint.name), now());
                 skip.insert(endpoint.name.clone(), next);
             }
@@ -316,12 +316,13 @@ mod tests {
 
     fn dead_endpoint(agent_dir: &Path, socket: &str) -> PathBuf {
         let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
-        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        crate::host_daemon_paths::create_daemon_directories(&paths)
+            .expect("create daemon directories");
         std::fs::write(
             &paths.endpoint_file,
             serde_json::json!({ "socket": socket }).to_string(),
         )
-        .unwrap();
+        .expect("write dead endpoint file");
         paths.dir
     }
     fn dead_endpoints(agent_dir: &Path, count: usize) -> Vec<(String, PathBuf)> {
@@ -349,7 +350,9 @@ mod tests {
         }
     }
     fn expire_interval(agent_dir: &Path) {
-        let marker = read_host_gc_pass_marker(agent_dir).unwrap().unwrap();
+        let marker = read_host_gc_pass_marker(agent_dir)
+            .expect("read host gc pass marker")
+            .expect("host gc pass marker present");
         write_host_gc_pass_marker(
             agent_dir,
             &HostGcPassMarker {
@@ -357,7 +360,7 @@ mod tests {
                 ..marker
             },
         )
-        .unwrap();
+        .expect("write host gc pass marker");
     }
     fn ran(outcome: OpportunisticGcOutcome) -> HostGcPassMarker {
         match outcome {

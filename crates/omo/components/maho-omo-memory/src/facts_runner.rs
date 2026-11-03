@@ -134,11 +134,13 @@ impl FactsExtractorRunner {
                     async move{
                         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
                         let ledger:crate::facts_runner_types::FactsRunLedger=crate::worker::run_artifacts::read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?;
+                        // The child is told which owner-retracted lines it must never record.
+                        let do_not_record=memory_core::receipts::owner::SuppressionSet::load(&runner.identity.paths.runtime)?.do_not_record();
                         let mut cache=cache.lock().await;
                         let sandbox=options.sandbox.as_deref().map(|sandbox|sandbox as &(dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Sync));
                         runner.execute_child(&mut cache,crate::worker::facts_child_launch::FactsChildLaunchInput{
                             sandbox,
-                            run_id:&run_id,run_dir:&dir,payload:(&payload).into(),oversized:false,agreements:payload.agreements.is_some(),record_limits:None,resolution:&resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
+                            run_id:&run_id,run_dir:&dir,payload:(&payload).into(),do_not_record:&do_not_record,oversized:false,agreements:payload.agreements.is_some(),record_limits:None,resolution:&resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
                             options:crate::worker::spawn_supervisor::FactsChildOptions{termination_grace_ms:options.termination_grace_ms as f64,max_output_bytes:options.max_output_bytes,supervisor_command:&options.supervisor_command,supervisor_args:&options.supervisor_args,batch_id:&batch,queued:&ledger.queued,launched_at:chrono::DateTime::parse_from_rfc3339(&ledger.started_at).map_err(|error|error.to_string())?.timestamp_millis()},
                             signal:child_signal,
                         },&options.people,&mut |message|(options.warn)(message)).await
@@ -353,6 +355,19 @@ impl FactsExtractorRunner {
             ));
             return Ok(FactsLaunchResult::Empty);
         }
+        // Input-side replay guard: transcript lines restating owner-forgotten or corrected content
+        // never reach the facts child; an unreadable suppression store skips the launch (the batch
+        // stays pending) rather than risk re-learning it.
+        let suppressions =
+            match memory_core::receipts::owner::SuppressionSet::load(&self.identity.paths.runtime) {
+                Ok(set) => set,
+                Err(error) => {
+                    warn(&format!(
+                        "memory suppression unreadable; facts launch skipped: {error}"
+                    ));
+                    return Ok(FactsLaunchResult::Skipped);
+                }
+            };
         let batch = memory_core::support::random::random_uuid();
         let launched_at = (self.now)();
         if aborted() {
@@ -388,7 +403,10 @@ impl FactsExtractorRunner {
         let targets = crate::facts_failure_recording::queue_entry_targets(&capped.selected);
         let result = match execute(
             dir.clone(),
-            envelope.to_payload(capped.selected),
+            envelope.to_payload(crate::owner_memory::scrub_facts_entries(
+                &suppressions,
+                capped.selected,
+            )),
             batch.clone(),
             resolution,
         )
@@ -1461,6 +1479,7 @@ mod tests {
             run_id: &run_id,
             run_dir: &dir,
             payload: (&payload).into(),
+            do_not_record: &[],
             oversized: false,
             agreements: false,
             record_limits: None,

@@ -21,6 +21,7 @@ pub const SHUTDOWN_FLUSH: Duration = Duration::from_millis(1500);
 /// Reads the current `telemetry.*` switches from the merged configuration view at push time.
 /// `Err` means the host could not provide a view (export then fails closed).
 pub type ConfigSource = Arc<dyn Fn() -> Result<ConfigSwitches, String> + Send + Sync>;
+pub type DiagnosticReporter = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The telemetry extension for one process.
 #[derive(Clone)]
@@ -34,7 +35,7 @@ pub struct TelemetryExtension {
     /// session working directory ([`native_config_source`]).
     pub config_source: Option<ConfigSource>,
     /// Receives diagnostic lines; `None` writes them to the host diagnostic stream.
-    pub report: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub report: Option<DiagnosticReporter>,
 }
 
 impl TelemetryExtension {

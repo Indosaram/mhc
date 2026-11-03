@@ -61,11 +61,18 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 }
             })),
             after_reconnect: Some(Arc::new(move |snapshot| {
-                publish_wire_status(&command_events, &snapshot);
+                // A reload can invalidate this runtime while the reconnect awaits; the
+                // stale snapshot then has no subscriber and is dropped.
+                let _stale = publish_wire_status(&command_events, &snapshot);
             })),
             open_browser: Some(crate::auth::challenge_login::system_browser_opener()),
         },
     );
+    // The deferred attach publisher outlives `session_start`; shutdown (which precedes every reload
+    // or replacement invalidation) aborts it so the old runtime's work stops with the runtime.
+    let attach_publisher: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
+        Arc::default();
+    let start_publisher = attach_publisher.clone();
     let start = service.clone();
     let start_registrar = registrar.clone();
     let start_search = tool_search.clone();
@@ -102,6 +109,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
             let registrar = start_registrar.clone();
             let tool_search = start_search.clone();
             let events = start_events.clone();
+            let attach_publisher = start_publisher.clone();
             Box::pin(async move {
                 let env = std::env::vars().collect();
                 let mut service = service_handle.lock().await;
@@ -121,7 +129,8 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 service.set_policy_notice_event(Arc::new({
                     let events = events.clone();
                     move |notice| {
-                        events.emit("security_notice", &notice);
+                        // Notices from a connect that outlived a reload are dropped with the runtime.
+                        let _stale = events.try_emit("security_notice", &notice);
                     }
                 }));
                 service.bind_self(Arc::downgrade(&service_handle));
@@ -147,7 +156,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 // the bound runner bus once the deferred startup connect settles (pinned
                 // `onWireStatusChanged`); later changes publish via the reconnect/command paths.
                 let publish_service = service_handle.clone();
-                tokio::spawn(async move {
+                let publisher = tokio::spawn(async move {
                     // PERF-DIVERGENCE(senpi mcp index.ts): upstream awaits attach settle without any lock; this port wrapped the wait in the service Mutex guard, blocking other lockers up to 5s. Now the guard is dropped before awaiting. Output is identical.
                     let deferred = publish_service.lock().await.deferred_attach();
                     deferred
@@ -157,8 +166,16 @@ pub fn register_mcp_lifecycle_with_tool_search(
                         .await;
                     let service = publish_service.lock().await;
                     let snapshot = service.wire_status_snapshot().await;
-                    publish_wire_status(&events, &snapshot);
+                    // Dropped by design when the runtime went stale before the attach settled.
+                    let _stale = publish_wire_status(&events, &snapshot);
                 });
+                if let Some(previous) = attach_publisher
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .replace(publisher.abort_handle())
+                {
+                    previous.abort();
+                }
                 Ok(EventResult::None)
             })
         }),
@@ -171,6 +188,13 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
+            if let Some(publisher) = attach_publisher
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                publisher.abort();
+            }
             let service = shutdown.clone();
             Box::pin(async move {
                 service
@@ -289,16 +313,21 @@ fn publish_skill_warnings(events: &maho_ext_api::EventBus, warnings: &[String]) 
 
 /// Publish a session-owned MCP wire-status snapshot on the bound extension runner bus, matching
 /// the pinned `onWireStatusChanged` producer. Native payload; no JSON round-trip.
+///
+/// # Errors
+/// Returns the stale-runtime failure, without publishing, when the bus belongs to a runtime that a
+/// reload or session replacement invalidated: that runtime's subscribers are gone, so the snapshot
+/// is dropped by design instead of panicking the background task that produced it.
 pub fn publish_wire_status(
     events: &maho_ext_api::EventBus,
     snapshot: &crate::service_types::McpWireStatusSnapshot,
-) {
+) -> Result<(), ExtensionFailure> {
     let erased: std::sync::Arc<dyn std::any::Any + Send + Sync> =
         std::sync::Arc::new(snapshot.clone());
-    events.emit_native::<std::sync::Arc<dyn std::any::Any + Send + Sync>>(
+    events.try_emit_native::<std::sync::Arc<dyn std::any::Any + Send + Sync>>(
         maho_core::agent_session::MCP_WIRE_STATUS_CHANGED_EVENT,
         &erased,
-    );
+    )
 }
 /// Crate-level extension factory (upstream `mcpExtension`/`createMcpExtension`).
 /// The host builds it with the shared tool-search service and reads the returned

@@ -344,7 +344,7 @@ pub fn read_delimiter(text: &[u16], i: usize, d: &mut Delimiter) {
         } else if c == 125 {
             d.brace_depth -= 1;
             separator_shape = false;
-        } else if !is_space(c) && !is_quote(c) && !(c == 91 && separators == 1) {
+        } else if !(is_space(c) || is_quote(c) || c == 91 && separators == 1) {
             separator_shape = false;
         }
         if is_space(c) {

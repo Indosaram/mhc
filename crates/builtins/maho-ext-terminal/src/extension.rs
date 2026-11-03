@@ -28,11 +28,13 @@ fn bind_completion(
     notifier: Arc<Mutex<crate::notify::TerminalNotifier>>,
     lifecycle: Lifecycle,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let mut exit = manager
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&id)?
-        .subscribe_exit();
+    let handle = {
+        let mut manager = manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        manager.get(&id)?.completion_handle()
+    };
+    let mut exit = handle.exit_receiver();
     Some(tokio::spawn(async move {
         loop {
             if exit.borrow_and_update().is_some() {
@@ -54,15 +56,7 @@ fn bind_completion(
                 .record_background_exit(&id, manifest_now_ms())
                 .await;
         }
-        let view = {
-            let mut manager = manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(runtime) = manager.get(&id) else {
-                return;
-            };
-            crate::tools::context::TerminalExitView::of_runtime(runtime)
-        };
+        let view = handle.exit_view();
         send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
 }
@@ -280,6 +274,7 @@ struct TakeoverContext {
     restore_tasks: RestoreTasks,
     /// Set by shutdown: the grace window ends at once.
     grace_stop: Arc<tokio::sync::watch::Sender<bool>>,
+    ui: Option<Arc<dyn maho_ext_api::types::ExtensionUi>>,
 }
 /// Upstream `restoreInFlight`: the detached restore tasks (a takeover's `own`, the grace-window
 /// `decide`) that shutdown awaits before it records the manifest.
@@ -419,29 +414,45 @@ impl TakeoverContext {
             Ok(Some(manifest)) => (now - manifest.updated_at).max(0.0),
             _ => 0.0,
         };
-        let readable_manifest = matches!(restore_state, Ok(Some(_)));
-        // Upstream restartable-command `reapOrphan`: a watcher a crashed generation left running is
-        // confirmed and stopped before its respawn; this awaits with no manager/registry lock held.
-        if let Ok(Some(manifest)) = &restore_state {
-            lifecycle.writer.reap_orphans(manifest, now).await;
-        }
-        let digest = {
-            let mut manager = self
-                .manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut monitors = self
-                .monitors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            lifecycle.apply_restore(
-                restore_state,
-                &mut manager,
-                &mut monitors,
-                now,
-                self.shell.as_deref(),
-                &self.settings,
-            )
+        let mut readable_manifest = matches!(restore_state, Ok(Some(_)));
+        let reap_result = if let Ok(Some(manifest)) = &restore_state {
+            lifecycle.writer.reap_orphans(manifest, now).await
+        } else {
+            Ok(())
+        };
+        let digest = match reap_result {
+            Ok(()) => {
+                let mut manager = self
+                    .manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut monitors = self
+                    .monitors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                lifecycle.apply_restore(
+                    restore_state,
+                    &mut manager,
+                    &mut monitors,
+                    now,
+                    self.shell.as_deref(),
+                    &self.settings,
+                )
+            }
+            Err(error) => {
+                if let Some(ui) = &self.ui {
+                    ui.notify(
+                        &format!("Terminal restore failed: {error}"),
+                        maho_ext_api::types::NotificationType::Warning,
+                    );
+                }
+                maho_ext_api::diagnostic(&format!("Terminal restore failed: {error}"));
+                readable_manifest = false;
+                crate::restore::RestoreDigest {
+                    store_error: true,
+                    ..Default::default()
+                }
+            }
         };
         // Bound before the grace window: monitors created meanwhile reach this recorder. Upstream
         // `bindTerminalManifestWriter` drains the specs queued while unbound; the state lock is
@@ -795,7 +806,7 @@ impl Extension for TerminalExtension {
         // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
         let terminal_state = crate::extension_state::TerminalExtensionState {
             sender: sender.clone(),
-            ctx: session_ctx,
+            ctx: session_ctx.clone(),
             configuration: configuration.clone(),
             session_cwd,
             backgrounds: backgrounds.clone(),
@@ -1131,7 +1142,7 @@ impl Extension for TerminalExtension {
             let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
-            let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))}),ui:Some(ctx.ui.clone())};
             // Upstream `startPersistence`: nothing on disk to restore means the lease and the
             // recorder wait for the first durable need (`ensurePersistence`); the restore is
             // decided at once.
@@ -1216,16 +1227,18 @@ impl Extension for TerminalExtension {
             }),
         );
         let bash_sender = sender.clone();
+        let shutdown_sender = sender.clone();
         let lifecycle_delivery = completion_delivery.clone();
         let lifecycle_notifier = notifier.clone();
         let lifecycle_monitors = monitors.clone();
         let lifecycle_configuration = configuration.clone();
+        let start_sender = sender.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let notifier = lifecycle_notifier.clone();
                 let monitors = lifecycle_monitors.clone();
-                let sender = sender.clone();
+                let sender = start_sender.clone();
                 let lifecycle_delivery = lifecycle_delivery.clone();
                 let configuration = lifecycle_configuration.clone();
                 Box::pin(async move {
@@ -1914,6 +1927,7 @@ impl Extension for TerminalExtension {
         ]);
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
             .expect("valid builtin monitor registration");
+        crate::restore_digest::register_restore_digest_renderer(api);
         let activity = notifier.clone();
         let input_monitors = monitors.clone();
         let input_digests = digests.clone();
@@ -2003,7 +2017,7 @@ impl Extension for TerminalExtension {
                 })
             }),
         );
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();Box::pin(async move {
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();let sender=shutdown_sender.clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason!=maho_ext_api::types::SessionReason::Reload) {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();}
             let session_id=ctx.session_manager.session_id().to_owned();
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
@@ -2013,6 +2027,15 @@ impl Extension for TerminalExtension {
                 // registry.ts teardown is awaited: release the bundle lock so none is held
                 // across the exit-grace awaits and the runtime thread is not blocked.
                 let manager={let mut live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.begin_teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?.then(||live.manager.clone())};
+                // Upstream teardown disposes the registry and `onMonitorState([])` publishes the empty
+                // set. Here the telemetry task that would forward it is already aborted, so publish it
+                // directly; otherwise wake-source consumers keep the last non-zero monitor count.
+                if manager.is_some() {
+                    let payload=monitor_state_payload(&[]);
+                    sender.events.emit("terminal_monitor_state",&payload);
+                    if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));}
+                    sender.events.emit("wake_source_state",&serde_json::json!({"source":"terminal-monitors","activeCount":0,"monitors":[]}));
+                }
                 if let Some(manager)=manager {crate::manager::teardown_shared(&manager).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;}
                 crate::session_bundle::teardown_parked_bundle_async(&session_id).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }
@@ -2315,6 +2338,7 @@ mod tests {
             api.registered.handlers[&EventKind::SessionShutdown].len(),
             5
         );
+        assert!(api.registered.message_renderers.contains_key(crate::restore_digest::RESTORE_DIGEST_CUSTOM_TYPE));
     }
     #[tokio::test]
     async fn monitor_ending_reaches_native_event_bus_and_rpc() {
@@ -2386,6 +2410,139 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    struct NotificationCaptureActions {
+        sent: Arc<Mutex<Vec<CustomMessage>>>,
+    }
+    impl ExtensionActions for NotificationCaptureActions {
+        fn send_message(
+            &self,
+            message: CustomMessage,
+            _options: SendMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            self.sent.lock().unwrap().push(message);
+            Ok(())
+        }
+        fn send_user_message(
+            &self,
+            _content: UserMessageContent,
+            _options: SendUserMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn append_entry(
+            &self,
+            _custom_type: &str,
+            _data: Option<JsonValue>,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_completion_preserves_notice_under_capacity_eviction_with_lifecycle_gated() {
+        let dir = tempfile::tempdir().unwrap();
+        let sent_messages = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExtensionRuntime::default();
+        runtime.bind(Arc::new(NotificationCaptureActions {
+            sent: sent_messages.clone(),
+        }));
+        let api = Arc::new(ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.path().to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            runtime,
+        ));
+        let manager = Arc::new(Mutex::new(TerminalManager::new(1)));
+        let id1 = manager
+            .lock()
+            .unwrap()
+            .create(
+                "cmd1",
+                crate::shared::test_sh_options("stty -echo; printf 'first_completion_tail'; exit 0"),
+            )
+            .unwrap();
+        let backgrounds: Backgrounds = Arc::new(Mutex::new(indexmap::IndexMap::new()));
+        backgrounds.lock().unwrap().insert(
+            id1.clone(),
+            crate::session_bundle::BackgroundSession {
+                id: id1.clone(),
+                description: "test".to_owned(),
+                started_at_ms: 0.0,
+            },
+        );
+        let delivery = Arc::new(Mutex::new(Some(crate::notify::NotificationDelivery::Steer)));
+        let notifier = Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
+
+        // Hold the lifecycle lock BEFORE bind_completion to gate the completion task at the lifecycle await.
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        let gate = lifecycle.lock().await;
+
+        let mut exit_watch = {
+            let mut mgr = manager.lock().unwrap();
+            mgr.get(&id1).unwrap().subscribe_exit()
+        };
+
+        let task = bind_completion(
+            id1.clone(),
+            manager.clone(),
+            backgrounds.clone(),
+            api.clone(),
+            delivery.clone(),
+            notifier.clone(),
+            lifecycle.clone(),
+        )
+        .expect("task handle");
+
+        // Await session 1 exit before triggering eviction.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while exit_watch.borrow_and_update().is_none() {
+                exit_watch.changed().await.expect("exit sender");
+            }
+        })
+        .await
+        .expect("id1 exit");
+
+        // While completion callback is gated on the lifecycle lock, capacity eviction occurs:
+        // allocating session 2 at max_sessions=1 succeeds without capacity error and evicts id1 from manager.
+        let id2 = manager
+            .lock()
+            .unwrap()
+            .create("cmd2", crate::shared::test_sh_options("exit 0"))
+            .expect("session creation succeeds without capacity error");
+        assert_ne!(id2, id1);
+        assert_eq!(manager.lock().unwrap().size(), 1);
+        assert!(manager.lock().unwrap().get(&id1).is_none(), "id1 is evicted from manager");
+
+        // Release the lifecycle gate so completion callback can proceed to view reading and notice sending.
+        drop(gate);
+
+        // Await completion task to finish.
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("completion task must finish")
+            .expect("join ok");
+
+        // Assert actual sent notification was delivered and contains the session output tail.
+        let messages = sent_messages.lock().unwrap();
+        assert_eq!(messages.len(), 1, "exactly one completion message must be sent");
+        assert_eq!(
+            messages[0].custom_type,
+            crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
+        );
+        let content_text = match &messages[0].content[0] {
+            ToolContent::Text { text, .. } => text,
+            _ => panic!("expected text content"),
+        };
+        assert!(
+            content_text.contains("first_completion_tail"),
+            "notification must contain output tail, got: {content_text}"
+        );
+
+        manager.lock().unwrap().teardown().unwrap();
     }
 }
 
@@ -2701,7 +2858,11 @@ mod persistence_tests {
     }
 
     struct Fixture {
+        /// Owns the temp tree for the fixture's lifetime; unix-only tests also read its path.
+        #[cfg(unix)]
         dir: tempfile::TempDir,
+        #[cfg(not(unix))]
+        _dir: tempfile::TempDir,
         session_dir: PathBuf,
         terminal_dir: PathBuf,
         encoded: String,
@@ -2736,9 +2897,13 @@ mod persistence_tests {
             flush: None,
             restore_tasks: Arc::default(),
             grace_stop: Arc::new(tokio::sync::watch::channel(false).0),
+            ui: None,
         };
         Fixture {
+            #[cfg(unix)]
             dir,
+            #[cfg(not(unix))]
+            _dir: dir,
             session_dir,
             terminal_dir,
             encoded,
@@ -3426,6 +3591,7 @@ mod persistence_tests {
         teardown(&fixture);
     }
 
+    #[cfg(unix)]
     fn pending_monitors(fixture: &Fixture) -> Vec<crate::restore_digest::MonitorRestoreResult> {
         fixture
             .context
@@ -3686,5 +3852,93 @@ mod persistence_tests {
         assert!(state["monitors"][0]["startedAtMs"].is_number());
         registry.dispose();
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn orphan_kill_failure_aborts_restore_and_marks_digest_corrupt() {
+        let mut fixture = fixture(1, None);
+        let ui = Arc::new(RecordingUi::default());
+        fixture.context.ui = Some(ui.clone());
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let runtime = crate::process_identity::ChildProcessIdentity {
+            pid: 4242,
+            process_group_id: Some(4242),
+            started_at_ms: terminal_now_ms() - 60_000.0,
+            boot_at_ms: 1.0,
+            argv: vec!["cat".to_owned()],
+        };
+        let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        writer
+            .record_register_with(
+                crate::terminal_manifest_model::MonitorRegistration {
+                    monitor_id: "mon_ORPHANFAIL".to_owned(),
+                    spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                        description: "watch mon_ORPHANFAIL".into(),
+                        command: "cat".into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: Some(fixture.session_dir.to_string_lossy().into_owned()),
+                        persistent: true,
+                    },
+                }
+                .with_deadline_ms(None)
+                .with_runtime(Some(runtime)),
+                terminal_now_ms() - 60_000.0,
+            )
+            .await;
+        writer.record_shutdown(terminal_now_ms() - 60_000.0).await;
+        let manifest_path = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        let before_manifest = std::fs::read_to_string(&manifest_path).unwrap();
+
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        lifecycle.adopt_lease(crate::terminal_state::HeldLease {
+            path: fixture
+                .terminal_dir
+                .join(format!("{}.lease", fixture.encoded)),
+            pid: f64::from(std::process::id()),
+            token: "test-token".to_owned(),
+        });
+        lifecycle.writer.reap_orphan = Some(std::sync::Arc::new(|_, _| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "kill tree failed: operation not permitted",
+                ))
+            })
+        }));
+
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        decided(&mut fixture).await;
+
+        let outcome = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.outcome);
+        assert_eq!(
+            outcome,
+            Some(crate::restore_digest::RestoreDigestOutcome::Corrupt)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&manifest_path).unwrap(),
+            before_manifest
+        );
+        assert_eq!(fixture.context.manager.lock().unwrap().size(), 0);
+        assert!(fixture.context.state.lock().await.is_some());
+        assert!(ui.notes.lock().unwrap().iter().any(|note| note.contains("Terminal restore failed")));
+
+        teardown(&fixture);
     }
 }

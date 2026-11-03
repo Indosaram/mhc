@@ -124,7 +124,7 @@ mod redaction_tests {
     #[test]
     fn credential_shapes_beyond_github_tokens_are_masked() {
         let text = redact_kibitzer_event_text("deploy sk_live_abcdefghijklmnop1234 and AKIAABCDEFGHIJKLMNOP done");
-        assert_eq!(text, "deploy [REDACTED] and [REDACTED] done");
+        assert_eq!(text, "deploy [REDACTED] and *** done");
     }
 
     #[test]

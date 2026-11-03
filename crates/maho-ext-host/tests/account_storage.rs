@@ -7,7 +7,7 @@ fn fixture() -> (tempfile::TempDir, AuthStorage, CredentialSlotRepository) {
     let storage = AuthStorage::create(&directory.path().join("auth.json").to_string_lossy());
     storage.set("synthetic", Some(json!({"type":"api_key", "key":"synthetic-secret-a", "accounts":[
         {"name":"first", "key":"synthetic-secret-a", "source":"login"},
-        {"name":"second", "key":"synthetic-secret-b", "source":"import", "blockReason":"auth_error"}
+        {"name":"second", "key":"synthetic-secret-b", "source":"import", "blockReason":"auth_error", "blockedUntil":1000}
     ]}))).expect("persist synthetic credential pool");
     let repository = CredentialSlotRepository::new(&directory.path().join("credential-pool-state.json").to_string_lossy());
     (directory, storage, repository)

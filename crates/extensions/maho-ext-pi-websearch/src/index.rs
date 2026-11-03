@@ -13,17 +13,27 @@ fn clear_ui(ctx: &ExtensionContext) {
         ctx.ui.set_widget(STATUS_KEY, None, Default::default());
     }
 }
+pub type ConfigLoader = Arc<dyn Fn(&std::path::Path, &std::path::Path) -> Result<ConfigLoadResult, std::io::Error> + Send + Sync>;
+
 pub fn register_search_lifecycle(api: &mut ExtensionApi) -> Arc<Mutex<ConfigLoadResult>> {
+    register_search_lifecycle_with(api, Arc::new(load_websearch_config))
+}
+
+pub fn register_search_lifecycle_with(
+    api: &mut ExtensionApi,
+    loader: ConfigLoader,
+) -> Arc<Mutex<ConfigLoadResult>> {
     let state=Arc::new(Mutex::new(ConfigLoadResult::Failure{reason:ConfigLoadFailureReason::MissingConfig,message:"Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.".into(),source:None}));
     let current = Arc::clone(&state);
     api.on(
         EventKind::SessionStart,
         Arc::new(move |_, ctx| {
             let current = Arc::clone(&current);
+            let loader = Arc::clone(&loader);
             Box::pin(async move {
                 let home = dirs::home_dir()
                     .ok_or_else(|| ExtensionFailure::new("Home directory unavailable"))?;
-                let loaded = load_websearch_config(&ctx.cwd, &home)
+                let loaded = loader(&ctx.cwd, &home)
                     .map_err(|error| ExtensionFailure::new(error.to_string()))?;
                 *current
                     .lock()

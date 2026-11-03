@@ -729,6 +729,7 @@ pub const RESERVED_MEMORY_REPORT_KEYS: &[&str] = &[
     "tuiRenderCache",
     "tui",
     "heapSnapshot",
+    "heap",
     "reporterErrors",
 ];
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -794,14 +795,27 @@ pub struct ExtensionFailure {
     pub stack: Option<String>,
     pub class: Option<String>,
     pub code: Option<String>,
+    /// Original cancellation reason; its native payload preserves identity across clones.
+    pub abort_reason: Option<Box<maho_ai::utils::abort::AbortReason>>,
 }
 impl ExtensionFailure {
+    pub fn from_abort_reason(reason: maho_ai::utils::abort::AbortReason) -> Self {
+        Self {
+            message: reason.message.clone(),
+            stack: None,
+            class: Some(reason.name.clone()),
+            code: None,
+            abort_reason: Some(Box::new(reason)),
+        }
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             stack: None,
             class: None,
             code: None,
+            abort_reason: None,
         }
     }
     /// senpi `errorKind` = `${error.name}/${error.code}`: keep the machine classification (for
@@ -816,6 +830,7 @@ impl ExtensionFailure {
             stack: None,
             class,
             code,
+            abort_reason: None,
         }
     }
 }
@@ -1053,6 +1068,23 @@ pub struct SkillProvenance {
     pub kind: String,
     pub selected_root: String,
     pub project_root: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BackgroundTaskStatus {
+    pub running: usize,
+    pub completed: usize,
+    pub total: usize,
+    pub queued: usize,
+    pub paused: usize,
+    pub failed: usize,
+}
+impl BackgroundTaskStatus {
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+    pub fn is_cleared(&self) -> bool {
+        self.total == 0 || (self.running == 0 && self.queued == 0 && self.paused == 0 && self.failed == 0)
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillAllowedSet {
@@ -1394,6 +1426,25 @@ pub trait SessionManager: ToolSessionManager {
         None
     }
     fn get_entries(&self) -> Vec<SessionEntry>;
+    /// The entries of `get_entries()` whose type is one of `kinds`, in the same order. Hosts that
+    /// keep large strings out of memory filter before materializing, so a scan for a few small
+    /// bookkeeping entries does not copy the whole history.
+    fn get_entries_of_kinds(&self, kinds: &[&str]) -> Vec<SessionEntry> {
+        self.get_entries()
+            .into_iter()
+            .filter(|entry| kinds.contains(&entry.kind.as_str()))
+            .collect()
+    }
+    /// Visits the entries of `get_entries()` in order. Hosts materialize each entry only for its
+    /// own visit, so a full scan never holds a copy of the whole history.
+    fn for_each_entry(&self, visit: &mut dyn FnMut(SessionEntry)) {
+        self.get_entries().into_iter().for_each(visit);
+    }
+    /// senpi `buildSessionContext().messages`: the LLM-facing messages from the current leaf, or
+    /// `None` when the host cannot build them and the caller should project `get_entries()` itself.
+    fn build_context_messages(&self) -> Option<Vec<JsonValue>> {
+        None
+    }
     fn get_branch(&self) -> Vec<SessionEntry>;
     /// Folds `reduce` over the resident entries, oldest first, starting from `initial`.
     fn reduce_history(
@@ -4554,15 +4605,22 @@ impl EventBus {
     pub fn bind_runtime(&mut self, runtime: ExtensionRuntime) {
         self.runtime = Some(runtime);
     }
-    fn assert_active_or_panic(&self) {
+    /// Fails once this bus's registration scope failed or its bound runtime was invalidated by a
+    /// reload or session replacement.
+    pub fn assert_active(&self) -> Result<(), ExtensionFailure> {
         if self
             .registration_stale
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            std::panic::panic_any(ExtensionFailure::new("Extension factory failed to load"));
+            return Err(ExtensionFailure::new("Extension factory failed to load"));
         }
-        if let Some(runtime) = &self.runtime {
-            runtime.assert_active_or_panic();
+        self.runtime
+            .as_ref()
+            .map_or(Ok(()), ExtensionRuntime::assert_active)
+    }
+    fn assert_active_or_panic(&self) {
+        if let Err(error) = self.assert_active() {
+            std::panic::panic_any(error);
         }
     }
     pub fn invalidate_registration(&self) {
@@ -4630,6 +4688,16 @@ impl EventBus {
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
         self.assert_active_or_panic();
+        self.deliver(channel, data);
+    }
+    /// [`Self::emit`] for background work that can outlive its runtime: a stale bus drops the
+    /// publication and returns the stale-runtime failure instead of panicking.
+    pub fn try_emit(&self, channel: &str, data: &JsonValue) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        self.deliver(channel, data);
+        Ok(())
+    }
+    fn deliver(&self, channel: &str, data: &JsonValue) {
         if channel == "config-watch:unregister"
             && let Some(id) = data.get("id").and_then(JsonValue::as_str)
         {
@@ -4689,6 +4757,20 @@ impl EventBus {
     /// Publish the same borrowed native object to every matching subscriber.
     pub fn emit_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
         self.assert_active_or_panic();
+        self.deliver_native(channel, data);
+    }
+    /// [`Self::emit_native`] for background work that can outlive its runtime: a stale bus drops
+    /// the publication and returns the stale-runtime failure instead of panicking.
+    pub fn try_emit_native<T: Send + Sync + 'static>(
+        &self,
+        channel: &str,
+        data: &T,
+    ) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        self.deliver_native(channel, data);
+        Ok(())
+    }
+    fn deliver_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
         let handlers = self
             .state
             .lock()
@@ -5980,10 +6062,9 @@ impl ExtensionApi {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .live_rpc_handlers
-                .insert(
-                    self.registered.identity.path.clone(),
-                    self.registered.rpc_handlers.clone(),
-                );
+                .entry(self.registered.identity.path.clone())
+                .or_default()
+                .extend(self.registered.rpc_handlers.clone());
         }
         Ok(())
     }

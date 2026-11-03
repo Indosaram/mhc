@@ -38,7 +38,7 @@ mod tests {
     use serde_json::json;
 
     fn message() -> AgentMessage {
-        AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant_message(json!([])))))
+        AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant_message(json!([])))))
     }
 
     fn assistant_message(content: serde_json::Value) -> maho_ai::types::AssistantMessage {

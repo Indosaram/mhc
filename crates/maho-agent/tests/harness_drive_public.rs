@@ -17,7 +17,7 @@ use maho_agent::harness::runtime::lane::{
 };
 use maho_agent::harness::session::session::SessionErrorKind;
 use maho_agent::harness::session::types::{
-    LaneModelRef, NewEntry, OperationIntentKind, Session, SessionMetadata, SessionMutation,
+    LaneModelRef, NewEntry, OperationIntentKind, Session, SessionMetadata, SessionReader,
     TerminalStatus,
 };
 use maho_agent::harness::session::{
@@ -907,7 +907,7 @@ async fn allows_coherent_lane_reads_from_an_idle_callback() {
                 &context,
             )
             .await?;
-            let snapshot = watcher.snapshot().expect("watch snapshot")?;
+            let snapshot = watcher.snapshot().expect("watch snapshot");
             assert!(snapshot["operation"].is_null());
             watcher.unsubscribe();
             Ok(())

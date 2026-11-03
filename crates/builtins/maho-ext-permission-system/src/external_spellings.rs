@@ -51,6 +51,8 @@ fn physical_parent(physical: &str) -> String {
     crate::external_pattern::dirname(physical)
 }
 
+type PathDecision<'a> = dyn FnMut(&str, &str, &dyn Fn(&str) -> String) -> Decision + 'a;
+
 /// Walk a component queue like the kernel: the position is always physical, and link targets are
 /// prepended without normalizing away dots. A `..` moves to the physical parent's directory. Keep
 /// the absolute request, the physical prefix plus unresolved suffix at each followed link, and the
@@ -59,7 +61,7 @@ fn physical_parent(physical: &str) -> String {
 pub fn decide_external_paths(
     targets: &[&str],
     aliases: &[String],
-    decide: &mut dyn FnMut(&str, &str, &dyn Fn(&str) -> String) -> Decision,
+    decide: &mut PathDecision<'_>,
 ) -> Decision {
     let directories: RefCell<HashMap<String, Vec<String>>> = RefCell::default();
     let cases: RefCell<HashMap<String, String>> = RefCell::default();
@@ -98,10 +100,12 @@ pub fn decide_external_paths(
     let mut spellings: Vec<(String, String)> = Vec::new();
     let add = |spellings: &mut Vec<(String, String)>, spelling: String, resolved: &str| -> bool {
         for candidate in [spelling.clone(), canonical_case(&spelling)] {
-            match spellings.iter_mut().find(|(known, _)| *known == candidate) {
-                Some(entry) => entry.1 = resolved.to_owned(),
-                None if spellings.len() >= MAX_SPELLINGS => return false,
-                None => spellings.push((candidate, resolved.to_owned())),
+            if let Some(idx) = spellings.iter().position(|(known, _)| *known == candidate) {
+                spellings[idx].1 = resolved.to_owned();
+            } else if spellings.len() >= MAX_SPELLINGS {
+                return false;
+            } else {
+                spellings.push((candidate, resolved.to_owned()));
             }
         }
         true
@@ -110,7 +114,7 @@ pub fn decide_external_paths(
     let walked = (|| -> io::Result<bool> {
         let resolved_targets: Vec<String> = targets
             .iter()
-            .map(|target| resolve(*target))
+            .map(|target| resolve(target))
             .collect::<io::Result<_>>()?;
         let mut values: Vec<&str> = Vec::new();
         for value in targets

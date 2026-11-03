@@ -130,7 +130,7 @@ mod upstream_cases {
     use super::*;
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
-        let models = vec![model("anthropic", "claude-fable-5-1"), model("anthropic", "claude-opus-5-5"), model("kimi-for-coding", "k3"), model("kimi-for-coding", "kimi-for-coding-highspeed")];
+        let models = vec![model("anthropic", "claude-fable-5-1"), model("anthropic", "claude-opus-5-5"), model("kimi-for-coding", "k3.1-pro"), model("kimi-for-coding", "kimi-for-coding-highspeed")];
         let registry = FakeRegistry { available: Ok(Value::Array(models.clone())), catalog: models, find_override: None };
         describe_model_chains(&config, &registry).unwrap()
     }
@@ -138,14 +138,14 @@ mod upstream_cases {
     fn builtin_category_runtime_uses_declared_rung_order() {
         let report = report(serde_json::json!({}));
         let entry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
-        assert_eq!(entry.runtime, vec!["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5", "kimi-for-coding/k3"]);
+        assert_eq!(entry.runtime, vec!["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]);
         assert_eq!(entry.rungs.iter().map(|rung| &rung.state).collect::<Vec<_>>(), vec![&ChainRungState::Primary, &ChainRungState::Fallback, &ChainRungState::Fallback]);
     }
     #[test]
     fn later_override_leaves_earlier_builtin_not_reached() {
         let report = report(serde_json::json!({"categories":{"artistry":{"model":"anthropic/claude-opus-5-5"}}}));
         let entry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
-        assert_eq!(entry.runtime, vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3"]);
+        assert_eq!(entry.runtime, vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]);
         assert_eq!(entry.rungs[0].source, "omo.json");
         assert_eq!(entry.rungs[1].state, ChainRungState::NotReached);
     }

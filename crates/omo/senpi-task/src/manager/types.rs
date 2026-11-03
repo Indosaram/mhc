@@ -55,7 +55,15 @@ pub enum ManagedRunnerError {
     #[error("team member respawn launch failed: {code}")]
     TeamRespawnLaunch { code: String },
     #[error("{0}")]
+    HostSessionOpen(crate::runners::rpc_host::HostSessionOpenError),
+    #[error("{0}")]
     Other(String),
+}
+
+impl From<crate::runners::rpc_host::HostSessionOpenError> for ManagedRunnerError {
+    fn from(error: crate::runners::rpc_host::HostSessionOpenError) -> Self {
+        Self::HostSessionOpen(error)
+    }
 }
 
 pub type ManagedRunnerResult = Result<Arc<dyn ManagedChildHandle>, ManagedRunnerError>;
@@ -382,8 +390,10 @@ pub type ChildLivenessCallback =
 
 /// Schedules a debounced liveness notice; the closure notifies only if no newer status arrived.
 pub type LivenessNoticeTimer = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+pub type ExitConfirmationWait = Arc<dyn Fn(u64) + Send + Sync>;
 
 pub struct TaskManagerOptions {
+    pub exit_confirmation_wait: Option<ExitConfirmationWait>,
     pub on_child_liveness: Option<ChildLivenessCallback>,
     /// Replaces the 30 s liveness-notice debounce thread (tests drive it by hand); `None` keeps it.
     pub liveness_notice_timer: Option<LivenessNoticeTimer>,
@@ -424,6 +434,7 @@ impl TaskManagerOptions {
     ) -> Self {
         Self {
             on_child_liveness: None,
+            exit_confirmation_wait: None,
             liveness_notice_timer: None,
             host_transport: None,
             on_paused_child: None,

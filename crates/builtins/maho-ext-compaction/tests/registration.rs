@@ -1566,19 +1566,19 @@ async fn native_registered_cancellation_is_subscribed_and_never_persists() {
     run_native_scenario(true, false).await;
 }
 
-#[tokio::test]
-async fn native_overthreshold_prompt_compacts_before_provider_turn() {
-    run_native_scenario(false, true).await;
+#[test]
+fn native_overthreshold_prompt_compacts_before_provider_turn() {
+    on_large_stack(|| async { run_native_scenario(false, true).await });
 }
 
-#[tokio::test]
-async fn native_overflow_shrinks_summary_request_before_continuation() {
-    run_native_variant(false, true, "overflow").await;
+#[test]
+fn native_overflow_shrinks_summary_request_before_continuation() {
+    on_large_stack(|| async { run_native_variant(false, true, "overflow").await });
 }
 
-#[tokio::test]
-async fn native_empty_summary_uses_required_deterministic_fallback() {
-    run_native_variant(false, false, "fallback").await;
+#[test]
+fn native_empty_summary_uses_required_deterministic_fallback() {
+    on_large_stack(|| async { run_native_variant(false, false, "fallback").await });
 }
 
 #[tokio::test]
@@ -2615,10 +2615,12 @@ fn live_lane_policy_refuses_a_relative_session_cwd_instead_of_failing_open() {
     );
 }
 
+#[cfg(test)]
 struct CwdCaptureRegistry {
     model: Model,
     seen: std::sync::Mutex<Vec<Option<String>>>,
 }
+#[cfg(test)]
 impl ModelRegistry for CwdCaptureRegistry {
     fn get_all(&self) -> Vec<Model> {
         vec![self.model.clone()]
@@ -2823,4 +2825,22 @@ async fn builtin_spent_account_without_usable_model_reports_the_account_limit_wi
     assert_eq!(provider.get_call_log().len(), calls_before);
     session.dispose().await;
     provider.unregister().expect("unregister faux provider");
+}
+
+/// The native scenario drives a whole agent session inside one test future; unoptimized builds
+/// need more than the 2 MiB default test-thread stack for it (the shipped binary runs on 16 MiB).
+#[allow(dead_code)] // shared with examples/resume_compaction_native.rs, which includes this file
+fn on_large_stack<F: std::future::Future<Output = ()> + 'static>(body: fn() -> F) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(body())
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
 }

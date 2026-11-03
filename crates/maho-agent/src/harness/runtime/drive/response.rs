@@ -103,14 +103,14 @@ pub async fn consume_response(
                 HarnessEventPayload::MessageStart {
                     run_id: Some(drive.operation_id.clone()),
                     message: crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                        Box::new(message),
+                        std::sync::Arc::new(message),
                     )),
                 }
             } else {
                 HarnessEventPayload::MessageUpdate {
                     run_id: drive.operation_id.clone(),
                     message: crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                        Box::new(message),
+                        std::sync::Arc::new(message),
                     )),
                     event: Box::new(source_event),
                     frame,
@@ -161,7 +161,7 @@ pub async fn consume_response(
             HarnessEventPayload::MessageEnd {
                 run_id: Some(drive.operation_id.clone()),
                 message: crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                    Box::new(message.clone()),
+                    std::sync::Arc::new(message.clone()),
                 )),
                 entry_id: Some(response_id.clone()),
             },
@@ -511,7 +511,7 @@ pub async fn publish_response(
             let entry = NewEntry::message(
                 &id,
                 state.tip_id,
-                crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(
+                crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     message.clone(),
                 ))),
             );

@@ -161,6 +161,8 @@ pub mod wiring_context;
 pub mod wiring_memory_write;
 pub mod wiring_notice_inputs;
 pub mod wiring_reflection_live;
+pub mod write_policy;
+pub mod owner_memory;
 pub mod wiring_runtime;
 pub mod wiring_static;
 pub mod wiring_types;

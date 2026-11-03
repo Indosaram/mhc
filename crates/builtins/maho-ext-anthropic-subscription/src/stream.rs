@@ -238,7 +238,7 @@ pub fn stream_anthropic_subscription(
             crate::context_window::planned_context_window_now(&model.id, model.context_window);
         let mut started_at = 0.0;
         // account-context.ts: the account of the attempt that produced the turn's error, never another attempt's.
-        let mut attempt_account: Option<crate::account_context::AccountContext> = None;
+        let mut attempt_account: Option<crate::account_context::AccountContext>;
         let outcome = loop {
             let mut query = None;
             let mut selected = None;

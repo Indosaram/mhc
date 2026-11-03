@@ -349,7 +349,7 @@ where
                     if let Err(reason) = auth.deadline() { auth.drop_connection(reason); break 'pump; }
                 }
                 read = socket_read.read(&mut chunk), if input_open => {
-                    let count = match read { Ok(count) => count, Err(_) => 0 };
+                    let count = read.unwrap_or_default();
                     if count == 0 {
                         auth.closed();
                         input_open = false;
@@ -395,7 +395,7 @@ where
                     }
                 }
                 read = far_read.read(&mut back) => {
-                    let count = match read { Ok(count) => count, Err(_) => 0 };
+                    let count = read.unwrap_or_default();
                     if count == 0 {
                         let rest = std::mem::take(&mut outgoing);
                         if !rest.is_empty() {

@@ -6,6 +6,7 @@
 use serde_json::Value;
 
 use crate::runners::rpc::exit_mapping::map_exit_outcome_to_error;
+use crate::runners::in_process::child_handle::RunnerExit;
 use crate::runners::types::ChildExitOutcome;
 use crate::runners::{RunnerFailure, RunnerFailureKind, RunnerOutcome};
 
@@ -55,25 +56,46 @@ pub fn agent_end_outcome(
 
 /// The turn outcome when the child process ends before a terminal `agent_end`.
 pub fn exit_turn_outcome(exit: &ChildExitOutcome, final_text: Option<&str>) -> RunnerOutcome {
-    if let ChildExitOutcome::Clean { .. } = exit {
+    if let ChildExitOutcome::Clean { facts } = exit {
         return match final_text {
             Some(text) if !text.is_empty() => RunnerOutcome::completed(text),
-            _ => RunnerOutcome::error(
-                RunnerFailureKind::ChildTurnFailed,
-                "RPC child exited without assistant output",
-            ),
+            _ => {
+                let mut failure = RunnerFailure::new(RunnerFailureKind::ChildTurnFailed,
+                    "RPC child exited without assistant output");
+                if facts.pid.is_some() {
+                    failure = failure.with_exit(RunnerExit { kind: "clean", code: facts.code, signal: facts.signal.clone() });
+                }
+                RunnerOutcome::Error { failure, killed: false }
+            }
         };
     }
-    let facts = map_exit_outcome_to_error(exit, /*already_terminal*/ false);
+    let facts = map_exit_outcome_to_error(exit, false);
+    let runner_exit = match exit {
+        ChildExitOutcome::Killed { facts } => facts.pid.map(|_| RunnerExit {
+            kind: "killed",
+            code: facts.code,
+            signal: facts.signal.clone(),
+        }),
+        ChildExitOutcome::Crashed { facts } => facts.pid.map(|_| RunnerExit {
+            kind: "crashed",
+            code: facts.code,
+            signal: facts.signal.clone(),
+        }),
+        ChildExitOutcome::Clean { .. } | ChildExitOutcome::SpawnError { .. } => None,
+    };
+    let mut failure = RunnerFailure::new(
+        RunnerFailureKind::ChildPromptFailed,
+        facts
+            .as_ref()
+            .map_or("RPC child terminated abnormally", |facts| {
+                facts.error_message.as_str()
+            }),
+    );
+    if let Some(exit) = runner_exit {
+        failure = failure.with_exit(exit);
+    }
     RunnerOutcome::Error {
-        failure: RunnerFailure::new(
-            RunnerFailureKind::ChildPromptFailed,
-            facts
-                .as_ref()
-                .map_or("RPC child terminated abnormally", |facts| {
-                    facts.error_message.as_str()
-                }),
-        ),
+        failure,
         killed: facts.is_some_and(|facts| facts.killed),
     }
 }

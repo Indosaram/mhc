@@ -133,7 +133,7 @@ impl CompactContentStore {
         self.lock().spool.spill_allowed()
     }
 
-    pub(crate) fn spill_stopped(&self) -> bool {
+    pub fn spill_stopped(&self) -> bool {
         self.lock().spool.spill_stopped()
     }
 

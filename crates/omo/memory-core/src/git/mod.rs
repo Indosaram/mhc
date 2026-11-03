@@ -58,7 +58,7 @@ mod path_state_tests;
 
 #[cfg(test)]
 #[path = "repo_tests.rs"]
-mod repo_tests;
+pub(crate) mod repo_tests;
 
 #[cfg(test)]
 #[path = "repo_secret_tests.rs"]

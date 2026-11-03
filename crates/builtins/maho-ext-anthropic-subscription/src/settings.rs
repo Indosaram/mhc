@@ -368,7 +368,6 @@ mod tests {
             )]
             .into()
         )));
-        let project = json!({"claudeSdkOauthProvider":{"resumeMode":"auto"}});
         assert_eq!(resume_mode_source(&json!({}), &BTreeMap::new()), "global");
         let project = json!({"anthropicSubscriptionProvider":{"resumeMode":"off"}});
         assert_eq!(

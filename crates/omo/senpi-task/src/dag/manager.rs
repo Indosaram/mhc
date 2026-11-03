@@ -1556,7 +1556,7 @@ fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecord
     apply_dag_run_mutation(record, event)
 }
 
-fn skip_duplicate_terminal_transition(
+pub(crate) fn skip_duplicate_terminal_transition(
     record: &DagRunRecordV1,
     payload: &DagRunEventPayload,
 ) -> bool {

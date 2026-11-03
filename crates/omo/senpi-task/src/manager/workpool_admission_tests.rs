@@ -391,9 +391,8 @@ fn fresh_prepared_workpool_launch_carries_epoch_zero_to_manager_runner_spec() {
     h.manager
         .launch_prepared(record, managed)
         .expect("launch through manager");
-    wait_until("runner receives fresh epoch", || {
-        h.runner.specs().iter().any(|spec| spec.task_id == task_id)
-    });
+    let handle = h.runner.handle(&task_id).expect("synchronous launch returned a handle");
+    handle.wait_subscriptions(4);
     assert_eq!(
         h.runner
             .specs()
@@ -402,6 +401,17 @@ fn fresh_prepared_workpool_launch_carries_epoch_zero_to_manager_runner_spec() {
             .and_then(|spec| spec.workpool_run_epoch),
         Some(0)
     );
+    let specs = h.runner.specs();
+    let launched = specs.iter().find(|spec| spec.task_id == task_id).expect("worker launch");
+    let rpc = crate::manager::runner::to_rpc_spec(launched);
+    let mut wire = serde_json::json!({"sessionPath":"worker.jsonl"});
+    assert!(crate::runners::rpc_host::session_client_opening::with_spawned_by(
+        &mut wire, &rpc, Some("2026.10.25-2"), "fixture-socket"));
+    assert_eq!(wire["spawnedBy"], serde_json::json!({
+        "parentSessionId":"parent", "rootSessionId":"root", "taskId":task_id
+    }));
+    handle.complete("worker-finished");
+    crate::manager::manager_tests::fakes::wait_terminal(&h.manager, &task_id);
 }
 
 #[test]

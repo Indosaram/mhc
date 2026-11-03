@@ -615,9 +615,9 @@ async fn sessions_with_different_legacy_form_policies_never_share_a_pool() {
     };
     let mut services = Vec::new();
     for (owner, ui) in [
-        (5152_08_1, plain_ui()),
-        (5152_08_2, plain_ui()),
-        (5152_08_3, enforced_ui),
+        (5152081, plain_ui()),
+        (5152082, plain_ui()),
+        (5152083, enforced_ui),
     ] {
         let mut service = McpService::new(registry.clone(), owner);
         service.set_elicitation_ui(Some(ui));
@@ -681,7 +681,7 @@ async fn request_origins_end_when_credentials_change_or_the_server_is_undeclared
     // test rotates its credential.
     seed_cached_catalog(agent.path(), "oa");
     let registry = Arc::new(HostMcpRegistry::default());
-    let mut service = McpService::new(registry.clone(), 5152_09);
+    let mut service = McpService::new(registry.clone(), 515209);
     service
         .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
         .await
@@ -925,7 +925,7 @@ async fn a_stale_credential_connection_is_hidden_then_recreated_by_the_next_sync
     let agent = tempfile::tempdir().expect("agent dir");
     let tokens = oauth_server_fixture(agent.path(), "synthetic-5152-09-first");
     let registry = Arc::new(HostMcpRegistry::default());
-    let mut service = McpService::new(registry.clone(), 5152_09_2);
+    let mut service = McpService::new(registry.clone(), 5152092);
     service
         .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
         .await
@@ -1008,7 +1008,7 @@ async fn needs_auth_without_a_credential_identity_reports_needs_auth() {
     let agent = tempfile::tempdir().expect("agent dir");
     let tokens = oauth_server_fixture(agent.path(), "synthetic-5152-07-first");
     let registry = Arc::new(HostMcpRegistry::default());
-    let mut service = McpService::new(registry.clone(), 5152_07);
+    let mut service = McpService::new(registry.clone(), 515207);
     service
         .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
         .await

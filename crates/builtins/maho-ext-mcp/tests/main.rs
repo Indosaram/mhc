@@ -1,5 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
+// clippy.toml sets allow-unwrap-in-tests, which covers only #[test] fns; the shared fixture helpers
+// in these modules unwrap the same way.
+#![allow(clippy::unwrap_used)]
 
 #[path = "auth.rs"]
 pub mod auth;

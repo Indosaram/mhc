@@ -264,7 +264,7 @@ mod command {
             Box::pin(async { None })
         }
         fn notify(&self, message: &str, kind: NotificationType) {
-            self.notices.lock().unwrap().push((message.into(), kind));
+            self.notices.lock().expect("fixture notices").push((message.into(), kind));
         }
         fn set_status(&self, _: &str, _: Option<&str>) {}
         fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -273,7 +273,7 @@ mod command {
         fn set_title(&self, _: &str) {}
         fn paste_to_editor(&self, _: &str) {}
         fn set_editor_text(&self, text: &str) {
-            *self.editor.lock().unwrap() = Some(text.into());
+            *self.editor.lock().expect("fixture editor") = Some(text.into());
         }
         fn get_editor_text(&self) -> String {
             String::new()
@@ -349,7 +349,7 @@ mod command {
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         tokio::runtime::Builder::new_current_thread()
             .build()
-            .unwrap()
+            .expect("fixture runtime")
             .block_on(future)
     }
 

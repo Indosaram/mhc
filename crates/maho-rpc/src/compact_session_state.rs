@@ -367,7 +367,8 @@ impl CompactSessionState {
                 hot.active.insert(message_id.to_owned(), message);
                 Ok(())
             }
-            Err((message, error)) => {
+            Err(boxed) => {
+                let (message, error) = *boxed;
                 if !message.blocks.is_empty() {
                     hot.active.insert(message_id.to_owned(), message);
                 }
@@ -383,7 +384,7 @@ impl CompactSessionState {
         content_index: usize,
         block: ActiveBlock,
         mut message: ActiveMessage,
-    ) -> Result<ActiveMessage, (ActiveMessage, CompactError)> {
+    ) -> Result<ActiveMessage, Box<(ActiveMessage, CompactError)>> {
         let old = message.blocks.get(&content_index);
         let tails = (utf16_len(&block.tail) - old.map_or(0, |old| utf16_len(&old.tail))) * 2;
         let witness =
@@ -400,7 +401,7 @@ impl CompactSessionState {
             }),
         ) {
             Ok(root) => root,
-            Err(error) => return Err((message, error)),
+            Err(error) => return Err(Box::new((message, error))),
         };
         message.root = root;
         match self.message_roots.set(
@@ -412,16 +413,16 @@ impl CompactSessionState {
             }),
         ) {
             Ok(messages) => hot.messages = messages,
-            Err(error) => return Err((message, error)),
+            Err(error) => return Err(Box::new((message, error))),
         }
         // The published copy holds its own references; the caller drops its working copy's.
         if let Err(error) = adjust_block(&self.store, &block, 1) {
-            return Err((message, error));
+            return Err(Box::new((message, error)));
         }
         if let Some(previous) = message.blocks.insert(content_index, block)
             && let Err(error) = adjust_block(&self.store, &previous, -1)
         {
-            return Err((message, error));
+            return Err(Box::new((message, error)));
         }
         message.tail_bytes += tails;
         message.witness_bytes += witness;

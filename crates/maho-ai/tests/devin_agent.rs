@@ -321,7 +321,7 @@ fn request_context() -> Context {
                 )]),
                 timestamp: 0,
             }),
-            Message::Assistant(Box::new(foreign_assistant_message(vec![
+            Message::Assistant(std::sync::Arc::new(foreign_assistant_message(vec![
                 ContentBlock::Thinking(maho_ai::types::ThinkingContent {
                     thinking: "considering".into(),
                     started_at: None,
@@ -551,8 +551,8 @@ fn replays_a_native_devin_assistant_turn_under_its_own_response_id_and_thinking_
                 content: UserContent::Text("hi".into()),
                 timestamp: 0,
             }),
-            Message::Assistant(Box::new(native)),
-            Message::Assistant(Box::new(assistant_message(Vec::new()))),
+            Message::Assistant(std::sync::Arc::new(native)),
+            Message::Assistant(std::sync::Arc::new(assistant_message(Vec::new()))),
         ],
         tools: None,
     };

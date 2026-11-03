@@ -385,13 +385,11 @@ impl ClientAdmissions {
             // A new turn: an abort noted before it belongs to nothing this turn will report.
             EffectSessionEvent::AgentStart => self.lock().last_abort = None,
             EffectSessionEvent::AgentEnd {
-                will_retry,
+                will_retry: false,
                 assistant_error,
             } => {
-                if !will_retry {
-                    let outcome = self.end_outcome(assistant_error.clone());
-                    self.lock().turn_outcome = Some(outcome);
-                }
+                let outcome = self.end_outcome(assistant_error.clone());
+                self.lock().turn_outcome = Some(outcome);
             }
             EffectSessionEvent::AgentIdle => {
                 let (outcome, running) = {

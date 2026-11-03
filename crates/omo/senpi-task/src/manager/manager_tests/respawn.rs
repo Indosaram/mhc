@@ -859,3 +859,90 @@ fn stop_during_trusted_respawn_rebuild_refuses_launch() {
     assert_eq!(code, RespawnFailureCode::RunPaused);
     assert_eq!(runner.started_count(), 0);
 }
+
+#[test]
+fn host_draining_open_error_retains_typed_code_and_retry_after() {
+    let setup = Setup::new();
+    let project = setup.project;
+    let runner = FakeRunner::new();
+    let mut options = TaskManagerOptions::new(
+        project.store(),
+        ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        project.cwd(),
+    );
+    struct DrainingRunner;
+    impl RpcRespawnRunner for DrainingRunner {
+        fn start(&self, _: &RpcRunnerSpec) -> ManagedRunnerResult {
+            Err(crate::manager::types::ManagedRunnerError::HostSessionOpen(
+                crate::runners::rpc_host::HostSessionOpenError::SessionPathInUse {
+                    session_path: "/tmp/session.jsonl".into(),
+                    owner: Some("drain-gen".into()),
+                    retry_after_ms: Some(4500),
+                    message: "session_path_in_use: generation still draining".into(),
+                },
+            ))
+        }
+    }
+    options.rpc_respawn_runner = Some(Arc::new(DrainingRunner));
+    let manager = create_task_manager(options);
+    let record = respawn_record();
+    seed(&project, &record);
+    let result = manager.respawn(&record, Some(session_path()));
+    assert!(result.is_host_draining());
+    assert_eq!(result.retry_after_ms(), Some(4500));
+    match result {
+        RespawnResult::Failed { disposition, code, reason } => {
+            assert_eq!(disposition, RespawnDisposition::Retryable);
+            assert_eq!(code, RespawnFailureCode::HostDraining { retry_after_ms: Some(4500) });
+            assert!(reason.contains("session_path_in_use"));
+        }
+        RespawnResult::Ok(_) => panic!("expected failed respawn"),
+    }
+}
+
+#[test]
+fn non_drain_open_error_does_not_produce_host_draining() {
+    let setup = Setup::new();
+    let project = setup.project;
+    let runner = FakeRunner::new();
+    let mut options = TaskManagerOptions::new(
+        project.store(),
+        ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        project.cwd(),
+    );
+    struct RefusedRunner;
+    impl RpcRespawnRunner for RefusedRunner {
+        fn start(&self, _: &RpcRunnerSpec) -> ManagedRunnerResult {
+            Err(crate::manager::types::ManagedRunnerError::HostSessionOpen(
+                crate::runners::rpc_host::HostSessionOpenError::Refused {
+                    code: "invalid_profile".into(),
+                    session_path: "/tmp/session.jsonl".into(),
+                    retry_after_ms: None,
+                    message: "bad launch profile".into(),
+                },
+            ))
+        }
+    }
+    options.rpc_respawn_runner = Some(Arc::new(RefusedRunner));
+    let manager = create_task_manager(options);
+    let record = respawn_record();
+    seed(&project, &record);
+    let result = manager.respawn(&record, Some(session_path()));
+    assert!(!result.is_host_draining());
+    assert_eq!(result.retry_after_ms(), None);
+    match result {
+        RespawnResult::Failed { disposition, code, .. } => {
+            assert_eq!(disposition, RespawnDisposition::Retryable);
+            assert_eq!(code, RespawnFailureCode::RespawnFailed);
+        }
+        RespawnResult::Ok(_) => panic!("expected failed respawn"),
+    }
+}

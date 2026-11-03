@@ -34,6 +34,15 @@ impl HostMcpRegistry {
         owner: u64,
         factory: impl FnOnce() -> Arc<crate::shared_connection::SharedMcpConnection>,
     ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
+        self.attach_shared_with_options(key, owner, None, factory)
+    }
+    pub fn attach_shared_with_options(
+        &self,
+        key: &str,
+        owner: u64,
+        options: Option<crate::shared_connection::SharedLeaseOptions>,
+        factory: impl FnOnce() -> Arc<crate::shared_connection::SharedMcpConnection>,
+    ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
         let mut shared = self
             .shared
             .lock()
@@ -45,7 +54,7 @@ impl HostMcpRegistry {
             shared.remove(key);
         }
         let connection = shared.entry(key.into()).or_insert_with(factory);
-        connection.attach(owner, key.into())
+        connection.attach_with_options(owner, key.into(), options)
     }
     pub fn attach(
         &self,

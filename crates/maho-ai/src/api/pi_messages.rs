@@ -16,11 +16,11 @@ use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, DiagnosticCode, Thrown, append_assistant_message_diagnostic,
     create_assistant_message_diagnostic, now_ms,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
+#[cfg(test)]
+use crate::utils::event_stream::create_assistant_message_event_stream;
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::provider_env::get_provider_env_value;
 
 /// Serialized assistant-message event as sent by a pi-messages backend.
@@ -300,6 +300,7 @@ struct EventConverter {
     model: Model,
     partial: AssistantMessage,
     tool_json: std::collections::HashMap<usize, String>,
+    tool_json_parsed_len: std::collections::HashMap<usize, usize>,
 }
 
 impl EventConverter {
@@ -334,6 +335,7 @@ impl EventConverter {
                 timestamp: now_ms(),
             },
             tool_json: std::collections::HashMap::new(),
+            tool_json_parsed_len: std::collections::HashMap::new(),
         }
     }
 
@@ -497,6 +499,7 @@ impl EventConverter {
                     namespace: None,
                 });
                 self.tool_json.insert(*content_index, String::new());
+                self.tool_json_parsed_len.remove(content_index);
                 partial_event(&self.partial, |partial| {
                     AssistantMessageEvent::ToolcallStart {
                         content_index: *content_index,
@@ -508,19 +511,19 @@ impl EventConverter {
                 content_index,
                 delta,
             } => {
-                let json = format!(
-                    "{}{delta}",
-                    self.tool_json
-                        .get(content_index)
-                        .cloned()
-                        .unwrap_or_default()
-                );
-                self.tool_json.insert(*content_index, json.clone());
-                let parsed = parse_streaming_json(Some(&json));
-                if let Some(ContentBlock::ToolCall(call)) =
-                    self.partial.content.get_mut(*content_index)
-                {
-                    call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                let json = self.tool_json.entry(*content_index).or_default();
+                json.push_str(delta);
+                let total_len = json.len();
+                let parsed_len = self.tool_json_parsed_len.entry(*content_index).or_default();
+                // PERF-DIVERGENCE(senpi packages/ai/src/api/pi-messages.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+                if should_reparse_streaming_json(total_len, *parsed_len) {
+                    *parsed_len = total_len;
+                    let parsed = parse_streaming_json(Some(json.as_str()));
+                    if let Some(ContentBlock::ToolCall(call)) =
+                        self.partial.content.get_mut(*content_index)
+                    {
+                        call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                    }
                 }
                 partial_event(&self.partial, |partial| {
                     AssistantMessageEvent::ToolcallDelta {
@@ -535,6 +538,7 @@ impl EventConverter {
                 tool_call,
             } => {
                 self.tool_json.remove(content_index);
+                self.tool_json_parsed_len.remove(content_index);
                 if let Some(ContentBlock::ToolCall(call)) =
                     self.partial.content.get_mut(*content_index)
                 {
@@ -839,7 +843,8 @@ async fn drive(
         payload = next;
     }
 
-    let client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi pi-messages.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -1042,7 +1047,7 @@ mod tests {
             message.content = vec![ContentBlock::text("stable")];
             let original = serde_json::to_value(&message).expect("message");
             let context = Context {
-                messages: vec![Message::Assistant(Box::new(message.clone()))],
+                messages: vec![Message::Assistant(std::sync::Arc::new(message.clone()))],
                 ..Context::default()
             };
             let actual = context_payload(&context)["messages"][0].clone();

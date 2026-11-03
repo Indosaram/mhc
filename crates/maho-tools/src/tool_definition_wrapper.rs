@@ -5,6 +5,9 @@ use std::sync::Arc;
 pub type ContextFactory = Arc<
     dyn Fn(&str, Option<&maho_ai::utils::abort::AbortSignal>) -> Arc<dyn ToolContext> + Send + Sync,
 >;
+pub type ToolRunDispatcher = Arc<
+    dyn for<'a> Fn(&'a ToolDefinition, ToolCall<'a>) -> ToolFuture<'a, ToolResult> + Send + Sync,
+>;
 fn into_agent_result(result: ToolResult) -> AgentToolResult {
     AgentToolResult {
         content: result

@@ -89,12 +89,16 @@ pub fn session_ui_answer_ledger(session_id: &str) -> Arc<Mutex<UiAnswerLedger>> 
         .clone()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("invalid_answer_id")]
+pub struct InvalidAnswerId;
+
 /// `answerId` is optional, and when present a string of 1..=256 characters (`invalid_answer_id` otherwise).
-pub fn valid_answer_id(response: &Value) -> Result<Option<&str>, ()> {
+pub fn valid_answer_id(response: &Value) -> Result<Option<&str>, InvalidAnswerId> {
     match response.get("answerId") {
         None => Ok(None),
         Some(Value::String(id)) if (1..=256).contains(&id.chars().count()) => Ok(Some(id)),
-        Some(_) => Err(()),
+        Some(_) => Err(InvalidAnswerId),
     }
 }
 

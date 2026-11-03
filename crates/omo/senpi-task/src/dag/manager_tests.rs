@@ -1056,7 +1056,10 @@ fn given_a_parent_model_when_the_run_starts_then_the_checkpoint_keeps_it_for_eve
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("start");
-    assert_eq!(started.snapshot.parent_model.as_deref(), Some("openai/parent"));
+    let record = dag
+        .record(&started.snapshot.run_id, PARENT_SESSION_ID)
+        .expect("owned run record");
+    assert_eq!(record.parent_model.as_deref(), Some("openai/parent"));
     let persisted = store
         .read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id)
         .expect("checkpoint read")

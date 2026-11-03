@@ -14,6 +14,12 @@ struct StalledPort {
     state: Mutex<Option<Value>>,
     missing: Mutex<bool>,
     closes: Mutex<usize>,
+    close_failures: Mutex<usize>,
+    probes: Mutex<usize>,
+    probe_release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    probe_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    outcome_release: std::sync::Condvar,
+    outcome_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     detaches: Mutex<usize>,
     lost: Mutex<Vec<String>>,
 }
@@ -24,6 +30,14 @@ impl HostSessionPort for StalledPort {
         Ok(())
     }
     fn get_state(&self) -> Result<Value, HostError> {
+        *self.probes.lock().expect("probes") += 1;
+        let release = self.probe_release.lock().expect("probe release").take();
+        if let Some(release) = release {
+            if let Some(entered) = self.probe_entered.lock().expect("probe entered").take() {
+                entered.send(()).expect("probe listener");
+            }
+            release.recv_timeout(std::time::Duration::from_secs(5)).expect("probe release signal");
+        }
         if *self.missing.lock().expect("missing") {
             return Err(HostError {
                 message: "unknown_session".into(),
@@ -37,6 +51,7 @@ impl HostSessionPort for StalledPort {
         Box::new(|| {})
     }
     fn close(&self) -> Result<(), HostError> {
+        self.transport_lost("closed".into());
         Ok(())
     }
     fn detach(&self) -> Result<(), HostError> {
@@ -45,12 +60,24 @@ impl HostSessionPort for StalledPort {
     }
     fn transport_lost(&self, message: String) {
         self.lost.lock().expect("lost").push(message);
+        self.outcome_release.notify_all();
     }
     fn wait_for_outcome(&self) -> Option<RunnerOutcome> {
+        let lost = self.lost.lock().expect("lost");
+        if let Some(entered) = self.outcome_entered.lock().expect("outcome entered").take() {
+            entered.send(()).expect("outcome listener");
+        }
+        let (_lost, wait) = self.outcome_release.wait_timeout_while(lost, std::time::Duration::from_secs(5), |lost| lost.is_empty()).expect("outcome signal");
+        assert!(!wait.timed_out(), "transport must settle outcome");
         Some(RunnerOutcome::Cancelled)
     }
     fn close_confirmed(&self) -> Option<Result<(), HostError>> {
         *self.closes.lock().expect("closes") += 1;
+        let mut failures = self.close_failures.lock().expect("close failures");
+        if *failures > 0 {
+            *failures -= 1;
+            return Some(Err(HostError { message: "host unreachable".into() }));
+        }
         Some(Ok(()))
     }
 }
@@ -108,6 +135,27 @@ fn missed_probes_keep_the_child_nonterminal_and_refuse_input_until_it_answers() 
 }
 
 #[test]
+fn a_pending_host_probe_stays_single_flight_until_the_driver_receives_its_answer() {
+    let (handle, port) = stalled();
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    *port.probe_release.lock().expect("probe release") = Some(answer_rx);
+    *port.probe_entered.lock().expect("probe entered") = Some(entered_tx);
+    let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
+    handle.liveness_step_with_deadline(start, std::time::Duration::ZERO).expect("first driver probe");
+    entered_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("probe entered");
+    handle.liveness_step_with_deadline(start + 60_000, std::time::Duration::ZERO).expect("overdue driver probe");
+    assert_eq!(*port.probes.lock().expect("probes"), 1);
+    let step_handle = Arc::clone(&handle);
+    let step = std::thread::spawn(move || {
+        let _ = step_handle.liveness_step_at(start + 60_001);
+    });
+    answer_tx.send(()).expect("release probe");
+    step.join().expect("probe step");
+    assert_eq!(*port.probes.lock().expect("probes"), 1);
+}
+
+#[test]
 fn an_overdue_session_is_aborted_and_closed_before_reporting_terminal() {
     let (handle, port) = stalled();
     let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
@@ -139,6 +187,34 @@ fn an_overdue_session_is_aborted_and_closed_before_reporting_terminal() {
 }
 
 #[test]
+fn an_unreachable_host_retries_confirmed_close_without_releasing_outcome_waiters() {
+    let (handle, port) = stalled();
+    *port.close_failures.lock().expect("close failures") = 1;
+    let waiter_handle = Arc::clone(&handle);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    *port.outcome_entered.lock().expect("outcome entered") = Some(started_tx);
+    let waiter = std::thread::spawn(move || {
+        ManagedChildHandle::wait_for_outcome(waiter_handle.as_ref())
+    });
+    started_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("waiter started");
+    let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
+    miss_three(&handle, start);
+    handle.liveness_step_at(start + 170_000).expect("terminal-pending step");
+    handle.settle_close_for_tests();
+    assert!(!handle.stopped());
+    assert!(!waiter.is_finished());
+    assert_eq!(*port.closes.lock().expect("closes"), 1);
+    let probes = *port.probes.lock().expect("probes");
+    handle.liveness_step_at(start + 200_000).expect("retry close");
+    handle.settle_close_for_tests();
+    assert!(handle.stopped());
+    assert_eq!(*port.closes.lock().expect("closes"), 2);
+    assert_eq!(*port.probes.lock().expect("probes"), probes);
+    let outcome = waiter.join().expect("outcome waiter");
+    assert!(matches!(outcome, RunnerOutcome::Error { .. }));
+}
+
+#[test]
 fn a_live_hosts_missing_session_reply_ends_the_handle_immediately() {
     let (handle, port) = stalled();
     *port.missing.lock().expect("missing") = true;
@@ -152,6 +228,30 @@ fn a_live_hosts_missing_session_reply_ends_the_handle_immediately() {
         *port.lost.lock().expect("lost"),
         vec!["host session closed: unknown_session".to_string()]
     );
+}
+
+#[test]
+fn termination_releases_a_waiter_created_before_terminal_pending() {
+    let (handle, port) = stalled();
+    *port.close_failures.lock().expect("close failures") = 1;
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    *port.outcome_entered.lock().expect("outcome entered") = Some(entered_tx);
+    let waiting_handle = Arc::clone(&handle);
+    let waiter = std::thread::spawn(move || waiting_handle.wait_for_outcome());
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("outcome waiter entered before terminal pending");
+    let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
+    miss_three(&handle, start);
+    handle.liveness_step_at(start + 170_000).expect("overdue step");
+    handle.settle_close_for_tests();
+    assert!(!waiter.is_finished());
+
+    handle.terminate().expect("terminate");
+
+    assert!(handle.stopped());
+    assert_eq!(waiter.join().expect("early waiter"), RunnerOutcome::Cancelled);
+    assert_eq!(handle.wait_for_outcome(), RunnerOutcome::Cancelled);
 }
 
 /// `session-confirmed-close.test.ts` `closureFixture("answers", acked: true, listed: true)`: the
@@ -209,13 +309,13 @@ impl super::super::host_command_dispatch::HostRpcClient for ClosingHost {
 
 impl super::super::task_parent_wire::HostRunHoldClient for ClosingHost {}
 
-fn closing(
-    frame: Option<&'static str>,
-) -> (
+type ClosingFixture = (
     Arc<HostSessionHandle>,
     Arc<ClosingHost>,
     Arc<Mutex<Vec<&'static str>>>,
-) {
+);
+
+fn closing(frame: Option<&'static str>) -> ClosingFixture {
     let host = Arc::new(ClosingHost {
         frame,
         listeners: Mutex::new(Vec::new()),

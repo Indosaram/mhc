@@ -58,6 +58,7 @@ fn test_given_unavailable_os_capabilities_when_inspected_then_capture_input_ax_e
         stop_reason: None,
         integrity_level: None,
         screen_locked: false,
+        intervention_watch: None,
     };
 
     telem.os_permissions("sess-os-perm", &caps);

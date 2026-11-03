@@ -217,7 +217,8 @@ impl DesktopSyncChannel {
     ) -> impl std::future::Future<Output = Reply> + Send + use<> {
         // `request` re-parses like upstream's `safeParse`: only a well-formed operation is sent.
         let parsed = DesktopSyncRequest::parse(&request.to_value());
-        let receive = match (parsed, self.inner.state().child.clone()) {
+        let child = self.inner.state().child.clone();
+        let receive = match (parsed, child) {
             (Ok(parsed), Some(child)) => Some(self.inner.request(
                 json!({ "op": "request", "capability": child, "request": parsed.to_value() }),
             )),
@@ -269,7 +270,7 @@ where
                         return;
                     }
                 }
-                _ = closed.wait_for(|closed| *closed) => {
+                _ = async { let _ = closed.wait_for(|closed| *closed).await; } => {
                     let _ = write_half.shutdown().await;
                     return;
                 }
@@ -344,12 +345,12 @@ mod tests {
             let mut lines = BufReader::new(read).lines();
             let mut packets = Vec::new();
             while let Ok(Some(line)) = lines.next_line().await {
-                let packet: Value = serde_json::from_str(&line).unwrap();
+                let packet: Value = serde_json::from_str(&line).expect("valid fixture packet");
                 if let Some(reply) = replies(&packet) {
                     write
                         .write_all(format!("{reply}\n").as_bytes())
                         .await
-                        .unwrap();
+                        .expect("write fixture reply");
                 }
                 packets.push(packet);
                 if packets.len() == 2 {

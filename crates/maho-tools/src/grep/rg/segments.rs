@@ -51,7 +51,7 @@ pub fn plan_segments<'a>(
     request: &GrepEngineRequest,
     plan: &SegmentPlan<'_>,
 ) -> Vec<Vec<&'a Candidate>> {
-    let platform = plan.platform.unwrap_or_else(platform);
+    let platform = plan.platform.unwrap_or_else(|| platform());
     let budget = plan.budget.unwrap_or_else(|| argv_budget(platform));
     let mut segments: Vec<Vec<&Candidate>> = Vec::new();
     let mut room = 0usize;

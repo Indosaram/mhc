@@ -289,8 +289,14 @@ async fn serve(
                 let mut bytes = Vec::new();
                 loop {
                     let mut chunk = [0u8; 1];
-                    match socket.read(&mut chunk).await { Ok(0) => break, Ok(_) => {}, Err(_) => break }
-                    if chunk[0] == b'\n' { break; }
+                    match socket.read(&mut chunk).await {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                    if chunk[0] == b'\n' {
+                        break;
+                    }
                     bytes.push(chunk[0]);
                 }
                 if let Ok(request) = serde_json::from_slice::<Value>(&bytes) {
@@ -914,7 +920,7 @@ async fn ignores_malformed_bus_payloads() {
     f.finish().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn four_second_poll_refreshes_child_records_and_stops_on_shutdown() {
     let mut f = fixture().await;
     let tasks = f.directory.path().join(".omo/senpi-task/tasks");
@@ -968,6 +974,7 @@ async fn four_second_poll_refreshes_child_records_and_stops_on_shutdown() {
         json!({ "status": "done", "parent_session_id": "root-session" }).to_string(),
     )
     .expect("fixture");
+    tokio::time::pause();
     let task =
         tokio::task::spawn(async { tokio::time::advance(std::time::Duration::from_secs(4)).await });
     tokio::task::yield_now().await;

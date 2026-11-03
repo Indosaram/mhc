@@ -759,6 +759,36 @@ fn emit_early_failure(
     }
 }
 
+/// run-eval-cell.ts `resolveAtStart` for `%load`: the file is read when the cell's turn comes in
+/// the kernel's queue, with the session cwd and artifacts directory as roots.
+fn load_at_start(
+    invocation: &EvalCellInvocation,
+    options: &CreateEvalToolOptions,
+) -> Option<super::types::ResolveAtStart> {
+    let Ok(Some(super::magic_cells::MagicCell::Load(target))) =
+        super::magic_cells::parse_magic_cell(&invocation.input.code)
+    else {
+        return None;
+    };
+    let load_options = super::load_cell::LoadCellOptions {
+        cwd: invocation
+            .context
+            .as_ref()
+            .map(|context| context.cwd.clone())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default(),
+        artifacts_dir: options.artifacts_dir.clone(),
+    };
+    Some(Arc::new(move || {
+        super::load_cell::load_cell(&target, &load_options).map(|loaded| {
+            (
+                loaded.code,
+                Some(loaded.source_file.to_string_lossy().into_owned()),
+            )
+        })
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,32 +843,3 @@ mod tests {
     }
 }
 
-/// run-eval-cell.ts `resolveAtStart` for `%load`: the file is read when the cell's turn comes in
-/// the kernel's queue, with the session cwd and artifacts directory as roots.
-fn load_at_start(
-    invocation: &EvalCellInvocation,
-    options: &CreateEvalToolOptions,
-) -> Option<super::types::ResolveAtStart> {
-    let Ok(Some(super::magic_cells::MagicCell::Load(target))) =
-        super::magic_cells::parse_magic_cell(&invocation.input.code)
-    else {
-        return None;
-    };
-    let load_options = super::load_cell::LoadCellOptions {
-        cwd: invocation
-            .context
-            .as_ref()
-            .map(|context| context.cwd.clone())
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default(),
-        artifacts_dir: options.artifacts_dir.clone(),
-    };
-    Some(Arc::new(move || {
-        super::load_cell::load_cell(&target, &load_options).map(|loaded| {
-            (
-                loaded.code,
-                Some(loaded.source_file.to_string_lossy().into_owned()),
-            )
-        })
-    }))
-}

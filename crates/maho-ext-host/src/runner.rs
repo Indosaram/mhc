@@ -1485,13 +1485,10 @@ impl ExtensionRunner {
                 "Extension RPC request name must not be empty",
             ));
         }
-        let mut handlers = self.extensions.iter().filter_map(|extension| {
-            self.runtime
-                .live_rpc_handlers(&extension.identity.path)
-                .unwrap_or_else(|| extension.rpc_handlers.clone())
-                .get(name)
-                .cloned()
-        });
+        let mut handlers = self
+            .extensions
+            .iter()
+            .filter_map(|extension| self.extension_rpc_handler(extension, name));
         let handler = handlers.next().ok_or_else(|| {
             ExtensionFailure::new(format!("Unknown extension RPC request: {name}"))
         })?;
@@ -1503,6 +1500,18 @@ impl ExtensionRunner {
         let result = handler(data).await?;
         self.runtime.assert_active()?;
         Ok(result)
+    }
+    /// Whether a loaded extension serves the RPC request `name` (what `handle_rpc_request` would
+    /// dispatch to), so a host can answer an advertised but unserved request with a typed code.
+    pub fn has_rpc_handler(&self, name: &str) -> bool {
+        let name = name.trim();
+        self.extensions.iter().any(|extension| self.extension_rpc_handler(extension, name).is_some())
+    }
+    /// One extension's handler for `name`: its live entry first, then its load-time registration.
+    /// Per-name so a later same-path registration (e.g. the deferred task component under
+    /// `<builtin:omo>`) cannot hide handlers registered at load; one extension counts once.
+    fn extension_rpc_handler(&self, extension: &LoadedExtension, name: &str) -> Option<ExtensionRpcRequestHandler> {
+        self.runtime.live_rpc_handlers(&extension.identity.path).and_then(|live| live.get(name).cloned()).or_else(|| extension.rpc_handlers.get(name).cloned())
     }
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.create_context_for_extension(None)

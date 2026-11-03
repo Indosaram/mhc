@@ -9,7 +9,7 @@ use maho_cli::cli::experimental::command_options::AuthInput;
 use maho_cli::experimental::radius_auth::{RadiusRelayAuthResolver, StoredRadiusAuth};
 use maho_cli::experimental::radius_relay::*;
 use maho_server::client::errors::ClientError;
-use maho_server::client::transport::{ByteTransport, ByteTransportFactory, ByteTransportHandlers};
+use maho_server::client::transport::{ByteTransportFactory, ByteTransportHandlers};
 use tokio::sync::{mpsc, oneshot};
 
 const SERVER_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -276,7 +276,9 @@ fn handlers() -> (
     (
         ByteTransportHandlers {
             on_data: Arc::new(move |chunk: &[u8]| drop(data.send(chunk.to_vec()))),
-            on_close: Arc::new(move || drop(close.send(()))),
+            on_close: Arc::new(move || {
+                let _ = close.send(());
+            }),
             on_error: Arc::new(move |failure: ClientError| drop(error.send(failure))),
         },
         on_data,

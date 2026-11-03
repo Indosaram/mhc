@@ -85,35 +85,7 @@ pub const KIMI_CODE_K27_MODEL_ID: &str = "kimi-for-coding-highspeed";
 pub const KIMI_CODE_K28_MODEL_ID: &str = "kimi-for-coding";
 pub const DEEPSEEK_OFFICIAL_PROVIDER: &str = "deepseek";
 
-/// `FABLE55_LAUNCH` ids (`modelId`, `mythosModelId`; no snapshot yet).
-const FABLE55_IDS: [&str; 2] = ["claude-fable-5-5", "claude-mythos-5-5"];
-
-/// senpi `isFable55ModelId`: the family marker (`fable-5-5` or `fable-5.5`, likewise mythos)
-/// bounded by a separator or the string edge.
-pub fn is_fable55_model_id(model_id: &str) -> bool {
-    let normalized = normalize_model_id(model_id);
-    let separator = |character: Option<char>| character.is_none_or(|c| "/@:._-".contains(c));
-    FABLE55_IDS.iter().any(|id| {
-        let family = id.trim_start_matches("claude-");
-        let dotted = match family.rsplit_once('-') {
-            Some((head, minor)) if minor.chars().all(|c| c.is_ascii_digit()) => {
-                match head.rsplit_once('-') {
-                    Some((_, major)) if major.chars().all(|c| c.is_ascii_digit()) => {
-                        format!("{head}.{minor}")
-                    }
-                    _ => family.to_owned(),
-                }
-            }
-            _ => family.to_owned(),
-        };
-        [family.to_owned(), dotted].iter().any(|marker| {
-            normalized.find(marker.as_str()).is_some_and(|at| {
-                separator(normalized[..at].chars().next_back())
-                    && separator(normalized[at + marker.len()..].chars().next())
-            })
-        })
-    })
-}
+pub use maho_ai::utils::fable55_launch::is_fable55_model_id;
 
 fn gpt5_version(model_id: &str) -> Option<PromptPresetName> {
     let normalized = normalize_model_id(model_id);
@@ -533,6 +505,7 @@ mod tests {
                 context_files: vec![maho_core::system_prompt::ContextFile {
                     path: "/work/AGENTS.md".into(),
                     content: "rules".into(),
+                    scope: None,
                 }],
                 skills: vec![],
                 tuning_section: None,

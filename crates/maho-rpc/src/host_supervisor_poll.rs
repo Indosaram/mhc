@@ -100,7 +100,7 @@ pub async fn watch_supervisor_poll(
                         return format!("supervisor pid {supervisor_pid} is gone");
                     }
                     ticks += 1;
-                    if !comparable || ticks % every != 0 {
+                    if !comparable || !ticks.is_multiple_of(every) {
                         continue;
                     }
                     let observed = probe.start(supervisor_pid);

@@ -44,7 +44,7 @@ pub fn validate_prepared(prepared: &GenesisPrepared) -> Result<(), GenesisBuildE
     let value = to_value(body, GenesisBuildError::BadRecord)?;
     if body.kind != "genesis"
         || body.epoch != 1
-        || !parse_body(&value).is_some_and(|parsed| parsed.kind() == "genesis")
+        || parse_body(&value).is_none_or(|parsed| parsed.kind() != "genesis")
     {
         return Err(GenesisBuildError::BadRecord);
     }

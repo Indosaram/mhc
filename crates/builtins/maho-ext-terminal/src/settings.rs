@@ -236,7 +236,7 @@ mod tests {
             ))
             .redact_secrets_in_output
         );
-        assert!(!TERMINAL_SETTINGS_DEFAULTS.redact_secrets_in_output);
+        const { assert!(!TERMINAL_SETTINGS_DEFAULTS.redact_secrets_in_output); }
     }
 
     #[test]

@@ -62,7 +62,7 @@ mod tests {
     }
 
     fn assistant() -> Message {
-        Message::Assistant(Box::new(AssistantMessage {
+        Message::Assistant(std::sync::Arc::new(AssistantMessage {
             failure_source: None,
             credential_served_recently: None,
             timing: None,

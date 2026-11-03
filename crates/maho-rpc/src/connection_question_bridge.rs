@@ -16,7 +16,7 @@ pub async fn degrade_question(
             .dialog
             .signal
             .as_ref()
-            .is_some_and(maho_ai::utils::abort::AbortSignal::aborted)
+            .is_some_and(maho_ext_api::AbortSignal::is_aborted)
     };
     let mut answers = BTreeMap::new();
     let other = "Other (type an answer)";
@@ -106,10 +106,8 @@ fn now_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 /// senpi: an aborting side that resolved `timed_out` itself passes that status as the abort reason.
-pub fn signal_timed_out(signal: &maho_ai::utils::abort::AbortSignal) -> bool {
-    signal
-        .reason()
-        .is_some_and(|reason| reason.name == "timed_out" || reason.message == "timed_out")
+pub fn signal_timed_out(signal: &maho_ext_api::AbortSignal) -> bool {
+    signal.reason().as_deref() == Some("timed_out")
 }
 /// senpi `settledQuestionStatus`.
 fn settled_question_status(
@@ -464,6 +462,23 @@ impl ConnectionQuestionBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn abort_reason_preserves_timeout_and_first_cancellation() {
+        let signal = maho_ext_api::AbortSignal::default();
+        assert!(!signal_timed_out(&signal));
+        let observer = signal.clone();
+        signal.abort_with_reason(Some("timed_out".into()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), observer.cancelled())
+            .await.expect("late subscriber observes abort");
+        signal.abort();
+        assert!(signal_timed_out(&observer));
+        let cancelled = maho_ext_api::AbortSignal::default();
+        cancelled.abort();
+        cancelled.abort_with_reason(Some("timed_out".into()));
+        assert!(cancelled.is_aborted());
+        assert!(!signal_timed_out(&cancelled));
+    }
+
     fn request() -> QuestionRequest {
         QuestionRequest {
             request_id: "tool".into(),

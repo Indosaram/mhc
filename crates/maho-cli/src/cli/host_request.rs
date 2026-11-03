@@ -270,7 +270,7 @@ pub fn build_host_request(
             // mhc has no runtime build id function yet: `None` makes an idle handoff refuse (target_build_mismatch).
             Ok(HostRequest::Handoff {
                 target,
-                options,
+                options: Box::new(options),
                 env_keys,
                 handover,
                 client_runtime_build_id: None,

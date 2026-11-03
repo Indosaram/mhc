@@ -31,6 +31,11 @@ pub struct RpcObserver {
     close: Box<dyn Fn() + Send + Sync>,
 }
 
+pub type RpcObserverParts = (
+    tokio::sync::oneshot::Receiver<Result<RpcRecord, String>>,
+    Box<dyn Fn() + Send + Sync>,
+);
+
 impl RpcObserver {
     /// An observer from its answer and its close action (what `observe_stream` builds; a test
     /// double builds its own).
@@ -51,12 +56,7 @@ impl RpcObserver {
     }
 
     /// The close action alone, for a caller that awaits `subscribed` separately.
-    pub fn into_parts(
-        self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<Result<RpcRecord, String>>,
-        Box<dyn Fn() + Send + Sync>,
-    ) {
+    pub fn into_parts(self) -> RpcObserverParts {
         (self.subscribed, self.close)
     }
 }
@@ -392,7 +392,7 @@ mod tests {
                 &crate::rpc_monitor_targets::RpcEvents::Kinds(vec!["session_status".into()]),
             );
             let (handlers, _, closed, _closed_rx) = handlers();
-            let observer = open_rpc_observer(
+            let mut observer = open_rpc_observer(
                 socket_path.to_str().unwrap(),
                 &subscription,
                 handlers,
@@ -400,7 +400,7 @@ mod tests {
             )
             .await
             .unwrap();
-            observer.subscribed.await.unwrap().unwrap();
+            (&mut observer.subscribed).await.unwrap().unwrap();
             let first = lines_rx.recv().await.unwrap();
             let second = lines_rx.recv().await.unwrap();
             assert_eq!(

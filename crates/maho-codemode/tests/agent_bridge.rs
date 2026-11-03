@@ -277,8 +277,10 @@ async fn propagates_the_cell_abort_signal_to_task_execution() {
         signal: Some(controller.signal()),
         ..ExecuteToolOptions::default()
     };
-    let pending = AgentBridge::default().run(
-        &json!({"prompt":"x"}),
+    let bridge = AgentBridge::default();
+    let prompt = json!({"prompt":"x"});
+    let pending = bridge.run(
+        &prompt,
         AgentBridgeOptions {
             call_id: "call",
             task_tool_name: "task",

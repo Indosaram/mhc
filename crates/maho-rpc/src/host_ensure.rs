@@ -657,27 +657,57 @@ async fn discover_host(
 /// senpi `ensureHostLocked`'s stopping branch: a typed stop is not permission to signal or overwrite a foreign
 /// generation, so only the registered generation the stopping host names is waited out - both its supervisor
 /// and its host child gone - and discovery then runs again under the same lock. `false` refuses `host_stopping`.
-async fn wait_out_stopping_generation(
+fn wait_out_stopping_generation(
     prepared: &LockedHostEnsure,
     socket: &str,
     deadline: tokio::time::Instant,
-) -> bool {
+) -> impl std::future::Future<Output = bool> + Send + use<> {
+    // Resolved synchronously, so no borrow of the lock (whose SQLite handle is !Sync) is held across
+    // the wait's awaits.
+    let target = stopping_generation_target(prepared, socket);
+    async move {
+        let Some((pid_file, generation)) = target else {
+            return false;
+        };
+        loop {
+            let gone = crate::host_ensure_stop::resolve_pid_file_ownership(
+                &pid_file,
+                crate::host_reservations::read_process_start_time,
+            ) == crate::host_ensure_stop::PidFileOwnership::Gone;
+            if gone
+                && crate::host_stalled_evidence::host_child_alive(&generation, |_| {}) != Some(true)
+            {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
+        }
+    }
+}
+fn stopping_generation_target(
+    prepared: &LockedHostEnsure,
+    socket: &str,
+) -> Option<(
+    crate::host_ensure_stop::DaemonPidFile,
+    crate::host_daemon_paths::HostGenerationPaths,
+)> {
     // senpi `registeredHere`: the record about this endpoint, live or not - the wait is for it to be gone.
-    let Some(registered) = prepared.registration.as_ref().filter(|registered| {
+    let registered = prepared.registration.as_ref().filter(|registered| {
         registered
             .socket
             .as_deref()
             .is_none_or(|recorded| recorded == socket)
-    }) else {
-        return false;
-    };
+    })?;
     if prepared
         .protocol
         .as_ref()
         .and_then(|protocol| protocol.instance_id.as_deref())
         != Some(registered.instance_id.as_str())
     {
-        return false;
+        return None;
     }
     let pid_file = crate::host_ensure_stop::DaemonPidFile {
         pid: registered.pid,
@@ -685,21 +715,7 @@ async fn wait_out_stopping_generation(
     };
     let generation =
         crate::host_daemon_paths::generation_paths(&prepared.paths, &registered.instance_id);
-    loop {
-        let gone = crate::host_ensure_stop::resolve_pid_file_ownership(
-            &pid_file,
-            crate::host_reservations::read_process_start_time,
-        ) == crate::host_ensure_stop::PidFileOwnership::Gone;
-        if gone && crate::host_stalled_evidence::host_child_alive(&generation, |_| {}) != Some(true)
-        {
-            return true;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return false;
-        }
-        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
-    }
+    Some((pid_file, generation))
 }
 pub fn normalize_socket_path(value: &str) -> &str {
     value.strip_prefix("unix://").unwrap_or(value)

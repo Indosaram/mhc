@@ -95,7 +95,16 @@ pub struct FinalizedToolCall {
 }
 
 pub fn create_error_tool_result(message: &str) -> AgentToolResult {
-    AgentToolResult::text(message)
+    AgentToolResult {
+        content: vec![ContentBlock::text(message)],
+        details: Value::Null,
+        structured_content: None,
+        usage: None,
+        nested_calls: None,
+        added_tool_names: None,
+        terminate: None,
+        is_error: None,
+    }
 }
 
 fn immediate_error(tool_call: ToolCall, message: &str, terminate: bool) -> ImmediateToolOutcome {
@@ -281,7 +290,7 @@ pub fn finalize_tool_call<TContext>(
 pub fn tool_result_from_message(message: &ToolResultMessage, terminate: bool) -> AgentToolResult {
     AgentToolResult {
         content: message.content.clone(),
-        details: message.details.clone().unwrap_or(Value::Object(Map::new())),
+        details: message.details.clone().unwrap_or(Value::Null),
         structured_content: None,
         usage: message.usage,
         nested_calls: message.nested_calls.clone(),
@@ -296,7 +305,11 @@ pub fn create_tool_result_message(call: &FinalizedToolCall) -> ToolResultMessage
         tool_call_id: call.tool_call.id.clone(),
         tool_name: call.tool_call.name.clone(),
         content: call.result.content.clone(),
-        details: Some(call.result.details.clone()),
+        details: if call.result.details.is_null() {
+            None
+        } else {
+            Some(call.result.details.clone())
+        },
         usage: call.result.usage,
         added_tool_names: None,
         nested_calls: call.result.nested_calls.clone(),

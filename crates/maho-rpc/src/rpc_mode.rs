@@ -297,8 +297,6 @@ async fn run_rpc_mode_until(
 #[cfg(test)]
 mod drain_tests {
     use super::*;
-    #[cfg(unix)]
-    use std::os::unix::process::CommandExt;
     use std::{
         pin::Pin,
         task::{Context, Poll},
@@ -373,6 +371,8 @@ mod drain_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
     #[test]
     fn empty_chunks_do_not_emit_and_records_remain_individual_jsonl() {
         assert_eq!(linearize_output("\n\n").unwrap(), "");

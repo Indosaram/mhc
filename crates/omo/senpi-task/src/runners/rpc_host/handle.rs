@@ -35,6 +35,7 @@ pub struct HostSessionHandle {
     pending_close: Mutex<Option<std::sync::mpsc::Receiver<Result<(), HostError>>>>,
     /// The outcome a liveness ending settles with (confirmed unresponsive close).
     forced_outcome: Mutex<Option<RunnerOutcome>>,
+    outcome_changed: Arc<(Mutex<u64>, std::sync::Condvar)>,
 }
 /// The default probe cadence (`DEFAULT_HEARTBEAT_INTERVAL_MS`, `session-open.ts`).
 pub const HOST_HEARTBEAT_INTERVAL_MS: i64 = 10_000;
@@ -135,6 +136,7 @@ pub fn create_host_session_handle_with_inputs(
         pending_probe: Mutex::new(None),
         pending_close: Mutex::new(None),
         forced_outcome: Mutex::new(None),
+        outcome_changed: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
         native_pause: CurrentPortPause(port.clone()),
         task_id,
         port,
@@ -165,6 +167,7 @@ impl HostSessionHandle {
     pub fn transport_lost(&self, message: String) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        self.wake_outcome_waiters();
         self.current_port().transport_lost(message);
     }
     fn current_port(&self) -> Arc<dyn HostSessionPort> {
@@ -303,6 +306,11 @@ impl HostSessionHandle {
         self.liveness_step_at(now_ms())
     }
     pub(crate) fn liveness_step_at(&self, now: i64) -> Result<(), HostError> {
+        self.liveness_step_with_deadline(now, std::time::Duration::from_millis(
+            crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
+        ))
+    }
+    pub(crate) fn liveness_step_with_deadline(&self, now: i64, deadline: std::time::Duration) -> Result<(), HostError> {
         use super::handle_heartbeat::HeartbeatStep;
         use super::session_wire::is_host_session_missing;
         if self.stopped() {
@@ -310,9 +318,6 @@ impl HostSessionHandle {
         }
         self.collect_close();
         let mut refused = None;
-        let deadline = std::time::Duration::from_millis(
-            crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
-        );
         let step = self
             .liveness
             .step(|machine, changes| machine.tick(now, changes));
@@ -461,6 +466,9 @@ impl HostSessionHandle {
             crate::runners::RunnerFailureKind::ChildUnresponsive,
             UNRESPONSIVE_CLOSED,
         ));
+        let (generation, changed) = &*self.outcome_changed;
+        *generation.lock().expect("outcome generation lock poisoned") += 1;
+        changed.notify_all();
         self.transport_lost(UNRESPONSIVE_CLOSED.to_string());
     }
     /// `onGone(false)`: a live host answered `unknown_session`; the session ended and is detached.
@@ -604,16 +612,35 @@ impl ManagedChildHandle for HostSessionHandle {
         self.listeners.on_event(listener)
     }
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        let outcome = self
-            .current_port()
-            .wait_for_outcome()
-            .unwrap_or_else(|| (self.outcome)());
-        let outcome = self
-            .forced_outcome
+        if self.forced_outcome.lock().expect("hosted child state lock poisoned").is_none()
+            && matches!(
+            self.liveness.status(),
+            crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
+        ) {
+            let (generation, changed) = &*self.outcome_changed;
+            let mut generation = generation
+                .lock()
+                .expect("outcome generation lock poisoned");
+            let observed = *generation;
+            while observed == *generation
+                && !self.stopped()
+                && self.forced_outcome.lock().expect("hosted child state lock poisoned").is_none()
+                && matches!(
+                    self.liveness.status(),
+                    crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
+                )
+            {
+                generation = changed
+                    .wait(generation)
+                    .expect("outcome generation lock poisoned");
+            }
+        }
+        let forced = self.forced_outcome
             .lock()
             .expect("hosted child state lock poisoned")
-            .clone()
-            .unwrap_or(outcome);
+            .clone();
+        let outcome = forced.unwrap_or_else(|| self.current_port().wait_for_outcome().unwrap_or_else(|| (self.outcome)()));
+        let outcome = self.forced_outcome.lock().expect("hosted child state lock poisoned").clone().unwrap_or(outcome);
         self.settled
             .store(true, std::sync::atomic::Ordering::Release);
         outcome
@@ -627,12 +654,14 @@ impl ManagedChildHandle for HostSessionHandle {
     fn dispose(&self) -> Result<(), HostError> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        self.wake_outcome_waiters();
         self.stop_liveness();
         self.teardown.detach()
     }
     fn terminate(&self) -> Result<(), HostError> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        self.wake_outcome_waiters();
         self.stop_liveness();
         self.teardown.terminate()
     }
@@ -644,6 +673,14 @@ impl ManagedChildHandle for HostSessionHandle {
     }
     fn publish_task_status(&self, status: TaskStatus) -> Result<(), HostError> {
         self.teardown.publish_task_status(status)
+    }
+}
+
+impl HostSessionHandle {
+    fn wake_outcome_waiters(&self) {
+        let (generation, changed) = &*self.outcome_changed;
+        *generation.lock().expect("outcome generation lock poisoned") += 1;
+        changed.notify_all();
     }
 }
 

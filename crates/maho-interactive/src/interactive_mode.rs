@@ -958,6 +958,7 @@ pub struct InteractiveMode {
     /// A state change the next host frame must show (senpi `requestRender`); taken by
     /// [`InteractiveMode::take_frame_rebuild`].
     frame_dirty: bool,
+    background_footer_animating: bool,
     /// Whether an editor autocomplete request was outstanding at the last poll.
     autocomplete_pending: bool,
     /// Bumped on every session event so the memoized local footer stats follow the session.
@@ -1328,6 +1329,7 @@ impl InteractiveMode {
     }
     fn frame_animating(&self) -> bool {
         !self.agent_idle
+            || (self.footer.is_none() && self.background_footer_animating)
             || self.provisional_working
             || self.working_started_ms.is_some()
             || self.pending_turn.is_some()
@@ -3056,6 +3058,7 @@ impl InteractiveMode {
             pending_dialog_external_edit: Default::default(),
             footer_poll_ms: None,
             frame_dirty: true,
+            background_footer_animating: false,
             autocomplete_pending: false,
             footer_event_generation: 0,
             footer_stats_cache: RefCell::new(None),
@@ -4920,7 +4923,6 @@ impl InteractiveMode {
         );
         self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
-        self.subscribe_to_lifecycle();
         // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
         // session can register one through the host.
         self.session_control_host.dispose_active().await;
@@ -4930,6 +4932,10 @@ impl InteractiveMode {
             tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) }
         }
         self.finish_extension_binding().await;
+        // senpi `rebindCurrentSession`: `subscribeToAgent()` (which shows the lifecycle status) runs after
+        // `bindCurrentSessionExtensions()`, so the footer binds to the settled snapshot rather than a
+        // transient record the binding itself published.
+        self.subscribe_to_lifecycle();
     }
 
     /// senpi `showLifecycleStatus` + the `session_lifecycle` arm of `subscribeToAgent`: bind the
@@ -5067,10 +5073,11 @@ impl InteractiveMode {
                     if pending {
                         self.finish_question(&request_id, response);
                     }
-                    drop(reply.send(pending));
+                    let _ = reply.send(pending);
                 }
                 ControlSurfaceAction::Notice(line) => self.show_warning(&line),
                 ControlSurfaceAction::SelectModel { model, reply } => {
+                    let model = *model;
                     // senpi `applyModelSelection(this, model, {source: "control"})`.
                     let session = self.session.clone();
                     let selected = model.clone();
@@ -5130,7 +5137,7 @@ impl InteractiveMode {
                     let session = self.session.clone();
                     self.park_independent_action(
                         async move { session.stop().await },
-                        move |_mode, ()| drop(reply.send(())),
+                        move |_mode, ()| { let _ = reply.send(()); },
                     );
                 }
             }
@@ -12503,6 +12510,7 @@ impl InteractiveMode {
         // senpi `clearExtensionStatuses(HOST_STATUS_KEYS)`: the rendered statuses live in
         // `extension_ui.statuses`, which keeps the host-owned keys (`reset_before_session_invalidate`).
         self.footer_data.clear_extension_statuses();
+        self.background_footer_animating = false;
         self.extension_ui
             .statuses
             .lock()
@@ -12576,7 +12584,12 @@ impl InteractiveMode {
                 self.footer_data.set_subagent_cost(cost);
                 self.editor_host.request_render();
             }
-            UiRequest::WidgetFrame => self.editor_host.request_render(),
+            UiRequest::WidgetFrame => {
+                self.background_footer_animating = crate::components::footer::background_status_animating(
+                    &self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                self.editor_host.request_render();
+            }
             UiRequest::ResetExtensionUi => self.reset_extension_ui(),
             UiRequest::WidgetFactory(key, factory, options) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(
@@ -15129,6 +15142,7 @@ impl InteractiveMode {
             }
         }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
+        footer.now_ms = self.clock_ms();
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
         footer.set_compaction_delegated(self.compaction_delegated);
         footer.snapshot.extension_statuses = self

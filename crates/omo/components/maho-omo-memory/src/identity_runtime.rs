@@ -139,6 +139,17 @@ pub fn create_identity_runtime(
     })
 }
 impl MemoryIdentityRuntime {
+    /// A runtime over an existing reservation store (the CLI worker shares one store per identity).
+    pub fn with_store(identity: MemoryIdentityContext, store: Arc<ReflectionReservationStore>) -> Self {
+        Self {
+            identity,
+            store,
+            runner: Default::default(),
+            sandbox: Default::default(),
+            reconciliation: Default::default(),
+        }
+    }
+
     pub async fn launch<
         F: std::future::Future<
                 Output = Result<crate::worker::runner_types::ReflectionRunResult, String>,
@@ -234,9 +245,7 @@ impl MemoryIdentityRuntime {
                     drop(_clear);
                     let _ = publish.send(Some(outcome.clone()));
                     // The flight's owner reports what the pass did: a failure is not masked by its abort.
-                    if outcome.is_err() {
-                        return outcome;
-                    }
+                    outcome.as_ref().map_err(Clone::clone)?;
                     outcome
                 }
                 Err((mut done, flight_signal)) => {

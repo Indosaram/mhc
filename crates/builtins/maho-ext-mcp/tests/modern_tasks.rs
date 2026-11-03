@@ -413,6 +413,7 @@ async fn keeps_a_task_pending_beyond_the_rpc_operation_deadline_and_unwraps_only
     let (_connection, client) = connect(&script, root.path()).await;
     let updates = Arc::new(Mutex::new(Vec::new()));
     let (on_progress, worked) = on_working(updates.clone());
+    let scheduled = clock.next_scheduled(400_000.0);
     let pending = call_tool(
         &client,
         &clock,
@@ -426,6 +427,7 @@ async fn keeps_a_task_pending_beyond_the_rpc_operation_deadline_and_unwraps_only
     within("the working progress", worked)
         .await
         .expect("working progress");
+    within("the poll to be scheduled", scheduled).await;
     clock.advance(400_000.0);
     let result = within("the task result", pending)
         .await
@@ -591,6 +593,7 @@ async fn terminates_input_required_tasks_without_a_presenter_never_fabricating_a
     let root = tempfile::tempdir().expect("tempdir");
     let (_connection, client) = connect(&script, root.path()).await;
     let (on_progress, worked) = on_working(Arc::default());
+    let scheduled = clock.next_scheduled(400_000.0);
     let pending = call_tool(
         &client,
         &clock,
@@ -603,6 +606,7 @@ async fn terminates_input_required_tasks_without_a_presenter_never_fabricating_a
     within("the working progress", worked)
         .await
         .expect("working progress");
+    within("the poll to be scheduled", scheduled).await;
     clock.advance(400_000.0);
     let code = mrtr_code(within("the stopped call", pending).await.expect("join"));
     assert_eq!(code, McpMrtrErrorCode::ProcessingUnavailable);
@@ -1082,6 +1086,7 @@ async fn routes_task_and_displays_status_through_the_tool_row(mode: &str) {
         description: None,
         annotations: None,
         request_timeout: Duration::from_millis(1000),
+        invocation: None,
         client: Some(client),
         runtime: None,
         connection: None,

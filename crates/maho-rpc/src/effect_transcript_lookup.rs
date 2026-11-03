@@ -15,7 +15,7 @@ const HEADER_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectLookup {
-    Found(EffectStatus),
+    Found(Box<EffectStatus>),
     /// Searched to the header: the effect is not in this transcript.
     NotFoundComplete,
 }
@@ -77,7 +77,7 @@ fn lookup_with_chunk(
         carry = first_newline.map_or_else(Vec::new, |index| data[..index].to_vec());
         let text = String::from_utf8_lossy(&data[body_start..]);
         if let Some(effect) = newest_in_lines(&text, effect_id, &durable_session_id) {
-            return Ok(EffectLookup::Found(effect));
+            return Ok(EffectLookup::Found(Box::new(effect)));
         }
     }
     Ok(EffectLookup::NotFoundComplete)

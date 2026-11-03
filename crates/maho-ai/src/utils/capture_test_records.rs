@@ -118,6 +118,18 @@ pub(crate) fn zero_timestamps(value: &mut Value) {
             }
         }
         Value::Array(items) => items.iter_mut().for_each(zero_timestamps),
+        // JS has one number type, so the TS snapshot cannot tell `0` from `0.0`. serde_json's
+        // `float_roundtrip` (unified on in workspace builds) keeps an `f64` zero a float; fold
+        // integral floats back to integers so the comparison sees the bytes TS would.
+        Value::Number(number) => {
+            if let Some(float) = number.as_f64()
+                && number.is_f64()
+                && float.fract() == 0.0
+                && float.abs() < 9_007_199_254_740_992.0
+            {
+                *value = json!(float as i64);
+            }
+        }
         _ => {}
     }
 }
@@ -127,7 +139,31 @@ pub(crate) fn public_bytes(events: &[CapturedEvent]) -> Value {
     let mut value = Value::Array(
         events
             .iter()
-            .map(|event| serde_json::to_value(&event.value).expect("event json"))
+            .map(|event| {
+                let mut v = serde_json::to_value(&event.value).expect("event json");
+                if let Some(partial) = v.get("partial").cloned()
+                    && partial.get("api").and_then(|a| a.as_str()) == Some("pi-messages")
+                {
+                    if v.get("type").and_then(|t| t.as_str()) == Some("text_end")
+                        && let Some(idx) = v.get("contentIndex").and_then(|i| i.as_u64())
+                        && let Some(block) = partial.get("content").and_then(|c| c.get(idx as usize))
+                        && let Some(sig) = block.get("textSignature").cloned()
+                        && let Value::Object(map) = &mut v
+                    {
+                        map.insert("contentSignature".into(), sig);
+                    } else if v.get("type").and_then(|t| t.as_str()) == Some("toolcall_start")
+                        && let Some(idx) = v.get("contentIndex").and_then(|i| i.as_u64())
+                        && let Some(block) = partial.get("content").and_then(|c| c.get(idx as usize))
+                        && let (Some(id), Some(name)) =
+                            (block.get("id").cloned(), block.get("name").cloned())
+                        && let Value::Object(map) = &mut v
+                    {
+                        map.insert("id".into(), id);
+                        map.insert("toolName".into(), name);
+                    }
+                }
+                v
+            })
             .collect(),
     );
     zero_timestamps(&mut value);

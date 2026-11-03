@@ -3,6 +3,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+pub type ReadLegacyRecord<R> = Box<dyn Fn(&std::path::Path) -> Option<R> + Send + Sync>;
+pub type WriteLegacyRecord<R> = Box<dyn Fn(&R) -> std::io::Result<()> + Send + Sync>;
+
 pub struct LegacyMigration<R> {
     pub root_dir: PathBuf,
     pub lock_path: PathBuf,
@@ -10,8 +13,8 @@ pub struct LegacyMigration<R> {
     pub tokens_path: PathBuf,
     pub stale_ms: u64,
     pub disable_lock: bool,
-    pub read: Box<dyn Fn(&std::path::Path) -> Option<R> + Send + Sync>,
-    pub write: Box<dyn Fn(&R) -> std::io::Result<()> + Send + Sync>,
+    pub read: ReadLegacyRecord<R>,
+    pub write: WriteLegacyRecord<R>,
     pub lock_error: Box<dyn Fn(std::io::Error) -> std::io::Error + Send + Sync>,
 }
 

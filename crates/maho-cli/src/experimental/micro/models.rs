@@ -91,10 +91,10 @@ impl Models for PicoModels {
             Ok(context) => context,
             Err(error) => {
                 let error = maho_ai::utils::lazy::setup_error_message(model, &error);
-                return futures::stream::iter([AssistantMessageEvent::Error {
+                return futures::stream::iter([Ok(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error,
-                }])
+                })])
                 .boxed_local();
             }
         };
@@ -120,16 +120,16 @@ impl Models for PicoModels {
                         reason: ErrorReason::Aborted,
                         ..
                     })) if ctx.is_aborted() => None,
-                    Ok(Some(event)) => Some((event, Some(source))),
+                    Ok(Some(event)) => Some((Ok(event), Some(source))),
                     Ok(None) => None,
                     Err(error) => {
                         let error =
                             maho_ai::utils::lazy::setup_stream_error_message(&model, &error);
                         Some((
-                            AssistantMessageEvent::Error {
+                            Ok(AssistantMessageEvent::Error {
                                 reason: ErrorReason::Error,
                                 error,
-                            },
+                            }),
                             None,
                         ))
                     }
@@ -441,10 +441,13 @@ mod tests {
         let ctx = maho_agent::harness::context::background_context();
         let events: Vec<AssistantMessageEvent> = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            models.stream(&model, request, &ctx).collect(),
+            models.stream(&model, request, &ctx).collect::<Vec<_>>(),
         )
         .await
-        .expect("bounded stream");
+        .expect("bounded stream")
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .expect("stream events");
         let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
             panic!("stream ends with done: {events:?}");
         };

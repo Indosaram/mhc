@@ -355,7 +355,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let _lifetime_binding = hop.lifetime_binding;
     let daemon_dir = paths.dir.to_string_lossy().into_owned();
     // senpi `spawnHostChild`: the environment that binds the child to this supervisor and its generation.
-    let mut child_env = crate::host_lifecycle_launch::host_child_env(
+    let child_env = crate::host_lifecycle_launch::host_child_env(
         env.clone(),
         &crate::host_lifecycle_launch::HostChildEnv {
             platform,
@@ -374,6 +374,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         },
     );
     #[cfg(unix)]
+    let mut child_env = child_env;
+    #[cfg(unix)]
     let _watch_guard = bind_child_watch_pipe(&mut child_env)?;
     let stderr = {
         let mut options = std::fs::OpenOptions::new();
@@ -385,7 +387,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         }
         options.open(&paths.stderr_log)?
     };
-    let mut spawnable = spawnable_child_launch(&child_launch, platform);
+    let spawnable = spawnable_child_launch(&child_launch, platform);
+    #[cfg(unix)]
+    let mut spawnable = spawnable;
     // senpi `spawnHostChild`: a shell wrapper cannot prove preservation of the private inherited handle.
     // The inherited fd 4 is adopted (close-on-exec) before anything is spawned; a shell launch just closes it.
     #[cfg(unix)]
@@ -465,7 +469,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // so CREATE_NO_WINDOW gives the child a console without a window (senpi `windowsHide`); the lifetime
     // binding is the ppid watch alone.
     #[cfg(windows)]
-    let mut child = {
+    let child = {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut command = if spawnable.shell {
             // Node's `shell: true`: `cmd.exe /d /s /c "<command> <args>"`, every piece pre-quoted verbatim.

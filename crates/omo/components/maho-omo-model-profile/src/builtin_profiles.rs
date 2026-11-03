@@ -136,12 +136,7 @@ const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
         variant: Some("max"),
     },
 ];
-/// LAUNCH-GATED (upstream `fable-55-launch.ts`): the id is provisional and the rung stays out of every
-/// chain until the live listing confirms it. Mirrors `FABLE_55_RELEASED`; `launchRungs` drops the 5.5
-/// rung while it is false (its effort `xhigh` is in `FABLE_55_EFFORTS.accepted`). Replace with
-/// `model_core::fable_55_launch` once that module lands.
-const FABLE_55_RELEASED: bool = false;
-const FABLE_55_LAUNCH_ID: &str = "claude-fable-5-5";
+use model_core::{FABLE_55_LAUNCH_ID, FABLE_55_RELEASED};
 const DAILY_HEAVY_LAUNCH_MODELS: &[BuiltinRung] = &[
     BuiltinRung {
         providers: CLAUDE_PROVIDERS,

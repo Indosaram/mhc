@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 regex.workspace = true
+maho-ai = { path = "../../maho-ai" }
 maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
 
@@ -16,6 +17,7 @@ maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../maho-ext-host" }
 tokio.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 
 [lints]

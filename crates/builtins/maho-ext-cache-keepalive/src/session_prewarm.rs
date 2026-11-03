@@ -48,7 +48,7 @@ pub struct PromptCachePrefixRequest {
 
 /// `getPromptCachePrefixRequest` result.
 pub enum PromptCachePrefixOutcome {
-    Ready(PromptCachePrefixRequest),
+    Ready(Box<PromptCachePrefixRequest>),
     Skipped(String),
 }
 
@@ -101,11 +101,11 @@ impl PrewarmContext for ExtensionPrewarmContext {
             match ctx.get_prompt_cache_prefix_request(options).await.ok()? {
                 maho_ext_api::PromptCachePrefixResult::Ready(request) => {
                     let request = *request;
-                    Some(PromptCachePrefixOutcome::Ready(PromptCachePrefixRequest {
+                    Some(PromptCachePrefixOutcome::Ready(Box::new(PromptCachePrefixRequest {
                         model: request.model,
                         context: request.context,
                         options: request.options,
-                    }))
+                    })))
                 }
                 maho_ext_api::PromptCachePrefixResult::Skipped(reason) => {
                     Some(PromptCachePrefixOutcome::Skipped(reason))
@@ -240,7 +240,7 @@ impl Inner {
                 });
                 return Ok(());
             }
-            PromptCachePrefixOutcome::Ready(request) => request,
+            PromptCachePrefixOutcome::Ready(request) => *request,
         };
         if self.lock().submitted || !ctx.keep_alive_enabled() {
             return Ok(());
@@ -407,12 +407,14 @@ mod tests {
         model
     }
 
+    type PrefixFn = Box<dyn Fn() -> Option<PromptCachePrefixOutcome> + Send>;
+
     struct Host {
         model: Mutex<Option<Model>>,
         enabled: AtomicBool,
         idle: AtomicBool,
         pending: AtomicBool,
-        prefix: Mutex<Option<Box<dyn Fn() -> Option<PromptCachePrefixOutcome> + Send>>>,
+        prefix: Mutex<Option<PrefixFn>>,
         listeners: Mutex<Vec<ActivityListener>>,
     }
 
@@ -424,11 +426,11 @@ mod tests {
                 idle: AtomicBool::new(true),
                 pending: AtomicBool::new(false),
                 prefix: Mutex::new(Some(Box::new(|| {
-                    Some(PromptCachePrefixOutcome::Ready(PromptCachePrefixRequest {
+                    Some(PromptCachePrefixOutcome::Ready(Box::new(PromptCachePrefixRequest {
                         model: model(),
                         context: Context::default(),
                         options: WarmPromptCacheOptions::default(),
-                    }))
+                    })))
                 }))),
                 listeners: Mutex::default(),
             })

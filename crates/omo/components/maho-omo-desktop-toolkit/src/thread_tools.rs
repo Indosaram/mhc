@@ -65,13 +65,10 @@ async fn response_message(mut response: reqwest::Response, id: u64) -> Result<Va
             .map_err(|_| "desktop toolkit HTTP request failed".to_owned())?
             .ok_or_else(|| "desktop toolkit stream ended without a response".to_owned())?;
         buffer.extend_from_slice(&chunk);
-        loop {
-            let Some(end) = buffer
+        while let Some(end) = buffer
                 .iter()
                 .position(|byte| *byte == b'\r' || *byte == b'\n')
-            else {
-                break;
-            };
+        {
             if buffer[end] == b'\r' && end == buffer.len() - 1 {
                 break;
             }

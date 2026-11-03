@@ -315,7 +315,7 @@ impl Inner {
         let mut cancelled = cancelled.expect("waiting cell");
         // Dropping this future while it waits must not leave a phantom queued cell behind.
         let waiting = WaitingCell {
-            inner: &**self,
+            inner: self,
             cell_id: &cell_id,
         };
         let current = tokio::select! {

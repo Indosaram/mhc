@@ -136,15 +136,15 @@ fn print_and_sdk_without_ui_refuse_with_the_flag_hint_and_emit_asked() {
         "permission_asked",
         Arc::new(move |value: &Value| captured.lock().expect("events").push(value.clone())),
     );
-    let request = request("print-test-1", "session-1", "bash", &["rm -rf /"]);
-    let outcome = handle_no_ui(&request, false, &emitter).expect("emit");
+    let print_request = request("print-test-1", "session-1", "bash", &["rm -rf /"]);
+    let outcome = handle_no_ui(&print_request, false, &emitter).expect("emit");
     assert_eq!(
         serde_json::to_value(&outcome).expect("json"),
         json!({"requestID":"print-test-1","reply":"reject","message":format!("Permission required for bash (rm -rf /), and there is no UI to ask, so the call did not run. {DENIAL_IS_FINAL} The user can allow it with --permission bash=allow.")})
     );
     assert_eq!(
         *events.lock().expect("events"),
-        [serde_json::to_value(&request).expect("json")]
+        [serde_json::to_value(&print_request).expect("json")]
     );
     assert!(
         outcome

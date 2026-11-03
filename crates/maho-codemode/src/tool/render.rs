@@ -483,12 +483,14 @@ struct EvalCard {
     ticker: std::rc::Rc<LiveTicker>,
 }
 
-const LIVE_ELAPSED_TICK_MS: u64 = 1_000;
-// A live row repaints on every tick, so this many ticks without a render means the row is gone.
-const LIVE_TICKER_MAX_IDLE_TICKS: u32 = 60;
+// Divergence from senpi (1s): the host never passes an eval row a spinner frame, so the live
+// ticker repaints at the host spinner rate and the header glyph spins instead of sitting on ⠋.
+const LIVE_ELAPSED_TICK_MS: u64 = 80;
+// A live row repaints on every tick, so this many ticks (one minute) without a render means the row is gone.
+const LIVE_TICKER_MAX_IDLE_TICKS: u32 = 750;
 
 /// senpi `PlainTextComponent.syncLiveTicker`: the host animates no eval row, so while a cell is
-/// non-terminal the card repaints itself once a second to advance the header's elapsed time.
+/// non-terminal the card repaints itself on every spinner tick to advance the header's glyph and elapsed time.
 struct LiveTicker {
     ticker: std::cell::Cell<Option<maho_tui::ui_intervals::UiIntervalId>>,
     live: std::cell::Cell<bool>,
@@ -572,6 +574,12 @@ impl maho_tui::tui::Component for EvalCard {
     }
     fn render(&mut self, width: usize) -> Vec<String> {
         self.ticker.rendered();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
+        let spinner_frame = self.spinner_frame.or_else(|| {
+            self.ticker.live.get().then_some((now as u64 / LIVE_ELAPSED_TICK_MS) as usize)
+        });
         let context = EvalRenderContext {
             expanded: self.expanded,
             has_result: self.has_result,
@@ -579,10 +587,8 @@ impl maho_tui::tui::Component for EvalCard {
             is_error: self.is_error,
             show_images: self.show_images,
             image_protocol: self.image_protocol.clone(),
-            spinner_frame: self.spinner_frame,
-            now: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0),
+            spinner_frame,
+            now,
             theme: self.theme.clone(),
             cwd: self.cwd.clone(),
         };
@@ -1391,7 +1397,7 @@ fn render_json_entry_lines(
     };
     use super::json_tree::format_scalar;
     let theme = context.theme.as_ref();
-    let (depth, line_cap, scalar_len) = if context.expanded {
+    let (depth, line_cap, scalar_len): (usize, usize, usize) = if context.expanded {
         (6, 200, 2000)
     } else {
         (2, 6, 60)

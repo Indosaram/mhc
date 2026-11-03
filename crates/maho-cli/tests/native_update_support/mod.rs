@@ -47,8 +47,14 @@ pub struct Fixture {
     pub agent: PathBuf,
 }
 
+/// A scratch directory under cargo's per-target temp dir. Every fixture copies the ~600 MB debug `mhc`
+/// (and installs it again), which overflows a tmpfs `/tmp` once tests run in parallel.
+pub fn scratch_dir() -> tempfile::TempDir {
+    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("scratch directory")
+}
+
 pub fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().expect("fixture directory");
+    let dir = scratch_dir();
     let home = dir.path().join("home");
     let agent = dir.path().join("agent");
     let root = dir.path().join("root");

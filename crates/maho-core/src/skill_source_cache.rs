@@ -194,15 +194,15 @@ mod tests {
     fn a_changed_stamp_reads_the_file_again() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("SKILL.md");
-        write(&path, "---\nname: a\n---\none");
+        write(&path, "---\nname: one\n---\nbody");
         let now = Arc::new(AtomicU64::new((now_ms() + 60_000.0) as u64));
         let cache = SkillSourceCache::new(DEFAULT_LIMITS, clock(&now));
         let key = path.to_string_lossy().into_owned();
         let before = std::fs::metadata(&path).expect("stat");
-        assert!(cache.read(&key, &before).expect("read").ends_with("one"));
-        write(&path, "---\nname: a\n---\nlonger text");
+        assert!(cache.read(&key, &before).expect("read").contains("name: one"));
+        write(&path, "---\nname: longer text\n---\nbody");
         let after = std::fs::metadata(&path).expect("stat");
-        assert!(cache.read(&key, &after).expect("read").ends_with("longer text"));
+        assert!(cache.read(&key, &after).expect("read").contains("name: longer text"));
     }
 
     #[test]

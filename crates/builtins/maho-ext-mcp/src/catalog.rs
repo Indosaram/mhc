@@ -96,7 +96,7 @@ pub async fn collect_tool_catalog(
                 .filter(|cursor| !cursor.is_null())
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            Ok(McpListPage {
+            Ok::<McpListPage<Value>, McpError>(McpListPage {
                 items: response.get("tools").and_then(Value::as_array).cloned(),
                 next_cursor,
                 ..Default::default()

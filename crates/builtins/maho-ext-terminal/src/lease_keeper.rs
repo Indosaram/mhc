@@ -342,6 +342,9 @@ mod tests {
 
     async fn ticks(harness: &Harness, count: u64) {
         for _ in 0..count {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
             tokio::time::advance(std::time::Duration::from_millis(TICK_MS)).await;
             for _ in 0..8 {
                 tokio::task::yield_now().await;

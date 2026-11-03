@@ -90,7 +90,7 @@ async fn overflow_without_collapsible_history_settles_input_and_writes_notice() 
 struct ThrowingModels { calls:std::rc::Rc<std::cell::Cell<u32>>, secret:String }
 impl Models for ThrowingModels {
     fn resolve(&self,r:&ModelRef)->Option<Model> {
-        let mut model=crate::agent::default_model(); model.provider=r.provider.clone(); model.id=r.model_id.clone(); Some(model)
+        let mut model=crate::agent::default_model(); model.provider=r.provider.clone(); model.id=r.model_id.clone(); model.context_window=200_000; model.max_tokens=8192; Some(model)
     }
     fn stream(&self,_:&Model,_:RequestOptions,_:&Context)->AssistantStream {
         self.calls.set(self.calls.get()+1);

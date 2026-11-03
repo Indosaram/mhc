@@ -18,7 +18,7 @@ use crate::harness::runtime::lane::{CommitDecision, LaneCommand};
 use crate::harness::runtime::restore::{decode_operation_state, restore_lane};
 use crate::harness::session::testing::InstrumentedStorage;
 use crate::harness::session::types::{
-    InboxItem, Operation, OperationMeta, Session, SessionMetadata, SessionMutation,
+    InboxItem, Operation, OperationMeta, Session, SessionMetadata,
 };
 use crate::harness::session::values::{
     lane_config, lane_state, operation_meta, operation_state, pending_entry,

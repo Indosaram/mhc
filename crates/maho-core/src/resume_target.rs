@@ -178,7 +178,7 @@ mod tests {
         )
         .await
         .expect("resume target");
-        assert_eq!(asked, [fixture.old_cwd.clone()]);
+        assert_eq!(asked, std::slice::from_ref(&fixture.old_cwd));
         assert!(target.rebound);
         assert_eq!(
             Path::new(&target.path).parent().expect("dir").file_name(),

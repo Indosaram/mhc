@@ -69,7 +69,7 @@ fn removes_retired_and_unlisted_rows_and_adds_priced_serving_tiers() {
 
 #[test]
 fn builds_a_bare_model_for_an_unknown_base_and_skips_models_without_a_context_window() {
-    let listing = vec![
+    let listing = [
         listed("o/new", "active", Some(400_000)),
         listed("o/blind", "active", None),
     ];

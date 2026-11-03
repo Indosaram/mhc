@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::session::SessionError;
 
@@ -18,19 +18,24 @@ impl MutationLine {
         Self::default()
     }
 
+    pub async fn acquire(&self) -> Result<OwnedMutexGuard<()>, SessionError> {
+        if let Some(error) = self.sealed.lock().await.clone() {
+            return Err(error);
+        }
+        let guard = self.gate.clone().lock_owned().await;
+        if let Some(error) = self.sealed.lock().await.clone() {
+            drop(guard);
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
     pub async fn run<T, F, Fut>(&self, operation: F) -> Result<T, SessionError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, SessionError>>,
     {
-        if let Some(error) = self.sealed.lock().await.clone() {
-            return Err(error);
-        }
-        let guard = self.gate.lock().await;
-        if let Some(error) = self.sealed.lock().await.clone() {
-            drop(guard);
-            return Err(error);
-        }
+        let guard = self.acquire().await?;
         let result = operation().await;
         drop(guard);
         result

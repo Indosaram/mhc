@@ -273,10 +273,13 @@ mod tests {
     fn every_query_disables_claude_code_auto_memory_and_requires_an_absolute_cwd() {
         let directory = tempfile::tempdir().expect("dir");
         let settings = crate::settings::load(&json!({}), &Value::Null, &Default::default());
+        let model = json!({"id":"claude-opus-5-5"});
+        let context = json!({});
+        let stream_options = json!({});
         let input = |cwd| QueryOptionsInput {
-            model: &json!({"id":"claude-opus-5-5"}),
-            context: &json!({}),
-            stream_options: &json!({}),
+            model: &model,
+            context: &context,
+            stream_options: &stream_options,
             settings: &settings,
             lane: crate::auth_lane::TokenInjection::OAuthSlots,
             cwd,

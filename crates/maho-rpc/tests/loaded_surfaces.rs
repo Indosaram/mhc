@@ -26,7 +26,6 @@ fn snapshot(name: &str) -> McpWireStatusSnapshot {
             resource_templates: Vec::new(),
             auth_status: McpWireAuthStatus::NotLoggedIn,
             status: None,
-            last_error: None,
         }],
     }
 }

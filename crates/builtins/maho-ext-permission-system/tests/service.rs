@@ -11,6 +11,8 @@ async fn static_deny(){ let mut s=PermissionService::new(vec![rule(Action::Deny)
 #[tokio::test]
 async fn approved_deny(){ let mut s=PermissionService::new(vec![],vec![rule(Action::Deny)],PermissionEventEmitter::default()); assert!(matches!(s.ask(request("a","s")).await,Err(PermissionError::Denied(_)))); }
 #[tokio::test]
+async fn settings_deny_beats_approved_allow(){ let mut s=PermissionService::new(vec![rule(Action::Deny)],vec![rule(Action::Allow)],PermissionEventEmitter::default()); assert!(matches!(s.ask(request("a","s")).await,Err(PermissionError::Denied(_)))); }
+#[tokio::test]
 async fn once_resolves(){ let mut s=PermissionService::new(vec![],vec![],PermissionEventEmitter::default()); let future=s.ask(request("a","s")); assert_eq!(s.list().len(),1); s.reply(ReplyInput{request_id:"a".into(),reply:Reply::Once,message:None,always:None}); assert!(future.await.is_ok()); assert!(s.get_approved().is_empty()); }
 #[tokio::test]
 async fn always_covers_same_session(){ let mut s=PermissionService::new(vec![],vec![],PermissionEventEmitter::default()); let first=s.ask(request("a","s")); let second=s.ask(request("b","s")); s.reply(ReplyInput{request_id:"a".into(),reply:Reply::Always,message:None,always:None}); assert!(first.await.is_ok()); assert!(second.await.is_ok()); assert_eq!(s.get_approved().len(),1); }

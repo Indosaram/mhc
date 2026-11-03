@@ -318,6 +318,16 @@ pub fn account_home_dir() -> String {
     if let Some(home) = account_home_dir_unix() {
         return home;
     }
+    // Windows: the account's profile folder (`FOLDERID_Profile`), which is independent of a
+    // HOME/USERPROFILE override, as `getpwuid` is on Unix. Without it an isolated HOME would drop
+    // the real profile as a walk boundary and load its `.omo` config as a project layer.
+    #[cfg(windows)]
+    if let Some(home) = dirs::home_dir()
+        .map(|home| to_posix_path(&home.to_string_lossy()))
+        .filter(|home| !home.is_empty())
+    {
+        return home;
+    }
 
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))

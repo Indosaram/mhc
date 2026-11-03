@@ -151,7 +151,7 @@ struct MutationState {
     commit_started: AtomicBool,
     commit_done: AtomicBool,
     settled: Arc<Semaphore>,
-    release: Arc<Semaphore>,
+    guard: std::sync::Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
     end_started: AtomicBool,
     end_done: AtomicBool,
     end_settled: Arc<Semaphore>,
@@ -163,7 +163,7 @@ pub struct StorageBackedSessionMutation {
 }
 
 impl StorageBackedSessionMutation {
-    fn new(storage: Arc<dyn Storage>, release: Arc<Semaphore>) -> Self {
+    fn new(storage: Arc<dyn Storage>, guard: tokio::sync::OwnedMutexGuard<()>) -> Self {
         Self {
             storage,
             state: Arc::new(MutationState {
@@ -171,7 +171,7 @@ impl StorageBackedSessionMutation {
                 commit_started: AtomicBool::new(false),
                 commit_done: AtomicBool::new(false),
                 settled: Arc::new(Semaphore::new(0)),
-                release,
+                guard: std::sync::Mutex::new(Some(guard)),
                 end_started: AtomicBool::new(false),
                 end_done: AtomicBool::new(false),
                 end_settled: Arc::new(Semaphore::new(0)),
@@ -309,10 +309,24 @@ impl SessionMutation for StorageBackedSessionMutation {
             }
             self.state.active.store(false, Ordering::SeqCst);
             self.settle().await;
-            self.state.release.add_permits(1);
+            if let Ok(mut lock) = self.state.guard.lock() {
+                lock.take();
+            }
             self.state.end_done.store(true, Ordering::SeqCst);
             self.state.end_settled.add_permits(1);
         })
+    }
+}
+
+impl Drop for StorageBackedSessionMutation {
+    fn drop(&mut self) {
+        if !self.state.end_done.swap(true, Ordering::SeqCst) {
+            self.state.active.store(false, Ordering::SeqCst);
+            if let Ok(mut lock) = self.state.guard.lock() {
+                lock.take();
+            }
+            self.state.end_settled.add_permits(1);
+        }
     }
 }
 
@@ -830,36 +844,9 @@ impl Session for StorageBackedSession {
     ) -> BoxFuture<'a, SessionResult<Box<dyn SessionMutation>>> {
         Box::pin(async move {
             self.assert_open()?;
-            let (sender, receiver) = tokio::sync::oneshot::channel::<SessionResult<Box<dyn SessionMutation>>>();
-            let mut sender = Some(sender);
-            let line = self.mutation_line.clone();
-            let storage = self.storage.clone();
-            tokio::spawn(async move {
-                let mut granted = false;
-                let result = line
-                    .run(|| async {
-                        let release = Arc::new(Semaphore::new(0));
-                        let mutation = StorageBackedSessionMutation::new(storage.clone(), release.clone());
-                        if let Some(sender) = sender.take() {
-                            granted = true;
-                            let _ = sender.send(Ok(Box::new(mutation) as Box<dyn SessionMutation>));
-                        }
-                        if let Ok(permit) = release.acquire().await {
-                            permit.forget();
-                        }
-                        Ok(())
-                    })
-                    .await;
-                if let Err(error) = result
-                    && !granted
-                        && let Some(sender) = sender.take() {
-                            let _ = sender.send(Err(error));
-                        }
-            });
-            match receiver.await {
-                Ok(result) => result,
-                Err(_) => Err(Self::closed_error()),
-            }
+            let guard = self.mutation_line.acquire().await?;
+            let mutation = StorageBackedSessionMutation::new(self.storage.clone(), guard);
+            Ok(Box::new(mutation) as Box<dyn SessionMutation>)
         })
     }
 

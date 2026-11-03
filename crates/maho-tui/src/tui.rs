@@ -1235,10 +1235,13 @@ impl TuiBaseState {
                 .options
                 .as_ref()
                 .is_some_and(|o| o.non_capturing);
-            if !non_capturing {
+            if !non_capturing && TuiBaseState::is_overlay_visible(&state.overlay_stack[index], 0, 0) {
                 state.focus_order_counter += 1;
                 state.overlay_stack[index].focus_order = state.focus_order_counter;
                 state.set_focus_component(Some(Rc::clone(component)));
+                state.overlay_focus_restore = OverlayFocusRestore::Eligible {
+                    overlay_component: Rc::clone(component),
+                };
             }
         }
         state.render_requested = true;
@@ -1262,9 +1265,15 @@ impl TuiBaseState {
         else {
             return;
         };
+        if !TuiBaseState::is_overlay_visible(&state.overlay_stack[index], 0, 0) {
+            return;
+        }
         state.focus_order_counter += 1;
         state.overlay_stack[index].focus_order = state.focus_order_counter;
         state.set_focus_component(Some(Rc::clone(component)));
+        state.overlay_focus_restore = OverlayFocusRestore::Eligible {
+            overlay_component: Rc::clone(component),
+        };
         state.render_requested = true;
         state.render_due_at_ms = Some(0);
     }
@@ -2710,25 +2719,32 @@ impl TuiBase {
             if !focus_is_overlay {
                 let action = {
                     let state = self.state.borrow();
+                    let is_overlay_visible = |component: &Rc<RefCell<dyn Component>>| {
+                        state.overlay_stack.iter().any(|entry| {
+                            Rc::ptr_eq(&entry.component, component)
+                                && TuiBaseState::is_overlay_visible(entry, 0, 0)
+                        })
+                    };
                     match &state.overlay_focus_restore {
-                        OverlayFocusRestore::Eligible { overlay_component } => {
+                        OverlayFocusRestore::Eligible { overlay_component }
+                            if is_overlay_visible(overlay_component) =>
+                        {
                             Some(Some(Rc::clone(overlay_component)))
                         }
                         OverlayFocusRestore::Blocked {
-                            blocked_by, resume, ..
-                        } if !ptr_eq_opt(&state.focused_component, blocked_by) => match resume {
-                            OverlayFocusResume::RestoreOverlay => {
-                                if let OverlayFocusRestore::Blocked {
-                                    overlay_component, ..
-                                } = &state.overlay_focus_restore
-                                {
+                            blocked_by,
+                            resume,
+                            overlay_component,
+                        } if is_overlay_visible(overlay_component)
+                            && !ptr_eq_opt(&state.focused_component, blocked_by) =>
+                        {
+                            match resume {
+                                OverlayFocusResume::RestoreOverlay => {
                                     Some(Some(Rc::clone(overlay_component)))
-                                } else {
-                                    None
                                 }
+                                OverlayFocusResume::FocusTarget(target) => Some(target.clone()),
                             }
-                            OverlayFocusResume::FocusTarget(target) => Some(target.clone()),
-                        },
+                        }
                         _ => None,
                     }
                 };
@@ -4247,8 +4263,8 @@ impl TuiBase {
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
-        state.previous_viewport_top =
-            (*prev_viewport_top).max(final_cursor_row.saturating_sub(height) + 1);
+        let scroll_top = (final_cursor_row as i64 - height as i64 + 1).max(0) as usize;
+        state.previous_viewport_top = (*prev_viewport_top).max(scroll_top);
         state.previous_lines = new_lines;
         state.previous_raw_lines = raw_lines;
         if let Some(kitty_image_ids) = kitty_image_ids {

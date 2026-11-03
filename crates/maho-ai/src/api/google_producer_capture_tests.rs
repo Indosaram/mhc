@@ -24,7 +24,7 @@ pub(super) fn adapter_model(name: &str) -> Model {
         _ => ("google-vertex", "gemini-3-flash-preview"),
     };
     crate::models_generated::get_builtin_model(provider, id)
-        .unwrap_or_else(|| panic!("{provider}/{id}"))
+        .unwrap_or_else(|_| panic!("{provider}/{id}"))
         .clone()
 }
 
@@ -215,7 +215,7 @@ async fn keeps_the_complete_parsed_seed_and_the_emitted_spelling_without_a_parse
             .and_then(|capture| capture.message.as_deref())
             .expect("done capture message");
         assert_eq!(
-            serde_json::to_value(&done.stop_reason).expect("stop"),
+            serde_json::to_value(done.stop_reason).expect("stop"),
             json!("toolUse")
         );
         assert!(minted_identity_keys(Some(done)).is_empty(), "{name}");

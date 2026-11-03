@@ -665,6 +665,14 @@ async fn completed_in_process_child_parks_idle_memory_and_rehydrates_on_follow_u
     let sdk_opts = maho_cli::cli::task_runners::native_child_sdk_options(&child_opts, Vec::new()).expect("sdk options");
     let created = maho_core::sdk::create_agent_session(sdk_opts).await.expect("child session");
     let session = Arc::new(created.session);
+    // The session's settle task releases idle runtime messages (re-externalizing, then spilling
+    // them) concurrently with the handle's park, and emits `AgentIdle` once that release is done.
+    let (idle_sender, mut idle_events) = tokio::sync::mpsc::unbounded_channel();
+    let _idle_subscription = session.subscribe(Arc::new(move |event| {
+        if matches!(event, maho_ext_api::AgentSessionEvent::AgentIdle) {
+            let _ = idle_sender.send(());
+        }
+    }));
     let child: Arc<dyn ChildSession> = Arc::new(NativeChild::new(session.clone(), tokio::runtime::Handle::current()));
 
     let handle = InProcessChildHandle::start("st_mem_park", child, "first turn prompt");
@@ -681,8 +689,12 @@ async fn completed_in_process_child_parks_idle_memory_and_rehydrates_on_follow_u
         }
     );
 
-    // The handle parks the child before it publishes the outcome, so the waiter must already
-    // observe a parked store; no polling.
+    // The handle parks the child before it publishes the outcome; the session's own idle release
+    // can still be mid-way (strings re-externalized, not yet spilled), so wait for its AgentIdle.
+    tokio::time::timeout(std::time::Duration::from_secs(30), idle_events.recv())
+        .await
+        .expect("the first turn's idle release finishes in time")
+        .expect("the session is alive");
     let stats_after_turn1 = session.with_session_manager(|m| m.resident_store_stats());
     assert_eq!(stats_after_turn1.blob_bytes, 0, "parked child resident store must hold 0 bytes in RAM");
     assert!(stats_after_turn1.evicted_count > 0, "parked child must spill strings to disk");

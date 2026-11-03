@@ -104,8 +104,13 @@ pub struct IndexInner<Row> {
     next_cut: AtomicU64,
 }
 
-#[derive(Clone)]
 pub struct CompactContentIndex<Row>(pub(crate) Arc<IndexInner<Row>>);
+
+impl<Row> Clone for CompactContentIndex<Row> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 
 /// One resident decoded page of index rows; dropping it ends its residency.
 pub struct HeldRows {

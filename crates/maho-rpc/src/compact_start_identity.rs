@@ -108,10 +108,13 @@ mod tests {
         Ok(())
     }
 
+    type StartEpoch = (&'static str, i64);
+    type StartCase = (&'static [StartEpoch], StartEpoch);
+
     // senpi 4272-compact-start-identity: retired epochs, duplicates and same-epoch resets are stale.
     #[test]
     fn rejects_retired_duplicate_and_reset_starts() {
-        let cases: [(&[(&str, i64)], (&str, i64)); 3] = [
+        let cases: [StartCase; 3] = [
             (&[("A", 0), ("B", 0)], ("A", 1)),
             (&[("A", 0)], ("A", 0)),
             (&[("A", 7)], ("A", 0)),

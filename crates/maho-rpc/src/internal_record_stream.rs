@@ -92,7 +92,7 @@ pub struct InternalRecordStream<S> {
 
 impl<S> InternalRecordStream<S> {
     /// The raw wire under the seal, for tests that play a substituted relay.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn into_inner_for_test(self) -> S {
         self.wire
     }

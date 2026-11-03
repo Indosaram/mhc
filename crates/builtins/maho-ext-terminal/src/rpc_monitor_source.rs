@@ -99,12 +99,6 @@ impl SourceInner {
             .clone()
     }
 
-    fn changed(&self) {
-        if let Some(host) = self.host() {
-            (host.changed)();
-        }
-    }
-
     fn line(&self, id: &str, line: String) {
         let Some(host) = self.host() else {
             return;
@@ -466,7 +460,7 @@ mod tests {
         let fixture = fixture();
         let (id, monitor_id, rows) = fixture
             .source
-            .register(options(&fixture, Some("idle|busy")))
+            .register(options(&fixture, Some("-> idle|-> busy")))
             .await
             .unwrap();
         assert_eq!(
@@ -482,7 +476,7 @@ mod tests {
         );
         let snapshot = &fixture.source.snapshots()[0];
         assert_eq!(snapshot.fire_count, Some(1));
-        assert_eq!(snapshot.filter.as_deref(), Some("idle|busy"));
+        assert_eq!(snapshot.filter.as_deref(), Some("-> idle|-> busy"));
         assert_eq!(snapshot.deadline_ms, Some(61_000.0));
         assert!(fixture.source.pause(&id));
         status(&fixture, "busy");
@@ -534,7 +528,7 @@ mod tests {
         assert!(fixture.source.settle(&first, "watcher killed"));
         assert!(!fixture.source.settle(&first, "watcher killed"));
         fixture.source.dispose();
-        let ended = fixture.ended.lock().unwrap();
+        let ended = fixture.ended.lock().unwrap().clone();
         assert_eq!(
             ended
                 .iter()
@@ -550,7 +544,6 @@ mod tests {
             .filter(|event| matches!(event, MonitorEvent::Summary { .. }))
             .count();
         assert_eq!(summaries, 1, "a disposed watch emits no summary");
-        drop(ended);
         assert!(
             fixture
                 .source

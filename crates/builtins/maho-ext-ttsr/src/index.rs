@@ -123,7 +123,16 @@ impl State {
             disabled_rules: disabled.clone(),
             ..Default::default()
         });
-        let entries = ctx.session_manager.get_entries();
+        // PERF-DIVERGENCE(senpi ttsr): upstream scans a copy of every entry; this visits them one at
+        // a time and keeps only custom records and assistant replies, the two kinds read below.
+        let mut entries = Vec::new();
+        ctx.session_manager.for_each_entry(&mut |entry| {
+            if entry.kind == "custom"
+                || (entry.kind == "message" && entry.data["message"]["role"] == "assistant")
+            {
+                entries.push(entry);
+            }
+        });
         for entry in &entries {
             let value = &entry.data;
             if value["type"] != "custom" {
@@ -344,7 +353,7 @@ fn handle(
                 };
                 return Ok(EventResult::MessageEnd {
                     message: Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                        Box::new(replacement),
+                        std::sync::Arc::new(replacement),
                     ))),
                 });
             } else if let Some(text) = text {
@@ -733,8 +742,8 @@ mod tests {
             wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
             is_project_trusted_fn: Arc::new(|| true),
             is_compacting_fn: Arc::new(|| false),
-            get_system_prompt_fn: Arc::new(|| String::new()),
-            get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions::default()),
+            get_system_prompt_fn: Arc::new(String::new),
+            get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
             registered_mcp_servers: Vec::new(),
             update_tool_hook_status: None,
             idle_coordinator: None,
