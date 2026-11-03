@@ -34,6 +34,8 @@ export async function executeScenarioRun({
   const referencesRead = new Set();
   let reportToolsRan = false;
   let overBudget = false;
+  let finalText = "";
+  const toolArgs = [];
 
   const childArgs = ["-p", "--mode", "json", "--model", model, scenario.prompt];
 
@@ -53,7 +55,13 @@ export async function executeScenarioRun({
       try {
         const event = JSON.parse(trimmed);
 
-        if (event.usage) {
+        if (event.type === "message_end" && event.message?.role === "assistant" && event.message.usage) {
+          const u = event.message.usage;
+          inputTokens += (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+          outputTokens += u.output || 0;
+          const txt = (event.message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+          if (txt) finalText = txt;
+        } else if (event.usage) {
           if (typeof event.usage.input === "number") inputTokens += event.usage.input;
           if (typeof event.usage.output === "number") outputTokens += event.usage.output;
         } else if (event.stats) {
@@ -68,7 +76,11 @@ export async function executeScenarioRun({
           return;
         }
 
-        if (event.type === "tool_call" || event.type === "tool_use") {
+        if (event.type === "tool_execution_start" && event.args) {
+          event.input = event.args;
+          toolArgs.push({ name: event.toolName, args: JSON.stringify(event.args).slice(0, 2000) });
+        }
+        if (event.type === "tool_call" || event.type === "tool_use" || event.type === "tool_execution_start") {
           const name = event.toolName || event.name;
           if (name) {
             toolCallNames.add(name);
@@ -108,8 +120,12 @@ export async function executeScenarioRun({
       // Determine if scenario met expected outcome
       let outcomeMet = true;
       if (scenario.expectedOutcome) {
-        // Assert based on fixture test result: pass property
-        outcomeMet = exitCode === 0 && testResult.pass === true;
+        // Only expectations the scenario defines are checked here; the fixture test
+        // result matters only when the scenario sets fixtureTestPass.
+        outcomeMet = exitCode === 0;
+        if (scenario.expectedOutcome.fixtureTestPass) {
+          outcomeMet = outcomeMet && testResult.pass === true;
+        }
       }
 
       const record = {
@@ -123,6 +139,8 @@ export async function executeScenarioRun({
         createGoalCalled,
         sleepOnlyUsed,
         childReportSizes,
+        finalText,
+        toolArgs,
         referencesRead: Array.from(referencesRead),
         reportToolsRan,
         fixtureTestResult: testResult,

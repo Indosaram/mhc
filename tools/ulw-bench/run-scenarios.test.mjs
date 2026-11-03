@@ -120,7 +120,7 @@ test result: ok. 3 passed; 0 failed
     try {
       createFixtureRepo(tmpDir);
       
-      const scenario = { id: "S-TEST", name: "Test", prompt: "test", expectedOutcome: true };
+      const scenario = { id: "S-TEST", name: "Test", prompt: "test", expectedOutcome: { fixtureTestPass: true } };
 
       // Case 1: Pass
       // Fix math.rs
@@ -156,6 +156,27 @@ test result: ok. 3 passed; 0 failed
       });
       assert.strictEqual(resultFail.outcomeMet, false);
       assert.strictEqual(resultFail.status, "failed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores the fixture test when the scenario does not set fixtureTestPass", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ulw-test-outcome-nofix-"));
+    try {
+      createFixtureRepo(tmpDir); // math.rs test still failing
+      const scenario = { id: "S-READONLY", name: "Test", prompt: "test", expectedOutcome: { noGoal: true } };
+      const result = await executeScenarioRun({
+        bin: "true",
+        model: "test-model",
+        scenario,
+        runIndex: 1,
+        fixtureDir: tmpDir,
+        maxInputTokens: 100,
+        outDir: tmpDir,
+      });
+      assert.strictEqual(result.outcomeMet, true);
+      assert.strictEqual(result.status, "completed");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
