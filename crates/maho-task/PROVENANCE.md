@@ -88,10 +88,15 @@
   inline set is chosen again against the longer error trailer, so the message stays within the
   batch limit.
 - `bind_settled_batcher` is defined in `src/transport/mod.rs` and called from
-  `src/extension.rs` when the task manager is built. The first settler drains the queue until it
-  is empty; results that settle while a delivery is in flight queue up and go out together as the
-  next bounded message, and each settler returns (so its waiters wake) only after the batch
-  holding its result was delivered. No timer or sleep is involved.
+  `src/extension.rs` when the task manager is built. A settle only enqueues its result; the first
+  settle with no flush pending spawns one flush task that yields once, so every settle already
+  runnable on the same thread (also on the current-thread runtime mhc ships with) enqueues first,
+  and then drains the queue into one bounded wake. The flush task signals each settle's oneshot
+  only after the batch holding its result was sent (or its failure was appended as a
+  `task_delivery_error` entry), and `TaskManager` awaits that signal before waking waiters. No
+  timer, sleep, or blocking wait is involved.
+- A wake bounds content plus serialized details by the batch limit. Details carry only
+  `{task_id, status, file_uri, truncated}` per inline task; task text appears once, in the content.
 - `TaskSettings::from_view` in `src/settings.rs` reads `task.completion_transport_limit`
   (default 8,000, clamped [1,000, 64,000]) and `task.completion_batch_limit` (default 24,000,
   clamped [2,000, 128,000]). They are not configurable yet: the `maho-config` schema does not
@@ -105,6 +110,7 @@
   failure handling (`wired_batch_delivery_failed_manifest_delivers_inline_with_note`), synchronous
   delivery before waiters wake (`settled_batcher_delivers_before_waiters_wake`), non-nested fallback
   envelope on task failure (`settled_batcher_failed_task_stderr_not_nested`), coalescing of results
-  that settle during an in-flight delivery into one bounded message
-  (`settled_batcher_coalesces_concurrent_tasks_through_manager`), and bounded details for a single
+  that settle in the same tick into one bounded message on the current-thread runtime
+  (`settled_batcher_coalesces_same_tick_settles_on_current_thread`), error entry plus waiter release
+  on a refused delivery (`settled_batcher_failed_delivery_records_entry_and_releases_waiters`), and bounded details for a single
   overflowed task (`single_overflowed_task_details_stay_bounded`).

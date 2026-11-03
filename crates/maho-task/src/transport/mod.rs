@@ -13,98 +13,98 @@ pub use cap::{
     cap_completion_response, count_utf16_code_units, deliver_settled, slice_utf16_bounded,
 };
 
-use crate::manager::{SettledCallback, TaskManager};
+use crate::manager::{SettledAck, SettledAckCallback, TaskManager};
 use maho_ext_api::ExtensionApi;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Duration;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+use tokio::sync::oneshot;
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+type Delivery = Box<dyn Fn(&[ChildCompletion]) -> Result<(), String> + Send + Sync>;
+type ErrorReport = Box<dyn Fn(&[ChildCompletion], &str) + Send + Sync>;
+
+/// How a flushed batch leaves the process and how a failed one is recorded.
+struct Outlet {
+    deliver: Delivery,
+    report: ErrorReport,
 }
 
 /// Coalesces settled background results into bounded parent wake batches (§9.2).
 ///
-/// The first settler becomes the flusher: it drains the queue in a loop until it is empty, and
-/// each drained batch becomes one message bounded by the batch limit. A result that settles while
-/// a delivery is in flight is only queued and joins the next batch, so a burst of N settles
-/// produces a handful of wakes instead of N. No timer delays a delivery.
+/// A settle only enqueues its result and returns a receiver. The first settle with no flush
+/// pending spawns ONE flush task; that task yields once, so every settle that is already runnable
+/// on the same thread enqueues first (this is what makes a current-thread runtime coalesce), then
+/// drains the whole queue into bounded wakes. The flush task alone signals the receivers, after
+/// the batch holding their result went through `send_message` (or its failure was recorded), so a
+/// waiter never wakes before its result was delivered. No timer or sleep is involved, no thread
+/// blocks, and `state` is never held across an `.await` or a delivery.
 ///
-/// Delivered before waiters wake (manager.rs `launch`): the manager fires `done_tx` only after the
-/// settled callback returns, and `submit` returns only after the batch holding its own result was
-/// handed to the sender, so the waiter wake follows the flush. Deadlock freedom: `deliver`
-/// clones the callback and releases the `on_settled` lock before calling it, `state` is never
-/// held across `send_message`, and the flusher never waits on a settler, so every waiting settler
-/// is woken by a flusher that is making progress. On a current-thread runtime the flusher holds
-/// the only thread for the whole drain, so no settler can ever be waiting.
+/// A failed or panicking delivery appends an error entry for exactly that batch; its waiters are
+/// released like any other and later queued results are still delivered by the same loop.
 #[derive(Default)]
 pub struct SettledBatcher {
     state: Mutex<BatchState>,
-    changed: Condvar,
 }
 
 #[derive(Default)]
 struct BatchState {
-    queue: Vec<ChildCompletion>,
-    queued_seq: u64,
-    flushed_seq: u64,
-    flushing: bool,
+    queue: Vec<(ChildCompletion, oneshot::Sender<()>)>,
+    flush_pending: bool,
 }
 
 impl SettledBatcher {
-    fn submit(&self, completion: ChildCompletion, deliver: impl Fn(&[ChildCompletion])) {
-        let mut state = lock(&self.state);
-        state.queue.push(completion);
-        state.queued_seq += 1;
-        let seq = state.queued_seq;
-        self.changed.notify_all();
-        if state.flushing {
-            let _flushed = self
-                .changed
-                .wait_while(state, |s| s.flushed_seq < seq)
-                .unwrap_or_else(PoisonError::into_inner);
-            return;
-        }
-        state.flushing = true;
-        drop(state);
-        let _reset = FlushReset(self);
-        loop {
-            let (batch, upto) = {
-                let mut state = lock(&self.state);
-                if state.queue.is_empty() {
-                    state.flushing = false;
-                    return;
-                }
-                (std::mem::take(&mut state.queue), state.queued_seq)
-            };
-            deliver(&batch);
-            lock(&self.state).flushed_seq = upto;
-            self.changed.notify_all();
-        }
+    fn state(&self) -> std::sync::MutexGuard<'_, BatchState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Blocks until at least `count` results wait for the next batch; false when `timeout` passed.
-    /// Lets a caller (and the coalescing test) synchronise on queued settles without sleeping.
-    pub fn wait_queued(&self, count: usize, timeout: Duration) -> bool {
-        let state = lock(&self.state);
-        let (_state, waited) = self
-            .changed
-            .wait_timeout_while(state, timeout, |s| s.queue.len() < count)
-            .unwrap_or_else(PoisonError::into_inner);
-        !waited.timed_out()
+    fn submit(self: &Arc<Self>, completion: ChildCompletion, outlet: &Arc<Outlet>) -> SettledAck {
+        let (ack, wake) = oneshot::channel();
+        let spawn_flush = {
+            let mut state = self.state();
+            state.queue.push((completion, ack));
+            !std::mem::replace(&mut state.flush_pending, true)
+        };
+        if spawn_flush {
+            let batcher = Arc::clone(self);
+            let outlet = Arc::clone(outlet);
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                batcher.flush(&outlet);
+            });
+        }
+        wake
+    }
+
+    fn flush(&self, outlet: &Outlet) {
+        let _pending = FlushPending(self);
+        loop {
+            let (items, acks): (Vec<_>, Vec<_>) = {
+                let mut state = self.state();
+                if state.queue.is_empty() {
+                    state.flush_pending = false;
+                    return;
+                }
+                std::mem::take(&mut state.queue).into_iter().unzip()
+            };
+            match catch_unwind(AssertUnwindSafe(|| (outlet.deliver)(&items))) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => (outlet.report)(&items, &error),
+                Err(_) => (outlet.report)(&items, "delivery panicked"),
+            }
+            for ack in acks {
+                let _ = ack.send(());
+            }
+        }
     }
 }
 
-/// Releases the settlers waiting on a flusher that unwound inside `deliver`.
-struct FlushReset<'a>(&'a SettledBatcher);
+/// Lets the next settle spawn a new flush when this one unwound; queued items stay queued.
+struct FlushPending<'a>(&'a SettledBatcher);
 
-impl Drop for FlushReset<'_> {
+impl Drop for FlushPending<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            let mut state = lock(&self.0.state);
-            state.flushing = false;
-            state.flushed_seq = state.queued_seq;
-            drop(state);
-            self.0.changed.notify_all();
+            self.0.state().flush_pending = false;
         }
     }
 }
@@ -116,11 +116,29 @@ pub fn bind_settled_batcher(
     transport_limit: usize,
     batch_limit: usize,
 ) -> Arc<SettledBatcher> {
-    let state_dir = manager.state().root.clone();
+    let state_dir: PathBuf = manager.state().root.clone();
     let batcher = Arc::new(SettledBatcher::default());
     let flusher = Arc::clone(&batcher);
+    let deliver_dir = state_dir.clone();
+    let report_sender = Arc::clone(&sender);
+    let outlet = Arc::new(Outlet {
+        deliver: Box::new(move |tasks| {
+            deliver_batch(&sender, &deliver_dir, batch_limit, tasks)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }),
+        report: Box::new(move |tasks, error| {
+            let _ = report_sender.append_entry(
+                "task_delivery_error",
+                Some(serde_json::json!({
+                    "error": error,
+                    "task_ids": tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
+                })),
+            );
+        }),
+    });
 
-    let callback: SettledCallback = Arc::new(move |record, _fallback_text| {
+    let callback: SettledAckCallback = Arc::new(move |record, _fallback_text| {
         let state = crate::record::StateDir::new(&state_dir);
         let disk_output = state.read_output(&record.id);
         let raw = if disk_output.trim().is_empty() {
@@ -132,18 +150,8 @@ pub fn bind_settled_batcher(
             build_capped_result_envelope(&state_dir, record, &raw, transport_limit);
         let completion = ChildCompletion::new(&record.id, record.status.as_str(), envelope)
             .with_details(details);
-        flusher.submit(completion, |tasks| {
-            if let Err(error) = deliver_batch(&sender, &state_dir, batch_limit, tasks) {
-                let _ = sender.append_entry(
-                    "task_delivery_error",
-                    Some(serde_json::json!({
-                        "error": error.to_string(),
-                        "task_ids": tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
-                    })),
-                );
-            }
-        });
+        flusher.submit(completion, &outlet)
     });
-    manager.set_on_settled(Some(callback));
+    manager.set_on_settled_ack(Some(callback));
     batcher
 }
