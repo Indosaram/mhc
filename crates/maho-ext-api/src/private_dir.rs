@@ -9,7 +9,9 @@ pub fn create_private_dir(dir: &Path) -> Option<()> {
     match std::fs::symlink_metadata(dir) {
         Ok(metadata) => metadata.file_type().is_dir().then_some(()),
         Err(_) => {
-            let mut builder = std::fs::DirBuilder::new();
+            let builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            let mut builder = builder;
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
             builder.create(dir).ok()

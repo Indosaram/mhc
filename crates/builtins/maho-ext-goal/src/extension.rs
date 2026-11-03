@@ -186,15 +186,6 @@ impl GoalExtension {
                 }),
             );
         }
-        let tree = continuation.clone();
-        api.on(
-            EventKind::SessionTree,
-            Arc::new(move |_, context| {
-                context.ui.set_status("todo-waiting", None);
-                tree.reset_todo_chain();
-                Box::pin(async { Ok(EventResult::None) })
-            }),
-        );
         let stale = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reset = stale.clone();
         api.on(

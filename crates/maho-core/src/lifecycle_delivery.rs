@@ -37,7 +37,7 @@ pub fn consume_lifecycle_delivery(
     let Some(run) = run_id else {
         return Ok(None);
     };
-    let existing = lifecycle_delivery_entries(&manager.entries());
+    let existing = lifecycle_delivery_entries(&manager.entries_of_types(&["custom_message"]));
     let id = if let Some(id) = existing.get(ticket) {
         id.clone()
     } else {

@@ -256,7 +256,7 @@ impl HostHeartbeat {
         apply: impl FnOnce(&mut HostHeartbeatMachine, &mut Vec<HostLivenessStatus>) -> T,
     ) -> T {
         let mut changes = Vec::new();
-        let result = apply(&mut *self.lock(), &mut changes);
+        let result = apply(&mut self.lock(), &mut changes);
         for status in changes {
             self.notify(status);
         }

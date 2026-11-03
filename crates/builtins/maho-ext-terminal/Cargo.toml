@@ -22,13 +22,13 @@ maho-tui = { path = "../../maho-tui" }
 maho-core = { path = "../../maho-core" }
 maho-rpc = { path = "../../maho-rpc" }
 maho-pty = { path = "../../vendor/maho-pty" }
+maho-ext-host = { path = "../../maho-ext-host" }
 notify = "=8.2.0"
 thiserror = "=2.0.20"
 tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
-maho-ext-host = { path = "../../maho-ext-host" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["test-util"] }
 

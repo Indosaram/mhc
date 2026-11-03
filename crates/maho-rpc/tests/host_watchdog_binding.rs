@@ -111,7 +111,7 @@ fn the_watchdog_binding_is_read_from_the_supervisor_handoff_names() {
         (HOST_WATCH_PPID_ENV.to_owned(), "42".to_owned()),
     ]);
     let config = read_host_watchdog_config_from_brand_env(&env).expect("the binding is present");
-    assert_eq!(config.fd, Some(7));
+    assert_eq!(config.fd, if cfg!(windows) { Some(7) } else { None });
     assert_eq!(config.ppid, Some(42));
 }
 

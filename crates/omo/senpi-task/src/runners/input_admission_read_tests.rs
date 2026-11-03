@@ -14,9 +14,11 @@ fn ids(count: usize) -> Vec<String> {
     (0..count).map(|index| format!("ps-{index}")).collect()
 }
 
+type ReadAnswer = Box<dyn Fn(&[String]) -> Option<Value> + Send + Sync>;
+
 struct ReadPort {
     batches: Mutex<Vec<usize>>,
-    answer: Box<dyn Fn(&[String]) -> Option<Value> + Send + Sync>,
+    answer: ReadAnswer,
 }
 
 impl HostSessionPort for ReadPort {

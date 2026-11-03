@@ -41,6 +41,13 @@ impl FakeMcpServer {
                             return StatusCode::ACCEPTED.into_response();
                         }
                         let authenticated = headers.contains_key("authorization");
+                        if value["method"].as_str() == Some("server/discover") {
+                            return Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": value.get("id").cloned().unwrap_or(Value::Null),
+                                "error": {"code": -32601, "message": "Method not found"},
+                            })).into_response();
+                        }
                         let result = match value["method"].as_str() {
                             Some("initialize") => json!({
                                 "protocolVersion": "2025-11-25",

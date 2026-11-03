@@ -55,7 +55,6 @@ where
                         .as_ref()
                         .is_none_or(|(path, _)| *path != old.page.path)
                     {
-                        loaded = None;
                         loaded = Some((old.page.path.clone(), index.read_page(&old.page).await?));
                     }
                     loaded

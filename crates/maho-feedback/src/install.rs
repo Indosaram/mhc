@@ -12,7 +12,7 @@ pub const LEGACY_REINSTALL_COMMAND_ENV: &str = "OMO_REINSTALL_COMMAND";
 pub fn reinstall_step(env: &dyn Fn(&str) -> Option<String>) -> String {
     let command = [REINSTALL_COMMAND_ENV, LEGACY_REINSTALL_COMMAND_ENV]
         .into_iter()
-        .filter_map(|key| env(key))
+        .filter_map(env)
         .map(|value| value.trim().to_owned())
         .find(|value| !value.is_empty());
     match command {

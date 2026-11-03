@@ -385,8 +385,7 @@ fn matches_suffix(parent: &str, parts: &[String], pattern: &str) -> bool {
             // Wildcard matching lets both * and ? consume '/'. Keep every possible pattern
             // position at a component boundary, rather than choosing one greedy match whose case
             // spelling could fail on a different volume.
-            for end in start..pattern_chars.len() {
-                let token = pattern_chars[end];
+            for (end, &token) in pattern_chars.iter().enumerate().skip(start) {
                 if token != '*' && token != '?' && token != '/' {
                     continue;
                 }

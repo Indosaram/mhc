@@ -91,12 +91,9 @@ fn reserved() -> std::sync::MutexGuard<'static, HashMap<PathBuf, usize>> {
 
 /// Outcomes per image block, so re-emitting a record (`get_messages`, `turn_end`) never rehashes it.
 /// senpi keys the live block object; a block is identified here by its reference and its data's digest.
-fn outcomes()
--> std::sync::MutexGuard<'static, HashMap<(ToolMediaScope, String, usize, String), PersistedMedia>>
-{
-    static OUTCOMES: OnceLock<
-        Mutex<HashMap<(ToolMediaScope, String, usize, String), PersistedMedia>>,
-    > = OnceLock::new();
+type MediaOutcomes = HashMap<(ToolMediaScope, String, usize, String), PersistedMedia>;
+fn outcomes() -> std::sync::MutexGuard<'static, MediaOutcomes> {
+    static OUTCOMES: OnceLock<Mutex<MediaOutcomes>> = OnceLock::new();
     OUTCOMES
         .get_or_init(Mutex::default)
         .lock()

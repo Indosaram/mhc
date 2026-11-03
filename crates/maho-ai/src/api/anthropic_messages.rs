@@ -59,10 +59,12 @@ use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, append_assistant_message_diagnostic, now_ms,
 };
 use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
+    AssistantMessageEventStream,
 };
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
-use crate::utils::json_parse::{parse_json_with_repair, parse_streaming_json};
+use crate::utils::json_parse::{
+    parse_json_with_repair, parse_streaming_json, should_reparse_streaming_json,
+};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::prompt_cache_ttl::{get_anthropic_compat, is_anthropic_api_base_url};
 use crate::utils::provider_env::get_provider_env_value;
@@ -607,11 +609,13 @@ fn consume_line(text: &str) -> Option<(usize, usize)> {
 struct SseDecoder {
     state: SseDecoderState,
     buffer: String,
+    utf8: crate::utils::utf8_stream::Utf8ChunkDecoder,
 }
 
 impl SseDecoder {
     fn push_bytes(&mut self, chunk: &[u8]) -> Vec<ServerSentEvent> {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        // DIVERGENCE(senpi anthropic.ts): a multibyte character split across two network chunks is carried to the next chunk instead of becoming two U+FFFD; Node's TextDecoder in stream mode keeps split characters, so this matches upstream behavior.
+        self.utf8.push(chunk, &mut self.buffer);
         let mut events = Vec::new();
         // PERF-DIVERGENCE(senpi anthropic.ts): upstream reassigns the buffer to its remainder per line; this port scans by offset and drains the consumed prefix once. Events are identical.
         let mut pos = 0;
@@ -627,6 +631,8 @@ impl SseDecoder {
 
     /// The stream's tail: a final unterminated line, then the trailing event.
     fn finish(&mut self) -> Vec<ServerSentEvent> {
+        // DIVERGENCE(senpi anthropic.ts): flushes a truncated trailing character as U+FFFD, like the end of a TextDecoder stream.
+        self.utf8.finish(&mut self.buffer);
         let mut events = Vec::new();
         // PERF-DIVERGENCE(senpi anthropic.ts): upstream reassigns the buffer to its remainder per line; this port scans by offset and drains the consumed prefix once. Events are identical.
         let mut pos = 0;
@@ -2669,7 +2675,8 @@ async fn send_request(
 ) -> Result<reqwest::Response, AnthropicStreamError> {
     let base_url = client.base_url.trim_end_matches('/');
     let url = format!("{base_url}/v1/messages");
-    let http_client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi anthropic.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let http_client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut body = prepared.params.clone();
     let mut headers = request_headers(client, model, api_key);
     if let Some(betas) = body.remove("betas") {
@@ -2782,6 +2789,7 @@ struct StreamState {
     output: AssistantMessage,
     indices: Vec<Option<usize>>,
     partial_json: Vec<Option<String>>,
+    partial_json_parsed_len: Vec<usize>,
     input_transformations: Option<Vec<Value>>,
     usage_model: Model,
     is_oauth_token: bool,
@@ -2801,6 +2809,7 @@ impl StreamState {
         self.output.content.push(block);
         self.indices.push(Some(index));
         self.partial_json.push(None);
+        self.partial_json_parsed_len.push(0);
         self.output.content.len() - 1
     }
 }
@@ -3114,11 +3123,19 @@ fn handle_content_block_delta(
             ) {
                 let scratch = state.partial_json[content_index].get_or_insert_with(String::new);
                 scratch.push_str(&partial);
-                let parsed = parse_streaming_json(Some(scratch));
-                if let Some(ContentBlock::ToolCall(call)) =
-                    state.output.content.get_mut(content_index)
-                {
-                    call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                let total_len = scratch.len();
+                // PERF-DIVERGENCE(senpi packages/ai/src/api/anthropic-messages.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+                if should_reparse_streaming_json(
+                    total_len,
+                    state.partial_json_parsed_len[content_index],
+                ) {
+                    let parsed = parse_streaming_json(Some(scratch));
+                    state.partial_json_parsed_len[content_index] = total_len;
+                    if let Some(ContentBlock::ToolCall(call)) =
+                        state.output.content.get_mut(content_index)
+                    {
+                        call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                    }
                 }
                 sink.push(AssistantMessageEvent::ToolcallDelta {
                     content_index,
@@ -3190,10 +3207,7 @@ fn handle_content_block_stop(
             });
         }
         Some(ContentBlock::ToolCall(_)) => {
-            let partial_json = state.partial_json[content_index]
-                .clone()
-                .unwrap_or_default();
-            state.partial_json[content_index] = None;
+            let partial_json = state.partial_json[content_index].take().unwrap_or_default();
             let parsed = parse_streaming_json(Some(&partial_json));
             if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(content_index)
             {
@@ -3317,10 +3331,15 @@ fn strip_streaming_scratch(state: &mut StreamState) {
         let Some(partial_json) = state.partial_json[content_index].take() else {
             continue;
         };
-        if let Some(ContentBlock::ProviderNative(native)) =
-            state.output.content.get_mut(content_index)
-        {
-            native.raw = merge_provider_native_input(&native.raw, &partial_json);
+        match state.output.content.get_mut(content_index) {
+            Some(ContentBlock::ProviderNative(native)) => {
+                native.raw = merge_provider_native_input(&native.raw, &partial_json);
+            }
+            Some(ContentBlock::ToolCall(call)) => {
+                let parsed = parse_streaming_json(Some(&partial_json));
+                call.arguments = parsed.as_object().cloned().unwrap_or_default();
+            }
+            _ => {}
         }
     }
 }
@@ -3888,6 +3907,7 @@ async fn run_stream(
         output,
         indices: Vec::new(),
         partial_json: Vec::new(),
+        partial_json_parsed_len: Vec::new(),
         input_transformations: None,
         usage_model: model.clone(),
         is_oauth_token: false,
@@ -4262,7 +4282,7 @@ mod cache_checkpoint_tests {
                 assistant.stop_reason = StopReason::ToolUse;
                 context
                     .messages
-                    .push(Message::Assistant(Box::new(assistant)));
+                    .push(Message::Assistant(std::sync::Arc::new(assistant)));
                 context
                     .messages
                     .push(Message::ToolResult(ToolResultMessage {
@@ -4361,5 +4381,28 @@ mod cache_checkpoint_tests {
         assert!(mark_assistant_message_cache_checkpoint(&mut blocks, &cache));
         assert_eq!(blocks[0]["cache_control"], cache);
         assert!(blocks[1].get("cache_control").is_none());
+    }
+}
+
+#[cfg(test)]
+mod sse_utf8_tests {
+    use super::*;
+
+    #[test]
+    fn data_line_keeps_multibyte_text_split_across_chunks() {
+        // Given: an SSE frame whose Hangul text is cut in the middle of a character
+        let frame = "event: content_block_delta\ndata: {\"text\":\"\u{d55c}\u{ae00}\"}\n\n";
+        let bytes = frame.as_bytes();
+        let hangul_start = frame.find('\u{d55c}').expect("hangul in frame");
+        let mut decoder = SseDecoder::default();
+
+        // When: the bytes arrive split after the first byte of the first character
+        let mut events = decoder.push_bytes(&bytes[..hangul_start + 1]);
+        events.extend(decoder.push_bytes(&bytes[hangul_start + 1..]));
+
+        // Then: the event data is intact
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.as_deref(), Some("content_block_delta"));
+        assert_eq!(events[0].data, "{\"text\":\"\u{d55c}\u{ae00}\"}");
     }
 }

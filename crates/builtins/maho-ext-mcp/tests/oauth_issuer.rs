@@ -344,7 +344,9 @@ async fn rejects_a_callback_when_its_credential_stamps_conflict() {
 
 #[tokio::test]
 async fn never_sends_an_old_registration_to_a_changed_issuer() {
-    for changed in ["/other", "https://other.example.com"] {
+    let other = fixture().await;
+    let other_issuer = other.issuer.clone();
+    for changed in ["/other", other_issuer.as_str()] {
         let fixture = fixture().await;
         let changed = if changed.starts_with('/') {
             format!("{}{changed}", fixture.base)

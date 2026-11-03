@@ -347,11 +347,11 @@ struct FakeProbe {
 }
 
 impl AuthProbe for FakeProbe {
-    fn rotation_allowed(&self, _provider: &str) -> impl Future<Output = bool> + Send {
-        async { false }
+    async fn rotation_allowed(&self, _provider: &str) -> bool {
+        false
     }
-    fn accounts(&self, _provider: &str) -> impl Future<Output = Vec<Account>> + Send {
-        async { Vec::new() }
+    async fn accounts(&self, _provider: &str) -> Vec<Account> {
+        Vec::new()
     }
     fn provider_auth(
         &self,

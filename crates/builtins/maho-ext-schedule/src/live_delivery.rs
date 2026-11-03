@@ -343,7 +343,12 @@ pub fn register_live_delivery(
                 let (watch_inner, watch_session) = (inner.clone(), session.clone());
                 // Without a watch, jobs written by another process are picked up at the next armed pass.
                 if let Ok(mut watcher) =
-                    notify::recommended_watcher(move |_event: notify::Result<notify::Event>| {
+                    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                        // fs.watch reports content changes only; inotify also reports the pass's own
+                        // directory reads as access events, and replanning on those never settles.
+                        if matches!(&event, Ok(event) if event.kind.is_access()) {
+                            return;
+                        }
                         drop(handle.spawn(replan_for(watch_inner.clone(), watch_session.clone())));
                     })
                 {

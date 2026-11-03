@@ -100,7 +100,7 @@ fn estimates_content_when_post_compaction_response_failed() {
     let AgentMessage::Llm(Message::Assistant(response)) = &mut failed else {
         panic!("assistant fixture");
     };
-    response.stop_reason = StopReason::Error;
+    std::sync::Arc::make_mut(response).stop_reason = StopReason::Error;
     path.push(message_entry("failed", failed));
     // When
     let preparation = prepare_compaction(&path, DEFAULT_COMPACTION_SETTINGS)
@@ -128,7 +128,7 @@ fn counts_utf16_units_when_estimating_message_text() {
     let AgentMessage::Llm(Message::Assistant(message)) = &mut response else {
         panic!("assistant fixture");
     };
-    message.content = vec![ContentBlock::text(&text)];
+    std::sync::Arc::make_mut(message).content = vec![ContentBlock::text(&text)];
     let messages = [user(&text), response];
     // When
     let estimates = messages.iter().map(estimate_tokens).collect::<Vec<_>>();

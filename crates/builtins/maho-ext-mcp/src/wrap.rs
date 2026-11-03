@@ -206,6 +206,7 @@ pub async fn mcp_abortable_delay(
     ms: f64,
     signal: &maho_ext_api::AbortSignal,
 ) -> Result<(), McpInterrupted> {
+    tokio::task::yield_now().await;
     if signal.is_aborted() {
         return Err(McpInterrupted);
     }

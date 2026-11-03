@@ -121,7 +121,7 @@ fn blank_non_markup(html: &str) -> String {
     let mut last = 0;
     for found in non_markup.find_iter(html).flatten() {
         scan.push_str(&html[last..found.start()]);
-        scan.push_str(&blank(found.len()));
+        scan.push_str(&blank(found.as_str().len()));
         last = found.end();
     }
     scan.push_str(&html[last..]);

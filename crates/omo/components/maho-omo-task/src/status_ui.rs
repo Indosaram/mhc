@@ -209,10 +209,15 @@ impl TaskStatusUi {
             .filter(|record| record.owner.is_none() && self.manager.was_background(&record.task_id))
             .cloned()
             .collect();
+        let standalone: Vec<_> = records
+            .iter()
+            .filter(|record| record.owner.is_none())
+            .cloned()
+            .collect();
         let shown = if self.manager.has_background_surface() {
             &background
         } else {
-            &records
+            &standalone
         };
         ui.set_widget(UI_KEY, None, ExtensionWidgetOptions::default());
         let Some(status) = task_footer_status(shown) else {

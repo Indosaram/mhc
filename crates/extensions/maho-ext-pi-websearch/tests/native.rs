@@ -567,7 +567,7 @@ mod upstream_route_edges {
             .await
             .expect("entries");
         assert!(entries.is_empty());
-        assert_eq!(*registry.auth.lock().unwrap(), ["gpt-5.5"]);
+        assert_eq!(*registry.auth.lock().expect("auth calls"), ["gpt-5.5"]);
     }
 
     #[tokio::test]
@@ -594,7 +594,21 @@ mod upstream_route_edges {
             Some("https://gateway.example.com/v1/responses?token=secret")
         );
         assert_opaque(entries[0].config.id.as_deref().expect("id"), "secret");
-        assert_eq!(*registry.auth.lock().unwrap(), ["gpt-5.5"]);
+        assert_eq!(*registry.auth.lock().expect("auth calls"), ["gpt-5.5"]);
+    }
+
+    #[tokio::test]
+    async fn unavailable_discovered_aliases_resolve_auth_once() {
+        let registry = aliases(
+            (0..8).map(|index| model(
+                &format!("gpt-5.5-alias-{index}"),
+                "https://gateway.example.com/v1",
+            )).collect(),
+            Some("gpt-5.5-alias-0"),
+        );
+        let entries = build_native_entries(None, Some(&registry)).await.expect("discovery");
+        assert!(entries.is_empty());
+        assert_eq!(*registry.auth.lock().expect("auth calls"), ["gpt-5.5-alias-0"]);
     }
 
     #[tokio::test]
@@ -630,6 +644,6 @@ mod upstream_route_edges {
             .await
             .expect("entries");
         assert_eq!(entries.len(), 1);
-        assert_eq!(*registry.auth.lock().unwrap(), ["gpt-5.5"]);
+        assert_eq!(*registry.auth.lock().expect("auth calls"), ["gpt-5.5"]);
     }
 }

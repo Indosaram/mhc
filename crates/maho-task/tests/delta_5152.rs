@@ -349,8 +349,8 @@ async fn d4_first_run_moves_to_another_provider() {
         settled.hook_notes
     );
     assert_eq!(
-        *lock(&fx.delivered),
-        [record.id.clone()],
+        lock(&fx.delivered).as_slice(),
+        std::slice::from_ref(&record.id),
         "one background delivery"
     );
     let envelope = fx.manager.result_text(&record.id).expect("envelope");

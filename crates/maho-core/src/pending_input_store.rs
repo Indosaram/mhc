@@ -142,7 +142,7 @@ pub struct PendingInputChange {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingInputRead {
-    Admitted { projection: PendingInputProjection },
+    Admitted { projection: Box<PendingInputProjection> },
     NotAdmitted { client_message_id: String },
 }
 
@@ -349,7 +349,7 @@ impl PendingInputStore {
     pub fn read(&self, client_message_id: &str) -> PendingInputRead {
         match self.state().inputs.get(client_message_id) {
             Some(input) => PendingInputRead::Admitted {
-                projection: project_pending_input(input),
+                projection: Box::new(project_pending_input(input)),
             },
             None => PendingInputRead::NotAdmitted {
                 client_message_id: client_message_id.to_owned(),
@@ -729,7 +729,7 @@ mod tests {
 
     fn projection(store: &PendingInputStore, id: &str) -> PendingInputProjection {
         match store.read(id) {
-            PendingInputRead::Admitted { projection } => projection,
+            PendingInputRead::Admitted { projection } => *projection,
             PendingInputRead::NotAdmitted { .. } => panic!("{id} not admitted"),
         }
     }

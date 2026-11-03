@@ -385,8 +385,11 @@ fn paged_and_unbounded_scans_use_the_captured_commit() {
         install_hooks: None,
     })
     .unwrap();
-    super::write_watermark(root.path(), &"a".repeat(40)).unwrap();
-    super::consume_under_lock(&repo, root.path()).unwrap();
+    let on_warn = |message: &str, detail: Option<&str>| {
+        panic!("unexpected watermark warning: {message}: {detail:?}");
+    };
+    super::write_watermark(root.path(), &"a".repeat(40), &on_warn).unwrap();
+    super::consume_under_lock(&repo, root.path(), &on_warn).unwrap();
     let calls = calls.lock().unwrap();
     let logs: Vec<_> = calls
         .iter()

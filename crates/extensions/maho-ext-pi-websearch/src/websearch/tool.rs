@@ -51,12 +51,15 @@ pub fn register_search_tool(api: &mut maho_ext_api::ExtensionApi,
             };
             let cancelled = async { match &signal { Some(signal) => signal.cancelled().await, None => std::future::pending().await } };
             let result = tokio::select! { biased;
+                () = cancelled => return Err(maho_ext_api::ExtensionFailure::from_abort_reason(
+                    signal.as_ref().and_then(maho_ai::utils::abort::AbortSignal::reason)
+                        .unwrap_or_else(|| maho_ai::utils::abort::AbortReason::new("AbortError", "The operation was aborted.")),
+                )),
                 result = async {
                     tool.lock().await.execute(&client, loaded,
                         SearchParams { query: params.query, allowed_domains: params.allowed_domains, blocked_domains: params.blocked_domains },
                         Some(WebSearchToolContext { model: model.as_ref(), model_registry: Some(registry.as_ref()) }), None, Some(&mut update)).await
                 } => result.map_err(maho_ext_api::ExtensionFailure::new)?,
-                () = cancelled => return Err(maho_ext_api::ExtensionFailure::new(signal.as_ref().and_then(maho_ai::utils::abort::AbortSignal::reason).map_or_else(|| "The operation was aborted.".into(), |reason| reason.message))),
             };
             let mut output = maho_ext_api::AgentToolResult::text(result.text);
             output.details = serde_json::to_value(result.details).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -76,6 +79,6 @@ impl WebSearchTool{
         if self.routing_state.as_ref().is_none_or(|state|state.success_counts.len()!=config.providers.len())||self.routing_key!=key{self.routing_state=Some(create_search_routing_state(config.providers.len()));self.routing_key=key;}
         let request=SearchRequest{query:params.query,max_results,allowed_domains:params.allowed_domains,blocked_domains:params.blocked_domains};
         let mut listener=|label:&str,attempts:&[SearchAttempt],routes:&[String]|{if let Some(update)=on_update.as_mut(){let mut progress=progress.clone();progress.current_provider=Some(label.into());progress.attempts=Some(attempts.to_vec());progress.route_labels=Some(routes.to_vec());update(SearchToolResult{text:progress_text(&progress),details:SearchRenderDetails::Progress(progress)});}};
-        let state=self.routing_state.as_mut().ok_or("Search routing state unavailable")?;let details=perform_search(client,&config,&request,signal,state,Some(&mut listener)).await?;Ok(SearchToolResult{text:format_search_text(&details),details:SearchRenderDetails::Result(details)})
+        let state=self.routing_state.as_mut().ok_or("Search routing state unavailable")?;let details=perform_search(client,&config,&request,signal,state,Some(&mut listener)).await.map_err(|error|error.to_string())?;Ok(SearchToolResult{text:format_search_text(&details),details:SearchRenderDetails::Result(details)})
     }
 }

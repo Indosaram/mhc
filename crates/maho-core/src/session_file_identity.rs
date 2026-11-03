@@ -51,11 +51,10 @@ pub fn same_file(metadata: &std::fs::Metadata, identity: &FileIdentity) -> bool 
         .is_some_and(|current| current.dev == identity.dev && current.ino == identity.ino)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn a_rename_over_the_path_is_a_different_identity() {
         let dir = tempfile::tempdir().expect("tempdir");

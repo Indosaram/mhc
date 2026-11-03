@@ -135,7 +135,7 @@ impl LifecycleSessionBinding {
         let ticket = message.pointer("/details/ticketId")?.as_str()?;
         self.session.with_session_manager(|manager| {
             manager
-                .entries()
+                .entries_of_types(&["custom_message"])
                 .iter()
                 .find(|entry| {
                     entry["type"] == "custom_message"
@@ -156,7 +156,7 @@ impl LifecycleSessionBinding {
         }
         let ticket = message.pointer("/details/ticketId")?.as_str()?;
         self.session.with_session_manager_mut(|manager| {
-            let entries = manager.entries();
+            let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let record = entries.iter().rev().find(|entry| {
                 entry["customType"] == "work-custody"
                     && entry.pointer("/data/ticketId").and_then(Value::as_str) == Some(ticket)
@@ -212,7 +212,7 @@ impl LifecycleSessionBinding {
         });
         self.host.mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
         self.session.with_session_manager_mut(|manager| {
-            let entries = manager.entries();
+            let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let mut custody = std::collections::BTreeMap::new();
             for entry in &entries {
                 if entry["customType"] == "work-custody" && entry.pointer("/data/sessionId").and_then(Value::as_str) == Some(self.session_id.as_str())
@@ -233,7 +233,7 @@ impl LifecycleSessionBinding {
         self.host.event("restore_complete", Value::Null);
         let queued = self.session.with_session_manager(|manager| {
             let mut records = std::collections::BTreeMap::new();
-            for entry in manager.entries() {
+            for entry in manager.entries_of_types(&["custom"]) {
                 if entry["customType"] == "work-custody"
                     && entry.pointer("/data/sessionId").and_then(Value::as_str)
                         == Some(self.session_id.as_str())

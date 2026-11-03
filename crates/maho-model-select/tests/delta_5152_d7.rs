@@ -106,7 +106,7 @@ fn released_flag_keeps_the_gated_rung_and_shipped_flag_gates() {
     };
     let r = resolved(resolve_delegate_model_gated(&input, true));
     assert_eq!(r.rung, Some(0));
-    assert!(!maho_ext_recommended_models::FABLE55_RELEASED);
+    const { assert!(!maho_ext_recommended_models::FABLE55_RELEASED); }
     assert_eq!(
         resolve_delegate_model(&input),
         resolve_delegate_model_gated(&input, false)

@@ -433,6 +433,298 @@ async fn registered_owned_member_expires_only_after_fixed_clock_advance() {
     .await;
 }
 
+#[test]
+fn sync_delivers_only_completions_owned_by_this_session() {
+    let root = tempfile::tempdir().expect("root");
+    let actions = Arc::new(Actions::default());
+    let runner = Arc::new(NoLaunch);
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(),
+        config: serde_json::json!({}),
+        runners: ManagedRunners {
+            in_process: runner.clone(),
+            process: runner,
+        },
+        actions: actions.clone(),
+        coordinator: None,
+        resolve_registry: Arc::new(|| None),
+        host_transport: None,
+    });
+    // Two finished background children in the shared store: one spawned by this session, one by
+    // another session using the same state dir.
+    let finished = |parent: &str| {
+        let mut record = senpi_task::state::create_task_record(
+            senpi_task::state::TaskRecordInput {
+                parent_session_id: parent.into(),
+                root_session_id: parent.into(),
+                ..Default::default()
+            },
+            Some(1),
+        )
+        .expect("record");
+        record.status = senpi_task::state::TaskStatus::Completed;
+        record.residency_state = senpi_task::state::ResidencyState::Disposed;
+        record.notify_on_terminal = true;
+        record.notification.run_epoch = 1;
+        record.notification.notified_epoch = 0;
+        engine.store.save(&record).expect("save");
+        record.task_id
+    };
+    let owned = finished("session");
+    let foreign = finished("other-session");
+    let mut api = support::api();
+    let component = TaskComponent::register(
+        &mut api,
+        engine,
+        Default::default(),
+        TeamMemberOwnershipDeps {
+            state_dir: StateDirConfig {
+                project_dir: root.path().into(),
+                task_state_dir: None,
+            },
+            team_bounds: TeamTaskBounds {
+                max_members: 4,
+                max_parallel_members: 2,
+                max_wall_clock_minutes: 10,
+            },
+            load_runtime_state: None,
+        },
+        false,
+    )
+    .expect("register")
+    .expect("component");
+    let mut context = support::context();
+    context.cwd = root.path().into();
+    component
+        .engine
+        .runtime
+        .lock()
+        .expect("runtime")
+        .capture_from(&context);
+    component.sync();
+    let delivered: Vec<String> = actions
+        .0
+        .lock()
+        .expect("messages")
+        .iter()
+        .filter(|message| message.custom_type == "senpi-task.completion")
+        .flat_map(|message| {
+            let details = message.details.clone().unwrap_or_default();
+            details
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|detail| detail["task_id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(delivered, [owned]);
+    let foreign_record = component
+        .engine
+        .store
+        .load(&foreign)
+        .expect("load")
+        .expect("foreign record");
+    assert_eq!(
+        foreign_record.notification.notified_epoch, 0,
+        "another session's completion stays owed to its owner"
+    );
+    component.dispose();
+}
+
+#[tokio::test]
+async fn before_compact_buffers_child_completion_and_compact_failed_clears_transition_and_delivers() {
+    for aborted in [false, true] {
+        let root = tempfile::tempdir().expect("root");
+        let actions = Arc::new(Actions::default());
+        let runner = Arc::new(NoLaunch);
+        let engine = compose_task_engine(ComposeTaskEngineDeps {
+            cwd: root.path().into(),
+            config: serde_json::json!({}),
+            runners: ManagedRunners {
+                in_process: runner.clone(),
+                process: runner,
+            },
+            actions: actions.clone(),
+            coordinator: None,
+            resolve_registry: Arc::new(|| None),
+            host_transport: None,
+        });
+        let mut api = support::api();
+        let timers = Arc::new(Timers::default());
+        let component = TaskComponent::register_with_status_timers(
+            &mut api,
+            engine,
+            Default::default(),
+            TeamMemberOwnershipDeps {
+                state_dir: StateDirConfig {
+                    project_dir: root.path().into(),
+                    task_state_dir: None,
+                },
+                team_bounds: TeamTaskBounds {
+                    max_members: 4,
+                    max_parallel_members: 2,
+                    max_wall_clock_minutes: 10,
+                },
+                load_runtime_state: None,
+            },
+            false,
+            timers,
+        )
+        .expect("register")
+        .expect("component");
+
+        let mut context = support::context();
+        context.cwd = root.path().into();
+
+        assert_eq!(
+            component
+                .engine
+                .runtime
+                .lock()
+                .expect("runtime")
+                .parent_state(),
+            senpi_task::completion::ParentState::Idle
+        );
+
+        let mut before_compact = ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
+            reason: CompactionReason::Manual,
+            will_retry: false,
+            request_id: "req".into(),
+            preparation: CompactionPreparation {
+                settings: CompactionSettings {
+                    enabled: true,
+                    reserve_tokens: 100,
+                    keep_recent_tokens: 100,
+                },
+                messages_to_summarize: Vec::new(),
+                turn_prefix_messages: Vec::new(),
+                tokens_before: 1000,
+                first_kept_entry_id: "keep".into(),
+                previous_summary: None,
+            },
+            branch_entries: Vec::new(),
+            custom_instructions: None,
+            signal: AbortSignal::default(),
+        });
+        for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handler(&mut before_compact, &context),
+            )
+            .await
+            .expect("before compact timeout")
+            .expect("before compact");
+        }
+
+        assert_eq!(
+            component
+                .engine
+                .runtime
+                .lock()
+                .expect("runtime")
+                .parent_state(),
+            senpi_task::completion::ParentState::Compacting
+        );
+
+        let mut record = senpi_task::state::create_task_record(
+            senpi_task::state::TaskRecordInput {
+                parent_session_id: "session".into(),
+                root_session_id: "session".into(),
+                ..Default::default()
+            },
+            Some(1),
+        )
+        .expect("record");
+        record.status = senpi_task::state::TaskStatus::Completed;
+        record.final_response = Some("child done".into());
+        record.notify_on_terminal = true;
+        component.engine.store.save(&record).expect("save");
+
+        let parent_state = component
+            .engine
+            .runtime
+            .lock()
+            .expect("runtime")
+            .parent_state();
+        component
+            .engine
+            .notifier
+            .notify_terminal(&senpi_task::completion::CompletionRequest {
+                record: record.clone(),
+                parent_state,
+                run_in_background: true,
+                tokens: None,
+            })
+            .expect("buffer completion");
+
+        assert_eq!(
+            actions
+                .0
+                .lock()
+                .expect("messages")
+                .iter()
+                .filter(|message| message.custom_type == "senpi-task.completion")
+                .count(),
+            0,
+            "child completion is buffered during compaction transition"
+        );
+
+        let mut compact_failed = ExtensionEvent::SessionCompactFailed {
+            reason: CompactionReason::Manual,
+            error_message: if aborted {
+                None
+            } else {
+                Some("compaction failed".into())
+            },
+            aborted,
+            will_retry: false,
+            from_extension: false,
+        };
+        for handler in &api.registered.handlers[&EventKind::SessionCompactFailed] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handler(&mut compact_failed, &context),
+            )
+            .await
+            .expect("compact failed timeout")
+            .expect("compact failed");
+        }
+
+        assert_eq!(
+            component
+                .engine
+                .runtime
+                .lock()
+                .expect("runtime")
+                .parent_state(),
+            senpi_task::completion::ParentState::Idle,
+            "compact_failed clears compaction transition"
+        );
+        assert_eq!(
+            actions
+                .0
+                .lock()
+                .expect("messages")
+                .iter()
+                .filter(|message| message.custom_type == "senpi-task.completion")
+                .count(),
+            1,
+            "compact_failed delivers buffered child completion"
+        );
+
+        let loaded = component
+            .engine
+            .store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record");
+        assert_eq!(loaded.notification.notified_epoch, 0);
+
+        component.dispose();
+    }
+}
+
 async fn recovery(case: Case) {
     let root = tempfile::tempdir().expect("root");
     let actions = Arc::new(Actions::default());

@@ -26,6 +26,8 @@ fn lost(reason: String) -> RpcRestoreResult {
     }
 }
 
+type BindMonitorId<'a> = &'a mut dyn FnMut(&str, &str);
+
 /// Upstream `CheckpointedRpcRestoreDeps`.
 pub struct CheckpointedRpcRestoreDeps<'a> {
     /// Arms the watch: the registry's rpc source in production; returns the fresh runtime id.
@@ -34,7 +36,7 @@ pub struct CheckpointedRpcRestoreDeps<'a> {
     pub pause: &'a mut dyn FnMut(&[String]),
     /// The writer's `scheduleRpcCheckpoint`.
     pub writer: Option<RpcCheckpointSink>,
-    pub bind_monitor_id: Option<&'a mut dyn FnMut(&str, &str)>,
+    pub bind_monitor_id: Option<BindMonitorId<'a>>,
     /// This session's durable id, which a `children` target names.
     pub session_id: Option<String>,
     pub agent_dir: Option<std::path::PathBuf>,

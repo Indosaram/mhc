@@ -66,3 +66,14 @@ async fn child_connection_requires_pipes() {
     child.wait().await.unwrap();
     assert!(!signal_spawned_child(&mut child));
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_spawn_yields_no_child_and_reaped_child_sends_no_signal() {
+    let root = tempfile::tempdir().expect("missing executable root");
+    let failed = tokio::process::Command::new(root.path().join("missing-executable")).spawn();
+    assert!(failed.is_err(), "spawning nonexistent binary yields Err");
+    let mut child = tokio::process::Command::new("/bin/true").kill_on_drop(true).spawn().expect("spawn true");
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await.expect("child exit deadline").expect("wait for child");
+    assert!(status.success());
+    assert!(!signal_spawned_child(&mut child));
+}

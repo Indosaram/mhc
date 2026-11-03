@@ -52,7 +52,9 @@ impl TerminalScreen {
     /// `feed(data)`: keep the sanitized chunk for resize replay, then parse it.
     pub fn feed(&mut self, payload: &str) {
         let sanitized = sanitize_string(payload);
-        self.parser.process(sanitized.as_bytes());
+        // Replace \u{fffd} with \u{E000} before feeding
+        let for_parser = sanitized.replace('\u{fffd}', "\u{E000}");
+        self.parser.process(for_parser.as_bytes());
         if !sanitized.is_empty() {
             self.append_history(sanitized);
         }
@@ -76,14 +78,23 @@ impl TerminalScreen {
     pub fn snapshot(&mut self) -> TerminalScreenSnapshot {
         let screen = self.parser.screen_mut();
         let (rows, cols) = screen.size();
-        let visible_grid = screen.rows(0, cols).collect();
+        let visible_grid = screen
+            .rows(0, cols)
+            .map(|row| row.replace('\u{E000}', "\u{fffd}"))
+            .collect();
         let cursor = screen.cursor_position();
         screen.set_scrollback(usize::MAX);
         let count = screen.scrollback();
         let mut scrollback = Vec::with_capacity(count);
         for offset in (1..=count).rev() {
             screen.set_scrollback(offset);
-            scrollback.push(screen.rows(0, cols).next().unwrap_or_default());
+            scrollback.push(
+                screen
+                    .rows(0, cols)
+                    .next()
+                    .unwrap_or_default()
+                    .replace('\u{E000}', "\u{fffd}"),
+            );
         }
         screen.set_scrollback(0);
         TerminalScreenSnapshot {

@@ -20,10 +20,10 @@ impl ExtensionUi for DialogUi{
 }
 #[tokio::test]
 async fn question_fallback_uses_native_select_input_and_unanswered_status(){
-    let ui=DialogUi{answers:Mutex::new(VecDeque::from([Some("Other (type an answer)".into()),Some("typed answer".into()),Some("comment".into())]))};
+    let ui=DialogUi{answers:Mutex::new(VecDeque::from([Some("Other (type an answer)".into()),Some("typed answer".into())]))};
     let request=QuestionRequest{request_id:"id".into(),wait_for_answer:true,timeout_ms:100,questions:vec![Question{id:"q".into(),header:"h".into(),question:"choose".into(),options:vec![QuestionOption{label:"yes".into(),description:None}],multi_select:false}]};
-    let result=maho_rpc::connection_question_bridge::degrade_question(&ui,request,ExtensionUiDialogOptions::default()).await.expect("question");
-    assert_eq!(result.status,QuestionStatus::CommentSubmitted);assert_eq!(result.answers["q"].text.as_deref(),Some("typed answer"));assert!(result.unanswered.is_empty());
+    let result=maho_rpc::connection_question_bridge::degrade_question(&ui,request,QuestionOptions::default()).await.expect("question");
+    assert_eq!(result.status,QuestionStatus::Answered);assert_eq!(result.answers["q"].text.as_deref(),Some("typed answer"));assert!(result.unanswered.is_empty());assert!(result.comment.is_none());
 }
 #[tokio::test]
 async fn login_maps_labels_to_ids_and_missing_prompt_to_cancellation(){

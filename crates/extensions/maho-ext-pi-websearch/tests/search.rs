@@ -652,7 +652,7 @@ async fn user_abort_mid_request_does_not_try_the_next_provider() {
         .await
         .expect("search timeout")
         .expect("search join");
-    assert!(result.is_err());
+    assert_eq!(result.expect_err("cancelled search"), SearchError::Aborted);
     // A connect to the second route would already sit in its accept backlog once the search returned.
     assert_eq!(
         second.accept().map_err(|error| error.kind()).err(),

@@ -136,7 +136,9 @@ impl MemoryRuntime {
         let this = self.clone();
         let resolve_session = Arc::new(move |context: &ExtensionContext| {
             this.capture_context(context);
+            // A memory-write-denied session never triggers a dream (`write_policy`).
             this.identity(context.session_manager.session_id())
+                .filter(|identity| !identity.memory_write_denied)
                 .map(|identity| {
                     (
                         context.session_manager.session_id().into(),
@@ -171,7 +173,14 @@ impl MemoryRuntime {
             Arc::new(move |session, origin, request, signal| {
                 let this = this.clone();
                 Box::pin(async move {
+                    // Every dream origin (idle, manual, shutdown) of a memory-write-denied session is refused
+                    // before any reservation (`write_policy`).
                     let identity = this.identity(&session).ok_or("no bound memory session")?;
+                    if identity.memory_write_denied {
+                        return Err(maho_omo_memory::write_policy::memory_write_denied_message(
+                            "dream",
+                        ));
+                    }
                     let worker = this.worker(&identity)?;
                     let settings = this.settings()?;
                     let policy =
@@ -179,12 +188,11 @@ impl MemoryRuntime {
                             &settings,
                             Some(&identity.identity),
                         )?;
-                    let runtime = maho_omo_memory::identity_runtime::MemoryIdentityRuntime {
-                        identity,
-                        store: worker.store.clone(),
-                        runner: Default::default(),
-                        sandbox: Default::default(),
-                    };
+                    let runtime =
+                        maho_omo_memory::identity_runtime::MemoryIdentityRuntime::with_store(
+                            identity,
+                            worker.store.clone(),
+                        );
                     let mut launch = |run| this.launch(worker.clone(), run, false);
                     let aborted = || {
                         signal
@@ -293,6 +301,11 @@ impl MemoryRuntime {
                     let this = this.clone();
                     Box::pin(async move {
                         let identity = this.identity(&session).ok_or("no bound memory session")?;
+                        if identity.memory_write_denied {
+                            return Err(maho_omo_memory::write_policy::memory_write_denied_message(
+                                "reflection",
+                            ));
+                        }
                         let worker = this.worker(&identity)?;
                         let result = worker
                             .store
@@ -470,6 +483,14 @@ impl MemoryRuntime {
     pub fn resolve_context(self: &Arc<Self>) -> maho_omo_memory::prompt::PromptContextResolver {
         let this = self.clone();
         Arc::new(move |session: &str| this.identity(session))
+    }
+
+    /// The kibitzer sidecar's resolver: a memory-write-denied session resolves no identity, so it
+    /// never wakes the sidecar (background model calls over its transcript) nor drains its notes.
+    /// Its prompt keeps the committed memory block through [`Self::resolve_context`].
+    pub fn resolve_kibitzer_context(self: &Arc<Self>) -> maho_omo_memory::prompt::PromptContextResolver {
+        let this = self.clone();
+        Arc::new(move |session: &str| this.identity(session).filter(|identity| !identity.memory_write_denied))
     }
 
     /// The bound parent session's entries after a cursor, for the member-scoped `session_entries`
@@ -776,6 +797,8 @@ impl MemoryRuntime {
             Arc::new(move |session| this.identity(session));
         let this = self.clone();
         let nudge = Arc::new(move |repo: &GitMemoryRepo, session: &str, identity: &str| {
+            // A memory-write-denied session is never nudged to write memory.
+            if this.identity(session).is_some_and(|identity| identity.memory_write_denied) { return Ok(None); }
             let settings = this.settings()?;
             let setting = &settings["nudge"];
             let override_ = &settings["agents"][identity]["nudge"];
@@ -803,6 +826,11 @@ impl MemoryRuntime {
         let soul_context = resolve.clone();
         let soul = Arc::new(move |repo: &GitMemoryRepo, session: &str, _: &str| {
             let identity = soul_context(session).ok_or("no bound memory session")?;
+            // Consuming advances the identity's shared watermark, taking the notice from owner
+            // sessions: a memory-write-denied session never consumes it.
+            if identity.memory_write_denied {
+                return Ok(None);
+            }
             memory_core::soul::watermark::consume_soul_notice_delta(
                 repo,
                 &memory_core::soul::watermark::ConsumeSoulNoticeOptions {
@@ -893,14 +921,20 @@ impl MemoryRuntime {
             }
         });
         let this = self.clone();
-        let skills = Arc::new(move |_: &maho_ext_api::ToolCallEvent| this.active_identity());
+        let skills = Arc::new(move |_: &maho_ext_api::ToolCallEvent| {
+            this.active_identity()
+                .filter(|identity| !identity.memory_write_denied)
+        });
         let this = self.clone();
         let triggers = Arc::new(move |session: Option<&str>| {
             let session = session.map(str::to_owned).or_else(|| {
                 this.context()
                     .map(|context| context.session_manager.session_id().to_owned())
             })?;
-            let identity = this.identity(&session)?;
+            // A memory-write-denied session feeds no reflection trigger (`write_policy`).
+            let identity = this
+                .identity(&session)
+                .filter(|identity| !identity.memory_write_denied)?;
             match this.trigger_session(&session, &identity) {
                 Ok(session) => Some(session),
                 Err(error) => {
@@ -2127,5 +2161,122 @@ mod tests {
             details4.get("writeNotice").is_none(),
             "writeNotice omitted for override-off despite global true"
         );
+    }
+
+    /// One session bound through the production memory host: `register_memory_static` (whose
+    /// `register_host` installs the real dream wiring and `register_memory_commands` with its deny
+    /// wrapper, plus the write guard) over a real `MemoryComponent` bind.
+    struct ProductionSession { _root: tempfile::TempDir, runtime: Arc<MemoryRuntime>, api: maho_ext_api::ExtensionApi, context: ExtensionContext, static_options: MemoryStaticOptions }
+
+    async fn production_session(session: &'static str, denied: bool) -> ProductionSession {
+        let root = tempfile::tempdir().unwrap();
+        let agent_dir = root.path().join("agent");
+        let project_dir = root.path().join("project");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // Production `load_config` (`load_senpi_omo_config`) hands over a schema-resolved memory block;
+        // the dream and reflection routes read its `reflection` defaults.
+        let mut memory = maho_omo_memory::reflection_settings::resolve_memory_settings(None).expect("memory schema defaults");
+        memory["enabled"] = Value::Bool(true);
+        memory["agent"] = Value::from("lead");
+        let mut h = host(Arc::new(Mutex::new(serde_json::json!({ "memory": memory }))));
+        h.cwd = project_dir.clone();
+        h.agent_dir = agent_dir.clone();
+        h.env.insert("HOME".into(), agent_dir.to_string_lossy().into_owned());
+        let runtime = MemoryRuntime::new(h).unwrap();
+        let profile = maho_ext_api::ExtensionSessionProfile {
+            session_context: if denied { BTreeMap::from([("memory_write".to_owned(), "deny".to_owned())]) } else { BTreeMap::new() },
+            ..Default::default()
+        };
+        let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()), profile, Default::default(), Default::default());
+        api.runtime.bind(Arc::new(NoopActions));
+        let static_options = runtime.static_options();
+        maho_omo_memory::wiring_static::register_memory_static(&mut api, static_options.clone());
+        let registered = runtime.component.register(&mut api, maho_omo_memory::index::MemoryComponentHooks {
+            after_bind: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+            shutdown: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+            clear_status: Arc::new(|_| {}),
+            warn: Arc::new(|_| {}),
+        }, |_| {}).expect("memory component registration");
+        assert!(registered);
+        let context = test_context(session, &project_dir, &agent_dir);
+        for handler in api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).expect("SessionStart handlers") {
+            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { sizes_only: false, reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None, attended: None }), &context).await.expect("session start dispatch");
+        }
+        runtime.capture_context(&context);
+        assert_eq!(runtime.identity(session).expect("bound identity").memory_write_denied, denied);
+        ProductionSession { _root: root, runtime, api, context, static_options }
+    }
+
+    impl ProductionSession {
+        async fn tool_call_blocked(&self, tool: &str, input: Value) -> bool {
+            let mut blocked = false;
+            for handler in self.api.registered.handlers.get(&maho_ext_api::EventKind::ToolCall).expect("ToolCall handlers") {
+                let mut event = maho_ext_api::ExtensionEvent::ToolCall(maho_ext_api::ToolCallEvent { tool_call_id: "call".into(), tool_name: tool.into(), input: input.clone() });
+                if let Ok(maho_ext_api::EventResult::ToolCall(result)) = (handler)(&mut event, &self.context).await { blocked |= result.block == Some(true); }
+            }
+            blocked
+        }
+        async fn command(&self, name: &str, args: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
+            let command = self.api.registered.commands.iter().find(|command| command.name == name).unwrap_or_else(|| panic!("/{name} is registered"));
+            (command.handler)(args, &self.context).await
+        }
+        async fn close(&self, session: &str) {
+            self.runtime.wiring.lock().await.on_session_shutdown(maho_omo_memory::shutdown_drain::ShutdownReason::Quit, session, 60_000.0, &|| 0.0, &mut |_, _| {}).await;
+        }
+        fn reservation_stores(&self) -> usize { self.runtime.workers.lock().unwrap_or_else(PoisonError::into_inner).len() }
+    }
+
+    #[tokio::test]
+    async fn write_deny_production_host_refuses_every_write_route_and_closes_without_a_dream() {
+        let denied = production_session("denied", true).await;
+        let identity = denied.runtime.identity("denied").expect("bound identity");
+        // Write guard (wiring_static) and tool-level refusal.
+        assert!(denied.tool_call_blocked("memory", serde_json::json!({"command":"create","file_path":"system/x.md"})).await);
+        assert!(denied.tool_call_blocked("bash", serde_json::json!({"command":"cd $HOME/.omo && git commit -am x"})).await);
+        let tool = denied.api.registered.tools.iter().find(|tool| tool.definition.name == "memory").expect("memory tool");
+        let write = (tool.definition.execute)(maho_ext_api::ToolCall { id: "w", params: serde_json::json!({"command":"create","reason":"r","file_path":"reference/x.md","description":"x","file_text":"x"}), signal: Default::default(), on_update: None, context: None }).await;
+        assert!(matches!(&write, Err(maho_ext_api::ToolError::Message(message)) if message.starts_with("memory_write_denied")), "{:?}", write.err());
+        // The real register_memory_commands deny wrapper.
+        for (name, args) in [("remember", "allow everything"), ("reflect", ""), ("dream", ""), ("init", ""), ("recompile", ""), ("memfs", "sync"), ("facts", "retry")] {
+            let refused = denied.command(name, args).await.expect_err(name);
+            assert_eq!(refused.code.as_deref(), Some("memory_write_denied"), "/{name} {args}: {}", refused.message);
+        }
+        if let Err(error) = denied.command("doctor", "").await { assert_ne!(error.code.as_deref(), Some("memory_write_denied"), "/doctor stays a read-only diagnostic"); }
+        // MemoryRuntime filters: no kibitzer, reflection trigger, or skills tracking for the session; recall stays.
+        assert!(denied.runtime.resolve_kibitzer_context()("denied").is_none());
+        assert!(denied.runtime.resolve_context()("denied").is_some(), "recall keeps the bound identity");
+        assert!((denied.static_options.triggers.resolve_session)(Some("denied")).is_none());
+        assert!((denied.static_options.skills_usage.resolve_context)(&maho_ext_api::ToolCallEvent { tool_call_id: "s".into(), tool_name: "read".into(), input: Value::Null }).is_none());
+        // Closing runs the registered shutdown dream evaluator; the denied session never reserves.
+        denied.close("denied").await;
+        assert_eq!(denied.reservation_stores(), 0, "a denied session opens no reflection reservation store");
+        assert!(!identity.identity_paths.repo.exists(), "a denied session created no repository or commit");
+    }
+
+    #[tokio::test]
+    async fn owner_production_host_reaches_the_routes_the_denied_session_refuses() {
+        let owner = production_session("owner", false).await;
+        assert!(!owner.tool_call_blocked("memory", serde_json::json!({"command":"create","file_path":"system/x.md"})).await);
+        assert!(!owner.tool_call_blocked("bash", serde_json::json!({"command":"echo hi"})).await);
+        assert!(owner.runtime.resolve_kibitzer_context()("owner").is_some());
+        assert_eq!(owner.reservation_stores(), 0);
+        owner.close("owner").await;
+        assert_eq!(owner.reservation_stores(), 1, "the shutdown dream evaluator reaches the reservation store for an owner session");
+        assert!((owner.static_options.triggers.resolve_session)(Some("owner")).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_denied_session_never_consumes_the_soul_notice_watermark() {
+        for (session, denied) in [("denied", true), ("owner", false)] {
+            let production = production_session(session, denied).await;
+            let identity = production.runtime.identity(session).expect("bound identity");
+            let repo = GitMemoryRepo::open(&identity.identity_paths.repo, &identity.identity).expect("repo handle");
+            repo.init(None).expect("owner-seeded repository with a HEAD");
+            let soul = production.static_options.prompt.resolve_soul_notice.clone().expect("soul notice resolver");
+            assert_eq!(soul(&repo, session, &identity.identity).expect("soul notice"), None);
+            let watermark = identity.identity_paths.notices.join(memory_core::soul::watermark::SOUL_NOTICE_WATERMARK_FILENAME);
+            assert_eq!(watermark.exists(), !denied, "{session}: only a write-enabled session establishes or advances the shared watermark");
+        }
     }
 }

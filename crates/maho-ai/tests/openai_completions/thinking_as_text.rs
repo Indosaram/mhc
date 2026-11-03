@@ -100,6 +100,7 @@ fn build_context(assistant: maho_ai::types::Message) -> maho_ai::types::Context 
 fn build_assistant(content: Vec<ContentBlock>) -> maho_ai::types::Message {
     let mut message = assistant(content, StopReason::Stop);
     if let maho_ai::types::Message::Assistant(assistant) = &mut message {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = "repro-provider".to_owned();
         assistant.model = "repro-model".to_owned();
         assistant.timestamp = 2;

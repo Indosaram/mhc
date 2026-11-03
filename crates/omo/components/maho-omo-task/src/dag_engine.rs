@@ -1083,7 +1083,7 @@ impl TaskDagEngine {
         let owned = lock(&self.schedulers)
             .get(run)
             .map(|owned| owned.scheduler.clone());
-        if let Some(scheduler) = owned {
+        if result.status.is_terminal() && let Some(scheduler) = owned {
             scheduler.when_idle();
         }
         Ok(serde_json::json!({
@@ -1779,6 +1779,7 @@ impl TaskDagEngine {
                 };
                 let coordinator = idle_injection::from_slot(&context.idle_coordinator);
                 let bridge = bridge.clone();
+                let last_attach = last_attach.clone();
                 Box::pin(async move {
                     // DAG recovery assumes the session-start task reconcile finished (a revivable
                     // child already carries a handle). Admission does not wait for that reconcile, so

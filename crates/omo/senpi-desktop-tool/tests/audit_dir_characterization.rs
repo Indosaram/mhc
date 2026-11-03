@@ -32,6 +32,11 @@ fn host() -> TestToolContext {
     context_in("/sessions/project", "/work")
 }
 
+/// `run` spawns the JS kernel in the context's cwd, so it must be a directory that exists.
+fn run_host() -> TestToolContext {
+    context_in("/sessions/project", &std::env::temp_dir().to_string_lossy())
+}
+
 async fn execute(
     fixture: &DesktopFixture,
     id: &str,
@@ -264,7 +269,7 @@ async fn details_audit_holds_one_host_record_per_engine_audit_stamped_with_sessi
         &fixture,
         "call-run",
         json!({ "action": "run", "code": code }),
-        &host(),
+        &run_host(),
     )
     .await;
 
@@ -309,14 +314,14 @@ async fn each_run_gets_its_own_run_id_and_only_its_own_audit_records() {
         &fixture,
         "run-1",
         json!({ "action": "run", "code": code }),
-        &host(),
+        &run_host(),
     )
     .await;
     let second = execute(
         &fixture,
         "run-2",
         json!({ "action": "run", "code": code }),
-        &host(),
+        &run_host(),
     )
     .await;
 
@@ -338,7 +343,7 @@ async fn details_screenshots_lists_only_the_artifact_capture_and_captures_add_no
         &fixture,
         "call-cap",
         json!({ "action": "run", "code": code }),
-        &host(),
+        &run_host(),
     )
     .await;
 

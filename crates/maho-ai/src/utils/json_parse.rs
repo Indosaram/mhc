@@ -68,6 +68,17 @@ pub fn parse_json_with_repair<T: DeserializeOwned>(json: &str) -> Result<T, serd
     }
 }
 
+/// Buffers up to this many bytes are re-parsed on every streamed delta.
+const STREAMING_REPARSE_EAGER_LEN: usize = 8192;
+
+/// Whether a streamed argument buffer of `total_len` bytes should be re-parsed now, given the
+/// length at the last parse. Small buffers re-parse every delta; large ones only after 1/8 growth,
+/// which keeps total parse work linear in the final size.
+pub fn should_reparse_streaming_json(total_len: usize, last_parsed_len: usize) -> bool {
+    total_len <= STREAMING_REPARSE_EAGER_LEN
+        || total_len.saturating_sub(last_parsed_len) >= total_len / 8
+}
+
 /// Parses possibly incomplete streamed tool-call JSON; anything unparseable yields `{}`.
 pub fn parse_streaming_json(partial_json: Option<&str>) -> Value {
     let Some(partial_json) = partial_json.filter(|json| !crate::utils::js::trim(json).is_empty()) else {
@@ -319,6 +330,15 @@ mod tests {
         // senpi fe8c564b: `parseJsonWithRepair` succeeds on "null" and its result is returned
         // as-is (only the partial-json fallback path defaults nullish results to {}).
         assert_eq!(parse_streaming_json(Some("null")), Value::Null);
+    }
+
+    #[test]
+    fn reparse_throttle_is_eager_for_small_buffers_and_geometric_for_large() {
+        assert!(should_reparse_streaming_json(1, 0));
+        assert!(should_reparse_streaming_json(8192, 8191));
+        assert!(!should_reparse_streaming_json(8193, 8192));
+        assert!(!should_reparse_streaming_json(80_000, 79_000));
+        assert!(should_reparse_streaming_json(80_000, 70_000));
     }
 
     #[test]

@@ -1137,7 +1137,42 @@ async fn publish_structural_outcome(
         LaneContinue::Result { value } => match value {
             StructuralPublication::Procedure(result) => Ok(result),
             StructuralPublication::FinishPending(entry_ids) => {
-                finish_run_boundary(lane.as_ref(), drive, state, true, &entry_ids, Vec::new()).await
+                let task = summary_task_of(state).ok_or_else(|| {
+                    session_invariant_error("Structural finish mediation requires a summary task")
+                })?;
+                let ResultBoundary::ResumeCheckpoint { resume_after } = &task.boundary else {
+                    return Err(session_invariant_error(
+                        "Structural finish mediation requires a resumable finish boundary",
+                    ));
+                };
+                let Continuation::MayFinish {
+                    include_final_assistant,
+                } = resume_after.continuation
+                else {
+                    return Err(session_invariant_error(
+                        "Structural finish mediation requires a resumable finish boundary",
+                    ));
+                };
+                let pending_events = vec![HarnessEvent::new(
+                    HarnessEventPayload::CompactionEnd {
+                        run_id: drive.operation_id.clone(),
+                        reason: "threshold".into(),
+                        ended_at: now_ms(),
+                        status: "declined".into(),
+                        entry_id: None,
+                        error: None,
+                    },
+                    Some(lane.name.clone()),
+                )];
+                finish_run_boundary(
+                    lane.as_ref(),
+                    drive,
+                    state,
+                    include_final_assistant,
+                    &entry_ids,
+                    pending_events,
+                )
+                .await
             }
         },
     }

@@ -485,7 +485,7 @@ fn fallback_chain_lengths_match_transcription() {
         .collect();
     assert_eq!(
         lengths,
-        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 3), ("plan-reviewer", 8)]
+        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 4), ("plan-reviewer", 8)]
     );
 }
 

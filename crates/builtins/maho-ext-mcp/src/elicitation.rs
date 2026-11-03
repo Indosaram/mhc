@@ -78,13 +78,15 @@ fn response(action: ElicitationAction) -> ElicitationResponse {
 /// The readiness half of upstream `McpElicitationUiProvider` (`enforced`, `eligible`, `subscribe`). A pooled
 /// connection installs an aggregate over its leases (shared-connection.ts); otherwise readiness is read from
 /// the connection's own UI.
+pub type McpFormReadinessSubscribe = Arc<
+    dyn Fn(Arc<dyn Fn() + Send + Sync>) -> crate::form_types::McpFormUnsubscribe + Send + Sync,
+>;
+
 #[derive(Clone)]
 pub struct McpFormReadiness {
     pub enforced: Arc<dyn Fn() -> bool + Send + Sync>,
     pub eligible: Arc<dyn Fn() -> bool + Send + Sync>,
-    pub subscribe: Arc<
-        dyn Fn(Arc<dyn Fn() + Send + Sync>) -> crate::form_types::McpFormUnsubscribe + Send + Sync,
-    >,
+    pub subscribe: McpFormReadinessSubscribe,
 }
 /// Upstream `uiProvider?.enforced?.()`, falling back to the UI's own private binding.
 pub fn mcp_forms_enforced(

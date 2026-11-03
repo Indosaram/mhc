@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum RpcHostRequestMethod {
@@ -528,16 +534,18 @@ pub enum RpcCommandBody {
             skip_serializing_if = "Option::is_none"
         )]
         retain_on_disconnect: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        kind: Option<SessionKind>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        context: Option<BTreeMap<String, String>>,
-        #[serde(rename = "auto_title", skip_serializing_if = "Option::is_none")]
-        auto_title: Option<bool>,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        expected_host_instance: Option<Value>,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        kind: Option<Value>,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        context: Option<Value>,
+        #[serde(rename = "auto_title", default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        auto_title: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         durable_session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        attended: Option<bool>,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        attended: Option<Value>,
         /// Where this session's replies render: `terminal`, `app` or `chat` (validated at the router).
         #[serde(skip_serializing_if = "Option::is_none")]
         prompt_surface: Option<Value>,
@@ -1227,10 +1235,56 @@ mod tests {
         assert!(matches!(
             command.body,
             RpcCommandBody::OpenSession {
-                attended: Some(false),
+                attended: Some(Value::Bool(false)),
                 ..
             }
         ));
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    #[test]
+    fn open_session_deserializes_expected_host_instance() {
+        let value = json!({"type":"open_session","expectedHostInstance":"host-xyz"});
+        let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(
+            &command.body,
+            RpcCommandBody::OpenSession {
+                expected_host_instance: Some(Value::String(s)),
+                ..
+            } if s == "host-xyz"
+        ));
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    #[test]
+    fn open_session_preserves_malformed_kind_and_context_for_router_validation() {
+        let value = json!({
+            "type": "open_session",
+            "kind": 123,
+            "context": "not-a-map",
+            "auto_title": "yes"
+        });
+        let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(
+            &command.body,
+            RpcCommandBody::OpenSession {
+                kind: Some(Value::Number(_)),
+                context: Some(Value::String(_)),
+                auto_title: Some(Value::String(_)),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    #[test]
+    fn open_session_keeps_explicit_null_distinct_from_absent_fields() {
+        let value = json!({
+            "type": "open_session",
+            "expectedHostInstance": null,
+            "kind": null,
+            "context": null,
+            "auto_title": null,
+            "attended": null
+        });
+        let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(command).unwrap(), value);
     }
     #[test]

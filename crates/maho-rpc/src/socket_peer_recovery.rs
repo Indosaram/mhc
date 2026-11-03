@@ -230,7 +230,7 @@ mod tests {
             Box::new(move |_| {
                 let counter = counter.clone();
                 ResyncCut {
-                    read: Box::new(|| Vec::new()),
+                    read: Box::new(Vec::new),
                     release: Some(Box::new(move || {
                         counter.fetch_add(1, Ordering::SeqCst);
                     })),

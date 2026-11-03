@@ -45,7 +45,7 @@ use crate::utils::error_body::{
 };
 use crate::utils::hash::short_hash;
 use crate::utils::headers::headers_to_record;
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::provider_env::get_provider_env_value;
 use crate::utils::provider_retry::{
@@ -1963,6 +1963,7 @@ struct StreamingToolCall {
     name: String,
     arguments: Map<String, Value>,
     partial_args: Option<String>,
+    partial_args_parsed_len: usize,
     custom_input: Option<CustomToolInput>,
     stream_index: Option<usize>,
 }
@@ -2227,6 +2228,7 @@ impl StreamState {
                     name: name.to_owned(),
                     arguments,
                     partial_args: custom_input_property.is_none().then(String::new),
+                    partial_args_parsed_len: 0,
                     custom_input: custom_input_property.map(|property| CustomToolInput {
                         property,
                         json_buffer: GrammarToolInputJsonBuffer::default(),
@@ -2373,9 +2375,10 @@ impl StreamState {
 }
 
 fn default_transport(options: Option<&OpenAiCompletionsOptions>) -> Arc<dyn ChatTransport> {
+    // PERF-DIVERGENCE(senpi openai-completions.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
     let client = options
         .and_then(|options| options.stream.request.fetch.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     Arc::new(ReqwestTransport::new(client))
 }
 
@@ -2494,6 +2497,20 @@ pub fn stream_with_transport(
         }
     });
     stream
+}
+
+/// The next SSE chunk, raced against the turn's abort signal: an abort wins (it is polled first) and
+/// answers the aborted error, so the caller returns and drops the stream with its HTTP response.
+async fn next_chunk_or_abort<S>(chunks: &mut S, signal: Option<&AbortSignal>) -> Result<Option<S::Item>, OpenAiCompletionsError>
+where
+    S: futures::Stream + Unpin,
+{
+    let Some(signal) = signal else { return Ok(chunks.next().await) };
+    tokio::select! {
+        biased;
+        () = signal.cancelled() => Err(OpenAiCompletionsError::protocol("Request was aborted")),
+        chunk = chunks.next() => Ok(chunk),
+    }
 }
 
 async fn create_request(
@@ -2698,7 +2715,11 @@ async fn run_stream_inner(
 
     let mut state = StreamState::default();
     let mut chunks = chunk_stream;
-    while let Some(chunk) = chunks.next().await {
+    // The abort signal covers the body as well as the headers (openai-node hands the signal to
+    // `fetch`, which aborts the body read too): an abort while the provider holds the stream open
+    // returns at once, and dropping `chunks` drops the response, so the connection is closed
+    // instead of left waiting for bytes the aborted turn will never read.
+    while let Some(chunk) = next_chunk_or_abort(&mut chunks, signal.as_ref()).await? {
         let chunk = chunk?;
         if let Some(options) = options {
             options
@@ -2864,13 +2885,21 @@ async fn run_stream_inner(
                     {
                         delta_text = arguments.to_owned();
                         if let Some(StreamBlock::ToolCall(block)) = state.blocks.get_mut(index) {
-                            let mut partial = block.partial_args.clone().unwrap_or_default();
+                            let partial = block.partial_args.get_or_insert_with(String::new);
                             partial.push_str(arguments);
-                            block.partial_args = Some(partial.clone());
-                            block.arguments = parse_streaming_json(Some(partial.as_str()))
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default();
+                            let total_len = partial.len();
+                            // PERF-DIVERGENCE(senpi packages/ai/src/api/openai-completions.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+                            if should_reparse_streaming_json(
+                                total_len,
+                                block.partial_args_parsed_len,
+                            ) {
+                                block.arguments =
+                                    parse_streaming_json(block.partial_args.as_deref())
+                                        .as_object()
+                                        .cloned()
+                                        .unwrap_or_default();
+                                block.partial_args_parsed_len = total_len;
+                            }
                         }
                     } else if let Some(custom_input) = tool_call
                         .get("custom")

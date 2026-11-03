@@ -123,7 +123,9 @@ async fn registered_abort_preserves_custom_reason_and_disconnects() {
     let accepted_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::select! { event = accepted => event.map_err(|error| error.to_string()), result = &mut request => Err(format!("request ended before acceptance: {result:?}")) }
     }).await;
-    controller.abort(Some(maho_ai::utils::abort::AbortReason::new("Error", "cancel registered search")));
+    let reason = maho_ai::utils::abort::AbortReason::new("AbortError", "cancel registered search")
+        .with_payload(Arc::new(()));
+    controller.abort(Some(reason.clone()));
     let result = if matches!(&accepted_result, Ok(Ok(()))) {
         Some(tokio::time::timeout(std::time::Duration::from_secs(5), &mut request).await)
     } else { None };
@@ -131,7 +133,11 @@ async fn registered_abort_preserves_custom_reason_and_disconnects() {
     let server = tokio::time::timeout(std::time::Duration::from_secs(5), tasks.join_next()).await;
     if server.is_err() { tasks.abort_all(); while tasks.join_next().await.is_some() {} }
     accepted_result.expect("accept deadline").expect("acceptance event");
-    assert_eq!(result.expect("accepted request").expect("request deadline").expect_err("abort").message, "cancel registered search");
+    let failure = result.expect("accepted request").expect("request deadline").expect_err("abort");
+    assert_eq!(failure.message, reason.message);
+    assert_eq!(failure.class.as_deref(), Some("AbortError"));
+    let original = failure.abort_reason.expect("retained abort reason");
+    assert_eq!(*original, reason);
     server.expect("server deadline").expect("server task").expect("server");
     assert!(std::net::TcpListener::bind(address).is_ok());
 }

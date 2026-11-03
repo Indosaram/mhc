@@ -273,7 +273,7 @@ pub fn tool_result(tool_call_id: &str, content: Vec<ContentBlock>) -> Message {
 }
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
-    Message::Assistant(Box::new(maho_ai::types::AssistantMessage {
+    Message::Assistant(std::sync::Arc::new(maho_ai::types::AssistantMessage {
         failure_source: None,
         credential_served_recently: None,
         timing: None,

@@ -79,10 +79,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     type Listeners = Arc<Mutex<Vec<(usize, Arc<ActivityListener>)>>>;
+    type SubscribeFn = Box<dyn FnOnce(ActivityListener) -> Option<Unsubscribe>>;
 
     fn host() -> (
         Listeners,
-        impl Fn() -> Box<dyn FnOnce(ActivityListener) -> Option<Unsubscribe>>,
+        impl Fn() -> SubscribeFn,
     ) {
         let listeners: Listeners = Arc::default();
         let next = Arc::new(AtomicUsize::new(0));
@@ -100,7 +101,7 @@ mod tests {
                         .unwrap()
                         .retain(|(existing, _)| *existing != id)
                 }) as Unsubscribe)
-            }) as Box<dyn FnOnce(ActivityListener) -> Option<Unsubscribe>>
+            }) as SubscribeFn
         };
         (listeners, subscribe)
     }

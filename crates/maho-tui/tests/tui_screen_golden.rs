@@ -1,7 +1,7 @@
 //! Byte-exact full-screen parity for the main and alternate screen renderers.
 //!
 //! Each `tools/golden/cases/tui-screen-*.json` case is replayed against the Rust renderer. The
-//! `.ansi` fixture is the byte stream senpi's renderer wrote for the same steps and the
+//! `.ansi.json` fixture encodes the byte stream senpi's renderer wrote for the same steps and the
 //! `.<cols>x<rows>.json` fixture is the screen senpi's VirtualTerminal shows afterwards.
 
 use std::cell::RefCell;
@@ -175,8 +175,9 @@ fn trim_viewport(mut screen: Value) -> Value {
 fn assert_case(name: &str) {
     let (stream, columns, rows) = replay(name);
     let expected_stream = {
-        let raw = std::fs::read_to_string(fixture_path(&format!("{name}.ansi")))
-            .unwrap_or_else(|error| panic!("{name}.ansi: {error}"));
+        let encoded = std::fs::read_to_string(fixture_path(&format!("{name}.ansi.json")))
+            .unwrap_or_else(|error| panic!("{name}.ansi.json: {error}"));
+        let raw: String = serde_json::from_str(&encoded).expect("encoded ANSI stream");
         if cfg!(windows) {
             raw.replace("\x1b[3J", "")
         } else {
@@ -394,7 +395,6 @@ mod sgr_row_clear {
     }
 
     fn render(screen: &mut TuiMainScreen, terminal: &mut RecordingTerminal) {
-        screen.base.reset_forced_render_state();
         screen.base.do_render(terminal);
     }
 
@@ -2075,10 +2075,13 @@ mod tui_render_and_overlays {
 
     // ---------- overlay-options.test.ts ----------
 
+    type RequestedWidth = Rc<RefCell<Option<usize>>>;
+    type StaticOverlayTracked = (Rc<RefCell<dyn Component>>, RequestedWidth);
+
     /// senpi's `StaticOverlay`: fixed lines, records the width it was rendered at.
     struct StaticOverlay {
         lines: Vec<String>,
-        requested_width: Rc<RefCell<Option<usize>>>,
+        requested_width: RequestedWidth,
     }
 
     impl Component for StaticOverlay {
@@ -2092,9 +2095,7 @@ mod tui_render_and_overlays {
         static_overlay_tracked(lines).0
     }
 
-    fn static_overlay_tracked(
-        lines: &[&str],
-    ) -> (Rc<RefCell<dyn Component>>, Rc<RefCell<Option<usize>>>) {
+    fn static_overlay_tracked(lines: &[&str]) -> StaticOverlayTracked {
         let requested_width = Rc::new(RefCell::new(None));
         let overlay: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(StaticOverlay {
             lines: lines.iter().map(|line| line.to_string()).collect(),
@@ -4440,14 +4441,15 @@ mod alt_screen_selection {
         }
     }
 
-    fn control(
-        answer: fn(&TuiMouseEvent) -> Option<TuiMouseEventResult>,
-    ) -> (
+    type ControlEvents = Rc<RefCell<Vec<TuiMouseEventType>>>;
+    type ControlHarness = (
         Rc<RefCell<Control>>,
-        Rc<RefCell<Vec<TuiMouseEventType>>>,
+        ControlEvents,
         Rc<RefCell<Vec<u32>>>,
         Rc<RefCell<usize>>,
-    ) {
+    );
+
+    fn control(answer: fn(&TuiMouseEvent) -> Option<TuiMouseEventResult>) -> ControlHarness {
         let (events, clicks, renders) = (Rc::default(), Rc::default(), Rc::default());
         let control = Rc::new(RefCell::new(Control {
             events: Rc::clone(&events),
@@ -4863,7 +4865,9 @@ mod alt_screen_controls {
         ];
         let direct = with_overrides(&clear, prefers_button_motion_mouse);
         assert!(start_writes(direct).contains("\x1b[?1003h"));
-        let multiplexers: [(&str, &[(&str, Option<&str>)]); 5] = [
+        type EnvOverride<'a> = (&'a str, Option<&'a str>);
+        type MultiplexerCase<'a> = (&'a str, &'a [EnvOverride<'a>]);
+        let multiplexers: [MultiplexerCase<'_>; 5] = [
             (
                 "tmux environment",
                 &[("TMUX", Some("/tmp/tmux/default,1,0"))],

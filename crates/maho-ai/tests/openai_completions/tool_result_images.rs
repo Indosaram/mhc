@@ -97,6 +97,7 @@ fn assistant_with_tool_calls(calls: Vec<(&str, &str, Value)>, provider: &str, mo
         .collect();
     let mut message = assistant(content, StopReason::ToolUse);
     if let maho_ai::types::Message::Assistant(assistant) = &mut message {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = provider.to_owned();
         assistant.model = model_id.to_owned();
     }

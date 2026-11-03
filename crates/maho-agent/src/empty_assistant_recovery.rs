@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use maho_ai::model::Model;
-use maho_ai::tool_call_middleware::has_kimi_text_tool_call_recovery;
+use maho_ai::tool_call_middleware::{
+    get_tool_call_format, has_kimi_text_tool_call_recovery, should_recover_text_tool_calls,
+};
 use maho_ai::types::{
     AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, ErrorReason,
 };
@@ -23,13 +25,13 @@ use crate::types::StreamFn;
 
 /// `BufferedRecord = { event } | { progress }`.
 enum BufferedRecord {
-    Event(CapturedEvent),
+    Event(Box<CapturedEvent>),
     Progress(FrozenProgress),
 }
 
 fn forward(outer_stream: &AssistantMessageEventStream, entry: BufferedRecord) {
     match entry {
-        BufferedRecord::Event(event) => outer_stream.push_captured(event, CaptureHint::default()),
+        BufferedRecord::Event(event) => outer_stream.push_captured(*event, CaptureHint::default()),
         BufferedRecord::Progress(progress) => outer_stream.push_frozen_progress(progress),
     }
 }
@@ -284,7 +286,7 @@ async fn run_retrying_stream(
                 outer_stream.push_captured(captured, CaptureHint::default());
                 continue;
             }
-            buffered.push(BufferedRecord::Event(captured));
+            buffered.push(BufferedRecord::Event(Box::new(captured)));
             if is_meaningful_content_event(&event, policy) {
                 for pending in buffered.drain(..) {
                     forward(&outer_stream, pending);
@@ -294,6 +296,11 @@ async fn run_retrying_stream(
         }
         drop(events);
         if !retry {
+            if !forwarding {
+                for pending in buffered.drain(..) {
+                    forward(&outer_stream, pending);
+                }
+            }
             match stream.result().await {
                 Ok(mut result) => {
                     if retrying {
@@ -322,12 +329,15 @@ async fn run_retrying_stream(
 
 // Wrapping replaces the provider stream with a buffering proxy, which does not carry the
 // underlying stream's liveness surface (trackLocalWork/hasPendingLocalWork) that the loop's
-// idle watchdog reads. Only cursor-agent tracks local work, so it is the one api left unwrapped.
-// Divergence from senpi, which wraps only text-tool-call models: any model can end a turn with
-// an empty `stop` (GPT-6 Astra does so on a few percent of turns), and unwrapped that empty stop
-// settles the turn silently, leaving the session idle with nothing scheduled to wake it.
+// idle watchdog reads. Only wrap models that actually need stream-level recovery; the
+// empty-tool_use contradiction is normalized for every model by the agent loop instead.
+// Divergence from senpi: GPT-6 Astra models are also wrapped, because they end a few percent of
+// turns with an empty `stop` that would otherwise settle the turn silently.
 pub fn with_empty_assistant_recovery(model: &Model, stream_function: StreamFn) -> StreamFn {
-    if model.api == "cursor-agent" {
+    if !should_recover_text_tool_calls(model)
+        && get_tool_call_format(model).is_none()
+        && !model.id.contains("astra")
+    {
         return stream_function;
     }
     let policy = CommitPolicy {

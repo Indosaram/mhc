@@ -669,11 +669,18 @@ pub async fn mcp_request_with_clock(
                     }
                     Ok(())
                 };
+                let task_linked = options.signal.as_ref().map(|caller| {
+                    McpLinkedSignal::new(vec![caller.clone(), state.signal.clone()])
+                });
+                let task_signal = task_linked
+                    .as_ref()
+                    .map(|linked| linked.signal.clone())
+                    .unwrap_or_else(|| state.signal.clone());
                 result = follow_mcp_task(
                     &result,
                     McpTaskOptions {
                         clock: clock.as_ref(),
-                        signal: state.signal.clone(),
+                        signal: task_signal,
                         timeout_ms: task_timeout,
                         send: &send,
                         inputs: &inputs,

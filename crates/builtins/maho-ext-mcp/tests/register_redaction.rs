@@ -30,6 +30,8 @@ async fn progress_updates_redact_resolved_values_in_text_and_details() {
             support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
             "--tools".into(),
             "1".into(),
+            "--slow-tool-call".into(),
+            "1".into(),
         ]),
         connect_timeout_ms: Some(5000.0),
         ..Default::default()

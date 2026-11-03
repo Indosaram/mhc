@@ -1,5 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
+// clippy.toml sets allow-unwrap-in-tests, which covers only #[test] fns; the shared fixture helpers
+// in these modules unwrap the same way.
+#![allow(clippy::unwrap_used)]
 
 #[path = "ansi.rs"]
 pub mod ansi;
@@ -48,6 +51,8 @@ pub mod extension_registry;
 pub mod facts_child;
 #[path = "fast_mode.rs"]
 pub mod fast_mode;
+#[path = "first_time_setup.rs"]
+pub mod first_time_setup;
 #[path = "file_processor.rs"]
 pub mod file_processor;
 #[path = "fork_session.rs"]

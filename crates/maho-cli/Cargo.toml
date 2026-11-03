@@ -26,6 +26,7 @@ omo = [
     "dep:lsp-daemon",
     "dep:senpi-task",
     "dep:delegate-core",
+    "dep:omo-utils",
     "maho-ext-pi-comment-checker/omo-core",
     "maho-ext-hooks/claude-plugins",
 ]
@@ -154,6 +155,7 @@ memory-core = { package = "maho-memory-core", path = "../omo/memory-core", optio
 maho-omo-lsp = { path = "../omo/components/maho-omo-lsp", optional = true }
 lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon", optional = true }
 senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task", optional = true }
+omo-utils = { package = "maho-utils", path = "../omo/utils", optional = true }
 delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core", optional = true }
 indexmap.workspace = true
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
@@ -169,7 +171,7 @@ regex.workspace = true
 sha2.workspace = true
 flate2 = "=1.1.8"
 tar = "0.4"
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "=9.2.2", default-features = false, features = ["deflate"] }
 url.workspace = true
 percent-encoding.workspace = true
 base64 = "=0.22.1"
@@ -194,7 +196,7 @@ minisign = "=0.7.9"
 maho-ext-host = { path = "../maho-ext-host" }
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "net"] }
 
 [[bin]]
 name = "mhc"

@@ -31,7 +31,7 @@ pub(crate) type InternalLoopConfig = AgentLoopConfig;
 /// `InternalEvent = { event } | { progress }`; the event keeps the assistant capture it carries.
 #[derive(Debug, Clone)]
 pub enum InternalEvent {
-    Event(Captured<AgentEvent>),
+    Event(Box<Captured<AgentEvent>>),
     Progress(FrozenProgress),
 }
 

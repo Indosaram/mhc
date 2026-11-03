@@ -213,6 +213,7 @@ async fn static_hook_reemits_from_base_and_omits_native_context() {
         .push(ContextFile {
             path: instructions.to_string_lossy().into_owned(),
             content: "fixture".into(),
+            scope: None,
         });
     assert!(matches!(
         hook(&mut event, &ctx).await.unwrap(),
@@ -452,6 +453,7 @@ async fn natively_loaded_ancestor_agents_md_is_not_reinjected_by_the_repository_
     options.context_files.push(ContextFile {
         path: root_agents.to_string_lossy().into_owned(),
         content: "ROOT-AGENTS-NATIVE\n".into(),
+        scope: None,
     });
     let mut start = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
         prompt: "read main.ts".into(),

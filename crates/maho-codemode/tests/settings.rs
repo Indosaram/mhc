@@ -395,7 +395,9 @@ async fn retained_budgets_resolve_from_defaults_file_and_environment() {
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     const MIB: u64 = 1024 * 1024;
     let defaults = CodemodeSettings::default();
-    let cases: [(fn(&CodemodeSettings, &Environment) -> u64, &str, u64, u64); 2] = [
+    type BudgetResolver = fn(&CodemodeSettings, &Environment) -> u64;
+    type BudgetCase = (BudgetResolver, &'static str, u64, u64);
+    let cases: [BudgetCase; 2] = [
         (
             resolve_retained_results_bytes,
             RETAINED_RESULTS_ENVIRONMENT_FLAG,

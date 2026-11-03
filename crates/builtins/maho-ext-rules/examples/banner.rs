@@ -8,8 +8,8 @@ fn main() {
             rule_count: 2,
             diagnostics: vec![RuleDiagnostic { severity: "warning".into(), source: "bad.md".into(), message: String::new() }],
             top_rules: vec![
-                BannerRule { relative_path: "bad.md".into(), match_reason: MatchReason::Glob { pattern: "**/*.rs".into() } },
-                BannerRule { relative_path: "good.md".into(), match_reason: MatchReason::SingleFile },
+                BannerRule { path: None, relative_path: "bad.md".into(), match_reason: MatchReason::Glob { pattern: "**/*.rs".into() } },
+                BannerRule { path: None, relative_path: "good.md".into(), match_reason: MatchReason::SingleFile },
             ],
         }, Rc::new(|_, text| text.to_owned()), Rc::new(str::to_owned));
         println!("width={width}");

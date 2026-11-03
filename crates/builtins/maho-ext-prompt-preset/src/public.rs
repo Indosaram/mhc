@@ -33,6 +33,7 @@ mod tests {
             context_files: vec![ContextFile {
                 path: "/synthetic-project/AGENTS.md".into(),
                 content: "CONTEXT_SENTINEL".into(),
+                scope: None,
             }],
             skills: Vec::new(),
             tuning_section: None,
@@ -46,7 +47,7 @@ mod tests {
         id: &'a str,
         preset: Option<&'a str>,
     ) -> public::ModelWithPromptPresetMetadata<'a> {
-        public::ModelMetadata {
+        public::ModelWithPromptPresetMetadata {
             id,
             provider: "synthetic",
             name: None,
@@ -94,7 +95,11 @@ mod tests {
         ];
         for (id, name, build) in builders {
             assert_eq!(
-                public::resolve_preset_name(model(id, None), public::PromptPresetName::Auto),
+                public::resolve_preset_name(public::ContractModel {
+                    provider_id: "synthetic",
+                    model_id: id,
+                    name: None,
+                }),
                 Some(name)
             );
             let actual =

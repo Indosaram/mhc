@@ -104,19 +104,26 @@ pub async fn handle_doctor(
             checks.push(facts);
         }
 
-        let repaired = repair_missing_skill_name_frontmatter(Some(&identity.identity_paths.repo));
-        let report = format_skill_name_frontmatter_repair_report(&repaired);
-        extra.push(format!(
-            "[info] skills: scanned {} skill file{}",
-            repaired.scanned,
-            if repaired.scanned == 1 { "" } else { "s" }
-        ));
-        extra.extend(
-            report
-                .split('\n')
-                .filter(|line| !line.is_empty())
-                .map(|line| format!("[info] skills: {line}")),
-        );
+        // The skill frontmatter repair writes into the memory repository: a memory-write-denied
+        // session runs every read-only check but never the repair (`crate::write_policy`).
+        let write_denied = ctx.session_id.as_deref().and_then(|session| (deps.resolve_context)(session)).is_some_and(|context| context.memory_write_denied);
+        if write_denied {
+            extra.push(format!("[info] skills: frontmatter repair skipped; {}", crate::write_policy::memory_write_denied_message("skill frontmatter repair")));
+        } else {
+            let repaired = repair_missing_skill_name_frontmatter(Some(&identity.identity_paths.repo));
+            let report = format_skill_name_frontmatter_repair_report(&repaired);
+            extra.push(format!(
+                "[info] skills: scanned {} skill file{}",
+                repaired.scanned,
+                if repaired.scanned == 1 { "" } else { "s" }
+            ));
+            extra.extend(
+                report
+                    .split('\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| format!("[info] skills: {line}")),
+            );
+        }
     }
 
     let level = worst_level(&checks);
@@ -446,6 +453,23 @@ mod tests {
 
         assert!(response.text.contains("skills/commit/SKILL.md"));
         assert!(response.text.contains("name:"));
+    }
+
+    #[tokio::test]
+    async fn given_a_memory_write_denied_session_when_doctor_runs_then_checks_run_and_no_skill_file_is_rewritten() {
+        let (_root, identity, mut fake) = harness(true);
+        let skill = identity.identity_paths.repo.join("skills").join("commit").join("SKILL.md");
+        std::fs::create_dir_all(skill.parent().expect("skill dir")).expect("dir");
+        std::fs::write(&skill, "---\ndescription: x\n---\n").expect("skill");
+        let bound = fake.deps.resolve_context.clone();
+        fake.deps.resolve_context = Arc::new(move |session: &str| bound(session).map(|context| context.with_memory_write_denied(true)));
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_doctor(&fake.deps, &context.ctx, "").await;
+
+        assert!(response.text.contains("[ok] repository"), "read-only checks still run: {}", response.text);
+        assert!(response.text.contains("memory_write_denied"), "{}", response.text);
+        assert_eq!(std::fs::read_to_string(&skill).expect("skill"), "---\ndescription: x\n---\n", "the denied session leaves the repo untouched");
     }
 
     #[tokio::test]

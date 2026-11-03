@@ -69,7 +69,7 @@ pub struct HostSessionControl {
     session: Arc<dyn ControlSession>,
     socket: Option<String>,
     report: Arc<dyn Fn(String) + Send + Sync>,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 
 /// senpi `INBOX_ENGINE_ENTRY_PREFIX`: the engine's own inbox entries never count as deliveries.
@@ -85,7 +85,7 @@ impl HostSessionControl {
             session,
             socket,
             report,
-            state: Mutex::default(),
+            state: Arc::default(),
         }
     }
 
@@ -206,10 +206,9 @@ impl HostSessionControl {
         }
     }
 
-    /// The registration's `dispose`: releases it only while it is still the active one.
-    pub fn dispose_registration(&self, registration: u64) {
+    fn dispose_state(state: &Mutex<State>, registration: u64) {
         let released = {
-            let mut state = self.state();
+            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if state
                 .active
                 .as_ref()
@@ -223,6 +222,11 @@ impl HostSessionControl {
         if let Some(active) = released {
             active.release();
         }
+    }
+
+    /// The registration's `dispose`: releases it only while it is still the active one.
+    pub fn dispose_registration(&self, registration: u64) {
+        Self::dispose_state(&self.state, registration);
     }
 
     /// The `wake` command: one drain pass covering `delivery_ids`, answered with what it admitted.
@@ -262,12 +266,7 @@ impl HostSessionControl {
 pub fn profile_host_socket(
     runtime: &maho_core::agent_session_runtime::AgentSessionRuntime,
 ) -> Option<String> {
-    runtime
-        .launch_profile()?
-        .session_context
-        .as_ref()?
-        .get("host_socket")
-        .cloned()
+    runtime.holder_endpoint()?.host_socket.clone()
 }
 
 /// The live `AgentSession` a host serves, as the control edges read it.
@@ -302,7 +301,7 @@ impl ControlSession for AgentControlSession {
 
 /// senpi `HostSessionControl implements ControlEndpointHost`: what `pi.session.registerControlEndpoint` reaches in a
 /// session this host serves.
-impl maho_core::session_control_actions::ControlEndpointHost for Arc<HostSessionControl> {
+impl maho_core::session_control_actions::ControlEndpointHost for HostSessionControl {
     fn register(
         &self,
         options: maho_core::extensions::session_control_types::RegisterControlEndpointOptions,
@@ -315,10 +314,9 @@ impl maho_core::session_control_actions::ControlEndpointHost for Arc<HostSession
             let drain = options.drain.clone();
             let drain: ControlDrain = Arc::new(move |event| {
                 let drain = drain.clone();
-                Box::pin(async move { Ok(drain(event).await) })
+                Box::pin(async move { drain(event).await })
             });
             match self
-                .as_ref()
                 .register(std::path::Path::new(&options.inbox_dir), drain)
                 .await
             {
@@ -326,12 +324,12 @@ impl maho_core::session_control_actions::ControlEndpointHost for Arc<HostSession
                     socket,
                     registration,
                 } => {
-                    let control = Arc::downgrade(self);
+                    let state = Arc::downgrade(&self.state);
                     SessionControlRegistration::Registered {
                         socket,
                         dispose: Arc::new(move || {
-                            if let Some(control) = control.upgrade() {
-                                control.dispose_registration(registration);
+                            if let Some(state) = state.upgrade() {
+                                Self::dispose_state(&state, registration);
                             }
                             Box::pin(async { Ok(()) })
                         }),
@@ -458,12 +456,13 @@ mod tests {
             control.register(&temp.path().join("inbox"), drain).await,
             ControlRegistration::Registered { .. }
         ));
-        let next = |started: &mut tokio::sync::mpsc::UnboundedReceiver<Value>| {
+        async fn next(started: &mut tokio::sync::mpsc::UnboundedReceiver<Value>) -> Value {
             tokio::time::timeout(std::time::Duration::from_secs(30), started.recv())
-        };
-        assert_eq!(next(&mut started).await.unwrap().unwrap(), "inbox");
+                .await.expect("drain starts").expect("drain channel open")
+        }
+        assert_eq!(next(&mut started).await, "inbox");
         release_tx.send(()).unwrap();
-        assert_eq!(next(&mut started).await.unwrap().unwrap(), "inbox");
+        assert_eq!(next(&mut started).await, "inbox");
         control.dispose();
     }
 

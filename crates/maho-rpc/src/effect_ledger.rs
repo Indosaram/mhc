@@ -20,10 +20,13 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+type CachedReceipt = (usize, Option<EffectStatus>);
+type ReceiptCache = Mutex<HashMap<String, CachedReceipt>>;
+
 /// The session's most recent effect receipt, read from the transcript tail WITHOUT opening a ledger:
 /// answering a status subscriber must never seal a stale receipt or restore queued input as a side effect.
 pub fn latest_session_effect(session: &dyn EffectSession) -> Option<EffectStatus> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (usize, Option<EffectStatus>)>>> = OnceLock::new();
+    static CACHE: OnceLock<ReceiptCache> = OnceLock::new();
     let entries = session.entries();
     let route = session.effect_route();
     let cache = CACHE.get_or_init(Mutex::default);
@@ -219,32 +222,28 @@ impl EffectLedger {
         match event {
             EffectSessionEvent::ModelChanged {
                 effect_id: Some(effect_id),
-            } => {
-                if self.pending_kind(effect_id) == Some(EffectKind::SetModel) {
-                    self.transition_quiet(effect_id, EffectState::Done, applied());
-                }
+            } if self.pending_kind(effect_id) == Some(EffectKind::SetModel) => {
+                self.transition_quiet(effect_id, EffectState::Done, applied());
             }
             EffectSessionEvent::ModelChangeCancelled {
                 effect_id: Some(effect_id),
                 reason,
                 detail,
-            } => {
-                if self.pending_kind(effect_id) == Some(EffectKind::SetModel) {
-                    let outcome = match reason {
-                        ModelChangeCancelReason::ContextBudget => context_budget_outcome(
-                            detail
-                                .as_deref()
-                                .unwrap_or("the target model cannot hold the repaired context"),
-                        ),
-                        ModelChangeCancelReason::Error => model_switch_error_outcome(
-                            detail.as_deref().unwrap_or("the model switch failed"),
-                        ),
-                        ModelChangeCancelReason::Superseded => {
-                            effect_outcomes::SET_MODEL_SUPERSEDED.outcome()
-                        }
-                    };
-                    self.transition_quiet(effect_id, EffectState::Failed, failed_with(outcome));
-                }
+            } if self.pending_kind(effect_id) == Some(EffectKind::SetModel) => {
+                let outcome = match reason {
+                    ModelChangeCancelReason::ContextBudget => context_budget_outcome(
+                        detail
+                            .as_deref()
+                            .unwrap_or("the target model cannot hold the repaired context"),
+                    ),
+                    ModelChangeCancelReason::Error => model_switch_error_outcome(
+                        detail.as_deref().unwrap_or("the model switch failed"),
+                    ),
+                    ModelChangeCancelReason::Superseded => {
+                        effect_outcomes::SET_MODEL_SUPERSEDED.outcome()
+                    }
+                };
+                self.transition_quiet(effect_id, EffectState::Failed, failed_with(outcome));
             }
             EffectSessionEvent::AgentIdle => {
                 for record in self.snapshot() {

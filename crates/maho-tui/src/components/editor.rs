@@ -219,16 +219,16 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Mark
         let is_ws = !is_atomic_marker(&grapheme) && is_whitespace_char(&grapheme);
 
         if current_width + g_width > max_width {
-            if let Some(opp) = wrap_opp_index {
-                if current_width - wrap_opp_width + g_width <= max_width {
-                    chunks.push(TextChunk {
-                        text: line[chunk_start..opp].to_string(),
-                        start_index: chunk_start,
-                        end_index: opp,
-                    });
-                    chunk_start = opp;
-                    current_width -= wrap_opp_width;
-                }
+            if let Some(opp) = wrap_opp_index
+                && current_width - wrap_opp_width + g_width <= max_width
+            {
+                chunks.push(TextChunk {
+                    text: line[chunk_start..opp].to_string(),
+                    start_index: chunk_start,
+                    end_index: opp,
+                });
+                chunk_start = opp;
+                current_width -= wrap_opp_width;
             } else if chunk_start < char_index {
                 chunks.push(TextChunk {
                     text: line[chunk_start..char_index].to_string(),

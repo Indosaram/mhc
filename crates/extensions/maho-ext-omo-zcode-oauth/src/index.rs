@@ -1901,8 +1901,10 @@ mod tests {
         let sink = Arc::clone(&captured);
         let mut model = model;
         model.base_url = base;
-        let mut options = maho_ai::types::SimpleStreamOptions::default();
-        options.reasoning = reasoning;
+        let mut options = maho_ai::types::SimpleStreamOptions {
+            reasoning,
+            ..Default::default()
+        };
         options.stream.request.api_key = Some("key".into());
         options.stream.request.max_retries = Some(0);
         options.stream.request.on_payload = Some(Arc::new(move |payload, _, _| {

@@ -8,12 +8,14 @@ use crate::service::McpService;
 use maho_ext_api::{ExtensionUi, NotificationType};
 use std::sync::Arc;
 
+pub type McpAuthAppendEntry = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The session pieces upstream reads from `ctx` and `pi`.
 pub struct McpAuthCommandContext {
     pub ui: Arc<dyn ExtensionUi>,
     pub has_ui: bool,
     /// Upstream `pi.appendEntry("mcp-auth", message)`: with UI, auth progress is a session notice entry.
-    pub append_entry: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub append_entry: Option<McpAuthAppendEntry>,
     pub on_reconnect: McpAuthReconnect,
     pub open_browser: Option<super::challenge_login::BrowserOpener>,
 }

@@ -869,7 +869,7 @@ fn session_switching_parent_buffers_without_delivery() {
 }
 
 #[test]
-fn two_buffered_completions_flush_as_one_wake() {
+fn two_buffered_completions_flush_with_individual_receipts() {
     let first = TaskRecord {
         task_id: "st_aaaa".to_string(),
         name: Some("one".to_string()),
@@ -890,15 +890,90 @@ fn two_buffered_completions_flush_as_one_wake() {
         FlushResult::Flushed(2)
     );
     let calls = parent.calls();
-    assert_eq!(calls.len(), 1);
+    // CompletionNotifier dispatches singleton messages per completion so receipts and retries are isolated;
+    // the host coordinator batches them into one wake injection on flush.
+    assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].trigger_turn, Some(true));
-    assert_eq!(calls[0].details.len(), 2);
+    assert_eq!(calls[0].details.len(), 1);
+    assert_eq!(calls[1].trigger_turn, Some(true));
+    assert_eq!(calls[1].details.len(), 1);
     let notified: Vec<i64> = store
         .mutated()
         .iter()
         .map(|record| record.notification.notified_epoch)
         .collect();
     assert_eq!(notified, vec![0, 0]);
+}
+
+#[test]
+fn first_of_two_buffered_completions_fails_and_retries_while_second_notifies_once() {
+    let first = TaskRecord {
+        task_id: "st_first".to_string(),
+        name: Some("one".to_string()),
+        ..completed_record()
+    };
+    let second = TaskRecord {
+        task_id: "st_second".to_string(),
+        name: Some("two".to_string()),
+        ..completed_record()
+    };
+    let store = MemoryStore::with([first.clone(), second.clone()]);
+
+    struct SelectiveNotifier {
+        calls: Mutex<Vec<ParentNotifierMessage>>,
+    }
+    impl ParentNotifier for SelectiveNotifier {
+        fn enqueue_with_callbacks(
+            &self,
+            message: &ParentNotifierMessage,
+            callbacks: DeliveryCallbacks,
+        ) -> Result<(), HostError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(message.clone());
+            if !message.details.is_empty() && message.details[0].task_id == "st_first" {
+                callbacks.failed(HostError {
+                    message: "first failed".into(),
+                });
+            } else {
+                callbacks.delivered();
+            }
+            Ok(())
+        }
+    }
+
+    let parent = Arc::new(SelectiveNotifier {
+        calls: Mutex::new(Vec::new()),
+    });
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(
+        parent.clone(),
+        store.clone(),
+    ));
+
+    notify(&completion, &first, ParentState::Compacting, true);
+    notify(&completion, &second, ParentState::Compacting, true);
+    assert_eq!(completion.buffered_count("parent-session"), 2);
+
+    let result = flush(&completion, "parent-session", false);
+    assert_eq!(result, FlushResult::Failed(2));
+
+    let calls = parent.calls.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].details.len(), 1);
+    assert_eq!(calls[1].details.len(), 1);
+
+    // st_first was failed: NOT marked notified, re-buffered
+    let record_first = store.get("st_first").expect("first");
+    assert_eq!(record_first.notification.notified_epoch, -1);
+    assert_eq!(record_first.notification.notification_failed_epoch, Some(0));
+
+    // st_second was delivered: marked notified exactly once
+    let record_second = store.get("st_second").expect("second");
+    assert_eq!(record_second.notification.notified_epoch, 0);
+
+    // Only st_first remains buffered
+    assert_eq!(completion.buffered_count("parent-session"), 1);
 }
 
 #[test]

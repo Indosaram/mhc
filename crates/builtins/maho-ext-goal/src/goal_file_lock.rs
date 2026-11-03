@@ -500,6 +500,6 @@ mod tests {
                 update_ms: 2_000
             }
         );
-        assert!(GOAL_LOCK_WAIT_BUDGET_MS > GOAL_LOCK_OPTIONS.stale_ms);
+        const { assert!(GOAL_LOCK_WAIT_BUDGET_MS > GOAL_LOCK_OPTIONS.stale_ms); }
     }
 }

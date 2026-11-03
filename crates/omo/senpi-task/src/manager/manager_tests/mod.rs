@@ -9,6 +9,7 @@ mod fallback;
 mod leaf_policies;
 mod names;
 mod parent_registry;
+mod provisional_exit;
 mod residency_unlimited;
 mod respawn;
 mod respawn_spec;

@@ -4,6 +4,9 @@ pub const RPC_HOST_EMPTY_EXIT_MS_ENV: &str = "SENPI_RPC_HOST_EMPTY_EXIT_MS";
 pub const RPC_CLOSE_GRACE_MS_ENV: &str = "SENPI_RPC_CLOSE_GRACE_MS";
 pub const DEFAULT_SESSION_IDLE_EVICTION_MS: f64 = 30. * 60_000.;
 pub const DEFAULT_HOST_EMPTY_EXIT_MS: f64 = 15. * 60_000.;
+/// `session_closed` reason of a session parked for a generation handoff (the only end that writes a
+/// park record).
+const HANDOFF_PARKED_REASON: &str = "handoff_parked";
 #[derive(Debug, PartialEq)]
 pub struct HostIdlePolicy {
     pub idle_eviction_ms: f64,
@@ -245,6 +248,17 @@ struct OpenRefusal {
     data: Option<serde_json::Value>,
 }
 impl OpenRefusal {
+    fn with_data(
+        message: impl Into<String>,
+        code: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code.into()),
+            data: Some(data),
+        }
+    }
     fn plain(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -836,6 +850,13 @@ impl HostCore {
             DURABLE_SESSION_ID_CAPABILITY,
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
             DETACH_CONNECTION_CAPABILITY,
+            MEMORY_WRITE_DENY_CAPABILITY,
+            MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
+            EFFECT_TOOLS_DENY_CAPABILITY,
+            TOOLS_EXCLUDE_CAPABILITY,
+            SUPERVISOR_WORK_TOOLS_CAPABILITY,
+            MEMORY_RECEIPTS_CAPABILITY,
+            MEMORY_FORGET_CAPABILITY,
         ])
         .chain(std::iter::once(
             crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
@@ -1236,11 +1257,17 @@ impl HostCore {
         self.forget_session(session_id);
         true
     }
-    /// Parks one settled session for a handoff (senpi `evictIdleSession(sessionId,"handoff_parked")`):
+    /// Parks one settled session for a handoff (senpi `evictIdleSession(sessionId,"handoff_parked")`).
+    async fn park_session(&self, session_id: &str) {
+        self.end_session(session_id, HANDOFF_PARKED_REASON).await;
+    }
+    /// Ends one open session regardless of attachments (a handoff park, the stdio peer's departure):
     /// the routing handle ends exactly as a close ends it, the terminal record names the reason (and
     /// the file a retained session reopens by) so a client is not told the session vanished, and
-    /// every attachment is drained because a drain ends the shared session.
-    async fn park_session(&self, session_id: &str) {
+    /// every attachment is drained because the shared session ends. Only a handoff park writes the
+    /// park record the next generation reopens from.
+    async fn end_session(&self, session_id: &str, reason: &str) {
+        let parking = reason == HANDOFF_PARKED_REASON;
         if let Some(workers) = &self.workers {
             let record = workers
                 .with_entry(session_id, |entry| {
@@ -1252,7 +1279,8 @@ impl HostCore {
                         entry.context_overlay.as_ref(),
                     )
                 })
-                .flatten();
+                .flatten()
+                .filter(|_| parking);
             let Some(retained) = workers.force_close(session_id) else {
                 return;
             };
@@ -1262,7 +1290,7 @@ impl HostCore {
             if let Ok(value) =
                 serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
                     session_id: session_id.into(),
-                    reason: Some("handoff_parked".into()),
+                    reason: Some(reason.into()),
                     session_path: retained,
                 })
             {
@@ -1290,7 +1318,8 @@ impl HostCore {
                 entry.durable_session_id.as_deref(),
                 &entry.profile,
                 entry.context_overlay.as_ref(),
-            );
+            )
+            .filter(|_| parking);
             entry.close.attachments = 0;
             entry.close.state = crate::session_registry::RpcSessionState::Closing;
             (retained, record)
@@ -1311,13 +1340,26 @@ impl HostCore {
         if let Ok(value) =
             serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
                 session_id: session_id.into(),
-                reason: Some("handoff_parked".into()),
+                reason: Some(reason.into()),
                 session_path: retained,
             })
         {
             self.route(session_id, None, value);
         }
         self.forget_session(session_id);
+    }
+    /// Ends every session the host still holds once its stdio peer is gone (stdin EOF). The closes
+    /// run together; each awaits its worker's actual exit (the close grace quarantines a stuck one),
+    /// so no owned session process outlives the host.
+    async fn end_all_sessions(&self, reason: &str) {
+        let handles = self
+            .list_rows(true)
+            .await
+            .iter()
+            .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        futures::future::join_all(handles.iter().map(|handle| self.end_session(handle, reason)))
+            .await;
     }
     /// Releases the RETAINED sessions a dropped connection still owned (senpi `releaseConnection`
     /// -> `releaseOwnedSession` for `retainOnDisconnect` entries): a retained session is never closed
@@ -1429,6 +1471,12 @@ impl HostCore {
         message: impl Into<String>,
         session_id: Option<String>,
     ) {
+        // A typed open failure (`invalid_session_context`) carries its machine code in `errorCode`.
+        let error = message.into();
+        let error_code = (command == "open_session")
+            .then(|| crate::rpc_input_validation::open_session_error_code(&error))
+            .flatten()
+            .map(str::to_owned);
         self.respond(
             connection,
             &crate::rpc_types::RpcResponse {
@@ -1437,8 +1485,8 @@ impl HostCore {
                 command: command.into(),
                 session_id,
                 result: crate::rpc_types::RpcResponseResult::Error {
-                    error: message.into(),
-                    error_code: None,
+                    error,
+                    error_code,
                     error_data: None,
                 },
             },
@@ -2442,6 +2490,7 @@ impl HostCore {
             thinking_level,
             permission_preset,
             retain_on_disconnect,
+            expected_host_instance,
             kind,
             context,
             auto_title,
@@ -2468,9 +2517,61 @@ impl HostCore {
                 crate::rpc_types::RPC_ERROR_INVALID_SPAWNED_BY,
             ));
         }
-        // senpi session-command-router `open`: only `attended:false` (observational open) is accepted.
-        if *attended == Some(true) {
+        let instance_id = crate::protocol_identity::host_instance_id();
+        let attach_only = expected_host_instance.is_some();
+        if let Some(expected) = expected_host_instance.as_ref() {
+            if let Some(err) =
+                crate::rpc_input_validation::expected_host_instance_error(Some(expected))
+            {
+                let msg = format!(
+                    "{}: {err}",
+                    crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
+                );
+                return Err(OpenRefusal::with_data(
+                    msg.clone(),
+                    msg,
+                    serde_json::json!({
+                        "reason": "invalid_expected_host_instance",
+                        "action": "supply_host_instance",
+                    }),
+                ));
+            }
+            let raw_str = expected.as_str().unwrap_or_default();
+            if raw_str != instance_id {
+                return Err(OpenRefusal::with_data(
+                    crate::rpc_types::RPC_ERROR_OWNER_CHANGED,
+                    crate::rpc_types::RPC_ERROR_OWNER_CHANGED,
+                    serde_json::json!({
+                        "reason": "host_instance_mismatch",
+                        "action": "rediscover_holder",
+                        "expectedHostInstance": raw_str,
+                        "hostInstance": instance_id,
+                    }),
+                ));
+            }
+        }
+        if let Some(att) = attended.as_ref()
+            && att != &serde_json::Value::Bool(false)
+        {
             return Err(invalid("attended must be false or omitted".to_owned()));
+        }
+        if let Some(err) = crate::rpc_input_validation::session_kind_error(kind.as_ref()) {
+            return Err(OpenRefusal::plain(format!(
+                "{}: {err}",
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_KIND
+            )));
+        }
+        if let Some(err) = crate::rpc_input_validation::session_context_error(context.as_ref()) {
+            return Err(OpenRefusal {
+                message: format!("{}: {err}", crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT),
+                code: Some(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT.to_owned()),
+                data: None,
+            });
+        }
+        if let Some(err) =
+            crate::rpc_input_validation::session_auto_title_error(auto_title.as_ref())
+        {
+            return Err(invalid(err.to_owned()));
         }
         if let Some(reason) =
             crate::rpc_input_validation::prompt_surface_error(prompt_surface.as_ref())
@@ -2482,10 +2583,37 @@ impl HostCore {
         {
             return Err(invalid(reason.to_owned()));
         }
+        if provider.is_some() != model_id.is_some() {
+            return Err(invalid(
+                "provider and modelId must be given together".to_owned(),
+            ));
+        }
         if let Some(reason) =
             crate::rpc_input_validation::retry_fallback_error(retry_fallback.as_ref())
         {
             return Err(invalid(reason));
+        }
+        let parsed_kind = kind
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| match s {
+                "worker" => Some(maho_ext_api::SessionKind::Worker),
+                "interactive" => Some(maho_ext_api::SessionKind::Interactive),
+                _ => None,
+            });
+        let parsed_context = context.as_ref().and_then(|c| {
+            c.as_object().map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect::<std::collections::BTreeMap<String, String>>()
+            })
+        });
+        // Session-role policy shape errors are typed `invalid_session_context` before any admission.
+        if let Some(error) = crate::rpc_input_validation::session_policy_error(parsed_context.as_ref()) {
+            return Err(OpenRefusal::plain(format!(
+                "{}: {error}",
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+            )));
         }
         let profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
@@ -2493,19 +2621,17 @@ impl HostCore {
                 permission_preset: permission_preset.clone(),
                 creation_model: provider.clone().zip(model_id.clone()),
                 initial_thinking_level: thinking_level.clone(),
-                auto_title: *auto_title,
+                auto_title: auto_title.as_ref().and_then(serde_json::Value::as_bool),
                 prompt_size_inventory: None,
             },
             session_path: session_path.clone(),
             durable_session_id: durable_session_id.clone(),
-            session_kind: kind.map(|kind| match kind {
-                crate::rpc_types::SessionKind::Worker => maho_ext_api::SessionKind::Worker,
-                crate::rpc_types::SessionKind::Interactive => {
-                    maho_ext_api::SessionKind::Interactive
-                }
-            }),
-            session_context: context.clone(),
-            attended: (*attended == Some(false)).then_some(false),
+            session_kind: parsed_kind,
+            session_context: parsed_context,
+            attended: attended
+                .as_ref()
+                .and_then(serde_json::Value::as_bool)
+                .and_then(|b| (!b).then_some(false)),
             prompt_surface: prompt_surface
                 .as_ref()
                 .and_then(serde_json::Value::as_str)
@@ -2516,7 +2642,7 @@ impl HostCore {
                 .map(str::to_owned),
             retry_fallback: retry_fallback.clone(),
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
-                host_instance: Some(crate::protocol_identity::host_instance_id().to_owned()),
+                host_instance: Some(instance_id.to_owned()),
                 host_socket: None,
                 host_daemon_dir: std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV)
                     .ok()
@@ -2528,7 +2654,7 @@ impl HostCore {
         };
         let retain = retain_on_disconnect.unwrap_or(false);
         let opened = self
-            .open_admitted(connection, profile, retain, overlay)
+            .open_admitted(connection, profile, retain, overlay, attach_only)
             .await;
         // senpi `open`: a successful open of a path drops any park record for it, so a later successor does not
         // reopen a session a client already took back.
@@ -2545,10 +2671,11 @@ impl HostCore {
         profile: crate::session_registry::RpcSessionLaunchProfile,
         retain: bool,
         overlay: Option<&serde_json::Value>,
+        attach_only: bool,
     ) -> Result<serde_json::Value, OpenRefusal> {
         if let Some(workers) = self.workers.clone() {
             return self
-                .open_worker_session(&workers, connection, profile, retain, overlay)
+                .open_worker_session(&workers, connection, profile, retain, overlay, attach_only)
                 .await;
         }
         // senpi `attachToOpenSession`: a path still opening is waited on (bounded, this waiter only) with no
@@ -2556,7 +2683,12 @@ impl HostCore {
         let admitted = loop {
             let admitted = {
                 let mut registry = self.registry.lock().await;
-                registry.admit_open(profile.clone(), retain, crate::connection_handler::now_ms())
+                registry.admit_open_with_policy(
+                    profile.clone(),
+                    retain,
+                    crate::connection_handler::now_ms(),
+                    attach_only,
+                )
             };
             match admitted {
                 Ok(crate::session_registry::OpenAdmission::Wait {
@@ -2620,7 +2752,9 @@ impl HostCore {
                 }
                 // A second client joins the live session: register it with the fanout so it
                 // receives the session's records and the in-flight snapshot (senpi `open`).
-                self.attach_connection(connection, &handle).await;
+                self.attach_connection(connection, &handle)
+                    .await
+                    .map_err(|error| OpenRefusal::plain(error.to_string()))?;
                 let state = self.session_state(&handle).await;
                 self.publish_status(&handle, "attach", "client", false)
                     .await;
@@ -2649,7 +2783,9 @@ impl HostCore {
                     }
                 }
                 let state = self.session_state(&handle).await;
-                self.attach_connection(connection, &handle).await;
+                self.attach_connection(connection, &handle)
+                    .await
+                    .map_err(|error| OpenRefusal::plain(error.to_string()))?;
                 self.publish_status(&handle, "open", "client", false).await;
                 Ok(serde_json::json!({"sessionId":handle,"state":state}))
             }
@@ -2781,6 +2917,7 @@ impl HostCore {
         profile: crate::session_registry::RpcSessionLaunchProfile,
         retain: bool,
         overlay: Option<&serde_json::Value>,
+        attach_only: bool,
     ) -> Result<serde_json::Value, OpenRefusal> {
         let requested = profile.clone();
         let opened = workers
@@ -2788,6 +2925,7 @@ impl HostCore {
                 profile,
                 retain,
                 crate::connection_handler::now_ms(),
+                attach_only,
                 |handle| self.worker_routes(workers, handle),
             )
             .await;
@@ -2990,7 +3128,11 @@ impl HostCore {
     /// Attaches one opening connection to a session (senpi `open`): ownership, the fanout target
     /// with its capabilities and late-joiner replay, the session's visibility class, and the shared
     /// binding the first opener creates. A stdio open owns no connection and keeps no binding.
-    async fn attach_connection(&self, connection: Option<&str>, session_id: &str) {
+    async fn attach_connection(
+        &self,
+        connection: Option<&str>,
+        session_id: &str,
+    ) -> Result<(), maho_core::structured_session_lane::StructuredLaneUnavailableError> {
         let (runtime, kind, lane, scope) = {
             let registry = self.registry.lock().await;
             match registry.get(session_id) {
@@ -3000,7 +3142,7 @@ impl HostCore {
                     entry.acceptance.clone(),
                     entry.scope.clone(),
                 ),
-                None => return,
+                None => return Ok(()),
             }
         };
         let capabilities = connection
@@ -3034,7 +3176,7 @@ impl HostCore {
             }
         }
         let Some(connection) = connection else {
-            return;
+            return Ok(());
         };
         // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
         if declared {
@@ -3047,11 +3189,11 @@ impl HostCore {
             .attach(connection, session_id);
         self.presenters.attach(connection, session_id);
         let Some(runtime) = runtime else {
-            return;
+            return Ok(());
         };
         let mut bindings = self.bindings.lock().await;
         if bindings.contains_key(session_id) {
-            return;
+            return Ok(());
         }
         let fanout = std::sync::Arc::clone(&self.fanout);
         let writer = std::sync::Arc::clone(&self.default_writer);
@@ -3089,12 +3231,22 @@ impl HostCore {
             .await,
         );
         // senpi session-binding.ts: `writeStructured` only when `structuredLaneEnabled()`.
-        if crate::structured_session_records::structured_lane_enabled() {
-            binding.install_structured_lane(
+        if crate::structured_session_records::structured_lane_enabled()
+            && let Err(error) = binding.install_structured_lane(
                 runtime.session(),
                 self.default_writer.structured_lanes.clone(),
                 structured_scope,
-            );
+            )
+        {
+            drop(bindings);
+            binding.dispose().await;
+            self.attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .release(connection, session_id);
+            self.release_owner_attachment(connection, session_id).await;
+            self.release_owned_session(session_id).await;
+            return Err(error);
         }
         // senpi session-binding `bindMcpForms(session, ui)`, only when the deployment enforces presenters.
         if self.presenters.enabled() {
@@ -3119,6 +3271,7 @@ impl HostCore {
             );
         }
         bindings.insert(session_id.to_owned(), binding);
+        Ok(())
     }
     /// Releases every session a dropped connection still owned (senpi `releaseConnection`). Each
     /// attachment goes through the refcounted detach a close uses, so a session another connection
@@ -3765,7 +3918,9 @@ impl HostCore {
                 .attach(owner, session_id);
             self.presenters.attach(owner, session_id);
         } else {
-            self.attach_connection(Some(owner), session_id).await;
+            self.attach_connection(Some(owner), session_id)
+                .await
+                .map_err(|_| "structured_lane_unavailable")?;
         }
         Ok(())
     }
@@ -4410,10 +4565,12 @@ fn open_child_session_count(rows: &[serde_json::Value], durable_session_id: &str
 }
 tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
 /// The presenter control endpoint's view of this host's writer (senpi `SessionEventWriter` presenter getters).
+#[cfg(unix)]
 struct PresenterWriter {
     presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
     fanout: std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
 }
+#[cfg(unix)]
 impl crate::mcp_presenter_control::McpPresenterWriter for PresenterWriter {
     fn mcp_form_binding(
         &self,
@@ -4492,12 +4649,6 @@ fn route_session_record(
 ) {
     // Every copy, socket or stdio, is stamped where the host enqueues it (senpi `observeLifecycleDelivery`).
     crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
-    // senpi `SessionEventWriter.enqueue`: a `snapshot_marker` goes only to the requester's own mirror subscription,
-    // never to attachments, the attach replay or stdio. This host has no mirror subscriptions yet (session status
-    // stream open), so no target asked for it.
-    if record["type"] == crate::get_snapshot::SNAPSHOT_MARKER {
-        return;
-    }
     let targeted = matches!(
         record["type"].as_str(),
         Some("response" | "bash_execution_update")
@@ -4762,6 +4913,32 @@ mod handoff_tests {
             1
         );
     }
+    /// Every capability the Ferryx supervisor requires is advertised exactly once.
+    #[tokio::test]
+    async fn protocol_info_advertises_every_supervisor_capability() {
+        let capabilities = idle_core().advertised_capabilities();
+        for required in [
+            "multi_session",
+            "session_context",
+            "durable_session_id",
+            "memory_write_deny",
+            "memory_write_deny_effects",
+            "effect_tools_deny",
+            "tools_exclude",
+            "supervisor_work_tools",
+            "memory_receipts",
+            "memory_forget",
+        ] {
+            assert_eq!(
+                capabilities
+                    .iter()
+                    .filter(|capability| *capability == required)
+                    .count(),
+                1,
+                "{required}: {capabilities:?}"
+            );
+        }
+    }
     #[tokio::test]
     async fn presenter_capability_is_advertised_only_under_enforcement_and_private_records_never_echo()
      {
@@ -4772,7 +4949,7 @@ mod handoff_tests {
         let Some(core) = std::sync::Arc::try_unwrap(core).ok() else {
             panic!("the idle core is uniquely owned");
         };
-        let core = core.with_mcp_presenter_enforcement(true);
+        let core = std::sync::Arc::new(core.with_mcp_presenter_enforcement(true));
         let capabilities = core.advertised_capabilities();
         assert_eq!(
             capabilities
@@ -4991,7 +5168,7 @@ mod handoff_tests {
                 Ok(crate::session_registry::OpenAdmission::Create(handle)) if handle == "rpc-1"
             ));
         }
-        core.attach_connection(Some("c"), "rpc-1").await;
+        core.attach_connection(Some("c"), "rpc-1").await.unwrap();
         assert!(
             core.fanout
                 .lock()
@@ -5272,8 +5449,16 @@ mod handoff_tests {
             }
         }
     }
-    #[tokio::test]
-    async fn a_deferred_release_attachment_survives_its_connection_dropping_mid_turn() {
+    #[test]
+    fn a_deferred_release_attachment_survives_its_connection_dropping_mid_turn() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
         let temp = tempfile::tempdir().unwrap();
         let (core, gate, mut calls, mut disposed) = gated_core(temp.path());
         let mut client = peer(&core, "c");
@@ -5321,6 +5506,11 @@ mod handoff_tests {
             .expect("the deferred release ends the session once its turn settles")
             .expect("the runtime reports its disposal");
         let _ = turn.await.unwrap();
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
     // senpi session-router-routing.ts `unload_session`: the router answers through `unloadSession`; a session with
     // no file yet is refused (nothing to reopen it by) and stays open.
@@ -6006,38 +6196,9 @@ pub async fn run_multi_session_host_with_signals(
         }
     }
 }
-#[cfg(not(unix))]
-async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
-    use tokio::io::AsyncReadExt;
-    let mut input = tokio::io::stdin();
-    let mut reader = crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS)
-        .map_err(std::io::Error::other)?;
-    let mut chunk = [0u8; 8192];
-    loop {
-        let count = input.read(&mut chunk).await?;
-        let records = if count == 0 {
-            reader.finish()
-        } else {
-            reader.push(&chunk[..count])
-        };
-        for record in records {
-            let crate::jsonl::LineRecord::Line(line) = record else {
-                continue;
-            };
-            core.handle(None, &line)
-                .await
-                .map_err(std::io::Error::other)?;
-        }
-        if count == 0 {
-            core.default_writer
-                .flush()
-                .await
-                .map_err(std::io::Error::other)?;
-            return Ok(());
-        }
-    }
-}
-#[cfg(unix)]
+/// The stdio host on every platform: each inbound line becomes its own in-flight command, polled
+/// alongside stdin, so one session's streaming turn never holds back another session's commands,
+/// an abort, or `get_protocol_info`. Only the socket listener is platform-gated.
 async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     use tokio::io::AsyncReadExt;
     let mut input = tokio::io::stdin();
@@ -6060,7 +6221,15 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
         let count = tokio::select! {
             result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if let Err(error)=result{break Err(std::io::Error::other(error));}continue;},
             exit=&mut empty_exit,if !empty_exit_done=>{empty_exit_done=true;if matches!(exit,Ok(true)){break core.default_writer.flush().await.map_err(std::io::Error::other);}continue;},
-            count=input.read(&mut chunk)=>match count{Ok(count)=>count,Err(error)=>break Err(error)},
+            count=input.read(&mut chunk)=>count,
+        };
+        // A failed read loses the peer exactly as EOF does: its sessions end before the error returns.
+        let count = match count {
+            Ok(count) => count,
+            Err(error) => {
+                shut_down_stdio(&core, commands).await;
+                break Err(error);
+            }
         };
         let records = if count == 0 {
             reader.finish()
@@ -6075,7 +6244,7 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
             commands.push(Box::pin(async move { core.handle(None, &line).await }) as HostCommand);
         }
         if count == 0 {
-            drop(commands);
+            shut_down_stdio(&core, commands).await;
             break core
                 .default_writer
                 .flush()
@@ -6088,9 +6257,22 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     empty_exit.abort();
     result
 }
-#[cfg(any(unix, windows))]
+/// Stdin reached EOF (or failed), so the peer is gone: every OPEN session is ended (each worker's
+/// actual exit awaited) while the commands still in flight keep being polled, so an answer the peer
+/// already asked for is still written. Whatever is still in flight once those sessions are gone is
+/// dropped - including an `open_session` that had not finished: that session is not ended here, and
+/// a worker it already spawned ends with the host's runtime (its child handle is kill-on-drop).
+async fn shut_down_stdio(core: &HostCore, mut commands: Vec<HostCommand>) {
+    let mut ending = std::pin::pin!(core.end_all_sessions("host_shutdown"));
+    loop {
+        tokio::select! {
+            biased;
+            result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if let Err(error)=result{eprintln!("senpi rpc stdio command failed during shutdown: {error}");}},
+            ()=&mut ending=>break,
+        }
+    }
+}
 type HostCommand = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-#[cfg(any(unix, windows))]
 async fn poll_host_commands(commands: &mut Vec<HostCommand>) -> Result<(), String> {
     let (index, result) = std::future::poll_fn(|cx| {
         for (index, command) in commands.iter_mut().enumerate() {
@@ -6638,6 +6820,255 @@ async fn serve_socket_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_core() -> (std::sync::Arc<HostCore>, tokio::io::DuplexStream, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let (client_read, host_write) = tokio::io::duplex(8192);
+        let writer = std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+            host_write,
+        ));
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            |_profile: crate::session_registry::RpcSessionLaunchProfile| {
+                Box::pin(async { Err("this host opens no session in this test".to_owned()) })
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: directory.path().to_owned(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                create_runtime,
+                capabilities: vec![],
+                close_grace_ms: 10_000,
+            },
+            writer,
+        ));
+        (core, client_read, directory)
+    }
+    #[tokio::test]
+    async fn open_session_rejects_lone_provider_or_model_id() {
+        let (core, _, _directory) = test_core();
+        let cmd1: crate::rpc_types::RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"open_session","provider":"openai"}))
+                .unwrap();
+        let res1 = core.open_session_inner(None, &cmd1.body, None).await;
+        assert_eq!(
+            res1.err().unwrap().message,
+            "invalid_launch_profile: provider and modelId must be given together"
+        );
+
+        let cmd2: crate::rpc_types::RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"open_session","modelId":"gpt-4"}))
+                .unwrap();
+        let res2 = core.open_session_inner(None, &cmd2.body, None).await;
+        assert_eq!(
+            res2.err().unwrap().message,
+            "invalid_launch_profile: provider and modelId must be given together"
+        );
+    }
+    #[tokio::test]
+    async fn open_session_rejects_explicit_null_host_instance() {
+        let (core, _, _directory) = test_core();
+        let command: crate::rpc_types::RpcCommand = serde_json::from_value(
+            serde_json::json!({"type":"open_session","expectedHostInstance":null}),
+        ).unwrap();
+        let refusal = core.open_session_inner(None, &command.body, None).await.err().unwrap();
+        assert_eq!(refusal.data.unwrap()["reason"], "invalid_expected_host_instance");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+    }
+    #[tokio::test]
+    async fn open_session_wire_refusals_and_attach_only_semantics() {
+        let (core, client_read, directory) = test_core();
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(client_read);
+
+        core.handle(
+            None,
+            r#"{"id":"r1","type":"open_session","expectedHostInstance":""}"#,
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r1");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: expectedHostInstance must be a non-empty string"
+        );
+        assert_eq!(
+            resp["errorCode"],
+            "invalid_launch_profile: expectedHostInstance must be a non-empty string"
+        );
+        assert_eq!(
+            resp["errorData"]["reason"],
+            "invalid_expected_host_instance"
+        );
+        assert_eq!(resp["errorData"]["action"], "supply_host_instance");
+
+        core.handle(
+            None,
+            r#"{"id":"r2","type":"open_session","expectedHostInstance":"wrong-inst"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r2");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error"], "owner_changed");
+        assert_eq!(resp["errorCode"], "owner_changed");
+        assert_eq!(resp["errorData"]["reason"], "host_instance_mismatch");
+        assert_eq!(resp["errorData"]["action"], "rediscover_holder");
+        assert_eq!(resp["errorData"]["expectedHostInstance"], "wrong-inst");
+        assert_eq!(
+            resp["errorData"]["hostInstance"],
+            crate::protocol_identity::host_instance_id()
+        );
+
+        let live_id = crate::protocol_identity::host_instance_id();
+        let session_path = directory.path().join("unheld.jsonl");
+        core.handle(
+            None,
+            &serde_json::json!({"id":"r3","type":"open_session","expectedHostInstance":live_id,"sessionPath":session_path}).to_string(),
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r3");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error"], "session_not_held");
+        assert_eq!(resp["errorCode"], "session_not_held");
+        assert_eq!(resp["errorData"]["reason"], "session_not_held");
+        assert_eq!(resp["errorData"]["action"], "rediscover_holder");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+
+        core.handle(
+            None,
+            r#"{"id":"r4","type":"open_session","kind":"unsupported_kind"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r4");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_kind: kind must be \"interactive\" or \"worker\"."
+        );
+
+        core.handle(None, r#"{"id":"r5","type":"open_session","kind":999}"#)
+            .await
+            .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r5");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_kind: kind must be \"interactive\" or \"worker\"."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r6","type":"open_session","context":"raw-string"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r6");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["errorCode"], "invalid_session_context");
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context must be an object of string values."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r7","type":"open_session","context":{"Bad_Key":"val"}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r7");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context key \"Bad_Key\" must match ^[a-z][a-z0-9_]*$."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r8","type":"open_session","context":{"valid":123}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r8");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context value for key \"valid\" must be a string."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"policy","type":"open_session","context":{"memory_write":"allow"}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "policy");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["errorCode"], "invalid_session_context");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+
+        core.handle(
+            None,
+            r#"{"id":"r9","type":"open_session","auto_title":"not-bool"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r9");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: auto_title must be a boolean."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r10","type":"open_session","attended":true}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r10");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: attended must be false or omitted"
+        );
+    }
     /// senpi `sessionMemory`: only the session's own kernels count, and a session without one reports zeros.
     #[test]
     fn a_rows_memory_sums_only_its_own_kernels() {

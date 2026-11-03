@@ -374,57 +374,62 @@ impl ServerConnection {
             .as_ref()
             .and_then(|transport| transport.get_root_pid())
     }
-    pub async fn connect(self: &Arc<Self>) -> Result<Arc<McpClient>, McpError> {
-        self.observe_form_readiness();
-        let mut receiver = {
-            let mut inner = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if inner.state == ServerConnectionState::Disabled {
-                return Err(self.error(
-                    format!("MCP server {} is disabled", self.server_name),
-                    "connect",
-                ));
-            }
-            if inner.state == ServerConnectionState::Connected {
-                return inner
-                    .transport
-                    .as_ref()
-                    .ok_or_else(|| self.error("connected transport absent".into(), "client"))?
-                    .client();
-            }
-            if let Some(pending) = &inner.pending {
-                pending.clone()
-            } else {
-                let (sender, receiver) = watch::channel(None);
-                inner.pending = Some(receiver.clone());
-                let generation = inner.generation;
-                let connection = self.clone();
-                tokio::spawn(async move {
-                    let result = connection.open_connection(generation).await;
-                    {
-                        let mut inner = connection
-                            .inner
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if inner.generation == generation {
-                            inner.pending = None;
+    pub fn connect(
+        self: &Arc<Self>,
+    ) -> futures::future::BoxFuture<'static, Result<Arc<McpClient>, McpError>> {
+        let this = self.clone();
+        Box::pin(async move {
+            this.observe_form_readiness();
+            let mut receiver = {
+                let mut inner = this
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if inner.state == ServerConnectionState::Disabled {
+                    return Err(this.error(
+                        format!("MCP server {} is disabled", this.server_name),
+                        "connect",
+                    ));
+                }
+                if inner.state == ServerConnectionState::Connected {
+                    return inner
+                        .transport
+                        .as_ref()
+                        .ok_or_else(|| this.error("connected transport absent".into(), "client"))?
+                        .client();
+                }
+                if let Some(pending) = &inner.pending {
+                    pending.clone()
+                } else {
+                    let (sender, receiver) = watch::channel(None);
+                    inner.pending = Some(receiver.clone());
+                    let generation = inner.generation;
+                    let connection = this.clone();
+                    tokio::spawn(async move {
+                        let result = connection.open_connection(generation).await;
+                        {
+                            let mut inner = connection
+                                .inner
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if inner.generation == generation {
+                                inner.pending = None;
+                            }
                         }
-                    }
-                    sender.send_replace(Some(result));
-                });
-                receiver
+                        sender.send_replace(Some(result));
+                    });
+                    receiver
+                }
+            };
+            loop {
+                if let Some(result) = receiver.borrow().clone() {
+                    return result;
+                }
+                if receiver.changed().await.is_err() {
+                    return Err(this.error("connect task closed".into(), "connect"));
+                }
             }
-        };
-        loop {
-            if let Some(result) = receiver.borrow().clone() {
-                return result;
-            }
-            if receiver.changed().await.is_err() {
-                return Err(self.error("connect task closed".into(), "connect"));
-            }
-        }
+        })
     }
     async fn open_connection(
         self: &Arc<Self>,

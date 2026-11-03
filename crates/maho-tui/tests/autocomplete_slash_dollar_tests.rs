@@ -1014,7 +1014,7 @@ fn keeps_wrappers_that_are_closed_inside_the_path() {
     ] {
         let line = format!("see {prefix}");
         let (values, actual_prefix) =
-            force_suggestions(&mut provider, &[line.clone()], 0, line.len()).expect("suggestions");
+            force_suggestions(&mut provider, std::slice::from_ref(&line), 0, line.len()).expect("suggestions");
         assert_eq!(actual_prefix, prefix, "{line}");
         assert_eq!(values, vec![value.to_string()], "{line}");
     }
@@ -1118,7 +1118,7 @@ fn does_not_interpret_email_addresses_or_at_after_ascii_or_cjk_letters_as_attach
             let line = format!("{before}@{name}");
             assert!(
                 provider
-                    .get_suggestions(&[line.clone()], 0, line.len(), false)
+                    .get_suggestions(std::slice::from_ref(&line), 0, line.len(), false)
                     .is_none(),
                 "{line}"
             );

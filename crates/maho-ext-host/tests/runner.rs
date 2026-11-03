@@ -423,6 +423,7 @@ fn failure() -> ExtensionHandler {
                 stack: Some("test-stack".into()),
                 class: None,
                 code: None,
+                abort_reason: None,
             })
         })
     })
@@ -2624,6 +2625,32 @@ async fn rpc_requests_require_one_owner_and_an_active_runtime() {
         "replaced"
     );
 }
+#[tokio::test]
+async fn deferred_same_path_rpc_registration_keeps_load_time_handlers() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut load = ExtensionApi::new(LoadedExtension::new("<builtin:omo>", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    load.rpc_handle("memory_receipts", Arc::new(|_| Box::pin(async { Ok(JsonValue::String("receipts".into())) }))).unwrap();
+    scope.commit_registration().unwrap();
+    Arc::make_mut(&mut runner.extensions).push(load.registered.clone());
+    // Deferred SessionStart registrations: fresh `LoadedExtension`s under the same identity path.
+    for name in ["omo.task.list", "omo.dag.status"] {
+        let mut late = ExtensionApi::new(LoadedExtension::new("<builtin:omo>", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+        let reply = JsonValue::String(name.into());
+        late.rpc_handle(name, Arc::new(move |_| { let reply = reply.clone(); Box::pin(async move { Ok(reply) }) })).unwrap();
+    }
+    assert!(runner.has_rpc_handler("memory_receipts"));
+    assert_eq!(runner.handle_rpc_request("memory_receipts", JsonValue::Null).await.unwrap(), JsonValue::String("receipts".into()));
+    for name in ["omo.task.list", "omo.dag.status"] {
+        assert!(runner.has_rpc_handler(name));
+        assert_eq!(runner.handle_rpc_request(name, JsonValue::Null).await.unwrap(), JsonValue::String(name.into()));
+    }
+    // A late live registration of a load-time name is the same owner, not a second handler.
+    let mut again = ExtensionApi::new(LoadedExtension::new("<builtin:omo>", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    again.rpc_handle("memory_receipts", Arc::new(|_| Box::pin(async { Ok(JsonValue::String("live".into())) }))).unwrap();
+    assert_eq!(runner.handle_rpc_request("memory_receipts", JsonValue::Null).await.unwrap(), JsonValue::String("live".into()));
+    assert!(!runner.has_rpc_handler("memory_forget"));
+}
 #[test]
 fn markdown_transformers_chain_in_extension_order() {
     let mut a = extension("a", EventKind::AgentStart, none());
@@ -3741,12 +3768,15 @@ impl ExtensionContextActions for ContextActions {
     fn on_user_activity(&self, listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.activity.lock().unwrap().push((id, listener));
+        self.activity
+            .lock()
+            .expect("user activity listeners fixture")
+            .push((id, listener));
         let activity = Arc::clone(&self.activity);
         Some(Box::new(move || {
             activity
                 .lock()
-                .unwrap()
+                .expect("user activity listeners fixture")
                 .retain(|(existing, _)| *existing != id)
         }))
     }
@@ -4384,6 +4414,7 @@ async fn retained_kernel_tools_invoke_scope_returns_false_on_invalidated_context
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
@@ -5832,6 +5863,7 @@ fn monitor_forwarding_keeps_private_host_state_and_rejects_mismatched_calls() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(Some(("call".into(), input.clone(), None))),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -5872,6 +5904,7 @@ fn forged_monitor_json_never_supplies_private_parent_and_stale_context_cannot_mu
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(Some(("call".into(), input.clone(), None))),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();

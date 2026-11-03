@@ -1798,10 +1798,16 @@ mod editor_dollar_autocomplete {
     use maho_tui::autocomplete::{CombinedAutocompleteProvider, CommandSpec};
 
     type Request = (String, usize, usize);
+    type AutocompleteSender = std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>;
+    type EditorHarness = (
+        Editor,
+        Rc<RefCell<Vec<Request>>>,
+        Rc<RefCell<Vec<AutocompleteSender>>>,
+    );
 
     struct RecordingProvider {
         requests: Rc<RefCell<Vec<Request>>>,
-        answers: Rc<RefCell<Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>>>,
+        answers: Rc<RefCell<Vec<AutocompleteSender>>>,
         immediate: Option<AutocompleteSuggestions>,
     }
 
@@ -1868,13 +1874,7 @@ mod editor_dollar_autocomplete {
         std::time::Instant::now() + std::time::Duration::from_secs(1)
     }
 
-    fn editor_with(
-        immediate: Option<AutocompleteSuggestions>,
-    ) -> (
-        Editor,
-        Rc<RefCell<Vec<Request>>>,
-        Rc<RefCell<Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>>>,
-    ) {
+    fn editor_with(immediate: Option<AutocompleteSuggestions>) -> EditorHarness {
         let (mut editor, _host) = create_editor(24);
         let requests = Rc::new(RefCell::new(Vec::new()));
         let answers = Rc::new(RefCell::new(Vec::new()));
@@ -2988,10 +2988,12 @@ mod kill_ring_undo_autocomplete {
         std::time::Instant::now() + std::time::Duration::from_millis(ms)
     }
 
+    type SuggestFn = Box<dyn Fn(&str, bool) -> Option<AutocompleteSuggestions>>;
+
     /// A synchronous provider: `suggest(text before cursor, force)`; senpi's prefix-replacing
     /// `applyCompletion`; `calls` counts lookups.
     struct ScriptedProvider {
-        suggest: Box<dyn Fn(&str, bool) -> Option<AutocompleteSuggestions>>,
+        suggest: SuggestFn,
         triggers: Vec<String>,
         calls: Rc<RefCell<usize>>,
     }
@@ -3896,6 +3898,7 @@ mod remaining_cases {
     use std::time::{Duration, Instant};
 
     type Requests = Rc<RefCell<Vec<(String, bool)>>>;
+    type SuggestFn = Box<dyn Fn(&str, bool) -> Reply>;
 
     /// One provider answer: now, or never (senpi's promise that only settles on abort).
     enum Reply {
@@ -3909,7 +3912,7 @@ mod remaining_cases {
     struct Recorder {
         triggers: Vec<String>,
         requests: Requests,
-        suggest: Box<dyn Fn(&str, bool) -> Reply>,
+        suggest: SuggestFn,
         stalled: Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>,
         delegate: Option<CombinedAutocompleteProvider>,
     }

@@ -242,9 +242,9 @@ fn a_quoted_path_that_exists_as_written_is_not_unquoted() {
         maho_ext_permission_system::parsers::resolve_read_path("'name'", project.path()),
         literal.to_string_lossy()
     );
-    // Neither the quoted nor the unquoted spelling exists: the path as written is kept.
+    // Neither the quoted nor the unquoted spelling exists: the unquoted path is returned.
     assert_eq!(
         maho_ext_permission_system::parsers::resolve_read_path("'missing'", project.path()),
-        project.path().join("'missing'").to_string_lossy()
+        project.path().join("missing").to_string_lossy()
     );
 }

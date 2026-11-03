@@ -100,8 +100,9 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
         }
     }
+    // senpi takes stderr over only right before `ui.start()` (interactive_entry), so startup
+    // diagnostics such as an unresolved `--provider/--model` stay visible on the terminal.
     let _interactive_stderr = if mode == AppMode::Interactive {
-        maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
         Some(InteractiveStderr)
     } else {
         None

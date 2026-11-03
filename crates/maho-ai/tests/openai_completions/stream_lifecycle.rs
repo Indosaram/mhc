@@ -220,3 +220,54 @@ async fn ends_each_content_block_before_starting_the_next_block_type() {
     );
     server.shutdown();
 }
+
+/// An abort while the provider holds the response body open ends the turn as aborted AND hangs up
+/// the HTTP connection: the provider sees the client leave instead of an orphaned stream that waits
+/// for bytes nobody reads. Every wait is event-driven; the bound only fails a hung client.
+#[tokio::test]
+async fn an_abort_mid_body_ends_the_turn_and_closes_the_provider_connection() {
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    let (closed_tx, mut closed) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let server = RawServer::start(raw_handler(move |mut stream, _request| {
+        let closed_tx = closed_tx.clone();
+        async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let frame = json!({
+                "id": "chatcmpl-held",
+                "choices": [{ "index": 0, "delta": { "content": "still streaming" }, "finish_reason": null }],
+            });
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+            if stream.write_all(format!("{head}data: {frame}\n\n").as_bytes()).await.is_err() || stream.flush().await.is_err() {
+                return;
+            }
+            // Held: no finish, no EOF from this side. Only the client hanging up ends the read.
+            let mut rest = [0u8; 256];
+            while matches!(stream.read(&mut rest).await, Ok(count) if count > 0) {}
+            let _ = closed_tx.send(());
+        }
+    }))
+    .await;
+
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let mut options: SimpleStreamOptions = simple_options("test");
+    options.stream.request.max_retries = Some(0);
+    options.stream.request.signal = Some(controller.signal());
+    let stream = run_simple(&lifecycle_model(&server.base_url), &lifecycle_context(), options, None);
+    // The body phase is reached once the first content delta is relayed.
+    tokio::time::timeout(BOUND, async {
+        while let Some(event) = stream.next().await.expect("stream event") {
+            if matches!(event, AssistantMessageEvent::TextDelta { .. }) {
+                return;
+            }
+        }
+        panic!("the stream ended before the held chunk was relayed");
+    })
+    .await
+    .expect("the held chunk was relayed in time");
+
+    controller.abort(None);
+    let response = tokio::time::timeout(BOUND, finish(&stream)).await.expect("the aborted turn ended in time");
+    assert_eq!(response.stop_reason, StopReason::Aborted, "{:?}", response.error_message);
+    tokio::time::timeout(BOUND, closed.recv()).await.expect("the provider saw the client hang up in time").expect("the held handler ran");
+    server.shutdown();
+}

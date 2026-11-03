@@ -4,6 +4,8 @@ use maho_ai::{
     types::ProviderEnv,
     utils::abort::AbortSignal,
 };
+#[cfg(test)]
+use maho_ai::utils::abort::AbortController;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 /// The ADC file `gcloud auth application-default login` writes, same as the builtin google-vertex provider.
@@ -134,7 +136,7 @@ mod tests {
             file: false,
         };
         assert!(
-            resolve_vertex_model_garden_ambient(&ctx, &AbortSignal::default(), None)
+            resolve_vertex_model_garden_ambient(&ctx, &AbortController::new().signal(), None)
                 .await
                 .unwrap()
                 .is_none()
@@ -143,7 +145,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_prefers_env_then_gcloud_env_then_the_stored_google_vertex_profile() {
-        let signal = AbortSignal::default();
+        let signal = AbortController::new().signal();
         let both = Ctx {
             env: BTreeMap::from([
                 ("GOOGLE_CLOUD_PROJECT", "env-a"),
@@ -220,7 +222,7 @@ mod tests {
         };
         assert_eq!(
             project(
-                auth.resolve(&StoredCtx, None, &AbortSignal::default())
+                auth.resolve(&StoredCtx, None, &AbortController::new().signal())
                     .await
                     .unwrap()
             )

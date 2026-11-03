@@ -63,6 +63,9 @@ fn scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off() {
     assert_eq!(built.options.model.unwrap().id, model.id); assert_eq!(built.options.thinking_level, Some(ModelThinkingLevel::Off));
     assert!(matches!(built.options.no_tools, Some(maho_core::sdk::NoToolsMode::Builtin))); assert_eq!(built.options.tools.unwrap(), ["read"]);
     assert!(build_session_options(&parsed, &scoped, true, &runtime, &settings).options.model.is_none());
+    let provider_only = Args { provider: Some("anthropic".to_owned()), ..Default::default() };
+    let diagnostics = build_session_options(&provider_only, &scoped, false, &runtime, &settings).diagnostics;
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic.error && diagnostic.message.starts_with("--provider requires --model")));
     let entries = session_model_entries(scoped.to_vec()).unwrap();
     assert_eq!(entries[0].model.id, model.id);
     assert_eq!(entries[0].thinking_level, Some(maho_ai::types::ThinkingLevel::High));

@@ -441,3 +441,65 @@ fn commit_times_ignore_follow_and_signature_settings() {
     let reopened = GitMemoryRepo::open(&repo.dir, "agent-one").unwrap();
     assert_eq!(reopened.path_commit_times("HEAD").unwrap(), plain);
 }
+
+/// Records every argv and timeout it runs, then runs the real git.
+pub(crate) struct RecordingExec {
+    pub(crate) inner: Arc<dyn super::exec::GitExec>,
+    pub(crate) calls: std::sync::Mutex<Vec<(Vec<String>, u64)>>,
+}
+
+impl RecordingExec {
+    pub(crate) fn system() -> Arc<Self> {
+        Arc::new(Self { inner: super::exec::system_git_exec(), calls: Default::default() })
+    }
+
+    /// The recorded call whose argv contains `command`, with its timeout.
+    pub(crate) fn call_with(&self, command: &str) -> (Vec<String>, u64) {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .find(|(argv, _)| argv.iter().any(|arg| arg == command))
+            .cloned()
+            .unwrap_or_else(|| panic!("no git {command} call in {calls:?}"))
+    }
+}
+
+impl super::exec::GitExec for RecordingExec {
+    fn run(&self, argv: &[String], options: &super::exec::GitExecOptions) -> std::io::Result<super::exec::GitExecResult> {
+        self.calls.lock().unwrap().push((argv.to_vec(), options.timeout_ms));
+        self.inner.run(argv, options)
+    }
+}
+
+/// `repo.ts`: every commit and merge runs with the commit budget (the hooks run inside it) and
+/// without auto maintenance; plain reads keep the shorter git budget.
+#[test]
+fn commits_and_merges_get_the_commit_budget_without_auto_maintenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let exec = Arc::new(RecordingExec { inner: super::exec::system_git_exec(), calls: Default::default() });
+    let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+        dir: temp.path().to_path_buf(),
+        agent_id: "agent-one".to_string(),
+        exec: Some(exec.clone()),
+        install_hooks: None,
+    })
+    .expect("repo");
+    repo.init(Some(InitializeGitRepoOptions {
+        seed_files: vec![GitSeedFile { relative_path: "seed.md".into(), content: "seed\n".into() }],
+        ..Default::default()
+    }))
+    .expect("init");
+    fs::write(temp.path().join("fact.md"), "fact\n").expect("write");
+    let author = GitCommitAuthor { agent_id: "agent-one".into(), author_name: "Agent One".into(), author_email: None };
+    repo.commit_write(&["fact.md"], "record fact", &author).expect("commit");
+
+    let calls = exec.calls.lock().unwrap().clone();
+    let commits: Vec<&(Vec<String>, u64)> = calls.iter().filter(|(argv, _)| argv.iter().any(|arg| arg == "commit")).collect();
+    assert_eq!(commits.len(), 2, "the seed commit and the write: {calls:?}");
+    for (argv, timeout) in commits {
+        assert_eq!(&argv[..4], &super::repo::NO_AUTO_MAINTENANCE.map(str::to_string)[..], "{argv:?}");
+        assert_eq!(*timeout, super::repo::COMMIT_TIMEOUT_MS, "{argv:?}");
+    }
+    let status = calls.iter().find(|(argv, _)| argv.iter().any(|arg| arg == "status")).expect("a status read");
+    assert_eq!(status.1, 30_000, "reads keep the git budget");
+}

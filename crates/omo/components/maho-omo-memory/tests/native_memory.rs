@@ -693,6 +693,17 @@ async fn native_faux_corrupt_memory_reports_ts_doctor_parser_error() {
         "broken persona without frontmatter\n",
     )
     .unwrap();
+    // The corruption is committed (a hand edit or a sync that bypassed the hooks): the memory tool
+    // refuses a dirty repository before it reads any file (`memory.ts` cleanCheck), so only a
+    // committed corrupt block reaches the frontmatter parser this test pins.
+    let exec = engine.repo.exec();
+    for args in [
+        vec!["add", "system/persona.md"],
+        vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "--no-verify", "-m", "corrupt persona"],
+    ] {
+        let output = exec.run_in(&paths.repo, &args).unwrap();
+        assert_eq!(output.code, 0, "{}", output.stderr);
+    }
     let before = engine.repo.head().unwrap();
     let notifications = Arc::new(Mutex::new(0));
     let identity = MemoryIdentityContext::new(

@@ -35,7 +35,7 @@ use crate::types::{
 };
 use crate::utils::abort::AbortSignal;
 use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
+    AssistantMessageEventStream,
 };
 use crate::utils::headers::provider_headers_to_record;
 use crate::utils::pi_user_agent::get_pi_user_agent;
@@ -566,7 +566,8 @@ async fn drive(
         params = next_params;
     }
 
-    let http = reqwest::Client::new();
+    // PERF-DIVERGENCE(senpi google-vertex.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let http = crate::utils::http_client::shared_http_client();
     let auth = match &api_key {
         Some(api_key) => Some(GoogleAuth::ApiKey(api_key.clone())),
         None => Some(GoogleAuth::Bearer(

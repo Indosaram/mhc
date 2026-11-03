@@ -22,6 +22,7 @@ pub mod session_wire;
 pub mod store_index;
 pub mod task_parent_wire;
 pub mod unresponsive_close;
+pub use session_open::HostSessionOpenError;
 use crate::host::HostError;
 use std::sync::Arc;
 pub type OpenHostSession = Arc<
@@ -34,7 +35,7 @@ pub type OpenHostSession = Arc<
                 open_session::OpenedHostSession,
                 Arc<dyn Fn() -> crate::runners::RunnerOutcome + Send + Sync>,
             ),
-            HostError,
+            HostSessionOpenError,
         > + Send
         + Sync,
 >;
@@ -98,9 +99,9 @@ impl RpcHostRunner {
                 open_session::OpenedHostSession,
                 std::sync::Arc<dyn Fn() -> crate::runners::RunnerOutcome + Send + Sync>,
             ),
-            HostError,
+            HostSessionOpenError,
         >,
-    ) -> Result<std::sync::Arc<handle::HostSessionHandle>, HostError> {
+    ) -> Result<std::sync::Arc<handle::HostSessionHandle>, HostSessionOpenError> {
         let (client, opened, outcome) = open(spec, session_context::build_child_context(spec))?;
         let pin = spec
             .model
@@ -127,7 +128,9 @@ impl RpcHostRunner {
         if attached {
             Ok(handle)
         } else {
-            self.opener.start_initial_prompt(handle, &spec.prompt)
+            self.opener
+                .start_initial_prompt(handle, &spec.prompt)
+                .map_err(HostSessionOpenError::from)
         }
     }
 

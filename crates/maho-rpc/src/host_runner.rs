@@ -10,6 +10,7 @@ pub struct HostTarget {
     pub socket: String,
     pub agent_dir: std::path::PathBuf,
 }
+#[derive(Debug)]
 pub struct HostOutcome {
     pub exit_code: i32,
     pub payload: serde_json::Value,
@@ -47,7 +48,7 @@ pub enum HostRequest {
     },
     Handoff {
         target: HostTarget,
-        options: crate::host_handoff::HandoffOptions,
+        options: Box<crate::host_handoff::HandoffOptions>,
         env_keys: Vec<String>,
         /// The conditional form (`--when idle`): the running host hands over at its next safe idle point.
         handover: Option<crate::host_handover_request::IdleHandoverTerms>,
@@ -157,7 +158,7 @@ pub async fn run_host_request(request: HostRequest) -> std::io::Result<HostOutco
             handover,
             client_runtime_build_id,
         } => match handover {
-            None => handoff_outcome(&target.socket, &target.agent_dir, options, &env_keys).await,
+            None => handoff_outcome(&target.socket, &target.agent_dir, *options, &env_keys).await,
             Some(terms) => {
                 crate::host_handover_request::idle_handover_outcome(
                     &target.socket,

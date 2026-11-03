@@ -316,6 +316,7 @@ pub struct ToolDefinitionEntry {
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub type AgentSessionEventListener = Arc<dyn Fn(&AgentSessionEvent) + Send + Sync>;
+type BeforeSessionReplaceListener = Arc<dyn Fn() + Send + Sync>;
 
 /// Copy-on-write listener list: `emit` snapshots it with one `Arc` clone.
 type SharedEventListeners = Arc<Mutex<Arc<Vec<(u64, AgentSessionEventListener)>>>>;
@@ -565,6 +566,10 @@ pub fn provider_retry_watchdog_abort_message(
     }
 }
 
+/// Host refusal of a prompt-dispatched extension command: `(name, args, source of the registering
+/// extension)` -> `Some(reason)` refuses.
+pub type ExtensionCommandGate = Arc<dyn Fn(&str, &str, &maho_ext_api::SourceInfo) -> Option<String> + Send + Sync>;
+
 // Staged for slices S2..S8: each field is populated by construction and consumed by the slice that
 // owns the corresponding TS member; the attribute is dropped once every slice lands.
 #[allow(dead_code)]
@@ -579,6 +584,13 @@ struct AgentSessionState {
     eval_only_tool_names: Option<BTreeSet<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
+    /// Names a registration offered that `excluded_tool_names` withheld: lets a caller tell a real
+    /// excluded tool from an exclusion naming nothing.
+    withheld_excluded_tool_names: BTreeSet<String>,
+    /// Host refusal of prompt-dispatched extension commands (`/name args`).
+    extension_command_gate: Option<ExtensionCommandGate>,
+    /// The host marked the session's role restrictive: client-submitted user bash is refused.
+    user_bash_denied: bool,
     base_tools_override: Option<BTreeMap<String, AgentTool>>,
     base_tool_definitions: BTreeMap<String, ToolDefinition>,
     tool_registry: BTreeMap<String, AgentTool>,
@@ -765,6 +777,12 @@ impl SessionStatsCounts {
 
     fn fold(&mut self, entries: &[Value], totals: &mut crate::usage_totals::UsageTotals) {
         for entry in entries {
+            self.fold_entry(entry, totals);
+        }
+    }
+
+    fn fold_entry(&mut self, entry: &Value, totals: &mut crate::usage_totals::UsageTotals) {
+        {
             let kind = entry
                 .get("type")
                 .and_then(Value::as_str)
@@ -777,11 +795,11 @@ impl SessionStatsCounts {
                 crate::usage_totals::add_usage_to_totals(totals, &usage);
             }
             if kind != "message" {
-                continue;
+                return;
             }
             self.total_messages += 1;
             let Some(message) = entry.get("message") else {
-                continue;
+                return;
             };
             match message.get("role").and_then(Value::as_str) {
                 Some("user") => self.user_messages += 1,
@@ -1069,6 +1087,10 @@ pub struct AgentSessionInner {
     /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
     /// in place; the next reader or run re-materializes them through `runtime_messages()`.
     runtime_messages_tokenized: std::sync::atomic::AtomicBool,
+    /// Bumped by every child park that clears the runtime messages. The idle release captures it
+    /// before reading the transcript and commits its tokenized copy under this lock only when no
+    /// park ran in between, so a parked child never gets its messages back.
+    idle_park_generation: Mutex<u64>,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     lifecycle_fact_subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
@@ -1081,7 +1103,7 @@ pub struct AgentSessionInner {
     before_session_invalidate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// senpi `onBeforeSessionReplace` for a session replaced in place (new, switch/import, fork): runs after the
     /// outgoing `session_shutdown` handlers and before its extension runtime is invalidated.
-    before_session_replace: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    before_session_replace: Mutex<Vec<(u64, BeforeSessionReplaceListener)>>,
     next_before_session_replace: AtomicU64,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
@@ -1601,6 +1623,30 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
                     .collect()
             })
         })
+    }
+    fn get_entries_of_kinds(&self, kinds: &[&str]) -> Vec<maho_ext_api::SessionEntry> {
+        self.session.upgrade().map_or_else(Vec::new, |inner| {
+            AgentSession { inner }.with_session_manager(|manager| {
+                let mut entries = Vec::new();
+                manager.for_each_entry(
+                    &|entry| kinds.contains(&entry.get("type").and_then(Value::as_str).unwrap_or_default()),
+                    &mut |entry| entries.push(session_entry_from_value(entry)),
+                );
+                entries
+            })
+        })
+    }
+    fn build_context_messages(&self) -> Option<Vec<Value>> {
+        self.session.upgrade().map(|inner| {
+            AgentSession { inner }.with_session_manager(|manager| manager.current_context().messages)
+        })
+    }
+    fn for_each_entry(&self, visit: &mut dyn FnMut(maho_ext_api::SessionEntry)) {
+        if let Some(inner) = self.session.upgrade() {
+            AgentSession { inner }.with_session_manager(|manager| {
+                manager.for_each_entry(&|_| true, &mut |entry| visit(session_entry_from_value(entry)));
+            });
+        }
     }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session.upgrade().map_or_else(Vec::new, |inner| {
@@ -3872,13 +3918,11 @@ impl crate::turn_deadline::DeadlineSessionOwner for WeakDeadlineOwner {
         &self,
         deadline: &crate::turn_deadline::TurnDeadline,
     ) -> Result<(), String> {
-        use crate::turn_deadline::DeadlineSessionOwner as _;
         self.session()
             .map_or(Ok(()), |session| session.record_deadline_stop(deadline))
     }
 
     fn abort_turn_for_deadline(&self) -> crate::turn_deadline::DeadlineAbort {
-        use crate::turn_deadline::DeadlineSessionOwner as _;
         match self.session() {
             Some(session) => session.abort_turn_for_deadline(),
             None => Box::pin(async { Ok(()) }),
@@ -3900,7 +3944,6 @@ impl crate::turn_deadline::DeadlineSessionOwner for WeakDeadlineOwner {
     }
 
     fn warn_deadline(&self, event: crate::turn_deadline::TurnDeadlineWarning, detail: &str) {
-        use crate::turn_deadline::DeadlineSessionOwner as _;
         if let Some(session) = self.session() {
             session.warn_deadline(event, detail);
         }
@@ -4151,6 +4194,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once inside the idle release, after it read the runtime messages and before it commits
+    /// the tokenized copy, so a test can force a park into that window.
+    static IDLE_RELEASE_BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 type ToolChildHostTargets = Arc<
     Mutex<
         Vec<(
@@ -4398,6 +4449,9 @@ impl AgentSession {
             ),
             allowed_tool_names: name_set(config.allowed_tool_names),
             excluded_tool_names: name_set(config.excluded_tool_names),
+            withheld_excluded_tool_names: BTreeSet::new(),
+            extension_command_gate: None,
+            user_bash_denied: false,
             base_tools_override: config.base_tools_override,
             base_tool_definitions: BTreeMap::new(),
             tool_registry: BTreeMap::new(),
@@ -4533,12 +4587,11 @@ impl AgentSession {
                 .header()
                 .as_ref()
                 .and_then(|h| h.get("spawnedBy")),
-            &config
-                .session_manager
-                .reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY),
+            &config.session_manager.entries_of_types(&["custom"]),
         );
         let restored_run_id = lifecycle.run_id.clone();
-        let held_inputs = crate::held_inputs::HeldInputs::new(&config.session_manager.entries());
+        let held_inputs =
+            crate::held_inputs::HeldInputs::new(&config.session_manager.entries_of_types(&["custom"]));
         let session = Self {
             inner: Arc::new(AgentSessionInner {
                 agent,
@@ -4644,6 +4697,7 @@ impl AgentSession {
                 settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
+                idle_park_generation: Mutex::new(0),
                 wake_source_subscription: Mutex::new(None),
                 lifecycle_fact_subscriptions: Mutex::new(Vec::new()),
                 extension_rpc_event_forward: Mutex::new(None),
@@ -4957,7 +5011,7 @@ impl AgentSession {
 
                 let run_id = lock(&self.lifecycle).run_id.clone();
                 let result = self.with_session_manager_mut(|manager| {
-                    let entries = manager.entries();
+                    let entries = manager.entries_of_types(&["custom"]);
                     let mut latest = indexmap::IndexMap::<String, Value>::new();
                     for entry in &entries {
                         if entry["type"] == "custom" && entry["customType"] == "work-custody"
@@ -5140,7 +5194,7 @@ impl AgentSession {
                             AgentMessage::Llm(maho_ai::types::Message::Assistant(original)),
                             AgentMessage::Llm(maho_ai::types::Message::Assistant(rewritten)),
                         ) if original.error_cause.is_some() => {
-                            rewritten.error_cause = original.error_cause;
+                            std::sync::Arc::make_mut(rewritten).error_cause = original.error_cause.clone();
                         }
                         (
                             AgentMessage::Llm(maho_ai::types::Message::ToolResult(original)),
@@ -5347,7 +5401,7 @@ impl AgentSession {
                                 .and_then(|d| d["ticketId"].as_str())
                                 .is_some_and(|ticket| {
                                     crate::lifecycle_delivery::lifecycle_delivery_entries(
-                                        &manager.entries(),
+                                        &manager.entries_of_types(&["custom_message"]),
                                     )
                                     .contains_key(ticket)
                                 });
@@ -5702,7 +5756,7 @@ impl AgentSession {
     }
 
     pub fn report_child_lifecycle(&self, report: &Value) -> Result<bool, String> {
-        let entries = self.with_session_manager(|manager| manager.entries());
+        let entries = self.with_session_manager(|manager| manager.entries_of_types(&["custom"]));
         let mut children = crate::lifecycle_children::LifecycleChildren::new(&entries);
         let changed = children.report(report, |accepted| {
             self.with_session_manager_mut(|manager| {
@@ -6263,7 +6317,7 @@ impl AgentSession {
         if let Some(effect) = request["effectId"].as_str()
             && let Some(mut answer) = self.with_session_manager(|manager| {
                 manager
-                    .entries()
+                    .entries_of_types(&["custom"])
                     .iter()
                     .rev()
                     .find(|entry| {
@@ -8321,6 +8375,18 @@ impl AgentSession {
             session: self,
             controller: pending.clone(),
         };
+        // senpi `_abortActiveAgentAndRetry("system")`: the cut-off turn is owned by the system, so it
+        // renders as "System operation aborted" instead of a provider failure.
+        let streaming = self.is_streaming();
+        if lock(&self.user_abort_wait).is_some() {
+            self.state()
+                .abort_provenance
+                .join(maho_ext_api::AbortSource::System, streaming);
+        } else if streaming {
+            self.state()
+                .abort_provenance
+                .begin(maho_ext_api::AbortSource::System);
+        }
         self.agent.abort(None);
         self.abort_retry();
         let signal = pending.signal();
@@ -9648,7 +9714,7 @@ impl AgentSession {
         if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) =
             &mut messages[index]
         {
-            assistant.error_message = Some(hinted.clone());
+            std::sync::Arc::make_mut(assistant).error_message = Some(hinted.clone());
         }
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -12431,7 +12497,7 @@ impl AgentSession {
             entry_id,
             options,
             Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                Box::new(replacement),
+                std::sync::Arc::new(replacement),
             ))),
         )
         .await
@@ -13278,6 +13344,11 @@ impl AgentSession {
         exclude_from_context: bool,
         id: Option<String>,
     ) -> Result<maho_tools::bash_executor::BashResult, String> {
+        // A session the host marked restrictive (a role policy that withholds bash) runs no terminal
+        // command, client-submitted user bash included. Plain tool exclusions restrict only the model.
+        if self.state().user_bash_denied {
+            return Err("bash_excluded: this session's role policy withholds bash, so user bash commands are refused".to_owned());
+        }
         match self.user_bash_hook(command, exclude_from_context).await? {
             maho_ext_api::EventResult::UserBash {
                 result: Some(result),
@@ -13966,6 +14037,11 @@ impl AgentSession {
         let Some(command) = runner.get_command(name) else {
             return Ok(false);
         };
+        // A gated session refuses the command before it runs; the prompt fails with the typed reason.
+        let gate = self.state().extension_command_gate.clone();
+        if let Some(refusal) = gate.and_then(|gate| gate(name, args, &command.command.source_info)) {
+            return Err(refusal);
+        }
         let info = &command.command.source_info;
         self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({"name":name,"source":"extension","syntax":"slash",
             "sourceInfo":{"path":info.path,"source":info.source,"scope":match info.scope {
@@ -14715,6 +14791,7 @@ impl AgentSession {
     /// the native `SessionManager` keeps none (every view re-materializes from the store).
     fn release_idle_runtime_messages(&self) {
         self.state().abort_provenance = Default::default();
+        let park_generation = *lock(&self.idle_park_generation);
         let _ = self.with_session_manager_mut(|manager| manager.park_idle_memory());
         let store = self.with_session_manager(|manager| manager.resident_store().clone());
         store.spill_resident();
@@ -14736,19 +14813,34 @@ impl AgentSession {
             })
             .collect();
         store.spill_resident();
-        self.agent.set_messages(messages);
-        self.runtime_messages_tokenized
-            .store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        if let Some(hook) = IDLE_RELEASE_BEFORE_COMMIT.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        {
+            let generation = lock(&self.idle_park_generation);
+            if *generation == park_generation {
+                self.agent.set_messages(messages);
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+        }
         maho_tool_child::allocator::reclaim_unused_heap();
     }
 
     pub fn park_idle_child_memory(&self) {
-        let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
-        if parked {
-            self.agent.set_messages(Vec::new());
-            self.runtime_messages_tokenized
-                .store(true, Ordering::SeqCst);
-        } else {
+        let parked = {
+            let mut generation = lock(&self.idle_park_generation);
+            let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
+            if parked {
+                *generation += 1;
+                self.agent.set_messages(Vec::new());
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+            parked
+        };
+        if !parked {
             self.release_idle_runtime_messages();
         }
         maho_tool_child::allocator::reclaim_unused_heap();
@@ -15615,14 +15707,21 @@ impl AgentSession {
             })
         });
         let mut state = self.state();
+        // An exclusion entry ending in `*` withholds every tool name with that prefix.
+        if state.excluded_tool_names.as_ref().is_some_and(|names| {
+            names.contains(&definition.name)
+                || names.iter().any(|name| {
+                    name.strip_suffix('*')
+                        .is_some_and(|prefix| definition.name.starts_with(prefix))
+                })
+        }) {
+            state.withheld_excluded_tool_names.insert(definition.name);
+            return;
+        }
         if state
             .allowed_tool_names
             .as_ref()
             .is_some_and(|names| !names.contains(&definition.name))
-            || state
-                .excluded_tool_names
-                .as_ref()
-                .is_some_and(|names| names.contains(&definition.name))
         {
             return;
         }
@@ -15659,6 +15758,37 @@ impl AgentSession {
                 source_info,
             },
         );
+    }
+
+    /// Every tool name a registration offered but the session's exclusion list withheld.
+    pub fn withheld_excluded_tool_names(&self) -> Vec<String> {
+        self.state().withheld_excluded_tool_names.iter().cloned().collect()
+    }
+
+    /// The session's tool exclusion entries (names and `prefix*` patterns), carried into a
+    /// replacement session.
+    pub fn excluded_tool_names(&self) -> Option<Vec<String>> {
+        self.state().excluded_tool_names.as_ref().map(|names| names.iter().cloned().collect())
+    }
+
+    /// Installs the host's refusal of prompt-dispatched extension commands: `Some(reason)` from the
+    /// gate fails the prompt before the command runs. Replacement sessions inherit it.
+    pub fn set_extension_command_gate(&self, gate: Option<ExtensionCommandGate>) {
+        self.state().extension_command_gate = gate;
+    }
+
+    pub fn extension_command_gate(&self) -> Option<ExtensionCommandGate> {
+        self.state().extension_command_gate.clone()
+    }
+
+    /// Marks the session's role restrictive, refusing client-submitted user bash. Replacement
+    /// sessions inherit it.
+    pub fn set_user_bash_denied(&self, denied: bool) {
+        self.state().user_bash_denied = denied;
+    }
+
+    pub fn user_bash_denied(&self) -> bool {
+        self.state().user_bash_denied
     }
 
     pub fn replace_custom_tool(&self, definition: ToolDefinition) -> Result<(), String> {
@@ -16517,6 +16647,9 @@ impl AgentSession {
         if options.stream.session_id.is_none() {
             options.stream.session_id = Some(self.session_id());
         }
+        // senpi sdk.ts streamFn: every model request runs in the session cwd, overriding the
+        // caller's, so subprocess-backed lanes start there.
+        options.stream.request.cwd = Some(self.cwd());
         options.service_tier = options
             .service_tier
             .or_else(|| self.resolve_request_service_tier(model));
@@ -16853,7 +16986,7 @@ impl AgentSession {
         // runner emits (handler failures included), read at emit time so a later rebind wins. A
         // listener copied onto a replacement runner stays inert once its session is disposed.
         let weak = Arc::downgrade(&self.inner);
-        runner.on_error(Arc::new(move |error: &ExtensionError| {
+        runner.set_session_error_listener(Some(Arc::new(move |error: &ExtensionError| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
@@ -16868,7 +17001,7 @@ impl AgentSession {
             if let Some(listener) = listener {
                 listener(error);
             }
-        }));
+        })));
         let weak = Arc::downgrade(&self.inner);
         runner.set_shutdown_budget_resolver(Arc::new(move || {
             let Some(inner) = weak.upgrade() else { return (2_000, 10_000); };
@@ -18594,14 +18727,33 @@ impl AgentSession {
     }
 
     pub async fn extension_runner_request(&self, name: &str, data: Value) -> Result<Value, String> {
+        self.extension_runner_request_typed(name, data)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::extension_runner_request`] keeping the handler's failure `code` (the RPC `errorCode`).
+    pub async fn extension_runner_request_typed(
+        &self,
+        name: &str,
+        data: Value,
+    ) -> Result<Value, maho_ext_api::ExtensionFailure> {
         self.extension_runner
             .lock()
             .await
             .clone()
-            .ok_or_else(|| "Extension runner is not bound".to_owned())?
+            .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?
             .handle_rpc_request(name, data)
             .await
-            .map_err(|error| error.message)
+    }
+
+    /// Whether the bound extension runner serves the RPC request `name`; `false` when unbound.
+    pub async fn extension_runner_has_rpc_handler(&self, name: &str) -> bool {
+        self.extension_runner
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|runner| runner.has_rpc_handler(name))
     }
 
     pub async fn loaded_extension_surfaces(&self) -> Vec<Value> {
@@ -19490,7 +19642,7 @@ impl AgentSession {
             message: AgentMessage::Llm(maho_ai::types::Message::Assistant(message)),
         }) = &mut event
         {
-            **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
+            *message = std::sync::Arc::new(crate::retry_fallback::usage_limit::describe_usage_limit_message(message));
         }
         // Compaction start and end are lifecycle edges: the lifecycle getter no longer recomputes (senpi#3980).
         if matches!(
@@ -20319,6 +20471,27 @@ impl AgentSession {
     /// Clear all queued messages and return them. `ordered` preserves the recovery order across
     /// both native queue modes.
     pub fn clear_queue(&self, abort_will_follow: bool) -> ClearedQueue {
+        let cleared_custom_messages: Vec<maho_agent::harness::messages::CustomMessage> = {
+            let state = self.state();
+            let receipts = lock(&self.queued_custom_receipts);
+            receipts
+                .iter()
+                .filter(|(_, receipt)| receipt.outcome().is_none())
+                .filter_map(|(custom, _)| {
+                    let agent_message = AgentMessage::Custom(
+                        maho_agent::types::CustomAgentMessage::Custom(custom.clone()),
+                    );
+                    let in_cleared_queue = self.agent.contains_queued_message(&agent_message)
+                        || state
+                            .post_compaction_deferred_steering_messages
+                            .contains(&agent_message)
+                        || state
+                            .post_compaction_deferred_follow_up_messages
+                            .contains(&agent_message);
+                    in_cleared_queue.then(|| custom.clone())
+                })
+                .collect()
+        };
         let steering;
         let follow_up;
         let ordered;
@@ -20340,9 +20513,35 @@ impl AgentSession {
         self.agent.clear_all_queues();
         self.release_queued_deliveries(&cleared_deliveries, "cleared");
         // A removed queued message is never written: every send waiting on it settles now as cleared (senpi#4106).
-        self.audit_queued_custom_receipts(
-            &crate::itemized_send::QueuedDeliveryCleared { item_ids: Vec::new() }.to_string(),
-        );
+        for custom in cleared_custom_messages {
+            let is_appended =
+                serde_json::to_value(&custom.content)
+                    .ok()
+                    .is_some_and(|content_val| {
+                        self.with_session_manager(|manager| {
+                            manager.entries().iter().rev().any(|e| {
+                                let details_match = match (&custom.details, e.get("details")) {
+                                    (Some(expected), Some(actual)) => expected == actual,
+                                    (None, None) | (None, Some(Value::Null)) => true,
+                                    _ => false,
+                                };
+                                e.get("type").and_then(Value::as_str) == Some("custom_message")
+                                    && e.get("customType").and_then(Value::as_str)
+                                        == Some(custom.custom_type.as_str())
+                                    && e.get("content") == Some(&content_val)
+                                    && e.get("display").and_then(Value::as_bool)
+                                        == Some(custom.display)
+                                    && details_match
+                            })
+                        })
+                    });
+            if !is_appended {
+                self.settle_queued_custom_receipt(
+                    &custom,
+                    Err(crate::itemized_send::QueuedDeliveryCleared { item_ids: Vec::new() }.to_string()),
+                );
+            }
+        }
         self.emit_queue_update();
         ClearedQueue {
             steering,
@@ -20594,7 +20793,7 @@ impl AgentSession {
         enum FoldInput {
             Cached(SessionStats),
             Appended(Vec<Value>, SessionStats, crate::usage_totals::UsageTotals),
-            All(Vec<Value>),
+            All(SessionStatsCounts, crate::usage_totals::UsageTotals),
         }
         let previous = self.state().session_stats_cache.clone();
         // Entries are append-only, so (session id, entry count, leaf id) pins the aggregate below.
@@ -20608,6 +20807,16 @@ impl AgentSession {
                     manager.get_entry_count(),
                     manager.leaf_id().map(str::to_owned),
                 );
+                // A full rescan folds the history in place: the counters read only types, roles,
+                // usage and block kinds, so the spilled tool-result strings are never rehydrated.
+                let fold_all = || {
+                    let mut counts = SessionStatsCounts::default();
+                    let mut totals = crate::usage_totals::create_usage_totals();
+                    manager.visit_history_unmaterialized(&mut |entry| {
+                        counts.fold_entry(entry, &mut totals);
+                    });
+                    FoldInput::All(counts, totals)
+                };
                 let input = match previous {
                     Some((cached_key, stats, _)) if cached_key == key => FoldInput::Cached(stats),
                     Some((cached_key, stats, totals))
@@ -20615,10 +20824,10 @@ impl AgentSession {
                     {
                         match manager.entries_after(cached_key.1) {
                             Some(entries) => FoldInput::Appended(entries, stats, totals),
-                            None => FoldInput::All(manager.entries()),
+                            None => fold_all(),
                         }
                     }
-                    _ => FoldInput::All(manager.entries()),
+                    _ => fold_all(),
                 };
                 (key, input)
             });
@@ -20635,12 +20844,7 @@ impl AgentSession {
                 counts.fold(&entries, &mut totals);
                 (counts, totals)
             }
-            FoldInput::All(entries) => {
-                let mut counts = SessionStatsCounts::default();
-                let mut totals = crate::usage_totals::create_usage_totals();
-                counts.fold(&entries, &mut totals);
-                (counts, totals)
-            }
+            FoldInput::All(counts, totals) => (counts, totals),
         };
         let SessionStatsCounts {
             user_messages,
@@ -20722,12 +20926,19 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .collect();
         let messages = crate::messages::filter_context_excluded_messages(messages);
-        // Id-only walk first: only a compacted branch needs the materialized `current_branch()`.
+        // Id-only walk first: only a compacted branch needs entries, and only from its latest
+        // compaction to the leaf; materializing the whole branch rehydrated every spilled tool result.
         let compacted = self
             .latest_current_branch_entry_id("compaction", None)
             .is_some();
         let branch = if compacted {
-            self.with_session_manager(|manager| manager.current_branch())
+            self.with_session_manager(|manager| {
+                manager
+                    .current_branch_tail(0, &mut |entry: &Value| {
+                        entry.get("type").and_then(Value::as_str) == Some("compaction")
+                    })
+                    .1
+            })
         } else {
             Vec::new()
         };
@@ -21974,7 +22185,7 @@ impl crate::work_obligations::CustodyStore for SessionCustodyStore {
     fn entries(&self) -> Vec<Value> {
         self.0
             .upgrade()
-            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries())
+            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries_of_types(&["custom"]))
     }
     fn append(
         &mut self,
@@ -22562,8 +22773,8 @@ mod tests {
         let mut assistant =
             maho_ai::providers::faux::faux_assistant_message("", Default::default());
         assistant.stop_reason = StopReason::Error;
-        assistant.error_cause = Some(cause);
-        let original = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(assistant)));
+        assistant.error_cause = Some(cause.clone());
+        let original = AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant)));
         session.agent.set_messages(vec![original.clone()]);
         let mut extension = maho_ext_api::LoadedExtension::new(
             "<inline:advice>",
@@ -22580,6 +22791,7 @@ mod tests {
                 if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) =
                     &mut message
                 {
+                    let assistant = std::sync::Arc::make_mut(assistant);
                     assistant.error_message = Some("replacement advice".into());
                     assistant.error_cause = None;
                 }
@@ -22611,7 +22823,7 @@ mod tests {
                 .as_assistant()
                 .expect("assistant")
                 .error_cause,
-            Some(cause)
+            Some(cause.clone())
         );
         session
             .rebuild_session_context()
@@ -24287,10 +24499,12 @@ mod tests {
         session.dispose().await;
     }
 
+    type AskedPrompts = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
     /// A UI whose `select` answers with a fixed label and records each prompt it was shown.
     struct AnsweringUi {
         answer: Option<&'static str>,
-        asked: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        asked: AskedPrompts,
     }
     impl maho_ext_api::ExtensionUi for AnsweringUi {
         fn select<'a>(
@@ -24413,7 +24627,7 @@ mod tests {
     }
 
     impl SwitchTrustFixture {
-        fn bind_ui(&self, answer: Option<&'static str>) -> Arc<Mutex<Vec<(String, Vec<String>)>>> {
+        fn bind_ui(&self, answer: Option<&'static str>) -> AskedPrompts {
             let asked = Arc::new(Mutex::new(Vec::new()));
             self.session.state().extension_ui_context = Some(Arc::new(AnsweringUi {
                 answer,
@@ -25120,6 +25334,82 @@ mod tests {
     }
 
     #[test]
+    fn excluded_names_and_prefix_patterns_are_withheld_and_recorded() {
+        let session = AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false),
+            cwd: "/tmp".to_owned(), agent_dir: Some("/tmp/maho-agent".to_owned()), fallback_now: None, retry_random: None,
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: BTreeMap::new(), custom_tools: Vec::new(),
+            model_runtime: Some(ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
+            model_registry: None, uses_default_stream_function: Some(true), initial_active_tool_names: None, default_tool_names: None,
+            eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: Some(vec!["bash".to_owned(), "task_*".to_owned()]),
+            base_tools_override: None, session_start_event: None, auto_title_sessions: None,
+        }).expect("session");
+        for name in ["bash", "task_send", "tasks", "read"] {
+            session.register_tool_definition(test_definition(name), empty_source_info(), test_tool(name));
+        }
+        let registered = session.get_all_tools().into_iter().map(|tool| tool.name).collect::<BTreeSet<_>>();
+        assert_eq!(registered, BTreeSet::from(["read".to_owned(), "tasks".to_owned()]));
+        assert_eq!(session.withheld_excluded_tool_names(), ["bash", "task_send"]);
+    }
+
+    fn bash_excluded_session(temp: &tempfile::TempDir) -> AgentSession {
+        let cwd = temp.path().to_string_lossy().into_owned();
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory(&cwd, None, None),
+            settings_manager: SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false),
+            cwd: cwd.clone(), agent_dir: Some(temp.path().join("agent").to_string_lossy().into_owned()), fallback_now: None, retry_random: None,
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: BTreeMap::new(), custom_tools: Vec::new(),
+            model_runtime: Some(ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
+            model_registry: None, uses_default_stream_function: Some(true), initial_active_tool_names: None, default_tool_names: None,
+            eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: Some(vec!["bash".to_owned()]),
+            base_tools_override: None, session_start_event: None, auto_title_sessions: None,
+        }).expect("session")
+    }
+
+    #[tokio::test]
+    async fn a_restrictive_role_refuses_user_bash_before_any_shell_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session = bash_excluded_session(&temp);
+        session.set_user_bash_denied(true);
+        let Err(refused) = session.execute_user_bash("touch user-bash-ran", None, true, None).await else {
+            panic!("user bash ran in a restrictive-role session");
+        };
+        assert!(refused.starts_with("bash_excluded: "), "{refused}");
+        assert!(!temp.path().join("user-bash-ran").exists(), "no shell ran");
+    }
+
+    #[tokio::test]
+    async fn plain_bash_exclusion_keeps_user_bash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session = bash_excluded_session(&temp);
+        let hook_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:user-bash>", session.cwd().into(), Default::default());
+        let runs = hook_runs.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::UserBash, vec![Arc::new(move |_, _| {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(maho_ext_api::EventResult::UserBash { operations: None, result: Some(maho_tools::bash_executor::BashResult {
+                output: "user bash ran".into(), exit_code: Some(0), cancelled: false, truncated: false, full_output_path: None,
+            }) }) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // `--exclude-tools bash` / `tools_exclude=bash` hide bash from the model, not from the user.
+        let result = session.execute_user_bash("echo hi", None, true, None).await;
+        assert_eq!(result.map(|result| result.output), Ok("user bash ran".to_owned()), "a plain bash exclusion keeps `!cmd`");
+        assert_eq!(hook_runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Control: the host's restrictive flag refuses before the user-bash path runs.
+        session.set_user_bash_denied(true);
+        let Err(refused) = session.execute_user_bash("echo hi", None, true, None).await else {
+            panic!("a restrictive role must refuse user bash");
+        };
+        assert!(refused.starts_with("bash_excluded: "), "{refused}");
+        assert_eq!(hook_runs.load(std::sync::atomic::Ordering::SeqCst), 1, "the refusal precedes the user-bash hook");
+        session.dispose().await;
+    }
+
+    #[test]
     fn idle_release_tokenizes_spilled_runtime_strings_and_the_next_read_rehydrates_them() {
         let temp = tempfile::tempdir().expect("tempdir");
         let dir = temp.path().to_str().expect("utf8 dir").to_owned();
@@ -25203,6 +25493,58 @@ mod tests {
         assert_eq!(
             session.get_last_assistant_text().as_deref(),
             Some(large_reply.as_str())
+        );
+        let rehydrated = session.messages();
+        assert_eq!(rehydrated.len(), 2);
+        assert_eq!(user_message_text(&rehydrated[0]), large_user);
+    }
+
+    #[test]
+    fn idle_release_never_restores_messages_into_a_child_parked_mid_release() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let mut manager = SessionManager::create("/workspace", Some(&dir), None);
+        let large_user = "u".repeat(48 * 1024);
+        let large_reply = "a".repeat(24 * 1024);
+        manager.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": large_user }],
+            "timestamp": 1
+        }));
+        manager.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_reply }],
+            "api": "faux",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": maho_ai::types::Usage::default(),
+            "stopReason": "stop",
+            "timestamp": 2
+        }));
+        let session = test_session_with_manager(manager);
+        session.rebuild_session_context().expect("rebuild context");
+        assert_eq!(session.agent.state().messages().len(), 2);
+
+        // Force a park into the window between the release's transcript read and its commit.
+        let parked_mid_release = std::rc::Rc::new(std::cell::Cell::new(false));
+        let parker = session.clone();
+        let parked_flag = parked_mid_release.clone();
+        IDLE_RELEASE_BEFORE_COMMIT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                parker.park_idle_child_memory();
+                parked_flag.set(parker.agent.state().messages().is_empty());
+            }));
+        });
+
+        session.release_idle_runtime_messages();
+
+        assert!(
+            parked_mid_release.get(),
+            "the park must run inside the release window and clear the runtime messages"
+        );
+        assert!(
+            session.agent.state().messages().is_empty(),
+            "a release that read the transcript before a park must not restore it into the parked child"
         );
         let rehydrated = session.messages();
         assert_eq!(rehydrated.len(), 2);
@@ -26871,6 +27213,173 @@ mod tests {
         assert_eq!(session.pending_message_count(), 0);
     }
 
+    #[tokio::test]
+    async fn clear_queue_settles_only_genuinely_cleared_custom_receipts() {
+        let session = test_session();
+
+        // 1. Unqueued custom message and receipt simulating consumed in-flight
+        let unqueued_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "in_flight".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "in flight payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"flight_id": 42})),
+            timestamp: 0,
+        };
+        let unqueued_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(unqueued_msg.clone(), unqueued_receipt.clone());
+
+        // 2. Genuinely queued custom message and receipt
+        let queued_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "queued_turn".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "queued payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"queued_id": 7})),
+            timestamp: 0,
+        };
+        let queued_agent_msg = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+            queued_msg.clone(),
+        ));
+        session.agent.steer(queued_agent_msg);
+        let queued_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(queued_msg.clone(), queued_receipt.clone());
+
+        // 3. Appended-but-still-queued custom message to verify transcript guard
+        let appended_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "appended_already".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "appended payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"appended_id": 99})),
+            timestamp: 0,
+        };
+        let appended_agent_msg = AgentMessage::Custom(
+            maho_agent::types::CustomAgentMessage::Custom(appended_msg.clone()),
+        );
+        session.agent.steer(appended_agent_msg);
+        let appended_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(appended_msg.clone(), appended_receipt.clone());
+        session.with_session_manager_mut(|manager| {
+            manager.append_custom_message(
+                &appended_msg.custom_type,
+                serde_json::to_value(&appended_msg.content).expect("content to value"),
+                appended_msg.display,
+                appended_msg.details.clone(),
+            );
+        });
+
+        // 4. Pending next-turn message and receipt (must NOT be cleared or failed)
+        let next_turn_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "next_turn".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "next turn payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"next_turn_id": 123})),
+            timestamp: 0,
+        };
+        let next_turn_agent_msg = AgentMessage::Custom(
+            maho_agent::types::CustomAgentMessage::Custom(next_turn_msg.clone()),
+        );
+        session
+            .state()
+            .pending_next_turn_messages
+            .push(next_turn_agent_msg.clone());
+        let next_turn_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(next_turn_msg.clone(), next_turn_receipt.clone());
+
+        // 5. Pending custom message (must NOT be cleared or failed)
+        let pending_streaming_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "streaming_pending".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "streaming pending payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"streaming_id": 456})),
+            timestamp: 0,
+        };
+        session
+            .state()
+            .pending_custom_messages
+            .push(pending_streaming_msg.clone());
+        let pending_streaming_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(
+            pending_streaming_msg.clone(),
+            pending_streaming_receipt.clone(),
+        );
+
+        // Register oneshot settlement callbacks before the action
+        let (unqueued_tx, unqueued_rx) = tokio::sync::oneshot::channel();
+        unqueued_receipt.on_settled(move |outcome| {
+            let _ = unqueued_tx.send(outcome);
+        });
+
+        let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+        queued_receipt.on_settled(move |outcome| {
+            let _ = queued_tx.send(outcome);
+        });
+
+        let (appended_tx, appended_rx) = tokio::sync::oneshot::channel();
+        appended_receipt.on_settled(move |outcome| {
+            let _ = appended_tx.send(outcome);
+        });
+
+        // Act: clear the queue
+        session.clear_queue(false);
+
+        // Queued receipt must be failed by clear_queue
+        let queued_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), queued_rx)
+            .await
+            .expect("queued receipt did not settle within timeout")
+            .expect("queued oneshot closed");
+        assert!(queued_outcome.is_err());
+
+        // Unqueued receipt must remain pending (not failed by clear_queue)
+        assert!(unqueued_receipt.outcome().is_none());
+
+        // Appended-but-still-queued receipt must also remain pending due to transcript guard
+        assert!(appended_receipt.outcome().is_none());
+
+        // Pending next-turn message and receipt must remain preserved in state and pending
+        assert!(next_turn_receipt.outcome().is_none());
+        assert_eq!(
+            session.state().pending_next_turn_messages,
+            vec![next_turn_agent_msg]
+        );
+
+        // Pending streaming custom message and receipt must remain preserved in state and pending
+        assert!(pending_streaming_receipt.outcome().is_none());
+        assert_eq!(
+            session.state().pending_custom_messages,
+            vec![pending_streaming_msg]
+        );
+
+        // Manually settle unqueued receipt as delivered and await exact outcome
+        session.settle_queued_custom_receipt(&unqueued_msg, Ok(()));
+        let unqueued_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), unqueued_rx)
+            .await
+            .expect("unqueued receipt did not settle within timeout")
+            .expect("unqueued oneshot closed");
+        assert_eq!(unqueued_outcome, Ok(()));
+
+        // Manually settle appended receipt as delivered and await exact outcome
+        session.settle_queued_custom_receipt(&appended_msg, Ok(()));
+        let appended_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), appended_rx)
+            .await
+            .expect("appended receipt did not settle within timeout")
+            .expect("appended oneshot closed");
+        assert_eq!(appended_outcome, Ok(()));
+    }
+
     #[test]
     fn setting_a_queue_mode_persists_and_emits() {
         let session = test_session();
@@ -26979,7 +27488,7 @@ mod tests {
                 .iter()
                 .map(|input| input.queued_id.clone())
                 .collect::<Vec<_>>(),
-            [second.queued_id.clone()]
+            std::slice::from_ref(&second.queued_id)
         );
         assert_eq!(native_queued_texts(&session), ["keep me"]);
         deliver_next_queued(&session).await;
@@ -27840,14 +28349,14 @@ mod tests {
             timestamp: 1,
         };
         let asst_msg =
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst.clone())));
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(asst.clone())));
         assert_eq!(
             message_fingerprint(Some(&asst_msg)),
             "7:10:20:30:15:5:false"
         );
 
         asst.usage.context_usage = Some(None);
-        let asst_null = AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst)));
+        let asst_null = AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(asst)));
         assert_eq!(
             message_fingerprint(Some(&asst_null)),
             "7:10:20:30:undefined:undefined:true"
@@ -32425,7 +32934,7 @@ mod tests {
         }
         session.rebuild_session_context().expect("context");
         let messages = session.messages();
-        let entries = session.with_session_manager(|manager| manager.entries());
+        let entries = session.with_session_manager(|manager| conversation_entries(manager.entries()));
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let (result, ()) = tokio::join!(session.compact(None), async {
                 entered.await.expect("actual summary started");
@@ -32436,7 +32945,7 @@ mod tests {
         })
         .await;
         let after_messages = session.messages();
-        let after_entries = session.with_session_manager(|manager| manager.entries());
+        let after_entries = session.with_session_manager(|manager| conversation_entries(manager.entries()));
         let status = session.compaction_state().status().to_owned();
         let compacting = session.is_compacting();
         let calls = provider.get_call_log().len();
@@ -33179,7 +33688,7 @@ mod tests {
             );
             assert_eq!(
                 session
-                    .with_session_manager(|manager| manager.entries())
+                    .with_session_manager(|manager| conversation_entries(manager.entries()))
                     .len(),
                 if reject { 1 } else { 2 }
             );
@@ -33765,6 +34274,37 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn footer_reads_on_a_compacted_session_do_not_materialize_the_history() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_session_manager_mut(|manager| {
+            let root = manager
+                .append_message(serde_json::json!({"role":"user","content":"first","timestamp":0}));
+            manager.append_message(
+                serde_json::json!({"role":"user","content":"x".repeat(64 * 1024),"timestamp":1}),
+            );
+            manager.append_compaction(
+                "digest",
+                root["id"].as_str().expect("root"),
+                1000,
+                None,
+                None,
+                None,
+            );
+            manager.append_message(
+                serde_json::json!({"role":"user","content":"after","timestamp":2}),
+            );
+        });
+        session.with_session_manager(|manager| manager.drop_materialized_cache());
+
+        let stats = session.get_session_stats();
+
+        assert_eq!(stats.user_messages, 3);
+        assert!(stats.context_usage.is_some());
+        assert!(!session.with_session_manager(|manager| manager.has_materialized_view()));
     }
 
     #[tokio::test]
@@ -36159,7 +36699,7 @@ mod tests {
         pending_assistant.usage.total_tokens = 200_000;
         pending_assistant.stop_reason = StopReason::Error;
         pending_assistant.error_message = Some("prompt is too long".into());
-        let pending_assistant = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(
+        let pending_assistant = AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
             pending_assistant,
         )));
         session
@@ -36352,7 +36892,7 @@ mod tests {
         );
         let mut event = Box::pin(session.process_agent_event(
             maho_agent::types::AgentEvent::MessageEnd {
-                message: AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(
+                message: AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     assistant,
                 ))),
             },
@@ -37351,7 +37891,7 @@ mod tests {
         assert!(!session.is_compacting());
         assert!(
             session
-                .with_session_manager(|manager| manager.entries())
+                .with_session_manager(|manager| conversation_entries(manager.entries()))
                 .is_empty()
         );
     }
@@ -39079,7 +39619,6 @@ mod tests {
     /// edges, so the state a client reads follows them with nothing else happening, and a read never recomputes.
     #[tokio::test]
     async fn compaction_start_and_end_are_lifecycle_edges() {
-        use maho_ext_api::ExtensionContextActions;
         let session = retry_session(Vec::new(), 0);
         session.refresh_lifecycle();
         assert_eq!(session.lifecycle_snapshot()["state"], "done");
@@ -39335,7 +39874,7 @@ mod tests {
         assert!(!session.is_bash_running());
         assert!(!session.has_pending_bash_messages());
         assert_eq!(session.messages()[0].role(), "bashExecution");
-        let entry = session.with_session_manager(|manager| manager.entries()[0].clone());
+        let entry = session.with_session_manager(|manager| conversation_entries(manager.entries())[0].clone());
         assert_eq!(entry["message"]["command"], "printf native");
         assert_eq!(entry["message"]["excludeFromContext"], true);
     }

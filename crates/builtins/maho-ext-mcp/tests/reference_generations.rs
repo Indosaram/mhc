@@ -132,7 +132,8 @@ async fn reconnect_rereads_the_reference_and_rekeys_on_rotation() {
     let error = connection
         .renew()
         .await
-        .expect_err("a rotated snapshot never reuses the stale identity");
+        .err()
+        .expect("a rotated snapshot never reuses the stale identity");
     assert!(is_mcp_config_generation_changed_error(&error), "{error:?}");
     assert_eq!(rekeys.load(Ordering::SeqCst), 1);
     assert_eq!(

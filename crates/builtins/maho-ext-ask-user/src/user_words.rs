@@ -121,7 +121,7 @@ pub fn read_user_word_blocks(content: &[ContentBlock]) -> Option<Vec<ToolResultU
             _ => None,
         })
         .collect();
-    if texts.len() % 2 != 0 {
+    if !texts.len().is_multiple_of(2) {
         return None;
     }
     let mut words = Vec::with_capacity(texts.len() / 2);

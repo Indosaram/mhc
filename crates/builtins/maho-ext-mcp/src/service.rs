@@ -470,18 +470,22 @@ impl McpService {
         self.register_bound_session_tools().await
     }
     /// Re-runs the last sync, so a server whose references changed reconnects under its new identity.
-    pub async fn resync_current_config(&mut self) -> Result<(), McpServiceError> {
-        let (Some(config), Some(cwd), Some(agent_dir)) = (
-            self.config.clone(),
-            self.session_cwd.clone(),
-            self.agent_dir.clone(),
-        ) else {
-            return Ok(());
-        };
-        let env = self.session_env.clone();
-        self.sync_from_config(config, &cwd, &agent_dir, &env)
-            .await?;
-        self.register_bound_session_tools().await
+    pub fn resync_current_config(
+        &mut self,
+    ) -> futures::future::BoxFuture<'_, Result<(), McpServiceError>> {
+        Box::pin(async move {
+            let (Some(config), Some(cwd), Some(agent_dir)) = (
+                self.config.clone(),
+                self.session_cwd.clone(),
+                self.agent_dir.clone(),
+            ) else {
+                return Ok(());
+            };
+            let env = self.session_env.clone();
+            self.sync_from_config(config, &cwd, &agent_dir, &env)
+                .await?;
+            self.register_bound_session_tools().await
+        })
     }
     async fn sync_from_config(
         &mut self,

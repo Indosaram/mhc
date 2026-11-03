@@ -104,6 +104,7 @@ impl ExtensionUi for RecordingUi {
 }
 
 fn context(ui: Arc<RecordingUi>, root: &Path) -> ExtensionContext {
+    let prompt_cwd = root.to_path_buf();
     ExtensionContext {
         ui,
         mode: ExtensionMode::Print,
@@ -126,8 +127,8 @@ fn context(ui: Arc<RecordingUi>, root: &Path) -> ExtensionContext {
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
-            cwd: root.into(),
+        get_system_prompt_options_fn: Arc::new(move || BuildSystemPromptOptions {
+            cwd: prompt_cwd.clone(),
             ..Default::default()
         }),
         registered_mcp_servers: Vec::new(),
@@ -141,7 +142,7 @@ fn context(ui: Arc<RecordingUi>, root: &Path) -> ExtensionContext {
 
 #[tokio::test]
 async fn test_and_reconnect_failures_are_redacted_before_notify() {
-    // A server name equal to a resolved value makes the failure text quote it ("Unknown MCP server: <name>").
+    // A server name equal to a resolved value makes the failure text quote it ("MCP test <name> failed").
     let secret = resolve_env("VALUE", "synthetic3858-notify-alpha");
     let root = tempfile::tempdir().expect("root");
     let registered = LoadedExtension::new("builtin:mcp", root.path().into(), SourceInfo::default());
@@ -156,6 +157,25 @@ async fn test_and_reconnect_failures_are_redacted_before_notify() {
         Arc::new(HostMcpRegistry::default()),
         3862,
     );
+    std::fs::write(
+        root.path().join("mcp.json"),
+        serde_json::json!({
+            "mcpServers": {
+                &secret: {
+                    "type": "stdio",
+                    "command": "/missing/server"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write mcp.json");
+    service
+        .lock()
+        .await
+        .attach_session(root.path(), root.path(), &Default::default(), true, &[])
+        .await
+        .expect("attach session");
     let command = api
         .registered
         .commands

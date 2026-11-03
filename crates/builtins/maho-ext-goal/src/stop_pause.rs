@@ -61,7 +61,7 @@ pub fn mark_stop_resumed(pi: &ExtensionApi, goal_id: &str) -> Result<(), Extensi
 }
 pub fn paused_by_stop(ctx: &ExtensionContext, goal_id: &str) -> bool {
     ctx.session_manager
-        .get_entries()
+        .get_entries_of_kinds(&["custom"])
         .iter()
         .rev()
         .find_map(|entry| {

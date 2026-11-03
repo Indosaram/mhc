@@ -55,6 +55,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
         let options = memory_options.clone();
         Box::pin(async move {
             let context = resolve().ok_or_else(|| ToolError::Message("memory: no memory identity bound to this session; enable omo memory and restart the session so the memory tools can initialize".into()))?;
+            if context.memory_write_denied { return Err(ToolError::Message(crate::write_policy::memory_write_denied_message(MEMORY_TOOL_NAME))); }
             let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms, ..Default::default() }).map_err(|e| ToolError::Message(e.message))?;
             let params: MemoryToolParams = serde_json::from_value(call.params)?;
             let repaired = memory_core::tools::leaked_arguments::repair_leaked_arguments(params);
@@ -92,6 +93,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
         let options = options.clone();
         Box::pin(async move {
             let context = resolve().ok_or_else(|| ToolError::Message("memory_apply_patch: no memory identity bound to this session; enable omo memory and restart the session so the memory tools can initialize".into()))?;
+            if context.memory_write_denied { return Err(ToolError::Message(crate::write_policy::memory_write_denied_message(MEMORY_APPLY_PATCH_TOOL_NAME))); }
             let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms, ..Default::default() }).map_err(|e| ToolError::Message(e.message))?;
             let reason = call.params.get("reason").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: reason must be a string".into()))?;
             let input = call.params.get("input").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: input must be a string".into()))?;

@@ -5,7 +5,7 @@
     not(target_os = "linux"),
     allow(unused_imports, dead_code, reason = "several cases are Linux-only")
 )]
-use maho_isolation::iso::{self, BackendKind, IsoError, IsolationBackend as _};
+use maho_isolation::iso::{self, BackendKind, IsoError};
 use maho_isolation::{BackendChoice, IsolationSettings, TaskIsolation};
 use maho_task::isolation::WorkspaceIsolation;
 use std::path::Path;

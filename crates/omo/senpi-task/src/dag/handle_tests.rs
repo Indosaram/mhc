@@ -265,6 +265,33 @@ fn recv_within<T>(rx: &mpsc::Receiver<T>, what: &str) -> T {
 }
 
 #[test]
+fn cancelled_wait_returns_live_snapshot_and_removes_subscription() {
+    let harness = fixture(vec![build_node(NodeSpec { state: DagNodeState::Running, task_id: Some("task-plan"), ..node("plan") })]);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let surface = create_dag_wait_surface(DagWaitSurfaceOptions {
+        store: harness.store.clone(),
+        subscribe: Arc::new(move |_, _| { ready_tx.send(()).expect("ready"); Box::new(|| {}) }),
+        cancel: None,
+        read_output: None,
+    });
+    let cancellation = Arc::new(DagWaitCancellation::default());
+    let worker_cancel = cancellation.clone();
+    let worker_surface = surface.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = with_dag_wait_cancellation(worker_cancel, || worker_surface.wait(&run_id(), PARENT_SESSION_ID));
+        done_tx.send(result).expect("done");
+    });
+    recv_within(&ready_rx, "registration");
+    cancellation.cancel();
+    let result = recv_within(&done_rx, "cancelled waiter").expect("snapshot");
+    worker.join().expect("worker");
+    assert_eq!(result.status, DagRunStatus::Running);
+    assert_eq!(surface.waiter_count(&run_id()), 0);
+    assert!(surface.inner.waiters.lock().expect("waiters").is_empty());
+}
+
+#[test]
 fn given_a_two_node_run_when_both_nodes_complete_then_wait_resolves_with_each_node_output_and_run_stats()
  {
     let running = vec![

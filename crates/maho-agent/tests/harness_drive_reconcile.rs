@@ -25,7 +25,7 @@ use maho_agent::harness::session::commit::insert_entry;
 use maho_agent::harness::session::testing::{GatingStorage, InstrumentedStorage};
 use maho_agent::harness::session::types::{
     InboxItem, InboxItemKind, NewEntry, Operation, OperationMeta, OperationState, Session,
-    SessionMetadata, SessionMutation, SessionReader, Storage, TerminalStatus, Write,
+    SessionMetadata, SessionReader, Storage, TerminalStatus, Write,
 };
 use maho_agent::harness::session::values::{
     append_list, branch_tip, lane_config, lane_state, operation_meta, operation_preparation_prefix,
@@ -278,6 +278,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
     ));
     session.attach();
     let faux = faux_provider(RegisterFauxProviderOptions {
+        api: Some("faux".into()),
         token_size: Some(FauxTokenSize {
             min: Some(1),
             max: Some(1),
@@ -846,7 +847,7 @@ async fn durably_drains_abortable_input_once_and_preserves_lane_owned_input_thro
         ),
     )
     .await;
-    let queued = vec![
+    let queued = [
         ("steer", InboxItemKind::Steer, "steer"),
         ("write", InboxItemKind::Write, "write"),
         ("follow", InboxItemKind::FollowUp, "follow"),
@@ -1340,8 +1341,12 @@ async fn commits_ready_at_the_deadline_and_emits_retry_lifecycle_around_the_next
     fixture.expect_projection_restores().await;
 }
 
-#[tokio::test]
-async fn admits_an_abort_aware_timer_only_for_local_waiting() {
+#[test]
+fn admits_an_abort_aware_timer_only_for_local_waiting() {
+    on_large_stack(admits_an_abort_aware_timer_only_for_local_waiting_body);
+}
+
+async fn admits_an_abort_aware_timer_only_for_local_waiting_body() {
     let fixture = create_fixture(FixtureOptions::default()).await;
     accept_prompt(&fixture).await;
     let ready = advance_to_ready(&fixture).await;
@@ -1482,7 +1487,7 @@ async fn consumes_its_permit_only_after_the_fresh_intent_commit_lands() {
     let suspended = submit_deferred(
         &fixture,
         faux_assistant_message(
-            "",
+            Vec::<maho_ai::types::ContentBlock>::new(),
             FauxAssistantMessageOptions {
                 stop_reason: Some(StopReason::Error),
                 error_message: Some("failed".into()),
@@ -1564,8 +1569,12 @@ async fn leaves_suspended_state_unchanged_when_the_fresh_intent_is_discarded() {
     assert_eq!(durable["poll"], 0);
 }
 
-#[tokio::test]
-async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options() {
+#[test]
+fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options() {
+    on_large_stack(waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body);
+}
+
+async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body() {
     let fixture = deferred_fixture(FixtureOptions {
         pending_fetches: 1,
         ..Default::default()
@@ -1651,4 +1660,21 @@ async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_capt
     ));
     assert_eq!(fixture.faux.state().deferred_fetch_count, 1);
     fixture.expect_projection_restores().await;
+}
+
+/// The debug-build drive futures for the retry-wait paths nest deeper than the 2 MiB default test
+/// thread stack; the shipped binary runs its entry thread on 16 MiB (maho-cli main.rs).
+fn on_large_stack<F: std::future::Future<Output = ()> + 'static>(body: fn() -> F) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(body())
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
 }

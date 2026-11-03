@@ -31,16 +31,19 @@ pub fn refuse_agreements_violation(
 }
 
 /// Rolls index and worktree back to HEAD for `paths`: tracked paths are restored on both sides,
-/// paths new at HEAD are unstaged and removed.
-pub(crate) fn restore_paths(repo: &GitMemoryRepo, paths: &[String]) -> Result<(), GitError> {
+/// paths new at HEAD are unstaged and removed. A path may name a directory (a renamed tree); it
+/// counts as tracked when HEAD holds any file under it.
+pub fn restore_paths(repo: &GitMemoryRepo, paths: &[String]) -> Result<(), GitError> {
     let normalized = normalize_pathspecs(paths);
     if normalized.is_empty() {
         return Ok(());
     }
     let at_head: BTreeSet<String> = repo.ls_tree(Some("HEAD"), None)?.into_iter().collect();
-    let (tracked, untracked): (Vec<String>, Vec<String>) = normalized
-        .into_iter()
-        .partition(|path| at_head.contains(path));
+    let (tracked, untracked): (Vec<String>, Vec<String>) =
+        normalized.into_iter().partition(|path| {
+            let prefix = format!("{path}/");
+            at_head.contains(path) || at_head.iter().any(|file| file.starts_with(&prefix))
+        });
     let exec = repo.exec();
     let run = |args: &[&str]| -> Result<(), GitError> {
         let result = exec.run_in(&repo.dir, args).map_err(GitError::Io)?;
@@ -60,8 +63,14 @@ pub(crate) fn restore_paths(repo: &GitMemoryRepo, paths: &[String]) -> Result<()
         run(&args)?;
     }
     for path in &untracked {
-        run(&["rm", "-q", "--cached", "--ignore-unmatch", "--", path])?;
-        match std::fs::remove_file(repo.dir.join(path)) {
+        run(&["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", path])?;
+        let full = repo.dir.join(path);
+        let removed = if full.is_dir() {
+            std::fs::remove_dir_all(&full)
+        } else {
+            std::fs::remove_file(&full)
+        };
+        match removed {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(GitError::Io(error)),

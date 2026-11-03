@@ -72,7 +72,7 @@ pub struct OpenMicroDeps {
     pub agent_dir: PathBuf,
     pub model_runtime: ModelRuntime,
     /// Called with the opened harness before `resume` (senpi tests spy on `Harness.open`).
-    pub on_harness: Option<Box<dyn FnOnce(&Rc<Harness>)>>,
+    pub on_harness: Option<OnHarness>,
     /// Where `(header, detail)` debug entries go (senpi `appendDebugLogEntry`, which the tests
     /// mock); `None` is the brand debug log.
     pub debug_log: Option<DebugLog>,
@@ -80,6 +80,9 @@ pub struct OpenMicroDeps {
 
 /// senpi `appendDebugLogEntry(header, detail)`.
 pub type DebugLog = Rc<dyn Fn(&str, &str)>;
+pub type OnHarness = Box<dyn FnOnce(&Rc<Harness>)>;
+type CompactionSettingsFn = Rc<dyn Fn(&Model) -> Option<ResolvedCompactionSettings>>;
+type Listener = Rc<dyn Fn()>;
 
 /// senpi `OpenMicroResult`.
 pub struct OpenMicroResult {
@@ -123,7 +126,7 @@ struct PendingAuth {
 /// The shared runtime state behind both `MicroViewSource` and `MicroController`.
 pub struct MicroRuntime {
     state: RefCell<MicroView>,
-    listeners: RefCell<Vec<(u64, Rc<dyn Fn()>)>>,
+    listeners: RefCell<Vec<(u64, Listener)>>,
     next_listener: Cell<u64>,
     next_notice: Cell<u64>,
     closed: Cell<bool>,
@@ -133,7 +136,7 @@ pub struct MicroRuntime {
     restarting_watch: Cell<bool>,
     cumulative: RefCell<UsageAccumulator>,
     model_runtime: ModelRuntime,
-    compaction: Rc<dyn Fn(&Model) -> Option<ResolvedCompactionSettings>>,
+    compaction: CompactionSettingsFn,
     env: Arc<NodeExecutionEnv>,
     location: RefCell<MicroSessionLocation>,
     refresh_controllers: RefCell<Vec<AbortController>>,
@@ -215,7 +218,7 @@ struct OpenParts {
     watch: Watch,
     cumulative: UsageAccumulator,
     model_runtime: ModelRuntime,
-    compaction: Rc<dyn Fn(&Model) -> Option<ResolvedCompactionSettings>>,
+    compaction: CompactionSettingsFn,
     pending_reports: Rc<RefCell<Option<Vec<String>>>>,
     report_target: Rc<RefCell<std::rc::Weak<MicroRuntime>>>,
 }
@@ -224,7 +227,7 @@ struct OpenParts {
 fn compaction_settings(
     cwd: &Path,
     agent_dir: &Path,
-) -> Rc<dyn Fn(&Model) -> Option<ResolvedCompactionSettings>> {
+) -> CompactionSettingsFn {
     let settings = maho_core::settings_manager::SettingsManager::create(
         &cwd.to_string_lossy(),
         &agent_dir.to_string_lossy(),
@@ -266,7 +269,7 @@ async fn open_inner(
     storage_slot: &mut Option<Rc<JsonlStorage>>,
     env: &Arc<NodeExecutionEnv>,
     model_runtime: ModelRuntime,
-    on_harness: Option<Box<dyn FnOnce(&Rc<Harness>)>>,
+    on_harness: Option<OnHarness>,
 ) -> Result<OpenParts, String> {
     let ctx = &*BACKGROUND_CONTEXT;
     let compaction = compaction_settings(&location.cwd, agent_dir);
@@ -394,7 +397,8 @@ async fn open_inner(
         }
         Box::pin(async { Ok::<Option<HookOutput>, Error>(None) })
     });
-    harness
+    // Registered for the harness's lifetime; the unregister handle is intentionally not called.
+    let _unregister = harness
         .hooks(
             &namespace,
             &kinds.generation,
@@ -535,7 +539,7 @@ impl MicroRuntime {
     }
 
     fn update(&self, patch: impl FnOnce(&mut MicroView)) {
-        patch(&mut *self.state.borrow_mut());
+        patch(&mut self.state.borrow_mut());
         self.publish();
     }
 

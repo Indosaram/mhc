@@ -73,7 +73,7 @@ pub async fn run_tui_rpc_command(
     connection: &ControlConnection,
     command: &ControlCommand,
 ) -> TuiRpcAnswer {
-    use TuiRpcAnswer::{Answer, Answered, NotOwned};
+    use TuiRpcAnswer::{Answer, NotOwned};
     let kind = command["type"].as_str().unwrap_or_default();
     match kind {
         "get_snapshot" => Answer(get_snapshot(context, connection, command)),

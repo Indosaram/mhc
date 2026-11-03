@@ -82,7 +82,7 @@ impl ImportReport {
             } else {
                 String::new()
             },
-            format!(", {} file(s) expired on import", self.expired_on_import),
+            format_args!(", {} file(s) expired on import", self.expired_on_import),
         );
         for warning in &self.warnings {
             out.push_str(&format!(

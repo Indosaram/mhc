@@ -364,12 +364,14 @@ pub(crate) mod tests {
     use crate::mcp_form_types::McpFormInputWire;
     use maho_ai::utils::abort::AbortController;
 
+    type TimerCallback = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+    type TimerMap = std::collections::BTreeMap<u64, TimerCallback>;
+
     /// senpi test fixture clock: settable time, recorded timers that only `expire` fires.
     #[derive(Default)]
     pub struct ManualClock {
         pub now: Mutex<f64>,
-        pub timers:
-            Mutex<std::collections::BTreeMap<u64, Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>>>,
+        pub timers: Mutex<TimerMap>,
         next: std::sync::atomic::AtomicU64,
     }
     impl McpFormClock for ManualClock {

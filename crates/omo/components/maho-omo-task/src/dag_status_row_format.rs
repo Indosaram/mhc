@@ -1,4 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
+use maho_ext_api::BackgroundTaskStatus;
 use senpi_task::{dag::{store::default_is_process_alive, types::{DagNode, DagNodeState, DagRoute, DagRunSnapshot}}, renderer_text::{excerpt_renderer_text, normalize_renderer_text, renderer_visible_width}};
 
 const MAX_NODE_ROWS: usize = 12;
@@ -30,13 +31,54 @@ pub fn dag_run_counts(run: &DagRunSnapshot) -> DagRunCounts {
     let count = |state: &str| run.nodes.iter().filter(|node| node.state.as_str() == state).count();
     DagRunCounts { completed: count("completed"), running: count("running"), failed: count("failed"), nodes: run.nodes.len(), current_wave, total_waves }
 }
-/// Footer status text for the live runs: the first run's progress, prefixed by the run count when several are live.
+pub fn dag_footer_counts(runs: &[DagRunSnapshot]) -> Option<BackgroundTaskStatus> {
+    if runs.is_empty() {
+        return None;
+    }
+    let mut seen_runs = std::collections::HashSet::new();
+    let mut seen_nodes = std::collections::HashSet::new();
+    let mut counts = BackgroundTaskStatus::default();
+    for run in runs {
+        if !seen_runs.insert(&run.run_id) {
+            continue;
+        }
+        let is_run_paused = run.status == senpi_task::dag::types::DagRunStatus::Paused;
+        for node in &run.nodes {
+            if !seen_nodes.insert((&run.run_id, &node.id)) {
+                continue;
+            }
+            counts.total += 1;
+            match node.state {
+                DagNodeState::Running => {
+                    if is_run_paused {
+                        counts.paused += 1;
+                    } else {
+                        counts.running += 1;
+                    }
+                }
+                DagNodeState::Paused => {
+                    counts.paused += 1;
+                }
+                DagNodeState::Pending | DagNodeState::Blocked | DagNodeState::Scheduled => {
+                    counts.queued += 1;
+                }
+                DagNodeState::Completed => {
+                    counts.completed += 1;
+                }
+                DagNodeState::Failed => {
+                    counts.failed += 1;
+                }
+                DagNodeState::Cancelled | DagNodeState::Skipped => {}
+            }
+        }
+    }
+    if counts.total == 0 {
+        return None;
+    }
+    Some(counts)
+}
 pub fn dag_footer_status(runs: &[DagRunSnapshot]) -> Option<String> {
-    let first = runs.first()?;
-    let counts = dag_run_counts(first);
-    let mut text = format!("dag {}/{} wave {}/{}", counts.completed, counts.nodes, counts.current_wave, counts.total_waves);
-    if counts.failed > 0 { text.push_str(&format!(" {} failed", counts.failed)); }
-    Some(if runs.len() > 1 { format!("{} runs \u{b7} {text}", runs.len()) } else { text })
+    dag_footer_counts(runs).map(|counts| serde_json::to_string(&counts).unwrap_or_default())
 }
 pub fn run_rows_with_options(run: &DagRunSnapshot, activity: Option<&BTreeMap<String, String>>, options: Option<&DagRunRowsOptions>) -> Vec<String> {
     let DagRunCounts { completed, running, failed, current_wave: current, total_waves: total, .. } = dag_run_counts(run);

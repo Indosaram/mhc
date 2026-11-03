@@ -200,7 +200,13 @@ impl PrivateChannel {
             return false;
         }
         match crate::jsonl::serialize_json_line(value) {
-            Ok(line) if self.outbox.send(Outbound::Line(line)).is_ok() => true,
+            Ok(line) => match self.outbox.send(Outbound::Line(line)) {
+                Ok(()) => true,
+                Err(_) => {
+                    self.destroy();
+                    false
+                }
+            },
             _ => {
                 self.destroy();
                 false

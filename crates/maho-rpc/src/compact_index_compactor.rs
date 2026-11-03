@@ -57,7 +57,7 @@ impl CompactIndexCompactor {
         if compactor.running.swap(true, Ordering::SeqCst) {
             return;
         }
-        let index = index.clone();
+        let index = CompactContentIndex(Arc::clone(&index.0));
         index.store().clone().enqueue(
             CompactStorageOperation::PageWrite,
             crate::compact_spool_storage::job(move |_store| async move {
