@@ -66,12 +66,12 @@ pub async fn call_mcp_proxy_entry(
             call.params = params;
             (full.execute)(call).await
         }
-        Err(guidance) => Ok(guidance),
+        Err(guidance) => Ok(*guidance),
     }
 }
 
 /// The proxy's JSON-string `args` as an object, or the guiding text result.
-fn parse_proxy_args(entry: &McpToolCatalogEntry, args: Option<&str>) -> Result<Value, ToolResult> {
+fn parse_proxy_args(entry: &McpToolCatalogEntry, args: Option<&str>) -> Result<Value, Box<ToolResult>> {
     let parsed = serde_json::from_str::<Value>(args.unwrap_or("{}"));
     match parsed {
         Ok(params) if params.is_object() => Ok(params),
@@ -80,13 +80,13 @@ fn parse_proxy_args(entry: &McpToolCatalogEntry, args: Option<&str>) -> Result<V
                 Ok(_) => "args must encode a JSON object".to_owned(),
                 Err(error) => error.to_string(),
             };
-            Err(text_result(
+            Err(Box::new(text_result(
                 &entry.server,
                 format!(
                     "Invalid args for '{}': {error}. Pass args as a JSON object STRING matching the schema from op:\"describe\", e.g. {{\"op\":\"call\",\"tool\":\"{}\",\"args\":\"{{\\\"key\\\": \\\"value\\\"}}\"}}.",
                     entry.tool, entry.tool,
                 ),
-            ))
+            )))
         }
     }
 }
@@ -261,7 +261,7 @@ pub fn create_mcp_proxy_tool(
                     // operation its preflight approved.
                     let params = match parse_proxy_args(&entry, args.as_deref()) {
                         Ok(params) => params,
-                        Err(guidance) => return Ok(guidance),
+                        Err(guidance) => return Ok(*guidance),
                     };
                     let invocation = crate::invocation::McpInvocation::from_call(
                         &call,

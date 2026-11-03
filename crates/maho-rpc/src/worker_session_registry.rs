@@ -292,6 +292,7 @@ impl WorkerSessionRegistry {
         profile: RpcSessionLaunchProfile,
         retain: bool,
         now: f64,
+        attach_only: bool,
         routes: impl FnOnce(&str) -> WorkerRoutes,
     ) -> Result<WorkerOpen, RpcSessionRegistryError> {
         crate::session_registry::validate_profile_paths(&profile)?;
@@ -331,6 +332,13 @@ impl WorkerSessionRegistry {
                 && let Some(owner) = state.ownership.reservations.owner(&key).map(str::to_owned)
             {
                 return state.attach(&owner, &key, retain, now);
+            }
+            if attach_only {
+                return Err(RpcSessionRegistryError::new(
+                    crate::rpc_types::RPC_ERROR_SESSION_NOT_HELD,
+                    None,
+                    Some(serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"})),
+                ));
             }
             if state.entries.len() >= crate::session_worker_protocol::SESSION_WORKER_LIMITS.workers
             {
@@ -748,6 +756,24 @@ mod tests {
             },
         );
         registry
+    }
+    #[tokio::test]
+    async fn attach_only_refuses_before_spawning_or_allocating_an_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = root.path().to_string_lossy().into_owned();
+        let spawn: SpawnSessionWorker = Arc::new(|| panic!("attach-only must not spawn"));
+        let registry = WorkerSessionRegistry::new(serde_json::json!({}), spawn, 0);
+        let error = registry
+            .open_session(profile, false, 0., true, |_| {
+                panic!("attach-only must not allocate routes")
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "session_not_held");
+        assert_eq!(registry.size(), 0);
+        assert_eq!(lock(&registry.state).serial, 0);
     }
     // senpi `getForCommand`: polling a session nobody holds is observation and leaves its idle clock alone.
     #[test]

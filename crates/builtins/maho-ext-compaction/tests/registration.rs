@@ -2615,10 +2615,12 @@ fn live_lane_policy_refuses_a_relative_session_cwd_instead_of_failing_open() {
     );
 }
 
+#[cfg(test)]
 struct CwdCaptureRegistry {
     model: Model,
     seen: std::sync::Mutex<Vec<Option<String>>>,
 }
+#[cfg(test)]
 impl ModelRegistry for CwdCaptureRegistry {
     fn get_all(&self) -> Vec<Model> {
         vec![self.model.clone()]

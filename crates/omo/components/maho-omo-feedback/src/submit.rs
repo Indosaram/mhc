@@ -654,7 +654,11 @@ mod tests {
         .await;
         assert_eq!(
             ignored,
-            SubmitResult::Refused(FeedbackSubmitRefusal::Unavailable)
+            SubmitResult::ServiceRefused {
+                reason: ServiceRefusal::Rejected,
+                code: "conflict".into(),
+                request_id: None,
+            }
         );
     }
 

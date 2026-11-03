@@ -42,4 +42,4 @@ async fn registered_native_image_handler_uses_effective_model_and_scrubs_history
     let bypass=maho_ext_imagegen::state::is_native_bypass();drop(api);drop(ctx);root.close()?;
     shutdown?;outcome?;assert!(!bypass);Ok(())
 }
-fn maho_agent_message(message:AssistantMessage)->AgentMessage{AgentMessage::Llm(Message::Assistant(Box::new(message)))}
+fn maho_agent_message(message:AssistantMessage)->AgentMessage{AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message)))}

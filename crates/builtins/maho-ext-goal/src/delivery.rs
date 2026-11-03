@@ -26,6 +26,8 @@ pub struct GoalDelivery {
     pub lifecycle: Arc<crate::lifecycle_facts::GoalLifecycleCollector>,
     neutral_lifecycle: Mutex<Option<Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>>>,
     last_facts: Arc<Mutex<Option<crate::lifecycle_facts::GoalLifecycleFacts>>>,
+    last_agent_end: Arc<Mutex<Option<maho_core::agent_abort_provenance::AgentEndEvent>>>,
+    last_todo_outcome: Arc<Mutex<Option<String>>>,
 }
 impl GoalDelivery {
     pub fn new(
@@ -63,6 +65,8 @@ impl GoalDelivery {
             lifecycle: Default::default(),
             neutral_lifecycle: Default::default(),
             last_facts: Default::default(),
+            last_agent_end: Default::default(),
+            last_todo_outcome: Default::default(),
         }
     }
     /// `session_tree` in goal/index.ts: a tree move restarts the todo-owed reminder chain.
@@ -401,6 +405,8 @@ impl GoalDelivery {
                     ctx.session_manager.session_id(),
                 );
                 let publish = neutral.clone();
+                let events = self.api.events.clone();
+                let session_id = ctx.session_manager.session_id().to_owned();
                 self.lifecycle
                     .on_goal_lifecycle_change(Arc::new(move |goal| {
                         publish.transition(goal.map(|goal| {
@@ -416,6 +422,10 @@ impl GoalDelivery {
                                 continuation_stopped: goal.continuation_stopped_at.is_some(),
                             }
                         }));
+                        events.emit(
+                            "goal_lifecycle_facts",
+                            &serde_json::json!({"sessionId":session_id,"goal":goal}),
+                        );
                     }));
                 *self.neutral_lifecycle.lock().map_err(failure)? = Some(neutral);
                 self.lifecycle.goal_lifecycle_changed(goal);
@@ -423,28 +433,73 @@ impl GoalDelivery {
                     &(self.reference)(ctx),
                     &self.lifecycle,
                 );
-                let events = self.api.events.clone();
-                let session_id = ctx.session_manager.session_id().to_owned();
-                self.lifecycle
-                    .on_goal_lifecycle_change(Arc::new(move |goal| {
-                        events.emit(
-                            "goal_lifecycle_facts",
-                            &serde_json::json!({"sessionId":session_id,"goal":goal}),
-                        );
-                    }));
                 self.todo_backstop.lock().map_err(failure)?.reset_chain();
-                let facts = self.last_facts.clone();
+                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self.last_facts.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                let reference = self.reference.clone();
+                let context = ctx.clone();
+                let monitor = self.runtime.monitor.clone();
+                let pending = self.pending.clone();
+                let now = self.now.clone();
+                let last_agent_end = self.last_agent_end.clone();
+                let last_todo_outcome = self.last_todo_outcome.clone();
                 self.lifecycle
-                    .register_goal_lifecycle_collector(Arc::new(move || {
-                        facts
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .clone()
-                            .unwrap_or(crate::lifecycle_facts::GoalLifecycleFacts {
-                                goal: None,
-                                input: None,
-                            })
-                    }));
+                    .register_goal_lifecycle_collector(Arc::new(
+                        move |restored_end: Option<&maho_core::agent_abort_provenance::AgentEndEvent>, changed_goal: Option<Option<&Goal>>| {
+                            let goal = match changed_goal {
+                                Some(None) => None,
+                                Some(Some(goal)) => Some(goal.clone()),
+                                None => crate::store::read_goal(&reference(&context)).unwrap_or_else(|error| {
+                                    maho_ext_api::diagnostic(&format!(
+                                        "goal lifecycle read failed: {error}"
+                                    ));
+                                    None
+                                }),
+                            };
+                            let last_end = last_agent_end
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .clone();
+                            let end = last_end.or_else(|| restored_end.cloned());
+                            let todo_outcome = last_todo_outcome
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .clone();
+                            let input = if let Some(ref end_event) = end {
+                                let monitor = monitor
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                                    &context,
+                                    end_event,
+                                    goal.as_ref(),
+                                    todo_outcome.as_deref(),
+                                    (
+                                        crate::turn_end_liveness_report::deadline_stop_pending(&context),
+                                        pending.load(Ordering::Acquire),
+                                    ),
+                                    &monitor,
+                                    now() as i64,
+                                ) {
+                                    Ok(input) => Some(input),
+                                    Err(error) => {
+                                        maho_ext_api::diagnostic(&format!(
+                                            "goal lifecycle collection failed: {error}"
+                                        ));
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            crate::lifecycle_facts::GoalLifecycleFacts {
+                                goal,
+                                input,
+                                todo_outcome,
+                            }
+                        },
+                    ));
                 self.pending.store(false, Ordering::Release);
                 self.subscribe(ctx);
                 if let Some(goal) = goal {
@@ -624,56 +679,16 @@ impl GoalDelivery {
                 if let Some(service) = self.neutral_lifecycle.lock().map_err(failure)?.as_ref() {
                     service.turn_end(serde_json::to_value(&input).map_err(failure)?);
                 }
+                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(ended.clone());
+                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(outcome.clone());
                 *self.last_facts.lock().map_err(failure)? =
                     Some(crate::lifecycle_facts::GoalLifecycleFacts {
                         goal: goal.cloned(),
                         input: Some(input),
+                        todo_outcome: Some(outcome.clone()),
                     });
-                let reference = self.reference.clone();
-                let context = ctx.clone();
-                let monitor = self.runtime.monitor.clone();
-                let pending = self.pending.clone();
-                let now = self.now.clone();
-                let ended_live = ended.clone();
-                let outcome_live = outcome.clone();
-                self.lifecycle
-                    .register_goal_lifecycle_collector(Arc::new(move || {
-                        let goal =
-                            crate::store::read_goal(&reference(&context)).unwrap_or_else(|error| {
-                                maho_ext_api::diagnostic(&format!(
-                                    "goal lifecycle read failed: {error}"
-                                ));
-                                None
-                            });
-                        let input = {
-                            let monitor = monitor
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
-                                &context,
-                                &ended_live,
-                                goal.as_ref(),
-                                Some(&outcome_live),
-                                (
-                                    crate::turn_end_liveness_report::deadline_stop_pending(
-                                        &context,
-                                    ),
-                                    pending.load(Ordering::Acquire),
-                                ),
-                                &monitor,
-                                now() as i64,
-                            ) {
-                                Ok(input) => Some(input),
-                                Err(error) => {
-                                    maho_ext_api::diagnostic(&format!(
-                                        "goal lifecycle collection failed: {error}"
-                                    ));
-                                    None
-                                }
-                            }
-                        };
-                        crate::lifecycle_facts::GoalLifecycleFacts { goal, input }
-                    }));
                 self.lifecycle.goal_lifecycle_changed(goal);
             }
             ExtensionEvent::HeldWakesReleased { sources } => {
@@ -732,6 +747,8 @@ impl GoalDelivery {
                 self.lifecycle.retire();
                 self.neutral_lifecycle.lock().map_err(failure)?.take();
                 *self.last_facts.lock().map_err(failure)? = None;
+                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();
                 *self.context.lock().map_err(failure)? = None;
@@ -835,7 +852,7 @@ mod tests {
         );
         let event = maho_core::agent_abort_provenance::AgentEndEvent {
             messages: vec![maho_agent::types::AgentMessage::Llm(
-                maho_ai::types::Message::Assistant(Box::new(
+                maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     maho_ai::providers::faux::faux_assistant_message(
                         "Continuing parser work.",
                         Default::default(),
@@ -888,7 +905,7 @@ mod tests {
         );
         let mut question = event.clone();
         question.messages = vec![maho_agent::types::AgentMessage::Llm(
-            maho_ai::types::Message::Assistant(Box::new(
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(
                 maho_ai::providers::faux::faux_assistant_message(
                     "Which parser?",
                     Default::default(),
@@ -1016,7 +1033,7 @@ mod tests {
         assistant.stop_reason = maho_ai::types::StopReason::Error;
         assistant.error_message = Some("provider transport unavailable".into());
         let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
-            Box::new(assistant),
+            std::sync::Arc::new(assistant),
         ));
         runtime
             .event(
@@ -1221,7 +1238,7 @@ mod tests {
             maho_ai::providers::faux::faux_assistant_message(text, Default::default())
         }
         fn narration(text: &str) -> Vec<AgentMessage> {
-            vec![AgentMessage::Llm(Message::Assistant(Box::new(assistant(
+            vec![AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(assistant(
                 text,
             ))))]
         }
@@ -1252,7 +1269,7 @@ mod tests {
             }))
             .unwrap();
             let mut messages = vec![
-                AgentMessage::Llm(Message::Assistant(Box::new(call))),
+                AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(call))),
                 AgentMessage::Llm(Message::ToolResult(result)),
             ];
             messages.extend(narration(&format!(
@@ -1515,5 +1532,142 @@ mod tests {
             assert_blocked_no_progress(&harness.goal());
             harness.finish().await;
         }
+    }
+    #[tokio::test]
+    async fn restored_end_evaluates_lifecycle_facts_after_session_start_and_prioritizes_live_end() {
+        use maho_ext_api::*;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = crate::test_context::context();
+        ctx.cwd = dir.path().into();
+        ctx.agent_dir = dir.path().join("agent");
+        let session = crate::test_context::bind_session(&mut ctx);
+        ctx.goal_store_file = Some(dir.path().join("goal.json"));
+        let reference_dir = dir.path().to_path_buf();
+        let reference: crate::accounting_hooks::GoalStoreReference =
+            Arc::new(move |_| crate::types::GoalStoreRef {
+                base_dir: reference_dir.clone(),
+                thread_id: "delivery-test".into(),
+            });
+        let store_ref = reference(&ctx);
+        let created = crate::store::create_goal(&store_ref, "build parser", None, 100)
+            .await
+            .unwrap();
+        let runtime = Arc::new(GoalRuntime::new(reference.clone(), Arc::new(|| 1000.0)));
+        let transport = ExtensionRuntime::default();
+        transport.bind(Arc::new(Capture(Mutex::new(Vec::new()))));
+        let api = ExtensionApi::new(
+            LoadedExtension::new("goal", dir.path().into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            transport,
+        );
+        let delivery = Arc::new(GoalDelivery::new(
+            runtime,
+            reference.clone(),
+            Arc::new(|| 1000.0),
+            &api,
+        ));
+        delivery
+            .event(
+                &ExtensionEvent::SessionStart(SessionStartEvent {
+                    sizes_only: false,
+                    reason: SessionReason::Startup,
+                    initial_model_provenance: None,
+                    previous_session_file: None,
+                    attended: None,
+                }),
+                &ctx,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let initial_facts = delivery.lifecycle.collect_facts().unwrap();
+        assert_eq!(
+            initial_facts.goal.as_ref().map(|g| g.id.as_str()),
+            Some(created.id.as_str())
+        );
+        assert!(initial_facts.input.is_none());
+        assert!(initial_facts.todo_outcome.is_none());
+
+        let restored_end = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(Arc::new(
+                    maho_ai::providers::faux::faux_assistant_message(
+                        "Restored progress",
+                        Default::default(),
+                    ),
+                )),
+            )],
+            will_retry: false,
+            aborted: false,
+            abort_source: None,
+        };
+        let restored_facts = delivery
+            .lifecycle
+            .collect_goal_lifecycle_facts(Some(&restored_end), None)
+            .unwrap();
+        assert!(restored_facts.input.is_some());
+        let restored_input = restored_facts.input.unwrap();
+        assert_eq!(restored_input.ended_by, "clean");
+
+        let custom_goal = Goal {
+            id: "override-goal".into(),
+            status: GoalStatus::Active,
+            ..created.clone()
+        };
+        let overridden_facts = delivery
+            .lifecycle
+            .collect_goal_lifecycle_facts(Some(&restored_end), Some(Some(&custom_goal)))
+            .unwrap();
+        assert_eq!(
+            overridden_facts.goal.as_ref().map(|g| g.id.as_str()),
+            Some("override-goal")
+        );
+
+        let live_end = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(Arc::new(
+                    maho_ai::providers::faux::faux_assistant_message(
+                        "Live end turn",
+                        Default::default(),
+                    ),
+                )),
+            )],
+            will_retry: false,
+            aborted: true,
+            abort_source: Some(AbortSource::User),
+        };
+        delivery
+            .event(
+                &ExtensionEvent::AgentEnd {
+                    messages: live_end.messages.clone(),
+                    aborted: Some(true),
+                    abort_source: Some(AbortSource::User),
+                    will_retry: Some(false),
+                },
+                &ctx,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let live_facts = delivery
+            .lifecycle
+            .collect_goal_lifecycle_facts(Some(&restored_end), None)
+            .unwrap();
+        assert_eq!(live_facts.input.expect("live input").ended_by, "user-abort");
+        assert!(live_facts.todo_outcome.is_some());
+
+        delivery.event(
+            &ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                reason: SessionReason::Quit,
+                target_session_file: None,
+                signal: None,
+            }),
+            &ctx,
+            None,
+        ).await.expect("shutdown delivery");
+        session.dispose().await;
     }
 }

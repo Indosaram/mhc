@@ -41,7 +41,7 @@ impl SettleObserver {
     /// Names the current await and refuses to begin another phase after retirement.
     pub fn phase(&self, label: &str) -> Result<(), ExtensionFailure> {
         if let Some(reason) = self.signal.reason() {
-            return Err(ExtensionFailure::new(reason.message));
+            return Err(ExtensionFailure::from_abort_reason(reason));
         }
         *self.hook.lock().unwrap_or_else(PoisonError::into_inner) = label.to_owned();
         Ok(())
@@ -112,9 +112,11 @@ mod tests {
         let observer = SettleObserver::new(controller.signal(), "onSettled");
         assert!(observer.phase("journal").is_ok());
         assert_eq!(observer.hook_label(), "journal");
-        controller.abort(Some(AbortReason::new("AbortError", "retired")));
-        let refused = observer.phase("next").err().map(|e| e.message);
-        assert_eq!(refused.as_deref(), Some("retired"));
+        let reason = AbortReason::new("AbortError", "retired").with_payload(7_u8);
+        controller.abort(Some(reason.clone()));
+        let refused = observer.phase("next").expect_err("retired observer refuses a phase");
+        assert_eq!(refused.message, "retired");
+        assert_eq!(refused.abort_reason.as_deref(), Some(&reason));
         assert_eq!(observer.hook_label(), "journal");
     }
 

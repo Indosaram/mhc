@@ -154,7 +154,7 @@ impl Engine {
         );
         let mut selected_root_single = false;
         for candidate in sort_candidates(&candidates) {
-            let root_single = is_root_single_file(candidate);
+            let root_single = is_root_single_file(&candidate);
             if root_single && selected_root_single {
                 continue;
             }
@@ -234,7 +234,7 @@ impl Engine {
                 // One root AGENTS.md/CLAUDE.md-style file per project root across all targets (rootSingleFileSelectionKeyFor).
                 let root_single_key = root
                     .as_ref()
-                    .filter(|_| is_root_single_file(candidate))
+                    .filter(|_| is_root_single_file(&candidate))
                     .cloned();
                 if root_single_key
                     .as_ref()

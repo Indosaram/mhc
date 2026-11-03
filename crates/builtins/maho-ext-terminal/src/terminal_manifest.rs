@@ -74,7 +74,7 @@ impl TerminalManifestWriter {
     /// every command watch the restore will re-spawn that recorded its child, confirm the old
     /// watcher still runs and stop its tree. A kill reports `killed`, an unconfirmable pid
     /// `unverified`, a dead one nothing.
-    pub async fn reap_orphans(&mut self, state: &TerminalManifest, now: f64) {
+    pub async fn reap_orphans(&mut self, state: &TerminalManifest, now: f64) -> std::io::Result<()> {
         self.reaped.clear();
         for monitor in &state.monitors {
             let Some(runtime) = &monitor.runtime else {
@@ -105,24 +105,15 @@ impl TerminalManifestWriter {
                     )
                     .await
                 }
-            };
+            }?;
             let action = match reaped {
-                Ok(result) if result.action == crate::orphan_reaper::ReapAction::Killed => {
+                result if result.action == crate::orphan_reaper::ReapAction::Killed => {
                     Some(crate::restore_digest::OrphanAction::Killed)
                 }
-                Ok(result) if result.reason.is_some() => {
+                result if result.reason.is_some() => {
                     Some(crate::restore_digest::OrphanAction::Unverified)
                 }
-                Ok(_) => None,
-                // Native divergence: upstream lets a kill error fail the whole restore; here the
-                // watch is reported with an unverified orphan and the restore goes on.
-                Err(error) => {
-                    maho_ext_api::diagnostic(&format!(
-                        "terminal restore: stopping the previous watcher of {} failed: {error}",
-                        monitor.monitor_id
-                    ));
-                    Some(crate::restore_digest::OrphanAction::Unverified)
-                }
+                _ => None,
             };
             if let Some(action) = action {
                 self.reaped.insert(
@@ -134,6 +125,7 @@ impl TerminalManifestWriter {
                 );
             }
         }
+        Ok(())
     }
     pub async fn record_register(&mut self, registration: MonitorRegistration, now: f64) {
         self.record_register_with(registration.into(), now).await;
@@ -359,8 +351,13 @@ impl TerminalManifestWriter {
         settings: &crate::settings::ResolvedTerminalSettings,
     ) -> crate::restore::RestoreDigest {
         let state = self.read_restore_state().await;
-        if let Ok(Some(manifest)) = &state {
-            self.reap_orphans(manifest, now).await;
+        if let Ok(Some(manifest)) = &state
+            && let Err(error) = self.reap_orphans(manifest, now).await {
+            maho_ext_api::diagnostic(&format!("Terminal restore failed: {error}"));
+            return crate::restore::RestoreDigest {
+                store_error: true,
+                ..Default::default()
+            };
         }
         self.apply_restore_state(state, manager, registry, now, shell, settings)
     }
@@ -1132,12 +1129,12 @@ mod orphan_tests {
     ) -> crate::process_identity::ChildProcessIdentity {
         let command = "while true; do read line; done";
         let options = crate::tools::spawn::command_options(command, Some(dir), None)
-            .unwrap()
+            .expect("fixture command options")
             .0
             .env(crate::shared::MONITOR_ENV_ID, monitor_id);
-        let id = manager.create(command, options).unwrap();
+        let id = manager.create(command, options).expect("create fixture watch");
         manager.bind_monitor_id(monitor_id, &id);
-        let identity = manager.get(&id).unwrap().identity().unwrap();
+        let identity = manager.get(&id).expect("registered watch").identity().expect("watch identity");
         let mut writer = TerminalManifestWriter::new(dir, "orphans");
         writer
             .record_register_with(
@@ -1176,7 +1173,7 @@ mod orphan_tests {
         let digest = next.restore_live(manager, registry, now_ms()).await;
         assert_eq!(digest.restored, 1, "{digest:?}");
         next.persist_restored(now_ms()).await;
-        let saved = next.read_restore_state().await.unwrap().unwrap();
+        let saved = next.read_restore_state().await.expect("read restored state").expect("saved restore state");
         (
             digest.results[0].orphan.clone(),
             saved.monitors[0].runtime.clone().expect("fresh runtime recorded"),
@@ -1285,7 +1282,7 @@ mod orphan_tests {
                     })
                 })
             }));
-            writer.reap_orphans(&state, now_ms()).await;
+            writer.reap_orphans(&state, now_ms()).await.unwrap();
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), reaps, "{command:?} {cwd:?}");
             assert_eq!(writer.reaped.len(), reaps, "an orphan only for a reaped watch");
         }
@@ -1332,6 +1329,41 @@ mod orphan_tests {
         );
         registry.dispose();
         manager.teardown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn orphan_kill_error_aborts_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(temp.path()).unwrap();
+        let mut crashed = crate::manager::TerminalManager::default();
+        let watch = record_live_watch(&dir, &mut crashed, "mon_ORPHANKILLFAIL1").await;
+        assert!(crate::orphan_reaper::is_process_alive(watch.pid));
+
+        let mut next = TerminalManifestWriter::new(&dir, "orphans");
+        next.reap_orphan = Some(std::sync::Arc::new(|_, _| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "kill tree failed: operation not permitted",
+                ))
+            })
+        }));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+
+        assert!(digest.store_error);
+        assert_eq!(digest.restored, 0);
+        assert_eq!(manager.size(), 0);
+        assert!(crate::orphan_reaper::is_process_alive(watch.pid));
+
+        registry.dispose();
+        manager.teardown().unwrap();
+        let id = crashed.resolve_id("mon_ORPHANKILLFAIL1").expect("watch id");
+        let mut exited = crashed.get(&id).expect("watch").subscribe_exit();
+        crashed.teardown().expect("stop original watcher");
+        tokio::time::timeout(std::time::Duration::from_secs(10), exited.wait_for(Option::is_some))
+            .await.expect("watch exit deadline").expect("watch exit");
     }
 }
 

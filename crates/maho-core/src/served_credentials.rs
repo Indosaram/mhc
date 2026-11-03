@@ -10,6 +10,7 @@ use std::sync::Mutex;
 /// How long a served response vouches for its credential (senpi#2491).
 pub const CREDENTIAL_SERVED_WINDOW_MS: i64 = 10 * 60_000;
 const MAX_SERVED_CREDENTIALS: usize = 1_024;
+type ServedCredentialEntries = HashMap<String, (i64, u64)>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RequestCredential<'a> {
@@ -24,7 +25,7 @@ pub struct RequestCredential<'a> {
 /// (headers, ADC or SigV4), identity reduces to provider + base url.
 pub struct ServedCredentials {
     /// Key -> (served at, insertion sequence); the sequence tracks last success for the size cap.
-    served_at: Mutex<(HashMap<String, (i64, u64)>, u64)>,
+    served_at: Mutex<(ServedCredentialEntries, u64)>,
     now: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 

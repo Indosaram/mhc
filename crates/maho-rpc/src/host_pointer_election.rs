@@ -172,6 +172,7 @@ mod tests {
         crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
         (temp, paths, socket)
     }
+    #[cfg(unix)]
     fn live_generation(paths: &HostDaemonPaths, id: &str, socket: &str) {
         let generation = generation_paths(paths, id);
         crate::host_daemon_paths::create_generation_directory(&generation).unwrap();

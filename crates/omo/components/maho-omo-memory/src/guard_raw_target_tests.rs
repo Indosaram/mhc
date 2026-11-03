@@ -1,9 +1,12 @@
 //! Guard target resolution (omo v5.1.52 `guard.ts`): built-ins and apply_patch open the resolved
 //! path; suffix-classified external tools open the raw string, so it is judged where the OS lands.
 
+#[cfg(unix)]
 use crate::context::MemoryIdentityContext;
+#[cfg(unix)]
 use crate::guard::{MemoryGuard, MemoryGuardDecision};
 
+#[cfg(unix)]
 fn fixture() -> (tempfile::TempDir, MemoryIdentityContext, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let paths = memory_core::identity::layout::build_identity_paths(dir.path(), "own");

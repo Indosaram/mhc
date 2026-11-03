@@ -5,7 +5,7 @@
 #![cfg(unix)]
 use crate::socket_auth::RpcIdentityError;
 use serde_json::{Value, json};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 fn unsafe_record(path: &Path, detail: impl Into<String>) -> RpcIdentityError {

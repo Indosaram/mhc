@@ -23,6 +23,7 @@ pub struct ListenerState {pub verdict:ListenerVerdict,pub evidence:String}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum ListenerVerdict {Live,Dead,Gone}
 const HOLDER_PROBE_TIMEOUT_MS:u64=5_000;
+#[cfg(unix)]
 const CONNECT_PROBE_TIMEOUT_MS:u64=2_000;
 /// Which processes hold the entry open (senpi `lsofSocketHolders`): pids from `lsof -t`, none, or `None` when unknown.
 pub async fn lsof_socket_holders(socket_path:String)->Option<Vec<u32>>{

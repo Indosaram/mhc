@@ -569,7 +569,7 @@ mod tests {
             ..Default::default()
         };
         let message =
-            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(
+            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                 maho_ai::providers::faux::faux_assistant_message("done", Default::default()),
             )));
         monitor.reset_length_recovery_after_clean_stop(None, std::slice::from_ref(&message));
@@ -708,7 +708,7 @@ mod tests {
         assistant.usage.cache_write = 30;
         let event = maho_core::agent_abort_provenance::AgentEndEvent {
             messages: vec![maho_agent::types::AgentMessage::Llm(
-                maho_ai::types::Message::Assistant(Box::new(assistant)),
+                maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant)),
             )],
             will_retry: false,
             aborted: true,

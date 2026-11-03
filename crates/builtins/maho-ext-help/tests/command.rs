@@ -76,7 +76,7 @@ impl ExtensionUi for Ui {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, _: NotificationType) {
-        self.notices.lock().unwrap().push(message.into());
+        self.notices.lock().expect("fixture notices").push(message.into());
     }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -215,7 +215,7 @@ fn registered() -> (ExtensionApi, Arc<Mutex<Vec<String>>>) {
     let recorded = shown.clone();
     Help {
         display: Arc::new(move |_, markdown| {
-            recorded.lock().unwrap().push(markdown);
+            recorded.lock().expect("recorded help").push(markdown);
             Box::pin(async { Ok(()) })
         }),
     }

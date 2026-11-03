@@ -401,6 +401,7 @@ mod tests {
         assert!(adopt_presenter_bootstrap_fd(3).is_none());
     }
 
+    #[cfg(target_os = "linux")]
     const ADOPTION_CHILD_ENV: &str = "MAHO_RPC_PRESENTER_FD_ADOPTION_CHILD";
 
     /// Re-executes this test binary with a socket at fd 4. The child adopts it, then spawns a process that must

@@ -29,7 +29,7 @@ fn assistant_entry() -> NewEntry {
     NewEntry::message(
         "assistant",
         None,
-        maho_ai::types::Message::Assistant(Box::new(message)).into(),
+        maho_ai::types::Message::Assistant(std::sync::Arc::new(message)).into(),
     )
 }
 
@@ -117,7 +117,7 @@ async fn reduces_frames_and_projects_running_settled_tools_with_full_indexes() {
     let assistant = NewEntry::message(
         "assistant",
         None,
-        maho_ai::types::Message::Assistant(Box::new(
+        maho_ai::types::Message::Assistant(std::sync::Arc::new(
             maho_ai::providers::faux::faux_assistant_message(content, Default::default()),
         ))
         .into(),
@@ -351,7 +351,7 @@ async fn dereferences_queues_pending_writes_and_deferred_handles() {
             insert_entry(NewEntry::message(
                 "source",
                 None,
-                maho_ai::types::Message::Assistant(Box::new(message)).into(),
+                maho_ai::types::Message::Assistant(std::sync::Arc::new(message)).into(),
             )),
             Write::Value(set_value(&branch_tip("main"), json!("source"))),
         ],

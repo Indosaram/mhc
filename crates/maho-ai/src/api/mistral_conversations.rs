@@ -20,7 +20,7 @@ use crate::utils::event_stream::{
 };
 use crate::utils::hash::short_hash;
 use crate::utils::headers::headers_to_record;
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::sanitize_unicode::sanitize_surrogates;
 
@@ -701,6 +701,7 @@ struct StreamState {
     current_block: Option<usize>,
     tool_blocks_by_key: std::collections::HashMap<String, usize>,
     partial_args: std::collections::HashMap<usize, String>,
+    partial_args_parsed_len: std::collections::HashMap<usize, usize>,
 }
 
 fn finish_current_block(
@@ -909,9 +910,15 @@ fn consume_chunk(
         };
         let accumulated = state.partial_args.entry(index).or_default();
         accumulated.push_str(&args_delta);
-        let parsed = parse_streaming_json(Some(accumulated));
-        if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(index) {
-            call.arguments = parsed.as_object().cloned().unwrap_or_default();
+        let total_len = accumulated.len();
+        let parsed_len = state.partial_args_parsed_len.entry(index).or_default();
+        // PERF-DIVERGENCE(senpi packages/ai/src/api/mistral-conversations.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+        if should_reparse_streaming_json(total_len, *parsed_len) {
+            *parsed_len = total_len;
+            let parsed = parse_streaming_json(Some(accumulated));
+            if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(index) {
+                call.arguments = parsed.as_object().cloned().unwrap_or_default();
+            }
         }
         sink.push(AssistantMessageEvent::ToolcallDelta {
             content_index: index,
@@ -1096,7 +1103,8 @@ async fn drive(
     let base_url = model.base_url.trim_end_matches('/');
     let url = format!("{base_url}/v1/chat/completions");
     let headers = build_mistral_headers(model, &api_key, options);
-    let client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi mistral-conversations.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let body = to_mistral_wire_payload(&payload).to_string();
 
     let timeout_ms = options.request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
@@ -1146,6 +1154,7 @@ async fn drive(
         current_block: None,
         tool_blocks_by_key: std::collections::HashMap::new(),
         partial_args: std::collections::HashMap::new(),
+        partial_args_parsed_len: std::collections::HashMap::new(),
     };
 
     let mut body = response.bytes_stream();
@@ -1193,12 +1202,21 @@ async fn drive(
     if let Some(index) = state.current_block.take() {
         finish_current_block(&mut state, sink, Some(index));
     }
-    let tool_indices: Vec<usize> = state.tool_blocks_by_key.values().copied().collect();
+    let mut tool_indices: Vec<usize> = state.tool_blocks_by_key.values().copied().collect();
+    tool_indices.sort_unstable();
     for index in tool_indices {
+        let accumulated = state.partial_args.remove(&index);
+        let parsed_len = state.partial_args_parsed_len.remove(&index);
+        if let Some(accumulated) = accumulated
+            && parsed_len != Some(accumulated.len())
+            && let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(index)
+        {
+            let parsed = parse_streaming_json(Some(&accumulated));
+            call.arguments = parsed.as_object().cloned().unwrap_or_default();
+        }
         let Some(ContentBlock::ToolCall(call)) = state.output.content.get(index).cloned() else {
             continue;
         };
-        state.partial_args.remove(&index);
         sink.push(AssistantMessageEvent::ToolcallEnd {
             content_index: index,
             tool_call: call,
@@ -1567,6 +1585,7 @@ mod tests {
             current_block: None,
             tool_blocks_by_key: std::collections::HashMap::new(),
             partial_args: std::collections::HashMap::new(),
+            partial_args_parsed_len: std::collections::HashMap::new(),
         };
         let chunk = json!({
             "id": "r1",
@@ -1603,6 +1622,7 @@ mod tests {
             current_block: None,
             tool_blocks_by_key: std::collections::HashMap::new(),
             partial_args: std::collections::HashMap::new(),
+            partial_args_parsed_len: std::collections::HashMap::new(),
         };
         let chunk = json!({
             "choices": [{ "delta": { "tool_calls": [

@@ -751,12 +751,14 @@ struct HostState {
     next_ticket: u64,
 }
 
+type EventListeners = HashMap<String, Vec<(u64, Arc<EventListener>)>>;
+
 struct HostShared {
     state: Mutex<HostState>,
     changed: Condvar,
     writer: Mutex<Box<dyn Write + Send>>,
     errors: Mutex<Box<dyn Write + Send>>,
-    listeners: Mutex<HashMap<String, Vec<(u64, Arc<EventListener>)>>>,
+    listeners: Mutex<EventListeners>,
     next_listener: AtomicU64,
     options: HostOptions,
 }

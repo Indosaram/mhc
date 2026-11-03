@@ -6,14 +6,14 @@ use maho_ext_gpt_apply_patch::apply::apply_patch_detailed;
 use std::path::{Path, PathBuf};
 
 fn workspace_with(name: &str, content: &str) -> (tempfile::TempDir, PathBuf) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().expect("fixture workspace");
     let file = directory.path().join(name);
-    std::fs::write(&file, content).unwrap();
+    std::fs::write(&file, content).expect("write fixture");
     (directory, file)
 }
 
 fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap()
+    std::fs::read_to_string(path).expect("read patched fixture")
 }
 
 #[tokio::test]

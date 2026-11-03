@@ -104,12 +104,8 @@ impl CompletionNotifier {
             }
             return Ok(FlushResult::Dropped(entries.len()));
         }
-        let details: Vec<CompletionDetails> =
-            entries.iter().map(|entry| entry.details.clone()).collect();
-        let mut message = build_completion_message(&details);
-        message.trigger_turn = Some(true);
         let count = entries.len();
-        let state = Inner::deliver_entries(&self.inner, &message, entries, Some(input.session_id.clone()))?;
+        let state = Inner::deliver_entries(&self.inner, entries, Some(input.session_id.clone()))?;
         Ok(match state {
             DeliveryState::Pending => FlushResult::Pending(count),
             DeliveryState::Delivered => FlushResult::Flushed(count),
@@ -291,8 +287,7 @@ impl Inner {
             return Ok(());
         }
         if !this.lock().pending.insert(retry_key(&entry)) { return Ok(()); }
-        let message = build_delivery_message(std::slice::from_ref(&entry.details));
-        Self::deliver_entries(this, &message, vec![entry], None)?;
+        Self::deliver_entries(this, vec![entry], None)?;
         Ok(())
     }
 
@@ -316,70 +311,126 @@ impl Inner {
             RoutingDecision::Wake => DeliveredDecision::Wake,
             RoutingDecision::DeliverStreaming => DeliveredDecision::DeliverStreaming,
         };
-        let message = build_delivery_message(std::slice::from_ref(&entry.details));
         if !this.lock().pending.insert(retry_key(&entry)) {
             return Ok(NotifyResult::Skipped(SkipReason::DeliveryPending));
         }
-        Ok(match Self::deliver_entries(this, &message, vec![entry], None)? {
+        Ok(match Self::deliver_entries(this, vec![entry], None)? {
             DeliveryState::Pending => NotifyResult::Pending(delivered),
             DeliveryState::Delivered => NotifyResult::Delivered(delivered),
             DeliveryState::Failed => NotifyResult::Failed,
         })
     }
 
-    fn deliver_entries(this: &Arc<Self>, message: &ParentNotifierMessage, entries: Vec<BufferedEntry>, buffered_session: Option<String>) -> Result<DeliveryState, StoreError> {
-        {
-            let mut state = this.lock();
-            for entry in &entries { state.pending.insert(retry_key(entry)); }
-        }
-        let bookkeeping_error = Arc::new(Mutex::new(None));
+    fn deliver_entry(
+        this: &Arc<Self>,
+        entry: BufferedEntry,
+        buffered_session: Option<String>,
+        bookkeeping_error: &Arc<Mutex<Option<StoreError>>>,
+    ) -> DeliveryState {
+        let message = build_delivery_message(std::slice::from_ref(&entry.details));
         let mut final_state = DeliveryState::Failed;
         for attempt in 0..2 {
             let inner = Arc::clone(this);
-            let entries = entries.clone();
+            let entry = entry.clone();
             let buffered_session = buffered_session.clone();
-            let errors = Arc::clone(&bookkeeping_error);
+            let errors = Arc::clone(bookkeeping_error);
             let callbacks = DeliveryCallbacks::new(move |result| {
                 let outcome = (|| -> Result<(), StoreError> {
-                    for entry in &entries {
-                        match &result {
-                            Ok(()) => {
-                                persist_notified(inner.deps.store.as_ref(), &entry.task_id, entry.epoch)?;
-                                inner.finish_retry_chain(entry);
-                                inner.lock().pending.remove(&retry_key(entry));
+                    match &result {
+                        Ok(()) => {
+                            persist_notified(inner.deps.store.as_ref(), &entry.task_id, entry.epoch)?;
+                            inner.finish_retry_chain(&entry);
+                            inner.lock().pending.remove(&retry_key(&entry));
+                        }
+                        Err(error) => {
+                            if let Some(session) = &buffered_session {
+                                inner.push_buffered(session, entry.clone());
                             }
-                            Err(error) => {
-                                if let Some(session) = &buffered_session {
-                                    inner.push_buffered(session, entry.clone());
-                                }
-                                inner.lock().pending.remove(&retry_key(entry));
-                                if inner.deps.store.load(&entry.task_id)?.is_some() {
-                                    record_failure(inner.deps.store.as_ref(), &entry.task_id, entry.epoch, error)?;
-                                }
-                                if buffered_session.is_none() {
-                                    Self::schedule_retry(&inner, entry.clone());
-                                }
+                            inner.lock().pending.remove(&retry_key(&entry));
+                            if inner.deps.store.load(&entry.task_id)?.is_some() {
+                                record_failure(inner.deps.store.as_ref(), &entry.task_id, entry.epoch, error)?;
+                            }
+                            if buffered_session.is_none() {
+                                Self::schedule_retry(&inner, entry.clone());
                             }
                         }
                     }
                     Ok(())
                 })();
                 if let Err(error) = outcome {
-                    utils::logger::log("senpi-task completion settlement failed", Some(&json!({ "error": error.to_string() })));
+                    utils::logger::log(
+                        "senpi-task completion settlement failed",
+                        Some(&json!({ "error": error.to_string() })),
+                    );
                     *errors.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
                 }
             });
-            match this.deps.notifier.enqueue_with_callbacks(message, callbacks.clone()) {
-                Ok(()) => { final_state = callbacks.state(); break; }
+            match this.deps.notifier.enqueue_with_callbacks(&message, callbacks.clone()) {
+                Ok(()) => {
+                    final_state = callbacks.state();
+                    break;
+                }
                 Err(error) => {
-                    if callbacks.state() != DeliveryState::Pending { final_state = callbacks.state(); break; }
-                    if attempt == 1 { callbacks.failed(error); } else { callbacks.rejected(); }
+                    if callbacks.state() != DeliveryState::Pending {
+                        final_state = callbacks.state();
+                        break;
+                    }
+                    if attempt == 1 {
+                        callbacks.failed(error);
+                        final_state = callbacks.state();
+                    } else {
+                        callbacks.rejected();
+                    }
                 }
             }
         }
-        let error = bookkeeping_error.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(error) = error { return Err(error); }
-        Ok(final_state)
+        final_state
+    }
+
+    fn deliver_entries(
+        this: &Arc<Self>,
+        entries: Vec<BufferedEntry>,
+        buffered_session: Option<String>,
+    ) -> Result<DeliveryState, StoreError> {
+        {
+            let mut state = this.lock();
+            for entry in &entries {
+                state.pending.insert(retry_key(entry));
+            }
+        }
+        let bookkeeping_error = Arc::new(Mutex::new(None));
+        let mut has_failed = false;
+        let mut has_pending = false;
+
+        for entry in entries {
+            let entry_state = Self::deliver_entry(
+                this,
+                entry,
+                buffered_session.clone(),
+                &bookkeeping_error,
+            );
+            match entry_state {
+                DeliveryState::Failed => has_failed = true,
+                DeliveryState::Pending => has_pending = true,
+                DeliveryState::Delivered => {}
+            }
+        }
+
+        let error = bookkeeping_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(error) = error {
+            return Err(error);
+        }
+
+        if has_failed {
+            Ok(DeliveryState::Failed)
+        } else if has_pending {
+            Ok(DeliveryState::Pending)
+        } else {
+            Ok(DeliveryState::Delivered)
+        }
     }
 }
 

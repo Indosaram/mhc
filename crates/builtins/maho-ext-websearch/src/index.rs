@@ -797,8 +797,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.details, Some(params.clone()));
+        let expected = params.to_string();
         assert!(
-            matches!(&result.content[0], maho_tools::definition::ToolContent::Text { text, .. } if *text == params.to_string())
+            matches!(&result.content[0], maho_tools::definition::ToolContent::Text { text, .. } if text == &expected)
         );
     }
     #[test]

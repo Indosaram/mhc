@@ -92,6 +92,15 @@ fn respawn_fresh(input: &RespawnInput<'_>) -> RespawnResult {
             if is_team_runtime_unavailable(&error) {
                 return team_inactive();
             }
+            if let Some(hold) = crate::lifecycle::host_session::read_host_draining_hold_from_runner_error(&error) {
+                return RespawnResult::Failed {
+                    disposition: RespawnDisposition::Retryable,
+                    code: RespawnFailureCode::HostDraining {
+                        retry_after_ms: hold.retry_after_ms,
+                    },
+                    reason: error.to_string(),
+                };
+            }
             log_failure("senpi-task fresh rpc respawn failed", input.record, &error);
             failure(
                 RespawnDisposition::Retryable,
@@ -175,6 +184,15 @@ fn respawn_process(input: &RespawnInput<'_>, session_path: &Path) -> RespawnResu
         Err(error) => {
             if is_team_runtime_unavailable(&error) {
                 return team_inactive();
+            }
+            if let Some(hold) = crate::lifecycle::host_session::read_host_draining_hold_from_runner_error(&error) {
+                return RespawnResult::Failed {
+                    disposition: RespawnDisposition::Retryable,
+                    code: RespawnFailureCode::HostDraining {
+                        retry_after_ms: hold.retry_after_ms,
+                    },
+                    reason: error.to_string(),
+                };
             }
             log_failure("senpi-task rpc respawn failed", input.record, &error);
             return failure(

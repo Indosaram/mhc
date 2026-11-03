@@ -624,6 +624,17 @@ impl ChildSession for NativeChild {
         }
         Ok(())
     }
+    fn clear_queued_input(&self) {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone();
+        if let Some(session) = session {
+            session.clear_queue(false);
+        }
+    }
     fn get_last_assistant_text(&self) -> Option<String> {
         let state = self
             .state

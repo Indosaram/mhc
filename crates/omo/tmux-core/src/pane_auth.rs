@@ -39,7 +39,9 @@ impl Drop for PaneAuthDirectory {
 /// path through their injected environment instead.
 pub fn create_pane_auth_directory() -> std::io::Result<PaneAuthDirectory> {
     let path = std::env::temp_dir().join(format!("omo-run-auth-{}", uuid::Uuid::new_v4()));
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

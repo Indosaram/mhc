@@ -32,7 +32,8 @@ pub struct LifecycleActivity {
 }
 impl LifecycleActivity {
     pub fn clear(&mut self) {
-        self.activity.clear();
+        self.outstanding_tools.clear();
+        self.model_since = None;
     }
     /// Returns whether the event changed the live activity.
     pub fn observe(&mut self, event: &maho_agent::types::AgentEvent) -> bool {
@@ -902,7 +903,7 @@ mod tests {
         c.restore_complete();
         c.start_run(None);
         let assistant = |text: &str| {
-            AgentMessage::from(Message::Assistant(Box::new(
+            AgentMessage::from(Message::Assistant(std::sync::Arc::new(
                 maho_ai::providers::faux::faux_assistant_message(text, Default::default()),
             )))
         };

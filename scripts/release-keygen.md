@@ -34,6 +34,7 @@ and in the repository secrets `MINISIGN_SECRET_KEY` / `MINISIGN_PASSWORD`; never
   `MHC_RELEASE_PUBKEY_FILE=crates/maho-cli/tests/fixtures/release-test-key/test.pub`; they report `channel: candidate`
   in `mhc --version --verbose`. The fixture pair under `crates/maho-cli/tests/fixtures/release-test-key/` is a
   non-production, passwordless test key and is never trusted by release builds.
-- Run the update integration tests (`tests/native_update_*.rs`) with
-  `MHC_RELEASE_PUBKEY_FILE=crates/maho-cli/tests/fixtures/release-test-key/test.pub` in the environment; do not put it in
-  `.cargo/config.toml`.
+- Unversioned debug-profile builds (`cargo test`, `cargo build` without `--release`) embed the fixture key when
+  `MHC_RELEASE_PUBKEY_FILE` is unset, so the update integration tests (`tests/native_update_*.rs`) run with no
+  environment. Such a binary cannot install real releases; release-profile and versioned builds always embed
+  `mhc-release.pub`.

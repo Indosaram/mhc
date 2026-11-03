@@ -105,6 +105,13 @@ async fn closes_the_session_files_without_writing_when_the_lock_is_lost_while_a_
         .run_until(async {
             let agent = tempfile::tempdir().expect("agent dir");
             let cwd = tempfile::tempdir().expect("cwd");
+            // chatgpt-subscription impersonates the Codex client, so mhc refuses it until the user
+            // has recorded consent (docs/divergences.md); this fixture stands for a consenting user.
+            std::fs::write(
+                agent.path().join("settings.json"),
+                r#"{"providerRiskConsent":{"chatgpt-subscription":"2026-01-01T00:00:00.000Z"}}"#,
+            )
+            .expect("consent settings");
             // The micro default model, answering with one read call.
             let faux = faux_provider(RegisterFauxProviderOptions {
                 provider: Some("chatgpt-subscription".into()),
@@ -127,6 +134,8 @@ async fn closes_the_session_files_without_writing_when_the_lock_is_lost_while_a_
                 ))]);
             let mut model_runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
                 providers: Some(Vec::new()),
+                auth_path: Some(agent.path().join("auth.json")),
+                agent_dir: Some(agent.path().to_path_buf()),
                 ..Default::default()
             })
             .expect("model runtime");
@@ -167,10 +176,10 @@ async fn closes_the_session_files_without_writing_when_the_lock_is_lost_while_a_
                     logged
                         .borrow_mut()
                         .push((header.to_owned(), detail.to_owned()));
-                    if header.starts_with("micro session stop") {
-                        if let Some(signal) = stop_logged.borrow_mut().take() {
-                            let _ = signal.send(());
-                        }
+                    if header.starts_with("micro session stop")
+                        && let Some(signal) = stop_logged.borrow_mut().take()
+                    {
+                        let _ = signal.send(());
                     }
                 })
             };

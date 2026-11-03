@@ -75,7 +75,9 @@ pub fn session_control_sender_of(details: &Value) -> Option<SessionControlSender
 
 /// senpi `senderLabel`.
 pub fn sender_label(sender: &SessionControlSender) -> String {
-    let named = |value: &Option<String>| value.as_deref().filter(|value| !value.trim().is_empty());
+    fn named(value: &Option<String>) -> Option<&str> {
+        value.as_deref().filter(|value| !value.trim().is_empty())
+    }
     match sender {
         SessionControlSender::Agent { name, .. } => match named(name) {
             Some(name) => format!("Sent by another agent \u{b7} {name}"),

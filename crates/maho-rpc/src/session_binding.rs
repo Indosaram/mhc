@@ -595,7 +595,7 @@ pub type PresenterReply = std::sync::Arc<dyn Fn(Option<&str>, &serde_json::Value
 /// The connection roles one host (or one worker isolate) keeps, shared with every binding it creates (senpi#3811).
 /// The correlation stage a binding's records pass through (senpi `new ClientMessageEvents(output, () =>
 /// ClientAdmissions.forSession(session).hasIdentities)`). Only a ledger that already exists is read.
-fn new_client_message_events(
+pub(crate) fn new_client_message_events(
     sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
     route: String,
 ) -> crate::client_message_events::ClientMessageEvents {
@@ -717,7 +717,7 @@ impl RpcSessionBinding {
         session: &maho_core::agent_session::AgentSession,
         lanes: crate::session_structured_lanes::SessionStructuredLanes,
         scope: maho_ai::node::provider_scope::ProviderScope,
-    ) {
+    ) -> Result<(), maho_core::structured_session_lane::StructuredLaneUnavailableError> {
         let tag = self.session_id.clone();
         let output: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
             std::sync::Arc::new(move |mut record: serde_json::Value| {
@@ -727,15 +727,17 @@ impl RpcSessionBinding {
                 record["sessionId"] = tag.clone().into();
                 lanes.accept(&tag, &record);
             });
-        // An agent built outside the session layer has no structured lane; the legacy records still flow.
-        let subscription = crate::structured_session_records::subscribe_structured_session_records(
-            session, output,
-        )
-        .ok();
+        let subscription = crate::structured_session_records::subscribe_structured_session_records_routed(
+            session,
+            output,
+            Some(&self.session_id),
+            Some(self.handler.last_abort_source.clone()),
+        )?;
         *self
             .structured_subscription
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = subscription;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscription);
+        Ok(())
     }
     pub fn keep_relocation_subscription(
         &self,
@@ -964,10 +966,13 @@ mod tests {
         ledger
             .admit(
                 &serde_json::json!({"type":"prompt","message":"hi","clientMessageId":"m1"}),
-                |_| -> futures::future::BoxFuture<
+                |hooks| -> futures::future::BoxFuture<
                     'static,
                     Result<crate::client_admission_record::AdmissionDisposition, String>,
                 > {
+                    assert!(hooks
+                        .accepted(crate::client_admission_record::AdmissionDisposition::Started)
+                        .is_some());
                     Box::pin(async {
                         Ok(crate::client_admission_record::AdmissionDisposition::Started)
                     })
@@ -1017,5 +1022,121 @@ mod tests {
                 .is_err()
         );
         assert_eq!(records.len(), 1);
+    }
+
+    async fn prompt(session: &maho_core::agent_session::AgentSession) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent()
+                .prompt(maho_agent::AgentPromptInput::text("go")),
+        )
+        .await
+        .expect("bounded turn");
+    }
+
+    #[tokio::test]
+    async fn structured_lane_records_reach_the_writer_lanes_until_close() {
+        use maho_ai::types::{AssistantMessageEvent as E, ContentBlock, TextContent};
+        let root = tempfile::tempdir().unwrap();
+        let session = crate::structured_session_records::tests::scripted_session(
+            root.path(),
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(ContentBlock::Text(TextContent {
+                    text: "ok".into(),
+                    ..Default::default()
+                }));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "ok".into(),
+                    partial: partial.clone(),
+                });
+                stream.push(E::Done {
+                    reason: maho_ai::types::DoneReason::Stop,
+                    message: partial.clone(),
+                });
+                stream.end(Some(partial));
+            },
+        );
+        let lanes = crate::session_structured_lanes::SessionStructuredLanes::default();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let stop = lanes.observe(
+            "routed",
+            std::sync::Arc::new(move |record: &serde_json::Value| {
+                log.lock().unwrap().push(record.clone())
+            }),
+        );
+        let scope = maho_ai::node::provider_scope::ProviderScope::new();
+        let binding = create_rpc_session_binding(
+            "routed".into(),
+            session.clone(),
+            std::sync::Arc::new(|_| {}),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await;
+        binding
+            .install_structured_lane(&session, lanes.clone(), scope.clone())
+            .expect("install structured lane");
+        prompt(&session).await;
+        let records = std::mem::take(&mut *seen.lock().unwrap());
+        assert!(records.iter().all(|record| record["sessionId"] == "routed"));
+        assert!(
+            records.iter().any(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant"),
+            "assistant message_start on the lane"
+        );
+        let start = records
+            .iter()
+            .find(|r| r["assistantMessageEvent"]["type"] == "text_start")
+            .expect("seeded text_start on the lane");
+        assert!(start["assistantMessageEvent"]["seed"].is_object());
+        scope.close();
+        prompt(&session).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a closed scope writes no structured record"
+        );
+        binding.dispose().await;
+        stop();
+    }
+
+    #[tokio::test]
+    async fn install_structured_lane_propagates_unavailable_error_when_no_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(|_, _, _| {
+            maho_ai::types::AssistantMessageEventStream::with_capture_blocks(true)
+        });
+        let session = crate::structured_session_records::tests::session_of(
+            maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(stream_fn),
+                ..Default::default()
+            }),
+            None,
+            root.path(),
+        );
+        let lanes = crate::session_structured_lanes::SessionStructuredLanes::default();
+        let scope = maho_ai::node::provider_scope::ProviderScope::new();
+        let binding = create_rpc_session_binding(
+            "unavail".into(),
+            session.clone(),
+            std::sync::Arc::new(|_| {}),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await;
+        let result = binding.install_structured_lane(&session, lanes, scope);
+        assert!(result.is_err());
+        binding.dispose().await;
     }
 }

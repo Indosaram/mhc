@@ -693,6 +693,11 @@ async fn native_faux_corrupt_memory_reports_ts_doctor_parser_error() {
         "broken persona without frontmatter\n",
     )
     .unwrap();
+    engine
+        .repo
+        .exec()
+        .run_in(&paths.repo, &["commit", "--no-verify", "-a", "-m", "corrupt fixture"])
+        .unwrap();
     let before = engine.repo.head().unwrap();
     let notifications = Arc::new(Mutex::new(0));
     let identity = MemoryIdentityContext::new(

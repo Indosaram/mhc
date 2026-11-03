@@ -247,8 +247,12 @@ impl MemoryComponent {
                 let memory_root=memory_core::identity::layout::resolve_memory_root(&this.options.env,&session_cwd);
                 let run_token=format!("{:x}-{}-{}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
                 let run_paths=crate::transient_identity::resolve_identity_run_paths(&adopted.id,adopted.paths.clone(),&memory_root,one_shot,Some(&run_token));
-                let binding=create_memory_binding(&adopted.id,&run_paths.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
-                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root).with_project_scope(crate::context::ProjectScope { memory_root, auto_identity: settings["auto_identity"].as_str().unwrap_or("project").to_owned() });
+                // The write policy is host context or a denial this session already recorded; sticky across resume.
+                let denied=crate::write_policy::profile_denies_memory_write(&handle.profile)||crate::write_policy::recorded_memory_write_denied(&entries);
+                // The binding names the durable repository (as `session_binding` does): a one-shot run's
+                // transient root is per process, so recording it would make every resume an identity conflict.
+                let binding=create_memory_binding(&adopted.id,&adopted.paths.repo.to_string_lossy(),(this.options.now)());let value=crate::write_policy::binding_entry_value(&binding,denied);
+                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root).with_project_scope(crate::context::ProjectScope { memory_root, auto_identity: settings["auto_identity"].as_str().unwrap_or("project").to_owned() }).with_memory_write_denied(denied);
                 let state=sessions.get_mut(id).ok_or("Inserted memory session is missing")?;state.context=Some(bound.clone());this.supervisor.acquire();state.sync_repo=Some(bound.identity_paths.repo.clone());let sync_enabled=settings["sync"]["enabled"]==true;drop(sessions);
                 handle.append_entry(MEMORY_BINDING_CUSTOM_TYPE,Some(value)).map_err(|error|error.to_string())?;
                 Ok::<_,String>(Some((id.to_owned(),bound,sync_enabled)))

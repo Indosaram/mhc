@@ -127,9 +127,9 @@ async fn relays_the_sources_record_to_one_copy_only_when_a_step_pushes_two_event
     });
     source.push(AssistantMessageEvent::ThinkingStart {
         content_index: 0,
-        partial: source_message,
+        partial: source_message.clone(),
     });
-    source.end(None);
+    source.end(Some(source_message));
     let source_start = public_events(&drain_records(&source).await)[1].clone();
     let outer = AssistantMessageEventStream::with_capture_blocks(true);
     let outer_message = create_assistant_message(

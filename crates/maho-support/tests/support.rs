@@ -164,13 +164,14 @@ fn contains_path_rules() {
 /// utils.md Delta D1 tree: `T/root/`, `T/other/x`, `T/other/sub`, `T/root/link -> T/other/sub`.
 #[cfg(unix)]
 fn delta_d1_tree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("create isolated path fixture");
     let root = dir.path().join("root");
     let other = dir.path().join("other");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::create_dir_all(other.join("sub")).unwrap();
-    std::fs::write(other.join("x"), "x").unwrap();
-    std::os::unix::fs::symlink(other.join("sub"), root.join("link")).unwrap();
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    std::fs::create_dir_all(other.join("sub")).expect("create symlink target directory");
+    std::fs::write(other.join("x"), "x").expect("write outside fixture file");
+    std::os::unix::fs::symlink(other.join("sub"), root.join("link"))
+        .expect("create escaping fixture symlink");
     (dir, root, other)
 }
 

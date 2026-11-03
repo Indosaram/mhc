@@ -643,8 +643,7 @@ mod tests {
             },
             None,
         )
-        .err()
-        .expect("unreadable");
+        .expect_err("unreadable");
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 

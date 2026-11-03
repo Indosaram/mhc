@@ -288,6 +288,9 @@ async fn apply_streamed_args_delta_hints_the_throttled_parse_frontier() {
             ..Default::default()
         },
     );
+    state
+        .open_tool_calls
+        .insert("env-1".into(), (0, "call_1".into()));
     stream.push(crate::types::AssistantMessageEvent::ToolcallStart {
         content_index: 0,
         partial: output.clone(),

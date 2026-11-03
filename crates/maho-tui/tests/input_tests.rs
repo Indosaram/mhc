@@ -56,6 +56,8 @@ fn supports_a_custom_prompt_and_styled_placeholder() {
 
 #[test]
 fn does_not_overflow_with_wide_cjk_and_fullwidth_text() {
+    type CursorPosition = (&'static str, fn(&mut Input));
+
     let width = 93;
     let cases = [
         "中文汉字测试用于验证文本超出终端宽度时界面不会崩溃这是复现用的测试用例",
@@ -63,7 +65,7 @@ fn does_not_overflow_with_wide_cjk_and_fullwidth_text() {
         "这是一段测试文本，用于验证中文字符在终端中的显示宽度是否被正确计算，如果不正确就会导致用户界面崩溃的问题",
         "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ０１２３４５６７８９ａｂｃｄｅｆｇｈｉｊｋｌｍ",
     ];
-    let cursor_positions: [(&str, fn(&mut Input)); 3] = [
+    let cursor_positions: [CursorPosition; 3] = [
         ("start", |_| {}),
         ("middle", |input| {
             for _ in 0..10 {

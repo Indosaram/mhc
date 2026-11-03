@@ -30,6 +30,7 @@ fn open_in_progress_wait_ms() -> u64 {
 fn opening_owner(session_path: &str) -> SessionPathOwner {
     SessionPathOwner {
         instance_id: crate::protocol_identity::host_instance_id().to_owned(),
+        host_socket: None,
         pid: std::process::id(),
         process_start_time: None,
         session_path: session_path.to_owned(),
@@ -242,9 +243,14 @@ mod tests {
     #[test]
     fn an_open_session_is_joined_and_retention_only_ever_turns_on() {
         let mut entry = open_entry("/p");
-        let mut requested = RpcSessionLaunchProfile::default();
-        requested.prompt_surface = Some("app".into());
-        requested.runtime.permission_preset = Some("guarded".into());
+        let requested = RpcSessionLaunchProfile {
+            prompt_surface: Some("app".into()),
+            runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
+                permission_preset: Some("guarded".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let decision = attach_to_open_session(
             vec![AttachCandidate {
                 handle: "rpc-1",

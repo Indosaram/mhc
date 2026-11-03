@@ -187,7 +187,7 @@ fn log_attributes(body: &[u8]) -> Attrs {
 }
 
 /// Every string attribute value in the three payloads (resource included).
-fn all_strings(bodies: &[&[u8]]) -> Vec<String> {
+fn all_strings(traces: &[u8], metrics: &[u8], logs: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut push = |attrs: Attrs| {
         for (_, value) in attrs {
@@ -196,23 +196,23 @@ fn all_strings(bodies: &[&[u8]]) -> Vec<String> {
             }
         }
     };
-    for body in bodies {
+    for body in [traces, metrics, logs] {
         push(resource_attributes(body));
-        for (_, attrs) in spans(body) {
-            push(attrs);
-        }
-        push(log_attributes(body));
-        for resource_metrics in sub(body, 1) {
-            for scope_metrics in sub(&resource_metrics, 2) {
-                for metric in sub(&scope_metrics, 2) {
-                    let name = text(&metric, 1);
-                    for (attrs, _) in metric_points(body, &name) {
-                        push(attrs);
-                    }
+    }
+    for (_, attrs) in spans(traces) {
+        push(attrs);
+    }
+    for resource_metrics in sub(metrics, 1) {
+        for scope_metrics in sub(&resource_metrics, 2) {
+            for metric in sub(&scope_metrics, 2) {
+                let name = text(&metric, 1);
+                for (attrs, _) in metric_points(metrics, &name) {
+                    push(attrs);
                 }
             }
         }
     }
+    push(log_attributes(logs));
     out
 }
 
@@ -419,7 +419,7 @@ fn d1_unknown_model_is_never_replaced_by_a_placeholder() {
     let traces = traces_request(&config, &run);
     let metrics = metrics_request(&config, &run);
     let logs = logs_request(&config, &run);
-    let strings = all_strings(&[&traces, &metrics, &logs]);
+    let strings = all_strings(&traces, &metrics, &logs);
     assert!(strings.iter().any(|value| value == "zz-experimental-9"));
     assert!(
         !strings

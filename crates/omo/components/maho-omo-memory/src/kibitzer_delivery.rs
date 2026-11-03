@@ -149,6 +149,10 @@ impl KibitzerDelivery {
     }
 
     pub fn accept(self: &Arc<Self>, session_id: &str, context: &MemoryIdentityContext, nudges: &[RecallNudge]) {
+        // A nudge restating owner-forgotten or corrected content is never delivered.
+        let kept = crate::owner_memory::drop_suppressed_nudges(context, "kibitzer", nudges, &*self.options.warn);
+        if !nudges.is_empty() && kept.is_empty() { return; }
+        let nudges = kept.as_slice();
         // The ledger mark is per-batch and outside every lock.
         let ledger = (self.options.ledger_for)(context);
         let entries: Vec<memory_core::recall::RecallSurfacedEntry> =

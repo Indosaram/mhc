@@ -179,7 +179,7 @@ pub async fn probe_request_auth_with_keep(
     provider: &str,
     model_id: &str,
     model: &Model,
-    on_refresh_unavailable: &mut dyn FnMut(RefreshUnavailableKeep),
+    on_refresh_unavailable: &mut (dyn FnMut(RefreshUnavailableKeep) + Send),
 ) -> Option<AuthFailure> {
     let slots = credential_slots(registry, provider).await;
     // The engine's selection: without rotation only the flat credential is used; with it, a pin is

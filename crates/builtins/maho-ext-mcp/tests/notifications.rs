@@ -116,7 +116,6 @@ fn tombstone_render_call_marks_the_tool_removed_without_a_result_renderer() {
 #[test]
 fn session_registrar_publishes_tombstone_renderer_and_keeps_earlier_renderers() {
     use maho_ext_mcp::tool_registrar::{McpToolRegistrar,SessionMcpToolRegistrar};
-    use maho_ext_api::ErasedToolRenderers;
     let runtime=maho_ext_api::ExtensionRuntime::default();
     let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("<builtin:mcp>",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),runtime.clone());
     let registrar=SessionMcpToolRegistrar::from_api(&api);

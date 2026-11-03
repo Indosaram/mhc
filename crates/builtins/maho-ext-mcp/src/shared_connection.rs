@@ -359,6 +359,15 @@ impl SharedMcpConnection {
         owner: u64,
         key: String,
     ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
+        self.attach_with_options(owner, key, None)
+    }
+
+    pub fn attach_with_options(
+        self: &Arc<Self>,
+        owner: u64,
+        key: String,
+        options: Option<SharedLeaseOptions>,
+    ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
         let mut state = self
             .state
             .lock()
@@ -374,16 +383,23 @@ impl SharedMcpConnection {
         }
         *state.leases.entry(owner).or_default() += 1;
         drop(state);
-        {
-            let mut options = self
-                .lease_options
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !options.iter().any(|(id, _)| *id == owner) {
-                options.push((owner, SharedLeaseOptions::default()));
+        match options {
+            Some(options) => {
+                self.set_owner_options(owner, options);
+            }
+            None => {
+                {
+                    let mut options = self
+                        .lease_options
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !options.iter().any(|(id, _)| *id == owner) {
+                        options.push((owner, SharedLeaseOptions::default()));
+                    }
+                }
+                self.notify_readiness();
             }
         }
-        self.notify_readiness();
         Ok(crate::shared_lease::SharedMcpLease::new(
             self.clone(),
             owner,

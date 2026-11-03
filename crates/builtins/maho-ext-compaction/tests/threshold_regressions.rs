@@ -865,7 +865,7 @@ async fn expect_speculative_compaction_invalidated_by(trigger: Invalidation) {
             aborted.error_message = None;
             aborted.content = Vec::new();
             ExtensionEvent::MessageEnd {
-                message: AgentMessage::Llm(Message::Assistant(Box::new(aborted))),
+                message: AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(aborted))),
             }
         }
     };

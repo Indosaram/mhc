@@ -17,42 +17,26 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
 /// invalid (`resolveBundledSkillsOverride`). An invalid value is reported once per process through `report`.
 pub fn resolve_bundled_skills_override(
     env: &telemetry_core::TelemetryEnv,
-    report: &dyn Fn(&str),
+    report: &(dyn Fn(&str) + Send + Sync),
 ) -> Option<PathBuf> {
-    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-    let value = env.get("OMO_BUNDLED_SKILLS_DIR").filter(|value| !value.is_empty())?;
-    let path = Path::new(value);
-    let problem = if !path.is_absolute() {
-        "relative".to_string()
-    } else {
-        match std::fs::read_dir(path) {
-            Ok(_) => return Some(path.to_path_buf()),
-            Err(error) => match error.kind() {
-                std::io::ErrorKind::NotFound => "ENOENT".to_string(),
-                std::io::ErrorKind::PermissionDenied => "EACCES".to_string(),
-                _ => "ENOTDIR".to_string(),
-            },
-        }
-    };
-    let message = format!(
-        "OMO_BUNDLED_SKILLS_DIR={value} ignored ({problem}); needs a readable absolute dir"
-    );
-    let first = SEEN
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(message.clone());
-    if first {
-        report(&message);
+    struct Reporter<'a>(&'a (dyn Fn(&str) + Send + Sync));
+    impl maho_ext_api::ComponentLogger for Reporter<'_> {
+        fn info(&self, message: &str, _: Option<&serde_json::Value>) { (self.0)(message); }
+        fn warn(&self, message: &str, _: Option<&serde_json::Value>) { (self.0)(message); }
+        fn error(&self, message: &str, _: Option<&serde_json::Value>) { (self.0)(message); }
     }
-    None
+    maho_omo_bundled_skills::override_dir::resolve_bundled_skills_override(
+        &env.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+        Some(&Reporter(report)),
+        None,
+    )
 }
 /// The bundled skills directory, ending in a path separator (callers append `<skill>/SKILL.md`). A valid
 /// `OMO_BUNDLED_SKILLS_DIR` wins; otherwise `default_root` (the plugin's own skills).
 pub fn get_builtin_skills_root(
     env: &telemetry_core::TelemetryEnv,
     default_root: &Path,
-    report: &dyn Fn(&str),
+    report: &(dyn Fn(&str) + Send + Sync),
 ) -> PathBuf {
     let root = resolve_bundled_skills_override(env, report).unwrap_or_else(|| default_root.to_path_buf());
     let text = root.to_string_lossy();

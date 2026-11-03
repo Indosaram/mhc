@@ -49,6 +49,10 @@ pub use host_session_close::{
 pub use host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
 };
+pub use host_session_revive::{
+    BeforeAttemptFn, DEFERRED_HOST_REASONS, HostSessionParkOptions, HostSessionParkOutcome,
+    park_host_session_on_daemon_loss, retry_deferred_host_session, retry_deferred_host_sessions,
+};
 pub use pending_cancel::finish_pending_cancel;
 pub use port::{
     DestroyCause, LifecycleReattachPorts, OrphanSignal, ProcessSignaller, ReattachPort,

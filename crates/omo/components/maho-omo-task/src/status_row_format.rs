@@ -31,15 +31,31 @@ pub fn format_task_row(record: &TaskRecord, stats: Option<&TaskRunStats>) -> Str
     }
     parts.join(" ")
 }
-/// Footer status text: live subagents, plus the failed ones still in view. Details live in /tasks.
-pub fn task_footer_status(records: &[TaskRecord]) -> Option<String> {
+pub fn task_footer_counts(records: &[TaskRecord]) -> Option<maho_ext_api::BackgroundTaskStatus> {
     let live = records.iter().filter(|record| !is_terminal(record.status)).count();
     let failed = records.iter().filter(|record| matches!(record.status, TaskStatus::Error | TaskStatus::Lost)).count();
-    let mut parts = Vec::new();
-    if live > 0 { parts.push(format!("{live} subagent{}", if live == 1 { "" } else { "s" })); }
-    // Without a live count, name the subject so the failure does not read as part of a neighbour.
-    if failed > 0 { parts.push(if live > 0 { format!("{failed} failed") } else { format!("subagents {failed} failed") }); }
-    (!parts.is_empty()).then(|| parts.join(" "))
+    if live == 0 && failed == 0 {
+        return None;
+    }
+    let mut counts = maho_ext_api::BackgroundTaskStatus {
+        total: records.len(),
+        failed,
+        ..Default::default()
+    };
+    for record in records {
+        match record.status {
+            TaskStatus::Completed => counts.completed += 1,
+            TaskStatus::Paused => counts.paused += 1,
+            TaskStatus::Running | TaskStatus::Pending if is_suspended(record) => counts.paused += 1,
+            TaskStatus::Running => counts.running += 1,
+            TaskStatus::Pending => counts.queued += 1,
+            TaskStatus::Error | TaskStatus::Lost | TaskStatus::Cancelled | TaskStatus::Interrupted => {}
+        }
+    }
+    Some(counts)
+}
+pub fn task_footer_status(records: &[TaskRecord]) -> Option<String> {
+    task_footer_counts(records).map(|counts| serde_json::to_string(&counts).unwrap_or_default())
 }
 pub fn build_widget_rows(records: &[TaskRecord]) -> Vec<String> {
     let active: Vec<_> = records.iter().filter(|record| !is_terminal(record.status)).collect();

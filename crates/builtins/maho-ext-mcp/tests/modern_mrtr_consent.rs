@@ -12,13 +12,15 @@ use maho_ext_mcp::modern::{
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
+type SelectFn = Arc<dyn Fn(&str, &[String]) -> Option<String> + Send + Sync>;
+type InputFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 /// A scripted UI for testing MRTR consent forms that records method calls and returns pre-configured answers.
 struct ScriptedUi {
     select_answers: Mutex<Vec<Option<String>>>,
-    select_fn: Option<Arc<dyn Fn(&str, &[String]) -> Option<String> + Send + Sync>>,
+    select_fn: Option<SelectFn>,
     select_calls: Mutex<usize>,
     input_answers: Mutex<Vec<Option<String>>>,
-    input_fn: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    input_fn: Option<InputFn>,
     input_calls: Mutex<usize>,
     confirm_calls: Mutex<usize>,
 }

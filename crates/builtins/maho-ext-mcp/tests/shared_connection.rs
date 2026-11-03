@@ -290,11 +290,13 @@ impl maho_ext_api::ExtensionUi for NullUi {
     }
 }
 
+type ReadyListeners = Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>;
+
 /// A UI bound to a private form presenter whose readiness the test flips; `subscribe` records listeners.
 struct PrivateForms {
     ui: Arc<dyn maho_ext_api::ExtensionUi>,
     ready: Arc<std::sync::atomic::AtomicBool>,
-    listeners: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    listeners: ReadyListeners,
     _abort: maho_ai::utils::abort::AbortController,
 }
 impl PrivateForms {
@@ -304,7 +306,7 @@ impl PrivateForms {
         };
         let ui: Arc<dyn maho_ext_api::ExtensionUi> = Arc::new(NullUi);
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(ready));
-        let listeners: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>> = Arc::default();
+        let listeners: ReadyListeners = Arc::default();
         let abort = maho_ai::utils::abort::AbortController::new();
         let signal = abort.signal();
         let capture = {

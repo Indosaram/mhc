@@ -1267,13 +1267,13 @@ mod tests {
         );
         manager.bind_monitor_id("mon_ENDED", &ended);
         exited(&mut manager, &ended).await;
-        assert_eq!(manager.sweep_exited(false)?, [ended.clone()]);
+        assert_eq!(manager.sweep_exited(false)?.as_slice(), std::slice::from_ref(&ended));
         assert_eq!(
             manager.session_state(&ended)?.unwrap().0,
             TerminalSessionState::Exited
         );
         assert_eq!(*killed.lock().unwrap(), ["301:SIGTERM", "301:SIGKILL"]);
-        assert_eq!(manager.sweep_exited(true)?, [ended.clone()]);
+        assert_eq!(manager.sweep_exited(true)?.as_slice(), std::slice::from_ref(&ended));
         assert_eq!(*killed.lock().unwrap(), ["301:SIGTERM", "301:SIGKILL"]);
         assert!(manager.get(&ended).is_none());
         assert_eq!(manager.resolve_id("mon_ENDED"), None);

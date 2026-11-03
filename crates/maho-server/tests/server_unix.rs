@@ -17,6 +17,36 @@ use tokio::{
 };
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 const MAX: u32 = 1024 * 1024;
+
+#[test]
+fn invalid_server_identity_and_timer_limits_are_rejected_before_publication() {
+    let directory = tempfile::tempdir().expect("server options directory");
+    let path = directory.path().join("invalid.sock");
+    for identity in ["", "invalid-server"] {
+        let result = create_unix_server(Arc::new(Host), UnixServerOptions {
+            server_id: identity.into(), path: path.clone(), ..Default::default()
+        });
+        assert!(matches!(result, Err(error) if error.code == "invalid_request"));
+        assert!(!path.exists());
+    }
+    for options in [
+        UnixServerOptions {
+            handshake_timeout: Some(Duration::from_millis(2_147_483_648)),
+            ..Default::default()
+        },
+        UnixServerOptions {
+            graceful_close_timeout_ms: Some(2_147_483_648),
+            ..Default::default()
+        },
+    ] {
+        let result = create_unix_server(Arc::new(Host), UnixServerOptions {
+            server_id: ID.into(), path: path.clone(), ..options
+        });
+        assert!(matches!(result, Err(error) if error.code == "invalid_request"));
+        assert!(!path.exists());
+    }
+}
+
 #[tokio::test]
 async fn listener_creates_owner_only_parent_without_changing_existing_directory() {
     use std::os::unix::fs::PermissionsExt;
@@ -37,6 +67,57 @@ async fn listener_creates_owner_only_parent_without_changing_existing_directory(
     );
     listener.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_live_listener_is_not_unlinked_by_a_second_start() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().expect("socket directory");
+    let path = directory.path().join("live.sock");
+    let first = start_unix(path.clone()).await;
+    let before = std::fs::metadata(&path).expect("first socket");
+    let second = create_unix_server(Arc::new(Host), UnixServerOptions {
+        server_id: ID.into(), path: path.clone(), ..Default::default()
+    }).expect("second server options");
+    assert!(second.start().await.is_err());
+    let after = std::fs::metadata(&path).expect("first socket remains");
+    assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    let (client, _) = connect_ready(&path).await;
+    drop(client);
+    second.close().await.expect("close rejected server");
+    first.close().await.expect("close first server");
+}
+
+#[tokio::test]
+async fn a_regular_file_at_the_socket_path_is_preserved() {
+    let directory = tempfile::tempdir().expect("socket directory");
+    let path = directory.path().join("file.sock");
+    std::fs::write(&path, b"preserved bytes").expect("fixture file");
+    let server = create_unix_server(Arc::new(Host), UnixServerOptions {
+        server_id: ID.into(), path: path.clone(), ..Default::default()
+    }).expect("server options");
+    assert!(server.start().await.is_err());
+    assert_eq!(std::fs::read(&path).expect("preserved file"), b"preserved bytes");
+    server.close().await.expect("close rejected server");
+    assert_eq!(std::fs::read(&path).expect("preserved file after close"), b"preserved bytes");
+}
+
+#[tokio::test]
+async fn a_stale_socket_is_reclaimed_and_clean_close_allows_rebinding() {
+    let directory = tempfile::tempdir().expect("socket directory");
+    let path = get_unix_socket_path(ID, directory.path()).expect("socket path");
+    assert_eq!(path, directory.path().join(format!("{ID}.sock")));
+    let stale = std::os::unix::net::UnixListener::bind(&path).expect("stale socket");
+    drop(stale);
+    assert!(path.exists());
+    for _ in 0..2 {
+        let server = start_unix(path.clone()).await;
+        let (client, _) = connect_ready(&path).await;
+        drop(client);
+        server.close().await.expect("close socket");
+        assert!(!path.exists());
+    }
+}
+
 #[tokio::test]
 async fn listener_options_validate_before_publication_and_apply_mode() {
     use std::os::unix::fs::PermissionsExt;

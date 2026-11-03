@@ -525,7 +525,7 @@ async fn renegotiates_late_grants_and_revocation(shared: bool) {
     let registry = Arc::new(HostMcpRegistry::default());
     let presenter = Arc::new(Presenter::default());
     let (ui, _host) = private_ui(&presenter);
-    let mut service = McpService::new(registry.clone(), 39_1);
+    let mut service = McpService::new(registry.clone(), 391);
     service.set_elicitation_ui(Some(ui.clone()));
     attach(&mut service, agent.path()).await;
     let connection = service.connections["fixture"]
@@ -537,7 +537,7 @@ async fn renegotiates_late_grants_and_revocation(shared: bool) {
 
     let peer_presenter = Arc::new(Presenter::default());
     let (peer_ui, _peer_host) = private_ui(&peer_presenter);
-    let mut peer = shared.then(|| McpService::new(registry.clone(), 39_2));
+    let mut peer = shared.then(|| McpService::new(registry.clone(), 392));
     if let Some(peer) = &mut peer {
         peer.set_elicitation_ui(Some(peer_ui.clone()));
         attach(peer, agent.path()).await;

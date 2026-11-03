@@ -729,6 +729,7 @@ pub const RESERVED_MEMORY_REPORT_KEYS: &[&str] = &[
     "tuiRenderCache",
     "tui",
     "heapSnapshot",
+    "heap",
     "reporterErrors",
 ];
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -794,14 +795,27 @@ pub struct ExtensionFailure {
     pub stack: Option<String>,
     pub class: Option<String>,
     pub code: Option<String>,
+    /// Original cancellation reason; its native payload preserves identity across clones.
+    pub abort_reason: Option<Box<maho_ai::utils::abort::AbortReason>>,
 }
 impl ExtensionFailure {
+    pub fn from_abort_reason(reason: maho_ai::utils::abort::AbortReason) -> Self {
+        Self {
+            message: reason.message.clone(),
+            stack: None,
+            class: Some(reason.name.clone()),
+            code: None,
+            abort_reason: Some(Box::new(reason)),
+        }
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             stack: None,
             class: None,
             code: None,
+            abort_reason: None,
         }
     }
     /// senpi `errorKind` = `${error.name}/${error.code}`: keep the machine classification (for
@@ -816,6 +830,7 @@ impl ExtensionFailure {
             stack: None,
             class,
             code,
+            abort_reason: None,
         }
     }
 }
@@ -1053,6 +1068,23 @@ pub struct SkillProvenance {
     pub kind: String,
     pub selected_root: String,
     pub project_root: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BackgroundTaskStatus {
+    pub running: usize,
+    pub completed: usize,
+    pub total: usize,
+    pub queued: usize,
+    pub paused: usize,
+    pub failed: usize,
+}
+impl BackgroundTaskStatus {
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+    pub fn is_cleared(&self) -> bool {
+        self.total == 0 || (self.running == 0 && self.queued == 0 && self.paused == 0 && self.failed == 0)
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillAllowedSet {
@@ -5980,10 +6012,9 @@ impl ExtensionApi {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .live_rpc_handlers
-                .insert(
-                    self.registered.identity.path.clone(),
-                    self.registered.rpc_handlers.clone(),
-                );
+                .entry(self.registered.identity.path.clone())
+                .or_default()
+                .extend(self.registered.rpc_handlers.clone());
         }
         Ok(())
     }

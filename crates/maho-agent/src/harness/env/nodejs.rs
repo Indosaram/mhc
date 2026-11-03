@@ -1591,12 +1591,13 @@ impl NodeExecutionEnv {
         context: &Context,
     ) -> Result<(), ExecutionError> {
         let truncated = capture.truncated();
+        let spill_context = crate::harness::context::without_abort_signal(context);
         if spill.path.is_none() && !chunk.is_empty() && truncated {
             let created = self
                 .create_temp_file(
                     Some("pi-output-".to_string()),
                     Some(".log".to_string()),
-                    context,
+                    &spill_context,
                 )
                 .await;
             match created {

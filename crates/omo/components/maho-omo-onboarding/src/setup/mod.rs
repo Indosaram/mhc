@@ -72,10 +72,6 @@ pub fn timestamp() -> String {
     now.strftime("%Y%m%dT%H%M%S.%3fZ").to_string()
 }
 
-pub(crate) fn is_plain_object(value: &serde_json::Value) -> bool {
-    value.is_object()
-}
-
 pub(crate) fn sorted_unique(values: impl IntoIterator<Item = String>) -> Vec<String> {
     let set: std::collections::BTreeSet<String> = values.into_iter().collect();
     set.into_iter().collect()

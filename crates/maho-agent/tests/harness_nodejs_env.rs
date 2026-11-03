@@ -783,6 +783,7 @@ fn ignore_updates() -> Option<maho_agent::harness::types::ShellOutputUpdateHandl
     Some(std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) })))
 }
 
+#[cfg(unix)]
 fn remove_spill(path: &str) {
     let _ = std::fs::remove_dir_all(Path::new(path).parent().expect("spill parent"));
 }

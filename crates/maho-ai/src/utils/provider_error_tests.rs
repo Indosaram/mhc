@@ -162,7 +162,7 @@ fn encoded(separator: &str, depth: usize, hex_case: HexCase) -> String {
     let code = separator.encode_utf16().next().unwrap_or_default();
     let hex = format!("{code:02x}");
     let upper = matches!(hex_case, HexCase::Upper)
-        || (matches!(hex_case, HexCase::Mixed) && depth % 2 == 0);
+        || (matches!(hex_case, HexCase::Mixed) && depth.is_multiple_of(2));
     let digits = if upper { hex.to_uppercase() } else { hex };
     format!("%{}{digits}", "25".repeat(depth - 1))
 }
@@ -177,7 +177,7 @@ fn encoded_separator_equivalence() {
         for depth in 0..4 {
             for hex_case in HEX_CASES {
                 for (value, shaped) in [
-                    (format!("sk-proj-FIXTURE0006"), true),
+                    ("sk-proj-FIXTURE0006".to_string(), true),
                     (ghp(), true),
                     (jwt(), true),
                     (aws.clone(), true),

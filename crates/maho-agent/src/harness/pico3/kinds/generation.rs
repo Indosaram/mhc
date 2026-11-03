@@ -103,7 +103,7 @@ pub(super) fn estimate(messages: &[StoredMessage], omit_errors:bool) -> Result<u
     let mut native=Vec::new();
     for message in messages { match message.decode()? {
         Message::System(_) => {},
-        Message::Assistant(m) => if !omit_errors || !matches!(m.stop_reason,StopReason::Error|StopReason::Aborted) { native.push(maho_ai::types::Message::Assistant(m)); },
+        Message::Assistant(m) => if !omit_errors || !matches!(m.stop_reason,StopReason::Error|StopReason::Aborted) { native.push(maho_ai::types::Message::Assistant(std::sync::Arc::from(m))); },
         Message::User(m) => native.push(maho_ai::types::Message::User(m)),
         Message::ToolResult(m) => native.push(maho_ai::types::Message::ToolResult(*m)),
     } }
@@ -117,7 +117,7 @@ pub struct GenerationKind {
 }
 pub fn generation(sections:std::rc::Rc<super::super::system::SectionRegistry>,tool_registry:std::rc::Rc<super::super::system::ToolRegistry>) -> Result<GenerationKind> {
     Ok(GenerationKind { token:KindToken::core("pi.generation"),
-        config:KindConfig { rewindable:object(&serde_json::json!({"thinkingLevel":"off","selectedTools":[],"profile":"default"}))?,
+        config:KindConfig { rewindable:object(&serde_json::json!({"model":null,"thinkingLevel":"off","selectedTools":[],"profile":"default"}))?,
             sticky:object(&serde_json::json!({"retry":{"enabled":true,"maxRetries":3,"baseDelayMs":2000,"maxAgentDelayMs":60000}}))? },
         inflight:vec!["requesting".into()],sections,tool_registry })
 }

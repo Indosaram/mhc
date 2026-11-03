@@ -18,7 +18,7 @@ fn enabled_components_preserve_tools_commands_and_lifecycle_handlers() {
     let mut api=new_api();extension.register(&mut api);
     assert_eq!(crate::support::tool_names(&api),["alpha_tool"]);
     assert_eq!(command_names(&api),["beta"]);
-    assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::SessionStart].len(),1);
+    assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::SessionStart].len(),2);
     let runtime=extension.runtime().expect("runtime");
     assert_eq!(runtime.captured_tools()[0].name,"alpha_tool");
     assert_eq!(runtime.context().get_flag(OMO_DISABLED_FLAG),Some(FlagValue::Boolean(false)));

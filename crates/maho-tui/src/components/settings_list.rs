@@ -509,7 +509,11 @@ mod tests {
         }]
     }
 
-    fn searchable() -> (SettingsList, Rc<RefCell<Vec<(String, String)>>>) {
+    type ChangeRecord = (String, String);
+    type ChangeLog = Rc<RefCell<Vec<ChangeRecord>>>;
+    type SearchableFixture = (SettingsList, ChangeLog);
+
+    fn searchable() -> SearchableFixture {
         let changes = Rc::new(RefCell::new(Vec::new()));
         let mut list = SettingsList::new(
             items(),

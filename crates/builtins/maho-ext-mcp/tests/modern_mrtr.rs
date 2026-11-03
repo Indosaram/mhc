@@ -24,7 +24,7 @@ use maho_ext_mcp::{
     log::McpLogger,
     modern::{
         consent_queue::queued_form,
-        elicitation::{MrtrInputResponse, collect_mrtr_form},
+        elicitation::MrtrInputResponse,
         errors::{McpMrtrError, McpMrtrErrorCode, as_mcp_mrtr_error},
         tools::call_modern_tool,
     },
@@ -76,10 +76,8 @@ fn default_input_result() -> Value {
 struct MrtrStub {
     url: String,
     requests: Arc<Mutex<Vec<Value>>>,
-    results: Arc<Mutex<Vec<Value>>>,
     continuation_status: Arc<Mutex<Option<u16>>>,
     output_schema: Arc<Mutex<Option<Value>>>,
-    sse: Arc<Mutex<bool>>,
     notifications: Arc<Mutex<Vec<Value>>>,
     extra_methods: Arc<Mutex<Vec<String>>>,
     hang: Arc<AtomicBool>,
@@ -115,7 +113,7 @@ impl MrtrStub {
 
         let app = Router::new().route(
             "/mcp",
-            post(move |headers: HeaderMap, Json(request): Json<Value>| {
+            post(move |_headers: HeaderMap, Json(request): Json<Value>| {
                 let requests = req_clone.clone();
                 let results = res_clone.clone();
                 let continuation_status = status_clone.clone();
@@ -359,10 +357,8 @@ impl MrtrStub {
         Self {
             url: format!("http://{address}/mcp"),
             requests,
-            results,
             continuation_status,
             output_schema,
-            sse,
             notifications,
             extra_methods,
             hang,
@@ -414,6 +410,8 @@ impl MrtrStub {
     }
 }
 
+type SelectFn = Arc<dyn Fn(&str, &[String]) -> Option<String> + Send + Sync>;
+type InputFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type AsyncSelectFn = Arc<
     dyn for<'a> Fn(&'a str, &'a [String], ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>
         + Send
@@ -421,9 +419,9 @@ type AsyncSelectFn = Arc<
 >;
 
 struct MrtrUi {
-    select_fn: Option<Arc<dyn Fn(&str, &[String]) -> Option<String> + Send + Sync>>,
+    select_fn: Option<SelectFn>,
     async_select_fn: Option<AsyncSelectFn>,
-    input_fn: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    input_fn: Option<InputFn>,
     select_titles: Arc<Mutex<Vec<String>>>,
 }
 
@@ -976,7 +974,7 @@ const send = x => process.stdout.write(JSON.stringify(x) + '\n');
 let round = 0;
 readline.createInterface({ input: process.stdin }).on('line', line => {
     const x = JSON.parse(line);
-    if (x.id === 'mcp-stdio-era-probe') {
+    if (x.method === 'server/discover' || x.id === 'senpi-era-probe' || x.id === 'mcp-stdio-era-probe') {
         send({
             jsonrpc: '2.0',
             id: x.id,
@@ -1030,16 +1028,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     let logger = Arc::new(Mutex::new(
         McpLogger::new("stdio-test", root.path(), None).unwrap(),
     ));
-    let mut transport =
-        maho_ext_mcp::transport::create_mcp_transport("stdio-test", &config, None, logger).unwrap();
-    transport.elicitation_ui = Some(MrtrUi::default_ui());
-    let client = maho_ext_mcp::transport::connect_mcp_transport(&transport)
-        .await
-        .unwrap();
+    let connection = ServerConnection::new("stdio-test", config.clone(), None, logger);
+    connection.set_elicitation_ui(Some(MrtrUi::default_ui()));
+    let client = connection.connect().await.unwrap();
 
     let origin = make_origin_with_binding(
         unique_binding(),
-        ServerConnection::new("stdio-test", config.clone(), None, transport.logger.clone()),
+        connection.clone(),
         Some(MrtrUi::default_ui()),
         None,
     );
@@ -1065,9 +1060,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
             "stderr canary leaked into logger"
         );
     }
-    maho_ext_mcp::transport::shutdown_mcp_transport(&transport)
-        .await
-        .ok();
+    connection.dispose().await.ok();
 }
 
 /// Upstream case: `modern diagnostic messages are suppressed before consent reaches the logger` in `modern-mrtr.test.ts`
@@ -1535,13 +1528,10 @@ async fn a_stopped_multi_input_batch_never_dispatches_partial_answers() {
 /// A terminal host's selector widgets: every `select` mounts one widget whose answer slot the test fills by index,
 /// like upstream feeding `handleInput` to a captured `ExtensionSelectorComponent`. Enter picks the first choice,
 /// Escape cancels, and a settled widget ignores further input (upstream `answerSettled`).
+type SelectorWidget = (Vec<String>, Option<tokio::sync::oneshot::Sender<Option<String>>>);
+
 struct WidgetUi {
-    widgets: Mutex<
-        Vec<(
-            Vec<String>,
-            Option<tokio::sync::oneshot::Sender<Option<String>>>,
-        )>,
-    >,
+    widgets: Mutex<Vec<SelectorWidget>>,
     shown: tokio::sync::mpsc::UnboundedSender<usize>,
     admitted: Arc<std::sync::atomic::AtomicUsize>,
 }

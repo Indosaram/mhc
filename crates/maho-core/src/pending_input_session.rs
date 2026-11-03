@@ -60,7 +60,7 @@ pub struct SessionPendingInputsOptions {
 pub enum PendingInputOutcome {
     Admitted {
         client_message_id: String,
-        projection: PendingInputProjection,
+        projection: Box<PendingInputProjection>,
     },
     NotAdmitted {
         client_message_id: String,

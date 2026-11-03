@@ -27,6 +27,74 @@ pub static JEMALLOC_CONF: &[u8; 103] =
 pub static JEMALLOC_CONF: &[u8; 80] =
     b"dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
 
+/// jemalloc's process-wide byte counters (`stats.*`), refreshed when read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeapStats {
+    /// Bytes handed out to the program.
+    pub allocated: usize,
+    /// Bytes in pages that hold at least one live allocation.
+    pub active: usize,
+    /// Bytes physically resident in pages the allocator maps.
+    pub resident: usize,
+    /// Bytes in active extents mapped by the allocator.
+    pub mapped: usize,
+    /// Bytes of address space kept for reuse but returned to the OS.
+    pub retained: usize,
+    /// Bytes of allocator bookkeeping.
+    pub metadata: usize,
+}
+
+/// Current allocator counters; `None` where the process does not use jemalloc.
+pub fn heap_stats() -> Option<HeapStats> {
+    #[cfg(unix)]
+    {
+        fn read(name: &[u8]) -> Option<usize> {
+            let mut value = 0usize;
+            let mut len = std::mem::size_of::<usize>();
+            // SAFETY: `name` is a NUL-terminated mallctl name for a `size_t` statistic, and
+            // `value`/`len` describe a writable buffer of exactly that width.
+            let status = unsafe {
+                tikv_jemalloc_sys::mallctl(
+                    name.as_ptr().cast(),
+                    (&raw mut value).cast(),
+                    &raw mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            (status == 0).then_some(value)
+        }
+        let mut epoch = 1u64;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: `epoch` takes and returns a `uint64_t`; both buffers point at `epoch` with its
+        // exact width. Writing it refreshes the cached `stats.*` counters read below.
+        let status = unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"epoch".as_ptr(),
+                (&raw mut epoch).cast(),
+                &raw mut len,
+                (&raw mut epoch).cast(),
+                std::mem::size_of::<u64>(),
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        Some(HeapStats {
+            allocated: read(b"stats.allocated\0")?,
+            active: read(b"stats.active\0")?,
+            resident: read(b"stats.resident\0")?,
+            mapped: read(b"stats.mapped\0")?,
+            retained: read(b"stats.retained\0")?,
+            metadata: read(b"stats.metadata\0")?,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 /// Flush the calling thread's cache and purge every arena after a large release.
 pub fn reclaim_unused_heap() {
     #[cfg(unix)]
@@ -96,6 +164,19 @@ mod tests {
         assert_eq!(option::<usize>(b"opt.tcache_max\0"), 1024);
         #[cfg(target_os = "linux")]
         assert!(option::<bool>(b"opt.background_thread\0"));
+    }
+
+    #[test]
+    fn heap_stats_track_a_live_allocation() {
+        let before = heap_stats().expect("jemalloc stats");
+        let block = vec![7u8; 8 << 20];
+        let during = heap_stats().expect("jemalloc stats");
+        assert!(
+            during.allocated >= before.allocated + (8 << 20) - (1 << 20),
+            "{before:?} -> {during:?}"
+        );
+        assert!(during.active >= during.allocated && during.resident >= during.active / 2);
+        drop(block);
     }
 
     #[cfg(target_os = "linux")]

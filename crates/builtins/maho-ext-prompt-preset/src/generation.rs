@@ -62,6 +62,7 @@ mod tests {
             context_files: vec![ContextFile {
                 path: "/fixture/AGENTS.md".into(),
                 content: "CONTEXT_SENTINEL".into(),
+                scope: None,
             }],
             skills: Vec::new(),
             tuning_section: None,

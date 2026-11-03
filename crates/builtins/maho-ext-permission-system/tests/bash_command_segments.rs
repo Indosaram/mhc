@@ -466,7 +466,7 @@ fn bounded_work_and_fail_closed_limits() {
             &["rm", "-rf", "build"]
         ])
     );
-    assert!(MAX_COMMAND_LENGTH < 100_000);
+    const { assert!(MAX_COMMAND_LENGTH < 100_000) };
     assert_eq!(
         analyze_bash_command(&format!("echo {}", "a".repeat(100_000))),
         BashCommandAnalysis::Unparsed

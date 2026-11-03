@@ -23,7 +23,8 @@ consulted in latest mode.
 
 `PINS.md` is never modified by either mode: `provenanceErrors()` requires both pins to be full
 commits in every mode, and latest mode additionally requires the overlay's own `commit` to be a full
-commit that is **not** the pinned omo commit.
+commit that is **not** the pinned omo commit, unless the overlay declares `pinCommit` equal to it
+(an overlay synced exactly at the pin, as for omo v5.1.52).
 
 ## The selected product staging
 

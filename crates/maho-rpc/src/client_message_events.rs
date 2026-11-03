@@ -402,29 +402,30 @@ mod tests {
             lane.release(&after);
             after
         };
-        let seen = seen.lock().unwrap();
-        let own = seen
-            .iter()
-            .find(|(record, ..)| record["message"] == steer)
-            .map(|(record, ..)| record)
-            .expect("own record");
-        for field in ["clientMessageId", "clientTurnId", "clientMessages"] {
-            assert!(own.get(field).is_none(), "{field}");
+        {
+            let seen = seen.lock().unwrap();
+            let own = seen
+                .iter()
+                .find(|(record, ..)| record["message"] == steer)
+                .map(|(record, ..)| record)
+                .expect("own record");
+            for field in ["clientMessageId", "clientTurnId", "clientMessages"] {
+                assert!(own.get(field).is_none(), "{field}");
+            }
+            for (index, (_, accepted, correlation)) in seen.iter().enumerate() {
+                let accepted = accepted.as_ref().expect("sequenced");
+                assert_eq!(accepted.turn_id, turn_id);
+                assert_eq!(
+                    correlation.as_ref(),
+                    Some(&standing),
+                    "no END or restart inside this turn"
+                );
+                assert_eq!(accepted.sequence, index as u64 + 2);
+            }
+            assert_eq!(after.turn_id, turn_id);
+            assert_eq!(after.correlation, Some(standing));
+            assert_eq!(after.sequence, seen.len() as u64 + 1);
         }
-        for (index, (_, accepted, correlation)) in seen.iter().enumerate() {
-            let accepted = accepted.as_ref().expect("sequenced");
-            assert_eq!(accepted.turn_id, turn_id);
-            assert_eq!(
-                correlation.as_ref(),
-                Some(&standing),
-                "no END or restart inside this turn"
-            );
-            assert_eq!(accepted.sequence, index as u64 + 2);
-        }
-        assert_eq!(after.turn_id, turn_id);
-        assert_eq!(after.correlation, Some(standing));
-        assert_eq!(after.sequence, seen.len() as u64 + 1);
-        drop(seen);
         let mut lane = std::mem::take(&mut *lane.lock().unwrap());
         lane.retire(crate::session_acceptance_lane::RetireReason::Close);
         lane.idle().await;

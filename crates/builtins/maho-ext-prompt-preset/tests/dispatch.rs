@@ -30,7 +30,7 @@ fn explicit_prompt_presets_render_chat_without_a_handoff_ledger() {
 #[test]
 fn all_explicit_presets_dispatch_to_nonempty_prompts() {
     use PromptPresetName::*;
-    for preset in [ClaudeFable5, ClaudeFable51, ClaudeOpus55, ClaudeOpus5, ClaudeOpus48, ClaudeOpus47, ClaudeOpus46, ClaudeOpus45, DeepseekV4Flash, DeepseekV4Flash0731, DeepseekV41Flash, DeepseekV4Pro, Glm52, Glm53, Grok45, Grok46, Grok47, KimiK31, KimiK3, KimiK28, KimiK27, KimiK26, Gpt5, Gpt52, Gpt53Codex, Gpt54, Gpt55, Gpt56, Gpt6Astra] {
+    for preset in [ClaudeFable5, ClaudeFable51, ClaudeFable55, ClaudeOpus55, ClaudeSonnet55, ClaudeHaiku55, Gemini4Argon, ClaudeOpus5, ClaudeOpus48, ClaudeOpus47, ClaudeOpus46, ClaudeOpus45, DeepseekV4Flash, DeepseekV4Flash0731, DeepseekV41Flash, DeepseekV4Pro, Glm52, Glm53, Grok45, Grok46, Grok47, KimiK31, KimiK3, KimiK28, KimiK27, KimiK26, Gpt5, Gpt52, Gpt53Codex, Gpt54, Gpt55, Gpt56, Gpt6Astra] {
         let resolved = resolve_preset(ModelMetadata { id: "unknown", provider: "fixture", name: None, prompt_preset: None }, preset, options()).unwrap();
         assert_eq!(resolved.name, preset);
         assert!(!resolved.prompt.is_empty());
@@ -48,6 +48,7 @@ fn preset_capture_forwards_the_exact_render_once_and_preserves_context_sources()
     input.context_files.push(maho_core::system_prompt::ContextFile {
         path: "/project/AGENTS.md".into(),
         content: "fixture context".into(),
+        scope: None,
     });
     let resolved = resolve_preset(
         ModelMetadata { id: "unknown", provider: "fixture", name: None, prompt_preset: None },

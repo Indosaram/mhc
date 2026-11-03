@@ -33,6 +33,10 @@ pub struct ContextReductionPolicy {
 /// Emits a compaction log event (`emergency_prune`, `breaker_deterministic_fallback`).
 pub type ContextReductionLog = Arc<dyn Fn(&ExtensionContext, &str, Value) + Send + Sync>;
 
+pub type ContextReductionPolicyReader = Arc<
+    dyn Fn(&ExtensionContext) -> Result<ContextReductionPolicy, ExtensionFailure> + Send + Sync,
+>;
+
 pub struct ContextReductionLifecycleOptions {
     pub emergency_prune_latch: Arc<Mutex<EmergencyPruneLatch>>,
     pub emergency_instructions: String,
@@ -40,9 +44,7 @@ pub struct ContextReductionLifecycleOptions {
     /// The tool declarations the provider request carries, freeform and grammar formats included;
     /// the OpenAI remote replay boundary converts its sealed baseline with them.
     pub get_request_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
-    pub get_policy: Arc<
-        dyn Fn(&ExtensionContext) -> Result<ContextReductionPolicy, ExtensionFailure> + Send + Sync,
-    >,
+    pub get_policy: ContextReductionPolicyReader,
     pub log: ContextReductionLog,
     /// The OpenAI remote replay boundary the latest live context event sealed, read by the
     /// `before_provider_request` payload rewrite. senpi carries it on the converted input items as

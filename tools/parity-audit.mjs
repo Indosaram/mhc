@@ -197,7 +197,7 @@ export function parseFragment(text, source) {
 				tsTests: parseCount(get("ts tests"), source, i + 1),
 				rustTests: parseCount(get("rust tests"), source, i + 1),
 				status,
-				reason: cols.includes("n/a reason") ? get("n/a reason") : naReasonFrom(get("status")),
+				reason: (cols.includes("n/a reason") ? get("n/a reason") : "") || naReasonFrom(get("status")),
 				source: `${source}:${i + 1}`,
 			});
 		}
@@ -236,8 +236,8 @@ export function loadLedger(repo, crate) {
 	const merged = new Map();
 	if (!existsSync(dir)) return merged;
 	const fragments = readdirSync(dir)
-		.filter((f) => /^\d+\.md$/.test(f))
-		.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+		.filter((f) => /^\d+[a-z]?\.md$/.test(f))
+		.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10) || a.localeCompare(b));
 	for (const f of fragments) {
 		for (const row of parseFragment(readFileSync(join(dir, f), "utf8"), `${relative(repo, dir)}/${f}`)) merged.set(row.tsPath, row);
 	}
@@ -246,7 +246,7 @@ export function loadLedger(repo, crate) {
 
 function fragmentCount(repo, crate) {
 	const dir = join(repo, "crates", crateDir(repo, crate), "parity.d");
-	return existsSync(dir) ? readdirSync(dir).filter((f) => /^\d+\.md$/.test(f)).length : 0;
+	return existsSync(dir) ? readdirSync(dir).filter((f) => /^\d+[a-z]?\.md$/.test(f)).length : 0;
 }
 
 /** Resolves a crate package name to its directory under crates/ (searches one level of groups). */

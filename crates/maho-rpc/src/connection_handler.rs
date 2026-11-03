@@ -1450,7 +1450,15 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::ExtensionRequest{name,data}=>{
             let name=name.trim();
             if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
-            else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
+            else if crate::custom_capability::OWNER_MEMORY_REQUESTS.contains(&name)&&!session.extension_runner_has_rpc_handler(name).await{
+                // An advertised owner memory request this session does not serve is typed.
+                return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"extension_request".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("memory is unavailable in this session: no handler serves {name}"),error_code:Some(crate::custom_capability::MEMORY_UNAVAILABLE_ERROR_CODE.into()),error_data:default_error_data(session,"extension_request")}});
+            }
+            else {match session.extension_runner_request_typed(name,data.clone().unwrap_or(serde_json::Value::Null)).await{
+                Ok(value)=>("extension_request",Ok(Some(value))),
+                // The handler's typed failure code travels as `errorCode`.
+                Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"extension_request".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code,error_data:default_error_data(session,"extension_request")}}),
+            }}
         },
         RpcCommandBody::SetClientInfo{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_client_info".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}}),
         RpcCommandBody::GetProtocolInfo=>{
@@ -2150,9 +2158,7 @@ impl RpcConnectionHandler {
                     eprintln!("senpi rpc session {report_label}: {line}");
                 }),
             ));
-        session.set_control_endpoint_host(Some(std::sync::Arc::new(std::sync::Arc::clone(
-            &session_control,
-        ))));
+        session.set_control_endpoint_host(Some(session_control.clone()));
         let pending: std::sync::Arc<
             std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
         > = Default::default();
@@ -2384,7 +2390,7 @@ impl RpcConnectionHandler {
             let answer_id = if is_response {
                 match crate::ui_answer_ledger::valid_answer_id(value) {
                     Ok(answer_id) => answer_id.map(str::to_owned),
-                    Err(()) => {
+                    Err(_) => {
                         let mut reply = reply_to();
                         reply["success"] = false.into();
                         reply["error"] = "invalid_answer_id".into();
@@ -2927,7 +2933,7 @@ impl RpcConnectionHandler {
 }
 
 /// A bare in-memory session for tests outside this module.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod test_support {
     pub(crate) fn session() -> super::AgentSession {
         super::new_session_tests::session()
@@ -3884,6 +3890,44 @@ mod new_session_tests {
         );
     }
     #[tokio::test]
+    async fn unserved_owner_memory_requests_are_typed_memory_unavailable() {
+        // No memory extension registered its handlers in this session.
+        let session = session();
+        for name in crate::custom_capability::OWNER_MEMORY_REQUESTS {
+            let response = serde_json::to_value(
+                handle_session_command(
+                    &session,
+                    &serde_json::from_value(serde_json::json!({"id":"m","type":"extension_request","name":name,"data":{"sourceId":"s","receiptId":"rcpt_x"}}))
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(response["success"], false, "{name}");
+            assert_eq!(
+                response["errorCode"],
+                crate::custom_capability::MEMORY_UNAVAILABLE_ERROR_CODE,
+                "{name}: {response}"
+            );
+        }
+        // Any other unserved request keeps its untyped error.
+        let other = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"extension_request","name":"other_request"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(other["success"], false);
+        assert!(other.get("errorCode").is_none(), "{other}");
+    }
+    #[tokio::test]
     async fn get_auth_providers_dispatches_provider_statuses() {
         let response = serde_json::to_value(
             handle_session_command(
@@ -4078,7 +4122,7 @@ mod new_session_tests {
         use maho_core::credential_accounts::{
             CredentialAccountBlockedReason, CredentialAccountSource, CredentialAccountSummary,
         };
-        let account = |blocked_reason, blocked_until| CredentialAccountSummary {
+        let account = |blocked_reason: Option<CredentialAccountBlockedReason>, blocked_until| CredentialAccountSummary {
             name: "work".into(),
             display_name: None,
             source: CredentialAccountSource::Login,
@@ -4304,10 +4348,10 @@ mod connection_events_tests {
         assert_eq!(response["success"], true);
         assert_eq!(response["data"], serde_json::json!({"admitted":[]}));
         let registration = maho_core::session_control_actions::ControlEndpointHost::register(
-            &std::sync::Arc::clone(&handler.session_control),
+            &*handler.session_control,
             maho_core::extensions::session_control_types::RegisterControlEndpointOptions {
                 inbox_dir: std::env::temp_dir().to_string_lossy().into_owned(),
-                drain: Arc::new(|_| Box::pin(async { None })),
+                drain: Arc::new(|_| Box::pin(async { Ok(None) })),
                 is_session_referenced: None,
             },
         )
@@ -4526,8 +4570,8 @@ mod connection_events_tests {
         });
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let requests = of_type(&records, "question_request");
-                if let Some(first) = requests.first() {
+                let requests = of_type(&records, "extension_ui_request");
+                if let Some(first) = requests.iter().find(|record| record["method"] == "question") {
                     return first["id"].as_str().expect("id").to_owned();
                 }
                 tokio::task::yield_now().await;

@@ -8,7 +8,7 @@ use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ext_api::{
     EventKind, EventResult, ExtensionApi, ExtensionFuture, ExtensionContext, ExtensionEvent,
     ExtensionHandlerOptions, ExtensionToolExecutor, ToolDefinition, ToolExecutionMode,
-    ToolExposure, ToolSessionManager,
+    ToolExposure,
 };
 use serde_json::{Value, json};
 use std::{

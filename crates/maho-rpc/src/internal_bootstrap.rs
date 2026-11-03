@@ -181,9 +181,8 @@ mod tests {
             |buffer| {
                 let (advance_ms, step) = steps.next().expect("read past the script");
                 clock.set(clock.get() + std::time::Duration::from_millis(advance_ms));
-                step.map(|count| {
+                step.inspect(|&count| {
                     buffer[..count].fill(7);
-                    count
                 })
             },
             || clock.get(),

@@ -93,7 +93,15 @@ fn render_status_env_preserves_non_bmp_unicode() {
             }]
         }]
     });
-    let lines = render_eval_result(&result, &maho_codemode::tool::types::EvalToolRequest::List, &Default::default(), 80);
+    let lines = render_eval_result(
+        &result,
+        &maho_codemode::tool::types::EvalToolRequest::List,
+        &EvalRenderContext {
+            expanded: true,
+            ..Default::default()
+        },
+        80,
+    );
     assert!(lines.iter().any(|line| line.contains("ICON=🦀")));
     assert!(!lines.iter().any(|line| line.contains("ICON=\u{fffd}\u{fffd}")));
 }

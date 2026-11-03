@@ -553,7 +553,7 @@ mod tests {
             text: text.into(),
             ..TextContent::default()
         })];
-        maho_ai::types::Message::Assistant(Box::new(message))
+        maho_ai::types::Message::Assistant(std::sync::Arc::new(message))
     }
     #[test]
     fn turn_prompt_joins_trailing_user_messages_so_the_request_survives_notices() {

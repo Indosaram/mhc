@@ -30,7 +30,7 @@ pub struct McpCommandHost {
     /// Upstream `pendingAttach`: every subcommand waits for the single in-flight attach.
     pub pending_attach: Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>,
     /// Upstream `pi.appendEntry("mcp-auth", ...)`.
-    pub append_entry: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub append_entry: Option<crate::auth::commands_auth_dispatch::McpAuthAppendEntry>,
     /// Runs after `/mcp reconnect` so wire status follows the reconnect.
     pub after_reconnect:
         Option<Arc<dyn Fn(crate::service_types::McpWireStatusSnapshot) + Send + Sync>>,

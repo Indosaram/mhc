@@ -1381,7 +1381,7 @@ pub enum Message {
     #[serde(rename = "user")]
     User(UserMessage),
     #[serde(rename = "assistant")]
-    Assistant(Box<AssistantMessage>),
+    Assistant(std::sync::Arc<AssistantMessage>),
     #[serde(rename = "toolResult")]
     ToolResult(ToolResultMessage),
     #[serde(rename = "configurationUpdate")]
@@ -1596,6 +1596,7 @@ pub enum AssistantMessageEvent {
     #[serde(rename = "toolcall_end")]
     ToolcallEnd {
         content_index: usize,
+        #[serde(with = "tool_call_with_type")]
         tool_call: ToolCall,
         partial: AssistantMessage,
     },
@@ -1607,6 +1608,41 @@ pub enum AssistantMessageEvent {
         reason: ErrorReason,
         error: AssistantMessage,
     },
+}
+
+pub(crate) mod tool_call_with_type {
+    use super::ToolCall;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Tagged<'a> {
+        r#type: &'static str,
+        #[serde(flatten)]
+        tool_call: &'a ToolCall,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Untagged {
+        #[serde(default)]
+        #[allow(dead_code)]
+        r#type: Option<String>,
+        #[serde(flatten)]
+        tool_call: ToolCall,
+    }
+
+    pub fn serialize<S: Serializer>(call: &ToolCall, s: S) -> Result<S::Ok, S::Error> {
+        Tagged {
+            r#type: "toolCall",
+            tool_call: call,
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ToolCall, D::Error> {
+        Untagged::deserialize(d).map(|u| u.tool_call)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

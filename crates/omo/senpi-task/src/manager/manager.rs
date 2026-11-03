@@ -262,6 +262,7 @@ struct Inner {
     host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
     on_child_liveness: Option<crate::manager::types::ChildLivenessCallback>,
     liveness_notice_timer: Option<crate::manager::types::LivenessNoticeTimer>,
+    exit_confirmation_wait: Option<crate::manager::types::ExitConfirmationWait>,
     host_status_publication: Mutex<()>,
     launches_changed: std::sync::Condvar,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
@@ -496,6 +497,7 @@ impl TaskManager {
                 host_transport: options.host_transport,
                 on_child_liveness: options.on_child_liveness,
                 liveness_notice_timer: options.liveness_notice_timer,
+                exit_confirmation_wait: options.exit_confirmation_wait,
                 host_status_publication: Mutex::new(()),
                 launches_changed: std::sync::Condvar::new(),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
@@ -4867,6 +4869,17 @@ impl Inner {
 }
 
 impl OutcomeTrackerPorts for Inner {
+    fn exit_confirmation_now(&self) -> i64 {
+        (self.now)()
+    }
+
+    fn wait_exit_confirmation(&self, remaining_ms: u64) {
+        match &self.exit_confirmation_wait {
+            Some(wait) => wait(remaining_ms),
+            None => std::thread::sleep(std::time::Duration::from_millis(remaining_ms)),
+        }
+    }
+
     fn next_tracking_generation(&self, task_id: &str) -> u64 {
         let mut state = lock(&self.state);
         let generation = state

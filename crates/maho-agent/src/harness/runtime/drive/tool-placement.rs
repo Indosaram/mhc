@@ -33,8 +33,10 @@ pub fn tool_call_for<'a>(sources: &'a ToolBatchSource, call: &ToolCall) -> Resul
 
 pub fn with_tool_batch(run: &ToolsOperation, batch: ToolBatch) -> ToolsOperation { ToolsOperation { operation: run.operation.clone(), at: OperationMarker::Tools, batch } }
 
-pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, capability: &OperationState, sources: &ToolBatchSource, recovery: bool) -> Result<(), SessionError> {
-    let OperationState::Tools(run) = capability else { return Err(session_invariant_error("Tool placement requires tools state")); };
+pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, _capability: &OperationState, sources: &ToolBatchSource, recovery: bool) -> Result<(), SessionError> {
+    let state = lane.state();
+    let Some(operation) = state.operation.as_ref() else { return Ok(()); };
+    let OperationState::Tools(run) = &operation.state else { return Ok(()); };
     let Some(first) = run.batch.calls.iter().position(|call| !matches!(call, ToolCall::Completed { .. })) else { return Ok(()); };
     let ready: Vec<_> = run.batch.calls.iter().skip(first).take_while(|call| matches!(call, ToolCall::OutcomeReady { .. })).cloned().collect();
     if ready.is_empty() { return Ok(()); }
@@ -73,7 +75,8 @@ pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, capability
             turn_results.push(message);
         }
     }
-    let committed = settle_operation(lane, capability, &drive.context, false, |state, op, reader| async move {
+    let current_tools_state = OperationState::Tools(run.clone());
+    let committed = settle_operation(lane, &current_tools_state, &drive.context, false, |state, op, reader| async move {
         let OperationState::Tools(mut current) = op.state else { return Err(session_invariant_error("Tool placement state changed")); };
         let mut writes = Vec::new(); let mut entries = Vec::new(); let mut usage_rows = Vec::new(); let mut parent = state.tip_id;
         let previous_configuration = state.configuration.clone();

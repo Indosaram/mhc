@@ -1,12 +1,13 @@
 pub type OwnedWorkpoolTaskIdsCallback = Option<Arc<dyn Fn() -> Result<std::collections::BTreeSet<String>, String> + Send + Sync>>;
 pub type LoggerCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::sync::Arc;
-use maho_ext_api::EventBus;
+use maho_ext_api::{BusSubscription, EventBus};
 use serde_json::{json, Value};
 use senpi_task::state::TaskRecord;
 use crate::status_row_format::task_status_description;
 
 pub const RESUMPTION_CHANNEL_STATE_EVENT: &str = "wake_source_state";
+pub const RESUMPTION_CHANNEL_STATE_REQUEST_EVENT: &str = "wake_source_state_request";
 
 pub trait ResumptionChannelManager: Send + Sync {
     fn list(&self, session_id: &str) -> Vec<TaskRecord>;
@@ -28,7 +29,7 @@ pub struct TaskResumptionChannelManager {
 }
 
 #[derive(Clone, Copy)]
-enum Emission { Start, Changed, Shutdown }
+enum Emission { Start, Changed, Shutdown, Snapshot }
 struct QueuedState { last_ids: String, tail: Option<tokio::sync::oneshot::Receiver<()>> }
 pub struct QueuedResumptionChannelEmitter {
     events: EventBus,
@@ -42,36 +43,77 @@ struct Completion(Option<tokio::sync::oneshot::Sender<()>>);
 impl Drop for Completion { fn drop(&mut self) { if let Some(sender) = self.0.take() { let _ = sender.send(()); } } }
 type EmissionFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 struct EmissionJob { future: EmissionFuture, completed: tokio::sync::oneshot::Sender<()> }
-struct EmissionWorker { sender: std::sync::mpsc::Sender<EmissionJob>, stop: Arc<tokio::sync::Notify>, thread: std::thread::JoinHandle<()> }
+struct EmissionWorker { sender: std::sync::mpsc::Sender<EmissionJob>, stop: Arc<tokio::sync::Notify>, thread: std::thread::JoinHandle<()>, subscription: BusSubscription }
 pub struct OwnedResumptionChannels {
     emitter: Arc<QueuedResumptionChannelEmitter>,
-    worker: std::sync::Mutex<Option<EmissionWorker>>,
+    worker: Arc<std::sync::Mutex<Option<EmissionWorker>>>,
 }
 impl OwnedResumptionChannels {
     pub fn new(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Result<Self, std::io::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let (sender, receiver) = std::sync::mpsc::channel::<EmissionJob>();
-        let emitter = QueuedResumptionChannelEmitter::new(events, manager, session_id);
+        let emitter = QueuedResumptionChannelEmitter::new(events.clone(), manager, session_id);
         let shutdown = emitter.clone(); let stop = Arc::new(tokio::sync::Notify::new()); let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("task-resumption".into()).spawn(move || {
             for job in &receiver {
-                let completed = runtime.block_on(async { tokio::select! { biased; () = stopping.notified() => false, () = job.future => true } });
-                if !completed { break; }
-                let _ = job.completed.send(());
+                let EmissionJob { future, completed } = job;
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.block_on(async {
+                        tokio::select! {
+                            biased;
+                            () = stopping.notified() => false,
+                            () = future => true,
+                        }
+                    })
+                }));
+                match outcome {
+                    Ok(true) => {
+                        let _ = completed.send(());
+                    }
+                    Ok(false) => {
+                        break;
+                    }
+                    Err(payload) => {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|value| (*value).to_owned()))
+                            .unwrap_or_else(|| "task resumption emission job panicked".to_owned());
+                        maho_ext_api::diagnostic(&message);
+                        let _ = completed.send(());
+                    }
+                }
             }
             for job in receiver.try_iter() { drop(job); }
             runtime.block_on(shutdown.emit_shutdown());
         })?;
-        Ok(Self { emitter, worker: std::sync::Mutex::new(Some(EmissionWorker { sender, stop, thread })) })
+        let worker = Arc::new(std::sync::Mutex::new(None));
+        let weak_worker = Arc::downgrade(&worker);
+        let weak_emitter = Arc::downgrade(&emitter);
+        let subscription = events.on(RESUMPTION_CHANNEL_STATE_REQUEST_EVENT, Arc::new(move |_| {
+            if let (Some(worker_lock), Some(emitter)) = (weak_worker.upgrade(), weak_emitter.upgrade()) {
+                drop(Self::submit_job(&worker_lock, &emitter, Emission::Snapshot));
+            }
+        }));
+        *worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(EmissionWorker { sender, stop, thread, subscription });
+        Ok(Self { emitter, worker })
     }
-    fn submit(&self, emission: Emission) -> tokio::sync::oneshot::Receiver<()> {
+    fn submit_job(worker_lock: &std::sync::Mutex<Option<EmissionWorker>>, emitter: &Arc<QueuedResumptionChannelEmitter>, emission: Emission) -> tokio::sync::oneshot::Receiver<()> {
         let (completed, receiver) = tokio::sync::oneshot::channel();
-        let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let worker = worker_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(worker) = worker.as_ref() {
-            let future = match emission { Emission::Start => self.emitter.emit_session_start(), Emission::Changed => self.emitter.emit_if_changed(), Emission::Shutdown => self.emitter.emit_shutdown() };
+            let future = match emission {
+                Emission::Start => emitter.emit_session_start(),
+                Emission::Changed => emitter.emit_if_changed(),
+                Emission::Shutdown => emitter.emit_shutdown(),
+                Emission::Snapshot => emitter.emit_snapshot(),
+            };
             if worker.sender.send(EmissionJob { future, completed }).is_err() { maho_ext_api::diagnostic("task resumption worker stopped before emission"); }
         }
         receiver
+    }
+    fn submit(&self, emission: Emission) -> tokio::sync::oneshot::Receiver<()> {
+        Self::submit_job(&self.worker, &self.emitter, emission)
     }
     pub async fn emit_session_start(&self) -> Result<(), String> { self.submit(Emission::Start).await.map_err(|error| error.to_string()) }
     pub async fn emit_shutdown(&self) -> Result<(), String> { self.submit(Emission::Shutdown).await.map_err(|error| error.to_string()) }
@@ -79,6 +121,7 @@ impl OwnedResumptionChannels {
     pub fn dispose(&self) {
         let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(worker) = worker {
+            drop(worker.subscription);
             worker.stop.notify_one(); drop(worker.sender);
             if worker.thread.join().is_err() { maho_ext_api::diagnostic("task resumption worker panicked"); }
         }
@@ -100,6 +143,7 @@ impl QueuedResumptionChannelEmitter {
         self.active.store(true, std::sync::atomic::Ordering::SeqCst); self.enqueue(Emission::Start)
     }
     pub fn emit_if_changed(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> { self.enqueue(Emission::Changed) }
+    fn emit_snapshot(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> { self.enqueue(Emission::Snapshot) }
     pub fn emit_shutdown(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         self.active.store(false, std::sync::atomic::Ordering::SeqCst); self.enqueue(Emission::Shutdown)
     }
@@ -110,7 +154,7 @@ impl QueuedResumptionChannelEmitter {
         Box::pin(async move {
             let _completion = completion;
             if let Some(previous) = previous { let _ = previous.await; }
-            if matches!(emission, Emission::Changed) && !emitter.active.load(std::sync::atomic::Ordering::SeqCst) { return; }
+            if matches!(emission, Emission::Changed | Emission::Snapshot) && !emitter.active.load(std::sync::atomic::Ordering::SeqCst) { return; }
             let mut channels = Vec::new();
             if !matches!(emission, Emission::Shutdown) && let Some(session) = (emitter.session_id)() {
                 // One ownership-store read per snapshot, never one per record.

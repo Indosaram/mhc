@@ -66,7 +66,7 @@ fn tool_call(name: &str, arguments: Value, id: &str) -> ContentBlock {
 /// `fauxAssistantMessage(content, { stopReason: "toolUse" })`: the pinned faux provider's defaults
 /// (`api`/`provider` = `faux`, model `faux-1`) with the given tool calls.
 fn faux_assistant(calls: Vec<ContentBlock>) -> Message {
-    Message::Assistant(Box::new(AssistantMessage {
+    Message::Assistant(std::sync::Arc::new(AssistantMessage {
         failure_source: None,
         credential_served_recently: None,
         timing: None,
@@ -98,7 +98,7 @@ fn faux_assistant(calls: Vec<ContentBlock>) -> Message {
 /// `nativeSearchTurn(names)`: a same-model assistant turn whose native tool search discovered
 /// `reference_names`.
 fn native_search_turn(reference_names: &[&str], use_id: &str) -> Message {
-    Message::Assistant(Box::new(AssistantMessage {
+    Message::Assistant(std::sync::Arc::new(AssistantMessage {
         failure_source: None,
         credential_served_recently: None,
         timing: None,

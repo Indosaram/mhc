@@ -19,6 +19,9 @@ pub mod native_update;
 pub mod nearest_parent_config;
 pub mod package_manager_cli;
 pub mod pi_dir_restore;
+/// Windows std-handle privacy through `omo_utils` (built only with the `omo` feature).
+#[cfg(feature = "omo")]
+pub mod private_stdio;
 pub mod process_crash_record;
 /// Port of the omo-senpi plugin installer (SUL-1.0, built only with the `omo` feature).
 #[cfg(feature = "omo")]

@@ -796,7 +796,7 @@ pub fn snapshot_with_frames(
         refs.extend(tree.refs.clone());
     }
     let mut visits = manager.collect_descendant_frames(&main);
-    visits.sort_by(|a, b| b.depth.cmp(&a.depth));
+    visits.sort_by_key(|visit| std::cmp::Reverse(visit.depth));
     for visit in visits {
         let Some(parent) = visit.parent_frame_id.clone() else {
             continue;

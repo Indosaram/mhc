@@ -35,7 +35,7 @@ use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
 use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
+    AssistantMessageEventStream,
 };
 use crate::utils::headers::provider_headers_to_record;
 use crate::utils::pi_user_agent::get_pi_user_agent;
@@ -559,7 +559,8 @@ async fn drive(
     let url = client.stream_generate_content_url(&model.id);
     let headers = client.headers.clone();
     let auth = Some(GoogleAuth::ApiKey(api_key.clone()));
-    let http = reqwest::Client::new();
+    // PERF-DIVERGENCE(senpi google-generative-ai.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let http = crate::utils::http_client::shared_http_client();
     let body = request_body(&params, false)?;
     let response = retry_google_request(
         move || {

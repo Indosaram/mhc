@@ -29,10 +29,12 @@ const RETIRED: &str = "Settle observer retired";
 const EXHAUSTED: &str = "Settle observer budget exhausted";
 
 type Pending = Arc<Mutex<BTreeMap<u64, (AbortController, Option<String>)>>>;
+struct CancellationOwner(Arc<()>);
 
 #[derive(Clone)]
 pub struct SettleObservers {
     pending: Pending,
+    cancellation_owner: Arc<()>,
     next: Arc<Mutex<u64>>,
     logger: Arc<dyn ComponentLogger>,
     budget: Duration,
@@ -50,6 +52,7 @@ impl SettleObservers {
     pub fn with_budget(logger: Arc<dyn ComponentLogger>, budget: Duration) -> Self {
         Self {
             pending: Arc::default(),
+            cancellation_owner: Arc::new(()),
             next: Arc::default(),
             logger,
             budget,
@@ -58,12 +61,30 @@ impl SettleObservers {
 
     /// Aborts every observer owned by `session_id`, or all of them when it is unknown.
     pub fn retire(&self, session_id: Option<&str>) {
-        let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        for (controller, owner) in pending.values() {
-            if session_id.is_none() || owner.as_deref() == session_id {
-                controller.abort(Some(AbortReason::new("AbortError", RETIRED)));
-            }
+        let controllers: Vec<_> = self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .filter(|(_, owner)| session_id.is_none() || owner.as_deref() == session_id)
+            .map(|(controller, _)| controller.clone())
+            .collect();
+        // Abort invokes listeners synchronously: never hold the pending guard across callbacks.
+        for controller in controllers {
+            controller.abort(Some(self.cancellation_reason("AbortError", RETIRED)));
         }
+    }
+
+    fn cancellation_reason(&self, name: &str, message: &str) -> AbortReason {
+        AbortReason::new(name, message)
+            .with_payload(CancellationOwner(self.cancellation_owner.clone()))
+    }
+
+    pub fn is_cancellation(&self, failure: &ExtensionFailure) -> bool {
+        failure.abort_reason.as_deref()
+            .and_then(AbortReason::payload::<CancellationOwner>)
+            .is_some_and(|owner| Arc::ptr_eq(&owner.0, &self.cancellation_owner))
+    }
+
+    pub fn cancellation_failure(reason: &AbortReason) -> ExtensionFailure {
+        ExtensionFailure::from_abort_reason(reason.clone())
     }
 
     pub fn pending_count(&self) -> usize {
@@ -138,8 +159,10 @@ impl SettleObservers {
                             "sessionId": session_id,
                         })),
                     );
-                    if let Some((controller, _)) = self.pending.lock().unwrap_or_else(PoisonError::into_inner).get(&id) {
-                        controller.abort(Some(AbortReason::new("TimeoutError", EXHAUSTED)));
+                    let controller = self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+                        .get(&id).map(|(controller, _)| controller.clone());
+                    if let Some(controller) = controller {
+                        controller.abort(Some(self.cancellation_reason("TimeoutError", EXHAUSTED)));
                     }
                     None
                 }
@@ -151,7 +174,13 @@ impl SettleObservers {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&id);
         match outcome {
-            Some(Err(_)) if signal.aborted() => Ok(EventResult::None),
+            Some(Err(err)) => {
+                if signal.aborted() || self.is_cancellation(&err) {
+                    Ok(EventResult::None)
+                } else {
+                    Err(err)
+                }
+            }
             Some(result) => result,
             None => Ok(EventResult::None),
         }

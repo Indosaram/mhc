@@ -187,7 +187,7 @@ where
             after_sequence,
             reason,
         };
-        let result = async {
+        let result: Result<CompactColdOutcome, CompactError> = async {
             self.index.store().assert_readable()?;
             let active = |token: &Arc<Mutex<Token>>| lock(token).active || (self.is_active)(key);
             if active(token) {
@@ -197,7 +197,7 @@ where
                 return Ok(rejected(ColdRejection::UnknownMessage));
             }
             let cut = self.index.freeze()?;
-            let applied = async {
+            let applied: Result<CompactColdOutcome, CompactError> = async {
                 let row = self.index.lookup(&cut, key).await?;
                 self.index.store().assert_readable()?;
                 if active(token) {

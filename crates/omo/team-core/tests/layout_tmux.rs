@@ -238,6 +238,7 @@ fn layout_given_env_auth_no_argv_contains_the_password_and_the_pane_consumes_its
     let password = ["a", "'", "b"].concat();
     let username = "u".to_owned();
     let auth_directory = tmux_core::create_pane_auth_directory().expect("pane auth directory");
+    #[cfg(unix)]
     let sandbox = tempfile::Builder::new()
         .prefix("team-pane-auth-")
         .tempdir()

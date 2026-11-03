@@ -328,6 +328,7 @@ async fn open_endpoint(
             std::path::Path::new(&gc_dir),
             &maho_rpc::host_gc::HostGcOptions {
                 kinds: Some(vec![maho_rpc::host_endpoints::EndpointKind::Tui]),
+                ..Default::default()
             },
         )
         .await;

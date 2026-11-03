@@ -329,7 +329,8 @@ mod tests {
             entry(SearchProvider::Google, None, None),
             entry(SearchProvider::ChatgptSubscription, Some("own"), None),
         ]);
-        let none: Option<&fn(LoginModel) -> std::future::Ready<Option<LoginAuth>>> = None;
+        type AuthFn = fn(LoginModel) -> std::future::Ready<Option<LoginAuth>>;
+        let none: Option<&AuthFn> = None;
         let resolved = resolve_session_login_entries(config, None, &[], none, None)
             .await
             .expect("resolve");

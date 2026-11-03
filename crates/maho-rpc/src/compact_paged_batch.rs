@@ -27,6 +27,9 @@ enum Sub<T> {
     Draft(Box<Draft<T>>),
 }
 
+type MinSplit<T> = (Box<Draft<T>>, Sub<T>);
+type TakeMinResult<T> = Result<MinSplit<T>, CompactError>;
+
 impl<T> Sub<T> {
     fn height(&self) -> i64 {
         match self {
@@ -206,7 +209,7 @@ impl<'a, T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> Compac
     fn take_min(
         &self,
         sub: Sub<T>,
-    ) -> BoxFuture<'_, Result<(Box<Draft<T>>, Sub<T>), CompactError>> {
+    ) -> BoxFuture<'_, TakeMinResult<T>> {
         Box::pin(async move {
             let mut node = self.open(sub).await?;
             if matches!(node.left, Sub::Empty) {

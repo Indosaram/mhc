@@ -32,10 +32,12 @@ fn message() -> AssistantMessage {
     message
 }
 
-fn recorder() -> (
+type RecordedEvents = (
     Arc<Mutex<Vec<OrderedAgentRecord>>>,
     Arc<dyn Fn(OrderedAgentRecord) -> BoxFuture<'static, ()> + Send + Sync>,
-) {
+);
+
+fn recorder() -> RecordedEvents {
     let records: Arc<Mutex<Vec<OrderedAgentRecord>>> = Arc::default();
     let sink = records.clone();
     (
@@ -87,7 +89,7 @@ fn holds_capture_only_between_the_first_subscription_and_last_release() {
     assert!(
         dispatch_internal_agent(
             Some(&channel),
-            InternalEvent::Event(Captured::bare(AgentEvent::AgentStart))
+            InternalEvent::Event(Box::new(Captured::bare(AgentEvent::AgentStart)))
         )
         .is_none()
     );

@@ -710,6 +710,56 @@ pub async fn mount_agent_session_runtime(
         extension_ui,
         tool_runtime,
     } = request;
+    // Session-role policy (`memory_write`, `effect_tools`, `tools_exclude`): validated, unioned with
+    // what this session recorded on earlier opens, and enforced at construction - excluded names
+    // never register, and every extension (this open and each reload) sees the sticky effective context.
+    #[cfg(feature = "omo")]
+    let (policy, recorded_bindings, session_profile, exclude_tools) = {
+        let recorded_entries = session_manager
+            .as_ref()
+            .map(SessionManager::entries)
+            .unwrap_or_default();
+        let policy = super::session_policy::SessionPolicy::resolve(
+            &session_profile.session_context,
+            &recorded_entries,
+        )?;
+        let recorded_bindings = super::session_policy::memory_binding_count(&recorded_entries);
+        let session_profile = maho_ext_api::ExtensionSessionProfile {
+            session_context: policy.effective_context(&session_profile.session_context),
+            ..session_profile
+        };
+        let policy_excluded = policy.excluded_tool_names();
+        let exclude_tools = if policy_excluded.is_empty() {
+            exclude_tools
+        } else {
+            let mut names = exclude_tools.unwrap_or_default();
+            let missing: Vec<String> = policy_excluded
+                .into_iter()
+                .filter(|name| !names.contains(name))
+                .collect();
+            names.extend(missing);
+            Some(names)
+        };
+        (policy, recorded_bindings, session_profile, exclude_tools)
+    };
+    // Without the `omo` build there is no memory to bind and no policy to record, so a session-role
+    // policy cannot be honored: the open fails closed instead of ignoring it.
+    #[cfg(not(feature = "omo"))]
+    if let Some(key) = [
+        maho_rpc::rpc_input_validation::MEMORY_WRITE_CONTEXT_KEY,
+        maho_rpc::rpc_input_validation::EFFECT_TOOLS_CONTEXT_KEY,
+        maho_rpc::rpc_input_validation::TOOLS_EXCLUDE_CONTEXT_KEY,
+    ]
+    .into_iter()
+    .find(|key| session_profile.session_context.contains_key(*key))
+    {
+        return Err(format!(
+            "{}: context {key} needs the omo build of mhc",
+            maho_rpc::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+        ));
+    }
+    let work_tools_requested =
+        super::supervisor_work_tools::supervisor_work_tools_requested(&session_profile);
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
     launch_config.cwd = cwd.clone();
@@ -867,6 +917,27 @@ pub async fn mount_agent_session_runtime(
         super::hook_sources::build_loaded_hook_sources(&launch_config, settings)
     });
     created.session.set_hook_sources(Some(hooks));
+    #[cfg(feature = "omo")]
+    if policy.memory_write_denied || policy.effect_tools_denied {
+        // Installed before the extensions bind, so a SessionStart-time prompt is gated too: a prompt
+        // starting with `/name` dispatches any extension command, so a restrictive role keeps only its
+        // allowlist, and the role refuses client-submitted user bash (plain exclusions do not).
+        let (memory_denied, effect_denied) =
+            (policy.memory_write_denied, policy.effect_tools_denied);
+        let gate: maho_core::agent_session::ExtensionCommandGate = Arc::new(
+            move |name: &str, args: &str, source: &maho_ext_api::SourceInfo| {
+                super::session_policy::restrictive_command_refusal(
+                    memory_denied,
+                    effect_denied,
+                    name,
+                    args,
+                    &source.source,
+                )
+            },
+        );
+        created.session.set_extension_command_gate(Some(gate));
+        created.session.set_user_bash_denied(true);
+    }
     let mut bindings = extension_bindings
         .map(|factory| factory(&created.session))
         .unwrap_or_default();
@@ -885,6 +956,83 @@ pub async fn mount_agent_session_runtime(
             ..bindings
         })
         .await;
+    // Every builtin and extension tool has registered by now: an exclusion that withheld nothing
+    // names no real tool. Check before recording, so a rejected open leaves no policy entry.
+    #[cfg(feature = "omo")]
+    {
+        let withheld: std::collections::BTreeSet<String> = created
+            .session
+            .withheld_excluded_tool_names()
+            .into_iter()
+            .collect();
+        let unknown = policy.unknown_requested_tools(&withheld);
+        if !unknown.is_empty() {
+            created.session.dispose().await;
+            return Err(format!(
+                "{}: tools_exclude names no registered tool: {}",
+                maho_rpc::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT,
+                unknown.join(", ")
+            ));
+        }
+    }
+    // A requested role must actually be served: settings (`defaultTools`) or exclusions can filter
+    // the builtin work tools, and a session without them must not open as a supervisor session.
+    if work_tools_requested {
+        let registered: std::collections::BTreeSet<String> = created
+            .session
+            .get_all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let missing: Vec<&str> = super::supervisor_work_tools::SUPERVISOR_WORK_TOOL_NAMES
+            .into_iter()
+            .filter(|name| !registered.contains(*name))
+            .collect();
+        if !missing.is_empty() {
+            created.session.dispose().await;
+            return Err(format!(
+                "{}: supervisor_tools=work requested but {} did not register (filtered by the defaultTools setting or tools_exclude)",
+                maho_rpc::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT,
+                missing.join(", ")
+            ));
+        }
+    }
+    #[cfg(feature = "omo")]
+    let mut restricted_identity = None;
+    #[cfg(feature = "omo")]
+    if policy.memory_write_denied || policy.effect_tools_denied {
+        // The memory bind of this open must record the denial: that bind also registers the own-root
+        // write guard of write/edit. Unbound (memory disabled, an identity conflict) the session
+        // would keep plain file writers without it, so it does not open.
+        // An effect-tool-denied session needs memory too: the memory component carries its MCP
+        // refusal, and the session exists to learn into memory.
+        let entries = created
+            .session
+            .with_session_manager(|manager| manager.entries());
+        if policy.memory_write_denied
+            && !super::session_policy::bound_memory_write_denied(recorded_bindings, &entries)
+        {
+            created.session.dispose().await;
+            return Err(format!(
+                "{}: memory_write=deny requires a memory bind that records the denial, and this open recorded none (memory disabled, an identity conflict, or no memory identity)",
+                maho_rpc::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+            ));
+        }
+        if super::session_policy::memory_binding_count(&entries) <= recorded_bindings {
+            created.session.dispose().await;
+            return Err(format!(
+                "{}: effect_tools=deny requires a memory bind, and this open recorded none (memory disabled, an identity conflict, or no memory identity)",
+                maho_rpc::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+            ));
+        }
+        restricted_identity = super::session_policy::bound_memory_identity(&entries);
+    }
+    #[cfg(feature = "omo")]
+    if let Some(data) = policy.entry_to_record() {
+        created.session.with_session_manager_mut(|manager| {
+            manager.append_custom(super::session_policy::SESSION_POLICY_CUSTOM_TYPE, Some(data))
+        });
+    }
     let diagnostics = created.services.diagnostics.clone();
     let model_fallback_message = created.model_fallback_message.clone();
     let mut runtime = AgentSessionRuntime::new(
@@ -906,12 +1054,51 @@ pub async fn mount_agent_session_runtime(
     runtime
         .session()
         .set_switch_project_trust(Some(switch_project_trust(config, false)));
+    #[cfg(feature = "omo")]
+    let runtime = keep_session_policy(runtime, &policy, restricted_identity);
     Ok(MountedRuntime {
         runtime,
         diagnostics,
         model_fallback_message,
         widget_requests,
     })
+}
+
+/// Makes the session-role policy outlive the session it was opened with.
+#[cfg(feature = "omo")]
+fn keep_session_policy(
+    mut runtime: AgentSessionRuntime,
+    policy: &super::session_policy::SessionPolicy,
+    restricted_identity: Option<String>,
+) -> AgentSessionRuntime {
+    // new_session / fork / switch_session keep the role: the replacement session records the same
+    // policy entry (its exclusions also carry over through the session's exclusion list).
+    if policy.is_restrictive() {
+        runtime.record_on_replacement(
+            super::session_policy::SESSION_POLICY_CUSTOM_TYPE,
+            policy.record(),
+        );
+    }
+    // switch_session / import keep the memory-write role and the effect-tool policy: a denied runtime
+    // never stamps its denial into an owner session, and an unrestricted runtime never drops a denied
+    // session's restrictions. A restricted runtime also keeps its memory identity, so the
+    // replacement's bind cannot hit an identity conflict and leave it unbound.
+    let denied = policy.memory_write_denied;
+    let effect_denied = policy.effect_tools_denied;
+    let switch_guard: maho_core::agent_session_runtime::SwitchGuard =
+        Box::new(move |entries: &[serde_json::Value]| {
+            super::session_policy::cross_role_switch_error(denied, entries)
+                .or_else(|| super::session_policy::effect_tools_switch_error(effect_denied, entries))
+                .or_else(|| {
+                    super::session_policy::memory_identity_switch_error(
+                        restricted_identity.as_deref(),
+                        entries,
+                    )
+                })
+                .map_or(Ok(()), Err)
+        });
+    runtime.set_switch_guard(Some(switch_guard));
+    runtime
 }
 
 /// The session factory shape the host mounts: one call per session, keyed by cwd and

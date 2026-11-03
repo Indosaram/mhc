@@ -245,13 +245,16 @@ fn counting_context(resolutions: &Arc<AtomicUsize>) -> ToolContextSource<()> {
     }))
 }
 
+type CallStatesHook = Box<dyn Fn(&[String]) -> Vec<Json>>;
+type ExtraWritesHook = Box<dyn Fn(&str, &[String]) -> Vec<Write>>;
+
 struct FixtureOptions {
     calls: Vec<&'static str>,
     tools: Vec<Arc<AgentHarnessTool<()>>>,
     mode: ToolExecutionMode,
     stop_reason: StopReason,
-    call_states: Option<Box<dyn Fn(&[String]) -> Vec<Json>>>,
-    extra_writes: Option<Box<dyn Fn(&str, &[String]) -> Vec<Write>>>,
+    call_states: Option<CallStatesHook>,
+    extra_writes: Option<ExtraWritesHook>,
     tool_context: ToolContextSource<()>,
     cancelled: bool,
     on_emit: Option<EmitHook>,
@@ -550,7 +553,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
             parent_id: None,
             kind: EntryKind::Message {
                 message: maho_agent::types::AgentMessage::from(maho_ai::types::Message::Assistant(
-                    assistant,
+                    Arc::new(assistant),
                 )),
                 terminate: None,
             },
@@ -590,7 +593,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
     let restored = restore_lane(&*session, "main", &BACKGROUND_CONTEXT)
         .await
         .expect("restore lane");
-    let mut lane = Lane::new(
+    let lane = Lane::new(
         "main".into(),
         session.clone(),
         restored,

@@ -37,11 +37,17 @@ mod tests {
 
     #[test]
     fn maps_known_unknown_and_empty() {
-        assert_eq!(
-            to_telemetry_terminal_program(Some("iTerm.app")),
-            Some("iTerm.app")
-        );
-        assert_eq!(to_telemetry_terminal_program(Some("MyTerm")), Some("other"));
+        for known in KNOWN_TERMINAL_PROGRAMS {
+            assert_eq!(to_telemetry_terminal_program(Some(known)), Some(known));
+        }
+        for unknown in [
+            "/home/sentinel-user/bin/x",
+            "my-private-terminal",
+            "iterm.app",
+            " vscode ",
+        ] {
+            assert_eq!(to_telemetry_terminal_program(Some(unknown)), Some("other"));
+        }
         assert_eq!(to_telemetry_terminal_program(Some("")), None);
         assert_eq!(to_telemetry_terminal_program(None), None);
     }

@@ -509,7 +509,6 @@ mod tests {
             maho_core::lockfile_policy::CredentialStoreBusyError::new("auth.json", 10)
         )));
     }
-    use maho_ai::auth::types::CredentialStore as _;
     struct BusyStore(maho_ai::auth::credential_store::InMemoryCredentialStore);
     #[async_trait::async_trait]
     impl maho_ai::auth::types::CredentialStore for BusyStore {

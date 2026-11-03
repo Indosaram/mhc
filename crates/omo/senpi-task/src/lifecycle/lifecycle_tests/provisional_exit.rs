@@ -1,7 +1,9 @@
 //! `lifecycle/provisional-exit.ts` through reconciliation: the lifecycle-side cases of
 //! `manager/provisional-exit.test.ts`, `manager/provisional-exit-retry.test.ts` and
-//! `lifecycle/own-crash-reconcile.test.ts`. The manager-side writer of `provisional_exit`
-//! (`manager/provisional-exit.ts`) is not ported, so the record is seeded with the exit it writes.
+//! `lifecycle/own-crash-reconcile.test.ts`. The actual manager writer of `provisional_exit`
+//! and 3 deterministic tests exist in `manager/provisional_exit.rs` and
+//! `manager/manager_tests/provisional_exit.rs`. The tests here exercise the lifecycle
+//! reconciliation and recovery paths with seeded exits.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -279,4 +281,33 @@ fn a_deferred_owner_retry_loses_a_provisional_exit_instead_of_reviving_it() {
     assert_lost_without_replay(&temp, &h);
     h.lifecycle.dispose();
     gates.release_all();
+}
+
+#[test]
+fn same_session_detached_retry_loses_a_provisional_exit_without_replay() {
+    let temp = temp_store();
+    seed_exited(&temp, "parent-1");
+    temp.store.transition(TASK_ID, &TaskTransition::DetachRpc {
+        timestamp: crate::shared::iso_from_ms(now_ms()),
+    }).expect("detach");
+    let h = harness(&temp, &[], Some(Arc::new(|_| {})));
+    crate::lifecycle::deferred_revival::retry_deferred_scoped_child(
+        h.lifecycle.context(), TASK_ID, "parent-1", "lock_contended",
+    ).expect("scoped retry");
+    assert_lost_without_replay(&temp, &h);
+    h.lifecycle.dispose();
+}
+
+#[test]
+fn stopped_scoped_retry_cannot_lose_or_revive_a_child() {
+    let temp = temp_store();
+    let original = seed_exited(&temp, "parent-1");
+    let h = harness(&temp, &[], Some(Arc::new(|_| {})));
+    crate::lifecycle::deferred_revival::stop_scoped_retries(h.lifecycle.context(), "parent-1");
+    crate::lifecycle::deferred_revival::retry_deferred_scoped_child(
+        h.lifecycle.context(), TASK_ID, "parent-1", "lock_contended",
+    ).expect("stopped retry");
+    assert_eq!(load(&temp), original);
+    assert_eq!(h.respawns.load(Ordering::SeqCst), 0);
+    h.lifecycle.dispose();
 }

@@ -81,7 +81,9 @@ fn user_creation_target_is_basename_anchored() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn plan9_fixture() -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, BTreeMap<String, String>), Box<dyn std::error::Error>> {
+type Plan9Fixture = (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, BTreeMap<String, String>);
+
+fn plan9_fixture() -> Result<Plan9Fixture, Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let project = home.join("project");

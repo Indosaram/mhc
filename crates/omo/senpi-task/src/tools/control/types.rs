@@ -491,6 +491,7 @@ pub enum SendResultDetails {
 impl SendResultDetails {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Unresponsive { .. } => "unresponsive",
             Self::Steered { .. } => "steered",
             Self::Revived { .. } => "revived",
             Self::Stale { .. } => "stale",

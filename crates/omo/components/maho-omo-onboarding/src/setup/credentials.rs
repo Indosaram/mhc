@@ -272,6 +272,7 @@ pub fn plan_credentials(
         pending: result.additions.len(),
         current,
         notices: sources.notices,
+        malformed: false,
         result,
         guidance,
         found,

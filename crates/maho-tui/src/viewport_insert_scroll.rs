@@ -60,8 +60,8 @@ pub fn plan_viewport_insert_scroll(
     }
 
     let scrolled_out = viewport_top - prev_viewport_top;
-    for row in 0..scrolled_out {
-        if Some(&previous_visible[row]) != new_lines.get(prev_viewport_top + row) {
+    for (row, previous) in previous_visible.iter().take(scrolled_out).enumerate() {
+        if Some(previous) != new_lines.get(prev_viewport_top + row) {
             return None;
         }
     }

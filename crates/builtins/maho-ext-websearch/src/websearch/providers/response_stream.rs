@@ -53,10 +53,8 @@ pub fn collect_response_stream(body_text: &str) -> Value {
             continue;
         }
         match event["type"].as_str() {
-            Some("response.output_item.done") => {
-                if event["item"].is_object() {
-                    done_items.push(event["item"].clone());
-                }
+            Some("response.output_item.done") if event["item"].is_object() => {
+                done_items.push(event["item"].clone());
             }
             Some("response.completed" | "response.done") => {
                 completed_output = event["response"]["output"]
