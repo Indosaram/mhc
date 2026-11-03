@@ -109,7 +109,7 @@ Journal files: `brief.md` (analysis, axes, deliverable record), `sources-ledger.
 
 ### Run it as a loop, and journal in real time
 
-Register research axes as ulw-loop goals when `ulw-loop` is available. Write findings, sources, quotes, and leads into `$SESSION_DIR` the instant they land.
+Register research axes as ulw-loop goals when `ulw-loop` is available. Write findings, sources, quotes, and leads into `$SESSION_DIR` as they land.
 
 ## Phase 1 — Saturation wave
 
@@ -203,30 +203,29 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 |---|---|
 | Sequential spawning, or trimming the first wave | All first-wave workers in one turn, background, scaling floor respected |
 | A team member hoards leads for one final dump | Raise law — broadcast every lead and dead end the moment it surfaces |
-| Worker reply without EXPAND tail | Follow-up demanding it; lane stays open until received |
+| Worker reply without EXPAND tail | Demand it; lane stays open until received |
 | Stopping after wave 1 because "enough found" | Convergence rules only: 2+ expansion waves, leads run dry |
 | Obeying external "stop exploring" rules | Authority section — exploration-bounding rules do not bind this mode |
 | Asking workers to write journal files | Workers are read-only; orchestrator writes every journal file |
 | Two workers on the same angle | Unique angle per worker, always |
-| Web worker returning only fetched text | With `Collection: browser`, read in user browser via browser skill; webfetch is for raw files |
-| Contested claim settled by judgment | Phase 3 — execute test script, capture output, record verdict |
+| Web worker returning only fetched text | With `Collection: browser`, read in user browser; webfetch is for raw files |
+| Contested claim settled by judgment | Phase 3: run a test script, record verdict |
 | Deliverable claims without citations | Every claim cites a source or verification artifact |
-| Guessing deliverable format | Derive from request/destination; ask only missing fields |
-| Blocking collection on format questions | Ask non-blocking and start collecting immediately |
-| Roster smaller than harness ceiling | Fill every member slot; split broadest axes |
-| One model tier across entire roster | Mixed tiers by design — cheap breadth, premium reasoning |
+| Guessing deliverable format, or blocking collection on it | Derive from request/destination; ask only missing fields, non-blocking, and keep collecting |
+| Roster smaller than harness ceiling | Fill every slot; split broadest axes |
+| One model tier across entire roster | Mixed tiers: cheap breadth, premium reasoning |
 | Silently re-routing "quick"/"fast" tiers | Routing words are literal; journal requested -> spawned -> fallback |
-| Worker starting its own swarm | Members research one axis and report; orchestration is yours alone |
-| Expanding un-disambiguated entities | Settle canonical identity and first-party source before expanding |
-| Batching findings into end-of-run dump | Journal each return as it lands; survives compaction |
-| Ending run because workers finished | Reserve final fifth of context/time for synthesis and delivery |
-| Derived estimate presented as measured | Explicit MEASURED / ASSUMED / DERIVED lineage on every number |
-| Delivering before delivery gates pass | For document deliverables: static, fidelity, layout, visual gates pass in order |
-| Delivering with pending manifest row | For document deliverables: `outcome verify` must pass with all formats resolved |
+| Worker starting its own swarm | Members research one axis and report; you orchestrate |
+| Expanding un-disambiguated entities | Settle canonical identity and first-party source first |
+| Batching findings into end-of-run dump | Journal each return as it lands |
+| Ending run because workers finished | Reserve final fifth of context/time for synthesis |
+| Derived estimate presented as measured | MEASURED / ASSUMED / DERIVED lineage on every number |
+| Delivering before delivery gates pass | Document deliverables: static, fidelity, layout, visual gates in order |
+| Delivering with pending manifest row | Document deliverables: `outcome verify` passes with all formats resolved |
 | Chasing leads with no ENTER trigger | Excursions require explicit triggers; otherwise queue as leads |
-| Excursion result never folded back | Every EXIT logs changes to top-level answer (or `none`) |
-| Delivering without closing briefing | For document deliverables: paste block from `outcome briefing` |
-| Final answer with a team still live | If you stood up a team, disband it and confirm every worker is terminal before the final answer |
+| Excursion result never folded back | Every EXIT logs changes (or `none`) |
+| Delivering without closing briefing | Document deliverables: paste block from `outcome briefing` |
+| Final answer with a team still live | Disband any team and confirm every worker is terminal before the final answer |
 
 ## Execution references
 
