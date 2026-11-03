@@ -115,6 +115,9 @@ struct State {
     live: HashMap<String, LiveTask>,
     /// Tasks whose child start is in flight: the child may already run before it reaches `live`.
     launching: HashSet<String>,
+    /// Tasks this process claimed whose start has not returned yet: the record is resident under this
+    /// host's pid with no handle, which a concurrent reconcile must not read as a crashed orphan.
+    claiming: HashSet<String>,
     child_subscribers: HashMap<String, Vec<ChildSubscriber>>,
     released: HashMap<String, i64>,
     waiters: HashMap<String, Vec<(u64, WaitWaker)>>,
@@ -372,6 +375,32 @@ pub fn create_task_manager(options: TaskManagerOptions) -> TaskManager {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Saves a claim draft with its id marked `claiming` BEFORE the record file exists, so a reconcile running
+/// beside this start never sees the new resident record without the mark (omo `#launching` covers the same
+/// window upstream, where nothing else runs between the claim and the tracked launch).
+struct ClaimingSaver<'a>(&'a Inner);
+impl TaskRecordSaver for ClaimingSaver<'_> {
+    fn save(&self, record: &TaskRecord) -> Result<(), StoreError> {
+        lock(&self.0.state).claiming.insert(record.task_id.clone());
+        let saved = self.0.saver.save(record);
+        if saved.is_err() {
+            lock(&self.0.state).claiming.remove(&record.task_id);
+        }
+        saved
+    }
+}
+
+/// Clears a claimed task's `claiming` mark when its start returns.
+struct ClaimMark<'a> {
+    inner: &'a Inner,
+    task_id: String,
+}
+impl Drop for ClaimMark<'_> {
+    fn drop(&mut self) {
+        lock(&self.inner.state).claiming.remove(&self.task_id);
+    }
 }
 
 fn resident_record(inner: &Inner, task_id: &str) -> Option<TaskRecord> {
@@ -2220,7 +2249,8 @@ impl TaskManager {
     }
 
     pub fn is_launching(&self, task_id: &str) -> bool {
-        lock(&self.inner.state).launching.contains(task_id)
+        let state = lock(&self.inner.state);
+        state.launching.contains(task_id) || state.claiming.contains(task_id)
     }
 
     pub fn resident_task_ids(&self) -> Vec<String> {
@@ -3014,6 +3044,8 @@ impl Inner {
         let requested_registration = requested_name
             .as_deref()
             .map(|name| lock(&self.names).register(&spec.parent_session_id, Some(name), None));
+        // Marked `claiming` from the save until this start returns: covers the claimed record until `launching`
+        // (or a queue/hold) takes over.
         let claimed = match self.claim(
             spec,
             plan,
@@ -3059,6 +3091,10 @@ impl Inner {
                     error_message: ID_CONTENTION_MESSAGE.to_string(),
                 });
             }
+        };
+        let _claim_mark = ClaimMark {
+            inner: self,
+            task_id: claimed.task_id.clone(),
         };
         if let Some(admission) = &spec.admission {
             admission.bind(&claimed.task_id);
@@ -3284,7 +3320,7 @@ impl Inner {
                 .then_some(&name_available as &dyn Fn(&str) -> bool),
             ..ClaimOptions::default()
         };
-        claim_task_record(self.saver.as_ref(), &claim_draft, &options)
+        claim_task_record(&ClaimingSaver(self), &claim_draft, &options)
     }
 
     fn bookkeeping_failed(
