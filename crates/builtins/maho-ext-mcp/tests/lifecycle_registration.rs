@@ -276,7 +276,7 @@ async fn wire_status_published_by_the_pre_reload_runtime_is_dropped_without_pani
     let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<McpWireStatusSnapshot>();
     let subscription = session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(move |snapshot| { let _ = send.send(snapshot.clone()); })).await.expect("runner bound");
     // When an old-runtime worker publishes its wire status after the reload
-    let snapshot = McpWireStatusSnapshot {servers: vec![McpWireStatusServer {name: "stale".into(), server_info: None, tools: Vec::new(), resources: Vec::new(), resource_templates: Vec::new(), auth_status: McpWireAuthStatus::Unsupported, status: None}]};
+    let snapshot = McpWireStatusSnapshot {servers: vec![McpWireStatusServer {name: "stale".into(), server_info: None, last_error: None, tools: Vec::new(), resources: Vec::new(), resource_templates: Vec::new(), auth_status: McpWireAuthStatus::Unsupported, status: None}]};
     let worker = tokio::spawn(async move { maho_ext_mcp::index::publish_wire_status(&stale, &snapshot) });
     // Then the worker finishes without panicking, reports the stale runtime as its typed outcome,
     // and the stale snapshot reaches no live consumer
