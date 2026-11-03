@@ -224,6 +224,12 @@ pub fn fold_send_outcome(
                 settled: Some(settled),
             })
         }
+        SendOutcome::Unresponsive { reason, .. } => Err(control_error(
+            DagNodeControlErrorCode::NodeUnresponsive,
+            reason,
+            &run_id,
+            &node_id,
+        )),
         SendOutcome::NotFound { .. } => Err(control_error(
             DagNodeControlErrorCode::NodeNotFound,
             format!("dag node \"{node_id}\" points at task {task_id}, which no longer exists"),

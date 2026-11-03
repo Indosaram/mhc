@@ -12,8 +12,9 @@ first
   fixture person
 </human>
 <external_projection>
+Names drop ".md" (a quoted name is exact).
 $MEMORY_DIR/
-notes/facts/: example.md
+notes/facts/: example
 </external_projection>
 </memory>
 

@@ -1,4 +1,10 @@
-//! Strict path containment using lexical resolution followed by native canonicalization.
+//! Strict path containment using native canonicalization of the caller's own path spelling.
+//!
+//! Native realpath receives the original component sequence before lexical normalization: on
+//! POSIX a symlink must be followed before a later `..`. Callers that open a lexically resolved
+//! path must pass that same resolved path; raw-string openers must pass the raw path. Windows
+//! compares normalized long names case-insensitively; POSIX compares native spelling (so a case
+//! alias of the same directory on a case-insensitive volume is accepted).
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -32,10 +38,9 @@ fn lexical_resolve(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn canonical(path: &Path, options: &PathContainmentOptions<'_>) -> io::Result<PathBuf> {
-    let resolved = lexical_resolve(path)?;
     let canonical = match options.realpath {
-        Some(realpath) => realpath(&resolved)?,
-        None => std::fs::canonicalize(resolved)?,
+        Some(realpath) => realpath(path)?,
+        None => std::fs::canonicalize(path)?,
     };
     lexical_resolve(&canonical)
 }
@@ -112,16 +117,15 @@ fn normalize_windows(path: &str) -> String {
 }
 
 fn canonical_windows(path: &Path, options: &PathContainmentOptions<'_>) -> io::Result<String> {
-    let raw = path.to_string_lossy().replace('/', "\\");
-    let absolute = if raw.starts_with("\\\\") || raw.as_bytes().get(1) == Some(&b':') {
-        raw
-    } else {
-        format!("{}\\{}", std::env::current_dir()?.display(), raw)
-    };
-    let resolved = PathBuf::from(normalize_windows(&absolute));
     let canonical = match options.realpath {
-        Some(realpath) => realpath(&resolved)?,
-        None => std::fs::canonicalize(resolved)?,
+        Some(realpath) => realpath(path)?,
+        None => std::fs::canonicalize(path)?,
     };
-    Ok(normalize_windows(&canonical.to_string_lossy()))
+    let canonical = canonical.to_string_lossy().replace('/', "\\");
+    let absolute = if canonical.starts_with("\\\\") || canonical.as_bytes().get(1) == Some(&b':') {
+        canonical
+    } else {
+        format!("{}\\{}", std::env::current_dir()?.display(), canonical)
+    };
+    Ok(normalize_windows(&absolute))
 }

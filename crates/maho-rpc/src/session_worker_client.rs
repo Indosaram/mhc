@@ -176,7 +176,9 @@ impl WorkerGrants {
                 .filter(|(_, grant)| grant.connection.as_deref() == Some(connection))
                 .map(|(id, _)| id.clone())
                 .collect();
-            ids.into_iter().filter_map(|id| pending.remove(&id)).collect()
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id))
+                .collect()
         };
         for grant in cancelled {
             (grant.cancel)();
@@ -185,8 +187,9 @@ impl WorkerGrants {
 
     /// `#stop`: every pending dialog is cancelled, so a closing worker is never left waiting on one.
     pub fn cancel_all(&self) {
-        let cancelled: Vec<PendingGrant> =
-            std::mem::take(&mut *lock(&self.pending)).into_values().collect();
+        let cancelled: Vec<PendingGrant> = std::mem::take(&mut *lock(&self.pending))
+            .into_values()
+            .collect();
         for grant in cancelled {
             (grant.cancel)();
         }
@@ -387,6 +390,25 @@ pub struct SessionWorkerCallbacks {
     /// The bound writer's security bridge (senpi `SessionEventWriter`'s grant methods); `None` forwards a worker's
     /// grant traffic to the clients unchanged.
     pub security: Option<Arc<dyn WorkerSecurityWriter>>,
+    /// The host writer's presenter state when the deployment enforces private MCP forms (senpi
+    /// `writer.mcpPresenters`); `None` refuses every `mcp_form_bind` the worker sends.
+    pub presenters: Option<Arc<crate::session_event_writer::SessionMcpPresenters>>,
+}
+/// The host-side private form state of one worker (senpi `privateBinding` / `privateOperations`).
+#[derive(Default)]
+struct PrivateForms {
+    unbind: Option<(
+        crate::session_event_writer::McpFormsUnbind,
+        Option<crate::mcp_form_types::Unsubscribe>,
+    )>,
+    operations: std::collections::BTreeMap<
+        String,
+        (
+            maho_ai::utils::abort::AbortController,
+            maho_ai::utils::abort::AbortController,
+            String,
+        ),
+    >,
 }
 struct ClientState {
     snapshot: Option<WorkerSnapshot>,
@@ -412,6 +434,13 @@ struct ClientInner {
     /// The grant dialogs this worker is waiting on, when a writer bridges them.
     grants: Option<WorkerGrants>,
     started: std::time::Instant,
+    /// The host store's mirror listener posting each change to this worker (senpi `stopLimitMirror`).
+    limit_mirror: std::sync::Mutex<Option<crate::session_worker_limit_mirror::LimitMirror>>,
+    /// The host's ordered acceptance lane for this worker incarnation, present only while the flag is on.
+    acceptance: Option<crate::session_registry::SharedAcceptanceLane>,
+    /// The next output frame ordinal this incarnation must send.
+    expected_ordinal: std::sync::Mutex<u64>,
+    private_forms: std::sync::Mutex<PrivateForms>,
 }
 /// Host-side handle of one session worker process (senpi \`SessionWorkerClient\`).
 pub struct SessionWorkerClient {
@@ -480,6 +509,9 @@ impl ClientInner {
                 return;
             }
         }
+        if let Some(lane) = &self.acceptance {
+            lock(lane).retire(crate::session_acceptance_lane::RetireReason::WorkerFailed);
+        }
         (self.callbacks.failure)(error);
         self.quarantine();
     }
@@ -499,13 +531,16 @@ impl ClientInner {
             state.controls.stop();
         }
         lock(&self.requests).close_with_error("session_worker_exited");
+        drop(lock(&self.limit_mirror).take());
+        self.release_private_forms();
         self.settled.send_modify(|count| *count += 1);
         (self.callbacks.exit)();
     }
     /// senpi `receive`'s `output` case before publication: the worker's security traffic is the host's to route, and a
     /// grant-select request goes to the one connection that can present it.
     fn relay_security(&self, record: &Value, connection: Option<&str>) -> SecurityRelay {
-        let (Some(grants), Some(session_id)) = (&self.grants, lock(&self.state).bound_session.clone())
+        let (Some(grants), Some(session_id)) =
+            (&self.grants, lock(&self.state).bound_session.clone())
         else {
             return SecurityRelay::Forward(connection.map(str::to_owned));
         };
@@ -540,22 +575,16 @@ impl ClientInner {
             let fallback = lock(&self.state).capabilities.clone();
             let cancel_id = id.to_owned();
             let client = self.outbox.clone();
-            let target = grants.route(
-                &session_id,
-                id,
-                connection,
-                &fallback,
-                move || {
-                    // `post({ type: "cancel_grant", id })`: the worker ends the dialog nobody can present.
-                    if let Ok(line) = serde_json::to_string(
-                        &crate::session_worker_protocol::HostToSessionWorker::CancelGrant {
-                            id: cancel_id.clone(),
-                        },
-                    ) {
-                        let _ = client.send(format!("{line}\n"));
-                    }
-                },
-            );
+            let target = grants.route(&session_id, id, connection, &fallback, move || {
+                // `post({ type: "cancel_grant", id })`: the worker ends the dialog nobody can present.
+                if let Ok(line) = serde_json::to_string(
+                    &crate::session_worker_protocol::HostToSessionWorker::CancelGrant {
+                        id: cancel_id.clone(),
+                    },
+                ) {
+                    let _ = client.send(format!("{line}\n"));
+                }
+            });
             if !target.accepted {
                 return SecurityRelay::Consumed;
             }
@@ -569,7 +598,7 @@ impl ClientInner {
             .as_ref()
             .and_then(|grants| grants.accept_response(id, connection))
     }
-    fn receive(&self, message: crate::session_worker_protocol::SessionWorkerWire) {
+    fn receive(self: &Arc<Self>, message: crate::session_worker_protocol::SessionWorkerWire) {
         use crate::session_worker_protocol::SessionWorkerWire as W;
         if lock(&self.state).stopped {
             if let Some(signal) = wire_signal(&message) {
@@ -626,6 +655,10 @@ impl ClientInner {
                 signal,
                 activity,
                 snapshot,
+                ordinal,
+                recovery,
+                transitions,
+                bootstrap,
             } => {
                 if !lock(&self.state).binding_ready {
                     self.credit(
@@ -634,6 +667,26 @@ impl ClientInner {
                         None,
                     );
                     return;
+                }
+                if self.acceptance.is_some() {
+                    // A gap, duplicate or reordered frame is denied and ends this incarnation before any mutation.
+                    let mut expected = lock(&self.expected_ordinal);
+                    if ordinal != Some(*expected) {
+                        let kind = if ordinal.is_some_and(|ordinal| ordinal < *expected) {
+                            "duplicate"
+                        } else {
+                            "gap"
+                        };
+                        drop(expected);
+                        self.credit(
+                            signal,
+                            crate::session_worker_protocol::WORKER_CREDIT_CODES.conflict,
+                            None,
+                        );
+                        self.fail(&format!("session_worker_frame_{kind}"));
+                        return;
+                    }
+                    *expected += 1;
                 }
                 // Identity and activity commit before publication; clients may attach or disconnect on that event.
                 if let Some(replacement) = &snapshot {
@@ -674,6 +727,23 @@ impl ClientInner {
                         return;
                     }
                 };
+                // Applied before routing, and so before this frame's credit returns.
+                if let Some(lane) = &self.acceptance {
+                    let mut lane = lock(lane);
+                    match bootstrap {
+                        Some(bootstrap) => lane.bootstrap(
+                            crate::session_acceptance_lane::SessionBootstrap {
+                                transcript: bootstrap.transcript,
+                            },
+                            None,
+                        ),
+                        None => {
+                            lane.apply_transcript(&transitions.unwrap_or_default());
+                            let carrier = recovery.map(Into::into);
+                            lane.accept(&record, carrier.as_ref());
+                        }
+                    }
+                }
                 (self.callbacks.output)(record, target);
                 self.credit(
                     signal,
@@ -717,12 +787,222 @@ impl ClientInner {
                     Some(display),
                 );
             }
+            W::McpFormBind { id, durable_id } => self.bind_private_forms(&id, &durable_id),
+            W::McpFormReady { id, epoch } => {
+                let version = lock(&self.private_forms)
+                    .unbind
+                    .as_ref()
+                    .filter(|(unbind, _)| unbind.binding().epoch == epoch)
+                    .and_then(|(unbind, _)| unbind.binding().version());
+                self.send(
+                    &crate::session_worker_protocol::HostToSessionWorker::McpFormAvailability {
+                        epoch,
+                        version,
+                        id: Some(id),
+                    },
+                );
+            }
+            W::McpFormRelease { epoch } => {
+                let current = lock(&self.private_forms)
+                    .unbind
+                    .as_ref()
+                    .is_some_and(|(unbind, _)| unbind.binding().epoch == epoch);
+                if current {
+                    self.stop_private_binding();
+                }
+            }
+            W::McpFormCancel {
+                id,
+                epoch,
+                lifetime,
+            } => {
+                let operation = lock(&self.private_forms).operations.get(&id).cloned();
+                if let Some((operation, presentation, owner)) = operation
+                    && owner == epoch
+                {
+                    match lifetime {
+                        crate::session_worker_protocol::McpFormCancelLifetime::Operation => {
+                            operation.abort(None)
+                        }
+                        crate::session_worker_protocol::McpFormCancelLifetime::Presentation => {
+                            presentation.abort(None)
+                        }
+                    }
+                }
+            }
+            W::McpFormCreate {
+                id,
+                epoch,
+                version,
+                input,
+            } => self.create_private_form(id, epoch, version, input),
             W::RequestClose => (self.callbacks.request_close)(),
+            W::SubscriptionLimits { limits } => {
+                crate::session_worker_limit_mirror::adopt_wire(std::slice::from_ref(&limits));
+            }
             W::Failure { error } => self.fail(&error),
         }
     }
 }
+impl ClientInner {
+    fn stop_private_binding(&self) {
+        let unbind = lock(&self.private_forms).unbind.take();
+        if let Some((unbind, unsubscribe)) = unbind {
+            if let Some(unsubscribe) = unsubscribe {
+                unsubscribe();
+            }
+            match &self.callbacks.presenters {
+                Some(presenters) => unbind.unbind(presenters),
+                None => unbind.binding().dispose(),
+            }
+        }
+    }
+    /// The worker exited: its binding is disposed and every in-flight form aborts (senpi `exit` handler).
+    fn release_private_forms(&self) {
+        self.stop_private_binding();
+        let operations = std::mem::take(&mut lock(&self.private_forms).operations);
+        for (operation, _, _) in operations.into_values() {
+            operation.abort(None);
+        }
+    }
+    /// senpi `mcp_form_bind`: the host binds the worker's session and answers with the epoch and grant version.
+    fn bind_private_forms(self: &Arc<Self>, id: &str, durable_id: &str) {
+        self.stop_private_binding();
+        let session_id = lock(&self.state).bound_session.clone();
+        let (Some(presenters), Some(session_id)) = (self.callbacks.presenters.clone(), session_id)
+        else {
+            self.fail("private_form_unavailable");
+            return;
+        };
+        let attached = self
+            .grants
+            .as_ref()
+            .map(|grants| grants.writer().attached(&session_id))
+            .unwrap_or_default();
+        let Some(unbind) = presenters.bind(&session_id, durable_id, Arc::new(|| {}), &attached)
+        else {
+            self.fail("private_form_unavailable");
+            return;
+        };
+        let binding = Arc::clone(unbind.binding());
+        let weak = Arc::downgrade(self);
+        let (epoch, version_binding) = (binding.epoch.clone(), Arc::clone(&binding));
+        let unsubscribe = binding.subscribe.as_ref().map(|subscribe| {
+            subscribe(Arc::new(move || {
+                if let Some(inner) = weak.upgrade() {
+                    inner.send(
+                        &crate::session_worker_protocol::HostToSessionWorker::McpFormAvailability {
+                            epoch: epoch.clone(),
+                            version: version_binding.version(),
+                            id: None,
+                        },
+                    );
+                }
+            }))
+        });
+        lock(&self.private_forms).unbind = Some((unbind, unsubscribe));
+        self.send(
+            &crate::session_worker_protocol::HostToSessionWorker::McpFormBound {
+                id: id.to_owned(),
+                epoch: binding.epoch.clone(),
+                version: binding.version(),
+            },
+        );
+    }
+    /// senpi `mcp_form_create`: present through the host binding when the worker's grant version is still current.
+    fn create_private_form(
+        self: &Arc<Self>,
+        id: String,
+        epoch: String,
+        version: String,
+        input: crate::mcp_form_types::McpFormInputWire,
+    ) {
+        let presenter = lock(&self.private_forms)
+            .unbind
+            .as_ref()
+            .map(|(unbind, _)| Arc::clone(unbind.binding()))
+            .filter(|binding| {
+                binding.epoch == epoch && binding.version().as_deref() == Some(version.as_str())
+            })
+            .and_then(|binding| binding.capture());
+        let operation = maho_ai::utils::abort::AbortController::new();
+        let presentation = maho_ai::utils::abort::AbortController::new();
+        lock(&self.private_forms).operations.insert(
+            id.clone(),
+            (operation.clone(), presentation.clone(), epoch.clone()),
+        );
+        // NATIVE-DIVERGENCE(senpi Atomics fence): the fence is the operation abort a worker cancel frame sets.
+        let fence = operation.signal();
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let outcome = match presenter {
+                Some(presenter) => {
+                    (presenter.present)(crate::mcp_form_types::McpFormInput {
+                        wire: input,
+                        operation_signal: operation.signal(),
+                        operation_current: Some(Arc::new(move || !fence.aborted())),
+                        presentation_signal: presentation.signal(),
+                    })
+                    .await
+                }
+                None => crate::mcp_form_types::McpFormOutcome::processing_failure(),
+            };
+            let Some(inner) = weak.upgrade() else { return };
+            lock(&inner.private_forms).operations.remove(&id);
+            inner.send(
+                &crate::session_worker_protocol::HostToSessionWorker::McpFormSettlement {
+                    id,
+                    epoch,
+                    settlement_id: uuid::Uuid::new_v4().to_string(),
+                    outcome: outcome.to_wire(),
+                },
+            );
+        });
+    }
+}
 impl SessionWorkerClient {
+    /// A client with no worker process behind it, its outbox observable (tests of the registries that own one).
+    #[cfg(test)]
+    pub(crate) fn detached_for_test() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            output: Box::new(|_: Value, _: Option<String>| {}),
+            request_close: Box::new(|| {}),
+            failure: Box::new(|_: &str| {}),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: false,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: None,
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(None),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: None,
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: None,
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        (Self { inner }, outbox)
+    }
     /// Starts the worker process and its pipe pumps; only the process's actual exit releases ownership.
     pub fn spawn(
         spawn: &SpawnSessionWorker,
@@ -763,6 +1043,14 @@ impl SessionWorkerClient {
             callbacks,
             grants,
             started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: maho_core::engine_socket_flag::compact_updates_enabled().then(|| {
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::session_acceptance_lane::SessionAcceptanceLane::default(),
+                ))
+            }),
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
         });
         tokio::spawn(async move {
             while let Some(line) = lines.recv().await {
@@ -822,16 +1110,77 @@ impl SessionWorkerClient {
         configuration: &serde_json::Value,
         profile: &crate::session_registry::RpcSessionLaunchProfile,
     ) -> Result<String, String> {
-        let result=self.request(serde_json::json!({"type":"prepare","configuration":configuration,"profile":crate::session_worker_protocol::profile_to_wire(profile)})).await?;
+        // senpi#3695: subscribe to the host store's mirror BEFORE taking the snapshot the prepare carries, so no
+        // change lands between the two; a duplicate copy is a no-op in the worker's total order.
+        let outbox = self.inner.outbox.clone();
+        let mirror = crate::session_worker_limit_mirror::subscribe_mirror(move |limits| {
+            if let Ok(line) = serde_json::to_string(
+                &crate::session_worker_protocol::HostToSessionWorker::SubscriptionLimits {
+                    accounts: vec![limits],
+                },
+            ) {
+                let _ = outbox.send(format!("{line}\n"));
+            }
+        });
+        *lock(&self.inner.limit_mirror) = Some(mirror);
+        let result=self.request(serde_json::json!({"type":"prepare","configuration":configuration,"profile":crate::session_worker_protocol::profile_to_wire(profile),"subscriptionLimits":crate::session_worker_limit_mirror::mirror_snapshot_wire()})).await?;
         match (result["type"].as_str(), result["sessionPath"].as_str()) {
             (Some("prepared"), Some(path)) => Ok(path.to_owned()),
             _ => Err("Invalid worker prepare response".into()),
         }
     }
+    /// senpi `setPromptSurface`: the attach that names another surface moves the live session to it.
+    pub async fn set_prompt_surface(&self, surface: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"prompt_surface","surface":surface}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker prompt_surface response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setBrowserEngine`.
+    pub async fn set_browser_engine(&self, engine: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"browser_engine","engine":engine}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker browser_engine response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setPermissionPreset`.
+    pub async fn set_permission_preset(&self, preset: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"permission_preset","preset":preset}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker permission_preset response".into());
+        }
+        Ok(())
+    }
     pub async fn commit(&self) -> Result<WorkerSnapshot, String> {
-        let result = self.request(serde_json::json!({"type":"commit"})).await?;
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let request = match &self.inner.acceptance {
+            Some(_) => {
+                serde_json::json!({"type":"commit","acceptance":true,"recoveryEpoch":nonce})
+            }
+            None => serde_json::json!({"type":"commit"}),
+        };
+        let result = self.request(request).await?;
         if result["type"] != "ready" {
             return Err("Invalid worker commit response".into());
+        }
+        if let Some(lane) = &self.inner.acceptance {
+            let bootstrap: crate::session_worker_protocol::WorkerBootstrap =
+                serde_json::from_value(result["bootstrap"].clone())
+                    .map_err(|_| "Invalid worker commit response".to_owned())?;
+            lock(lane).bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap {
+                    transcript: bootstrap.transcript,
+                },
+                Some(nonce),
+            );
         }
         let snapshot: WorkerSnapshot = serde_json::from_value(result["snapshot"].clone())
             .map_err(|error| error.to_string())?;
@@ -857,6 +1206,9 @@ impl SessionWorkerClient {
             state.binding_ready = true;
         }
         let mut message = serde_json::json!({"type":"bind","sessionId":session_id,"display":self.inner.display()});
+        if self.inner.callbacks.presenters.is_some() {
+            message["mcpFormsEnforced"] = true.into();
+        }
         if let Some(connection) = connection {
             message["connection"] = connection.into();
         }
@@ -874,7 +1226,8 @@ impl SessionWorkerClient {
         // A response to a grant dialog belongs to the worker only when it came from the connection the dialog was
         // routed to (senpi `acceptWorkerGrantResponse`); any other answer is dropped here.
         if command.get("type").and_then(Value::as_str) == Some("extension_ui_response")
-            && let Some(id) = command.get("id").and_then(Value::as_str)
+            // The answered request is `uiRequestId` when present, else the frame `id` (senpi#4348).
+            && let Some(id) = crate::extension_ui_response::answered_ui_request_id(&command)
             && self.inner.accept_grant_response(id, connection.as_deref()) == Some(false)
         {
             return Ok(());
@@ -899,6 +1252,10 @@ impl SessionWorkerClient {
     pub fn dispose(&self) {
         self.inner.post(WorkerControl::CancelUi);
     }
+    /// The host's acceptance lane for this incarnation (senpi `acceptance`); the binding registers it.
+    pub fn acceptance(&self) -> Option<crate::session_registry::SharedAcceptanceLane> {
+        self.inner.acceptance.clone()
+    }
     pub fn snapshot(&self) -> Option<WorkerSnapshot> {
         lock(&self.inner.state).snapshot.clone()
     }
@@ -913,6 +1270,10 @@ impl SessionWorkerClient {
             lock(&self.inner.requests).active_count(),
             lock(&self.inner.state).snapshot.as_ref(),
         )
+    }
+    /// senpi `bindingReady`: the worker's routing binding is installed, so an attach may join it.
+    pub fn binding_ready(&self) -> bool {
+        lock(&self.inner.state).binding_ready
     }
     pub fn is_stopped(&self) -> bool {
         lock(&self.inner.state).stopped
@@ -1036,8 +1397,7 @@ mod tests {
             self.attached.clone()
         }
         fn has_capability(&self, connection: &str, capability: &str) -> bool {
-            capability == GRANT_SELECT_CAPABILITY
-                && self.capable.iter().any(|id| id == connection)
+            capability == GRANT_SELECT_CAPABILITY && self.capable.iter().any(|id| id == connection)
         }
         fn is_empty(&self) -> bool {
             self.empty
@@ -1139,6 +1499,156 @@ mod tests {
         assert_eq!(grants.accept_response("ui-1", Some("peer-a")), None);
     }
 
+    /// senpi 4348-worker-grant-answer: a bound client whose grant dialog `grant` went to `grant-client`, with the
+    /// worker's outbox observable; only the binding's command gate is under test, no worker process is spawned.
+    fn grant_gate_client() -> (
+        SessionWorkerClient,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let grants = grants(
+            &["question-only", "grant-client", "grant-other"],
+            &["grant-client", "grant-other"],
+            false,
+        );
+        let route = grants.route("s", "grant", Some("grant-client"), &[], || {});
+        assert_eq!(
+            route,
+            WorkerGrantRoute {
+                accepted: true,
+                connection: Some("grant-client".to_owned())
+            }
+        );
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            output: Box::new(|_: Value, _: Option<String>| {}),
+            request_close: Box::new(|| {}),
+            failure: Box::new(|_: &str| {}),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: true,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: Some("s".into()),
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(None),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: Some(grants),
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: None,
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        (SessionWorkerClient { inner }, outbox)
+    }
+
+    /// Sends one `extension_ui_response` from `connection` and returns how many commands reached the worker's outbox.
+    /// The command is polled once: a dropped answer settles at once, a forwarded one waits on the worker's reply.
+    fn answer(
+        client: &SessionWorkerClient,
+        outbox: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        connection: &str,
+        frame: Value,
+    ) -> usize {
+        use futures::FutureExt;
+        let mut command = serde_json::json!({"type":"extension_ui_response","value":"Grant and save permanently"});
+        for (key, value) in frame.as_object().into_iter().flatten() {
+            command[key] = value.clone();
+        }
+        let _ = client
+            .command(command, Some(connection.to_owned()), None)
+            .now_or_never();
+        let mut forwarded = 0;
+        while let Ok(line) = outbox.try_recv() {
+            if serde_json::from_str::<Value>(line.trim_end())
+                .is_ok_and(|message| message["type"] == "command")
+            {
+                forwarded += 1;
+            }
+        }
+        forwarded
+    }
+
+    #[tokio::test]
+    async fn attach_setters_post_their_upstream_requests_and_settle_on_the_result() {
+        let (client, mut outbox) = grant_gate_client();
+        for (kind, field, value) in [
+            ("prompt_surface", "surface", "app"),
+            ("browser_engine", "engine", "builtin"),
+            ("permission_preset", "preset", "guarded"),
+        ] {
+            let call = async {
+                match kind {
+                    "prompt_surface" => client.set_prompt_surface(value).await,
+                    "browser_engine" => client.set_browser_engine(value).await,
+                    _ => client.set_permission_preset(value).await,
+                }
+            };
+            let reply = async {
+                let line = outbox.recv().await.expect("the request is posted");
+                let sent: Value = serde_json::from_str(line.trim_end()).expect("json");
+                assert_eq!(sent["type"], kind);
+                assert_eq!(sent[field], value);
+                client
+                    .inner
+                    .receive(crate::session_worker_protocol::SessionWorkerWire::Result {
+                        request: sent["request"].as_u64().expect("request id"),
+                        error: None,
+                    });
+            };
+            let (result, ()) = tokio::join!(call, reply);
+            assert_eq!(result, Ok(()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_long_form_grant_answer_from_a_connection_without_grant_select_is_not_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-a","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "question-only", long), 0);
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn a_long_form_grant_answer_from_another_grant_select_connection_is_not_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-b","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-other", long), 0);
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn the_short_form_answer_of_the_grant_recipient_is_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn the_long_form_answer_of_the_grant_recipient_is_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-d","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", long), 1);
+    }
+
     #[test]
     fn only_a_readable_security_notice_snapshot_crosses_the_worker_wire() {
         for snapshot in [
@@ -1162,5 +1672,229 @@ mod tests {
         ] {
             assert!(!is_security_notice_state(&snapshot), "{snapshot}");
         }
+    }
+
+    /// senpi 4272-worker-frame-order: a client bound to an ordered acceptance lane, with the frames'
+    /// credits, failures and routed lane cuts observable without spawning a worker process.
+    struct OrderedClient {
+        inner: Arc<ClientInner>,
+        lane: crate::session_registry::SharedAcceptanceLane,
+        outbox: tokio::sync::mpsc::UnboundedReceiver<String>,
+        killed: tokio::sync::oneshot::Receiver<()>,
+        failures: Arc<std::sync::Mutex<Vec<String>>>,
+        routed: Arc<std::sync::Mutex<Vec<u64>>>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn ordered_client() -> OrderedClient {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::new(
+            Some(crate::compact_content_store::CompactContentStoreOptions {
+                dir: dir.path().display().to_string(),
+                ..Default::default()
+            }),
+            None,
+        );
+        lane.bootstrap(Default::default(), Some("nonce".into()));
+        let lane = Arc::new(std::sync::Mutex::new(lane));
+        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let routed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let (kill, killed) = tokio::sync::oneshot::channel();
+        let failed = Arc::clone(&failures);
+        let observed = Arc::clone(&lane);
+        let routes = Arc::clone(&routed);
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            // The lane's cut as routing sees it: the frame was applied before it was routed.
+            output: Box::new(move |_: Value, _: Option<String>| {
+                let mut lane = lock(&observed);
+                let root = lane.freeze();
+                lane.release(&root);
+                lock(&routes).push(root.sequence);
+            }),
+            request_close: Box::new(|| {}),
+            failure: Box::new(move |error: &str| lock(&failed).push(error.to_owned())),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: true,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: Some("s".into()),
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(Some(kill)),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: None,
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: Some(Arc::clone(&lane)),
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        OrderedClient {
+            inner,
+            lane,
+            outbox,
+            killed,
+            failures,
+            routed,
+            _dir: dir,
+        }
+    }
+
+    fn frame(ordinal: u64, signal: u64) -> crate::session_worker_protocol::SessionWorkerWire {
+        crate::session_worker_protocol::SessionWorkerWire::Output {
+            record: serde_json::json!({"type":"agent_start"}),
+            connection: None,
+            signal,
+            activity: crate::session_worker_protocol::WorkerActivity {
+                busy: false,
+                handoff_busy: None,
+                streaming: false,
+            },
+            snapshot: None,
+            ordinal: Some(ordinal),
+            recovery: None,
+            transitions: None,
+            bootstrap: None,
+        }
+    }
+
+    impl OrderedClient {
+        /// Every credit the host has posted so far, as `(signal, code)`.
+        fn credits(&mut self) -> Vec<(u64, i32)> {
+            let mut credits = Vec::new();
+            while let Ok(line) = self.outbox.try_recv() {
+                if let Ok(crate::session_worker_protocol::HostToSessionWorker::Credit {
+                    signal,
+                    code,
+                    ..
+                }) = serde_json::from_str(line.trim_end())
+                {
+                    credits.push((signal, code));
+                }
+            }
+            credits
+        }
+        fn cut(&self) -> (String, u64) {
+            let mut lane = lock(&self.lane);
+            let root = lane.freeze();
+            lane.release(&root);
+            (root.session_epoch, root.sequence)
+        }
+        /// Takes the lane out so its settled store is retired and idle before the tempdir goes.
+        async fn finish(self) {
+            let mut lane = std::mem::take(&mut *lock(&self.lane));
+            lane.retire(crate::session_acceptance_lane::RetireReason::Close);
+            lane.idle().await;
+        }
+    }
+
+    const GRANTED: i32 = crate::session_worker_protocol::WORKER_CREDIT_CODES.granted;
+    const CONFLICT: i32 = crate::session_worker_protocol::WORKER_CREDIT_CODES.conflict;
+
+    /// One accepted frame, then `frames`; returns the cut before and after them.
+    fn deliver_after_first(frames: &[(u64, u64)]) -> (OrderedClient, (String, u64), (String, u64)) {
+        let mut client = ordered_client();
+        client.inner.receive(frame(0, 100));
+        assert_eq!(client.credits(), [(100, GRANTED)]);
+        let before = client.cut();
+        for (ordinal, signal) in frames {
+            client.inner.receive(frame(*ordinal, *signal));
+        }
+        let after = client.cut();
+        (client, before, after)
+    }
+
+    // senpi 4272-worker-frame-order: a frame applies to the lane before it is routed, so before its credit.
+    #[tokio::test]
+    async fn in_order_frames_apply_to_the_lane_before_routing() {
+        let mut client = ordered_client();
+        let (epoch, start) = client.cut();
+        for ordinal in 0..3 {
+            client.inner.receive(frame(ordinal, 10 + ordinal));
+        }
+        assert_eq!(*lock(&client.routed), [start + 1, start + 2, start + 3]);
+        assert_eq!(
+            client.credits(),
+            [(10, GRANTED), (11, GRANTED), (12, GRANTED)]
+        );
+        assert!(lock(&client.failures).is_empty());
+        assert_eq!(client.cut(), (epoch, start + 3));
+        assert!(!lock(&client.lane).retired());
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_skipped_frame_ordinal_is_denied_and_fails_the_incarnation_with_frame_gap() {
+        let (mut client, before, after) = deliver_after_first(&[(2, 7)]);
+        assert_eq!(client.credits(), [(7, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_gap"]);
+        assert!(
+            lock(&client.lane).retired(),
+            "WorkerFailed retires the lane"
+        );
+        assert_eq!(after, before, "nothing was accepted from the frame");
+        assert_eq!(lock(&client.routed).len(), 1, "the frame was never routed");
+        assert!(client.killed.try_recv().is_ok(), "the incarnation is ended");
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_repeated_frame_ordinal_is_denied_and_fails_the_incarnation_with_frame_duplicate() {
+        let (mut client, before, after) = deliver_after_first(&[(0, 7)]);
+        assert_eq!(client.credits(), [(7, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_duplicate"]);
+        assert!(lock(&client.lane).retired());
+        assert_eq!(after, before);
+        assert_eq!(lock(&client.routed).len(), 1);
+        assert!(client.killed.try_recv().is_ok());
+        client.finish().await;
+    }
+
+    // A reorder reaches the host as the later frame first: a gap; the late frame finds a failed
+    // incarnation and is refused too, with no second failure and no acceptance.
+    #[tokio::test]
+    async fn reordered_frames_are_both_denied_with_one_frame_gap_failure() {
+        let (mut client, before, after) = deliver_after_first(&[(2, 7), (1, 8)]);
+        assert_eq!(client.credits(), [(7, CONFLICT), (8, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_gap"]);
+        assert!(lock(&client.lane).retired());
+        assert_eq!(after, before);
+        assert_eq!(lock(&client.routed).len(), 1);
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn any_worker_failure_retires_the_incarnation_lane() {
+        let mut client = ordered_client();
+        client
+            .inner
+            .receive(crate::session_worker_protocol::SessionWorkerWire::Failure {
+                error: "boom".into(),
+            });
+        assert_eq!(*lock(&client.failures), ["boom"]);
+        assert!(lock(&client.lane).retired());
+        let accepted = lock(&client.lane).accept(&serde_json::json!({"type":"agent_start"}), None);
+        assert!(accepted.is_none(), "the retired lane accepts nothing more");
+        client.inner.receive(frame(0, 9));
+        assert_eq!(client.credits(), [(9, CONFLICT)]);
+        assert_eq!(lock(&client.failures).len(), 1);
+        client.finish().await;
     }
 }

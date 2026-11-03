@@ -51,6 +51,7 @@ async fn inherited_pipe_eof_fires_before_the_private_directory_is_removed() {
         scratch_dir: Some(scratch.clone()),
         cleanup_paths: None,
         public_socket: None,
+        ..Default::default()
     };
     let capture_saw_directory = Arc::new(AtomicBool::new(false));
     let capture_flag = capture_saw_directory.clone();
@@ -87,6 +88,7 @@ async fn a_gone_supervisor_pid_fires_the_watchdog_on_the_next_tick() {
         scratch_dir: Some(scratch.clone()),
         cleanup_paths: None,
         public_socket: None,
+        ..Default::default()
     };
     let (reason_tx, mut reason_rx) = tokio::sync::mpsc::unbounded_channel();
     let armed = tokio::spawn(arm_host_watchdog(Some(config), async { Ok(()) }, move |reason| {
@@ -109,7 +111,7 @@ fn the_watchdog_binding_is_read_from_the_supervisor_handoff_names() {
         (HOST_WATCH_PPID_ENV.to_owned(), "42".to_owned()),
     ]);
     let config = read_host_watchdog_config_from_brand_env(&env).expect("the binding is present");
-    assert_eq!(config.fd, Some(7));
+    assert_eq!(config.fd, if cfg!(windows) { Some(7) } else { None });
     assert_eq!(config.ppid, Some(42));
 }
 

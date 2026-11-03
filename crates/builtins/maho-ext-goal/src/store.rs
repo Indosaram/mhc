@@ -1,7 +1,8 @@
+use crate::goal_file_lock::with_goal_file_lock;
 pub use crate::persistence::goal_file_path;
 use crate::{
     errors::GoalError,
-    persistence::{encoded_thread_id, read_goal_file, write_goal_file},
+    persistence::{encoded_thread_id, read_goal_file},
     transitions::transition_goal_status,
     types::{
         Goal, GoalAccountingMode, GoalStatus, GoalStoreRef, GoalUpdate, GoalUpdateSource,
@@ -9,7 +10,6 @@ use crate::{
     },
     validation::{resolve_token_budget, validate_objective},
 };
-use maho_core::session_sidecar_store::serialize_by_key;
 use std::{fs, io::Write, path::PathBuf};
 pub fn goal_history_file_path(reference: &GoalStoreRef) -> PathBuf {
     reference
@@ -27,9 +27,26 @@ pub fn objective_full_text_file_path(reference: &GoalStoreRef) -> PathBuf {
 pub fn read_goal(reference: &GoalStoreRef) -> Result<Option<Goal>, GoalError> {
     read_goal_file(reference)
 }
+/// Imports a legacy pi-goal store under the goal lock, so a concurrent mutation cannot overwrite the import.
+pub async fn migrate_legacy_goal(reference: &GoalStoreRef) -> Result<Option<Goal>, GoalError> {
+    with_goal_file_lock(reference, |_held| async {
+        crate::persistence::migrate_legacy_goal_file_default(reference)
+    })
+    .await
+}
+/// `migrateLegacyGoal` with an explicit standalone agent dir, under the same goal lock.
+pub async fn migrate_legacy_goal_from(
+    reference: &GoalStoreRef,
+    standalone_agent_dir: &std::path::Path,
+) -> Result<Option<Goal>, GoalError> {
+    with_goal_file_lock(reference, |_held| async {
+        crate::persistence::migrate_legacy_goal_file(reference, standalone_agent_dir)
+    })
+    .await
+}
 pub async fn write_goal(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result<(), GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
-        write_goal_file(reference, goal)?;
+    with_goal_file_lock(reference, |held| async move {
+        held.write(goal)?;
         crate::lifecycle_facts::notify_transition(reference, goal);
         Ok(())
     })
@@ -52,6 +69,7 @@ fn fresh_goal(
         time_used_seconds: 0.0,
         consecutive_continuations: Some(0),
         unattended_continuations: Some(0),
+        no_progress_continuations: Some(0),
         last_continuation_signature: None,
         continuation_stopped_at: None,
         created_at: now,
@@ -68,7 +86,7 @@ pub async fn create_goal(
     token_budget: Option<f64>,
     now: u64,
 ) -> Result<Goal, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let validated = validate_objective(objective, &objective_full_text_file_name(reference))?;
         let current = read_goal_file(reference)?;
         if current
@@ -80,9 +98,11 @@ pub async fn create_goal(
             ));
         }
         if validated.truncated {
+            held.assert_held()?;
             write_full_objective_text(reference, objective)?;
         }
         if let Some(current) = current {
+            held.assert_held()?;
             archive_goal(reference, &current)?;
         }
         let goal = fresh_goal(
@@ -92,7 +112,7 @@ pub async fn create_goal(
             resolve_token_budget(None, token_budget.map(Some))?,
             now,
         );
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         crate::lifecycle_facts::notify_transition(reference, Some(&goal));
         Ok(goal)
     })
@@ -104,7 +124,7 @@ pub async fn update_goal(
     source: GoalUpdateSource,
     now: u64,
 ) -> Result<Goal, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let current = read_goal_file(reference)?
             .ok_or_else(|| GoalError::NotFound("cannot update goal: no goal exists".into()))?;
         let validated = update
@@ -144,12 +164,14 @@ pub async fn update_goal(
             if next.status != previous_status {
                 next.consecutive_continuations = Some(0);
                 next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
                 next.last_continuation_signature = None;
                 next.continuation_stopped_at = None;
             }
             if source == GoalUpdateSource::User && requested_status == Some(GoalStatus::Active) {
                 next.consecutive_continuations = Some(0);
                 next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
                 next.last_continuation_signature = None;
                 next.continuation_stopped_at = None;
                 next.last_started_at.get_or_insert(now);
@@ -158,9 +180,10 @@ pub async fn update_goal(
             next
         };
         if validated.as_ref().is_some_and(|v| v.truncated) {
+            held.assert_held()?;
             write_full_objective_text(reference, update.objective.as_deref().unwrap_or(""))?;
         }
-        write_goal_file(reference, Some(&next))?;
+        held.write(Some(&next))?;
         crate::lifecycle_facts::notify_transition(reference, Some(&next));
         Ok(next)
     })
@@ -182,9 +205,9 @@ fn write_full_objective_text(reference: &GoalStoreRef, objective: &str) -> Resul
         .map_err(|e| GoalError::Io(e.to_string()))
 }
 pub async fn clear_goal(reference: &GoalStoreRef) -> Result<bool, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let existed = read_goal_file(reference)?.is_some();
-        write_goal_file(reference, None)?;
+        held.write(None)?;
         crate::lifecycle_facts::notify_transition(reference, None);
         Ok(existed)
     })
@@ -198,7 +221,7 @@ pub async fn account_goal_usage(
     expected_goal_id: Option<&str>,
     now: u64,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -221,7 +244,7 @@ pub async fn account_goal_usage(
             .min(9_007_199_254_740_991);
         goal.time_used_seconds += elapsed_seconds.trunc().max(0.0);
         goal.updated_at = now.max(goal.updated_at.saturating_add(1));
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
@@ -232,7 +255,7 @@ pub async fn record_continuation_delivered(
     expected_goal_id: Option<&str>,
     count_unattended: bool,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -249,18 +272,32 @@ pub async fn record_continuation_delivered(
                 .unwrap_or(0)
                 .saturating_add(u64::from(count_unattended)),
         );
+        goal.no_progress_continuations = Some(
+            goal.no_progress_continuations
+                .unwrap_or(0)
+                .saturating_add(u64::from(count_unattended)),
+        );
         goal.last_continuation_signature = Some(signature.into());
         goal.continuation_stopped_at = None;
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
 }
+/// `resetContinuationStreak(ref, { unattended, progress })`: `unattended` (human input) clears both
+/// the unattended and no-progress counters; `progress` clears only the no-progress counter.
 pub async fn reset_continuation_streak(
     reference: &GoalStoreRef,
     unattended: bool,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    reset_continuation_streak_with_progress(reference, unattended, false).await
+}
+pub async fn reset_continuation_streak_with_progress(
+    reference: &GoalStoreRef,
+    unattended: bool,
+    progress: bool,
+) -> Result<Option<Goal>, GoalError> {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -268,38 +305,68 @@ pub async fn reset_continuation_streak(
         if unattended {
             goal.unattended_continuations = Some(0);
         }
+        if unattended || progress {
+            goal.no_progress_continuations = Some(0);
+        }
         goal.last_continuation_signature = None;
         goal.continuation_stopped_at = None;
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
 }
+/// Records an automatic-continuation stop once per active snapshot (`recordGoalContinuationStopped`).
+/// A guard `blocked_reason` blocks the goal and clears its continuation counters; `None` only closes
+/// elapsed accounting. Returns the current goal and whether this call recorded the stop.
 pub async fn record_goal_continuation_stopped(
     reference: &GoalStoreRef,
     expected: &Goal,
     at: u64,
-) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
-        let Some(mut goal) = read_goal_file(reference)? else {
-            return Ok(None);
+    blocked_reason: Option<&str>,
+) -> Result<(Option<Goal>, bool), GoalError> {
+    with_goal_file_lock(reference, |held| async move {
+        let current = read_goal_file(reference)?;
+        let Some(goal) = current.as_ref().filter(|goal| {
+            goal.id == expected.id
+                && goal.status == GoalStatus::Active
+                && !(blocked_reason.is_none() && goal.continuation_stopped_at.is_some())
+                && goal.last_continuation_signature == expected.last_continuation_signature
+                && goal.consecutive_continuations == expected.consecutive_continuations
+        }) else {
+            return Ok((current, false));
         };
-        if goal.id != expected.id
-            || goal.status != GoalStatus::Active
-            || goal.continuation_stopped_at.is_some()
-            || goal.last_continuation_signature != expected.last_continuation_signature
-            || goal.consecutive_continuations != expected.consecutive_continuations
-        {
-            return Ok(None);
+        let updated_at = goal.updated_at.saturating_add(1).max(at / 1000);
+        let mut next = match blocked_reason {
+            None => {
+                let mut next = goal.clone();
+                next.updated_at = updated_at;
+                if let Some(started) = next.last_started_at {
+                    next.time_used_seconds += (at / 1000).saturating_sub(started) as f64;
+                }
+                next
+            }
+            Some(reason) => {
+                let mut next = transition_goal_status(
+                    goal,
+                    GoalStatus::Blocked,
+                    GoalUpdateSource::Model,
+                    Some(reason),
+                    updated_at,
+                )?;
+                next.consecutive_continuations = Some(0);
+                next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
+                next.last_continuation_signature = None;
+                next
+            }
+        };
+        next.last_started_at = None;
+        next.continuation_stopped_at = Some(at);
+        held.write(Some(&next))?;
+        if blocked_reason.is_some() {
+            crate::lifecycle_facts::notify_transition(reference, Some(&next));
         }
-        if let Some(started) = goal.last_started_at {
-            goal.time_used_seconds += (at / 1000).saturating_sub(started) as f64;
-        }
-        goal.updated_at = goal.updated_at.saturating_add(1).max(at / 1000);
-        goal.last_started_at = None;
-        goal.continuation_stopped_at = Some(at);
-        write_goal_file(reference, Some(&goal))?;
-        Ok(Some(goal))
+        Ok((Some(next), true))
     })
     .await
 }
@@ -626,27 +693,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reference = reference(&dir);
         let goal = create_goal(&reference, "work", None, 1).await.unwrap();
-        let stopped = record_goal_continuation_stopped(&reference, &goal, 5000)
+        let (stopped, recorded) = record_goal_continuation_stopped(&reference, &goal, 5000, None)
             .await
-            .unwrap()
             .unwrap();
+        assert!(recorded);
+        let stopped = stopped.unwrap();
         assert_eq!(stopped.continuation_stopped_at, Some(5000));
         assert_eq!(stopped.last_started_at, None);
         assert!(
-            record_goal_continuation_stopped(&reference, &stopped, 6000)
+            !record_goal_continuation_stopped(&reference, &stopped, 6000, None)
                 .await
                 .unwrap()
-                .is_none()
+                .1
         );
         let delivered = record_continuation_delivered(&reference, "next", Some(&goal.id), true)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(delivered.continuation_stopped_at, None);
-        let _stopped = record_goal_continuation_stopped(&reference, &delivered, 7000)
-            .await
-            .unwrap()
-            .unwrap();
+        assert!(
+            record_goal_continuation_stopped(&reference, &delivered, 7000, None)
+                .await
+                .unwrap()
+                .1
+        );
         let resumed = update_goal(
             &reference,
             &GoalUpdate {
@@ -880,5 +950,96 @@ mod tests {
             fs::read_to_string(objective_full_text_file_path(&reference)).unwrap(),
             objective
         );
+    }
+    #[tokio::test]
+    async fn no_progress_counter_counts_deliveries_and_resets_on_progress_or_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = reference(&dir);
+        let goal = create_goal(&reference, "Work", None, 1).await.unwrap();
+        assert_eq!(goal.no_progress_continuations, Some(0));
+        record_continuation_delivered(&reference, "a", None, true)
+            .await
+            .unwrap();
+        let exempt = record_continuation_delivered(&reference, "b", None, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exempt.no_progress_continuations, Some(1));
+        let narration = reset_continuation_streak(&reference, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(narration.no_progress_continuations, Some(1));
+        let progress = reset_continuation_streak_with_progress(&reference, false, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress.no_progress_continuations, Some(0));
+        assert_eq!(progress.unattended_continuations, Some(1));
+        record_continuation_delivered(&reference, "c", None, true)
+            .await
+            .unwrap();
+        let input = reset_continuation_streak(&reference, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(input.no_progress_continuations, Some(0));
+        assert_eq!(input.unattended_continuations, Some(0));
+        record_continuation_delivered(&reference, "d", None, true)
+            .await
+            .unwrap();
+        let current = read_goal(&reference).unwrap().unwrap();
+        let (blocked, recorded) = record_goal_continuation_stopped(
+            &reference,
+            &current,
+            5_000,
+            Some(crate::continuation_recovery::NO_PROGRESS_BLOCKED_REASON),
+        )
+        .await
+        .unwrap();
+        assert!(recorded);
+        assert_eq!(blocked.unwrap().no_progress_continuations, Some(0));
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_import_waits_for_the_goal_lock_so_a_concurrent_write_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = GoalStoreRef {
+            base_dir: dir.path().join("extensions/goal"),
+            thread_id: "t".into(),
+        };
+        let legacy = dir.path().join("extensions/pi-goal");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("t.json"),
+            serde_json::json!({"version":1,"goal":{"id":"legacy","threadId":"t","objective":"old","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string(),
+        )
+        .unwrap();
+        let current = fresh_goal(&reference, "current".into(), GoalStatus::Active, None, 2);
+        let migrated = with_goal_file_lock(&reference, |held| {
+            let reference = reference.clone();
+            let standalone = dir.path().to_path_buf();
+            let current = current.clone();
+            async move {
+                let migration =
+                    tokio::spawn(
+                        async move { migrate_legacy_goal_from(&reference, &standalone).await },
+                    );
+                // Let the spawned import run up to the lock; it must not publish while we hold it.
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!migration.is_finished());
+                held.write(Some(&current))?;
+                Ok(migration)
+            }
+        })
+        .await
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(migrated, None);
+        assert_eq!(read_goal(&reference).unwrap(), Some(current));
+        assert!(legacy.join("t.json").exists());
     }
 }

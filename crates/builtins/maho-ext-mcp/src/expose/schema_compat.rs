@@ -4,7 +4,21 @@ pub use super::{naming::{build_mcp_tool_names, McpToolNameEntry}, pagination::{c
 #[derive(Debug, PartialEq)]
 pub struct SchemaConversionResult { pub schema: Value, pub warnings: Vec<String> }
 fn permissive() -> Value { json!({"type":"object","properties":{}}) }
-pub fn convert_json_schema_to_type_box(schema: &Value) -> SchemaConversionResult {
+pub fn convert_json_schema_to_type_box(schema: &Value) -> SchemaConversionResult { convert_json_schema_to_type_box_with(schema, false) }
+/// `modern`: a 2020-12 schema is offered as-is (a boolean wrapped in `allOf` so tool APIs see an object
+/// container); arguments are validated against it at call time.
+/// DIVERGENCE: senpi registers a pi-ai tool-argument validator on the TypeBox value; mhc validates in the MCP
+/// tool's execute path (expose/register.rs) because tool definitions carry plain JSON Schema here.
+pub fn convert_json_schema_to_type_box_with(schema: &Value, modern: bool) -> SchemaConversionResult {
+    if modern && (schema.is_boolean() || schema.is_object()) {
+        let parameters = if schema.is_boolean() { json!({"allOf":[schema]}) } else { schema.clone() };
+        // schema-compat.ts: `registerToolArgumentValidator(parameters, compileModernSchema(schema))`, so pi-ai
+        // validates the model's arguments against the exact 2020-12 schema instead of coercing them.
+        if let Ok(validator) = crate::modern::tool_schema::compile_modern_schema(schema) {
+            maho_ai::utils::validation::register_tool_argument_validator(&parameters, std::sync::Arc::new(move |value: &Value| validator.errors(value)));
+        }
+        return SchemaConversionResult { schema: parameters, warnings: Vec::new() };
+    }
     let mut stripped = schema.clone();
     if let Some(map) = stripped.as_object_mut() { map.remove("$schema"); map.remove("additionalProperties"); }
     let mut warnings = Vec::new();

@@ -30,11 +30,25 @@ pub async fn run_retry_wait(
                 },
             });
         }
-        drive.gate.admit(|| ())
-            .map_err(|error| session_invariant_error(error.to_string()))?;
-        super::retry::wait_until(wait.retry_wait.not_before, &drive.gate.signal())
-            .await
-            .map_err(|error| session_invariant_error(error.message))?;
+        // Pinned `drive.gate.admit(() => waitUntil(...))`: an `AbortRequested` refusal or timer
+        // abort is control flow the drive loop absorbs into reconciliation, not a fault.
+        if crate::harness::runtime::drive::admit(drive.gate.admit(|| ()))
+            .await?
+            .is_none()
+        {
+            return Ok(ProcedureResult::Continue);
+        }
+        if let Err(error) =
+            super::retry::wait_until(wait.retry_wait.not_before, &drive.gate.signal()).await
+        {
+            if crate::harness::runtime::drive::admit(drive.gate.admit(|| ()))
+                .await?
+                .is_none()
+            {
+                return Ok(ProcedureResult::Continue);
+            }
+            return Err(session_invariant_error(error.message));
+        }
     }
     let result = settle_operation(
         lane,

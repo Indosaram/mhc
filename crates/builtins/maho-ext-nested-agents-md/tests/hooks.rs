@@ -238,6 +238,7 @@ async fn lifecycle_events_reset_and_preserve_injection_cache() {
     let mut api = api();
     maho_ext_nested_agents_md::NestedAgentsMd.register(&mut api);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

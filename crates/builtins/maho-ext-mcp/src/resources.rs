@@ -15,6 +15,10 @@ pub struct McpResourceServer {
     pub output_guard: Option<OutputGuardSettings>,
     pub request_timeout: Duration,
     pub resources: Vec<Value>,
+    /// The connection behind `client`, for origin-bound reads (upstream `server.connection`).
+    pub connection: Option<Arc<crate::connection::ServerConnection>>,
+    pub request_origin: Option<crate::request_origin::McpRequestOriginFactory>,
+    pub ensure_fresh: Option<crate::catalog::McpCatalogCallback>,
 }
 pub fn subscribe_mcp_resource_updated(
     client: &McpClient,
@@ -63,16 +67,21 @@ pub fn create_mcp_resource_tools(
                                 .and_then(Value::as_str)
                                 .filter(|mime| !mime.is_empty())
                                 .map_or_else(String::new, |mime| format!(" ({mime})"));
-                            format!("- @mcp:{}/{uri} — {name}{mime}", entry.server)
+                            format!("- @mcp:{}/{uri} - {name}{mime}", entry.server)
                         })
                     })
                     .collect::<Vec<_>>();
                 Ok(ToolResult {
-                    content: vec![ToolContent::text(if lines.is_empty() {
-                        "No MCP resources available.".into()
-                    } else {
-                        lines.join("\n")
-                    })],
+                    content: vec![ToolContent::text(
+                        maho_core::config_reference_redaction::redact_resolved_reference_values(
+                            &if lines.is_empty() {
+                                "No MCP resources available.".into()
+                            } else {
+                                lines.join("\n")
+                            },
+                            "<redacted>",
+                        ),
+                    )],
                     details: Some(
                         json!({"preview":format!("{} resource(s)",lines.len()),"server":scope.unwrap_or("*"),"tool":"mcp_list_resources"}),
                     ),
@@ -105,16 +114,23 @@ pub fn create_mcp_resource_tools(
                     .iter()
                     .find(|entry| entry.server == name)
                     .ok_or_else(|| {
-                        ToolError::Message(format!(
-                            "Unknown MCP server '{name}' for resource {uri}."
-                        ))
+                        ToolError::Message(
+                            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                                &format!("Unknown MCP server '{name}' for resource {uri}."),
+                                "<redacted>",
+                            ),
+                        )
                     })?;
-                let text = read_mcp_resource_as_text(entry, uri)
+                let text = read_mcp_resource_as_text_with_signal(entry, uri, Some(&call.signal))
                     .await
                     .map_err(|error| ToolError::Message(error.to_string()))?;
                 Ok(ToolResult {
                     content: vec![ToolContent::text(text)],
-                    details: Some(json!({"preview":uri,"server":name,"tool":"mcp_read_resource"})),
+                    details: Some(
+                        maho_core::config_reference_redaction::redact_resolved_reference_data(
+                            &json!({"preview":uri,"server":name,"tool":"mcp_read_resource"}),
+                        ),
+                    ),
                     structured_content: None,
                     is_error: None,
                 })
@@ -130,6 +146,10 @@ pub async fn ensure_mcp_resource_subscriptions(
     resources: &[Value],
     timeout: Duration,
 ) {
+    // Modern streams derive their resource URI filter from resources/list results.
+    if crate::modern::request::is_modern_mcp_client(&client) {
+        return;
+    }
     if client
         .server_capabilities
         .read()
@@ -169,19 +189,56 @@ pub async fn read_mcp_resource_as_text(
     server: &McpResourceServer,
     uri: &str,
 ) -> Result<String, McpError> {
-    let result = server
-        .client
-        .request("resources/read", json!({"uri":uri}), server.request_timeout)
-        .await
-        .map_err(|error| {
-            let mut failure = McpError::new(
-                McpErrorKind::ToolExec,
-                format!("Failed to read MCP resource {uri}: {error}"),
-            );
-            failure.phase = Some("call".into());
-            failure.server_name = Some(server.server.clone());
-            failure
-        })?;
+    read_mcp_resource_as_text_with_signal(server, uri, None).await
+}
+pub async fn read_mcp_resource_as_text_with_signal(
+    server: &McpResourceServer,
+    uri: &str,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<String, McpError> {
+    let read = async {
+        let client = match (&server.request_origin, &server.connection) {
+            (Some(_), Some(connection)) => {
+                crate::health::ensure_mcp_tool_call_connection(
+                    connection,
+                    server.ensure_fresh.as_ref(),
+                )
+                .await?;
+                connection.client()?
+            }
+            (None, Some(connection)) => connection
+                .client()
+                .unwrap_or_else(|_| server.client.clone()),
+            _ => server.client.clone(),
+        };
+        let options = crate::request_origin::mcp_request_options(
+            server.request_origin.as_ref().and_then(|origin| origin()),
+            signal.cloned(),
+        );
+        client
+            .request_with_options(
+                "resources/read",
+                json!({"uri":uri}),
+                server.request_timeout,
+                &options,
+            )
+            .await
+    };
+    let result = read.await.map_err(|error| {
+        if crate::modern::errors::as_mcp_mrtr_error(&error).is_some() {
+            return error;
+        }
+        let mut failure = McpError::new(
+            McpErrorKind::ToolExec,
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                &format!("Failed to read MCP resource {uri}: {error}"),
+                "<redacted>",
+            ),
+        );
+        failure.phase = Some("call".into());
+        failure.server_name = Some(server.server.clone());
+        failure
+    })?;
     let text = flatten_resource_contents(
         result
             .get("contents")
@@ -266,12 +323,43 @@ pub async fn expand_mcp_resource_mentions(
                     1,
                 )
             }
-            Err(error) => notices.push(format!("@mcp mention left as-is: {error}")),
+            Err(error) => notices.push(mcp_mention_failure_notice(&error)),
         }
     }
+    let redacted = maho_core::config_reference_redaction::redact_resolved_reference_values(
+        &expanded,
+        "<redacted>",
+    );
+    let notices = notices
+        .iter()
+        .map(|notice| {
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                notice,
+                "<redacted>",
+            )
+        })
+        .collect();
     Ok(McpMentionExpansion {
-        changed: expanded != text,
-        text: expanded,
+        changed: redacted != text,
+        text: redacted,
         notices,
     })
+}
+/// resources.ts: a mention whose read was canceled, outlived its context, or timed out stays unchanged with a
+/// payload-free notice; any other failure names its error.
+pub fn mcp_mention_failure_notice(error: &McpError) -> String {
+    use crate::modern::errors::McpMrtrErrorCode;
+    match crate::modern::errors::as_mcp_mrtr_error(error) {
+        Some(mrtr)
+            if matches!(
+                mrtr.code,
+                McpMrtrErrorCode::Cancelled
+                    | McpMrtrErrorCode::ContextChanged
+                    | McpMrtrErrorCode::Timeout
+            ) =>
+        {
+            "MCP resource request canceled; mention left unchanged.".into()
+        }
+        _ => format!("@mcp mention left as-is: {error}"),
+    }
 }

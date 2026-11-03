@@ -231,7 +231,20 @@ pub fn parse_session_entries(content: &str) -> Vec<Value> {
         .collect()
 }
 
-fn parse_session_entry_line(line: &str) -> Option<Value> {
+/// senpi `compactUpdatesEnabled()` (engine-socket-flag.ts): the `<brand>_ENGINE_SOCKET_COMPACT_UPDATES`
+/// rollout flag, explicit `1`/`true` only. Off, no transcript base is captured and no journal byte cache kept.
+fn compact_updates_enabled() -> bool {
+    matches!(
+        crate::brand::env_value(
+            "ENGINE_SOCKET_COMPACT_UPDATES",
+            &crate::config::current_env()
+        )
+        .as_deref(),
+        Some("1" | "true")
+    )
+}
+
+pub(crate) fn parse_session_entry_line(line: &str) -> Option<Value> {
     if line.trim().is_empty() {
         return None;
     }
@@ -246,6 +259,26 @@ pub fn get_latest_compaction_entry(entries: &[Value]) -> Option<Value> {
         .cloned()
 }
 
+/// Drops the spare capacity a parse leaves in every object and array; values and key order are unchanged.
+fn shrink_json_to_fit(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            items.shrink_to_fit();
+            items.iter_mut().for_each(shrink_json_to_fit);
+        }
+        Value::Object(object) => {
+            let parsed = std::mem::take(object);
+            let mut fitted = serde_json::Map::with_capacity(parsed.len());
+            for (key, mut item) in parsed {
+                shrink_json_to_fit(&mut item);
+                fitted.insert(key, item);
+            }
+            *object = fitted;
+        }
+        _ => {}
+    }
+}
+
 fn build_entry_index(entries: &[Value]) -> HashMap<&str, &Value> {
     let mut index = HashMap::new();
     for entry in entries {
@@ -257,7 +290,10 @@ fn build_entry_index(entries: &[Value]) -> HashMap<&str, &Value> {
 }
 
 pub fn build_session_path(entries: &[Value], leaf_id: Option<&str>) -> Vec<Value> {
-    session_path_refs(entries, leaf_id).into_iter().cloned().collect()
+    session_path_refs(entries, leaf_id)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 // PERF-DIVERGENCE(senpi session-manager.ts): upstream walks the path once keeping object references; the public Vec<Value> wrappers still clone, but internal context building borrows the path instead of deep-cloning every entry on it (twice). Same entries, same order.
@@ -552,7 +588,12 @@ pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> Sessio
                     .and_then(Value::as_str)
                     == Some("omit-unsafe-v1")
         })
-        .map(|recovery_index| path[..recovery_index].iter().filter_map(|entry| entry.get("id").and_then(Value::as_str)).collect());
+        .map(|recovery_index| {
+            path[..recovery_index]
+                .iter()
+                .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                .collect()
+        });
     let projected: Vec<(&Value, Vec<Value>)> = context_entry_refs(path)
         .into_iter()
         .map(|entry| (entry, session_entry_to_context_messages(entry)))
@@ -560,24 +601,37 @@ pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> Sessio
     let mut retained_messages: Vec<Value> = Vec::new();
     if let Some(retained_ids) = &retained_ids {
         for (entry, messages) in &projected {
-            if entry.get("id").and_then(Value::as_str).is_some_and(|id| retained_ids.contains(id)) {
+            if entry
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| retained_ids.contains(id))
+            {
                 retained_messages.extend(messages.iter().cloned());
             }
         }
-        retained_messages = crate::retained_message_projection::project_retained_messages(&retained_messages);
+        retained_messages =
+            crate::retained_message_projection::project_retained_messages(&retained_messages);
     }
     let mut repaired = retained_messages.into_iter();
     let (entry_ids, messages) = projected
         .into_iter()
         .flat_map(|(entry, messages)| {
-            let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let entry_id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             let is_retained = retained_ids
                 .as_ref()
                 .is_some_and(|ids| ids.contains(entry_id.as_str()));
             messages
                 .into_iter()
                 .map(|message| {
-                    let message = if is_retained { repaired.next().unwrap_or(message) } else { message };
+                    let message = if is_retained {
+                        repaired.next().unwrap_or(message)
+                    } else {
+                        message
+                    };
                     (entry_id.clone(), message)
                 })
                 .collect::<Vec<_>>()
@@ -867,6 +921,8 @@ pub struct SessionManager {
     cwd: String,
     persist: bool,
     flushed: bool,
+    /// The file `persist_header_now` created in this process; only it may be discarded on close (senpi#3263).
+    owned_header_file: Option<String>,
     file_entries: Vec<Value>,
     entries_cache: EntriesCache,
     by_id: HashMap<String, usize>,
@@ -892,6 +948,61 @@ pub struct SessionManager {
     verbatim_from_count: usize,
     history_reductions: crate::session_history_reduce::HistoryReductions,
     last_write_error: Option<String>,
+    /// Set when an append to the flushed file failed and may have left a partial last line.
+    tail_may_be_torn: bool,
+    /// Why the tail may be torn, for the notice the person gets when it is set aside.
+    torn_tail_cause: crate::session_write_recovery::SessionRecoveryCause,
+    pending_recoveries: Vec<crate::session_write_recovery::SessionRecovery>,
+    recovery_listener: Option<RecoveryListener>,
+    /// The persisted base of the last load or rewrite, and how many history entries it holds (R3.C1.1).
+    transcript_file: crate::session_transcript_file::TranscriptFile,
+    transcript_journal: Option<crate::session_transcript_journal::TranscriptJournal>,
+    captures_transcript_base: bool,
+}
+
+/// Receives each repair of a session file once (senpi `onRecovery`).
+#[derive(Clone)]
+pub struct RecoveryListener(
+    pub Arc<dyn Fn(&crate::session_write_recovery::SessionRecovery) + Send + Sync>,
+);
+
+impl std::fmt::Debug for RecoveryListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecoveryListener")
+    }
+}
+
+/// senpi `isDisposableEntry`: setup entries, startup bookkeeping and engine lifecycle bookkeeping.
+fn is_disposable_entry(entry: &Value) -> bool {
+    let kind = entry_type(entry);
+    if kind == "custom" {
+        return entry.get("startupBookkeeping").and_then(Value::as_bool) == Some(true)
+            || matches!(
+                entry.get("customType").and_then(Value::as_str),
+                Some("session-lifecycle" | "work-custody" | "child-lifecycle")
+            );
+    }
+    matches!(
+        kind,
+        "session"
+            | "model_change"
+            | "model_change_rejected"
+            | "thinking_level_change"
+            | "configuration_update"
+            | "label"
+    )
+}
+
+/// senpi `isConversationEntry`: a user or assistant message.
+fn is_conversation_entry(entry: &Value) -> bool {
+    entry_type(entry) == "message"
+        && matches!(
+            entry
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(Value::as_str),
+            Some("user" | "assistant")
+        )
 }
 
 impl SessionManager {
@@ -921,12 +1032,20 @@ impl SessionManager {
         );
         let manager = Self {
             last_write_error: None,
+            tail_may_be_torn: false,
+            torn_tail_cause: crate::session_write_recovery::SessionRecoveryCause::Unknown,
+            pending_recoveries: Vec::new(),
+            recovery_listener: None,
+            transcript_file: crate::session_transcript_file::TranscriptFile::default(),
+            transcript_journal: None,
+            captures_transcript_base: compact_updates_enabled(),
             session_id: String::new(),
             session_file: None,
             session_dir: normalize_path(session_dir, &PathInputOptions::default()),
             cwd: resolve_path(cwd, cwd, &PathInputOptions::default()),
             persist,
             flushed: false,
+            owned_header_file: None,
             file_entries: Vec::new(),
             entries_cache: EntriesCache::default(),
             by_id: HashMap::new(),
@@ -957,6 +1076,7 @@ impl SessionManager {
     }
 
     pub fn dispose(&mut self) {
+        self.transcript_file.reset();
         crate::session_write_reservation::unregister_session_writer(&self.writer_owner());
         self.ownership
             .lock()
@@ -1100,17 +1220,23 @@ impl SessionManager {
 
     /// Must follow every mutation of `file_entries`: drops the shared materialized view.
     fn invalidate_entries_cache(&mut self) {
-        *self.entries_cache.0.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .entries_cache
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     fn externalize_file_entries(&mut self) {
         self.invalidate_entries_cache();
         let store = self.resident_store.clone();
-        self.file_entries = self
-            .file_entries
-            .iter()
-            .map(|entry| store.externalize(entry))
-            .collect();
+        // PERF-DIVERGENCE(senpi session-manager.ts): upstream maps each entry to an externalized copy;
+        // this rewrites large strings in place, so loading a session never holds two full histories,
+        // and trims the spare capacity parsing leaves in every object and array. Same values.
+        for entry in &mut self.file_entries {
+            store.externalize_in_place(entry);
+            shrink_json_to_fit(entry);
+        }
     }
 
     fn blobs_dir(&self) -> Option<String> {
@@ -1170,20 +1296,22 @@ impl SessionManager {
             target_cwd,
             &PathInputOptions::default(),
         ));
-        let source_entries = load_entries_from_file(&resolved_source_path);
-        if source_entries.is_empty() {
-            return Err(format!(
-                "Cannot fork: source session file is empty or invalid: {resolved_source_path}"
-            ));
-        }
-        if !source_entries
-            .iter()
-            .any(|entry| entry_type(entry) == "session")
-        {
-            return Err(format!(
-                "Cannot fork: source session has no header: {resolved_source_path}"
-            ));
-        }
+        let source_entries = match crate::session_entry_file::read_fork_source(
+            &resolved_source_path,
+        ) {
+            crate::session_entry_file::ForkSource::Empty => {
+                return Err(format!(
+                    "Cannot fork: source session file is empty or has no readable entries: {resolved_source_path}"
+                ));
+            }
+            crate::session_entry_file::ForkSource::NotASession => {
+                return Err(format!(
+                    "Cannot fork: source file is not a session file (no entry has a session header or a session entry shape): {resolved_source_path}"
+                ));
+            }
+            crate::session_entry_file::ForkSource::Session(entries)
+            | crate::session_entry_file::ForkSource::Headerless(entries) => entries,
+        };
         let dir = session_dir
             .map(|session_dir| normalize_path(session_dir, &PathInputOptions::default()))
             .unwrap_or_else(|| get_default_session_dir(&resolved_target_cwd));
@@ -1293,25 +1421,7 @@ impl SessionManager {
         } else {
             None
         };
-        // This process opens the session for append; normalize a final unterminated JSONL entry
-        // here, never from read-only load_entries_from_file callers.
-        if Path::new(&resolved_path).exists() {
-            let mut file = std::fs::OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&resolved_path)
-                .map_err(|error| error.to_string())?;
-            if file.metadata().map_err(|error| error.to_string())?.len() > 0 {
-                let mut last = [0u8; 1];
-                file.seek(SeekFrom::End(-1))
-                    .map_err(|error| error.to_string())?;
-                file.read_exact(&mut last)
-                    .map_err(|error| error.to_string())?;
-                if last[0] != b'\n' {
-                    file.write_all(b"\n").map_err(|error| error.to_string())?;
-                }
-            }
-        }
+        // The final unterminated or torn line is settled by set_session_file, on every append-open path.
         // If no session_dir is provided, derive it from the file's parent directory.
         let dir = match session_dir {
             Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
@@ -1345,7 +1455,7 @@ impl SessionManager {
     }
 
     /// senpi `continueRecent`: the cwd filter applies only to a custom session dir, and a resumed
-    /// session keeps the launch cwd (no `open` newline repair).
+    /// session keeps the launch cwd; set_session_file settles its final line like every append-open path (senpi#4295).
     pub fn continue_recent(cwd: &str, session_dir: Option<&str>) -> Result<Self, String> {
         let dir = match session_dir {
             Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
@@ -1414,6 +1524,7 @@ impl SessionManager {
         session_file: &str,
         options: Option<NewSessionOptions>,
     ) -> Result<(), String> {
+        self.owned_header_file = None;
         let session_file = resolve_moved_session_path(session_file);
         let session_file = session_file.as_str();
         if self.persist {
@@ -1423,19 +1534,52 @@ impl SessionManager {
                 .opened(&resolved)
                 .map_err(|error| error.to_string())?;
         }
-        self.session_file = Some(resolve_path(
-            session_file,
-            session_file,
-            &PathInputOptions::default(),
-        ));
+        let resolved_file = resolve_path(session_file, session_file, &PathInputOptions::default());
+        let recovery_cause = if self.session_file.as_deref() == Some(resolved_file.as_str())
+            && self.tail_may_be_torn
+        {
+            self.torn_tail_cause
+        } else {
+            crate::session_write_recovery::SessionRecoveryCause::Unknown
+        };
+        self.tail_may_be_torn = false;
+        self.torn_tail_cause = crate::session_write_recovery::SessionRecoveryCause::Unknown;
+        self.session_file = Some(resolved_file);
+        self.transcript_file.reset();
         self.mirror_trimmed = false;
         self.trimmed_entry_count = 0;
         self.resident_store.clear();
         let Some(current) = self.session_file.clone() else {
             return Ok(());
         };
+        let result = self.load_session_file(&current, options, recovery_cause);
+        if result.is_ok() {
+            self.journal_replace();
+        }
+        result
+    }
+
+    fn load_session_file(
+        &mut self,
+        current: &str,
+        options: Option<NewSessionOptions>,
+        recovery_cause: crate::session_write_recovery::SessionRecoveryCause,
+    ) -> Result<(), String> {
+        let current = current.to_owned();
         if Path::new(&current).exists() {
-            let entries = load_entries_from_file(&current);
+            // This process opens the session for append; a final line torn by an interrupted write is set aside
+            // now (senpi#4295: every open path, `-c` included), never from read-only load_entries_from_file callers.
+            if self.persist {
+                self.settle_final_line(&current, recovery_cause)?;
+            }
+            let (entries, identity) = if self.captures_transcript_base {
+                crate::session_entry_file::load_entries_from_file_with_identity(&current)
+            } else {
+                (load_entries_from_file(&current), None)
+            };
+            if self.captures_transcript_base && !entries.is_empty() {
+                self.transcript_file.capture(identity, Some(&entries));
+            }
             if entries.is_empty() {
                 let size = std::fs::metadata(&current)
                     .map(|metadata| metadata.len())
@@ -1494,6 +1638,7 @@ impl SessionManager {
 
     pub fn new_session(&mut self, options: Option<NewSessionOptions>) -> Option<String> {
         let timestamp = self.reset_to_new_session(options);
+        self.owned_header_file = None;
         if self.persist {
             let file_timestamp = timestamp.replace([':', '.'], "-");
             let path = Path::new(&self.session_dir)
@@ -1504,6 +1649,7 @@ impl SessionManager {
             self.session_file = Some(path);
         }
         self.sync_session_file_ownership();
+        self.journal_replace();
         self.session_file.clone()
     }
 
@@ -1536,15 +1682,20 @@ impl SessionManager {
             .as_ref()
             .and_then(|options| options.forked_from_leaf_id.clone())
         {
-            header.insert("forkedFromLeafId".to_owned(), Value::from(forked_from_leaf_id));
+            header.insert(
+                "forkedFromLeafId".to_owned(),
+                Value::from(forked_from_leaf_id),
+            );
         }
         if let Some(spawned_by) = options
             .as_ref()
             .and_then(|options| options.spawned_by.as_ref())
-            && let Ok(val) = serde_json::to_value(spawned_by) {
-                header.insert("spawnedBy".to_owned(), val);
-            }
+            && let Ok(val) = serde_json::to_value(spawned_by)
+        {
+            header.insert("spawnedBy".to_owned(), val);
+        }
         self.file_entries = vec![Value::Object(header)];
+        self.transcript_file.reset();
         self.history_generation += 1;
         self.verbatim_from_count = 0;
         self.invalidate_entries_cache();
@@ -1666,6 +1817,51 @@ impl SessionManager {
             .then(|| cache_read as f64 / latest_prompt_tokens as f64 * 100.0);
     }
 
+    /// senpi `persistHeaderNow`: a session exposed to other processes needs its id on disk before the first
+    /// assistant message would write it; later entries then append at once.
+    pub fn persist_header_now(&mut self) -> Result<(), String> {
+        if !self.persist || self.session_file.is_none() || self.flushed {
+            return Ok(());
+        }
+        self.rewrite_file();
+        if let Some(error) = self.last_write_error.take() {
+            return Err(error);
+        }
+        self.flushed = true;
+        self.owned_header_file = self.session_file.clone();
+        Ok(())
+    }
+
+    /// senpi `discardHeaderOnlyFile`: removes the session file when this process created it with
+    /// `persist_header_now` and it holds only setup entries (header, model, thinking level,
+    /// configuration, labels), `custom` entries their writer marked `startupBookkeeping` and engine
+    /// lifecycle bookkeeping (senpi#3864), then returns to buffering so a later entry cannot recreate a
+    /// header-less file (senpi#3263). Any message, delivered `custom_message`, session name, other
+    /// `custom` entry or usage record keeps the file, and a file opened from disk is never deleted here.
+    pub fn discard_header_only_file(&mut self) -> bool {
+        let Some(session_file) = self.session_file.clone() else {
+            return false;
+        };
+        if !self.persist
+            || !self.flushed
+            || self.owned_header_file.as_deref() != Some(&session_file)
+        {
+            return false;
+        }
+        if !self.file_entries.iter().all(is_disposable_entry) {
+            return false;
+        }
+        if let Err(error) = std::fs::remove_file(&session_file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return false;
+        }
+        self.owned_header_file = None;
+        self.flushed = false;
+        self.transcript_file.reset();
+        true
+    }
+
     fn rewrite_file(&mut self) {
         if let Err(error) = self.check_session_hold() {
             eprintln!("cannot rewrite session: {error}");
@@ -1685,10 +1881,28 @@ impl SessionManager {
         let mut content = String::new();
         for entry in &self.file_entries {
             // PERF-DIVERGENCE(senpi session-manager.ts): upstream serializes each stored object directly; this borrows entries without resident tokens instead of deep-cloning them through materialize. Serialized text is identical.
-            content.push_str(&serialize_entry(&self.resident_store.materialize_cow(entry)));
+            content.push_str(&serialize_entry(
+                &self.resident_store.materialize_cow(entry),
+            ));
             content.push('\n');
         }
-        if let Err(error) = std::fs::write(&session_file, content) {
+        let mut captured: Option<Option<crate::session_file_identity::FileIdentity>> = None;
+        let mut record = |identity: Option<crate::session_file_identity::FileIdentity>| {
+            captured = Some(identity)
+        };
+        let written = crate::session_file_replace::replace_file_atomically(
+            Path::new(&session_file),
+            &[content.as_bytes()],
+            if self.captures_transcript_base {
+                Some(&mut record as crate::session_file_replace::CaptureIdentity<'_>)
+            } else {
+                None
+            },
+        );
+        if let Some(identity) = captured {
+            self.capture_written_base(identity);
+        }
+        if let Err(error) = written {
             self.last_write_error = Some(error.to_string());
             crate::hidden_stdout_log::append_debug_note(&format!(
                 "cannot rewrite session {session_file}: {error}"
@@ -1710,8 +1924,25 @@ impl SessionManager {
         crate::session_write_reservation::reserve_session_write(&session_file);
         // PERF-DIVERGENCE(senpi session-manager.ts _persist): upstream scans every entry for an assistant message on each append; once flushed both branches below append the line regardless, so this skips the O(n) scan (and the materialize) then. Bytes written are identical.
         if self.flushed {
-            let persisted_entry = self.resident_store.materialize_cow(&self.file_entries[order]);
-            return append_line(&session_file, &persisted_entry);
+            if self.tail_may_be_torn {
+                let recovery = crate::session_write_recovery::truncate_to_last_complete_line(
+                    Path::new(&session_file),
+                    self.torn_tail_cause,
+                )?;
+                self.tail_may_be_torn = false;
+                if let Some(recovery) = recovery {
+                    self.report_recovery(recovery);
+                }
+            }
+            let persisted_entry = self
+                .resident_store
+                .materialize_cow(&self.file_entries[order]);
+            let appended = append_line(&session_file, &persisted_entry);
+            if let Err(error) = &appended {
+                self.tail_may_be_torn = true;
+                self.torn_tail_cause = crate::session_write_recovery::session_recovery_cause(error);
+            }
+            return appended;
         }
         let durable_lifecycle = {
             let entry = &self.file_entries[order];
@@ -1719,26 +1950,44 @@ impl SessionManager {
                 && entry
                     .get("customType")
                     .and_then(Value::as_str)
-                    .map(|ct| matches!(ct, "session-lifecycle" | "work-custody" | "child-lifecycle"))
+                    .map(|ct| {
+                        matches!(ct, "session-lifecycle" | "work-custody" | "child-lifecycle")
+                    })
                     .unwrap_or(false)
         };
-        let has_assistant = durable_lifecycle || self.file_entries.iter().any(|candidate| {
-            entry_type(candidate) == "message"
-                && candidate
-                    .get("message")
-                    .and_then(|message| message.get("role"))
-                    .and_then(Value::as_str)
-                    == Some("assistant")
-        });
+        let has_assistant = durable_lifecycle
+            || self.file_entries.iter().any(|candidate| {
+                entry_type(candidate) == "message"
+                    && candidate
+                        .get("message")
+                        .and_then(|message| message.get("role"))
+                        .and_then(Value::as_str)
+                        == Some("assistant")
+            });
         if has_assistant {
             self.rewrite_file();
-            if let Some(error) = self.last_write_error.take() { return Err(std::io::Error::other(error)); }
+            if let Some(error) = self.last_write_error.take() {
+                return Err(std::io::Error::other(error));
+            }
             self.flushed = true;
+            // Lifecycle bookkeeping created this file before any conversation, so an empty session
+            // can still discard it (senpi#3864).
+            if !self.file_entries.iter().any(is_conversation_entry) {
+                self.owned_header_file = Some(session_file);
+            }
         }
         Ok(())
     }
 
     fn append_entry(&mut self, entry: Value) {
+        self.append_entry_owned_by(entry, None);
+    }
+
+    fn append_entry_owned_by(
+        &mut self,
+        entry: Value,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+    ) {
         // PERF-DIVERGENCE(senpi session-manager.ts): upstream keeps one object per entry; the port deep-cloned each appended entry for externalize, for the push, and again for persist, so this moves the entry through externalize into file_entries and persists from there. Stored and written values are identical.
         let entry = self.resident_store.externalize_owned(entry);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -1791,12 +2040,195 @@ impl SessionManager {
                 "Failed to persist session entry to {}: {error}\n",
                 self.session_file.as_deref().unwrap_or_default()
             ));
+            return;
+        }
+        if self.transcript_journal.is_some() {
+            let committed = &self.file_entries[self.file_entries.len() - 1];
+            let id = committed
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let serialized = serialize_entry(&self.resident_store.materialize_cow(committed));
+            let persistence = self.transcript_persistence();
+            if let Some(journal) = &mut self.transcript_journal {
+                journal.record([
+                    crate::session_transcript_journal::TranscriptTransition::Append {
+                        id,
+                        entry: Some(serialized),
+                        persistence,
+                        owning_message_id: recovery_owner.map(|owner| owner.message_id.clone()),
+                        recovery_epoch: recovery_owner.map(|owner| owner.epoch.clone()),
+                    },
+                ]);
+            }
         }
     }
 
-    pub fn last_persistence_error(&self) -> Option<&str> { self.last_write_error.as_deref() }
+    /// Receives each repair of this session's file once (senpi#4295): a torn tail set aside on open, or the
+    /// fragment of a failed append set aside before the next one. Repairs made before a listener exists are
+    /// delivered on registration.
+    pub fn on_recovery(&mut self, listener: RecoveryListener) {
+        for recovery in std::mem::take(&mut self.pending_recoveries) {
+            (listener.0)(&recovery);
+        }
+        self.recovery_listener = Some(listener);
+    }
 
-    pub fn take_write_error(&mut self) -> Option<String> { self.last_write_error.take() }
+    /// Unregisters the recovery listener (senpi `onRecovery`'s returned disposer).
+    pub fn clear_recovery_listener(&mut self) {
+        self.recovery_listener = None;
+    }
+
+    fn report_recovery(&mut self, recovery: crate::session_write_recovery::SessionRecovery) {
+        match &self.recovery_listener {
+            Some(listener) => (listener.0)(&recovery),
+            None => self.pending_recoveries.push(recovery),
+        }
+    }
+
+    fn settle_final_line(
+        &mut self,
+        session_file: &str,
+        cause: crate::session_write_recovery::SessionRecoveryCause,
+    ) -> Result<(), String> {
+        match crate::session_entry_file::terminate_final_session_line(
+            Path::new(session_file),
+            cause,
+        )
+        .map_err(|error| error.to_string())?
+        {
+            Some(crate::session_entry_file::FinalLineRepair::SetAside(recovery)) => {
+                self.report_recovery(recovery)
+            }
+            Some(crate::session_entry_file::FinalLineRepair::Deferred) => {
+                self.tail_may_be_torn = true;
+                self.torn_tail_cause = cause;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// The identity of the descriptor that wrote the whole file is the base the written entries form.
+    fn capture_written_base(
+        &mut self,
+        identity: Option<crate::session_file_identity::FileIdentity>,
+    ) {
+        let entries = self.file_entries.clone();
+        self.transcript_file.capture(identity, Some(&entries));
+        let persistence = self.transcript_persistence_with(true);
+        let unavailable = self.transcript_file.unavailable;
+        if let Some(journal) = &mut self.transcript_journal {
+            if let Some(persistence) = persistence {
+                journal.record([
+                    crate::session_transcript_journal::TranscriptTransition::Persisted {
+                        persistence,
+                    },
+                ]);
+            } else if let Some(reason) = unavailable {
+                journal.record([
+                    crate::session_transcript_journal::TranscriptTransition::Unavailable { reason },
+                ]);
+            }
+        }
+    }
+
+    /// Starts journaling committed transcript changes and returns the whole transcript they follow (R3.C1.1).
+    pub fn begin_transcript_journal(
+        &mut self,
+    ) -> Vec<crate::session_transcript_journal::TranscriptTransition> {
+        self.transcript_journal =
+            Some(crate::session_transcript_journal::TranscriptJournal::default());
+        self.transcript_snapshot()
+    }
+
+    /// The transcript changes committed since the journal began or was last drained.
+    pub fn drain_transcript(
+        &mut self,
+    ) -> Vec<crate::session_transcript_journal::TranscriptTransition> {
+        self.transcript_journal
+            .as_mut()
+            .map(crate::session_transcript_journal::TranscriptJournal::drain)
+            .unwrap_or_default()
+    }
+
+    fn journal_replace(&mut self) {
+        if self.transcript_journal.is_none() {
+            return;
+        }
+        let snapshot = self.transcript_snapshot();
+        if let Some(journal) = &mut self.transcript_journal {
+            journal.record(snapshot);
+        }
+    }
+
+    fn journal_leaf(&mut self) {
+        let leaf_id = self.leaf_id.clone();
+        if let Some(journal) = &mut self.transcript_journal {
+            journal.record([
+                crate::session_transcript_journal::TranscriptTransition::Leaf { leaf_id },
+            ]);
+        }
+    }
+
+    fn transcript_snapshot(&self) -> Vec<crate::session_transcript_journal::TranscriptTransition> {
+        if let Some(reason) = self.transcript_file.unavailable {
+            return vec![
+                crate::session_transcript_journal::TranscriptTransition::Unavailable { reason },
+            ];
+        }
+        let base = self.transcript_file.base.clone();
+        let len = self.file_entries.len() as i64;
+        let unpersisted = if base.is_some() {
+            self.full_entry_count as i64 - self.transcript_file.history as i64
+        } else {
+            len
+        };
+        let resident = if base.is_some() {
+            len - 1
+        } else if self.mirror_trimmed {
+            -1
+        } else {
+            len
+        };
+        let tail = (unpersisted >= 0 && unpersisted <= resident)
+            .then(|| &self.file_entries[(len - unpersisted) as usize..]);
+        crate::session_transcript_journal::snapshot_transcript(
+            base,
+            tail,
+            self.leaf_id.as_deref(),
+            &mut |entry| serialize_entry(&self.resident_store.materialize_cow(entry)),
+            self.transcript_persistence().as_ref(),
+        )
+    }
+
+    fn transcript_persistence(
+        &self,
+    ) -> Option<crate::session_transcript_journal::TranscriptPersistence> {
+        self.transcript_persistence_with(self.flushed)
+    }
+
+    fn transcript_persistence_with(
+        &self,
+        flushed: bool,
+    ) -> Option<crate::session_transcript_journal::TranscriptPersistence> {
+        if !flushed {
+            return None;
+        }
+        Some(crate::session_transcript_journal::TranscriptPersistence {
+            file_identity: self.transcript_file.identity.clone()?,
+            count: self.full_entry_count + 1,
+        })
+    }
+
+    pub fn last_persistence_error(&self) -> Option<&str> {
+        self.last_write_error.as_deref()
+    }
+
+    pub fn take_write_error(&mut self) -> Option<String> {
+        self.last_write_error.take()
+    }
 
     pub fn append_entry_raw(&mut self, entry: Value) {
         self.append_entry(entry);
@@ -1833,6 +2265,17 @@ impl SessionManager {
         message: Value,
         input_source: Option<maho_ext_api::InputSource>,
     ) -> Value {
+        self.append_owned_message_with_recovery(message, input_source, None)
+    }
+
+    /// `appendOwnedMessage` with its `recoveryOwner`: the journal records the owning message id and
+    /// recovery epoch; the record's bytes do not change.
+    pub fn append_owned_message_with_recovery(
+        &mut self,
+        message: Value,
+        input_source: Option<maho_ext_api::InputSource>,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+    ) -> Value {
         let mut entry = self.base_entry("message");
         entry.insert("message".to_owned(), message);
         if let Some(source) = input_source {
@@ -1844,7 +2287,7 @@ impl SessionManager {
             entry.insert("inputSource".to_owned(), Value::from(name));
         }
         let entry = Value::Object(entry);
-        self.append_entry(entry.clone());
+        self.append_entry_owned_by(entry.clone(), recovery_owner);
         entry
     }
 
@@ -1872,7 +2315,12 @@ impl SessionManager {
         source: Option<&str>,
         model: Option<&maho_ai::types::Model>,
     ) -> Value {
-        self.append_thinking_level_change_context(thinking_level, thinking_selection, source, model.map(|model| (model.provider.as_str(), model.id.as_str())))
+        self.append_thinking_level_change_context(
+            thinking_level,
+            thinking_selection,
+            source,
+            model.map(|model| (model.provider.as_str(), model.id.as_str())),
+        )
     }
 
     fn append_thinking_level_change_context(
@@ -1883,7 +2331,9 @@ impl SessionManager {
         model: Option<(&str, &str)>,
     ) -> Value {
         let mut entry = self.base_entry("thinking_level_change");
-        if let Some(source) = source { entry.insert("source".into(), Value::from(source)); }
+        if let Some(source) = source {
+            entry.insert("source".into(), Value::from(source));
+        }
         entry.insert("thinkingLevel".to_owned(), Value::from(thinking_level));
         if let Some(selection) = thinking_selection {
             entry.insert("thinkingSelection".to_owned(), selection);
@@ -2071,10 +2521,24 @@ impl SessionManager {
     }
 
     pub fn append_custom(&mut self, custom_type: &str, data: Option<Value>) -> Value {
+        self.append_custom_marked(custom_type, data, false)
+    }
+
+    /// senpi `appendCustomEntry(customType, data, { startupBookkeeping })`: a marked entry does not keep a
+    /// conversation-free session's file (senpi#3263).
+    pub fn append_custom_marked(
+        &mut self,
+        custom_type: &str,
+        data: Option<Value>,
+        startup_bookkeeping: bool,
+    ) -> Value {
         let mut entry = self.base_entry("custom");
         entry.insert("customType".to_owned(), Value::from(custom_type));
         if let Some(data) = data {
             entry.insert("data".to_owned(), data);
+        }
+        if startup_bookkeeping {
+            entry.insert("startupBookkeeping".to_owned(), Value::Bool(true));
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
@@ -2088,6 +2552,18 @@ impl SessionManager {
         display: bool,
         details: Option<Value>,
     ) -> Value {
+        self.append_custom_message_with_recovery(custom_type, content, display, details, None)
+    }
+
+    /// `appendCustomMessageEntry` with its `recoveryOwner` (journal only; record bytes unchanged).
+    pub fn append_custom_message_with_recovery(
+        &mut self,
+        custom_type: &str,
+        content: Value,
+        display: bool,
+        details: Option<Value>,
+        recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
+    ) -> Value {
         let mut entry = self.base_entry("custom_message");
         entry.insert("customType".to_owned(), Value::from(custom_type));
         entry.insert("content".to_owned(), content);
@@ -2096,7 +2572,7 @@ impl SessionManager {
             entry.insert("details".to_owned(), details);
         }
         let entry = Value::Object(entry);
-        self.append_entry(entry.clone());
+        self.append_entry_owned_by(entry.clone(), recovery_owner);
         entry
     }
 
@@ -2228,17 +2704,26 @@ impl SessionManager {
     /// post-compaction view rather than the full history.
     /// Materialized once per mutation and shared; readers borrow the same `Arc`.
     fn compact_entries(&self) -> Arc<Vec<Value>> {
-        let mut cache = self.entries_cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self
+            .entries_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = cache.as_ref() {
             return Arc::clone(cached);
         }
-        let entries = self.file_entries.iter().filter(|entry| entry_type(entry) != "session");
-        let materialized = Arc::new(crate::session_entry_materializer::materialize_session_entries(
-            entries,
-            &self.resident_store,
-            || self.load_full_history_entries(),
-            |_| {},
-        ));
+        let entries = self
+            .file_entries
+            .iter()
+            .filter(|entry| entry_type(entry) != "session");
+        let materialized = Arc::new(
+            crate::session_entry_materializer::materialize_session_entries(
+                entries,
+                &self.resident_store,
+                || self.load_full_history_entries(),
+                |_| {},
+            ),
+        );
         *cache = Some(Arc::clone(&materialized));
         materialized
     }
@@ -2307,6 +2792,34 @@ impl SessionManager {
         }
         appended.reverse();
         Some(appended)
+    }
+
+    /// The entries of `entries()` that `keep` accepts, in the same order, each materialized only for
+    /// its own visit, so a scan never holds a copy of the whole history. `keep` sees the resident
+    /// form, where strings of 32 KiB and more are tokens: it must read only short identifying fields
+    /// (`type`, `customType`, `id`, `message.role`).
+    pub fn for_each_entry(&self, keep: &dyn Fn(&Value) -> bool, visit: &mut dyn FnMut(Value)) {
+        if self.mirror_trimmed && self.session_file.is_some() {
+            for entry in self.load_full_history_entries() {
+                if entry_type(&entry) != "session" && keep(&entry) {
+                    visit(self.resident_store.materialize(&entry));
+                }
+            }
+            return;
+        }
+        for entry in &self.file_entries {
+            if entry_type(entry) != "session" && keep(entry) {
+                visit(self.materialize_entry(entry));
+            }
+        }
+    }
+
+    /// The entries of `entries()` whose `type` is one of `kinds`, in order. Bookkeeping readers
+    /// (custom records, delivered notices) get them without materializing the rest of the history.
+    pub fn entries_of_types(&self, kinds: &[&str]) -> Vec<Value> {
+        let mut entries = Vec::new();
+        self.for_each_entry(&|entry| kinds.contains(&entry_type(entry)), &mut |entry| entries.push(entry));
+        entries
     }
 
     pub fn entries(&self) -> Vec<Value> {
@@ -2566,7 +3079,10 @@ impl SessionManager {
 
     pub fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
         let header = self.header()?;
-        let parent_session = header.get("parentSession").and_then(Value::as_str)?.to_owned();
+        let parent_session = header
+            .get("parentSession")
+            .and_then(Value::as_str)?
+            .to_owned();
         if let Some(leaf_val) = header.get("forkedFromLeafId") {
             let inherited_through_entry_id = leaf_val.as_str().map(str::to_owned);
             return Some(maho_ext_api::ForkProvenance {
@@ -2586,7 +3102,9 @@ impl SessionManager {
         }
         let parent_entries = load_entries_from_file(&resolved_parent);
         if parent_entries.is_empty()
-            || !parent_entries.iter().any(|entry| entry_type(entry) == "session")
+            || !parent_entries
+                .iter()
+                .any(|entry| entry_type(entry) == "session")
         {
             return None;
         }
@@ -2665,12 +3183,14 @@ impl SessionManager {
             return Err(format!("Entry {id} not found"));
         }
         self.leaf_id = Some(id.to_owned());
+        self.journal_leaf();
         Ok(())
     }
 
     /// senpi `resetLeaf`: the next append creates a new root entry (parentId = null).
     pub fn reset_leaf(&mut self) {
         self.leaf_id = None;
+        self.journal_leaf();
     }
 
     /// senpi `branchWithSummary`: move the leaf to `branch_from_id` (None = root) and append a
@@ -2703,6 +3223,7 @@ impl SessionManager {
             return Err(format!("Entry {leaf_id} not found"));
         }
         let path = self.branch(Some(leaf_id));
+        self.transcript_file.reset();
         let mut path_without_labels: Vec<Value> = Vec::new();
         let mut replacement_by_label_id: HashMap<String, String> = HashMap::new();
         let mut pending_label_ids: Vec<String> = Vec::new();
@@ -2835,6 +3356,7 @@ impl SessionManager {
             } else {
                 self.flushed = false;
             }
+            self.journal_replace();
             return Ok(Some(new_session_file));
         }
 
@@ -2842,6 +3364,7 @@ impl SessionManager {
         self.invalidate_entries_cache();
         self.session_id = new_session_id;
         self.build_index();
+        self.journal_replace();
         Ok(None)
     }
 
@@ -2936,11 +3459,18 @@ impl SessionManager {
                 || (!session.cwd.is_empty()
                     && resolve_path(&session.cwd, &session.cwd, &options) == resolved_cwd)
         };
-        let mut forward = |loaded: usize, total: usize, rows: Option<Vec<crate::session_discovery::SessionInfo>>| {
-            if let Some(progress) = on_progress.as_deref_mut() {
-                progress(loaded, total, rows.map(|rows| rows.into_iter().filter(|row| include(row)).collect()));
-            }
-        };
+        let mut forward =
+            |loaded: usize,
+             total: usize,
+             rows: Option<Vec<crate::session_discovery::SessionInfo>>| {
+                if let Some(progress) = on_progress.as_deref_mut() {
+                    progress(
+                        loaded,
+                        total,
+                        rows.map(|rows| rows.into_iter().filter(|row| include(row)).collect()),
+                    );
+                }
+            };
         let mut sessions: Vec<_> =
             crate::session_discovery::list_sessions_from_dir(&dir, Some(&mut forward), 0, None)
                 .into_iter()
@@ -3015,7 +3545,9 @@ fn append_line(session_file: &str, entry: &Value) -> std::io::Result<()> {
 pub fn parse_retention_days(value: Option<f64>) -> Result<Option<u64>, String> {
     match value {
         None => Ok(None),
-        Some(days) if days.is_finite() && days >= 1.0 && days.fract() == 0.0 && days <= 36_500.0 => {
+        Some(days)
+            if days.is_finite() && days >= 1.0 && days.fract() == 0.0 && days <= 36_500.0 =>
+        {
             Ok(Some(days as u64))
         }
         Some(days) => Err(format!(
@@ -3049,10 +3581,14 @@ pub fn prune_sessions(
         }
     }
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
             if meta.is_file()
                 && path
                     .file_name()
@@ -3121,7 +3657,9 @@ fn collect_orphan_sidecar(sidecar: &Path) {
     if std::fs::symlink_metadata(session).is_ok() {
         return;
     }
-    let Ok(lock) = open_retention_lock(session) else { return };
+    let Ok(lock) = open_retention_lock(session) else {
+        return;
+    };
     if std::fs::symlink_metadata(session).is_err() {
         lock.unlink_sidecar();
     }
@@ -3173,8 +3711,8 @@ impl crate::session_history_reduce::HistorySource for ManagerHistory<'_> {
         self.0.appended_since(count)
     }
 
-    fn read_all(&self) -> Vec<Value> {
-        self.0.entries()
+    fn visit_all(&self, visit: &mut dyn FnMut(Value)) {
+        self.0.for_each_entry(&|_| true, visit);
     }
 }
 
@@ -3294,11 +3832,15 @@ mod tests {
         let mut manager = SessionManager::in_memory("/tmp", None, None);
         manager.append_message(json!({ "role": "user", "content": "one", "timestamp": 1 }));
         assert_eq!(manager.entries().len(), 1);
-        let second = manager.append_message(json!({ "role": "user", "content": "two", "timestamp": 2 }));
+        let second =
+            manager.append_message(json!({ "role": "user", "content": "two", "timestamp": 2 }));
         let entries = manager.entries();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1]["id"], second["id"]);
-        assert_eq!(manager.current_branch().last().map(|entry| &entry["id"]), Some(&second["id"]));
+        assert_eq!(
+            manager.current_branch().last().map(|entry| &entry["id"]),
+            Some(&second["id"])
+        );
     }
 
     #[test]
@@ -3510,6 +4052,158 @@ mod tests {
     }
 
     #[test]
+    fn fork_from_forks_a_headerless_source_and_names_what_it_refuses() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target_dir = tmp.path().join("target");
+        std::fs::create_dir_all(&target_dir).expect("target dir");
+        let target = target_dir.to_string_lossy().into_owned();
+        let headerless = tmp.path().join("headerless.jsonl");
+        std::fs::write(
+            &headerless,
+            "{\"type\":\"message\",\"id\":\"a\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .expect("write");
+        let mut forked =
+            SessionManager::fork_from(&headerless.to_string_lossy(), &target, Some(&target), None)
+                .expect("headerless fork");
+        let entries = load_entries_from_file(forked.session_file().expect("file"));
+        assert_eq!(entry_type(&entries[0]), "session");
+        assert!(entries.iter().any(|entry| entry["id"] == "a"));
+        forked.dispose();
+
+        let empty = tmp.path().join("empty.jsonl");
+        std::fs::write(&empty, "\n").expect("write");
+        let error =
+            SessionManager::fork_from(&empty.to_string_lossy(), &target, Some(&target), None)
+                .expect_err("empty refused");
+        assert!(error.contains("source session file is empty or has no readable entries"));
+        let other = tmp.path().join("package.json");
+        std::fs::write(&other, "{\"name\":\"x\"}\n").expect("write");
+        let error =
+            SessionManager::fork_from(&other.to_string_lossy(), &target, Some(&target), None)
+                .expect_err("not a session refused");
+        assert!(error.contains("source file is not a session file"));
+    }
+
+    #[test]
+    fn opening_a_session_with_a_torn_tail_backs_it_up_and_reports_it_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("s.jsonl");
+        let header = serialize_entry(
+            &json!({ "type": "session", "version": CURRENT_SESSION_VERSION, "id": "s", "timestamp": "2026-01-01T00:00:00.000Z", "cwd": "/tmp" }),
+        );
+        std::fs::write(&path, format!("{header}\n{{\"type\":\"mess")).expect("torn");
+        let mut manager =
+            SessionManager::open(&path.to_string_lossy(), None, None, None).expect("open");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!("{header}\n")
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        manager.on_recovery(RecoveryListener(Arc::new(
+            move |recovery: &crate::session_write_recovery::SessionRecovery| {
+                sink.lock().expect("seen").push(recovery.clone());
+            },
+        )));
+        let seen = seen.lock().expect("seen").clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].cause,
+            crate::session_write_recovery::SessionRecoveryCause::Unknown
+        );
+        assert_eq!(
+            std::fs::read_to_string(&seen[0].backup_path).expect("backup"),
+            "{\"type\":\"mess"
+        );
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        assert_eq!(load_entries_from_file(&path.to_string_lossy()).len(), 3);
+    }
+
+    #[test]
+    fn a_failed_append_marks_the_tail_and_the_next_append_sets_the_fragment_aside() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut manager = SessionManager::create(
+            &tmp.path().to_string_lossy(),
+            Some(&tmp.path().to_string_lossy()),
+            None,
+        );
+        let path = PathBuf::from(manager.session_file().expect("file"));
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        // A write the disk cut short, as a failed flushed append leaves it.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        file.write_all(b"{\"type\":\"mess").expect("fragment");
+        manager.tail_may_be_torn = true;
+        manager.torn_tail_cause = crate::session_write_recovery::SessionRecoveryCause::DiskFull;
+        manager.append_message(json!({ "role": "user", "content": "b", "timestamp": 3 }));
+        assert_eq!(load_entries_from_file(&path.to_string_lossy()).len(), 4);
+        assert_eq!(manager.pending_recoveries.len(), 1);
+        assert!(
+            manager.pending_recoveries[0]
+                .notice
+                .contains("the disk was full")
+        );
+    }
+
+    #[test]
+    fn the_transcript_journal_records_appends_leaves_and_replacements() {
+        use crate::session_transcript_journal::TranscriptTransition;
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let snapshot = manager.begin_transcript_journal();
+        assert!(matches!(
+            snapshot.first(),
+            Some(TranscriptTransition::Replace { base: None })
+        ));
+        assert!(matches!(
+            snapshot.last(),
+            Some(TranscriptTransition::Leaf { leaf_id: None })
+        ));
+        let carrier = crate::session_recovery_identity::RecoveryCarrier {
+            message_id: "m1".into(),
+            epoch: "e1".into(),
+            durable_entry_id: None,
+        };
+        let entry = manager.append_owned_message_with_recovery(
+            json!({ "role": "user", "content": "hi" }),
+            None,
+            Some(&carrier),
+        );
+        assert!(
+            entry.get("owningMessageId").is_none(),
+            "record bytes are unchanged"
+        );
+        manager.reset_leaf();
+        let drained = manager.drain_transcript();
+        assert_eq!(drained.len(), 2);
+        let TranscriptTransition::Append {
+            id,
+            entry: Some(bytes),
+            owning_message_id,
+            recovery_epoch,
+            ..
+        } = &drained[0]
+        else {
+            panic!("append");
+        };
+        assert_eq!(Some(id.as_str()), entry["id"].as_str());
+        assert_eq!(bytes, &serialize_entry(&entry));
+        assert_eq!(owning_message_id.as_deref(), Some("m1"));
+        assert_eq!(recovery_epoch.as_deref(), Some("e1"));
+        assert_eq!(drained[1], TranscriptTransition::Leaf { leaf_id: None });
+        assert!(manager.drain_transcript().is_empty());
+        manager.new_session(None);
+        assert!(matches!(
+            manager.drain_transcript().first(),
+            Some(TranscriptTransition::Replace { .. })
+        ));
+    }
+
+    #[test]
     fn fork_from_writes_boundary_and_fork_provenance_returns_it_after_reopen() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().to_string_lossy().into_owned();
@@ -3539,26 +4233,49 @@ mod tests {
             }),
         )
         .expect("fork");
-        let forked_file = forked.session_file().expect("forked session file").to_owned();
+        let forked_file = forked
+            .session_file()
+            .expect("forked session file")
+            .to_owned();
 
         // Check header directly
         let entries = load_entries_from_file(&forked_file);
         assert_eq!(
-            entries.first().and_then(|entry| entry.get("forkedFromLeafId")).and_then(Value::as_str),
+            entries
+                .first()
+                .and_then(|entry| entry.get("forkedFromLeafId"))
+                .and_then(Value::as_str),
             Some("entry-2")
         );
 
         // Check fork_provenance on live manager
         let prov = forked.fork_provenance().expect("fork provenance");
-        assert_eq!(prov.parent_session, source_file.to_str().expect("source path"));
+        assert_eq!(
+            prov.parent_session,
+            source_file.to_str().expect("source path")
+        );
         assert_eq!(prov.inherited_through_entry_id.as_deref(), Some("entry-2"));
         forked.dispose();
 
         // Reopen and check fork_provenance again
-        let mut reopened = SessionManager::open(&forked_file, Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("reopen");
-        let prov_reopened = reopened.fork_provenance().expect("reopened fork provenance");
-        assert_eq!(prov_reopened.parent_session, source_file.to_str().expect("source path"));
-        assert_eq!(prov_reopened.inherited_through_entry_id.as_deref(), Some("entry-2"));
+        let mut reopened = SessionManager::open(
+            &forked_file,
+            Some(target_dir.to_str().expect("target dir")),
+            Some(target_dir.to_str().expect("target path")),
+            None,
+        )
+        .expect("reopen");
+        let prov_reopened = reopened
+            .fork_provenance()
+            .expect("reopened fork provenance");
+        assert_eq!(
+            prov_reopened.parent_session,
+            source_file.to_str().expect("source path")
+        );
+        assert_eq!(
+            prov_reopened.inherited_through_entry_id.as_deref(),
+            Some("entry-2")
+        );
         reopened.dispose();
 
         // Old fork without forkedFromLeafId:
@@ -3575,12 +4292,24 @@ mod tests {
                     "cwd": target_dir.to_str().expect("target path"),
                     "parentSession": source_file.to_str().expect("source path"),
                 })),
-                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })),
+                serialize_entry(
+                    &json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })
+                ),
             ),
-        ).expect("write old fork");
-        let mut old_mgr = SessionManager::open(old_fork_file.to_str().expect("old fork file"), Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("open old");
+        )
+        .expect("write old fork");
+        let mut old_mgr = SessionManager::open(
+            old_fork_file.to_str().expect("old fork file"),
+            Some(target_dir.to_str().expect("target dir")),
+            Some(target_dir.to_str().expect("target path")),
+            None,
+        )
+        .expect("open old");
         let old_prov = old_mgr.fork_provenance().expect("old fork provenance");
-        assert_eq!(old_prov.inherited_through_entry_id.as_deref(), Some("entry-1"));
+        assert_eq!(
+            old_prov.inherited_through_entry_id.as_deref(),
+            Some("entry-1")
+        );
         old_mgr.dispose();
 
         // Old fork with unreadable parent:
@@ -3597,10 +4326,19 @@ mod tests {
                     "cwd": target_dir.to_str().expect("target path"),
                     "parentSession": "/nonexistent/parent/session.jsonl",
                 })),
-                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })),
+                serialize_entry(
+                    &json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })
+                ),
             ),
-        ).expect("write broken fork");
-        let mut broken_mgr = SessionManager::open(broken_parent_fork_file.to_str().expect("broken fork file"), Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("open broken");
+        )
+        .expect("write broken fork");
+        let mut broken_mgr = SessionManager::open(
+            broken_parent_fork_file.to_str().expect("broken fork file"),
+            Some(target_dir.to_str().expect("target dir")),
+            Some(target_dir.to_str().expect("target path")),
+            None,
+        )
+        .expect("open broken");
         assert!(broken_mgr.fork_provenance().is_none());
         broken_mgr.dispose();
     }
@@ -3758,7 +4496,10 @@ mod tests {
         let unsafe_result = json!({ "role": "toolResult", "toolCallId": "t", "toolName": "read", "content": [{ "type": "image", "mimeType": "image/png" }], "isError": false, "timestamp": 2 });
         let call = json!({ "role": "assistant", "content": [{ "type": "toolCall", "id": "t", "name": "read", "arguments": {} }], "timestamp": 1 });
         let build = |policy: Option<&str>| {
-            let details = policy.map_or(Value::Null, |policy| json!({ "retainedMessagePolicy": policy }));
+            let details = policy.map_or(
+                Value::Null,
+                |policy| json!({ "retainedMessagePolicy": policy }),
+            );
             let entries = vec![
                 json!({ "type": "message", "id": "a", "parentId": null, "timestamp": "t1", "message": { "role": "user", "content": "task", "timestamp": 0 } }),
                 json!({ "type": "message", "id": "b", "parentId": "a", "timestamp": "t2", "message": call }),
@@ -4331,6 +5072,40 @@ mod tests {
     }
 
     #[test]
+    fn typed_scans_on_a_large_session_match_entries_without_materializing_the_history() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut writer = SessionManager::create(&dir, Some(&dir), None);
+        writer.append_message(json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }));
+        writer.append_custom("work-custody", Some(json!({ "id": "w" })));
+        writer.append_message(json!({ "role": "user", "content": "small", "timestamp": 2 }));
+        let path = writer.session_file().expect("session file").to_owned();
+        drop(writer);
+        let manager = SessionManager::open(&path, Some(&dir), None, None).expect("reopen");
+
+        let custom = manager.entries_of_types(&["custom"]);
+        let mut visited = Vec::new();
+        manager.for_each_entry(&|_| true, &mut |entry| visited.push(entry));
+
+        let all = manager.entries();
+        assert_eq!(custom, all.iter().filter(|entry| entry["type"] == "custom").cloned().collect::<Vec<_>>());
+        assert_eq!(visited, all);
+        manager.drop_materialized_cache();
+        manager.entries_of_types(&["custom"]);
+        manager.for_each_entry(&|_| true, &mut |_| {});
+        assert!(!manager.has_materialized_view());
+    }
+
+    #[test]
+    fn loaded_entries_keep_their_values_after_capacity_is_trimmed() {
+        let mut value = json!({ "b": [1, { "c": "d" }], "a": { "z": null, "y": 2.5 } });
+        let original = value.clone();
+        shrink_json_to_fit(&mut value);
+        assert_eq!(value, original);
+        assert_eq!(serde_json::to_string(&value).expect("json"), serde_json::to_string(&original).expect("json"));
+    }
+
+    #[test]
     fn compaction_trims_the_resident_mirror_while_full_history_stays_readable() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().to_string_lossy().into_owned();
@@ -4496,7 +5271,10 @@ mod prune_sessions_tests {
     use std::time::{Duration, SystemTime};
 
     fn aged(path: &Path, days: u64) {
-        let file = std::fs::OpenOptions::new().write(true).open(path).expect("open");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open");
         file.set_modified(SystemTime::now() - Duration::from_secs(days * 86_400))
             .expect("mtime");
     }
@@ -4511,7 +5289,11 @@ mod prune_sessions_tests {
     #[test]
     fn prune_sessions_removes_old_and_keeps_recent_and_current() {
         let (root, project) = fixture();
-        let (old, recent, current) = (project.join("old.jsonl"), project.join("recent.jsonl"), project.join("cur.jsonl"));
+        let (old, recent, current) = (
+            project.join("old.jsonl"),
+            project.join("recent.jsonl"),
+            project.join("cur.jsonl"),
+        );
         for path in [&old, &recent, &current] {
             std::fs::write(path, "{}\n").expect("write");
         }
@@ -4544,7 +5326,11 @@ mod prune_sessions_tests {
             .expect("sidecar");
         assert!(probe.try_lock().is_err());
         // The session file itself is never locked, so writers on any platform are unaffected.
-        let session = std::fs::OpenOptions::new().read(true).write(true).open(&file).expect("open");
+        let session = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file)
+            .expect("open");
         assert!(session.try_lock().is_ok());
         drop(session);
         drop(manager);
@@ -4562,11 +5348,23 @@ mod prune_sessions_tests {
         let holder = open_retention_lock(&locked).expect("sidecar lock");
         #[cfg(unix)]
         let sidecar = retention_lock_path(&locked);
-        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        let removed = prune_sessions(
+            root.path(),
+            30,
+            Path::new("/nonexistent"),
+            SystemTime::now(),
+        )
+        .expect("prune");
         assert_eq!(removed, 0);
         assert!(locked.exists() && text.exists());
         drop(holder);
-        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        let removed = prune_sessions(
+            root.path(),
+            30,
+            Path::new("/nonexistent"),
+            SystemTime::now(),
+        )
+        .expect("prune");
         assert_eq!(removed, 1);
         assert!(!locked.exists() && text.exists());
         #[cfg(unix)]
@@ -4583,7 +5381,13 @@ mod prune_sessions_tests {
         std::fs::write(&live_lock, "").expect("sidecar");
         std::fs::write(retention_lock_path(&orphan_session), "").expect("orphan");
         let held = open_retention_lock(&project.join("held.jsonl")).expect("held");
-        prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        prune_sessions(
+            root.path(),
+            30,
+            Path::new("/nonexistent"),
+            SystemTime::now(),
+        )
+        .expect("prune");
         assert!(live_lock.exists(), "sidecar of an existing session is kept");
         assert!(!retention_lock_path(&orphan_session).exists());
         assert!(held.path.exists(), "locked sidecar is kept");
@@ -4607,7 +5411,11 @@ mod prune_sessions_tests {
         // The orphan inode locks fine but is reported as not the path's inode.
         assert!(!lock_verified(&orphan, &path).expect("lock orphan"));
         // Locking the replacement through a second handle is contended, not trusted.
-        let again = std::fs::OpenOptions::new().read(true).write(true).open(&path).expect("open");
+        let again = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open");
         assert!(lock_verified(&again, &path).is_err());
         drop(replacement);
         // A path that vanished entirely is also a mismatch.
@@ -4650,7 +5458,13 @@ mod prune_sessions_tests {
         aged(&target, 40);
         std::os::unix::fs::symlink(&target, project.join("link.jsonl")).expect("file link");
         std::os::unix::fs::symlink(outside.path(), root.path().join("dirlink")).expect("dir link");
-        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        let removed = prune_sessions(
+            root.path(),
+            30,
+            Path::new("/nonexistent"),
+            SystemTime::now(),
+        )
+        .expect("prune");
         assert_eq!(removed, 0);
         assert!(target.exists());
     }
@@ -4662,5 +5476,175 @@ mod prune_sessions_tests {
         for bad in [-1.0, 0.0, 1.5, f64::NAN, f64::INFINITY] {
             assert!(parse_retention_days(Some(bad)).is_err(), "{bad}");
         }
+    }
+}
+
+/// senpi test/suite/regressions/3263-discard-conversation-free-session.test.ts and
+/// 3864-lifecycle-only-file-discard.test.ts.
+#[cfg(test)]
+mod discard_header_only_file_tests {
+    use super::*;
+
+    fn started() -> (tempfile::TempDir, SessionManager, String) {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().to_string_lossy().into_owned();
+        let manager = SessionManager::create(&path, Some(&path), None);
+        let file = manager.session_file().expect("session file").to_owned();
+        (dir, manager, file)
+    }
+
+    fn exists(file: &str) -> bool {
+        Path::new(file).exists()
+    }
+
+    #[test]
+    fn discards_a_header_only_file_that_extensions_added_startup_bookkeeping_to() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        manager.append_custom_marked("repository-identity", Some(json!({"root": "/r"})), true);
+        assert!(exists(&file));
+        assert!(manager.discard_header_only_file());
+        assert!(!exists(&file));
+        assert!(!manager.is_flushed());
+    }
+
+    #[test]
+    fn keeps_the_file_once_the_session_has_a_user_message() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom("pi-rules.scan", Some(json!({"rules": []})));
+        manager.append_message(json!({"role": "user", "content": "hi", "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_the_file_once_the_session_has_an_assistant_message() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_message(json!({"role": "assistant", "content": [], "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_the_file_once_a_delivered_message_reached_the_model_context() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_message(
+            "session_control_delivery",
+            json!("from outside"),
+            true,
+            Some(json!({"delivery_id": "d1"})),
+        );
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_a_shell_command_the_user_ran_before_the_first_prompt() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_message(json!({
+            "role": "bashExecution", "command": "git status", "output": "clean", "exitCode": 0,
+            "cancelled": false, "truncated": false, "timestamp": 1
+        }));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_a_file_whose_custom_entry_was_not_marked_as_startup_bookkeeping() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom(
+            "senpi-memory.session-binding",
+            Some(json!({"agent": "test"})),
+        );
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn persists_the_startup_bookkeeping_mark_on_the_entry() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        manager.append_custom("plain-state", Some(json!({"n": 1})));
+        let path = dir.path().to_string_lossy().into_owned();
+        let reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        let marks: Vec<Value> = reopened
+            .entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .get("startupBookkeeping")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
+        assert_eq!(marks, [json!(true), Value::Null]);
+    }
+
+    #[test]
+    fn keeps_a_session_the_user_named() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_session_info(Some("planning"));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn never_deletes_a_file_it_reopened_from_disk() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        let path = dir.path().to_string_lossy().into_owned();
+        let mut reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        assert!(!reopened.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn writes_the_buffered_custom_entries_again_once_a_conversation_starts_after_the_discard() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        assert!(manager.discard_header_only_file());
+        manager.append_message(json!({"role": "user", "content": "later", "timestamp": 1}));
+        manager.append_message(json!({"role": "assistant", "content": [], "timestamp": 2}));
+        assert!(exists(&file));
+        let path = dir.path().to_string_lossy().into_owned();
+        let reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        assert_eq!(
+            reopened
+                .entries()
+                .iter()
+                .map(|entry| entry_type(entry).to_owned())
+                .collect::<Vec<_>>(),
+            ["custom", "message", "message"]
+        );
+    }
+
+    #[test]
+    fn discards_a_file_that_only_lifecycle_records_created() {
+        for custom_type in ["session-lifecycle", "work-custody", "child-lifecycle"] {
+            let (_dir, mut manager, file) = started();
+            manager.append_custom(custom_type, Some(json!({"seq": 1})));
+            assert!(exists(&file), "{custom_type}");
+            assert!(manager.discard_header_only_file(), "{custom_type}");
+            assert!(!exists(&file), "{custom_type}");
+        }
+    }
+
+    #[test]
+    fn keeps_a_lifecycle_created_file_once_the_session_has_a_user_message() {
+        let (_dir, mut manager, file) = started();
+        manager.append_custom("session-lifecycle", Some(json!({"seq": 1})));
+        manager.append_message(json!({"role": "user", "content": "hi", "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
     }
 }

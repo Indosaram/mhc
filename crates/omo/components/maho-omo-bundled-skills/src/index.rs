@@ -22,6 +22,7 @@ use maho_ext_api::{
 };
 
 use crate::contributed_skill::{read_disabled_skills, read_discover_cwd};
+use crate::override_dir::resolve_bundled_skills_override;
 
 pub const BUNDLED_SKILLS_COMPONENT_NAME: &str = "bundled-skills";
 
@@ -56,6 +57,15 @@ impl BundledSkillsComponent {
 impl Extension for BundledSkillsComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let options = self.options.clone();
+        // Every bundled-skill consumer reports an invalid override once; the UI copy comes here.
+        let env = options.env.clone().unwrap_or_else(process_env);
+        api.on(
+            EventKind::SessionStart,
+            Arc::new(move |_, ctx| {
+                resolve_bundled_skills_override(&env, ctx.logger.as_deref(), Some(ctx.ui.as_ref()));
+                Box::pin(async { Ok(EventResult::None) })
+            }),
+        );
         api.on(
             EventKind::ResourcesDiscover,
             Arc::new(move |event, ctx| {
@@ -73,7 +83,10 @@ fn resources_discover(
 ) -> Result<EventResult, ExtensionFailure> {
     let ExtensionEvent::ResourcesDiscover(discover) = event else { return Ok(EventResult::None) };
     let env = options.env.clone().unwrap_or_else(process_env);
-    let Some(skills_dir) = options.skills_dir.clone().or_else(|| resolve_bundled_skills_dir(&env)) else {
+    let Some(skills_dir) = options
+        .skills_dir
+        .clone()
+        .or_else(|| resolve_bundled_skills_dir_logged(&env, ctx.logger.as_deref())) else {
         return Ok(EventResult::None);
     };
     let cwd = read_discover_cwd(discover).unwrap_or_else(|| ctx.cwd.clone());
@@ -130,7 +143,18 @@ fn read_sorted_names(dir: &Path) -> std::io::Result<Vec<String>> {
 /// extension the packaged candidate resolves first; from the source file the second candidate
 /// resolves to the same synced directory.
 pub fn resolve_bundled_skills_dir(env: &BTreeMap<String, String>) -> Option<PathBuf> {
-    resolve_bundled_skills_dir_from(env, executable_dir().as_deref())
+    resolve_bundled_skills_dir_logged(env, None)
+}
+
+/// Upstream `resolveBundledSkillsDir(importerUrl, env, { logger })`: a valid `OMO_BUNDLED_SKILLS_DIR`
+/// wins (callers put an explicit `skills_dir` ahead of this); an invalid one is reported once and
+/// falls back to the packaged roots.
+pub fn resolve_bundled_skills_dir_logged(
+    env: &BTreeMap<String, String>,
+    logger: Option<&dyn ComponentLogger>,
+) -> Option<PathBuf> {
+    resolve_bundled_skills_override(env, logger, None)
+        .or_else(|| resolve_bundled_skills_dir_from(env, executable_dir().as_deref()))
 }
 
 /// Upstream `resolveBundledSkillsDir(importerUrl = import.meta.url)`: the importer's directory is

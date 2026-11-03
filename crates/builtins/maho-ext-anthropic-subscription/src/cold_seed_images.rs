@@ -32,7 +32,7 @@ struct Image {
 }
 
 fn canonical_base64(data: &str) -> Option<(String, String)> {
-    let compact: String = data.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let compact: String = data.chars().filter(|c| !matches!(c, '\u{0009}'..='\u{000d}' | ' ' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')).collect();
     if compact.is_empty() || compact.trim_end_matches('=').len() % 4 == 1
         || !compact.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/_-=".contains(&b))
         || compact.bytes().filter(|b| *b == b'=').count() > 2
@@ -72,7 +72,7 @@ pub fn replay_history_images(messages: &[Value], custom: &std::collections::BTre
         };
         let Some(content) = message["content"].as_array() else {continue};
         for (ei, block) in content.iter().enumerate() {
-            if block["type"]!="image" || !matches!(block["mimeType"].as_str(),Some("image/jpeg"|"image/png"|"image/gif"|"image/webp")) {continue;}
+            if block["type"]!="image" || !block["mimeType"].as_str().is_some_and(crate::content_blocks::is_sdk_image_media_type) {continue;}
             let data=block["data"].as_str().map(str::to_owned);let decoded=data.as_deref().and_then(canonical_base64);
             images.push(Image {message:mi,entry:ei,answered:mi<answer_boundary,origin:origin.clone(),block:block.clone(),hash:decoded.as_ref().map(|v|v.0.clone()),data:decoded.map(|v|v.1)});
         }
@@ -110,6 +110,16 @@ pub fn replay_history_images(messages: &[Value], custom: &std::collections::BTre
 mod tests {
     use super::*;
     fn image(data:&str)->Value {json!({"type":"image","mimeType":"image/png","data":data})}
+    #[test]
+    fn replay_accepts_ecmascript_whitespace_but_rejects_non_whitespace() {
+        let expected = canonical_base64("aW1hZ2U=").expect("valid image");
+        for whitespace in ['\t', '\n', '\r', ' ', '\u{00a0}', '\u{1680}', '\u{2003}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{feff}'] {
+            assert_eq!(canonical_base64(&format!("aW1{whitespace}hZ2U=")), Some(expected.clone()));
+        }
+        for character in ['\u{0085}', '\u{200b}', '='] {
+            assert!(canonical_base64(&format!("aW1{character}hZ2U=")).is_none());
+        }
+    }
     #[test]
     fn history_images_carry_origin_deduplicate_and_omit_answered_tool_images() {
         let messages=vec![json!({"role":"user","content":[image("aW1hZ2U=")]}),json!({"role":"assistant","content":[]}),json!({"role":"toolResult","toolName":"read","toolCallId":"c1","content":[image("aW1hZ2U=")]}),json!({"role":"user","content":[image("bmV3")]}),json!({"role":"assistant","content":[]})];

@@ -56,6 +56,10 @@ pub struct IdleHandoverRequest {
     /// The complete, already allowlisted daemon environment of the CLI that asked.
     pub env: BTreeMap<String, String>,
     pub policy: Option<HostLifecyclePolicyInput>,
+    /// Successor deployment policy only; never enrollment authority.
+    pub mcp_presenter_enforcement: Option<bool>,
+    /// The agent dir of the CLI that asked; absent from CLIs before #3560. Another dir than the host's is refused.
+    pub agent_dir: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandoverSuccessor {
@@ -181,6 +185,8 @@ impl HostIdleHandover {
                 if current.view.state != HandoverState::Blocked {
                     return if current.request.target_runtime_build_id
                         == request.target_runtime_build_id
+                        && current.request.mcp_presenter_enforcement.unwrap_or(false)
+                            == request.mcp_presenter_enforcement.unwrap_or(false)
                     {
                         HandoverAnswer::Operation(current.view.clone())
                     } else {
@@ -326,6 +332,8 @@ impl HostIdleHandover {
 }
 fn same_terms(a: &IdleHandoverRequest, b: &IdleHandoverRequest) -> bool {
     a.target_runtime_build_id == b.target_runtime_build_id
+        && a.mcp_presenter_enforcement.unwrap_or(false)
+            == b.mcp_presenter_enforcement.unwrap_or(false)
         && a.if_instance_id == b.if_instance_id
         && a.if_generation == b.if_generation
 }
@@ -347,6 +355,8 @@ mod tests {
             host_args: vec![],
             env: BTreeMap::new(),
             policy: None,
+            mcp_presenter_enforcement: None,
+            agent_dir: None,
         }
     }
     fn successor() -> HandoverSuccessor {

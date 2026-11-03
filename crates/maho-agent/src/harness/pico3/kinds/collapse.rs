@@ -128,6 +128,10 @@ async fn summarize(task:&C,base:Base,rt:&Rt<'_>,ctx:&Context,check_head:bool)->R
     let mut stream=rt.models().stream(&model,RequestOptions {messages,thinking_level:base.thinking_level},ctx);
     let mut terminal=None;
     while let Some(event)=stream.next().await {
+        let event=match event { Ok(event)=>event, Err(error)=> {
+            if ctx.is_aborted() { return Err(Error::Forbidden(error)); }
+            return Ok(after_failure(base,None,error,rt.now()));
+        } };
         match event {
             AssistantMessageEvent::Done {message,..}=> {terminal=Some(message);break;},
             AssistantMessageEvent::Error {error,..}=> {terminal=Some(error);break;},

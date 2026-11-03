@@ -16,6 +16,10 @@ scalar into a JSON-quoted YAML string so Codex/OpenCode frontmatter parsing rema
 deterministic; the description text itself is unchanged. The `Pinned upstream commit` line
 in each section below records the exact submodule commit that the materialization reads.
 
+Sections 6 and 7 are the exception: the files they cover are committed to this repository,
+and their text and code are written afresh for this project rather than copied from the
+upstream.
+
 ---
 
 ## 1. Open Design (brand design-system DESIGN.md references)
@@ -190,7 +194,9 @@ SOFTWARE.
 
 ## 5. Project-original files
 
-`frontend/SKILL.md`, `frontend/references/design/README.md`, `_INDEX.md`, `aside.md`,
+`frontend/SKILL.md` (apart from three rules credited in section 6: the browser-drawn
+surface rule, the type-and-spacing floor, and the generated-scaffold rule),
+`frontend/references/design/README.md`, `_INDEX.md`, `aside.md`, `grounding.md`,
 `design-system-architecture.md`, `react-dev-tooling-skill.md`,
 `frontend/references/perfection/README.md`, `react-perf-tooling.md`, and
 `frontend/scripts/perfection/lighthouse-audit.py` are original to this project and require
@@ -245,3 +251,125 @@ MIT-licensed `JCodesMore/ai-website-cloner-template` clone-website workflow that
 cites; no source from that template is copied. It carries no third-party attribution beyond
 that lineage note, and it grants no license to copy any target site's trademarks, brand
 assets, or proprietary copy.
+
+---
+
+## 6. Impeccable (Paul Bakaus) - craft-floor rules
+
+The craft floor in this skill (the minimum finish for browser-drawn surfaces, the type and
+spacing thresholds, and the generated-scaffold patterns) builds on Impeccable's
+craft-floor reference. Nothing here is a copy: the covered files are committed to this
+repository and every sentence in them was written for this project.
+
+- Source: https://github.com/pbakaus/impeccable
+- Upstream file: `skill/reference/craft-floor.md`
+- Pinned upstream commit: 5e745ace7e151feb2a93d360d0281fe39448b857
+- Copyright 2025 Paul Bakaus
+- Licence: Apache-2.0. The covered material may be used only under the terms of that
+  licence, and it is provided without warranties or conditions of any kind, express or
+  implied; read the licence for the exact permissions and limitations. The complete
+  licence text ships next to this notice as `LICENSE-Apache-2.0.txt`.
+
+Covered here:
+
+- `frontend/references/perfection/craft-floor.md`;
+- the three `frontend/SKILL.md` rules named in section 5;
+- the `visual-qa/SKILL.md` checklist items A3 (its line-length part), A13, B8, E7, F8 and
+  F9.
+
+**Changes (Apache-2.0 §4(b)).**
+
+- *Carried over from the source:* the list of browser-drawn surfaces; giving a heading more
+  space above than below; the 65-75ch measure; the 6rem cap on display type; the -0.04em
+  tracking floor; the scaffold and shadow patterns.
+- *Added in this project:* a concrete CSS property for each surface; the 1.25x type step;
+  the 1.5x above-to-below heading ratio; the 2x between-to-within group gap; a minimum
+  measure on phones; the split between floors and defaults a route may override (the
+  kicker is a removable default here, where the source forbids it outright); the mapping
+  onto `/visual-qa` items.
+- *Left out because it conflicts with this skill:* blur and `backdrop-filter` as a general
+  motion material (allowed here only inside an ambience reveal the brief requested); one
+  theme chosen per product category; decorative custom scrollbars; a blanket ban on
+  bounce easing; a ban on common typefaces.
+- The upstream `NOTICE.md` names only the MIT-licensed `platform-design-skills` project as
+  the origin of its iOS and Android references. None of those references are used here.
+
+---
+
+## 7. Detect SDK - Impeccable detector and StyleGallery reflow
+
+### Impeccable detector
+
+Same upstream, commit and licence as section 6 (https://github.com/pbakaus/impeccable,
+commit 5e745ace7e151feb2a93d360d0281fe39448b857, Copyright 2025 Paul Bakaus, Apache-2.0,
+full text in `LICENSE-Apache-2.0.txt`).
+
+Covered here:
+
+- `frontend/scripts/detect/` - the SDK, its `rules/`, the CLI and the tests;
+- `frontend/references/perfection/detect.md`;
+- the development scripts `packages/shared-skills/scripts/detect-parity.ts`,
+  `detect-source-parity.ts` and `detect-parity-oracle.ts`.
+
+The SDK is a TypeScript reimplementation of the rule logic found in the upstream
+`crates/core`, `crates/detect` and `crates/foundation/src/registry.rs`. No Rust or
+JavaScript source was copied. So that findings stay comparable with the upstream detector,
+this project reuses its waiver attribute `data-impeccable-ignore`, its rule ids, its
+thresholds and its exemptions; the unit tests are modelled on the upstream fixtures.
+`detect-parity-oracle.ts` does not ship. During development it extracts Impeccable's built
+browser-side detector from a local clone in order to record baseline results; nothing from
+that build is copied into this project.
+
+**Changes (Apache-2.0 §4(b)).**
+
+- A new TypeScript engine that runs over a snapshot captured in the browser, in place of
+  the upstream Rust + WASM engine.
+- Every rule description and fix hint is rewritten.
+- `low-contrast` is raised to an error.
+- `allowFonts`, `allowEasings` and the design tokens are configuration values, not files.
+- A project waiver attribute, `data-detect-ignore`, works alongside the upstream one.
+- Not ported: telemetry, the hosted design-direction service, the edit hook, live mode, and
+  the browser extension.
+
+### StyleGallery - viewport reflow
+
+The reflow pass in `detect.ts` and the `viewport-reflow` rule follow StyleGallery's idea of
+checking a layout across a width matrix: the page is rendered at 320, 375, 768, 1024 and
+1440 px, an unbroken stress string is appended at 320 px, and any horizontal overflow is
+reported. The idea comes from StyleGallery's `tests/pattern-runtime.spec.mjs` and its
+layout-verification matrix; no StyleGallery code is copied.
+
+- Source: https://github.com/changeroa/StyleGallery
+- Pinned upstream commit: 0bf928f6269b1cb6cf24f04e0bf28a8ce2bbc0ff
+- Licences: code under MIT, documentation under CC BY 4.0.
+
+```
+MIT License
+
+Copyright (c) 2026 IYEN
+
+This license applies to the source code in this repository: scripts, CLI and
+MCP server implementations, the website and server code under `site/`,
+validators, and test code. The Markdown documentation, pattern and recipe
+prose, and domain documents are licensed separately under CC BY 4.0; see
+LICENSE-DOCS. Third-party material adapted into this repository keeps its
+original rights; see NOTICE.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -118,6 +118,52 @@ fn opt_out_env_matrix() {
 }
 
 #[test]
+fn global_disable_telemetry_opts_every_product_out() {
+    let cases: [OptOutCase; 6] = [
+        (
+            "global telemetry disable 1",
+            &[("OMO_DISABLE_TELEMETRY", "1")],
+            true,
+        ),
+        (
+            "global telemetry disable true",
+            &[("OMO_DISABLE_TELEMETRY", "true")],
+            true,
+        ),
+        (
+            "global telemetry disable yes",
+            &[("OMO_DISABLE_TELEMETRY", "yes")],
+            true,
+        ),
+        (
+            "global telemetry disable trims and lowercases",
+            &[("OMO_DISABLE_TELEMETRY", " Yes ")],
+            true,
+        ),
+        (
+            "global telemetry disable 0 keeps telemetry on",
+            &[("OMO_DISABLE_TELEMETRY", "0")],
+            false,
+        ),
+        (
+            "empty OMO_DISABLE_TELEMETRY keeps telemetry on",
+            &[("OMO_DISABLE_TELEMETRY", "")],
+            false,
+        ),
+    ];
+    for (name, pairs, expected) in cases {
+        for prefix in ["OMO_OPENCODE", "OMO_CODEX", "OMO_SENPI"] {
+            assert_eq!(disabled(pairs, prefix), expected, "{name} {prefix}");
+        }
+    }
+    // The global prefix, not the product prefix, names the switch.
+    assert!(!disabled(
+        &[("OMO_SENPI_DISABLE_TELEMETRY", "1")],
+        "OMO_SENPI"
+    ));
+}
+
+#[test]
 fn do_not_track_one_disables_every_product() {
     for prefix in ["OMO_OPENCODE", "OMO_CODEX", "OMO_SENPI"] {
         assert!(disabled(&[("DO_NOT_TRACK", "1")], prefix), "{prefix}");

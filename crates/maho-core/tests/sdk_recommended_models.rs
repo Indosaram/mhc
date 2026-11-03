@@ -108,6 +108,7 @@ async fn native_recommended_startup_awaits_model_switch_and_preserves_handler_or
                 &cwd, None, None,
             )),
             session_start_event: Some(maho_ext_api::SessionStartEvent {
+                sizes_only: false,
                 reason: maho_ext_api::SessionReason::Startup,
                 initial_model_provenance: Some("explicit".into()),
                 previous_session_file: Some("fixture-origin.jsonl".into()),

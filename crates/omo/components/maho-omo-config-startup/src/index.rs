@@ -411,8 +411,16 @@ impl Extension for ConfigStartupComponent {
                             } else {
                                 NotificationType::Info
                             };
+                            // Pin `notifyOrLog`: the UI when present, else the component logger at the
+                            // notice's level (stderr diagnostic only when no logger is bound).
                             if ctx.has_ui {
                                 ctx.ui.notify(&notice.message, kind);
+                            } else if let Some(logger) = &ctx.logger {
+                                if notice.kind == StartupNoticeKind::Warning {
+                                    logger.warn(&notice.message, None);
+                                } else {
+                                    logger.info(&notice.message, None);
+                                }
                             } else {
                                 maho_ext_api::diagnostic(&notice.message);
                             }

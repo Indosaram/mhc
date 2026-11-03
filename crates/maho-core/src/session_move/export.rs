@@ -12,8 +12,8 @@ pub struct ExportSessionForMoveOptions<'a> {
     pub bundle_dir: &'a Path,
     pub extension_state_dir: Option<&'a Path>,
     pub resolve_extension_state: Option<&'a dyn Fn() -> Result<Option<PathBuf>, String>>,
-    pub guard: Option<&'a dyn Fn() -> Result<(), String>>,
-    pub locked_guard: Option<&'a dyn Fn() -> Result<(), String>>,
+    pub guard: Option<super::session_lock::MoveGuard<'a>>,
+    pub locked_guard: Option<super::session_lock::MoveGuard<'a>>,
 }
 pub async fn export_session_for_move(
     options: ExportSessionForMoveOptions<'_>,
@@ -34,7 +34,7 @@ async fn write_move_bundle(
     options: &ExportSessionForMoveOptions<'_>,
 ) -> Result<MoveManifest, String> {
     let move_id = parse_move_id(&json!(options.move_id)).map_err(|e| e.to_string())?;
-    let entries = super::entries(options.session_file);
+    let entries = super::entries(options.session_file).await;
     let session_id = parse_plain_id(&json!(header_session_id(&entries)), "session id")
         .map_err(|e| e.to_string())?;
     match session_ownership(&entries) {
@@ -42,7 +42,8 @@ async fn write_move_bundle(
             options.session_file,
             SESSION_RELEASED,
             json!({"reason":"move", "move_id":move_id,"session_id":session_id,"target":options.target,"released_at":crate::session_manager::now_iso_millis()}),
-        )?,
+        )
+        .await?,
         SessionOwnership::Refused(owner)
             if owner.state == RefusedState::Moving && owner.move_id == move_id => {}
         SessionOwnership::Refused(owner) => {
@@ -57,24 +58,26 @@ async fn write_move_bundle(
         None => match options.extension_state_dir {
             Some(dir) => Some(dir.to_owned()),
             None => {
-                super::extension_state::sealed_outgoing_state_dir(options.session_file, &move_id)?
+                super::extension_state::sealed_outgoing_state_dir(options.session_file, &move_id)
+                    .await?
             }
         },
     };
     if let Some(state) = &state
-        && !state.exists() {
-            return Err(format!(
-                "The extension state the move release staged is missing ({}); the session was not exported without it.",
-                state.display()
-            ));
-        }
+        && !super::path_exists(state).await
+    {
+        return Err(format!(
+            "The extension state the move release staged is missing ({}); the session was not exported without it.",
+            state.display()
+        ));
+    }
     let staging = PathBuf::from(format!(
         "{}.partial-{}",
         options.bundle_dir.display(),
         std::process::id()
     ));
-    super::remove(&staging)?;
-    super::copy(options.session_file, &staging.join(SESSION_BUNDLE_PATH))?;
+    super::remove(&staging).await?;
+    super::copy(options.session_file, &staging.join(SESSION_BUNDLE_PATH)).await?;
     let sidecars = copy_sidecars(
         options.session_file.parent().unwrap_or(Path::new(".")),
         &session_id,
@@ -128,8 +131,10 @@ async fn write_move_bundle(
     )
     .await
     .map_err(|e| e.to_string())?;
-    super::remove(options.bundle_dir)?;
-    std::fs::rename(staging, options.bundle_dir).map_err(|e| e.to_string())?;
+    super::remove(options.bundle_dir).await?;
+    tokio::fs::rename(staging, options.bundle_dir)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(manifest)
 }
 async fn copy_sidecars(
@@ -139,21 +144,23 @@ async fn copy_sidecars(
 ) -> Result<Vec<BundleFile>, String> {
     let mut sources = Vec::new();
     let extensions = dir.join("extensions");
-    if extensions.exists() {
-        for entry in std::fs::read_dir(extensions).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+    if super::path_exists(&extensions).await {
+        let mut entries = tokio::fs::read_dir(extensions)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             let source = entry.path().join(format!(
                 "{}.json",
                 crate::session_sidecar_store::encoded_session_id(session_id)
             ));
-            if entry.file_type().map_err(|e| e.to_string())?.is_dir() && source.exists() {
+            if entry.file_type().await.map_err(|e| e.to_string())?.is_dir()
+                && super::path_exists(&source).await
+            {
                 sources.push(source);
             }
         }
     }
-    sources.extend(super::files_under(
-        &dir.join("resident-blobs").join(session_id),
-    )?);
+    sources.extend(super::files_under(&dir.join("resident-blobs").join(session_id)).await?);
     copy_list("files", dir, &sources, staging).await
 }
 async fn copy_extension_state(
@@ -161,7 +168,7 @@ async fn copy_extension_state(
     staging: &Path,
 ) -> Result<Vec<BundleFile>, String> {
     match dir {
-        Some(dir) => copy_list("state", dir, &super::files_under(dir)?, staging).await,
+        Some(dir) => copy_list("state", dir, &super::files_under(dir).await?, staging).await,
         None => Ok(vec![]),
     }
 }
@@ -182,7 +189,7 @@ async fn copy_list(
                 .replace('\\', "/")
         );
         let to = staging.join(&path);
-        super::copy(source, &to)?;
+        super::copy(source, &to).await?;
         files.push(BundleFile {
             path,
             sha256: sha256_file_async(&to).await.map_err(|e| e.to_string())?,

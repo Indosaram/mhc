@@ -1,8 +1,8 @@
 //! AX mutations: named actions, `AXValue` writes, and focus.
 
-use objc2_application_services::AXUIElement;
-use objc2_core_foundation::{CFBoolean, CFString};
-use senpi_desktop_core::error::CoreResult;
+use objc2_application_services::{AXError, AXUIElement};
+use objc2_core_foundation::{CFBoolean, CFString, CFType};
+use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use super::element::ax_result;
 
@@ -15,21 +15,70 @@ pub(crate) fn perform(element: &AXUIElement, action: &str) -> CoreResult<()> {
     ax_result(error, format!("AX action '{native}' failed"))
 }
 
-pub(super) fn set_value(element: &AXUIElement, value: &str) -> CoreResult<()> {
-    let attribute = CFString::from_str("AXValue");
-    let value = CFString::from_str(value);
-    // SAFETY: The element, attribute, and value stay retained for the
-    // synchronous setter call.
-    let error = unsafe { element.set_attribute_value(&attribute, &value) };
-    ax_result(error, "AXValue is not settable; no typing fallback was attempted")
+/// The AX requests an element write sends, each answered by the app's
+/// `AXError` reply: the seam tests script replies through.
+pub(super) trait AxRequests {
+    fn send_action(&self, action: &CFString) -> AXError;
+    fn write_attribute(&self, attribute: &CFString, value: &CFType) -> AXError;
 }
 
-pub(super) fn focus(element: &AXUIElement) -> CoreResult<()> {
-    let attribute = CFString::from_str("AXFocused");
-    // SAFETY: The singleton CFBoolean and retained element stay valid for the
-    // synchronous setter call.
-    let error = unsafe { element.set_attribute_value(&attribute, CFBoolean::new(true)) };
-    ax_result(error, "setting AXFocused=true failed")
+impl AxRequests for AXUIElement {
+    fn send_action(&self, action: &CFString) -> AXError {
+        // SAFETY: The retained element and action CFString stay valid for the
+        // synchronous AX request.
+        unsafe { self.perform_action(action) }
+    }
+
+    fn write_attribute(&self, attribute: &CFString, value: &CFType) -> AXError {
+        // SAFETY: The element, attribute, and value stay retained for the
+        // synchronous setter call.
+        unsafe { self.set_attribute_value(attribute, value) }
+    }
+}
+
+/// The outcome of a model-requested AX write, from the app's reply.
+/// `CannotComplete` means messaging failed or the app did not reply in time,
+/// e.g. while the request runs a modal dialog: the request was made, so its
+/// outcome is unknown rather than failed (`AxUnconfirmed`, ported from
+/// oh-my-pi `element_action_result`). Every other reply keeps the
+/// [`ax_result`] mapping.
+pub(super) fn request_result(error: AXError, request: &str, failed: impl Into<String>) -> CoreResult<()> {
+    if error == AXError::CannotComplete {
+        return Err(DesktopError::ax_unconfirmed(format!(
+            "{request} was requested, but its outcome could not be confirmed: the app did not reply \
+             in time or messaging failed ({error:?}), for example because it opened a modal \
+             dialog. It may already have taken effect: observe the window before retrying"
+        )));
+    }
+    ax_result(error, failed)
+}
+
+/// Performs a model-requested action (`ax.perform`, presses): a request the
+/// app got but did not answer is `AxUnconfirmed`.
+pub(super) fn perform_requested(element: &(impl AxRequests + ?Sized), action: &str) -> CoreResult<()> {
+    let native = action_name(action);
+    let error = element.send_action(&CFString::from_str(&native));
+    request_result(error, &format!("AX action '{native}'"), format!("AX action '{native}' failed"))
+}
+
+pub(super) fn set_value(element: &AXUIElement, value: &str) -> CoreResult<()> {
+    write_value(element, value)
+}
+
+/// Writes `AXValue` as a `CFString`.
+pub(super) fn write_value(element: &(impl AxRequests + ?Sized), value: &str) -> CoreResult<()> {
+    let value = CFString::from_str(value);
+    let error = element.write_attribute(&CFString::from_str("AXValue"), &value);
+    request_result(
+        error,
+        "setting AXValue",
+        "AXValue is not settable; no typing fallback was attempted",
+    )
+}
+
+pub(super) fn focus(element: &(impl AxRequests + ?Sized)) -> CoreResult<()> {
+    let error = element.write_attribute(&CFString::from_str("AXFocused"), CFBoolean::new(true));
+    request_result(error, "setting AXFocused=true", "setting AXFocused=true failed")
 }
 
 /// Sets `AXMain` and `AXFocused` to true on a window element: the restore and
@@ -64,3 +113,7 @@ pub(super) fn action_name(action: &str) -> String {
         _ => format!("AX{action}"),
     }
 }
+
+#[cfg(test)]
+#[path = "actions_tests.rs"]
+mod tests;

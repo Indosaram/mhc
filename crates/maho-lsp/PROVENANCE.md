@@ -29,3 +29,6 @@
   `tools/package-native.mjs` was read from that MIT script only.
 - Tests (`src/**` unit tests, `tests/fake_server.rs`, `tests/fixtures/fake_lsp.py`) were written
   for this crate; no upstream or OmO fixtures were reused.
+- Clean-room delta (method **C**): builtin default initialization options and their merge with
+  configured entries (`servers::builtin_initialization`, `config::merged_servers`) implement
+  `docs/cleanroom/specs/lsp.md` "Delta (omo v5.1.52)" D1-D3 from that spec alone.

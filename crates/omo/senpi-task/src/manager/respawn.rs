@@ -92,6 +92,15 @@ fn respawn_fresh(input: &RespawnInput<'_>) -> RespawnResult {
             if is_team_runtime_unavailable(&error) {
                 return team_inactive();
             }
+            if let Some(hold) = crate::lifecycle::host_session::read_host_draining_hold_from_runner_error(&error) {
+                return RespawnResult::Failed {
+                    disposition: RespawnDisposition::Retryable,
+                    code: RespawnFailureCode::HostDraining {
+                        retry_after_ms: hold.retry_after_ms,
+                    },
+                    reason: error.to_string(),
+                };
+            }
             log_failure("senpi-task fresh rpc respawn failed", input.record, &error);
             failure(
                 RespawnDisposition::Retryable,
@@ -176,6 +185,15 @@ fn respawn_process(input: &RespawnInput<'_>, session_path: &Path) -> RespawnResu
             if is_team_runtime_unavailable(&error) {
                 return team_inactive();
             }
+            if let Some(hold) = crate::lifecycle::host_session::read_host_draining_hold_from_runner_error(&error) {
+                return RespawnResult::Failed {
+                    disposition: RespawnDisposition::Retryable,
+                    code: RespawnFailureCode::HostDraining {
+                        retry_after_ms: hold.retry_after_ms,
+                    },
+                    reason: error.to_string(),
+                };
+            }
             log_failure("senpi-task rpc respawn failed", input.record, &error);
             return failure(
                 RespawnDisposition::Retryable,
@@ -250,6 +268,7 @@ fn rpc_spec(
     trusted: Option<TrustedRespawnLaunch>,
 ) -> RpcRunnerSpec {
     let trusted = trusted.unwrap_or_default();
+    let task_store_dir = crate::runners::types::task_store_dir_of(&state_dir);
     RpcRunnerSpec {
         fallback_models: record.fallback_models.as_ref().map(|models| {
             models
@@ -276,6 +295,9 @@ fn rpc_spec(
             .and_then(|model| model.variant.clone()),
         extensions: trusted.extensions,
         member_env: trusted.member_env,
+        parent_session_id: Some(record.parent_session_id.clone()),
+        root_session_id: Some(record.root_session_id.clone()),
+        task_store_dir,
         ..RpcRunnerSpec::default()
     }
 }

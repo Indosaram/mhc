@@ -23,8 +23,10 @@ fn shorten(value:&str,max:usize)->String {
     if value.encode_utf16().count()<=max {return value.into();}
     let mut units=0;let prefix=value.chars().take_while(|character|{units+=character.len_utf16();units<max}).collect::<String>();format!("{prefix}…")
 }
-fn provider(value:&serde_json::Value)->String {super::search::provider_entry_label(text(value,"provider"),None,value["entryId"].as_str())}
-fn attempt(value:&serde_json::Value)->String {format!("{}:{}",provider(value),if !text(value,"error").is_empty(){"failed".into()}else{value["resultsCount"].as_u64().unwrap_or(0).to_string()})}
+fn provider(value:&serde_json::Value)->String {super::route_attempts::attempt_route_label(text(value,"provider"),None,value["entryId"].as_str(),value["model"].as_str())}
+/// `attemptState`: skipped, challenged, failed, or the result count.
+fn state(value:&serde_json::Value)->String {if value["skipped"]==true{"skipped".into()}else if text(value,"blocked")=="challenge"{"challenged".into()}else if !text(value,"error").is_empty(){"failed".into()}else{value["resultsCount"].as_u64().unwrap_or(0).to_string()}}
+fn attempt(value:&serde_json::Value)->String {format!("{}:{}",provider(value),state(value))}
 pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
     use maho_interactive::theme::ThemeColor;
     use maho_tui::components::text::Text;
@@ -47,7 +49,7 @@ pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
                     if options.expanded&&!current.is_empty() {
                         let labels=details["routeLabels"].as_array().unwrap_or(&labels);
                         let attempts=details["attempts"].as_array().cloned().unwrap_or_default();
-                        let route=labels.iter().enumerate().map(|(index,label)|format!("{}:{}",label.as_str().unwrap_or(""),attempts.get(index).map(|a|if !text(a,"error").is_empty(){"failed".into()}else{a["resultsCount"].as_u64().unwrap_or(0).to_string()}).unwrap_or_else(||if index==attempts.len(){"searching".into()}else{"pending".into()}))).collect::<Vec<_>>().join(" -> ");
+                        let route=labels.iter().enumerate().map(|(index,label)|format!("{}:{}",label.as_str().unwrap_or(""),attempts.get(index).map(state).unwrap_or_else(||if index==attempts.len(){"searching".into()}else{"pending".into()}))).collect::<Vec<_>>().join(" -> ");
                         if !route.is_empty(){rows.push(theme.fg(ThemeColor::Muted,&format!("route {route}")));}
                     }
                     rows.join("\n")
@@ -71,8 +73,8 @@ pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
     }
 }
 pub fn duration_text(duration_ms:f64)->String { if duration_ms>=1000.0 { format!("{}s",(duration_ms/1000.0).round()) } else { format!("{duration_ms}ms") } }
-fn attempt_status(attempt:&SearchAttempt)->String { if attempt.error.as_ref().is_some_and(|error|!error.is_empty()) { "failed".into() } else { attempt.results_count.to_string() } }
-pub fn attempt_label(attempts:Option<&[SearchAttempt]>)->String { attempts.unwrap_or(&[]).iter().map(|attempt|format!("{}:{}",super::search::provider_entry_label(attempt.provider.as_str(),None,attempt.entry_id.as_deref()),attempt_status(attempt))).collect::<Vec<_>>().join(" -> ") }
+fn attempt_status(attempt:&SearchAttempt)->String { if attempt.skipped { "skipped".into() } else if attempt.blocked==Some(super::types::SearchBlockReason::Challenge) { "challenged".into() } else if attempt.error.as_ref().is_some_and(|error|!error.is_empty()) { "failed".into() } else { attempt.results_count.to_string() } }
+pub fn attempt_label(attempts:Option<&[SearchAttempt]>)->String { attempts.unwrap_or(&[]).iter().map(|attempt|format!("{}:{}",super::route_attempts::attempt_route_label(attempt.provider.as_str(),None,attempt.entry_id.as_deref(),attempt.model.as_deref()),attempt_status(attempt))).collect::<Vec<_>>().join(" -> ") }
 pub fn route_state_label(provider_labels:&[String],route_labels:Option<&[String]>,attempts:&[SearchAttempt])->String {
     route_labels.unwrap_or(provider_labels).iter().enumerate().map(|(index,label)|format!("{label}:{}",attempts.get(index).map_or_else(||if index==attempts.len() { "searching".into() } else { "pending".into() },attempt_status))).collect::<Vec<_>>().join(" -> ")
 }
@@ -80,6 +82,17 @@ pub fn route_state_label(provider_labels:&[String],route_labels:Option<&[String]
 mod tests {
     use super::*;
     #[test] fn duration_threshold_rounds_seconds() { assert_eq!(duration_text(999.0),"999ms"); assert_eq!(duration_text(1500.0),"2s"); }
+    #[test] fn attempt_states_name_skipped_challenged_and_model_routes() {
+        use super::super::types::{SearchBlockReason,SearchProvider};
+        let attempts=[
+            SearchAttempt{provider:SearchProvider::DuckduckgoHtml,skipped:true,blocked:Some(SearchBlockReason::Challenge),error:Some("skipped".into()),..Default::default()},
+            SearchAttempt{provider:SearchProvider::DuckduckgoHtml,entry_id:Some("backup".into()),blocked:Some(SearchBlockReason::Challenge),error:Some("challenge".into()),..Default::default()},
+            SearchAttempt{provider:SearchProvider::Anthropic,entry_id:Some("native".into()),model:Some("claude-haiku-4-5".into()),results_count:2,..Default::default()},
+        ];
+        assert_eq!(attempt_label(Some(&attempts)),"duckduckgo-html:skipped -> duckduckgo-html/backup:challenged -> anthropic/native (claude-haiku-4-5):2");
+        let labels=["a".into(),"b".into(),"c".into()];
+        assert_eq!(route_state_label(&labels,None,&attempts[..2]),"a:skipped -> b:challenged -> c:searching");
+    }
     #[test] fn route_override_preserves_empty_array() { let labels=["one".into(),"two".into()]; assert_eq!(route_state_label(&labels,None,&[]),"one:searching -> two:pending"); assert_eq!(route_state_label(&labels,Some(&[]),&[]),""); }
 }
 

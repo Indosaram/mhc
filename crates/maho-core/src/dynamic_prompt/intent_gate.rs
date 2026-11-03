@@ -11,7 +11,9 @@ pub fn build_key_triggers(tools: &[AvailableTool]) -> String {
         return String::new();
     }
 
-    format!("\nSpecialized search available this turn: {trigger_tools}. Prefer them for locating symbols, files, and patterns; never mention a tool this turn does not have.\n")
+    format!(
+        "\nSpecialized search available this turn: {trigger_tools}. Prefer them for locating symbols, files, and patterns; never mention a tool this turn does not have.\n"
+    )
 }
 
 /// `buildIntentGate`.
@@ -54,5 +56,56 @@ mod tests {
         let gate = build_intent_gate(&categorize_tools(&["read".to_string()]));
         assert!(!gate.contains("Specialized search available this turn"));
         assert!(gate.contains("in user-facing output.\n\nRoute by true intent, not surface form:"));
+    }
+
+    #[test]
+    fn includes_intent_routing_rules() {
+        let result = build_intent_gate(&[]);
+        assert!(result.contains("## Intent Gate"));
+        assert!(result.contains("Route by true intent, not surface form"));
+    }
+
+    #[test]
+    fn covers_the_three_intent_families() {
+        let result = build_intent_gate(&[]);
+        assert!(result.contains("Information asks"));
+        assert!(result.contains("Judgment asks"));
+        assert!(result.contains("Change asks"));
+    }
+
+    #[test]
+    fn includes_scope_fidelity_rule() {
+        assert!(build_intent_gate(&[]).contains("scope asked"));
+    }
+
+    #[test]
+    fn includes_turn_local_intent_derivation() {
+        assert!(build_intent_gate(&[]).contains("latest user turn"));
+    }
+
+    #[test]
+    fn adds_search_trigger_when_search_tools_are_available() {
+        let tools = vec![AvailableTool {
+            name: "grep".to_string(),
+            category: crate::dynamic_prompt::types::ToolCategory::Search,
+        }];
+        assert!(build_intent_gate(&tools).contains("grep"));
+    }
+
+    #[test]
+    fn forces_intent_verbalization_with_a_binding_stop_condition() {
+        let result = build_intent_gate(&[]);
+        assert!(result.contains("I read this as"));
+        assert!(result.contains("I'll stop when"));
+        assert!(!result.contains("Keep the routing decision internal"));
+        assert!(!result.contains("Do not expose classification labels"));
+    }
+
+    #[test]
+    fn routes_common_surface_forms() {
+        let result = build_intent_gate(&[]);
+        for word in ["explain", "implement", "error", "refactor"] {
+            assert!(result.contains(word), "{word}");
+        }
     }
 }

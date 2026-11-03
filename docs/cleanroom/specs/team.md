@@ -273,3 +273,44 @@ These are environment variables rather than config keys because the config schem
       tools, `team-update`, `MAHO_TEAM_*`); the config keys of §6 are interface facts already
       listed in config-keys.md;
 - [x] wording is new; message texts are written here, not copied from the MIT originals.
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+Rows routed through `task.md` "Delta (omo v5.1.52)" D5; full mapping in `task.md` D6.
+
+### D1. Member ancestry
+
+Behaviour: a member task records where it sits in the session tree, the same way a plain `task`
+does.
+
+- `owner_session` of a member = the lead session; `root_session` = the lead's root session (the
+  `MHC_TASK_ROOT_SESSION` of the lead process when the lead is itself a delegated run, else the
+  lead session itself). It is never just the lead when the lead has a different root.
+- The member child gets depth = the lead's depth + 1 (`MHC_TASK_DEPTH`), never a fixed 1, so the
+  `task.max_depth` gate of `task.md` §4 works for nested teams.
+- The member's session header carries `spawnedBy` as in `task.md` Delta D1 (parent = lead,
+  root = tree root, task = the member's task id); messages to the member (follow-up runs) keep
+  the same values.
+
+Tests:
+1. A top-level lead `L` creates team `t` with member `a` → task `t-a` has owner `L`, root `L`,
+   child depth 1.
+2. A lead that is itself a child (`MHC_TASK_ROOT_SESSION=R`, `MHC_TASK_DEPTH=1`,
+   `task.max_depth` 3) creates a team → each member has root `R` and child depth 2.
+3. `team_message` to an idle member starts a run whose environment has the same parent, root and
+   task id as the first run.
+
+### D2. Mapping
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-27 | D1 | APPLIES | members record root and depth from the lead's ancestry |
+| omo-senpi-task-b-14 | D1 | APPLIES | nested team members record the tree root |
+| omo-cores-31 | - | N-A | N-A reason: a pane here runs a read-only follower of the task's files (§4.3), never a client that attaches to a password-protected server, so there is no server password to keep out of the multiplexer's argument list |
+| omo-cores-32 | - | N-A | N-A reason: there is no attach or placeholder command that would need a password-file prefix (§4.3 follower only) |
+| omo-cores-33 | - | N-A | N-A reason: `maho-team` probes no server health URL; a member is a child process whose liveness is its exit (task.md §2) |
+| omo-cores-34 | - | N-A | N-A reason: team panes reuse the §4.3 follower and pass no credentials to the multiplexer |
+
+Leak self-check: no SUL code or comment carried over; no constant tables; env names are the
+existing MIT ones plus `task.md` Delta D1; neutral names; no OmO-original feature. The four
+omo-cores rows (added 2026-11-01) are N-A against this spec's own §4 design.

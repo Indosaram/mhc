@@ -415,6 +415,38 @@ fn staged_exact_turn_retains_first_result_after_a_later_turn_starts() {
     );
 }
 
+/// `runners/in-process/child-handle.ts` (#2838): a queued steer's id reaches the session for a
+/// mid-turn steer and follow-up, and an idle follow-up revives the child with the id on its prompt.
+#[test]
+fn given_identified_inputs_when_delivered_then_the_session_receives_each_id() {
+    use crate::manager::child_handle::{InputIdentity, ManagedChildHandle};
+    let id = |value: &str| InputIdentity {
+        client_message_id: value.to_string(),
+    };
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start("task-1", fake.clone(), "do the work");
+    handle
+        .steer_with_identity("nudge", &id("ps-1"))
+        .expect("steer");
+    handle
+        .follow_up_with_identity("more", &id("ps-2"))
+        .expect("follow up");
+    fake.wait_prompt_calls(1);
+    fake.set_last_text("done");
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed("done"));
+    handle
+        .follow_up_with_identity("revive", &id("ps-3"))
+        .expect("revive");
+    fake.wait_prompt_calls(2);
+    fake.resolve_prompt();
+    handle.wait_for_idle();
+    assert_eq!(
+        fake.identities(),
+        vec!["steer:ps-1", "followUp:ps-2", "prompt:ps-3"]
+    );
+}
+
 #[test]
 fn given_a_running_child_when_marked_stopping_then_queued_input_is_cleared_without_aborting_the_turn() {
     let fake = FakeSession::new("child-session-1");

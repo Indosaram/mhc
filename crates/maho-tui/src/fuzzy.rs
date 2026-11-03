@@ -168,17 +168,26 @@ fn lower_units(s: &str) -> Vec<u16> {
 }
 
 pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
-    let query_lower = lower_units(query);
-    let text_lower = lower_units(text);
+    match_lower_units(&lower_units(query), &lower_units(text))
+}
 
-    let direct = score_match(&query_lower, &text_lower);
+/// [`fuzzy_match`] for inputs the caller has already lower-cased, so a caller matching many
+/// queries against the same large text can lower-case that text once.
+pub fn fuzzy_match_lower(query_lower: &str, text_lower: &str) -> FuzzyMatch {
+    let query_lower: Vec<u16> = query_lower.encode_utf16().collect();
+    let text_lower: Vec<u16> = text_lower.encode_utf16().collect();
+    match_lower_units(&query_lower, &text_lower)
+}
+
+fn match_lower_units(query_lower: &[u16], text_lower: &[u16]) -> FuzzyMatch {
+    let direct = score_match(query_lower, text_lower);
     if direct.matches {
         return direct;
     }
 
     let mut best_swap: Option<FuzzyMatch> = None;
-    for variant in build_alphanumeric_swap_queries(&query_lower) {
-        let m = score_match(&variant, &text_lower);
+    for variant in build_alphanumeric_swap_queries(query_lower) {
+        let m = score_match(&variant, text_lower);
         if !m.matches {
             continue;
         }

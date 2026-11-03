@@ -4,7 +4,7 @@ import { join } from "node:path";
 const root = process.env.SENPI_SRC;
 if (!root) throw new Error("SENPI_SRC is required");
 const pin = Bun.spawn(["git", "--no-pager", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" });
-if ((await new Response(pin.stdout).text()).trim() !== "903b83367545bea516f35fc7f7c7cb692847988d" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
+if ((await new Response(pin.stdout).text()).trim() !== "59d58cee59d76bbecc83be828b59ff5420eb74df" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
 if (process.env.GOLDEN_PLATFORM === "darwin") Object.defineProperty(process, "platform", { value: "darwin" });
 const home = mkdtempSync("/tmp/lane35-screen-");
 const agentDir = join(home,"agent"); mkdirSync(agentDir);
@@ -49,7 +49,9 @@ await runtime.session.prompt(submission.text,mode.buildMainLoopPromptOptions(sub
 await Promise.race([completed,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("faux turn did not settle")),10000);timer.unref();})]);
 const command=process.env.GOLDEN_COMMAND;
 if(command){
- if(!["hotkeys","session","import"].includes(command))throw new Error("unsupported slash fixture");
+ // senpi core/slash-commands.ts BUILTIN_SLASH_COMMANDS minus new/quit/exit, which replace or end the
+ // session before a frame can be captured.
+ if(!["settings","model","tree","thinking","scoped-models","favorite-models","export","import","share","copy","rename","name","session","changelog","hotkeys","fork","clone","trust","login","logout","compact","resume","sessions","reload"].includes(command))throw new Error("unsupported slash fixture");
  await mode.defaultEditor.onSubmit(`/${command}`);
 }
 mode.ui.doRender(); await terminal.flush();

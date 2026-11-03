@@ -22,6 +22,8 @@ pub struct WorkerRoutes {
     /// The writer's security bridge: which connections can present a grant, and where a settled dialog is recorded
     /// (senpi \`SessionEventWriter\`'s grant methods). \`None\` forwards a worker's grant traffic unchanged.
     pub security: Option<std::sync::Arc<dyn crate::session_worker_client::WorkerSecurityWriter>>,
+    /// The host writer's presenter state when private MCP forms are enforced (senpi `writer.mcpPresenters`).
+    pub presenters: Option<std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>>,
 }
 pub struct WorkerSessionEntry {
     pub close: SessionCloseState,
@@ -40,6 +42,8 @@ pub struct WorkerSessionEntry {
 #[derive(Default)]
 struct RegistryState {
     entries: std::collections::BTreeMap<String, WorkerSessionEntry>,
+    /// senpi `onSizeChange` (the in-process registry's hook, kept by the worker registry too).
+    on_size_change: Option<crate::session_registry::SizeChangeHook>,
     ownership: WorkerOwnership,
     serial: u64,
 }
@@ -132,6 +136,7 @@ impl RegistryState {
             .get_mut(owner)
             .filter(|entry| {
                 entry.close.state == RpcSessionState::Open
+                    && entry.worker.binding_ready()
                     && entry
                         .worker
                         .snapshot()
@@ -162,6 +167,10 @@ impl WorkerSessionRegistry {
     }
     pub fn size(&self) -> usize {
         lock(&self.state).entries.len()
+    }
+    /// senpi `onSizeChange`: told the entry count after every open admits and every worker exit removes one.
+    pub fn set_on_size_change(&self, hook: crate::session_registry::SizeChangeHook) {
+        lock(&self.state).on_size_change = Some(hook);
     }
     /// Memory admission is the in-process registry's concern: a worker session runs in its own
     /// process and this registry already bounds occupancy with \`too_many_sessions\`.
@@ -209,14 +218,81 @@ impl WorkerSessionRegistry {
         ) {
             return Err(RpcSessionRegistryError::new("unknown_session", None, None));
         }
-        entry.last_command_at = now;
+        // Polling a session nobody holds is observation, not work that needs its runtime; an attached
+        // client's polling keeps its session alive exactly as before.
+        if entry.close.attachments > 0
+            || crate::session_command_activity::refreshes_session_activity(command)
+        {
+            entry.last_command_at = now;
+        }
         Ok(Arc::clone(&entry.worker))
+    }
+    /// senpi `attachSession` (`attachLiveSession`): a synchronous refcount change on an open entry; never opens a
+    /// path and never applies a launch profile. `true` when the attach ended a retained session's parked window.
+    pub fn attach_session(&self, handle: &str, now: f64) -> Result<bool, RpcSessionRegistryError> {
+        let mut state = lock(&self.state);
+        let entry = state
+            .entries
+            .get_mut(handle)
+            .filter(|entry| entry.close.state == RpcSessionState::Open)
+            .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        let was_parked = entry.close.retain_on_disconnect && entry.close.attachments == 0;
+        entry.close.attachments += 1;
+        entry.last_command_at = now;
+        Ok(was_parked)
+    }
+    /// senpi `attach` (the profile half): an attach that names another surface or browser engine moves the live
+    /// session to it, and a named permission preset is sent even when the record already names it (senpi#2842).
+    ///
+    /// NATIVE-DIVERGENCE(senpi awaits the setters before `attachments++`): the native attach takes the attachment
+    /// under the registry lock and applies the profile after it, since the worker requests await.
+    pub async fn apply_attach_profile(
+        &self,
+        handle: &str,
+        requested: &RpcSessionLaunchProfile,
+    ) -> Result<(), String> {
+        let (worker, surface, engine, preset) = {
+            let mut state = lock(&self.state);
+            let Some(entry) = state.entries.get_mut(handle) else {
+                return Ok(());
+            };
+            let surface = requested
+                .prompt_surface
+                .clone()
+                .filter(|surface| entry.profile.prompt_surface.as_ref() != Some(surface));
+            let engine = requested
+                .browser_engine
+                .clone()
+                .filter(|engine| entry.profile.browser_engine.as_ref() != Some(engine));
+            let preset = requested.runtime.permission_preset.clone();
+            if let Some(surface) = &surface {
+                entry.profile.prompt_surface = Some(surface.clone());
+            }
+            if let Some(engine) = &engine {
+                entry.profile.browser_engine = Some(engine.clone());
+            }
+            if let Some(preset) = &preset {
+                entry.profile.runtime.permission_preset = Some(preset.clone());
+            }
+            (Arc::clone(&entry.worker), surface, engine, preset)
+        };
+        if let Some(surface) = surface {
+            worker.set_prompt_surface(&surface).await?;
+        }
+        if let Some(engine) = engine {
+            worker.set_browser_engine(&engine).await?;
+        }
+        if let Some(preset) = preset {
+            worker.set_permission_preset(&preset).await?;
+        }
+        Ok(())
     }
     pub async fn open_session(
         &self,
         profile: RpcSessionLaunchProfile,
         retain: bool,
         now: f64,
+        attach_only: bool,
         routes: impl FnOnce(&str) -> WorkerRoutes,
     ) -> Result<WorkerOpen, RpcSessionRegistryError> {
         crate::session_registry::validate_profile_paths(&profile)?;
@@ -256,6 +332,13 @@ impl WorkerSessionRegistry {
                 && let Some(owner) = state.ownership.reservations.owner(&key).map(str::to_owned)
             {
                 return state.attach(&owner, &key, retain, now);
+            }
+            if attach_only {
+                return Err(RpcSessionRegistryError::new(
+                    crate::rpc_types::RPC_ERROR_SESSION_NOT_HELD,
+                    None,
+                    Some(serde_json::json!({"reason": "session_not_held", "action": "rediscover_holder"})),
+                ));
             }
             if state.entries.len() >= crate::session_worker_protocol::SESSION_WORKER_LIMITS.workers
             {
@@ -302,6 +385,9 @@ impl WorkerSessionRegistry {
                 .ownership
                 .states
                 .insert(handle.clone(), RpcSessionState::Opening);
+            if let Some(hook) = &state.on_size_change {
+                hook(state.entries.len());
+            }
             (handle, worker)
         };
         match self
@@ -432,6 +518,7 @@ impl WorkerSessionRegistry {
             routes,
         );
         let security = output_routes.security.clone();
+        let presenters = output_routes.presenters.clone();
         SessionWorkerCallbacks {
             reserve: Box::new(move |path| {
                 reserve
@@ -479,6 +566,11 @@ impl WorkerSessionRegistry {
                     let mut state = lock(&state);
                     let entry = state.entries.remove(&exit_handle);
                     state.ownership.exited(&exit_handle);
+                    if entry.is_some()
+                        && let Some(hook) = &state.on_size_change
+                    {
+                        hook(state.entries.len());
+                    }
                     entry.and_then(|entry| entry.failure)
                 });
                 if let Some(error) = failure {
@@ -486,6 +578,7 @@ impl WorkerSessionRegistry {
                 }
             }),
             security,
+            presenters,
         }
     }
     pub fn mark_close(
@@ -498,6 +591,8 @@ impl WorkerSessionRegistry {
             .entries
             .get_mut(handle)
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        entry.close.writing =
+            crate::session_teardown::session_is_writing(Some(entry.worker.busy()), None);
         let claim = crate::session_teardown::begin_session_close(&mut entry.close, detach)?;
         let next = entry.close.state;
         state.ownership.states.insert(handle.to_owned(), next);
@@ -631,6 +726,106 @@ mod tests {
         assert_eq!(
             registry.reserve("two", "/path", None),
             SessionWriteGrant::Granted
+        );
+    }
+    fn registry_with_entry(state: RpcSessionState, attachments: i64) -> WorkerSessionRegistry {
+        let spawn: SpawnSessionWorker = Arc::new(|| Err(std::io::Error::other("unused")));
+        let registry = WorkerSessionRegistry::new(serde_json::json!({}), spawn, 0);
+        let (worker, _outbox) = SessionWorkerClient::detached_for_test();
+        let profile = RpcSessionLaunchProfile::default();
+        lock(&registry.state).entries.insert(
+            "rpc-1".into(),
+            WorkerSessionEntry {
+                close: SessionCloseState {
+                    state,
+                    attachments,
+                    retain_on_disconnect: true,
+                    reservation_key: None,
+                    writing: false,
+                },
+                identity: crate::session_registry::session_identity(&profile),
+                profile,
+                worker: Arc::new(worker),
+                durable_session_id: None,
+                session_path: None,
+                cwd: String::new(),
+                last_command_at: 0.,
+                requested_path_key: None,
+                context_overlay: None,
+                failure: None,
+            },
+        );
+        registry
+    }
+    #[tokio::test]
+    async fn attach_only_refuses_before_spawning_or_allocating_an_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = root.path().to_string_lossy().into_owned();
+        let spawn: SpawnSessionWorker = Arc::new(|| panic!("attach-only must not spawn"));
+        let registry = WorkerSessionRegistry::new(serde_json::json!({}), spawn, 0);
+        let error = registry
+            .open_session(profile, false, 0., true, |_| {
+                panic!("attach-only must not allocate routes")
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "session_not_held");
+        assert_eq!(registry.size(), 0);
+        assert_eq!(lock(&registry.state).serial, 0);
+    }
+    // senpi `getForCommand`: polling a session nobody holds is observation and leaves its idle clock alone.
+    #[test]
+    fn polling_an_unattached_session_does_not_refresh_its_activity() {
+        let registry = registry_with_entry(RpcSessionState::Open, 0);
+        registry.get_for_command("rpc-1", "get_state", 5.).unwrap();
+        assert_eq!(
+            registry.with_entry("rpc-1", |entry| entry.last_command_at),
+            Some(0.)
+        );
+        registry.get_for_command("rpc-1", "prompt", 7.).unwrap();
+        assert_eq!(
+            registry.with_entry("rpc-1", |entry| entry.last_command_at),
+            Some(7.)
+        );
+        let attached = registry_with_entry(RpcSessionState::Open, 1);
+        attached.get_for_command("rpc-1", "get_state", 9.).unwrap();
+        assert_eq!(
+            attached.with_entry("rpc-1", |entry| entry.last_command_at),
+            Some(9.)
+        );
+    }
+    // senpi `attachSession`: only an open entry takes a live attach, and joining a parked one is reported.
+    #[test]
+    fn attach_session_counts_only_open_entries_and_reports_a_parked_resume() {
+        let registry = registry_with_entry(RpcSessionState::Open, 0);
+        assert_eq!(registry.attach_session("rpc-1", 3.), Ok(true));
+        assert_eq!(registry.attach_session("rpc-1", 4.), Ok(false));
+        assert_eq!(
+            registry.with_entry("rpc-1", |entry| entry.close.attachments),
+            Some(2)
+        );
+        let closing = registry_with_entry(RpcSessionState::Closing, 1);
+        assert_eq!(
+            closing.attach_session("rpc-1", 3.).unwrap_err().code,
+            "unknown_session"
+        );
+        assert_eq!(
+            registry.attach_session("missing", 3.).unwrap_err().code,
+            "unknown_session"
+        );
+    }
+    // senpi `attach`: a worker whose binding is not installed yet cannot be joined.
+    #[test]
+    fn an_attach_to_a_worker_before_its_binding_is_refused() {
+        let registry = registry_with_entry(RpcSessionState::Open, 1);
+        assert_eq!(
+            lock(&registry.state)
+                .attach("rpc-1", "/p", false, 1.)
+                .err()
+                .map(|error| error.code),
+            Some("session_path_in_use".to_owned())
         );
     }
     #[test]

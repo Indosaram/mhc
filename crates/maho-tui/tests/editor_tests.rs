@@ -7,7 +7,7 @@ use crate::common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use common::{create_editor, create_editor_with_theme, large_paste, paste, TestHost};
+use common::{TestHost, create_editor, create_editor_with_theme, large_paste, paste};
 use maho_tui::autocomplete::{
     ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal,
     AutocompleteSuggestions, MentionRange, SuggestionRequest,
@@ -24,6 +24,7 @@ const ALT_RIGHT: &str = "\x1bf";
 const ARROW_LEFT: &str = "\x1b[D";
 const ARROW_RIGHT: &str = "\x1b[C";
 const LINE_START: &str = "\x01";
+const LINE_END: &str = "\x05";
 
 fn type_text(editor: &mut Editor, text: &str) {
     for ch in text.chars() {
@@ -215,8 +216,8 @@ fn deletes_multi_code_unit_emojis_with_single_backspace() {
 #[test]
 fn replaces_the_entire_document_with_unicode_text_via_set_text() {
     let (mut editor, _host) = create_editor(30);
-    editor.set_text("Grüße 世界 🎉\nsecond");
-    assert_eq!(editor.get_text(), "Grüße 世界 🎉\nsecond");
+    editor.set_text("Hällö Wörld! 😀 äöüÄÖÜß");
+    assert_eq!(editor.get_text(), "Hällö Wörld! 😀 äöüÄÖÜß");
 }
 
 #[test]
@@ -392,15 +393,16 @@ fn consecutive_ctrl_w_accumulates_into_one_kill_ring_entry() {
 #[test]
 fn backward_deletions_prepend_and_forward_deletions_append_during_accumulation() {
     let (mut editor, _host) = create_editor(30);
-    type_text(&mut editor, "abc def");
+    editor.set_text("prefix|suffix");
     editor.handle_editor_input(LINE_START);
-    for _ in 0..4 {
+    for _ in 0..6 {
         editor.handle_editor_input(ARROW_RIGHT);
     }
-    editor.handle_editor_input("\x0b"); // Ctrl+K kills "def"
-    editor.handle_editor_input("\x17"); // Ctrl+W kills " " backwards, accumulates as prepend
+    editor.handle_editor_input("\x0b"); // Ctrl+K deletes "suffix" (forward)
+    editor.handle_editor_input("\x0b"); // Ctrl+K deletes "|" (forward, appended)
+    assert_eq!(editor.get_text(), "prefix");
     editor.handle_editor_input("\x19");
-    assert_eq!(editor.get_text(), "abc def");
+    assert_eq!(editor.get_text(), "prefix|suffix");
 }
 
 #[test]
@@ -598,18 +600,6 @@ fn creates_a_paste_marker_for_large_pastes() {
 }
 
 #[test]
-fn treats_paste_marker_as_single_unit_for_right_and_left_arrow() {
-    let (mut editor, _host) = create_editor(30);
-    let marker = paste(&mut editor, &large_paste("LINE", 12));
-
-    editor.handle_editor_input(LINE_START);
-    editor.handle_editor_input(ARROW_RIGHT);
-    assert_eq!(editor.get_cursor(), (0, marker.len()));
-    editor.handle_editor_input(ARROW_LEFT);
-    assert_eq!(editor.get_cursor(), (0, 0));
-}
-
-#[test]
 fn treats_paste_marker_as_single_unit_for_backspace() {
     let (mut editor, _host) = create_editor(30);
     editor.handle_editor_input("A");
@@ -672,7 +662,10 @@ fn undo_after_deleting_the_first_of_two_paste_markers_restores_both_registry_ent
     let body_two = large_paste("SECOND", 12);
     paste(&mut editor, &body_one);
     paste(&mut editor, &body_two);
-    assert_eq!(editor.get_text(), "[paste #1 +12 lines][paste #2 +12 lines]");
+    assert_eq!(
+        editor.get_text(),
+        "[paste #1 +12 lines][paste #2 +12 lines]"
+    );
 
     editor.handle_editor_input(LINE_START);
     editor.handle_editor_input(FORWARD_DELETE);
@@ -680,7 +673,10 @@ fn undo_after_deleting_the_first_of_two_paste_markers_restores_both_registry_ent
     assert_eq!(editor.get_expanded_text(), body_two);
 
     editor.handle_editor_input(UNDO);
-    assert_eq!(editor.get_text(), "[paste #1 +12 lines][paste #2 +12 lines]");
+    assert_eq!(
+        editor.get_text(),
+        "[paste #1 +12 lines][paste #2 +12 lines]"
+    );
     assert_eq!(editor.get_expanded_text(), format!("{body_one}{body_two}"));
 }
 
@@ -713,13 +709,41 @@ fn set_text_prunes_registry_entries_whose_markers_were_removed() {
 #[test]
 fn transfers_paste_registry_to_another_editor_instance() {
     let (mut source, _host) = create_editor(30);
-    let body = large_paste("SHARED", 12);
-    let marker = paste(&mut source, &body);
+    let body = (0..12)
+        .map(|i| format!("alpha{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    paste(&mut source, &body);
 
     let (mut target, _host2) = create_editor(30);
-    target.set_text(&marker);
+    let submitted = Rc::new(RefCell::new(String::new()));
+    let sink = submitted.clone();
+    target.on_submit = Some(Box::new(move |text: &str| {
+        *sink.borrow_mut() = text.to_string();
+    }));
+    target.set_text(&source.get_text());
     target.set_paste_state(&source.get_paste_state());
+    assert!(
+        target.get_text().starts_with("[paste #1 +"),
+        "{}",
+        target.get_text()
+    );
     assert_eq!(target.get_expanded_text(), body);
+
+    target.handle_editor_input(" ");
+    let beta = (0..12)
+        .map(|i| format!("beta{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    paste(&mut target, &beta);
+    assert!(
+        target.get_text().contains("[paste #2 +"),
+        "{}",
+        target.get_text()
+    );
+
+    target.handle_editor_input("\r");
+    assert_eq!(*submitted.borrow(), format!("{body} {beta}"));
 }
 
 #[test]
@@ -766,9 +790,12 @@ fn submits_large_pasted_content_literally() {
 #[test]
 fn does_not_treat_manually_typed_marker_like_text_as_atomic() {
     let (mut editor, _host) = create_editor(30);
-    type_text(&mut editor, "[paste #9 5 chars]");
-    editor.handle_editor_input(BACKSPACE);
-    assert_eq!(editor.get_text(), "[paste #9 5 chars");
+    let fake_marker = "[paste #99 +5 lines]";
+    type_text(&mut editor, fake_marker);
+    assert_eq!(editor.get_text(), fake_marker);
+    editor.handle_editor_input(LINE_START);
+    editor.handle_editor_input(ARROW_RIGHT);
+    assert_eq!(editor.get_cursor(), (0, 1));
 }
 
 // ---------- image markers ----------
@@ -927,6 +954,420 @@ fn keeps_paste_markers_working_alongside_image_markers() {
     assert_eq!(editor.get_expanded_text(), format!("[Image #1]{body}"));
 }
 
+#[test]
+fn restores_the_owners_attachment_payloads_when_undoing_a_marker_delete() {
+    use std::collections::BTreeMap;
+
+    let (mut editor, _host) = create_editor(30);
+    let payloads: Rc<RefCell<BTreeMap<u64, String>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    let restored: Rc<RefCell<Vec<BTreeMap<u64, String>>>> = Rc::new(RefCell::new(Vec::new()));
+    let snapshot_source = payloads.clone();
+    editor.snapshot_attachment_state = Some(Box::new(move || {
+        let state: maho_tui::components::editor::AttachmentState =
+            Rc::new(snapshot_source.borrow().clone());
+        Some(state)
+    }));
+    let restore_sink = restored.clone();
+    editor.restore_attachment_state = Some(Box::new(
+        move |state: &maho_tui::components::editor::AttachmentState| {
+            let map = state
+                .downcast_ref::<BTreeMap<u64, String>>()
+                .expect("snapshot is the payload map")
+                .clone();
+            restore_sink.borrow_mut().push(map);
+        },
+    ));
+
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(1, "A".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(2, "B".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(3, "C".to_string());
+    editor.handle_editor_input(ARROW_LEFT);
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "[Image #1][Image #2]");
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1][Image #2][Image #3]");
+    let last = restored
+        .borrow()
+        .last()
+        .cloned()
+        .expect("undo restored the payloads");
+    assert_eq!(
+        last.into_iter().collect::<Vec<_>>(),
+        vec![
+            (1, "A".to_string()),
+            (2, "B".to_string()),
+            (3, "C".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn renumbers_the_survivor_when_a_later_marker_is_backspaced() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    type_text(&mut editor, " ");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(BACKSPACE);
+
+    assert_eq!(editor.get_text(), "[Image #1] ");
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn crosses_the_marker_as_one_unit_for_alt_left_alt_right_word_navigation() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "aa ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " bb");
+    assert_eq!(editor.get_text(), "aa [Image #1] bb");
+
+    editor.handle_editor_input(LINE_END);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 14);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 3);
+
+    editor.handle_editor_input(ALT_RIGHT);
+    assert_eq!(editor.get_cursor().1, 13);
+}
+
+fn content_lines(editor: &mut Editor, width: usize) -> Vec<String> {
+    let lines = editor.render_editor(width);
+    lines[1..lines.len() - 1]
+        .iter()
+        .map(|line| strip_terminal_sequences(line).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn wraps_the_marker_as_one_atomic_segment_and_never_breaks_at_its_inner_space() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+    assert_eq!(editor.get_text(), "ab [Image #1] cd");
+
+    // 13 usable columns + 1 reserved for the cursor.
+    assert_eq!(content_lines(&mut editor, 14), vec!["ab", "[Image #1] cd"]);
+}
+
+#[test]
+fn wraps_the_marker_onto_its_own_visual_line_when_it_does_not_fit() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+
+    // 10 usable columns + 1 reserved for the cursor.
+    assert_eq!(
+        content_lines(&mut editor, 11),
+        vec!["ab", "[Image #1]", " cd"]
+    );
+}
+
+#[test]
+fn restores_marker_text_and_registry_entry_when_undoing_a_delete() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "");
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1]");
+    assert_eq!(editor.get_image_marker_state().ids, vec![1]);
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn drops_the_registry_entry_when_undoing_an_insert() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "hi");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "hi");
+    assert!(editor.get_image_marker_state().ids.is_empty());
+    assert_eq!(*orders.borrow(), vec![Vec::<u64>::new()]);
+}
+
+// ---------- backslash+Enter newline workaround ----------
+
+fn submit_flag(editor: &mut Editor) -> Rc<RefCell<bool>> {
+    let submitted = Rc::new(RefCell::new(false));
+    let sink = submitted.clone();
+    editor.on_submit = Some(Box::new(move |_text: &str| {
+        *sink.borrow_mut() = true;
+    }));
+    submitted
+}
+
+#[test]
+fn inserts_newline_for_backslash_followed_by_lf_enter() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\n");
+
+    assert_eq!(editor.get_text(), "\n");
+    assert!(!*submitted.borrow());
+}
+
+#[test]
+fn inserts_backslash_immediately_without_buffering() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\");
+}
+
+#[test]
+fn converts_standalone_backslash_to_newline_on_enter() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\n");
+}
+
+#[test]
+fn inserts_backslash_normally_when_followed_by_other_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "\\x");
+}
+
+#[test]
+fn does_not_trigger_newline_when_backslash_is_not_immediately_before_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    editor.handle_editor_input("\r");
+
+    assert!(*submitted.borrow());
+}
+
+#[test]
+fn only_removes_one_backslash_when_multiple_are_present() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\\\\\");
+
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\\\\\n");
+}
+
+// ---------- character jump (Ctrl+]) ----------
+
+const JUMP_FORWARD: &str = "\x1d";
+const JUMP_BACKWARD: &str = "\x1b\x1d";
+
+#[test]
+fn jumps_forward_to_first_occurrence_of_character_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 4));
+}
+
+#[test]
+fn jumps_forward_to_next_occurrence_after_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    for _ in 0..4 {
+        editor.handle_editor_input(ARROW_RIGHT);
+    }
+    assert_eq!(editor.get_cursor(), (0, 4));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_forward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("g");
+
+    assert_eq!(editor.get_cursor(), (2, 0));
+}
+
+#[test]
+fn jumps_backward_to_first_occurrence_before_cursor_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_backward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    assert_eq!(editor.get_cursor(), (2, 3));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("a");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_forward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_backward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 11));
+}
+
+#[test]
+fn jump_is_case_sensitive() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("Hello World");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("h");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("W");
+    assert_eq!(editor.get_cursor(), (0, 6));
+}
+
+#[test]
+fn cancels_jump_mode_when_ctrl_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input(JUMP_FORWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_jump_mode_on_escape_and_processes_the_escape() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("\x1b");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_backward_jump_mode_when_ctrl_alt_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input(JUMP_BACKWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "hello worldo");
+}
+
+#[test]
+fn jump_searches_for_special_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("foo(bar) = baz;");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("(");
+    assert_eq!(editor.get_cursor(), (0, 3));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("=");
+    assert_eq!(editor.get_cursor(), (0, 9));
+}
+
+#[test]
+fn jump_handles_empty_text_gracefully() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("x");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn resets_last_action_when_jumping() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "xhello world");
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    editor.handle_editor_input("Y");
+    assert_eq!(editor.get_text(), "xhellYo world");
+
+    editor.handle_editor_input(UNDO);
+    assert_eq!(editor.get_text(), "xhello world");
+}
+
 // ---------- mention highlight ----------
 
 fn mention_provider() -> Rc<RefCell<dyn AutocompleteProvider>> {
@@ -1034,7 +1475,9 @@ fn styles_a_mention_on_every_logical_line_and_across_wrap_chunks() {
 
     let lines = editor.render_editor(12);
     assert!(
-        lines.iter().any(|line| line.contains(&styled("$debugging"))),
+        lines
+            .iter()
+            .any(|line| line.contains(&styled("$debugging"))),
         "{lines:?}"
     );
 }
@@ -1173,10 +1616,18 @@ struct DeferredRequests {
     )>,
 }
 
-fn deferred_provider(state: Rc<RefCell<DeferredRequests>>) -> Rc<RefCell<dyn AutocompleteProvider>> {
+fn deferred_provider(
+    state: Rc<RefCell<DeferredRequests>>,
+) -> Rc<RefCell<dyn AutocompleteProvider>> {
     struct DeferredProvider(Rc<RefCell<DeferredRequests>>);
     impl AutocompleteProvider for DeferredProvider {
-        fn get_suggestions(&mut self, _: &[String], _: usize, _: usize, _: bool) -> Option<AutocompleteSuggestions> {
+        fn get_suggestions(
+            &mut self,
+            _: &[String],
+            _: usize,
+            _: usize,
+            _: bool,
+        ) -> Option<AutocompleteSuggestions> {
             None
         }
 
@@ -1201,7 +1652,11 @@ fn deferred_provider(state: Rc<RefCell<DeferredRequests>>) -> Rc<RefCell<dyn Aut
             _item: &AutocompleteItem,
             _prefix: &str,
         ) -> ApplyCompletionResult {
-            ApplyCompletionResult { lines: lines.to_vec(), cursor_line, cursor_col }
+            ApplyCompletionResult {
+                lines: lines.to_vec(),
+                cursor_line,
+                cursor_col,
+            }
         }
     }
     Rc::new(RefCell::new(DeferredProvider(state)))
@@ -1229,13 +1684,23 @@ fn debounces_an_at_trigger_until_the_host_polls_past_the_deadline() {
     editor.set_autocomplete_provider(deferred_provider(state.clone()));
 
     editor.handle_editor_input("@");
-    assert_eq!(state.borrow().requests.len(), 0, "the @ request waits for the debounce");
+    assert_eq!(
+        state.borrow().requests.len(),
+        0,
+        "the @ request waits for the debounce"
+    );
 
-    assert!(editor.poll_autocomplete_at(after_debounce()), "the request is in flight");
+    assert!(
+        editor.poll_autocomplete_at(after_debounce()),
+        "the request is in flight"
+    );
     assert_eq!(state.borrow().requests.len(), 1);
     assert!(!editor.is_showing_autocomplete());
 
-    state.borrow().requests[0].1.send(file_page("@")).expect("resolve request");
+    state.borrow().requests[0]
+        .1
+        .send(file_page("@"))
+        .expect("resolve request");
     assert!(!editor.poll_autocomplete_at(after_debounce()));
     assert!(editor.is_showing_autocomplete());
 }
@@ -1249,7 +1714,10 @@ fn aborts_the_in_flight_request_and_ignores_its_stale_answer_after_another_keyst
     editor.handle_editor_input("@");
     editor.poll_autocomplete_at(after_debounce());
     editor.handle_editor_input("s");
-    assert!(state.borrow().requests[0].0.is_aborted(), "a newer keystroke aborts the walk");
+    assert!(
+        state.borrow().requests[0].0.is_aborted(),
+        "a newer keystroke aborts the walk"
+    );
 
     // The superseded request's receiver is gone, so its late answer cannot reach the editor.
     assert!(state.borrow().requests[0].1.send(file_page("@")).is_err());
@@ -1257,7 +1725,2807 @@ fn aborts_the_in_flight_request_and_ignores_its_stale_answer_after_another_keyst
     assert_eq!(state.borrow().requests.len(), 2);
     assert!(!editor.is_showing_autocomplete());
 
-    state.borrow().requests[1].1.send(file_page("@s")).expect("resolve request");
+    state.borrow().requests[1]
+        .1
+        .send(file_page("@s"))
+        .expect("resolve request");
     editor.poll_autocomplete_at(after_debounce());
     assert!(editor.is_showing_autocomplete());
+}
+
+// ---------- editor-history-keybindings.test.ts ----------
+
+/// Restores the default global keybindings when the test ends (senpi's `afterEach`).
+struct DefaultKeybindingsOnDrop;
+
+impl Drop for DefaultKeybindingsOnDrop {
+    fn drop(&mut self) {
+        maho_tui::keybindings::set_keybindings(maho_tui::keybindings::KeybindingsManager::new(
+            maho_tui::keybindings::tui_keybindings(),
+            Default::default(),
+        ));
+    }
+}
+
+/// Only this test sends Ctrl+P/Ctrl+N, which are unbound by default, so installing the global
+/// bindings cannot change another test's keystrokes.
+#[test]
+fn browses_history_directly_without_first_moving_the_cursor() {
+    use maho_tui::keybindings::{KeybindingsManager, Keys, set_keybindings, tui_keybindings};
+
+    let _lock = common::global_keybindings_lock();
+    let _restore = DefaultKeybindingsOnDrop;
+    let mut user_bindings = maho_tui::keybindings::KeybindingsConfig::new();
+    user_bindings.insert(
+        "tui.editor.historyPrevious".to_string(),
+        Some(Keys::from("ctrl+p")),
+    );
+    user_bindings.insert(
+        "tui.editor.historyNext".to_string(),
+        Some(Keys::from("ctrl+n")),
+    );
+    set_keybindings(KeybindingsManager::new(tui_keybindings(), user_bindings));
+
+    let (mut editor, _host) = create_editor(24);
+    editor.add_to_history("older prompt");
+    editor.add_to_history("newer\nmultiline prompt");
+    editor.set_text("draft");
+    editor.handle_editor_input(ARROW_LEFT);
+    editor.handle_editor_input(ARROW_LEFT);
+
+    editor.handle_editor_input("\x10");
+    assert_eq!(editor.get_text(), "newer\nmultiline prompt");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input("\x10");
+    assert_eq!(editor.get_text(), "older prompt");
+
+    editor.handle_editor_input("\x0e");
+    assert_eq!(editor.get_text(), "newer\nmultiline prompt");
+    assert_eq!(editor.get_cursor(), (1, 16));
+
+    editor.handle_editor_input("\x0e");
+    assert_eq!(editor.get_text(), "draft");
+    assert_eq!(editor.get_cursor(), (0, 3));
+}
+
+// ---------- editor-dollar-autocomplete.test.ts ----------
+
+/// senpi's awaited provider promises become channels the test resolves; the debounce timer and
+/// the promise continuation are driven with `poll_autocomplete_at`.
+mod editor_dollar_autocomplete {
+    use super::*;
+    use maho_tui::autocomplete::{CombinedAutocompleteProvider, CommandSpec};
+
+    type Request = (String, usize, usize);
+    type AutocompleteSender = std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>;
+    type EditorHarness = (
+        Editor,
+        Rc<RefCell<Vec<Request>>>,
+        Rc<RefCell<Vec<AutocompleteSender>>>,
+    );
+
+    struct RecordingProvider {
+        requests: Rc<RefCell<Vec<Request>>>,
+        answers: Rc<RefCell<Vec<AutocompleteSender>>>,
+        immediate: Option<AutocompleteSuggestions>,
+    }
+
+    impl AutocompleteProvider for RecordingProvider {
+        fn get_suggestions(
+            &mut self,
+            _: &[String],
+            _: usize,
+            _: usize,
+            _: bool,
+        ) -> Option<AutocompleteSuggestions> {
+            None
+        }
+
+        fn request_suggestions(
+            &mut self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            _force: bool,
+            _signal: &AutocompleteSignal,
+        ) -> SuggestionRequest {
+            self.requests.borrow_mut().push((
+                lines.get(cursor_line).cloned().unwrap_or_default(),
+                cursor_line,
+                cursor_col,
+            ));
+            if let Some(answer) = self.immediate.clone() {
+                return SuggestionRequest::Ready(Some(answer));
+            }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            self.answers.borrow_mut().push(sender);
+            SuggestionRequest::Pending(receiver)
+        }
+
+        fn apply_completion(
+            &self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            _item: &AutocompleteItem,
+            _prefix: &str,
+        ) -> ApplyCompletionResult {
+            ApplyCompletionResult {
+                lines: lines.to_vec(),
+                cursor_line,
+                cursor_col,
+            }
+        }
+    }
+
+    fn debugging(prefix: &str) -> AutocompleteSuggestions {
+        AutocompleteSuggestions {
+            items: vec![AutocompleteItem {
+                value: "$debugging".to_string(),
+                label: "$debugging".to_string(),
+                description: Some("Debug runtime failures".to_string()),
+            }],
+            prefix: prefix.to_string(),
+        }
+    }
+
+    fn after_debounce() -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(1)
+    }
+
+    fn editor_with(immediate: Option<AutocompleteSuggestions>) -> EditorHarness {
+        let (mut editor, _host) = create_editor(24);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let answers = Rc::new(RefCell::new(Vec::new()));
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(RecordingProvider {
+            requests: Rc::clone(&requests),
+            answers: Rc::clone(&answers),
+            immediate,
+        })));
+        (editor, requests, answers)
+    }
+
+    #[test]
+    fn requests_and_renders_suggestions_when_the_prompt_starts_with_dollar() {
+        let (mut editor, requests, _answers) = editor_with(Some(debugging("$deb")));
+        type_text(&mut editor, "$deb");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(
+            requests.borrow().last().cloned(),
+            Some(("$deb".to_string(), 0, 4))
+        );
+        assert!(editor.render_editor(80).join("\n").contains("$debugging"));
+    }
+
+    #[test]
+    fn requests_dollar_autocomplete_on_a_later_logical_line() {
+        let (mut editor, requests, _answers) = editor_with(Some(debugging("$")));
+        type_text(&mut editor, "first line");
+        editor.handle_editor_input("\x1b[13;2u");
+        type_text(&mut editor, "text $");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(
+            requests.borrow().last().cloned(),
+            Some(("text $".to_string(), 1, 6))
+        );
+        assert!(editor.render_editor(80).join("\n").contains("$debugging"));
+    }
+
+    #[test]
+    fn reopens_dollar_autocomplete_after_a_multiline_paste_and_follow_up_typing() {
+        let provider = CombinedAutocompleteProvider::new(
+            vec![CommandSpec::with_description(
+                "skill:debugging",
+                "Debug runtime failures",
+            )],
+            "/tmp",
+            None,
+        );
+        let (mut editor, _host) = create_editor(24);
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(provider)));
+
+        editor.handle_editor_input("\x1b[200~first line\ntext $\x1b[201~");
+        editor.handle_editor_input("d");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(editor.get_text(), "first line\ntext $d");
+        assert!(editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn keeps_dollar_autocomplete_responsive_while_a_previous_request_is_pending() {
+        let (mut editor, requests, answers) = editor_with(None);
+        editor.handle_editor_input("$");
+        editor.poll_autocomplete_at(after_debounce());
+        assert_eq!(requests.borrow().len(), 1);
+
+        editor.handle_editor_input("d");
+        // The first request is superseded; its late answer cannot reach the editor.
+        let _ = answers.borrow()[0].send(None);
+        editor.poll_autocomplete_at(after_debounce());
+        assert_eq!(requests.borrow().len(), 2);
+        answers.borrow()[1]
+            .send(Some(debugging("$d")))
+            .expect("resolve the second request");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(editor.get_text(), "$d");
+        assert_eq!(requests.borrow().len(), 2);
+    }
+}
+
+// senpi editor.test.ts "Sticky column" (preferredVisualCol).
+mod sticky_column {
+    use super::*;
+    use maho_tui::tui::Component;
+
+    const UP: &str = "\x1b[A";
+    const DOWN: &str = "\x1b[B";
+    const CTRL_LEFT: &str = "\x1b[1;5D";
+    const CTRL_RIGHT: &str = "\x1b[1;5C";
+
+    fn editor_with(text: &str) -> Editor {
+        let (mut editor, _host) = create_editor(24);
+        editor.set_text(text);
+        editor
+    }
+
+    fn press(editor: &mut Editor, key: &str, times: usize) {
+        for _ in 0..times {
+            editor.handle_editor_input(key);
+        }
+    }
+
+    /// senpi `positionCursor`: top line, down `line` lines, line start, right `col` columns.
+    fn position_cursor(editor: &mut Editor, line: usize, col: usize) {
+        press(editor, UP, 20);
+        press(editor, DOWN, line);
+        editor.handle_editor_input(LINE_START);
+        press(editor, ARROW_RIGHT, col);
+    }
+
+    #[test]
+    fn preserves_target_column_when_moving_up_through_a_shorter_line() {
+        let mut editor = editor_with("2222222222x222\n\n1111111111_111111111111");
+        assert_eq!(editor.get_cursor(), (2, 23));
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 10);
+        assert_eq!(editor.get_cursor(), (2, 10));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (1, 0));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 10));
+    }
+
+    #[test]
+    fn preserves_target_column_when_moving_down_through_a_shorter_line() {
+        let mut editor = editor_with("1111111111_111\n\n2222222222x222222222222");
+        press(&mut editor, UP, 2);
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 10);
+        assert_eq!(editor.get_cursor(), (0, 10));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 0));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (2, 10));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_horizontal_movement_left_arrow() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 5);
+        assert_eq!(editor.get_cursor(), (2, 5));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 5));
+        editor.handle_editor_input(ARROW_LEFT);
+        assert_eq!(editor.get_cursor(), (0, 4));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 4));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_horizontal_movement_right_arrow() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        press(&mut editor, UP, 2);
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 5);
+        assert_eq!(editor.get_cursor(), (0, 5));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 5));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (2, 6));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 6));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_typing() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 8);
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 8));
+        editor.handle_editor_input("X");
+        assert_eq!(editor.get_cursor(), (0, 9));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 9));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_backspace() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 8);
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 8));
+        editor.handle_editor_input(BACKSPACE);
+        assert_eq!(editor.get_cursor(), (0, 7));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 7));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_ctrl_a_move_to_line_start() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 8);
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_START);
+        assert_eq!(editor.get_cursor(), (1, 0));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 0));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_ctrl_e_move_to_line_end() {
+        let mut editor = editor_with("12345\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 3);
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 3));
+        editor.handle_editor_input(LINE_END);
+        assert_eq!(editor.get_cursor(), (0, 5));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 5));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_word_movement_ctrl_left() {
+        let mut editor = editor_with("hello world\n\nhello world");
+        assert_eq!(editor.get_cursor(), (2, 11));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 11));
+        editor.handle_editor_input(CTRL_LEFT);
+        assert_eq!(editor.get_cursor(), (0, 6));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 6));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_word_movement_ctrl_right() {
+        let mut editor = editor_with("hello world\n\nhello world");
+        press(&mut editor, UP, 2);
+        editor.handle_editor_input(LINE_START);
+        assert_eq!(editor.get_cursor(), (0, 0));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 0));
+        editor.handle_editor_input(CTRL_RIGHT);
+        assert_eq!(editor.get_cursor(), (2, 5));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 5));
+    }
+
+    #[test]
+    fn resets_sticky_column_on_undo() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        press(&mut editor, UP, 2);
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 8);
+        assert_eq!(editor.get_cursor(), (0, 8));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 8));
+        editor.handle_editor_input("X");
+        assert_eq!(editor.get_text(), "1234567890\n\n12345678X90");
+        assert_eq!(editor.get_cursor(), (2, 9));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 9));
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "1234567890\n\n1234567890");
+        assert_eq!(editor.get_cursor(), (2, 8));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 8));
+    }
+
+    #[test]
+    fn handles_multiple_consecutive_up_down_movements() {
+        let mut editor = editor_with("1234567890\nab\ncd\nef\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 7);
+        assert_eq!(editor.get_cursor(), (4, 7));
+        press(&mut editor, UP, 4);
+        assert_eq!(editor.get_cursor(), (0, 7));
+        press(&mut editor, DOWN, 4);
+        assert_eq!(editor.get_cursor(), (4, 7));
+    }
+
+    #[test]
+    fn moves_correctly_through_wrapped_visual_lines_without_getting_stuck() {
+        let mut editor = editor_with("short\n123456789012345678901234567890");
+        editor.render(15);
+        assert_eq!(editor.get_cursor(), (1, 30));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor().0, 1);
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor().0, 1);
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor().0, 0);
+    }
+
+    #[test]
+    fn handles_set_text_resetting_sticky_column() {
+        let mut editor = editor_with("1234567890\n\n1234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 8);
+        editor.handle_editor_input(UP);
+        editor.set_text("abcdefghij\n\nabcdefghij");
+        assert_eq!(editor.get_cursor(), (2, 10));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 10));
+    }
+
+    #[test]
+    fn sets_preferred_visual_col_when_pressing_right_at_end_of_prompt_last_line() {
+        let mut editor = editor_with("111111111x1111111111\n\n333333333_");
+        press(&mut editor, UP, 2);
+        editor.handle_editor_input(LINE_END);
+        assert_eq!(editor.get_cursor(), (0, 20));
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor(), (2, 10));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (2, 10));
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 10));
+    }
+
+    #[test]
+    fn handles_editor_resizes_when_preferred_visual_col_is_on_the_same_line() {
+        let mut editor = editor_with("12345678901234567890\n\n12345678901234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 15);
+        press(&mut editor, UP, 2);
+        assert_eq!(editor.get_cursor(), (0, 15));
+        editor.render(12);
+        press(&mut editor, DOWN, 2);
+        assert_eq!(editor.get_cursor().1, 4);
+    }
+
+    #[test]
+    fn handles_editor_resizes_when_preferred_visual_col_is_on_a_different_line() {
+        let mut editor = editor_with("short\n12345678901234567890");
+        editor.handle_editor_input(LINE_START);
+        press(&mut editor, ARROW_RIGHT, 15);
+        assert_eq!(editor.get_cursor(), (1, 15));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 5));
+        editor.render(10);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 8));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 5));
+        editor.render(80);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 15));
+    }
+
+    #[test]
+    fn rewrapped_lines_target_fits_current_visual_column() {
+        let mut editor = editor_with("abcdefghijklmnopqr\n123456789012345678");
+        position_cursor(&mut editor, 0, 18);
+        assert_eq!(editor.get_cursor(), (0, 18));
+        editor.render(10);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 8));
+        editor.render(80);
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 8));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 8));
+    }
+
+    #[test]
+    fn rewrapped_lines_target_shorter_than_current_visual_column() {
+        let mut editor = editor_with("abcdefghijklmnopqr\n123456789012345678\nab");
+        position_cursor(&mut editor, 0, 18);
+        assert_eq!(editor.get_cursor(), (0, 18));
+        editor.render(10);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 8));
+        editor.render(80);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (2, 2));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (1, 8));
+    }
+}
+
+// senpi editor.test.ts "Word wrapping", "Grapheme-aware text wrapping" and "Scroll indicators".
+mod wrapping {
+    use super::*;
+    use maho_tui::components::editor::word_wrap_line;
+    use maho_tui::paste_markers::MarkerSegment;
+    use maho_tui::tui::Component;
+
+    fn rendered(text: &str, width: usize) -> Vec<String> {
+        let (mut editor, _host) = create_editor(24);
+        editor.set_text(text);
+        editor.render(width)
+    }
+
+    fn chunk_texts(line: &str, width: usize) -> Vec<String> {
+        word_wrap_line(line, width, None)
+            .into_iter()
+            .map(|chunk| chunk.text)
+            .collect()
+    }
+
+    fn content(lines: &[String]) -> Vec<String> {
+        lines[1..lines.len() - 1]
+            .iter()
+            .map(|line| strip_terminal_sequences(line).trim().to_owned())
+            .collect()
+    }
+
+    fn assert_content_widths(lines: &[String], width: usize) {
+        for (index, line) in lines[1..lines.len() - 1].iter().enumerate() {
+            assert_eq!(
+                visible_width(line),
+                width,
+                "line {} of {lines:?}",
+                index + 1
+            );
+        }
+    }
+
+    /// Every chunk fits and the chunks' byte ranges rebuild the line.
+    fn assert_fits_and_rebuilds(
+        line: &str,
+        width: usize,
+        segments: Option<&[MarkerSegment]>,
+    ) -> Vec<String> {
+        let chunks = word_wrap_line(line, width, segments);
+        for chunk in &chunks {
+            assert!(
+                visible_width(&chunk.text) <= width,
+                "{:?} exceeds {width}",
+                chunk.text
+            );
+        }
+        let rebuilt: String = chunks
+            .iter()
+            .map(|chunk| &line[chunk.start_index..chunk.end_index])
+            .collect();
+        assert_eq!(rebuilt, line);
+        chunks.into_iter().map(|chunk| chunk.text).collect()
+    }
+
+    fn segments(parts: &[&str]) -> Vec<MarkerSegment> {
+        let mut index = 0;
+        parts
+            .iter()
+            .map(|part| {
+                let segment = MarkerSegment {
+                    index,
+                    segment: (*part).to_owned(),
+                };
+                index += part.len();
+                segment
+            })
+            .collect()
+    }
+
+    const MARKER: &str = "[paste #1 +20 lines]";
+
+    #[test]
+    fn wraps_at_word_boundaries_instead_of_mid_word() {
+        let lines = rendered(
+            "Hello world this is a test of word wrapping functionality",
+            40,
+        );
+        let content = content(&lines);
+        assert!(!content[0].ends_with('-'));
+        for line in content {
+            let last = line.trim_end().chars().last();
+            assert!(
+                last.is_none_or(|ch| ch.is_alphanumeric() || ch == '_' || ".,!?;:".contains(ch)),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_start_lines_with_leading_whitespace_after_word_wrap() {
+        let lines = rendered("Word1 Word2 Word3 Word4 Word5 Word6", 20);
+        for line in &lines[1..lines.len() - 1] {
+            let line = strip_terminal_sequences(line);
+            let trimmed = line.trim_end();
+            assert!(
+                trimmed.trim_start().is_empty() || !trimmed.starts_with(char::is_whitespace),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn breaks_long_words_urls_at_character_level() {
+        let lines = rendered(
+            "Check https://example.com/very/long/path/that/exceeds/width here",
+            30,
+        );
+        assert_content_widths(&lines, 30);
+    }
+
+    #[test]
+    fn preserves_multiple_spaces_within_words_on_same_line() {
+        let lines = rendered("Word1   Word2    Word3", 50);
+        assert!(content(&lines)[0].contains("Word1   Word2"));
+    }
+
+    #[test]
+    fn handles_empty_string() {
+        assert_eq!(rendered("", 40).len(), 3);
+    }
+
+    #[test]
+    fn handles_single_word_that_fits_exactly() {
+        let lines = rendered("1234567890", 11);
+        assert_eq!(lines.len(), 3);
+        assert!(strip_terminal_sequences(&lines[1]).contains("1234567890"));
+    }
+
+    #[test]
+    fn wraps_word_to_next_line_when_it_ends_exactly_at_terminal_width() {
+        assert_eq!(
+            chunk_texts("hello world test", 11),
+            ["hello ", "world test"]
+        );
+    }
+
+    #[test]
+    fn keeps_whitespace_at_terminal_width_boundary_on_same_line() {
+        assert_eq!(
+            chunk_texts("hello world test", 12),
+            ["hello world ", "test"]
+        );
+    }
+
+    #[test]
+    fn handles_unbreakable_word_filling_width_exactly_followed_by_space() {
+        assert_eq!(
+            chunk_texts("aaaaaaaaaaaa aaaa", 12),
+            ["aaaaaaaaaaaa", " aaaa"]
+        );
+    }
+
+    #[test]
+    fn wraps_word_to_next_line_when_it_fits_width_but_not_remaining_space() {
+        assert_eq!(
+            chunk_texts("      aaaaaaaaaaaa", 12),
+            ["      ", "aaaaaaaaaaaa"]
+        );
+    }
+
+    #[test]
+    fn keeps_word_with_multi_space_and_following_word_together_when_they_fit() {
+        assert_eq!(
+            chunk_texts("Lorem ipsum dolor sit amet,    consectetur", 30),
+            ["Lorem ipsum dolor sit ", "amet,    consectetur"]
+        );
+    }
+
+    #[test]
+    fn keeps_word_with_multi_space_and_following_word_when_they_fill_width_exactly() {
+        assert_eq!(
+            chunk_texts("Lorem ipsum dolor sit amet,              consectetur", 30),
+            ["Lorem ipsum dolor sit ", "amet,              consectetur"]
+        );
+    }
+
+    #[test]
+    fn splits_when_word_plus_multi_space_plus_word_exceeds_width() {
+        assert_eq!(
+            chunk_texts("Lorem ipsum dolor sit amet,               consectetur", 30),
+            [
+                "Lorem ipsum dolor sit ",
+                "amet,               ",
+                "consectetur"
+            ]
+        );
+    }
+
+    #[test]
+    fn breaks_long_whitespace_at_line_boundary() {
+        assert_eq!(
+            chunk_texts(
+                "Lorem ipsum dolor sit amet,                         consectetur",
+                30
+            ),
+            [
+                "Lorem ipsum dolor sit ",
+                "amet,                         ",
+                "consectetur"
+            ]
+        );
+    }
+
+    #[test]
+    fn breaks_long_whitespace_at_line_boundary_2() {
+        assert_eq!(
+            chunk_texts(
+                "Lorem ipsum dolor sit amet,                          consectetur",
+                30
+            ),
+            [
+                "Lorem ipsum dolor sit ",
+                "amet,                         ",
+                " consectetur"
+            ]
+        );
+    }
+
+    #[test]
+    fn breaks_whitespace_spanning_full_lines() {
+        assert_eq!(
+            chunk_texts(
+                "Lorem ipsum dolor sit amet,                                     consectetur",
+                30
+            ),
+            [
+                "Lorem ipsum dolor sit ",
+                "amet,                         ",
+                "            consectetur"
+            ]
+        );
+    }
+
+    #[test]
+    fn force_breaks_when_wide_char_after_word_boundary_wrap_still_overflows() {
+        let line = format!(" {}你", "a".repeat(186));
+        assert_fits_and_rebuilds(&line, 187, None);
+    }
+
+    #[test]
+    fn splits_oversized_atomic_segment_across_multiple_chunks() {
+        let line = format!("A{MARKER}B");
+        assert_fits_and_rebuilds(&line, 10, Some(&segments(&["A", MARKER, "B"])));
+    }
+
+    #[test]
+    fn splits_oversized_atomic_segment_at_start_of_line() {
+        let line = format!("{MARKER}B");
+        let chunks = assert_fits_and_rebuilds(&line, 10, Some(&segments(&[MARKER, "B"])));
+        assert!(chunks.last().is_some_and(|chunk| chunk.contains('B')));
+    }
+
+    #[test]
+    fn splits_oversized_atomic_segment_at_end_of_line() {
+        let line = format!("A{MARKER}");
+        let chunks = assert_fits_and_rebuilds(&line, 10, Some(&segments(&["A", MARKER])));
+        assert_eq!(chunks[0], "A");
+    }
+
+    #[test]
+    fn splits_consecutive_oversized_atomic_segments() {
+        let second = "[paste #2 +30 lines]";
+        let line = format!("{MARKER}{second}");
+        assert_fits_and_rebuilds(&line, 10, Some(&segments(&[MARKER, second])));
+    }
+
+    #[test]
+    fn wraps_normally_after_oversized_atomic_segment() {
+        let line = format!("{MARKER} hello world");
+        let mut parts = vec![MARKER];
+        let tail = " hello world";
+        let singles: Vec<String> = tail.chars().map(String::from).collect();
+        parts.extend(singles.iter().map(String::as_str));
+        let chunks = assert_fits_and_rebuilds(&line, 10, Some(&segments(&parts)));
+        assert_eq!(chunks.last().map(String::as_str), Some("world"));
+    }
+
+    #[test]
+    fn wraps_lines_correctly_when_text_contains_wide_emojis() {
+        assert_content_widths(&rendered("Hello ✅ World", 20), 20);
+    }
+
+    #[test]
+    fn wraps_long_text_with_emojis_at_correct_positions() {
+        assert_content_widths(&rendered("✅✅✅✅✅✅", 10), 10);
+    }
+
+    #[test]
+    fn renders_isolated_thai_and_lao_am_clusters_without_width_drift() {
+        for text in ["ำabc", "ຳabc"] {
+            for line in rendered(text, 8) {
+                assert_eq!(visible_width(&line), 8, "{text:?}: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wraps_cjk_characters_correctly_each_is_2_columns_wide() {
+        let lines = rendered("日本語テスト", 11);
+        assert_content_widths(&lines, 11);
+        assert_eq!(content(&lines), ["日本語テス", "ト"]);
+    }
+
+    #[test]
+    fn handles_mixed_ascii_and_wide_characters_in_wrapping() {
+        let lines = rendered("Test ✅ OK 日本", 16);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(visible_width(&lines[1]), 16);
+    }
+
+    #[test]
+    fn renders_cursor_correctly_on_wide_characters() {
+        let lines = rendered("A✅B", 20);
+        assert!(lines[1].contains("\x1b[7m"));
+        assert_eq!(visible_width(&lines[1]), 20);
+    }
+
+    #[test]
+    fn does_not_exceed_terminal_width_with_emoji_at_wrap_boundary() {
+        let lines = rendered("0123456789✅", 11);
+        for line in &lines[1..lines.len() - 1] {
+            assert!(visible_width(line) <= 11, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn shows_cursor_at_end_of_line_before_wrap_wraps_on_next_char() {
+        let width = 10;
+        for padding_x in [0, 1] {
+            let host = common::TestHost::new(24);
+            let mut editor = Editor::new(
+                host,
+                common::plain_editor_theme(),
+                EditorOptions {
+                    padding_x: Some(padding_x),
+                    ..Default::default()
+                },
+            );
+            type_text(&mut editor, "aaaaaaaaa");
+            let lines = editor.render(width + padding_x);
+            assert_eq!(lines.len() - 2, 1, "padding {padding_x}");
+            assert!(lines[1].ends_with("\x1b[7m \x1b[0m"), "{:?}", lines[1]);
+            editor.handle_editor_input("a");
+            let lines = editor.render(width + padding_x);
+            assert_eq!(lines.len() - 2, 2, "padding {padding_x}");
+        }
+    }
+
+    #[test]
+    fn centers_scroll_indicators_on_wide_borders() {
+        let width = 40;
+        let text = (0..20)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut editor, _host) = create_editor(24);
+        editor.set_text(&text);
+        editor.render(width);
+        for _ in 0..10 {
+            editor.handle_editor_input("\x1b[A");
+        }
+        let lines = editor.render(width);
+        let rule = "─".repeat(15);
+        assert_eq!(
+            strip_terminal_sequences(&lines[0]),
+            format!("{rule} ↑ 9 more {rule}")
+        );
+        assert_eq!(
+            strip_terminal_sequences(lines.last().expect("bottom border")),
+            format!("{rule} ↓ 4 more {rule}")
+        );
+    }
+
+    #[test]
+    fn keeps_truncated_scroll_indicators_within_width_and_preserves_their_color_issue_6962() {
+        let width = 10;
+        let color = |text: &str| format!("\x1b[35m{text}\x1b[39m");
+        let mut theme = common::plain_editor_theme();
+        theme.border_color = Rc::new(color);
+        let (mut editor, _host) = create_editor_with_theme(theme, 24);
+        let text = (0..20)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.set_text(&text);
+        editor.render(width);
+        for _ in 0..10 {
+            editor.handle_editor_input("\x1b[A");
+        }
+        let lines = editor.render(width);
+        let top = &lines[0];
+        let bottom = lines.last().expect("bottom border");
+        assert!(
+            strip_terminal_sequences(top).starts_with("─── ↑"),
+            "{top:?}"
+        );
+        assert!(
+            strip_terminal_sequences(bottom).starts_with("─── ↓"),
+            "{bottom:?}"
+        );
+        assert_eq!(*top, color(&strip_terminal_sequences(top)));
+        assert_eq!(*bottom, color(&strip_terminal_sequences(bottom)));
+        for line in &lines {
+            assert_eq!(visible_width(line), width, "{line:?}");
+        }
+    }
+}
+
+// senpi editor.test.ts "Prompt history navigation", "Warp-on-WSL Shift+Enter normalization",
+// "Kitty CSI-u handling" and "Unicode text editing behavior" cases not ported above. Cursor columns
+// are byte offsets here (UTF-16 units upstream); `col` converts upstream's character columns.
+mod history_and_input {
+    use super::*;
+
+    const UP: &str = "\x1b[A";
+    const DOWN: &str = "\x1b[B";
+    const CTRL_LEFT: &str = "\x1b[1;5D";
+    const CTRL_RIGHT: &str = "\x1b[1;5C";
+    const EXPLICIT_NEWLINE: &str = "\x1b[13;2u";
+
+    fn editor() -> Editor {
+        create_editor(24).0
+    }
+
+    /// The byte column of character column `chars` in `line`.
+    fn col(line: &str, chars: usize) -> usize {
+        line.char_indices()
+            .nth(chars)
+            .map_or(line.len(), |(index, _)| index)
+    }
+
+    fn submitted(editor: &mut Editor) -> Rc<RefCell<Option<String>>> {
+        let submitted = Rc::new(RefCell::new(None));
+        let sink = submitted.clone();
+        editor.on_submit = Some(Box::new(move |text: &str| {
+            *sink.borrow_mut() = Some(text.to_owned());
+        }));
+        submitted
+    }
+
+    #[test]
+    fn jumps_to_start_before_entering_history_from_a_non_empty_draft() {
+        let mut editor = editor();
+        editor.add_to_history("prompt");
+        editor.set_text("draft");
+        editor.handle_editor_input(ARROW_LEFT);
+        editor.handle_editor_input(ARROW_LEFT);
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "draft");
+        assert_eq!(editor.get_cursor(), (0, 0));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "prompt");
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_text(), "draft");
+        assert_eq!(editor.get_cursor(), (0, 0));
+    }
+
+    #[test]
+    fn exits_history_mode_on_set_text_and_restarts_from_the_most_recent() {
+        let mut editor = editor();
+        editor.add_to_history("first");
+        editor.add_to_history("second");
+        editor.handle_editor_input(UP);
+        editor.set_text("");
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "second");
+    }
+
+    #[test]
+    fn uses_cursor_movement_instead_of_history_when_editor_has_content() {
+        let mut editor = editor();
+        editor.add_to_history("history item");
+        editor.set_text("line1\nline2");
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input("X");
+        assert_eq!(editor.get_text(), "line1X\nline2");
+    }
+
+    #[test]
+    fn places_cursor_at_start_after_browsing_history_upward() {
+        let mut editor = editor();
+        editor.add_to_history("older entry");
+        editor.add_to_history("line1\nline2\nline3");
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "line1\nline2\nline3");
+        assert_eq!(editor.get_cursor(), (0, 0));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "older entry");
+        assert_eq!(editor.get_cursor(), (0, 0));
+    }
+
+    #[test]
+    fn places_cursor_at_end_after_browsing_history_downward() {
+        let mut editor = editor();
+        editor.add_to_history("older entry");
+        editor.add_to_history("line1\nline2\nline3");
+        editor.add_to_history("newer entry");
+        for _ in 0..3 {
+            editor.handle_editor_input(UP);
+        }
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_text(), "line1\nline2\nline3");
+        assert_eq!(editor.get_cursor(), (2, 5));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_text(), "newer entry");
+    }
+
+    #[test]
+    fn allows_opposite_direction_cursor_movement_within_multi_line_history_entry() {
+        let mut editor = editor();
+        editor.add_to_history("line1\nline2\nline3");
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 0));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_text(), "line1\nline2\nline3");
+        assert_eq!(editor.get_cursor(), (1, 0));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "line1\nline2\nline3");
+        assert_eq!(editor.get_cursor(), (0, 0));
+    }
+
+    #[test]
+    fn keeps_cr_submission_and_non_warp_lf_behavior_unchanged() {
+        let mut warp = warp_editor();
+        let warp_submitted = submitted(&mut warp);
+        warp.set_text("warp");
+        warp.handle_editor_input("\r");
+        assert_eq!(warp_submitted.borrow().as_deref(), Some("warp"));
+
+        let mut regular = Editor::new(
+            TestHost::new(24),
+            common::plain_editor_theme(),
+            EditorOptions {
+                terminal_environment: Some(maho_tui::process_env::env_from(&[])),
+                terminal_platform: Some("linux".to_string()),
+                ..Default::default()
+            },
+        );
+        let regular_submitted = submitted(&mut regular);
+        regular.set_text("regular");
+        regular.handle_editor_input("\n");
+        assert_eq!(regular_submitted.borrow().as_deref(), Some("regular"));
+        assert_eq!(regular.get_text(), "");
+    }
+
+    #[test]
+    fn inserts_backslash_immediately_no_buffering() {
+        let mut editor = editor();
+        editor.handle_editor_input("\\");
+        assert_eq!(editor.get_text(), "\\");
+    }
+
+    #[test]
+    fn inserts_a_newline_for_tmux_csi_u_shift_enter_without_submitting() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        editor.set_text("hello");
+        editor.handle_editor_input("\x1b[13;2u");
+        assert_eq!(editor.get_text(), "hello\n");
+        assert!(submitted.borrow().is_none());
+    }
+
+    #[test]
+    fn ignores_printable_csi_u_sequences_with_unsupported_modifiers() {
+        let mut editor = editor();
+        editor.handle_editor_input("\x1b[99;9u");
+        assert_eq!(editor.get_text(), "");
+    }
+
+    #[test]
+    fn inserts_shifted_csi_u_letters_as_text() {
+        let mut editor = editor();
+        editor.handle_editor_input("\x1b[69;2u");
+        assert_eq!(editor.get_text(), "E");
+    }
+
+    #[test]
+    fn inserts_shifted_xterm_modify_other_keys_letters_as_text() {
+        let mut editor = editor();
+        editor.handle_editor_input("\x1b[27;2;69~");
+        assert_eq!(editor.get_text(), "E");
+    }
+
+    #[test]
+    fn inserts_mixed_ascii_umlauts_and_emojis_as_literal_text() {
+        let mut editor = editor();
+        for key in ["H", "e", "l", "l", "o", " ", "ä", "ö", "ü", " ", "😀"] {
+            editor.handle_editor_input(key);
+        }
+        assert_eq!(editor.get_text(), "Hello äöü 😀");
+    }
+
+    #[test]
+    fn deletes_single_code_unit_unicode_characters_umlauts_with_backspace() {
+        let mut editor = editor();
+        type_text(&mut editor, "äöü");
+        editor.handle_editor_input(BACKSPACE);
+        assert_eq!(editor.get_text(), "äö");
+    }
+
+    #[test]
+    fn preserves_umlauts_across_line_breaks() {
+        let mut editor = editor();
+        type_text(&mut editor, "äöü");
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        type_text(&mut editor, "ÄÖÜ");
+        assert_eq!(editor.get_text(), "äöü\nÄÖÜ");
+    }
+
+    #[test]
+    fn deletes_words_correctly_with_ctrl_w_and_alt_backspace() {
+        let mut editor = editor();
+        let cases = [
+            ("foo bar baz", "foo bar "),
+            ("foo bar   ", "foo "),
+            ("foo bar...", "foo bar"),
+            ("foo.bar", "foo."),
+            ("foo:bar", "foo:"),
+            ("line one\nline two", "line one\nline "),
+            ("line one\n", "line one"),
+        ];
+        for (text, expected) in cases {
+            editor.set_text(text);
+            editor.handle_editor_input("\x17");
+            assert_eq!(editor.get_text(), expected, "{text:?}");
+        }
+        editor.set_text("foo 😀😀 bar");
+        editor.handle_editor_input("\x17");
+        assert_eq!(editor.get_text(), "foo 😀😀 ");
+        editor.handle_editor_input("\x17");
+        assert_eq!(editor.get_text(), "foo ");
+        editor.set_text("foo bar");
+        editor.handle_editor_input("\x1b\x7f");
+        assert_eq!(editor.get_text(), "foo ");
+    }
+
+    #[test]
+    fn navigates_words_correctly_with_ctrl_left_right() {
+        let mut editor = editor();
+        editor.set_text("foo bar... baz");
+        for (key, expected) in [
+            (CTRL_LEFT, 11),
+            (CTRL_LEFT, 7),
+            (CTRL_LEFT, 4),
+            (CTRL_RIGHT, 7),
+            (CTRL_RIGHT, 10),
+            (CTRL_RIGHT, 14),
+        ] {
+            editor.handle_editor_input(key);
+            assert_eq!(editor.get_cursor(), (0, expected));
+        }
+        editor.set_text("   foo bar");
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(CTRL_RIGHT);
+        assert_eq!(editor.get_cursor(), (0, 6));
+        editor.set_text("foo.bar baz");
+        for (key, expected) in [(CTRL_LEFT, 8), (CTRL_LEFT, 4), (CTRL_LEFT, 3)] {
+            editor.handle_editor_input(key);
+            assert_eq!(editor.get_cursor(), (0, expected));
+        }
+        editor.handle_editor_input(LINE_START);
+        for (key, expected) in [(CTRL_RIGHT, 3), (CTRL_RIGHT, 4), (CTRL_RIGHT, 7)] {
+            editor.handle_editor_input(key);
+            assert_eq!(editor.get_cursor(), (0, expected));
+        }
+    }
+
+    #[test]
+    fn stops_at_fullwidth_chinese_punctuation_issue_4972() {
+        let text = "你好，世界";
+        let mut editor = editor();
+        editor.set_text(text);
+        for (key, chars) in [
+            (CTRL_LEFT, 3),
+            (CTRL_LEFT, 2),
+            (CTRL_LEFT, 0),
+            (CTRL_RIGHT, 2),
+            (CTRL_RIGHT, 3),
+            (CTRL_RIGHT, 5),
+        ] {
+            editor.handle_editor_input(key);
+            assert_eq!(editor.get_cursor(), (0, col(text, chars)));
+        }
+    }
+
+    #[test]
+    fn handles_mixed_cjk_and_ascii_word_movement() {
+        let text = "hello你好，world世界";
+        let mut editor = editor();
+        editor.set_text(text);
+        for (key, chars) in [
+            (CTRL_LEFT, 13),
+            (CTRL_LEFT, 8),
+            (CTRL_LEFT, 7),
+            (CTRL_LEFT, 5),
+            (CTRL_LEFT, 0),
+            (CTRL_RIGHT, 5),
+            (CTRL_RIGHT, 7),
+            (CTRL_RIGHT, 8),
+            (CTRL_RIGHT, 13),
+            (CTRL_RIGHT, 15),
+        ] {
+            editor.handle_editor_input(key);
+            assert_eq!(editor.get_cursor(), (0, col(text, chars)));
+        }
+    }
+}
+
+// senpi editor.test.ts "Kill ring", "Undo" and "Autocomplete" cases not ported above. senpi's
+// debounce timers are driven here by `poll_autocomplete_at(Instant)` (no real waiting).
+mod kill_ring_undo_autocomplete {
+    use super::*;
+
+    const UP: &str = "\x1b[A";
+    const EXPLICIT_NEWLINE: &str = "\x1b[13;2u";
+    const CTRL_W: &str = "\x17";
+    const CTRL_U: &str = "\x15";
+    const CTRL_K: &str = "\x0b";
+    const CTRL_Y: &str = "\x19";
+    const ALT_Y: &str = "\x1by";
+    const TAB: &str = "\t";
+
+    fn editor() -> Editor {
+        create_editor(24).0
+    }
+
+    fn now_plus(ms: u64) -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_millis(ms)
+    }
+
+    type SuggestFn = Box<dyn Fn(&str, bool) -> Option<AutocompleteSuggestions>>;
+
+    /// A synchronous provider: `suggest(text before cursor, force)`; senpi's prefix-replacing
+    /// `applyCompletion`; `calls` counts lookups.
+    struct ScriptedProvider {
+        suggest: SuggestFn,
+        triggers: Vec<String>,
+        calls: Rc<RefCell<usize>>,
+    }
+    impl AutocompleteProvider for ScriptedProvider {
+        fn trigger_characters(&self) -> Vec<String> {
+            self.triggers.clone()
+        }
+        fn get_suggestions(
+            &mut self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            force: bool,
+        ) -> Option<AutocompleteSuggestions> {
+            *self.calls.borrow_mut() += 1;
+            let line = lines.get(cursor_line).map_or("", String::as_str);
+            (self.suggest)(&line[..cursor_col.min(line.len())], force)
+        }
+        fn apply_completion(
+            &self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            item: &AutocompleteItem,
+            prefix: &str,
+        ) -> ApplyCompletionResult {
+            let line = lines.get(cursor_line).cloned().unwrap_or_default();
+            let start = cursor_col - prefix.len();
+            let mut lines = lines.to_vec();
+            lines[cursor_line] = format!("{}{}{}", &line[..start], item.value, &line[cursor_col..]);
+            ApplyCompletionResult {
+                lines,
+                cursor_line,
+                cursor_col: start + item.value.len(),
+            }
+        }
+    }
+
+    fn items(values: &[&str], prefix: &str) -> Option<AutocompleteSuggestions> {
+        Some(AutocompleteSuggestions {
+            items: values
+                .iter()
+                .map(|value| AutocompleteItem {
+                    value: (*value).to_owned(),
+                    label: (*value).to_owned(),
+                    description: None,
+                })
+                .collect(),
+            prefix: prefix.to_owned(),
+        })
+    }
+
+    fn provide(
+        editor: &mut Editor,
+        triggers: &[&str],
+        suggest: impl Fn(&str, bool) -> Option<AutocompleteSuggestions> + 'static,
+    ) -> Rc<RefCell<usize>> {
+        let calls = Rc::new(RefCell::new(0));
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(ScriptedProvider {
+            suggest: Box::new(suggest),
+            triggers: triggers.iter().map(|value| (*value).to_owned()).collect(),
+            calls: calls.clone(),
+        })));
+        calls
+    }
+
+    #[test]
+    fn ctrl_u_accumulates_multiline_deletes_including_newlines() {
+        let mut editor = editor();
+        editor.set_text("line1\nline2\nline3");
+        for expected in ["line1\nline2\n", "line1\nline2", "line1\n", "line1", ""] {
+            editor.handle_editor_input(CTRL_U);
+            assert_eq!(editor.get_text(), expected);
+        }
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn consecutive_deletions_across_lines_coalesce_into_one_entry() {
+        let mut editor = editor();
+        editor.set_text("1\n2\n3");
+        for expected in ["1\n2\n", "1\n2", "1\n", "1", ""] {
+            editor.handle_editor_input(CTRL_W);
+            assert_eq!(editor.get_text(), expected);
+        }
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "1\n2\n3");
+    }
+
+    #[test]
+    fn ctrl_k_at_line_end_deletes_newline_and_coalesces() {
+        let mut editor = editor();
+        type_text(&mut editor, "ab");
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        type_text(&mut editor, "cd");
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_END);
+        editor.handle_editor_input(CTRL_K);
+        assert_eq!(editor.get_text(), "abcd");
+        editor.handle_editor_input(CTRL_K);
+        assert_eq!(editor.get_text(), "ab");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "ab\ncd");
+    }
+
+    #[test]
+    fn multiline_yank_and_yank_pop_in_middle_of_text() {
+        let mut editor = editor();
+        editor.set_text("SINGLE");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("A\nB");
+        for _ in 0..3 {
+            editor.handle_editor_input(CTRL_U);
+        }
+        editor.set_text("hello world");
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..6 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "hello A\nBworld");
+        editor.handle_editor_input(ALT_Y);
+        assert_eq!(editor.get_text(), "hello SINGLEworld");
+    }
+
+    #[test]
+    fn alt_d_at_end_of_line_deletes_newline() {
+        let mut editor = editor();
+        editor.set_text("line1\nline2");
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_END);
+        editor.handle_editor_input("\x1bd");
+        assert_eq!(editor.get_text(), "line1line2");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "line1\nline2");
+    }
+
+    #[test]
+    fn undoes_newlines_and_signals_next_word_to_capture_state() {
+        let mut editor = editor();
+        type_text(&mut editor, "hello");
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        type_text(&mut editor, "world");
+        assert_eq!(editor.get_text(), "hello\nworld");
+        for expected in ["hello\n", "hello", ""] {
+            editor.handle_editor_input(UNDO);
+            assert_eq!(editor.get_text(), expected);
+        }
+    }
+
+    #[test]
+    fn does_not_trigger_autocomplete_during_single_line_paste() {
+        let mut editor = editor();
+        let calls = provide(&mut editor, &[], |_, _| None);
+        editor.handle_editor_input("\x1b[200~look at @node_modules/react/index.js please\x1b[201~");
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(
+            editor.get_text(),
+            "look at @node_modules/react/index.js please"
+        );
+        assert_eq!(*calls.borrow(), 0);
+        assert!(!editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn undoes_set_text_to_empty_string() {
+        let mut editor = editor();
+        type_text(&mut editor, "hello world");
+        editor.set_text("");
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "hello world");
+    }
+
+    #[test]
+    fn exits_history_browsing_mode_on_undo() {
+        let mut editor = editor();
+        editor.add_to_history("hello");
+        type_text(&mut editor, "world");
+        editor.handle_editor_input(CTRL_W);
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_text(), "hello");
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "world");
+    }
+
+    #[test]
+    fn undo_restores_to_pre_history_state_even_after_multiple_history_navigations() {
+        let mut editor = editor();
+        for entry in ["first", "second", "third"] {
+            editor.add_to_history(entry);
+        }
+        type_text(&mut editor, "current");
+        editor.handle_editor_input(CTRL_W);
+        for expected in ["third", "second", "first"] {
+            editor.handle_editor_input(UP);
+            assert_eq!(editor.get_text(), expected);
+        }
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "current");
+    }
+
+    #[test]
+    fn no_op_delete_operations_do_not_push_undo_snapshots() {
+        let mut editor = editor();
+        type_text(&mut editor, "hello");
+        editor.handle_editor_input(CTRL_W);
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(CTRL_W);
+        editor.handle_editor_input(CTRL_W);
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "hello");
+    }
+
+    #[test]
+    fn undoes_autocomplete() {
+        let mut editor = editor();
+        provide(&mut editor, &[], |prefix, _| {
+            (prefix == "di").then(|| items(&["dist/"], "di")).flatten()
+        });
+        type_text(&mut editor, "di");
+        editor.handle_editor_input(TAB);
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(editor.get_text(), "dist/");
+        assert!(!editor.is_showing_autocomplete());
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "di");
+    }
+
+    #[test]
+    fn auto_applies_single_force_file_suggestion_without_showing_menu() {
+        let mut editor = editor();
+        provide(&mut editor, &[], |prefix, force| {
+            (force && prefix == "Work")
+                .then(|| items(&["Workspace/"], "Work"))
+                .flatten()
+        });
+        type_text(&mut editor, "Work");
+        editor.handle_editor_input(TAB);
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(editor.get_text(), "Workspace/");
+        assert!(!editor.is_showing_autocomplete());
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "Work");
+    }
+
+    #[test]
+    fn shows_menu_when_force_file_has_multiple_suggestions() {
+        let mut editor = editor();
+        provide(&mut editor, &[], |prefix, force| {
+            (force && prefix == "src")
+                .then(|| items(&["src/", "src.txt"], "src"))
+                .flatten()
+        });
+        type_text(&mut editor, "src");
+        editor.handle_editor_input(TAB);
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(editor.get_text(), "src");
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input(TAB);
+        assert_eq!(editor.get_text(), "src/");
+        assert!(!editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn keeps_suggestions_open_when_typing_in_force_mode_tab_triggered() {
+        let mut editor = editor();
+        provide(&mut editor, &[], |prefix, force| {
+            if !(force || prefix.contains('/') || prefix.starts_with('.')) {
+                return None;
+            }
+            let all = ["readme.md", "package.json", "src/", "dist/"];
+            let matched: Vec<&str> = all
+                .into_iter()
+                .filter(|value| value.to_lowercase().starts_with(&prefix.to_lowercase()))
+                .collect();
+            (!matched.is_empty())
+                .then(|| items(&matched, prefix))
+                .flatten()
+        });
+        editor.handle_editor_input(TAB);
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert!(editor.is_showing_autocomplete());
+        for (key, text) in [("r", "r"), ("e", "re")] {
+            editor.handle_editor_input(key);
+            editor.poll_autocomplete_at(now_plus(1_000));
+            assert_eq!(editor.get_text(), text);
+            assert!(editor.is_showing_autocomplete());
+        }
+        editor.handle_editor_input(TAB);
+        assert_eq!(editor.get_text(), "readme.md");
+        assert!(!editor.is_showing_autocomplete());
+    }
+
+    /// Typing `keys` makes no lookup until the host polls past the debounce, then exactly one.
+    fn assert_debounced(triggers: &[&str], keys: &str, value: &'static str) {
+        let mut editor = editor();
+        let calls = provide(&mut editor, triggers, move |prefix, _| {
+            items(&[value], prefix)
+        });
+        type_text(&mut editor, keys);
+        assert_eq!(*calls.borrow(), 0, "{keys:?} waits for the debounce");
+        assert!(!editor.is_showing_autocomplete());
+        editor.poll_autocomplete_at(now_plus(1_000));
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(*calls.borrow(), 1, "{keys:?}");
+        assert!(editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn debounces_at_autocomplete_while_typing() {
+        assert_debounced(&[], "@mai", "@main.ts");
+    }
+
+    #[test]
+    fn debounces_hash_autocomplete_while_typing() {
+        assert_debounced(&[], "#298", "#2983");
+    }
+
+    #[test]
+    fn debounces_custom_trigger_characters_autocomplete_while_typing() {
+        assert_debounced(&["%"], "%sk", "%skill-name");
+    }
+
+    #[test]
+    fn resets_custom_trigger_characters_when_provider_changes() {
+        let mut editor = editor();
+        provide(&mut editor, &["%"], |_, _| items(&["%skill-name"], "%"));
+        let calls = provide(&mut editor, &[], |_, _| items(&["%skill-name"], "%"));
+        type_text(&mut editor, "%s");
+        editor.poll_autocomplete_at(now_plus(1_000));
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(*calls.borrow(), 0);
+        assert!(!editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn hides_autocomplete_when_backspacing_slash_command_to_empty() {
+        let mut editor = editor();
+        provide(&mut editor, &[], |prefix, _| {
+            let query = prefix.strip_prefix('/')?;
+            let matched: Vec<&str> = ["/model", "/help"]
+                .into_iter()
+                .filter(|value| value.starts_with(query))
+                .collect();
+            (!matched.is_empty())
+                .then(|| items(&matched, prefix))
+                .flatten()
+        });
+        editor.handle_editor_input("/");
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(editor.get_text(), "/");
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input(BACKSPACE);
+        editor.poll_autocomplete_at(now_plus(1_000));
+        assert_eq!(editor.get_text(), "");
+        assert!(!editor.is_showing_autocomplete());
+    }
+}
+
+// senpi editor.test.ts cases not ported above: hardware cursor, kill ring, undo, paste markers.
+mod remaining_cases {
+    use super::*;
+    use maho_tui::tui::{CURSOR_MARKER, Component, Focusable};
+
+    const UP: &str = "\x1b[A";
+    const DOWN: &str = "\x1b[B";
+    const EXPLICIT_NEWLINE: &str = "\x1b[13;2u";
+    const CTRL_W: &str = "\x17";
+    const CTRL_K: &str = "\x0b";
+    const CTRL_Y: &str = "\x19";
+    const ALT_Y: &str = "\x1by";
+
+    fn editor() -> Editor {
+        create_editor(24).0
+    }
+
+    fn submitted(editor: &mut Editor) -> Rc<RefCell<String>> {
+        let out = Rc::new(RefCell::new(String::new()));
+        let sink = out.clone();
+        editor.on_submit = Some(Box::new(move |text: &str| {
+            *sink.borrow_mut() = text.to_string();
+        }));
+        out
+    }
+
+    /// senpi `bigPaste(tag)`: 12 lines `${tag}${i}`.
+    fn big_paste(tag: &str) -> String {
+        (0..12)
+            .map(|i| format!("{tag}{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn bracketed(content: &str) -> String {
+        format!("\x1b[200~{content}\x1b[201~")
+    }
+
+    /// senpi `pasteWithMarker`: a 20-line paste.
+    fn paste_with_marker(editor: &mut Editor) {
+        let content = vec!["line"; 20].join("\n");
+        editor.handle_editor_input(&bracketed(&content));
+    }
+
+    /// Every `[paste #N +M lines]` / `[paste #N K chars]` marker in `text`, in order.
+    fn markers(text: &str) -> Vec<String> {
+        let pattern = regex::Regex::new(r"\[paste #\d+ (\+\d+ lines|\d+ chars)\]")
+            .expect("valid marker regex");
+        pattern
+            .find_iter(text)
+            .map(|m| m.as_str().to_string())
+            .collect()
+    }
+
+    struct HardwareCursorHost;
+    impl maho_tui::components::editor::EditorTuiHost for HardwareCursorHost {
+        fn request_render(&self) {}
+        fn terminal_rows(&self) -> usize {
+            24
+        }
+        fn show_hardware_cursor(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn does_not_draw_a_fake_cursor_when_the_hardware_cursor_is_visible() {
+        let mut editor = Editor::new(
+            Rc::new(HardwareCursorHost),
+            common::plain_editor_theme(),
+            EditorOptions::default(),
+        );
+        editor.set_focused(true);
+        editor.set_text("한글");
+        let rendered = editor.render(80).join("\n");
+        assert!(rendered.contains(CURSOR_MARKER));
+        assert!(!rendered.contains("\x1b[7m"));
+    }
+
+    #[test]
+    fn non_delete_actions_break_kill_accumulation() {
+        let mut editor = editor();
+        editor.set_text("foo bar baz");
+        editor.handle_editor_input(CTRL_W);
+        assert_eq!(editor.get_text(), "foo bar ");
+        editor.handle_editor_input("x");
+        assert_eq!(editor.get_text(), "foo bar x");
+        editor.handle_editor_input(CTRL_W);
+        assert_eq!(editor.get_text(), "foo bar ");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "foo bar x");
+        editor.handle_editor_input(ALT_Y);
+        assert_eq!(editor.get_text(), "foo bar baz");
+    }
+
+    #[test]
+    fn non_yank_actions_break_alt_y_chain() {
+        let mut editor = editor();
+        editor.set_text("first");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("second");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "second");
+        editor.handle_editor_input("x");
+        assert_eq!(editor.get_text(), "secondx");
+        editor.handle_editor_input(ALT_Y);
+        assert_eq!(editor.get_text(), "secondx");
+    }
+
+    #[test]
+    fn kill_ring_rotation_persists_after_cycling() {
+        let mut editor = editor();
+        for word in ["first", "second", "third"] {
+            editor.set_text(word);
+            editor.handle_editor_input(CTRL_W);
+        }
+        editor.set_text("");
+        editor.handle_editor_input(CTRL_Y);
+        editor.handle_editor_input(ALT_Y);
+        assert_eq!(editor.get_text(), "second");
+        editor.handle_editor_input("x");
+        editor.set_text("");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "second");
+    }
+
+    #[test]
+    fn handles_yank_in_middle_of_text() {
+        let mut editor = editor();
+        editor.set_text("word");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("hello world");
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..6 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "hello wordworld");
+    }
+
+    #[test]
+    fn handles_yank_pop_in_middle_of_text() {
+        let mut editor = editor();
+        editor.set_text("FIRST");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("SECOND");
+        editor.handle_editor_input(CTRL_W);
+        editor.set_text("hello world");
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..6 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "hello SECONDworld");
+        editor.handle_editor_input(ALT_Y);
+        assert_eq!(editor.get_text(), "hello FIRSTworld");
+    }
+
+    #[test]
+    fn alt_d_deletes_word_forward_and_saves_to_kill_ring() {
+        let mut editor = editor();
+        editor.set_text("hello world test");
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input("\x1bd");
+        assert_eq!(editor.get_text(), " world test");
+        editor.handle_editor_input("\x1bd");
+        assert_eq!(editor.get_text(), " test");
+        editor.handle_editor_input(CTRL_Y);
+        assert_eq!(editor.get_text(), "hello world test");
+    }
+
+    #[test]
+    fn cursor_movement_starts_new_undo_unit() {
+        let mut editor = editor();
+        type_text(&mut editor, "hello world");
+        assert_eq!(editor.get_text(), "hello world");
+        for _ in 0..5 {
+            editor.handle_editor_input(ARROW_LEFT);
+        }
+        type_text(&mut editor, "lol");
+        assert_eq!(editor.get_text(), "hello lolworld");
+        editor.handle_editor_input(UNDO);
+        assert_eq!(editor.get_text(), "hello world");
+        editor.handle_editor_input("|");
+        assert_eq!(editor.get_text(), "hello |world");
+    }
+
+    #[test]
+    fn treats_paste_marker_as_single_unit_for_right_arrow() {
+        let mut editor = editor();
+        editor.handle_editor_input("A");
+        paste_with_marker(&mut editor);
+        editor.handle_editor_input("B");
+        editor.handle_editor_input(LINE_START);
+        assert_eq!(editor.get_cursor(), (0, 0));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (0, 1));
+        editor.handle_editor_input(ARROW_RIGHT);
+        let marker = markers(&editor.get_text())[0].clone();
+        assert_eq!(editor.get_cursor(), (0, 1 + marker.len()));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (0, 1 + marker.len() + 1));
+    }
+
+    #[test]
+    fn treats_paste_marker_as_single_unit_for_left_arrow() {
+        let mut editor = editor();
+        editor.handle_editor_input("A");
+        paste_with_marker(&mut editor);
+        editor.handle_editor_input("B");
+        editor.handle_editor_input(ARROW_LEFT);
+        let marker = markers(&editor.get_text())[0].clone();
+        assert_eq!(editor.get_cursor(), (0, 1 + marker.len()));
+        editor.handle_editor_input(ARROW_LEFT);
+        assert_eq!(editor.get_cursor(), (0, 1));
+        editor.handle_editor_input(ARROW_LEFT);
+        assert_eq!(editor.get_cursor(), (0, 0));
+    }
+
+    #[test]
+    fn undo_after_paste_marker_deletion_restores_the_paste_registry() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let body = big_paste("alpha");
+        editor.handle_editor_input(&bracketed(&body));
+        editor.handle_editor_input(BACKSPACE);
+        editor.handle_editor_input(UNDO);
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), body);
+    }
+
+    #[test]
+    fn renumbers_the_paste_registry_in_ascending_id_order_when_markers_are_out_of_order_in_text() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let (paste_a, paste_b, paste_c) =
+            (big_paste("alpha"), big_paste("beta"), big_paste("gamma"));
+        editor.handle_editor_input(&bracketed(&paste_a));
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(&bracketed(&paste_b));
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(&bracketed(&paste_c));
+        editor.handle_editor_input(LINE_END);
+        editor.handle_editor_input(BACKSPACE);
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), format!("{paste_c}{paste_b}"));
+    }
+
+    #[test]
+    fn undo_after_set_text_restores_paste_markers_and_registry() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let body = big_paste("alpha");
+        editor.handle_editor_input(&bracketed(&body));
+        editor.set_text("replacement");
+        editor.handle_editor_input(UNDO);
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), body);
+    }
+
+    #[test]
+    fn set_text_with_extra_text_keeps_referenced_paste_markers_live_queued_message_restore() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let body = big_paste("alpha");
+        editor.handle_editor_input(&bracketed(&body));
+        let draft = editor.get_text();
+        editor.set_text(&format!("queued message\n\n{draft}"));
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), format!("queued message\n\n{body}"));
+    }
+
+    #[test]
+    fn set_text_does_not_revive_a_registry_entry_from_coincidental_marker_like_text() {
+        let mut editor = editor();
+        editor.handle_editor_input(&bracketed(&big_paste("alpha")));
+        editor.set_text("[paste #1 +5 lines]");
+        assert_eq!(editor.get_expanded_text(), "[paste #1 +5 lines]");
+
+        let mut editor2 = self::editor();
+        let body = big_paste("beta");
+        editor2.handle_editor_input(&bracketed(&body));
+        let text = editor2.get_text();
+        editor2.set_text(&text);
+        assert_eq!(editor2.get_expanded_text(), body);
+    }
+
+    #[test]
+    fn set_text_does_not_revive_a_stale_registry_entry_via_coincidental_exact_marker_text() {
+        let mut editor = editor();
+        editor.handle_editor_input(&bracketed(&big_paste("alpha")));
+        let marker = editor.get_text();
+        assert!(
+            regex::Regex::new(r"^\[paste #1 \+\d+ lines\]$")
+                .expect("valid marker regex")
+                .is_match(&marker),
+            "{marker}"
+        );
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(CTRL_K);
+        assert_eq!(editor.get_text(), "");
+        editor.set_text(&format!("unrelated {marker}"));
+        assert_eq!(editor.get_expanded_text(), format!("unrelated {marker}"));
+    }
+
+    #[test]
+    fn expands_only_canonical_marker_occurrences_same_id_literals_with_other_suffixes_stay_literal()
+    {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let body = big_paste("alpha");
+        editor.handle_editor_input(&bracketed(&body));
+        let marker = editor.get_text();
+        editor.set_text(&format!("{marker} literal [paste #1 +5 lines]"));
+        let expected = format!("{body} literal [paste #1 +5 lines]");
+        assert_eq!(editor.get_expanded_text(), expected);
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), expected);
+    }
+
+    #[test]
+    fn does_not_treat_same_id_non_canonical_marker_text_as_atomic() {
+        let mut editor = editor();
+        editor.handle_editor_input(&bracketed(&big_paste("alpha")));
+        let marker = editor.get_text();
+        editor.set_text(&format!("{marker} [paste #1 +5 lines]"));
+        editor.handle_editor_input(LINE_END);
+        let end_col = editor.get_cursor().1;
+        editor.handle_editor_input(ARROW_LEFT);
+        assert_eq!(editor.get_cursor(), (0, end_col - 1));
+    }
+
+    #[test]
+    fn kill_and_yank_keeps_a_paste_marker_expandable() {
+        let mut editor = editor();
+        let submitted = submitted(&mut editor);
+        let body = big_paste("alpha");
+        editor.handle_editor_input(&bracketed(&body));
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(CTRL_K);
+        assert_eq!(editor.get_text(), "");
+        editor.handle_editor_input(CTRL_Y);
+        editor.handle_editor_input("\r");
+        assert_eq!(*submitted.borrow(), body);
+    }
+
+    #[test]
+    fn handles_multiple_paste_markers_in_same_line() {
+        let mut editor = editor();
+        paste_with_marker(&mut editor);
+        editor.handle_editor_input(" ");
+        paste_with_marker(&mut editor);
+        let found = markers(&editor.get_text());
+        assert_eq!(found.len(), 2);
+        editor.handle_editor_input(LINE_START);
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (0, found[0].len()));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(editor.get_cursor(), (0, found[0].len() + 1));
+        editor.handle_editor_input(ARROW_RIGHT);
+        assert_eq!(
+            editor.get_cursor(),
+            (0, found[0].len() + 1 + found[1].len())
+        );
+    }
+
+    fn assert_rendered_within(editor: &mut Editor, width: usize) {
+        for line in editor.render(width) {
+            assert!(
+                visible_width(&line) <= width,
+                "line exceeds width {width}: visible={} text={line:?}",
+                visible_width(&line)
+            );
+        }
+    }
+
+    fn lines_paste(count: usize) -> String {
+        vec!["line"; count].join("\n")
+    }
+
+    #[test]
+    fn does_not_crash_when_paste_marker_is_wider_than_terminal_width() {
+        let mut editor = editor();
+        editor.handle_editor_input(&bracketed(&lines_paste(47)));
+        let found = markers(&editor.get_text());
+        assert_eq!(found.len(), 1, "paste marker should be created");
+        assert!(
+            visible_width(&found[0]) > 8,
+            "marker should be wider than render width"
+        );
+        assert_rendered_within(&mut editor, 8);
+    }
+
+    #[test]
+    fn does_not_crash_when_text_plus_paste_marker_exceeds_terminal_width_with_cursor_on_marker() {
+        let mut editor = editor();
+        type_text(&mut editor, &"b".repeat(35));
+        editor.handle_editor_input(&bracketed(&lines_paste(27)));
+        type_text(&mut editor, "bbbb");
+        for _ in 0..5 {
+            editor.handle_editor_input(ARROW_LEFT);
+        }
+        assert_rendered_within(&mut editor, 54);
+    }
+
+    #[test]
+    fn word_wrap_line_re_checks_overflow_after_backtracking_to_wrap_opportunity() {
+        let mut editor = editor();
+        editor.handle_editor_input(" ");
+        type_text(&mut editor, &"b".repeat(35));
+        editor.handle_editor_input(&bracketed(&lines_paste(27)));
+        type_text(&mut editor, "bbbb");
+        assert_rendered_within(&mut editor, 54);
+    }
+
+    #[test]
+    fn expands_large_pasted_content_literally_in_get_expanded_text() {
+        let mut editor = editor();
+        let mut lines: Vec<String> = (1..=10).map(|i| format!("line {i}")).collect();
+        lines.push("tokens $1 $2 $& $$ $` $' end".to_string());
+        let pasted = lines.join("\n");
+        editor.handle_editor_input(&bracketed(&pasted));
+        assert_eq!(markers(&editor.get_text()).len(), 1);
+        assert_eq!(editor.get_expanded_text(), pasted);
+    }
+
+    #[test]
+    fn snaps_to_the_paste_marker_start_when_navigating_down_into_it() {
+        let mut editor = editor();
+        editor.set_text("12345678901234567890\n\nhello ");
+        editor.handle_editor_input(&bracketed(&"x".repeat(2000)));
+        editor.render(80);
+        assert_eq!(markers(&editor.get_text()), ["[paste #1 2000 chars]"]);
+
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..10 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        assert_eq!(editor.get_cursor(), (0, 10));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 0));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (2, 6));
+    }
+
+    #[test]
+    fn preserves_sticky_column_when_navigating_through_paste_marker_line() {
+        let mut editor = editor();
+        type_text(&mut editor, "1234567890123456");
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        editor.handle_editor_input(&bracketed(&"x".repeat(2000)));
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        type_text(&mut editor, "abcdefghijklmnop");
+        editor.render(30);
+
+        for _ in 0..4 {
+            editor.handle_editor_input(UP);
+        }
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..10 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        assert_eq!(editor.get_cursor(), (0, 10));
+        for expected in [(1, 0), (2, 0), (3, 0), (4, 10)] {
+            editor.handle_editor_input(DOWN);
+            assert_eq!(editor.get_cursor(), expected);
+        }
+    }
+
+    /// Line 0 "abcdefgh" + 21-column marker + "ijklmnopqr", line 1 "123456789012345678", width 20.
+    fn wide_marker_editor() -> Editor {
+        let mut editor = editor();
+        type_text(&mut editor, "abcdefgh");
+        editor.handle_editor_input(&bracketed(&lines_paste(100)));
+        type_text(&mut editor, "ijklmnopqr");
+        editor.handle_editor_input(EXPLICIT_NEWLINE);
+        type_text(&mut editor, "123456789012345678");
+        editor.render(20);
+        editor
+    }
+
+    #[test]
+    fn does_not_get_stuck_moving_down_from_a_multi_visual_line_paste_marker() {
+        let mut editor = wide_marker_editor();
+        let found = markers(&editor.get_text());
+        assert_eq!(found.len(), 1, "paste marker should be created");
+        let marker_len = found[0].len();
+        assert!(marker_len > 20, "marker should be wider than terminal");
+        let marker_start = 8;
+        let marker_end = marker_start + marker_len;
+
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..6 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        assert_eq!(editor.get_cursor(), (0, 6));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (0, marker_start));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (0, marker_end));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, marker_start));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 6));
+    }
+
+    #[test]
+    fn skips_marker_continuation_vls_when_preferred_col_falls_in_marker_tail() {
+        let mut editor = wide_marker_editor();
+        editor.handle_editor_input(UP);
+        editor.handle_editor_input(LINE_START);
+        for _ in 0..3 {
+            editor.handle_editor_input(ARROW_RIGHT);
+        }
+        assert_eq!(editor.get_cursor(), (0, 3));
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor().1, 8);
+        editor.handle_editor_input(DOWN);
+        assert_eq!(editor.get_cursor(), (1, 3));
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor().1, 8);
+        editor.handle_editor_input(UP);
+        assert_eq!(editor.get_cursor(), (0, 3));
+    }
+
+    // ---------- Autocomplete: CJK boundaries, stale lists, slash arguments ----------
+
+    use maho_tui::autocomplete::{CombinedAutocompleteProvider, CommandSpec};
+    use std::time::{Duration, Instant};
+
+    type Requests = Rc<RefCell<Vec<(String, bool)>>>;
+    type SuggestFn = Box<dyn Fn(&str, bool) -> Reply>;
+
+    /// One provider answer: now, or never (senpi's promise that only settles on abort).
+    enum Reply {
+        Now(Option<AutocompleteSuggestions>),
+        Stall,
+    }
+
+    /// senpi's inline mock providers: records `(text before cursor, force)` per request and
+    /// answers through `suggest`; `applyCompletion` is senpi's prefix-replacing helper unless a
+    /// `CombinedAutocompleteProvider` is delegated to.
+    struct Recorder {
+        triggers: Vec<String>,
+        requests: Requests,
+        suggest: SuggestFn,
+        stalled: Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>,
+        delegate: Option<CombinedAutocompleteProvider>,
+    }
+
+    impl AutocompleteProvider for Recorder {
+        fn trigger_characters(&self) -> Vec<String> {
+            self.triggers.clone()
+        }
+
+        fn get_suggestions(
+            &mut self,
+            _: &[String],
+            _: usize,
+            _: usize,
+            _: bool,
+        ) -> Option<AutocompleteSuggestions> {
+            None
+        }
+
+        fn request_suggestions(
+            &mut self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            force: bool,
+            _signal: &AutocompleteSignal,
+        ) -> SuggestionRequest {
+            let line = lines.get(cursor_line).map_or("", String::as_str);
+            let before = &line[..cursor_col.min(line.len())];
+            self.requests.borrow_mut().push((before.to_string(), force));
+            match (self.suggest)(before, force) {
+                Reply::Now(suggestions) => SuggestionRequest::Ready(suggestions),
+                Reply::Stall => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    self.stalled.push(sender);
+                    SuggestionRequest::Pending(receiver)
+                }
+            }
+        }
+
+        fn apply_completion(
+            &self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            item: &AutocompleteItem,
+            prefix: &str,
+        ) -> ApplyCompletionResult {
+            if let Some(delegate) = &self.delegate {
+                return delegate.apply_completion(lines, cursor_line, cursor_col, item, prefix);
+            }
+            let line = lines.get(cursor_line).cloned().unwrap_or_default();
+            let start = cursor_col - prefix.len();
+            let mut lines = lines.to_vec();
+            lines[cursor_line] = format!("{}{}{}", &line[..start], item.value, &line[cursor_col..]);
+            ApplyCompletionResult {
+                lines,
+                cursor_line,
+                cursor_col: start + item.value.len(),
+            }
+        }
+    }
+
+    fn recorder(
+        editor: &mut Editor,
+        triggers: &[&str],
+        delegate: Option<CombinedAutocompleteProvider>,
+        suggest: impl Fn(&str, bool) -> Reply + 'static,
+    ) -> Requests {
+        let requests: Requests = Rc::new(RefCell::new(Vec::new()));
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(Recorder {
+            triggers: triggers.iter().map(|value| (*value).to_string()).collect(),
+            requests: requests.clone(),
+            suggest: Box::new(suggest),
+            stalled: Vec::new(),
+            delegate,
+        })));
+        requests
+    }
+
+    fn texts(requests: &Requests) -> Vec<String> {
+        requests
+            .borrow()
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect()
+    }
+
+    fn item(value: &str, label: &str) -> AutocompleteItem {
+        AutocompleteItem {
+            value: value.to_string(),
+            label: label.to_string(),
+            description: None,
+        }
+    }
+
+    fn reply(items: Vec<AutocompleteItem>, prefix: &str) -> Reply {
+        Reply::Now(Some(AutocompleteSuggestions {
+            items,
+            prefix: prefix.to_string(),
+        }))
+    }
+
+    /// senpi `t.mock.timers.tick(ms)` measured from `start`, a reading taken before the keystroke
+    /// that armed the debounce, so `start + 19ms` is always short of the 20ms deadline.
+    fn tick(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    /// A clock reading at or past the debounce deadline of every keystroke sent so far.
+    fn elapsed() -> Instant {
+        Instant::now() + Duration::from_millis(20)
+    }
+
+    #[test]
+    fn triggers_and_debounces_symbol_completion_after_cjk_punctuation() {
+        let mut befores: Vec<String> = vec!["查看，".to_string(), "\u{3000}".to_string()];
+        befores.extend(
+            "，．：；！？（）［］｛｝“”‘’…—。、「」『』《》【】"
+                .chars()
+                .map(String::from),
+        );
+        befores.extend(["(", "see (", "`", "["].map(String::from));
+        for before in &befores {
+            for trigger in ["@", "#", "$", "-"] {
+                let mut editor = editor();
+                let requests = recorder(&mut editor, &["$", "-"], None, |_, _| Reply::Now(None));
+                editor.set_text(before);
+                let start = Instant::now();
+                editor.handle_editor_input(trigger);
+                editor.poll_autocomplete_at(tick(start, 19));
+                assert_eq!(
+                    texts(&requests),
+                    Vec::<String>::new(),
+                    "{before:?} {trigger}"
+                );
+                editor.poll_autocomplete_at(elapsed());
+                assert_eq!(texts(&requests), vec![format!("{before}{trigger}")]);
+
+                let start = Instant::now();
+                editor.handle_editor_input("r");
+                editor.handle_editor_input("e");
+                editor.poll_autocomplete_at(tick(start, 19));
+                assert_eq!(requests.borrow().len(), 1, "{before:?} {trigger}");
+                editor.poll_autocomplete_at(elapsed());
+                assert_eq!(
+                    texts(&requests),
+                    vec![format!("{before}{trigger}"), format!("{before}{trigger}re")]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_auto_trigger_after_cjk_letters_or_for_unprefixed_paths() {
+        let mut editor = editor();
+        let requests = recorder(&mut editor, &[], None, |_, _| Reply::Now(None));
+        for text in [
+            "user@example.com",
+            "张三@example.com",
+            "查看@src",
+            "あ@src",
+            "カ@src",
+            "한@src",
+            "ㄅ@src",
+            "𠮷@src",
+            "か\u{3099}@src",
+            "禰\u{e0100}@src",
+            "々@src",
+            "Ａ@src",
+            "文档@备份",
+            "prefix#123",
+            "foo(@src",
+            "问题#123",
+            "查看，/path/",
+            "查看，./文档/",
+            "src/index.ts",
+            "./文档/说明.md",
+            "文档/说明.md",
+            "查看src/index.ts",
+        ] {
+            editor.set_text("");
+            type_text(&mut editor, text);
+            editor.poll_autocomplete_at(elapsed());
+            assert_eq!(requests.borrow().len(), 0, "{text}");
+        }
+    }
+
+    #[test]
+    fn requests_path_completion_after_cjk_punctuation_only_on_tab() {
+        let mut editor = editor();
+        let requests = recorder(&mut editor, &[], None, |_, _| Reply::Now(None));
+        let text = "查看，/path/";
+        type_text(&mut editor, text);
+        editor.poll_autocomplete_at(elapsed());
+        assert_eq!(*requests.borrow(), Vec::<(String, bool)>::new());
+        editor.handle_editor_input("\t");
+        editor.poll_autocomplete_at(elapsed());
+        assert_eq!(*requests.borrow(), vec![(text.to_string(), true)]);
+    }
+
+    // A slow refresh (fd walking $HOME) left the "@" list on screen while "~/Dev" was typed;
+    // accepting it spliced the stale item into the new text: "@~/Dev" -> "@~/De@go/".
+    #[test]
+    fn accepts_against_the_current_token_when_the_shown_list_predates_the_text() {
+        for accept_key in ["\t", "\r"] {
+            let mut editor = editor();
+            let was_submitted = Rc::new(std::cell::Cell::new(false));
+            let flag = was_submitted.clone();
+            editor.on_submit = Some(Box::new(move |_: &str| flag.set(true)));
+            let stall = Rc::new(std::cell::Cell::new(false));
+            let stalling = stall.clone();
+            recorder(&mut editor, &[], None, move |prefix, _| {
+                if prefix == "@" {
+                    return reply(vec![item("@go/", "go/")], prefix);
+                }
+                if stalling.get() {
+                    return Reply::Stall;
+                }
+                reply(
+                    vec![
+                        item("@~/Developer/", "Developer/"),
+                        item("@~/Dev.txt", "Dev.txt"),
+                    ],
+                    prefix,
+                )
+            });
+
+            editor.handle_editor_input("@");
+            editor.poll_autocomplete_at(elapsed());
+            assert!(editor.is_showing_autocomplete());
+
+            stall.set(true);
+            type_text(&mut editor, "~/Dev");
+            editor.poll_autocomplete_at(elapsed());
+            stall.set(false);
+
+            editor.handle_editor_input(accept_key);
+            editor.poll_autocomplete_at(elapsed());
+            assert_eq!(editor.get_text(), "@~/Developer/", "{accept_key:?}");
+            assert_eq!(editor.get_cursor(), (0, "@~/Developer/".len()));
+            assert!(!editor.is_showing_autocomplete());
+            assert!(!was_submitted.get());
+        }
+    }
+
+    #[test]
+    fn completes_chinese_path_prefixes_after_whitespace_or_cjk_punctuation_with_tab() {
+        let base_dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(base_dir.path().join("文档")).expect("mkdir");
+        std::fs::write(base_dir.path().join("文档").join("说明.md"), "text").expect("write");
+        let mut editor = editor();
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(CombinedAutocompleteProvider::new(
+            vec![],
+            &base_dir.path().to_string_lossy(),
+            None,
+        ))));
+        for separator in [" ", "\t", "\u{3000}", "\u{00a0}", "，", "。"] {
+            editor.set_text(&format!("查看{separator}"));
+            let before = editor.get_text();
+            editor.handle_editor_input("文");
+            editor.handle_editor_input("\t");
+            editor.poll_autocomplete_at(elapsed());
+            assert_eq!(editor.get_text(), format!("{before}文档/"), "{separator:?}");
+            editor.handle_editor_input("说");
+            editor.handle_editor_input("\t");
+            editor.poll_autocomplete_at(elapsed());
+            assert_eq!(
+                editor.get_text(),
+                format!("{before}文档/说明.md"),
+                "{separator:?}"
+            );
+            assert_eq!(editor.get_cursor(), (0, editor.get_text().len()));
+        }
+    }
+
+    #[test]
+    fn ends_unquoted_trigger_and_debounce_contexts_at_whitespace_or_cjk_punctuation() {
+        for separator in [" ", "\u{3000}", "，", "。"] {
+            for trigger in ["@", "#", "$"] {
+                let mut editor = editor();
+                let prefix = format!("{trigger}src");
+                let expected = prefix.clone();
+                let requests = recorder(&mut editor, &["$"], None, move |text, _| {
+                    if text == expected {
+                        reply(vec![item(&format!("{expected}/"), "src/")], text)
+                    } else {
+                        Reply::Now(None)
+                    }
+                });
+                editor.set_text(&format!("{trigger}sr"));
+                editor.handle_editor_input("c");
+                editor.poll_autocomplete_at(elapsed());
+                assert!(editor.is_showing_autocomplete(), "{separator:?} {trigger}");
+                editor.handle_editor_input(separator);
+                editor.poll_autocomplete_at(elapsed());
+                let both = vec![prefix.clone(), format!("{prefix}{separator}")];
+                assert_eq!(texts(&requests), both);
+                assert!(!editor.is_showing_autocomplete());
+                editor.handle_editor_input("文");
+                editor.poll_autocomplete_at(elapsed());
+                assert_eq!(texts(&requests), both);
+            }
+        }
+    }
+
+    #[test]
+    fn re_triggers_cjk_path_completion_after_accepting_directories_and_deleting() {
+        for directory in ["文档", "我的 文档", "资料，归档"] {
+            let quoted = directory != "文档";
+            let first_two: String = directory.chars().take(2).collect();
+            let initial = if quoted {
+                format!("@\"{first_two}")
+            } else {
+                "@文".to_string()
+            };
+            let directory_value = if quoted {
+                format!("@\"{directory}/\"")
+            } else {
+                format!("@{directory}/")
+            };
+            let file_value = if quoted {
+                format!("@\"{directory}/说明.md\"")
+            } else {
+                format!("@{directory}/说明.md")
+            };
+            let file_prefix = if quoted {
+                format!("@\"{directory}/说")
+            } else {
+                format!("@{directory}/说")
+            };
+            let mut editor = editor();
+            let (initial_c, directory_c, file_value_c, file_prefix_c) = (
+                initial.clone(),
+                directory_value.clone(),
+                file_value.clone(),
+                file_prefix.clone(),
+            );
+            let directory_label = format!("{directory}/");
+            recorder(
+                &mut editor,
+                &[],
+                Some(CombinedAutocompleteProvider::new(vec![], ".", None)),
+                move |before, _| {
+                    let prefix = &before[before.find('@').unwrap_or(before.len())..];
+                    if prefix == initial_c {
+                        return reply(vec![item(&directory_c, &directory_label)], prefix);
+                    }
+                    if prefix == file_prefix_c {
+                        return reply(vec![item(&file_value_c, "说明.md")], prefix);
+                    }
+                    Reply::Now(None)
+                },
+            );
+            editor.set_text(&format!("查看：{initial}"));
+            editor.handle_editor_input("\t");
+            editor.poll_autocomplete_at(elapsed());
+            assert_eq!(editor.get_text(), format!("查看：{directory_value}"));
+            assert!(!editor.is_showing_autocomplete());
+
+            editor.handle_editor_input("说");
+            editor.poll_autocomplete_at(elapsed());
+            assert!(editor.is_showing_autocomplete(), "{directory}");
+
+            for deletion in [BACKSPACE, FORWARD_DELETE] {
+                editor.handle_editor_input("错");
+                editor.poll_autocomplete_at(elapsed());
+                assert!(
+                    !editor.is_showing_autocomplete(),
+                    "{directory} {deletion:?}"
+                );
+                if deletion == FORWARD_DELETE {
+                    editor.handle_editor_input(ARROW_LEFT);
+                }
+                editor.handle_editor_input(deletion);
+                editor.poll_autocomplete_at(elapsed());
+                assert!(editor.is_showing_autocomplete(), "{directory} {deletion:?}");
+            }
+
+            editor.handle_editor_input("\t");
+            assert_eq!(editor.get_text(), format!("查看：{file_value} "));
+            assert_eq!(editor.get_cursor(), (0, editor.get_text().len()));
+        }
+    }
+
+    #[test]
+    fn re_queries_the_autocomplete_picker_when_the_cursor_moves_back_into_the_command_name() {
+        let mut editor = editor();
+        recorder(&mut editor, &[], None, |before, _| {
+            if !before.starts_with('/') {
+                return Reply::Now(None);
+            }
+            if let Some(space) = before.find(' ') {
+                return reply(
+                    vec![
+                        item("repo", "repo"),
+                        item("message", "message"),
+                        item("help", "help"),
+                    ],
+                    &before[space + 1..],
+                );
+            }
+            reply(vec![item("cmd", "cmd")], before)
+        });
+
+        for ch in "/cmd ".chars() {
+            editor.handle_editor_input(&ch.to_string());
+            editor.poll_autocomplete_at(elapsed());
+        }
+        assert_eq!(editor.get_text(), "/cmd ");
+        assert!(editor.is_showing_autocomplete());
+        let at_arg = strip_terminal_sequences(&editor.render(80).join("\n"));
+        assert!(
+            at_arg.contains("repo"),
+            "argument menu should be visible at `/cmd `"
+        );
+
+        editor.handle_editor_input(ARROW_LEFT);
+        editor.poll_autocomplete_at(elapsed());
+        let after_move = strip_terminal_sequences(&editor.render(80).join("\n"));
+        assert!(
+            !after_move.contains("repo"),
+            "stale argument menu must not survive the cursor move"
+        );
+        assert!(
+            !after_move.contains("message"),
+            "stale argument menu must not survive the cursor move"
+        );
+    }
+
+    #[test]
+    fn aborts_active_at_autocomplete_when_typing_continues() {
+        let mut editor = editor();
+        let state = Rc::new(RefCell::new(DeferredRequests::default()));
+        editor.set_autocomplete_provider(deferred_provider(state.clone()));
+
+        type_text(&mut editor, "@mai");
+        editor.poll_autocomplete_at(after_debounce());
+        assert_eq!(state.borrow().requests.len(), 1);
+        editor.handle_editor_input("n");
+        editor.poll_autocomplete_at(after_debounce());
+
+        let aborts = state
+            .borrow()
+            .requests
+            .iter()
+            .filter(|(signal, _)| signal.is_aborted())
+            .count();
+        assert_eq!(aborts, 1);
+    }
+
+    /// senpi's `/argtest <arg>` (or `/model <arg>`) provider: `arguments` filtered by the typed
+    /// prefix when `filter`, else all of them.
+    fn argument_provider(
+        editor: &mut Editor,
+        command: &'static str,
+        arguments: &'static [&'static str],
+        filter: bool,
+    ) {
+        let pattern =
+            regex::Regex::new(&format!(r"^/{command}\s+(\S+)$")).expect("valid argument regex");
+        recorder(editor, &[], None, move |before, _| {
+            let Some(captures) = pattern.captures(before) else {
+                return Reply::Now(None);
+            };
+            let argument = captures.get(1).map_or("", |m| m.as_str());
+            let items: Vec<AutocompleteItem> = arguments
+                .iter()
+                .filter(|value| !filter || value.starts_with(argument))
+                .map(|value| item(value, value))
+                .collect();
+            if items.is_empty() {
+                return Reply::Now(None);
+            }
+            reply(items, argument)
+        });
+    }
+
+    #[test]
+    fn applies_exact_typed_slash_argument_value_on_enter_even_when_first_item_is_highlighted() {
+        let mut editor = editor();
+        argument_provider(&mut editor, "argtest", &["one", "two", "three"], true);
+        type_text(&mut editor, "/argtest two");
+        assert_eq!(editor.get_text(), "/argtest two");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\r");
+        assert_eq!(editor.get_text(), "/argtest two");
+    }
+
+    #[test]
+    fn selects_first_prefix_match_on_enter_when_typed_arg_is_not_exact_match() {
+        let mut editor = editor();
+        argument_provider(&mut editor, "argtest", &["two", "three", "twelve"], true);
+        type_text(&mut editor, "/argtest t");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\r");
+        assert_eq!(editor.get_text(), "/argtest two");
+    }
+
+    #[test]
+    fn highlights_unique_prefix_match_as_user_types_before_full_exact_match() {
+        let mut editor = editor();
+        argument_provider(&mut editor, "argtest", &["one", "two", "three"], false);
+        type_text(&mut editor, "/argtest tw");
+        assert_eq!(editor.get_text(), "/argtest tw");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\r");
+        assert_eq!(editor.get_text(), "/argtest two");
+    }
+
+    #[test]
+    fn selects_first_prefix_match_when_multiple_items_match() {
+        let mut editor = editor();
+        argument_provider(&mut editor, "argtest", &["one", "two", "three"], false);
+        type_text(&mut editor, "/argtest t");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\r");
+        assert_eq!(editor.get_text(), "/argtest two");
+    }
+
+    #[test]
+    fn works_for_built_in_style_command_argument_completion_path_model_like() {
+        let mut editor = editor();
+        argument_provider(
+            &mut editor,
+            "model",
+            &["gpt-4o", "gpt-4o-mini", "claude-sonnet"],
+            true,
+        );
+        type_text(&mut editor, "/model gpt-4o-mini");
+        assert_eq!(editor.get_text(), "/model gpt-4o-mini");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\r");
+        assert_eq!(editor.get_text(), "/model gpt-4o-mini");
+    }
+
+    fn load_skills(
+        completions: impl Fn(&str) -> Option<Vec<AutocompleteItem>> + 'static,
+    ) -> CommandSpec {
+        CommandSpec::Command {
+            name: "load-skills".to_string(),
+            description: Some("Load skills".to_string()),
+            argument_hint: None,
+            get_argument_completions: Some(Rc::new(completions)),
+        }
+    }
+
+    #[test]
+    fn awaits_async_slash_command_argument_completions() {
+        let mut editor = editor();
+        let command = load_skills(|prefix: &str| {
+            prefix
+                .starts_with('s')
+                .then(|| vec![item("skill-a", "skill-a")])
+        });
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(CombinedAutocompleteProvider::new(
+            vec![command],
+            ".",
+            None,
+        ))));
+        editor.set_text("/load-skills ");
+        editor.handle_editor_input("s");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\t");
+        assert_eq!(editor.get_text(), "/load-skills skill-a");
+        assert!(!editor.is_showing_autocomplete());
+    }
+
+    /// senpi's completer returns the non-array `"not-an-array"`; `ArgumentCompletions` is typed
+    /// `Option<Vec<_>>`, so the closest invalid answer is `None`, with the same outcome.
+    #[test]
+    fn ignores_invalid_slash_command_argument_completion_results() {
+        let mut editor = editor();
+        let command = load_skills(|_: &str| None);
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(CombinedAutocompleteProvider::new(
+            vec![command],
+            ".",
+            None,
+        ))));
+        editor.set_text("/load-skills ");
+        editor.handle_editor_input("s");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(!editor.is_showing_autocomplete());
+        assert_eq!(editor.get_text(), "/load-skills s");
+    }
+
+    #[test]
+    fn does_not_show_argument_completions_when_command_has_no_argument_completer() {
+        let mut editor = editor();
+        let model = CommandSpec::Command {
+            name: "model".to_string(),
+            description: Some("Switch model".to_string()),
+            argument_hint: None,
+            get_argument_completions: Some(Rc::new(|_: &str| {
+                Some(vec![item("claude-opus", "claude-opus")])
+            })),
+        };
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(CombinedAutocompleteProvider::new(
+            vec![CommandSpec::with_description("help", "Show help"), model],
+            ".",
+            None,
+        ))));
+        type_text(&mut editor, "/he");
+        editor.poll_autocomplete_at(elapsed());
+        assert!(editor.is_showing_autocomplete());
+        editor.handle_editor_input("\t");
+        assert_eq!(editor.get_text(), "/help ");
+        assert!(!editor.is_showing_autocomplete());
+    }
 }

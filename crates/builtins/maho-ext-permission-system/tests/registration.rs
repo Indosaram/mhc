@@ -301,6 +301,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
 
     let session_start_handlers = api.registered.handlers[&EventKind::SessionStart].clone();
     let mut start_event = ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+        sizes_only: false,
         reason: maho_ext_api::SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

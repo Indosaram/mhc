@@ -187,7 +187,7 @@ fn register_onboarding(
     let runtime = api.runtime.clone();
     let session_kind = api.profile.session_kind;
     let state_dir = component.state_dir.clone();
-    let skills_root = component.skills_root.clone();
+    let skills_root = tour_skills_root(&std::env::vars().collect(), &component.skills_root);
     let process_forced = Arc::new(Mutex::new(false));
     // None is unclaimed; Some(None) is a successfully completed turn.
     let pending: Pending = Arc::new(Mutex::new(None::<Option<PendingRun>>));
@@ -593,9 +593,37 @@ fn register_onboarding(
     }
 }
 
+/// Upstream `getBuiltinSkillsRoot(process.env, logger)`: a valid `OMO_BUNDLED_SKILLS_DIR` moves the
+/// tour; an invalid one is reported once and the packaged root stays.
+fn tour_skills_root(env: &std::collections::BTreeMap<String, String>, packaged: &str) -> String {
+    maho_omo_bundled_skills::resolve_bundled_skills_override(env, None, None)
+        .map_or_else(|| packaged.to_owned(), |dir| dir.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tour_names_a_valid_override_and_keeps_the_packaged_root_otherwise() {
+        let dir = tempfile::tempdir().expect("override dir");
+        let env = |value: &str| {
+            std::collections::BTreeMap::from([(
+                maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV.to_owned(),
+                value.to_owned(),
+            )])
+        };
+        let valid = dir.path().to_string_lossy().into_owned();
+        assert_eq!(tour_skills_root(&env(&valid), "/packaged"), valid);
+        assert_eq!(
+            tour_skills_root(&env("relative/onboarding-tour-case"), "/packaged"),
+            "/packaged"
+        );
+        assert_eq!(
+            tour_skills_root(&std::collections::BTreeMap::new(), "/packaged"),
+            "/packaged"
+        );
+    }
 
     fn hermetic() -> OnboardingDependencies {
         OnboardingDependencies {

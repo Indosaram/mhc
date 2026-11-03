@@ -215,7 +215,7 @@ pub async fn run_extension_compaction(
     on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     run_extension_compaction_with_body(
-        snapshot, api_key, ambient, headers, None, signal, stream_runner, on_progress,
+        snapshot, api_key, ambient, headers, None, None, signal, stream_runner, on_progress,
     )
     .await
 }
@@ -304,6 +304,9 @@ pub async fn run_extension_compaction_for_context(
         auth.ambient,
         headers,
         auth.extra_body,
+        // senpi `SpeculativeCompactionContext.cwd`: the absolute session directory rides every summary
+        // request (`{ ...options, cwd: context.cwd }`) for subprocess-backed providers.
+        Some(context.cwd.to_string_lossy().into_owned()),
         signal,
         Some(&runner),
         on_progress,
@@ -325,6 +328,7 @@ async fn run_extension_compaction_with_body(
     ambient: bool,
     headers: Option<maho_ai::types::ProviderHeaders>,
     extra_body: Option<serde_json::Map<String, Value>>,
+    cwd: Option<String>,
     signal: Option<&maho_ai::utils::abort::AbortSignal>,
     stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
     on_progress: &(dyn Fn(&str) + Sync),
@@ -405,6 +409,7 @@ async fn run_extension_compaction_with_body(
                         omit_reasoning_options: reasoning_retry_spent,
                         forbid_tool_calls: tool_retry_spent,
                         stream_runner,
+                        cwd: cwd.clone(),
                     },
                     on_progress,
                 )

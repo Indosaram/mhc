@@ -329,3 +329,151 @@ mod bounded_exec {
         assert!(result.detail.contains("timed out after 10000ms"));
     }
 }
+
+/// mirror.test.ts "MirrorSync lifecycle": real git, a bare `file://` mirror and the installed
+/// post-commit hook, which runs inline because the commit sets `SYNC_PUSH_ENV=1`.
+#[cfg(unix)]
+mod lifecycle {
+    use super::*;
+    use crate::git::{GitSeedFile, InitializeGitRepoOptions};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::process::{Command, Output};
+
+    fn git(dir: &Path, args: &[&str]) -> Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env(SYNC_PUSH_ENV, "1")
+            .output()
+            .expect("spawn git")
+    }
+
+    fn create_repo(root: &Path) -> GitMemoryRepo {
+        let dir = root.join("repo");
+        let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(dir.clone(), "agent-mirror")).expect("repo");
+        repo.init(InitializeGitRepoOptions {
+            seed_files: vec![GitSeedFile { relative_path: "system/persona.md".into(), content: "seed\n".into() }],
+            ..Default::default()
+        })
+        .expect("init");
+        let hook = dir.join(".git/hooks/post-commit");
+        fs::create_dir_all(hook.parent().expect("hooks dir")).expect("hooks dir");
+        fs::write(&hook, get_post_commit_hook_script()).expect("hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("hook mode");
+        repo
+    }
+
+    fn create_bare(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("bare dir");
+        assert!(git(&dir, &["init", "--bare", "--quiet", "--initial-branch=main"]).status.success());
+        dir
+    }
+
+    fn commit_file(dir: &Path, relative: &str, body: &str) -> Output {
+        let full = dir.join(relative);
+        fs::create_dir_all(full.parent().expect("parent")).expect("parent");
+        fs::write(&full, body).expect("write");
+        assert!(git(dir, &["add", "-A"]).status.success());
+        git(dir, &["commit", "-m", &format!("write {relative}")])
+    }
+
+    fn read_log(dir: &Path) -> String {
+        fs::read_to_string(mirror_log_path(dir)).unwrap_or_default()
+    }
+
+    fn show(bare: &Path, spec: &str) -> Output {
+        git(bare, &["show", spec])
+    }
+
+    #[test]
+    fn when_set_then_a_commit_lands_then_the_mirror_receives_the_commit() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let bare = create_bare(root.path(), "bare");
+        let mirror = MirrorSync::new(&repo);
+        let result = mirror.set(&format!("file://{}", bare.display())).expect("set");
+        let commit = commit_file(&repo.dir, "system/persona.md", "hooked\n");
+        assert!(result.pushed, "{}", result.detail);
+        assert!(commit.status.success());
+        assert_eq!(String::from_utf8_lossy(&show(&bare, "main:system/persona.md").stdout), "hooked\n");
+        assert!(read_log(&repo.dir).contains("exit=0"));
+    }
+
+    #[test]
+    fn when_set_is_called_twice_then_the_second_url_wins() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let first = create_bare(root.path(), "first");
+        let second = create_bare(root.path(), "second");
+        let mirror = MirrorSync::new(&repo);
+        mirror.set(&format!("file://{}", first.display())).expect("first set");
+        mirror.set(&format!("file://{}", second.display())).expect("second set");
+        commit_file(&repo.dir, "reference/notes.md", "second\n");
+        assert_eq!(mirror.status().url, Some(format!("file://{}", second.display())));
+        assert_eq!(String::from_utf8_lossy(&show(&second, "main:reference/notes.md").stdout), "second\n");
+        assert!(!show(&first, "main:reference/notes.md").status.success());
+    }
+
+    #[test]
+    fn when_unset_then_later_commits_produce_no_new_log_lines() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let bare = create_bare(root.path(), "bare");
+        let mirror = MirrorSync::new(&repo);
+        mirror.set(&format!("file://{}", bare.display())).expect("set");
+        commit_file(&repo.dir, "system/persona.md", "before unset\n");
+        let before = read_log(&repo.dir);
+        assert!(before.contains("exit=0"));
+        mirror.unset().expect("unset");
+        commit_file(&repo.dir, "reference/after.md", "after unset\n");
+        assert_eq!(read_log(&repo.dir), before);
+        assert!(mirror.status().url.is_none());
+    }
+
+    #[test]
+    fn unreachable_mirror_set_keeps_config_and_reports_the_reason() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let missing = root.path().join("gone/gone.git");
+        let mirror = MirrorSync::new(&repo);
+        let result = mirror.set(&format!("file://{}", missing.display())).expect("set");
+        let status = mirror.status();
+        assert!(!result.pushed);
+        assert!(!result.detail.is_empty());
+        assert_eq!(status.url, Some(format!("file://{}", missing.display())));
+        assert!(status.ahead_count > 0);
+    }
+
+    #[test]
+    fn unreachable_mirror_commit_succeeds_and_failure_is_logged_in_status() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let missing = root.path().join("gone/gone.git");
+        let mirror = MirrorSync::new(&repo);
+        mirror.set(&format!("file://{}", missing.display())).expect("set");
+        let commit = commit_file(&repo.dir, "system/persona.md", "still local\n");
+        let status = mirror.status();
+        assert!(commit.status.success());
+        assert!(String::from_utf8_lossy(&git(&repo.dir, &["log", "--oneline"]).stdout).contains("write system/persona.md"));
+        assert!(!read_log(&repo.dir).contains("exit=0"));
+        assert!(!status.last_log_lines.is_empty());
+        assert!(status.last_log_lines.join("\n").contains("exit="));
+    }
+
+    #[test]
+    fn configured_mirror_push_now_lands_and_clears_ahead() {
+        let root = tempdir().expect("tempdir");
+        let repo = create_repo(root.path());
+        let bare = create_bare(root.path(), "bare");
+        repo.config_set(CONFIG_KEY, &format!("file://{}", bare.display())).expect("config");
+        let mirror = MirrorSync::new(&repo);
+        assert!(mirror.status().ahead_count > 0);
+        let result = mirror.push_now();
+        assert!(result.pushed, "{}", result.detail);
+        assert!(git(&bare, &["log", "--oneline", "main"]).status.success());
+        assert_eq!(mirror.status().ahead_count, 0);
+    }
+}

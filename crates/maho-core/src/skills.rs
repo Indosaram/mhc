@@ -8,8 +8,9 @@ use crate::diagnostics::{ResourceCollision, ResourceCollisionType, ResourceDiagn
 use crate::frontmatter::parse_frontmatter;
 use crate::paths::{PathInputOptions, canonicalize_path, lexical_resolve, resolve_path};
 use crate::skill_discovery::{
-    IgnoreMatcher, add_ignore_rules, read_skill_markdown_source, should_skip_skill_walk_directory_name,
+    IgnoreMatcher, add_ignore_rules_from_entries, should_skip_skill_walk_directory_name,
 };
+use crate::skill_source_cache::read_user_skill_source;
 use crate::source_info::{
     SourceInfo, SourceScope, SyntheticSourceInfoOptions, create_synthetic_source_info,
 };
@@ -225,12 +226,12 @@ fn load_skills_from_dir_internal(
 
     let root = root_dir.unwrap_or(dir).to_string();
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
-    add_ignore_rules(&mut matcher, dir, &root);
 
     let Ok(entries) = crate::utils::read_dir_sorted(dir) else {
         return LoadSkillsResult { skills, diagnostics };
     };
     let entries: Vec<std::path::PathBuf> = entries.into_iter().map(|entry| entry.path()).collect();
+    add_ignore_rules_from_entries(&mut matcher, dir, &root, &entries);
 
     for full_path in &entries {
         let name = full_path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
@@ -251,6 +252,7 @@ fn load_skills_from_dir_internal(
             source,
             provenance,
             Some(allowed),
+            None,
         );
         if let Some(skill) = skill {
             skills.push(skill);
@@ -299,6 +301,7 @@ fn load_skills_from_dir_internal(
             source,
             provenance,
             Some(allowed),
+            None,
         );
         if let Some(skill) = skill {
             skills.push(skill);
@@ -321,7 +324,7 @@ fn warning(message: impl Into<String>, path: &str) -> ResourceDiagnostic {
 
 /// `loadSkillFromFile`.
 pub fn load_skill_from_file(file_path: &str, source: &str) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
-    load_skill_from_file_internal(file_path, source, None, None)
+    load_skill_from_file_internal(file_path, source, None, None, None)
 }
 
 pub fn load_skill_from_file_internal(
@@ -329,6 +332,7 @@ pub fn load_skill_from_file_internal(
     source: &str,
     provenance: Option<&crate::skill_access::SkillProvenance>,
     allowed_set: Option<&crate::skill_access::SkillAllowedSet>,
+    stats: Option<&std::fs::Metadata>,
 ) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
     let is_declared_skill = Path::new(file_path).file_name().map(|name| name.to_string_lossy() == "SKILL.md").unwrap_or(false);
@@ -341,7 +345,10 @@ pub fn load_skill_from_file_internal(
                 Err(err) => return (None, vec![*err.diagnostic]),
             }
         }
-        _ => match read_skill_markdown_source(file_path) {
+        _ => match stats
+            .map_or_else(|| std::fs::metadata(file_path), |stats| Ok(stats.clone()))
+            .and_then(|stats| read_user_skill_source(file_path, &stats))
+        {
             Ok(content) => content,
             Err(error) => {
                 diagnostics.push(warning(error.to_string(), file_path));
@@ -492,7 +499,7 @@ pub fn load_skills_with_provenance(options: &LoadSkillsOptions, provenance_by_pa
         let loaded = if Path::new(path).is_dir() {
             load_skills_from_dir_internal(path, "path", true, (None, None), provenance, Some(&allowed), &std::collections::BTreeSet::new())
         } else {
-            let (skill, diagnostics) = load_skill_from_file_internal(path, "path", provenance, Some(&allowed));
+            let (skill, diagnostics) = load_skill_from_file_internal(path, "path", provenance, Some(&allowed), None);
             LoadSkillsResult { skills:skill.into_iter().collect(), diagnostics }
         };
         result.diagnostics.extend(loaded.diagnostics);
@@ -588,13 +595,8 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
 
     for raw_path in &options.skill_paths {
         let resolved_path = resolve_path(raw_path, &resolved_cwd, &PathInputOptions { trim: true, ..Default::default() });
-        if !Path::new(&resolved_path).exists() {
-            all_diagnostics.push(warning("skill path does not exist", &resolved_path));
-            continue;
-        }
-
         let Ok(metadata) = std::fs::metadata(&resolved_path) else {
-            all_diagnostics.push(warning("failed to read skill path", &resolved_path));
+            all_diagnostics.push(warning("skill path does not exist", &resolved_path));
             continue;
         };
         let source = get_source(&resolved_path);
@@ -602,7 +604,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
             let result = load_skills_from_dir_internal(&resolved_path, &source, true, (None, None), None, None, &std::collections::BTreeSet::new());
             add_skills(result, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
         } else if metadata.is_file() && resolved_path.ends_with(".md") {
-            let (skill, diagnostics) = load_skill_from_file(&resolved_path, &source);
+            let (skill, diagnostics) = load_skill_from_file_internal(&resolved_path, &source, None, None, Some(&metadata));
             match skill {
                 Some(skill) => add_skills(
                     LoadSkillsResult { skills: vec![skill], diagnostics },
@@ -755,12 +757,12 @@ mod tests {
     #[test]
     fn an_invalid_frontmatter_document_is_skipped_with_a_warning() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "bad/SKILL.md", "---\ndescription: [unclosed\n---\nbody");
+        write_skill(dir.path(), "bad/SKILL.md", "---\nname: invalid-yaml\ndescription: [unclosed bracket\n---\n\n# Invalid YAML Skill\n");
         let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
         assert!(result.skills.is_empty());
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
-        assert!(!result.diagnostics[0].message.is_empty());
+        assert!(result.diagnostics[0].message.contains("at line"), "{}", result.diagnostics[0].message);
         assert_eq!(result.diagnostics[0].path.as_deref(), Some(dir.path().join("bad").join("SKILL.md").to_string_lossy().as_ref()));
     }
 
@@ -848,6 +850,154 @@ mod tests {
         hidden.disable_model_invocation = true;
         assert_eq!(format_skills_for_prompt(&[hidden], FileReadTool::Read), "");
         assert_eq!(format_skills_for_prompt(&[], FileReadTool::Read), "");
+    }
+
+    // senpi test/skills.test.ts fixture cases (test/fixtures/skills) not covered above.
+    fn fixture_dir(entries: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (relative, content) in entries {
+            write_skill(dir.path(), relative, content);
+        }
+        dir
+    }
+
+    fn from_dir(dir: &Path) -> LoadSkillsResult {
+        load_skills_from_dir(&LoadSkillsFromDirOptions {
+            dir: dir.to_string_lossy().into_owned(),
+            source: "test".to_string(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_name_warning_still_loads_the_skill() {
+        for (name, needle) in [
+            ("Invalid_Name", "invalid characters"),
+            (
+                "this-is-a-very-long-skill-name-that-exceeds-the-sixty-four-character-limit-set-by-the-standard",
+                "exceeds 64 characters",
+            ),
+            ("bad--name", "consecutive hyphens"),
+        ] {
+            let dir = fixture_dir(&[(
+                "skill/SKILL.md",
+                format!("---\nname: {name}\ndescription: d\n---\nbody").as_str(),
+            )]);
+            let result = from_dir(dir.path());
+            assert_eq!(result.skills.len(), 1, "{name}");
+            assert!(result.diagnostics.iter().any(|d| d.message.contains(needle)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_differing_from_the_directory_loads_without_a_warning() {
+        let dir = fixture_dir(&[(
+            "name-mismatch/SKILL.md",
+            "---\nname: different-name\ndescription: d\n---\nbody",
+        )]);
+        let result = from_dir(&dir.path().join("name-mismatch"));
+        assert_eq!(result.skills[0].name, "different-name");
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(result.skills[0].source_info.source, "test");
+        assert!(!result.skills[0].disable_model_invocation);
+    }
+
+    #[test]
+    fn unknown_frontmatter_fields_are_ignored() {
+        let dir = fixture_dir(&[(
+            "unknown-field/SKILL.md",
+            "---\nname: unknown-field\ndescription: d\nauthor: someone\nversion: 1.0\n---\nbody",
+        )]);
+        let result = from_dir(dir.path());
+        assert_eq!(result.skills.len(), 1);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn nested_skills_load_recursively() {
+        let dir = fixture_dir(&[(
+            "nested/child-skill/SKILL.md",
+            "---\nname: child-skill\ndescription: d\n---\nbody",
+        )]);
+        let result = from_dir(&dir.path().join("nested"));
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].name, "child-skill");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_skill_md_without_frontmatter_needs_a_description() {
+        let dir = fixture_dir(&[("no-frontmatter/SKILL.md", "# No Frontmatter\n\nbody")]);
+        let result = from_dir(dir.path());
+        assert!(result.skills.is_empty());
+        assert!(result.diagnostics.iter().any(|d| d.message.contains("description is required")));
+    }
+
+    #[test]
+    fn multiline_yaml_descriptions_are_preserved() {
+        let dir = fixture_dir(&[(
+            "multiline-description/SKILL.md",
+            "---\nname: multiline-description\ndescription: |\n  This is a multiline description.\n  It spans multiple lines.\n---\nbody",
+        )]);
+        let result = from_dir(dir.path());
+        assert_eq!(result.skills.len(), 1);
+        assert!(result.skills[0].description.contains('\n'));
+        assert!(result.skills[0].description.contains("This is a multiline description."));
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_missing_directory_loads_nothing_and_warns_nothing() {
+        let result = from_dir(Path::new("/non/existent/path"));
+        assert!(result.skills.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn multiple_skills_each_render_a_skill_element() {
+        let skills = vec![
+            skill("skill-one", "/path/one/SKILL.md"),
+            skill("skill-two", "/path/two/SKILL.md"),
+        ];
+        let block = format_skills_for_prompt(&skills, FileReadTool::Read);
+        assert!(block.contains("<name>skill-one</name>"));
+        assert!(block.contains("<name>skill-two</name>"));
+        assert_eq!(block.matches("<skill>").count(), 2);
+    }
+
+    #[test]
+    fn an_explicit_skill_path_loads_as_a_temporary_scope() {
+        let dir = fixture_dir(&[(
+            "valid-skill/SKILL.md",
+            "---\nname: valid-skill\ndescription: d\n---\nbody",
+        )]);
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: dir.path().join("empty-cwd").to_string_lossy().into_owned(),
+            agent_dir: dir.path().join("empty-agent").to_string_lossy().into_owned(),
+            skill_paths: vec![dir.path().join("valid-skill").to_string_lossy().into_owned()],
+            include_defaults: true,
+        });
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].source_info.scope, SourceScope::Temporary);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_tilde_skill_path_expands_to_the_home_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = ".maho-skills-test-missing-dir";
+        let result = load_skills(&LoadSkillsOptions {
+            cwd: dir.path().to_string_lossy().into_owned(),
+            agent_dir: dir.path().join("agent").to_string_lossy().into_owned(),
+            skill_paths: vec![format!("~/{missing}")],
+            include_defaults: false,
+        });
+        let expanded = Path::new(&crate::config::home_dir()).join(missing);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(
+            result.diagnostics[0].path.as_deref(),
+            Some(expanded.to_string_lossy().as_ref())
+        );
     }
 
     #[test]

@@ -295,7 +295,7 @@ async fn open_harness(
         active_tool_names: None,
         tools,
         tool_context: Some(ToolContextSource::Value(tool_context)),
-        system_prompt: Some(system_prompt_fn),
+        system_prompt: Some(system_prompt_fn.into()),
         resources: None,
         stream_options: None,
         retry: None,

@@ -9,13 +9,13 @@ pub struct RevokeMoveOptions<'a> {
     pub session_file: &'a Path,
     pub move_id: &'a str,
     pub ledger: &'a MoveLedger,
-    pub guard: Option<&'a dyn Fn() -> Result<(), String>>,
+    pub guard: Option<super::session_lock::MoveGuard<'a>>,
 }
 pub async fn revoke_imported_move(options: RevokeMoveOptions<'_>) -> Result<(), String> {
     super::session_lock::with_session_move_lock(
         options.session_file,
         async {
-            seal(options.session_file, options.move_id)?;
+            seal(options.session_file, options.move_id).await?;
             move_step(MoveStep::RevokeSealed)?;
             options
                 .ledger
@@ -28,8 +28,8 @@ pub async fn revoke_imported_move(options: RevokeMoveOptions<'_>) -> Result<(), 
     )
     .await
 }
-fn seal(file: &Path, move_id: &str) -> Result<(), String> {
-    let entries = super::entries(file);
+async fn seal(file: &Path, move_id: &str) -> Result<(), String> {
+    let entries = super::entries(file).await;
     let session_id = header_session_id(&entries);
     let mut ownership = SessionOwnership::Writable;
     let mut latest = None;
@@ -57,4 +57,5 @@ fn seal(file: &Path, move_id: &str) -> Result<(), String> {
         SESSION_MOVED,
         json!({"move_id":move_id,"session_id":session_id.unwrap_or_default(),"target":latest["data"]["from"].as_str().unwrap_or_default(),"reason":REVOKED,"moved_at":crate::session_manager::now_iso_millis()}),
     )
+    .await
 }

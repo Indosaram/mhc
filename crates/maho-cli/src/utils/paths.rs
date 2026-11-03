@@ -21,6 +21,13 @@ pub fn normalize_path(input: &str, options: &PathInputOptions) -> Result<String,
         {
             return Err("Invalid file URL path".to_owned());
         }
+        // senpi `fileURLToPath` decodes with `decodeURIComponent`: a malformed escape or a byte
+        // sequence that is not UTF-8 throws instead of decoding lossily.
+        let raw = parsed.path().as_bytes();
+        if raw.iter().enumerate().any(|(index, byte)| *byte == b'%' && !(raw.get(index + 1).is_some_and(u8::is_ascii_hexdigit) && raw.get(index + 2).is_some_and(u8::is_ascii_hexdigit))) {
+            return Err("URI malformed".to_owned());
+        }
+        percent_encoding::percent_decode(raw).decode_utf8().map_err(|_| "URI malformed".to_owned())?;
         if let Ok(path) = parsed.to_file_path() {
             return Ok(path.to_string_lossy().into_owned());
         }

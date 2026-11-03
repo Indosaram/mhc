@@ -463,6 +463,40 @@ fn clone_spec<'a>(call: &ToolDispatchCall<'a>) -> ToolDispatchCall<'a> {
     }
 }
 
+/// One wrapped call through `dispatcher` (senpi `wrapToolDefinition`'s `dispatcher.run`): the definition's placement
+/// fields route it, and a dispatch failure that is not already a `ToolError` becomes its message.
+pub fn dispatch_tool_call<'a>(
+    dispatcher: Arc<dyn ToolDispatcher>,
+    definition: &'a maho_tools::ToolDefinition,
+    call: ToolCall<'a>,
+) -> ToolFuture<'a, ToolResult> {
+    Box::pin(async move {
+        dispatcher
+            .run(ToolDispatchCall {
+                definition,
+                placement: ToolPlacementInfo::from_definition(definition),
+                tool_call_id: call.id.to_owned(),
+                params: call.params,
+                signal: Some(call.signal),
+                on_update: call.on_update,
+                ctx: call.context,
+                source_path: None,
+            })
+            .await
+            .map_err(|error| match error.downcast::<ToolError>() {
+                Ok(error) => *error,
+                Err(error) => ToolError::Message(error.to_string()),
+            })
+    })
+}
+
+/// The wrapper-side dispatcher (`wrap_tool_definition`'s `dispatcher`) that runs every call through `dispatcher`.
+pub fn tool_run_dispatcher(
+    dispatcher: Arc<dyn ToolDispatcher>,
+) -> maho_tools::tool_definition_wrapper::ToolRunDispatcher {
+    Arc::new(move |definition, call| dispatch_tool_call(Arc::clone(&dispatcher), definition, call))
+}
+
 /// Hands a dispatcher to the extension host's wrappers (`maho_ext_api::ToolRunDispatch`).
 pub struct DispatcherRun(pub Arc<dyn ToolDispatcher>);
 

@@ -119,8 +119,86 @@ pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
         Some("append_session_entry") if !command.get("entry").is_some_and(valid_entry) => {
             Some("append_session_entry entry is malformed.")
         }
+        Some("unload_session") => unload_session_error(command),
+        Some("dequeue_message" | "edit_queued_message") => queued_input_change_error(command),
+        Some("get_effect_status") => effect_status_error(command),
+        Some("get_pending_inputs") => pending_inputs_error(command),
         _ => None,
     }
+}
+/// A non-empty string of at most 256 UTF-16 code units (senpi's `value.length <= 256`).
+fn id_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty() && text.encode_utf16().count() <= 256)
+}
+/// senpi rpc-input-validation.ts `dequeue_message` / `edit_queued_message`.
+fn queued_input_change_error(command: &Value) -> Option<&'static str> {
+    if !id_string(command.get("queuedId")) {
+        return Some(
+            "queuedId must be a non-empty string of at most 256 characters; read it from get_state or queue_update.",
+        );
+    }
+    if command["type"] == "edit_queued_message"
+        && !command
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| {
+                !text.is_empty() && text.encode_utf16().count() <= MAX_RPC_MESSAGE_CHARACTERS
+            })
+    {
+        return Some(
+            "text must be a non-empty string of at most 1000000 characters; dequeue_message removes an input.",
+        );
+    }
+    // `Number.isSafeInteger(n) && n >= 1`.
+    if command.get("expectedRevision").is_some_and(|revision| {
+        !revision
+            .as_u64()
+            .is_some_and(|revision| (1..=9_007_199_254_740_991).contains(&revision))
+    }) {
+        return Some(
+            "expectedRevision must be a whole number of at least 1; read it from the input's revision in get_state or queue_update.",
+        );
+    }
+    None
+}
+/// senpi rpc-input-validation.ts `get_effect_status`: a required `effectId`, an optional string `sessionPath`.
+fn effect_status_error(command: &Value) -> Option<&'static str> {
+    if !id_string(command.get("effectId")) {
+        return Some("effectId must be a non-empty string of at most 256 characters.");
+    }
+    command
+        .get("sessionPath")
+        .is_some_and(|path| !path.is_string())
+        .then_some("sessionPath must be a string.")
+}
+/// senpi rpc-input-validation.ts `get_pending_inputs`: at most 64 non-empty ids of at most 256 characters.
+fn pending_inputs_error(command: &Value) -> Option<&'static str> {
+    let ids = command.get("knownClientMessageIds")?;
+    let valid = ids
+        .as_array()
+        .is_some_and(|ids| ids.len() <= 64 && ids.iter().all(|id| id_string(Some(id))));
+    (!valid).then_some(
+        "knownClientMessageIds must be an array of at most 64 non-empty strings of at most 256 characters.",
+    )
+}
+/// senpi rpc-input-validation.ts `unload_session`: `children` is `refuse`/`detach`, the flags are booleans.
+fn unload_session_error(command: &Value) -> Option<&'static str> {
+    if command
+        .get("children")
+        .is_some_and(|children| children != "refuse" && children != "detach")
+    {
+        return Some("children must be \"refuse\" or \"detach\".");
+    }
+    [
+        ("interrupt", "interrupt must be a boolean."),
+        ("clearQueue", "clearQueue must be a boolean."),
+        ("force", "force must be a boolean."),
+    ]
+    .into_iter()
+    .find(|(flag, _)| command.get(*flag).is_some_and(|value| !value.is_boolean()))
+    .map(|(_, error)| error)
 }
 pub fn rpc_message_length_error(command: &Value) -> Option<String> {
     let kind = command.get("type")?.as_str()?;
@@ -212,6 +290,13 @@ pub fn session_auto_title_error(value: Option<&Value>) -> Option<&'static str> {
         .filter(|v| !v.is_boolean())
         .map(|_| "auto_title must be a boolean.")
 }
+pub fn expected_host_instance_error(value: Option<&Value>) -> Option<&'static str> {
+    match value {
+        None => None,
+        Some(Value::String(text)) if !text.trim().is_empty() => None,
+        Some(_) => Some("expectedHostInstance must be a non-empty string"),
+    }
+}
 
 const MAX_RETRY_FALLBACK_CHAINS: usize = 32;
 const MAX_RETRY_FALLBACK_ENTRIES: usize = 32;
@@ -301,6 +386,80 @@ mod tests {
         );
         assert_eq!(SESSION_CONTEXT_LIMITS.keys, SESSION_CONTEXT_KEYS);
     }
+    // senpi rpc-input-validation.ts `unload_session`.
+    #[test]
+    fn unload_session_flags_are_validated() {
+        let check = |command: Value| rpc_command_payload_error(&command);
+        assert_eq!(
+            check(json!({"type":"unload_session","children":"detach","force":true})),
+            None
+        );
+        assert_eq!(
+            check(json!({"type":"unload_session","children":"later"})),
+            Some("children must be \"refuse\" or \"detach\".")
+        );
+        assert_eq!(
+            check(json!({"type":"unload_session","clearQueue":"yes"})),
+            Some("clearQueue must be a boolean.")
+        );
+    }
+    // senpi rpc-input-validation.ts: queuedId, text, expectedRevision, effectId, sessionPath and
+    // knownClientMessageIds are refused before anything is read (rpc-queued-input-edit, rpc-pending-inputs tests).
+    #[test]
+    fn queued_input_effect_and_pending_input_fields_are_validated() {
+        let check = |command: Value| rpc_command_payload_error(&command);
+        assert_eq!(
+            check(
+                json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":1,"effectId":"d1"})
+            ),
+            None
+        );
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":""}))
+                .is_some_and(|error| error.starts_with("queuedId must be"))
+        );
+        assert!(check(json!({"type":"dequeue_message"})).is_some());
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":0}))
+                .is_some_and(|error| error.starts_with("expectedRevision must be"))
+        );
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":1.5}))
+                .is_some()
+        );
+        assert_eq!(
+            check(json!({"type":"edit_queued_message","queuedId":"q_1","text":"fixed"})),
+            None
+        );
+        assert!(
+            check(json!({"type":"edit_queued_message","queuedId":"q_1","text":""}))
+                .is_some_and(|error| error.starts_with("text must be"))
+        );
+        assert_eq!(
+            check(json!({"type":"get_effect_status","effectId":"e1"})),
+            None
+        );
+        assert!(check(json!({"type":"get_effect_status"})).is_some());
+        assert_eq!(
+            check(json!({"type":"get_effect_status","effectId":"e1","sessionPath":7})),
+            Some("sessionPath must be a string.")
+        );
+        let ids = |count: usize| {
+            (0..count)
+                .map(|index| format!("c-{index}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            check(json!({"type":"get_pending_inputs","knownClientMessageIds":ids(64)})),
+            None
+        );
+        assert_eq!(check(json!({"type":"get_pending_inputs"})), None);
+        assert!(
+            check(json!({"type":"get_pending_inputs","knownClientMessageIds":ids(65)}))
+                .is_some_and(|error| error.contains("at most 64"))
+        );
+        assert!(check(json!({"type":"get_pending_inputs","knownClientMessageIds":[""]})).is_some());
+    }
     #[test]
     fn rejects_nonobject_input() {
         for input in [Value::Null, json!([]), json!(42), json!("str"), json!(true)] {
@@ -382,6 +541,34 @@ mod tests {
         assert_eq!(session_auto_title_error(Some(&json!(false))), None);
         assert_eq!(session_auto_title_error(None), None);
         assert!(session_auto_title_error(Some(&json!(0))).is_some());
+    }
+    #[test]
+    fn expected_host_instance_validation_matches_upstream() {
+        assert_eq!(expected_host_instance_error(None), None);
+        assert_eq!(
+            expected_host_instance_error(Some(&json!("host-inst-1"))),
+            None
+        );
+        assert_eq!(
+            expected_host_instance_error(Some(&json!(""))),
+            Some("expectedHostInstance must be a non-empty string")
+        );
+        assert_eq!(
+            expected_host_instance_error(Some(&json!("   "))),
+            Some("expectedHostInstance must be a non-empty string")
+        );
+        assert_eq!(
+            expected_host_instance_error(Some(&json!(123))),
+            Some("expectedHostInstance must be a non-empty string")
+        );
+        assert_eq!(
+            expected_host_instance_error(Some(&json!(true))),
+            Some("expectedHostInstance must be a non-empty string")
+        );
+        assert_eq!(
+            expected_host_instance_error(Some(&Value::Null)),
+            Some("expectedHostInstance must be a non-empty string")
+        );
     }
     fn policy(pairs: &[(&str, &str)]) -> Option<String> {
         let context: std::collections::BTreeMap<String, String> = pairs

@@ -30,12 +30,15 @@ pub struct UserBashJobArgs {
     pub env: HashMap<String, String>,
     pub shell_path: Option<String>,
     pub timeout_seconds: Option<f64>,
+    pub redact_secrets_in_output: bool,
 }
 
 /// One streamed chunk of output; base64 so binary output survives the JSON channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserBashUpdate {
     pub data: String,
+    /// "stdout" or "stderr".
+    pub stream: &'static str,
 }
 
 pub fn parse_user_bash_args(value: Option<&Value>) -> Result<UserBashJobArgs, ToolChildJobError> {
@@ -57,6 +60,8 @@ pub fn parse_user_bash_args(value: Option<&Value>) -> Result<UserBashJobArgs, To
     Ok(UserBashJobArgs {
         command: command.to_owned(),
         cwd: cwd.to_owned(),
+        redact_secrets_in_output: field("redactSecretsInOutput").and_then(Value::as_bool)
+            == Some(true),
         env: env
             .iter()
             .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
@@ -228,20 +233,38 @@ fn kill_group(pid: u32) {
 #[cfg(not(unix))]
 fn kill_group(_pid: u32) {}
 
-/// Reads one output stream to its end, handing every chunk to `chunks` in arrival order.
+/// Reads one output stream to its end, handing every chunk to `chunks` in arrival order, tagged with
+/// its stream. With `redact`, chunks pass through a per-stream `SecretOutputRedactor` and the pending
+/// tail is flushed at the end of the stream.
 async fn forward_stream<R: AsyncRead + Unpin>(
     mut stream: R,
-    chunks: mpsc::UnboundedSender<Vec<u8>>,
+    name: &'static str,
+    redact: bool,
+    chunks: mpsc::UnboundedSender<(Vec<u8>, &'static str)>,
 ) {
+    let mut redactor = redact.then(maho_ext_api::RedactedStream::default);
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         match stream.read(&mut buffer).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => break,
             Ok(read) => {
-                if chunks.send(buffer[..read].to_vec()).is_err() {
+                let chunk = match redactor.as_mut() {
+                    Some(redactor) => redactor.push_bytes(&buffer[..read]).into_bytes(),
+                    None => buffer[..read].to_vec(),
+                };
+                if chunk.is_empty() {
+                    continue;
+                }
+                if chunks.send((chunk, name)).is_err() {
                     return;
                 }
             }
+        }
+    }
+    if let Some(redactor) = redactor.as_mut() {
+        let tail = redactor.finish_stream();
+        if !tail.is_empty() {
+            let _ = chunks.send((tail.into_bytes(), name));
         }
     }
 }
@@ -298,16 +321,24 @@ async fn run_user_bash(
         });
     }
     // Every chunk is sent in order and observed; the result settles only after the last one was sent.
-    let (chunks, mut received) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (chunks, mut received) = mpsc::unbounded_channel::<(Vec<u8>, &'static str)>();
     let readers: Vec<tokio::task::JoinHandle<()>> = [
-        launched
-            .stdout
-            .take()
-            .map(|stream| tokio::spawn(forward_stream(stream, chunks.clone()))),
-        launched
-            .stderr
-            .take()
-            .map(|stream| tokio::spawn(forward_stream(stream, chunks.clone()))),
+        launched.stdout.take().map(|stream| {
+            tokio::spawn(forward_stream(
+                stream,
+                "stdout",
+                args.redact_secrets_in_output,
+                chunks.clone(),
+            ))
+        }),
+        launched.stderr.take().map(|stream| {
+            tokio::spawn(forward_stream(
+                stream,
+                "stderr",
+                args.redact_secrets_in_output,
+                chunks.clone(),
+            ))
+        }),
     ]
     .into_iter()
     .flatten()
@@ -317,8 +348,9 @@ async fn run_user_bash(
         let update = Arc::clone(&job.update);
         tokio::spawn(async move {
             let mut failure: Option<String> = None;
-            while let Some(chunk) = received.recv().await {
-                if let Err(error) = (update)(json!({ "data": base64_encode(&chunk) })).await
+            while let Some((chunk, stream)) = received.recv().await {
+                if let Err(error) =
+                    (update)(json!({ "data": base64_encode(&chunk), "stream": stream })).await
                     && failure.is_none()
                 {
                     failure = Some(error.to_string());
@@ -414,6 +446,14 @@ mod tests {
         );
         assert_eq!(parsed.shell_path.as_deref(), Some("/bin/sh"));
         assert_eq!(parsed.timeout_seconds, Some(5.0));
+        assert!(!parsed.redact_secrets_in_output);
+        let redacting = parse_user_bash_args(Some(
+            &json!({ "command": "x", "cwd": "/", "env": {}, "redactSecretsInOutput": true }),
+        ));
+        assert_eq!(
+            redacting.map(|args| args.redact_secrets_in_output),
+            Ok(true)
+        );
         let zero = parse_user_bash_args(Some(
             &json!({ "command": "x", "cwd": "/", "env": {}, "timeoutSeconds": 0 }),
         ));
@@ -474,5 +514,25 @@ mod tests {
         assert_eq!(128 + signal_number("SIGKILL"), 137);
         assert_eq!(128 + signal_number("SIGTERM"), 143);
         assert_eq!(signal_number("SIGNOPE"), 0);
+    }
+
+    /// senpi user-bash-job.ts `redactSecretsInOutput`: each stream is redacted on its own, tagged with its name,
+    /// and the redactor's pending tail is flushed at the end of the stream; without the flag bytes pass through.
+    #[tokio::test]
+    async fn a_redacted_stream_hides_its_secret_and_keeps_its_tag() {
+        let (sender, mut received) = mpsc::unbounded_channel();
+        forward_stream(&b"Bearer abc=def==\n"[..], "stderr", true, sender).await;
+        let mut text = Vec::new();
+        while let Some((chunk, stream)) = received.recv().await {
+            assert_eq!(stream, "stderr");
+            text.extend(chunk);
+        }
+        assert_eq!(String::from_utf8(text).unwrap(), "Bearer <redacted>\n");
+        let (sender, mut received) = mpsc::unbounded_channel();
+        forward_stream(&b"Bearer abc=def==\n"[..], "stdout", false, sender).await;
+        assert_eq!(
+            received.recv().await,
+            Some((b"Bearer abc=def==\n".to_vec(), "stdout"))
+        );
     }
 }

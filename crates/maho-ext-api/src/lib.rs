@@ -1,12 +1,18 @@
 //! Native, statically registered extension contracts. No host or interactive dependency.
 pub mod goal_lifecycle;
+/// Per-call input identity the host scopes over a call's hooks and body (permission dispatch).
+pub use maho_agent::invocation_input;
 pub mod lifecycle_api;
 pub use lifecycle_api::*;
 pub mod mcp_wire;
 pub mod offload;
+pub mod private_dir;
 pub mod process_env;
+pub mod settle_observer;
+pub use settle_observer::*;
 pub mod types;
 pub use maho_tui::utils::wrap_text_with_ansi as notice_wrap_text;
+pub use maho_tools::secret_output_redactor::{RedactedStream, SecretOutputRedactor};
 pub use offload::*;
 pub use types::*;
 

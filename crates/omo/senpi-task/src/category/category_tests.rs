@@ -243,7 +243,7 @@ fn resolve_quick_chain_reaches_luna_fast() {
 
 #[test]
 fn resolve_writing_default_selects_kimi_k3() {
-    let models = registry(vec![model("kimi-coding", "k3")]);
+    let models = registry(vec![model("kimi-coding", "k3"), model("kimi-coding", "k3.1-pro")]);
     let resolved = expect_resolved(resolve("writing", json!({}), &models));
     assert_eq!(resolved.spec.provider, "kimi-coding");
     assert_eq!(resolved.spec.model_id, "k3");
@@ -253,10 +253,10 @@ fn resolve_writing_default_selects_kimi_k3() {
 
 #[test]
 fn resolve_writing_falls_back_to_k3_rung() {
-    let models = registry(vec![model("opencode-go", "kimi-k3")]);
+    let models = registry(vec![model("opencode-go", "kimi-k3.1-pro")]);
     let resolved = expect_resolved(resolve("writing", json!({}), &models));
     assert_eq!(resolved.spec.provider, "opencode-go");
-    assert_eq!(resolved.spec.model_id, "kimi-k3");
+    assert_eq!(resolved.spec.model_id, "kimi-k3.1-pro");
     assert_eq!(resolved.spec.variant.as_deref(), Some("low"));
     assert!(resolved.selection.matched_fallback);
     assert_eq!(
@@ -268,7 +268,7 @@ fn resolve_writing_falls_back_to_k3_rung() {
                 "moonshotai",
                 "opencode-go"
             ],
-            "kimi-k3",
+            "kimi-k3.1-pro",
             Some("low")
         ))
     );
@@ -750,7 +750,7 @@ fn dead_chain_kimi_transform_keeps_category_alive() {
     let result = resolve(
         "unspecified-high",
         json!({}),
-        &registry(vec![model("kimi-coding", "k3")]),
+        &registry(vec![model("kimi-coding", "k3.1-pro")]),
     );
     assert_eq!(result.kind(), "resolved");
     assert!(contains(result.available_categories(), "unspecified-high"));
@@ -970,7 +970,7 @@ fn gating_visual_engineering_kimi_is_real_chain_fallback() {
     let resolved = expect_resolved(resolve(
         "visual-engineering",
         json!({}),
-        &registry(vec![model("kimi-coding", "k3")]),
+        &registry(vec![model("kimi-coding", "k3.1-pro")]),
     ));
     assert!(resolved.selection.matched_fallback);
     assert_eq!(resolved.spec.variant.as_deref(), Some("max"));

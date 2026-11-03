@@ -63,6 +63,63 @@ fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_ori
     assert_eq!(*sent.lock().expect("sent mutex"), "  continue  ");
 }
 
+#[test]
+fn given_the_parent_session_runs_a_model_when_the_workflow_tool_starts_a_run_then_the_run_record_captures_it() {
+    let f = fixture();
+    let context = maho_omo_task::dag_tool::DagToolContext {
+        model: Some(maho_omo_task::dag_tool::DagToolModel { provider: "chatgpt-subscription".into(), id: "gpt-6.1-sol".into() }),
+    };
+    let started = maho_omo_task::dag_tool::run_dag_tool_in_context(&deps(&f.manager), DagToolInput {
+        action: "start".into(), definition: Some(default_definition()), run_id: None,
+        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+        guidance_id: None, text: None, remove: None,
+    }, Some(&context)).expect("start");
+    let details = started.details.expect("details");
+    assert_eq!(details["kind"], "started");
+    let run_id = details["run_id"].as_str().expect("run id").to_owned();
+    let record = f.manager.record(&run_id, PARENT_SESSION_ID).expect("run record");
+    assert_eq!(record.parent_model.as_deref(), Some("chatgpt-subscription/gpt-6.1-sol"));
+}
+
+#[test]
+fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_no_parent_model_is_recorded() {
+    let f = fixture();
+    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
+        action: "start".into(), definition: Some(default_definition()), run_id: None,
+        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+        guidance_id: None, text: None, remove: None,
+    }).expect("start");
+    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    assert_eq!(f.manager.record(&run_id, PARENT_SESSION_ID).expect("run record").parent_model, None);
+}
+
+#[test]
+fn engine_refusal_node_unresponsive_surfaces_verbatim() {
+    let f = fixture();
+    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
+        action: "start".into(), definition: Some(default_definition()), run_id: None,
+        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+        guidance_id: None, text: None, remove: None,
+    }).expect("start");
+    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    let mut dependencies = deps(&f.manager);
+    dependencies.send = Some(Arc::new(|_, _, _| {
+        let mut error = DagNodeControlError::new(DagNodeControlErrorCode::NodeUnresponsive, "HOST_STATUS_SENTINEL");
+        error.node_ids = vec!["plan".into()];
+        Err(DagToolExecutionError::Control(error))
+    }));
+    let result = run_dag_tool(&dependencies, DagToolInput {
+        action: "send".into(), definition: None, run_id: Some(run_id), reason: None,
+        detach: None, node_id: Some("plan".into()), node_ids: None, message: Some("continue".into()), prompt: None,
+        guidance_id: None, text: None, remove: None,
+    }).expect("send");
+    let details = result.details.expect("details");
+    assert_eq!(details["kind"], "error");
+    assert_eq!(details["error"]["code"], "node_unresponsive");
+    assert_eq!(details["error"]["message"], "HOST_STATUS_SENTINEL");
+    assert_eq!(details["error"]["node_ids"], json!(["plan"]));
+}
+
 impl Fixture {
     fn run_file_count(&self) -> usize {
         let runs_path = &self.store.paths.runs;

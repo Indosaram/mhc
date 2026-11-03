@@ -24,7 +24,7 @@ mod tests {
         error_message: Option<&str>,
         output: u64,
     ) -> AssistantMessage {
-        AssistantMessage {
+        AssistantMessage { credential_served_recently: None,
             thinking_level: None,
             provider_diagnostic: None,
             prompt_cache_breakpoint: None,

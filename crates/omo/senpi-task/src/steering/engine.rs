@@ -17,6 +17,8 @@ use crate::agents::interaction_policy_for_agent;
 use crate::host::HostError;
 use crate::lifecycle::DestroyCause;
 use crate::manager::ManagedChildHandle;
+use crate::manager::child_handle::InputIdentity;
+use crate::runners::rpc_host::session_wire::is_host_session_unresponsive;
 use crate::shared::iso_from_ms;
 use crate::state::{
     CancelRequest, DeliverAs, Messageability, PendingSteeringEntry, ResidencyState, TaskRecord,
@@ -260,8 +262,26 @@ impl SteeringEngine {
         {
             return Ok(stale_send(&fresh));
         }
+        if handle.liveness().is_some_and(|liveness| !liveness.is_running()) {
+            if record.status == TaskStatus::Running {
+                return self.enqueue_pending(&record, &input.message, deliver_as);
+            }
+            return Ok(SendOutcome::Unresponsive {
+                reason: format!(
+                    "Task {}'s session is unresponsive; nothing was sent. Retry when its host status returns to running.",
+                    record.task_id
+                ),
+                task_id: record.task_id,
+                retryable: true,
+            });
+        }
         if mode == Messageability::Steer {
-            deliver(handle.as_ref(), deliver_as, &input.message)?;
+            match deliver(handle.as_ref(), deliver_as, &input.message) {
+                Err(error) if is_host_session_unresponsive(&error) => {
+                    return self.enqueue_pending(&record, &input.message, deliver_as);
+                }
+                delivered => delivered?,
+            }
             self.event(
                 &record.task_id,
                 "steered",
@@ -430,20 +450,35 @@ impl SteeringEngine {
         let Some(handle) = (self.port.live_handle)(task_id) else {
             return Ok(());
         };
+        if handle.liveness().is_some_and(|liveness| !liveness.is_running()) {
+            return Ok(());
+        }
+        let mut ids = BTreeSet::new();
         for entry in &queue {
-            match deliver(handle.as_ref(), entry.deliver_as, &entry.message) {
+            // The entry's own id travels with it, so the child holds it under the id it was queued
+            // with and a repeated drain replays it instead of sending a second copy (#2838 step 4).
+            let identity = InputIdentity {
+                client_message_id: entry.id.clone(),
+            };
+            let delivered = match entry.deliver_as {
+                DeliverAs::Steer => handle.steer_with_identity(&entry.message, &identity),
+                DeliverAs::FollowUp => handle.follow_up_with_identity(&entry.message, &identity),
+            };
+            match delivered {
                 Ok(()) => self.event(
                     task_id,
                     "steered",
                     json!({ "delivered": deliver_as_str(entry.deliver_as), "queued": true }),
                 )?,
+                // Nothing was sent: the rest stays queued until the session responds again.
+                Err(error) if is_host_session_unresponsive(&error) => break,
                 Err(error) => utils::logger::log(
                     "senpi-task steering queued delivery failed",
                     Some(&json!({ "taskId": task_id, "error": error.to_string() })),
                 ),
             }
+            ids.insert(entry.id.clone());
         }
-        let ids: BTreeSet<String> = queue.into_iter().map(|entry| entry.id).collect();
         self.clear_persisted_queue(task_id, Some(&ids))
     }
 
@@ -895,6 +930,7 @@ pub(super) fn build_revived(record: &TaskRecord, timestamp: String) -> TaskRecor
     revived.failure_kind = None;
     revived.failure_reason = None;
     revived.awaiting_input = None;
+    revived.provisional_exit = None;
     revived.status = TaskStatus::Running;
     revived.residency_state = ResidencyState::Resident;
     revived.updated_at = timestamp;

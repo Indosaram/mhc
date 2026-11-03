@@ -23,3 +23,15 @@
   `bundled-skills`; the omo-gated `maho-cli` modules; `assets/omo-latest/**`; OmO/COMP sources)
   was opened.
 - Tests were written from the spec; no upstream or OmO fixtures were reused.
+
+## Unit skills-5152 (omo v5.1.52 delta)
+
+- Method: **C** (clean room). Built from the `## Delta (omo v5.1.52, 2026-10-30)` section of
+  `docs/cleanroom/specs/skills.md` at spec commit `da2b172b`; unit `skills-5152`.
+- Allowed inputs (and the only ones used): that spec, this crate's existing MIT code, and the MIT
+  `maho-ext-api` `ExtensionContext` (`logger`, `ui`, `has_ui`) API. No SUL, OmO or upstream
+  source, checkout, cache or web page was opened.
+- New: the validated override resolver (`RootResolver`, `validate_root`, once-per-process
+  `NoticeLedger`) in `src/root.rs`, used by `/skill`, the `skill` tool and `resources_discover`
+  in `src/extension.rs`. Environment variable names are interface facts from the spec.
+- Tests (`tests/root_override.rs`) were written from the delta's D3 cases 1-5.

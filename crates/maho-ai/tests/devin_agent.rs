@@ -386,6 +386,7 @@ fn foreign_assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::Assi
 fn assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::AssistantMessage {
     maho_ai::types::AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,

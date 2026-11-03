@@ -82,7 +82,7 @@ fn native_mode_with_session_and_provider(
     (mode, directory)
 }
 
-fn native_mode_with_session_and_provider_retaining_session(
+pub(crate) fn native_mode_with_session_and_provider_retaining_session(
     cwd_override: Option<&str>,
     session_manager: impl FnOnce(&str) -> maho_core::session_manager::SessionManager,
     provider_id: &str,
@@ -841,6 +841,7 @@ fn assistant_text_segments_remain_on_either_side_of_tool_card() {
     let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"text","text":"before-tool"},{"type":"toolCall","id":"ordered","name":"custom","arguments":{}},{"type":"text","text":"after-tool"}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":0})).expect("message");
     mode.handle_event(&AgentEvent::MessageStart {
         message: message.clone(),
+        streaming: None,
     });
     mode.handle_event(&AgentEvent::MessageEnd { message });
     mode.handle_event(&AgentEvent::ToolExecutionEnd {
@@ -865,6 +866,7 @@ fn streamed_tool_arguments_finish_with_exact_parsed_arguments() {
     mode.handle_event(&AgentEvent::AgentStart);
     mode.handle_event(&AgentEvent::MessageStart {
         message: message.clone(),
+        streaming: None,
     });
     mode.handle_event(&AgentEvent::MessageUpdate {
         message: message.clone(),
@@ -887,7 +889,7 @@ fn plain_string_user_content_renders_in_native_transcript() {
         serde_json::json!({"role":"user","content":"string-user-message","timestamp":0}),
     )
     .expect("user message");
-    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message });
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message, streaming: None });
     assert!(mode.render(80).join("\n").contains("string-user-message"));
 }
 
@@ -988,6 +990,7 @@ async fn smooth_reveal_ticks_show_buffered_text_and_final_event_flushes_it() {
     let (mut mode, _directory) = native_mode();
     mode.handle_event(&maho_agent::types::AgentEvent::MessageStart {
         message: message.clone(),
+        streaming: None,
     });
     mode.handle_event(&maho_agent::types::AgentEvent::MessageUpdate {
         message: message.clone(),
@@ -1355,6 +1358,7 @@ fn continuity_notice_renders_after_a_live_assistant_message_end() {
     let message = continuity_assistant("flatten");
     mode.handle_event(&maho_agent::types::AgentEvent::MessageStart {
         message: message.clone(),
+        streaming: None,
     });
     mode.handle_event(&maho_agent::types::AgentEvent::MessageEnd { message });
     assert!(
@@ -1633,6 +1637,25 @@ async fn compaction_and_retry_events_mount_status_indicators() {
     );
 }
 
+/// senpi#4295 (a37de3fcb3): `session_recovered` is shown as `showWarning(sanitizeTerminalLabel(notice))`.
+#[tokio::test]
+async fn session_recovered_shows_the_sanitized_notice_as_a_warning() {
+    use maho_ext_api::AgentSessionEvent;
+    use maho_tui::{tui::Component, utils::strip_terminal_sequences};
+    let (mut mode, _directory) = native_mode();
+    mode.handle_session_event(&AgentSessionEvent::SessionRecovered {
+        cause: "disk_full".into(),
+        backup_path: "/tmp/session.jsonl.torn".into(),
+        dropped_bytes: 42,
+        notice: "The last message wasn't saved\u{1b}[31m completely\n(disk full).".into(),
+    });
+    let frame = strip_terminal_sequences(&mode.render(200).join("\n"));
+    assert!(
+        frame.contains("Warning: The last message wasn't saved completely (disk full)."),
+        "the notice is a sanitized one-line warning: {frame}"
+    );
+}
+
 #[tokio::test]
 async fn idle_mode_skips_frame_rebuilds_until_a_state_change() {
     use maho_ext_api::AgentSessionEvent;
@@ -1880,6 +1903,7 @@ fn extension_select_counts_down_its_timeout_in_the_title_from_the_mode_tick() {
             options: vec!["a".into(), "b".into()],
             timeout_ms: Some(2_000),
             reply,
+            private: Default::default(),
         },
     );
     assert!(mode.render(80).join("\n").contains("Pick (2s)"));
@@ -2537,6 +2561,7 @@ async fn live_deadline_does_not_use_the_fixed_attachment_timeout() {
             dialog: maho_ext_api::ExtensionUiDialogOptions {
                 signal: Some(signal.clone()),
                 timeout_ms: Some(1),
+                ..Default::default()
             },
             get_deadline_at_ms: Some(std::sync::Arc::new(|| 100_000)),
             ..Default::default()
@@ -2582,6 +2607,7 @@ async fn collapsed_and_expanded_countdowns_read_the_live_capped_deadline() {
             dialog: maho_ext_api::ExtensionUiDialogOptions {
                 signal: Some(signal.clone()),
                 timeout_ms: Some(1),
+                ..Default::default()
             },
             hard_deadline_at_ms: Some(1),
             get_deadline_at_ms: Some(std::sync::Arc::new(move || {

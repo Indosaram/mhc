@@ -4,7 +4,10 @@ pub const GOAL_CONTINUATION_CAP: u64 = 8;
 pub const GOAL_STALL_TOOLLESS_THRESHOLD: u64 = 3;
 pub const GOAL_REPETITION_HASH_STREAK: usize = 3;
 pub const GOAL_LENGTH_RECOVERY_LIMIT: u64 = 1;
-pub const GOAL_UNATTENDED_CONTINUATION_LIMIT: u64 = 150;
+/// Consecutive automatic continuations without progress before the goal blocks (omo#10280).
+/// Progress is a new tool effect, a changed todo state, or new human input (direct, or a
+/// human-input monitor delivery); varied narration alone is not.
+pub const GOAL_NO_PROGRESS_CONTINUATION_LIMIT: u64 = 60;
 pub const GOAL_USER_GRACE_DELAY_MS: u64 = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoalContinuationPath {
@@ -40,7 +43,7 @@ pub enum DenyReason {
     Stale,
     Repetition,
     LengthExhausted,
-    Unattended,
+    NoProgress,
     ContextOverflow,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +80,28 @@ pub fn is_malformed_tool_use_turn(message: &maho_ai::types::AssistantMessage) ->
                 diagnostics
                     .iter()
                     .any(|d| d.kind == maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC)
+            })
+}
+/// `MONITOR_NOTIFICATION_CUSTOM_TYPE` in builtin/monitor-state-event.ts.
+pub const MONITOR_NOTIFICATION_CUSTOM_TYPE: &str = "senpi-monitor:notification";
+/// `isHumanInputMonitorNotification`: a delivered monitor notification carrying a person's words.
+pub fn is_human_input_monitor_notification(message: &maho_agent::types::AgentMessage) -> bool {
+    let maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+        custom,
+    )) = message
+    else {
+        return false;
+    };
+    custom.custom_type == MONITOR_NOTIFICATION_CUSTOM_TYPE
+        && custom
+            .details
+            .as_ref()
+            .and_then(|details| details.get("monitors"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|monitors| {
+                monitors.iter().any(|monitor| {
+                    monitor.get("humanInput") == Some(&serde_json::Value::Bool(true))
+                })
             })
 }
 pub fn continuation_turn_used_tools(messages: &[maho_agent::types::AgentMessage]) -> bool {
@@ -159,14 +184,15 @@ pub fn evaluate_goal_continuation(input: &GoalContinuationInput<'_>) -> GoalCont
     {
         return Deny(DenyReason::Repetition);
     }
+    // Monitor-delayed deliveries are exempt: armed-wake waiting is rate-limited by the cache-aware timer.
     if input.path != GoalContinuationPath::MonitorDelayed
         && input
             .goal
-            .and_then(|g| g.unattended_continuations)
+            .and_then(|g| g.no_progress_continuations)
             .unwrap_or(0)
-            >= GOAL_UNATTENDED_CONTINUATION_LIMIT
+            >= GOAL_NO_PROGRESS_CONTINUATION_LIMIT
     {
-        return Deny(DenyReason::Unattended);
+        return Deny(DenyReason::NoProgress);
     }
     if input.consecutive_continuations >= GOAL_CONTINUATION_CAP {
         return Deny(DenyReason::Cap);
@@ -223,6 +249,100 @@ pub fn has_goal_continuation_progress(input: &GoalContinuationInput<'_>) -> bool
         && input.current_signature.is_some()
         && input.last_continuation_signature != input.current_signature
 }
+/// True when the open/total todo counts in the signature changed; the narration hash is ignored.
+pub fn has_goal_todo_progress(
+    last_continuation_signature: Option<&str>,
+    current_signature: Option<&str>,
+) -> bool {
+    let (Some(last), Some(current)) = (last_continuation_signature, current_signature) else {
+        return false;
+    };
+    todo_state_of_signature(last) != todo_state_of_signature(current)
+}
+fn todo_state_of_signature(signature: &str) -> &str {
+    signature
+        .rfind(':')
+        .map_or(signature, |index| &signature[..index])
+}
+/// How many recent tool-effect fingerprints a new one must differ from to count as progress. Far
+/// above the guard's 60, so rotating through a fixed set of calls earns at most one progress turn
+/// per distinct call.
+pub const GOAL_TOOL_EFFECT_WINDOW: usize = 256;
+// Tools whose arguments are the change itself; masking their numbers would merge distinct edits.
+const MUTATING_TOOL_NAMES: [&str; 4] = ["edit", "write", "apply_patch", "todo"];
+fn static_regex(
+    cell: &'static std::sync::OnceLock<regex::Regex>,
+    pattern: &str,
+) -> &'static regex::Regex {
+    cell.get_or_init(|| match regex::Regex::new(pattern) {
+        Ok(regex) => regex,
+        Err(error) => panic!("invalid static tool-effect expression: {error}"),
+    })
+}
+/// Run-to-run noise in a result: ISO timestamps, clock times, durations, pids, long numbers and
+/// long hex ids. Small counters ("12/200 modules") stay visible. `\b` and digits are ASCII as in
+/// the JavaScript source.
+fn volatile_result_token() -> &'static regex::Regex {
+    static CELL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static_regex(
+        &CELL,
+        r"(?i)[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:\.[0-9]+)?Z?|(?-u:\b)[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?(?:\.[0-9]+)?(?-u:\b)|(?-u:\b)[0-9]+(?:\.[0-9]+)?\s?(?:ns|µs|us|ms|s|m|h)(?-u:\b)|(?-u:\b)pid[ =:]?[0-9]+|(?-u:\b)[0-9]{6,}(?-u:\b)|(?-u:\b)[0-9a-f]{8,}(?-u:\b)",
+    )
+}
+/// Any number or long hex id in a non-mutating call's arguments.
+fn volatile_argument_token() -> &'static regex::Regex {
+    static CELL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static_regex(&CELL, r"(?i)(?-u:\b)[0-9a-f]{8,}(?-u:\b)|[0-9]+")
+}
+fn call_arguments(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
+    let json = serde_json::to_string(arguments).unwrap_or_default();
+    if MUTATING_TOOL_NAMES.contains(&name) {
+        json
+    } else {
+        volatile_argument_token()
+            .replace_all(&json, "#")
+            .into_owned()
+    }
+}
+/// Fingerprint of what a turn's tools did: every call's name and arguments (numbers masked unless
+/// the tool mutates files), and every result's error flag and text with run-to-run noise masked.
+/// A turn whose tool results all failed has no fingerprint: failing is never progress.
+pub fn tool_effect_fingerprint(messages: &[maho_agent::types::AgentMessage]) -> Option<String> {
+    use maho_ai::types::ContentBlock;
+    let mut parts = Vec::new();
+    let mut succeeded = false;
+    for message in messages {
+        if let Some(assistant) = message.as_assistant() {
+            for content in &assistant.content {
+                if let ContentBlock::ToolCall(call) = content {
+                    parts.push(format!(
+                        "call:{}:{}",
+                        call.name,
+                        call_arguments(&call.name, &call.arguments)
+                    ));
+                }
+            }
+        } else if let Some(result) = message.as_tool_result() {
+            let text = result
+                .content
+                .iter()
+                .map(|content| match content {
+                    ContentBlock::Text(text) => text.text.as_str(),
+                    other => other.type_name(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            succeeded |= !result.is_error;
+            parts.push(format!(
+                "result:{}:{}:{}",
+                result.tool_name,
+                if result.is_error { "error" } else { "ok" },
+                volatile_result_token().replace_all(&text, "#")
+            ));
+        }
+    }
+    succeeded.then(|| hash_assistant_text(&parts.join("\u{0}")))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +357,7 @@ mod tests {
             time_used_seconds: 0.0,
             consecutive_continuations: None,
             unattended_continuations: None,
+            no_progress_continuations: None,
             last_continuation_signature: None,
             continuation_stopped_at: None,
             created_at: 1,
@@ -320,9 +441,9 @@ mod tests {
         );
     }
     #[test]
-    fn monitor_wait_is_exempt_from_unattended_limit() {
+    fn exempts_the_monitor_delayed_path_from_the_no_progress_limit() {
         let mut goal = goal();
-        goal.unattended_continuations = Some(150);
+        goal.no_progress_continuations = Some(GOAL_NO_PROGRESS_CONTINUATION_LIMIT);
         let mut input = input(&goal);
         input.path = GoalContinuationPath::MonitorDelayed;
         let result = evaluate_goal_continuation(&input);
@@ -480,9 +601,10 @@ mod tests {
         }
     }
     #[test]
-    fn unattended_limit_applies_to_every_counted_path_and_admits_below() {
+    fn denies_with_no_progress_at_the_limit_on_every_counted_path_and_admits_below_it() {
         let at_limit = Goal {
-            unattended_continuations: Some(GOAL_UNATTENDED_CONTINUATION_LIMIT),
+            unattended_continuations: Some(1_000),
+            no_progress_continuations: Some(GOAL_NO_PROGRESS_CONTINUATION_LIMIT),
             ..goal()
         };
         for path in [
@@ -496,12 +618,12 @@ mod tests {
             input.path = path;
             assert_eq!(
                 evaluate_goal_continuation(&input),
-                GoalContinuationVerdict::Deny(DenyReason::Unattended),
+                GoalContinuationVerdict::Deny(DenyReason::NoProgress),
                 "{path:?}"
             );
         }
         let below = Goal {
-            unattended_continuations: Some(GOAL_UNATTENDED_CONTINUATION_LIMIT - 1),
+            no_progress_continuations: Some(GOAL_NO_PROGRESS_CONTINUATION_LIMIT - 1),
             ..goal()
         };
         assert!(matches!(
@@ -634,7 +756,130 @@ mod tests {
         assert_eq!(GOAL_STALL_TOOLLESS_THRESHOLD, 3);
         assert_eq!(GOAL_REPETITION_HASH_STREAK, 3);
         assert_eq!(GOAL_LENGTH_RECOVERY_LIMIT, 1);
-        assert_eq!(GOAL_UNATTENDED_CONTINUATION_LIMIT, 150);
+        assert_eq!(GOAL_NO_PROGRESS_CONTINUATION_LIMIT, 60);
+        assert_eq!(GOAL_TOOL_EFFECT_WINDOW, 256);
         assert_eq!(GOAL_USER_GRACE_DELAY_MS, 10_000);
+    }
+    #[test]
+    fn todo_progress_compares_only_the_todo_part_of_the_signature() {
+        let goal = goal();
+        let mut input = input(&goal);
+        input.last_continuation_signature = Some("g:2/5:aaaa");
+        input.current_signature = Some("g:2/5:bbbb");
+        assert!(!has_goal_todo_progress(
+            Some("g:2/5:aaaa"),
+            Some("g:2/5:bbbb")
+        ));
+        assert!(has_goal_continuation_progress(&input));
+        assert!(has_goal_todo_progress(
+            Some("g:2/5:aaaa"),
+            Some("g:1/5:aaaa")
+        ));
+        assert!(!has_goal_todo_progress(None, Some("g:1/5:aaaa")));
+    }
+    fn tool_turn(
+        name: &str,
+        arguments: serde_json::Value,
+        text: &str,
+        is_error: bool,
+    ) -> Vec<maho_agent::types::AgentMessage> {
+        use maho_ai::types::{Message, ToolResultMessage};
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("arguments must be an object")
+        };
+        let call = maho_ai::providers::faux::faux_assistant_message(
+            vec![maho_ai::providers::faux::faux_tool_call(
+                name,
+                arguments,
+                Some("call"),
+            )],
+            Default::default(),
+        );
+        let result: ToolResultMessage = serde_json::from_value(serde_json::json!({
+            "role": "toolResult",
+            "toolCallId": "call",
+            "toolName": name,
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+            "timestamp": 0
+        }))
+        .unwrap();
+        vec![
+            maho_agent::types::AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(call))),
+            maho_agent::types::AgentMessage::Llm(Message::ToolResult(result)),
+        ]
+    }
+    #[test]
+    fn failing_tool_turns_have_no_fingerprint() {
+        assert_eq!(
+            tool_effect_fingerprint(&tool_turn(
+                "bash",
+                serde_json::json!({"command":"bun test"}),
+                "1 fail",
+                true
+            )),
+            None
+        );
+        assert_eq!(tool_effect_fingerprint(&[]), None);
+    }
+    #[test]
+    fn fingerprint_masks_run_to_run_noise_but_keeps_small_counters() {
+        let run = |turn: u32| {
+            tool_turn(
+                "bash",
+                serde_json::json!({"command": format!("bun test --bail={turn}; true")}),
+                &format!(
+                    "1 fail [{}.37ms]\nstarted 2026-10-17T18:{:02}:07Z pid {} run {:x}",
+                    40 + turn,
+                    turn % 60,
+                    4100 + turn,
+                    0x9f3a_2b10_u32 + turn
+                ),
+                false,
+            )
+        };
+        assert_eq!(
+            tool_effect_fingerprint(&run(1)),
+            tool_effect_fingerprint(&run(2))
+        );
+        let poll = |turn: u32| {
+            tool_turn(
+                "bash_output",
+                serde_json::json!({"bash_id":"bash_3"}),
+                &format!("building {turn}/200 modules"),
+                false,
+            )
+        };
+        assert_ne!(
+            tool_effect_fingerprint(&poll(1)),
+            tool_effect_fingerprint(&poll(2))
+        );
+    }
+    #[test]
+    fn mutating_tool_arguments_stay_exact() {
+        let edit = |turn: u32| {
+            tool_turn(
+                "edit",
+                serde_json::json!({"path":"src/parser.ts","oldText":format!("limit = {turn}")}),
+                "Edited src/parser.ts",
+                false,
+            )
+        };
+        assert_ne!(
+            tool_effect_fingerprint(&edit(1)),
+            tool_effect_fingerprint(&edit(2))
+        );
+        let sleep = |turn: u32| {
+            tool_turn(
+                "bash",
+                serde_json::json!({"command":format!("sleep {turn}")}),
+                "",
+                false,
+            )
+        };
+        assert_eq!(
+            tool_effect_fingerprint(&sleep(1)),
+            tool_effect_fingerprint(&sleep(7))
+        );
     }
 }

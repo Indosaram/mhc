@@ -59,6 +59,22 @@ pub fn theme_from_extension(
     crate::theme::Theme::from_json(json, mode)
 }
 
+/// The private-dialog half of `ExtensionUIDialogOptions` a host acts on: an ephemeral answer is no
+/// human admission under `--mcp-presenter-enforcement`, and `presented` is marked once on screen.
+#[derive(Clone, Debug, Default)]
+pub struct PrivateDialog {
+    pub ephemeral: bool,
+    pub presented: Option<maho_ext_api::DialogPresentedKey>,
+}
+impl PrivateDialog {
+    fn of(options: &ExtensionUiDialogOptions) -> Self {
+        Self {
+            ephemeral: options.ephemeral,
+            presented: options.presented.clone(),
+        }
+    }
+}
+
 pub enum UiRequest {
     SubagentCost(Option<f64>),
     WidgetFrame,
@@ -68,11 +84,13 @@ pub enum UiRequest {
         options: Vec<String>,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Input {
         title: String,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Notify(String, NotificationType),
     Widget(String, Option<WidgetContent>, ExtensionWidgetOptions),
@@ -167,18 +185,42 @@ impl InteractiveExtensionUi {
     /// (`clearExtensionStatuses`, `clearExtensionTerminalInputListeners`) reset at once; the mode-owned
     /// parts reset when the queued request is drained.
     pub fn reset_before_session_invalidate(&self) {
+        // senpi `clearExtensionStatuses(HOST_STATUS_KEYS)`: host-owned statuses survive the reset.
         self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .retain(|key, _| key.as_str() == crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
         self.terminal_input
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.send(UiRequest::ResetExtensionUi);
     }
-    /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown.
-    fn block_host_dialog(&self, label: &str) -> Option<BlockedHostDialog> {
+    /// The host's own status write (senpi `setExtensionStatus`); host-owned keys are writable here.
+    pub fn set_host_status(&self, key: &str, text: Option<&str>) {
+        let mut statuses = self
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(text) = text {
+            statuses.insert(key.into(), text.into());
+        } else {
+            statuses.remove(key);
+        }
+        drop(statuses);
+        // The footer reads the shared map; ask the host frame to show the change.
+        self.send(UiRequest::WidgetFrame);
+    }
+    /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown. An
+    /// ephemeral (private local) dialog is not bracketed (senpi v2026.10.27-2).
+    fn block_host_dialog(
+        &self,
+        label: &str,
+        opts: &ExtensionUiDialogOptions,
+    ) -> Option<BlockedHostDialog> {
+        if opts.ephemeral {
+            return None;
+        }
         let emit = self
             .blocked_emitter
             .lock()
@@ -194,6 +236,38 @@ impl InteractiveExtensionUi {
             &serde_json::json!({"active": true, "label": label, "id": id}),
         );
         Some(BlockedHostDialog { emit, id })
+    }
+    /// senpi `showExtensionConfirm(title, message)` called by the host itself (not through the
+    /// extension context): no `withBlockedHostDialog` bracket, and the dialog is not ephemeral, so the
+    /// answer is a human admission.
+    pub fn host_confirm<'a>(&'a self, title: &'a str, message: &'a str) -> UiFuture<'a, bool> {
+        self.show_confirm(title, message, ExtensionUiDialogOptions::default(), None)
+    }
+    /// senpi `showExtensionConfirm`: a Yes/No selector.
+    fn show_confirm<'a>(
+        &'a self,
+        title: &str,
+        message: &str,
+        opts: ExtensionUiDialogOptions,
+        blocked: Option<BlockedHostDialog>,
+    ) -> UiFuture<'a, bool> {
+        let title = format!("{title}\n{message}");
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.send(UiRequest::Select {
+            title,
+            options: vec!["Yes".into(), "No".into()],
+            timeout_ms: opts.timeout_ms,
+            reply,
+            private: PrivateDialog::of(&opts),
+        });
+        Box::pin(async move {
+            let _blocked = blocked;
+            Self::wait(receiver, opts).await.as_deref() == Some("Yes")
+        })
+    }
+    /// An ephemeral dialog whose signal is already aborted is never shown (senpi returns undefined).
+    fn settled_ephemeral(opts: &ExtensionUiDialogOptions) -> bool {
+        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::is_aborted)
     }
     async fn wait<T: Default>(
         reply: tokio::sync::oneshot::Receiver<T>,
@@ -396,7 +470,7 @@ impl ExtensionUi for InteractiveExtensionUi {
         title: &'a str,
         prefill: Option<&'a str>,
     ) -> ExtensionFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        let blocked = self.block_host_dialog(title, &ExtensionUiDialogOptions::default());
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Editor {
             title: title.into(),
@@ -422,13 +496,17 @@ impl ExtensionUi for InteractiveExtensionUi {
         options: &'a [String],
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { None });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select {
             title: title.into(),
             options: options.to_vec(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -441,19 +519,12 @@ impl ExtensionUi for InteractiveExtensionUi {
         message: &'a str,
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, bool> {
-        let blocked = self.block_host_dialog(title);
-        let title = format!("{title}\n{message}");
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        self.send(UiRequest::Select {
-            title,
-            options: vec!["Yes".into(), "No".into()],
-            timeout_ms: opts.timeout_ms,
-            reply,
-        });
-        Box::pin(async move {
-            let _blocked = blocked;
-            Self::wait(receiver, opts).await.as_deref() == Some("Yes")
-        })
+        // senpi `confirm`: an undefined (already aborted ephemeral) answer is `false`.
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { false });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
+        self.show_confirm(title, message, opts, blocked)
     }
     fn input<'a>(
         &'a self,
@@ -461,12 +532,16 @@ impl ExtensionUi for InteractiveExtensionUi {
         _placeholder: Option<&'a str>,
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { None });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Input {
             title: title.into(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -489,19 +564,11 @@ impl ExtensionUi for InteractiveExtensionUi {
     fn set_subagent_cost(&self, cost_usd: Option<f64>) {
         self.send(UiRequest::SubagentCost(cost_usd));
     }
+    // The host owns the lifecycle status; an extension cannot overwrite or clear it.
     fn set_status(&self, key: &str, text: Option<&str>) {
-        let mut statuses = self
-            .statuses
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(text) = text {
-            statuses.insert(key.into(), text.into());
-        } else {
-            statuses.remove(key);
+        if key != crate::lifecycle_status::LIFECYCLE_STATUS_KEY {
+            self.set_host_status(key, text);
         }
-        drop(statuses);
-        // The footer reads the shared map; ask the host frame to show the change.
-        self.send(UiRequest::WidgetFrame);
     }
     fn set_widget(
         &self,
@@ -782,6 +849,91 @@ mod tests {
             events[1].1,
             serde_json::json!({"active": false, "id": events[0].1["id"]})
         );
+    }
+
+    fn recording_emitter(ui: &InteractiveExtensionUi) -> Arc<Mutex<Vec<String>>> {
+        let channels: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = channels.clone();
+        *ui.blocked_emitter.lock().expect("emitter slot") =
+            Some(Arc::new(move |channel: &str, _data: &serde_json::Value| {
+                sink.lock().expect("channels").push(channel.to_owned());
+            }));
+        channels
+    }
+
+    // senpi v2026.10.27-2 a644802688: an ephemeral dialog skips the `herdr:blocked` bracket, and one
+    // whose signal is already aborted answers undefined (`confirm`: false) without being shown.
+    #[tokio::test]
+    async fn ephemeral_dialogs_skip_the_blocked_bracket_and_an_aborted_one_is_never_shown() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(Theme::default());
+        let channels = recording_emitter(&ui);
+        let options = vec!["a".to_owned()];
+        let ephemeral = || ExtensionUiDialogOptions {
+            ephemeral: true,
+            ..Default::default()
+        };
+        let shown = ui.select("Private", &options, ephemeral());
+        drop(
+            requests
+                .try_recv()
+                .expect("an ephemeral select is still shown"),
+        );
+        assert_eq!(shown.await, None);
+        let signal = AbortSignal::default();
+        signal.abort();
+        let aborted = || ExtensionUiDialogOptions {
+            ephemeral: true,
+            signal: Some(signal.clone()),
+            ..Default::default()
+        };
+        assert_eq!(ui.select("Gone", &options, aborted()).await, None);
+        assert!(!ui.confirm("Gone", "sure?", aborted()).await);
+        assert_eq!(ui.input("Gone", None, aborted()).await, None);
+        assert!(
+            requests.try_recv().is_err(),
+            "an aborted ephemeral dialog is never shown"
+        );
+        assert!(channels.lock().expect("channels").is_empty());
+    }
+
+    // senpi `chooseResumePath(..., { confirm: (title, message) => this.showExtensionConfirm(title,
+    // message) })`: the host's own confirm is not bracketed and is not ephemeral (admitHumanAnswer runs).
+    #[tokio::test]
+    async fn the_host_confirm_skips_the_blocked_bracket_and_is_not_ephemeral() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(Theme::default());
+        let channels = recording_emitter(&ui);
+        let answer = ui.host_confirm("Rebind", "sure?");
+        let Ok(UiRequest::Select {
+            title,
+            reply,
+            private,
+            ..
+        }) = requests.try_recv()
+        else {
+            panic!("the host confirm is shown as a selector");
+        };
+        assert_eq!(title, "Rebind\nsure?");
+        assert!(!private.ephemeral && private.presented.is_none());
+        drop(reply.send(Some("Yes".into())));
+        assert!(answer.await);
+        assert!(channels.lock().expect("channels").is_empty());
+    }
+
+    // senpi 3ffffa7369 / 25acb02f29: the lifecycle status is host-owned; an extension cannot write
+    // it, and the /reload reset keeps it while clearing the extensions' statuses.
+    #[test]
+    fn the_lifecycle_status_is_host_owned_and_survives_the_reload_reset() {
+        let (ui, _requests) = InteractiveExtensionUi::channel(Theme::default());
+        let key = crate::lifecycle_status::LIFECYCLE_STATUS_KEY;
+        ui.set_status(key, Some("forged"));
+        assert!(ui.statuses.lock().expect("statuses").get(key).is_none());
+        ui.set_host_status(key, Some("Idle"));
+        ui.set_status(key, None);
+        ui.set_status("ext", Some("mine"));
+        ui.reset_before_session_invalidate();
+        let statuses = ui.statuses.lock().expect("statuses").clone();
+        assert_eq!(statuses.get(key).map(String::as_str), Some("Idle"));
+        assert!(!statuses.contains_key("ext"));
     }
 
     #[test]

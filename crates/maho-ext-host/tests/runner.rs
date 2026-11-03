@@ -186,6 +186,43 @@ async fn lifecycle_ui_emits_prompt_pair_and_rejects_stale_prompts() {
     );
 }
 
+#[tokio::test]
+async fn lifecycle_ui_emits_prompt_pair_for_ephemeral_dialogs() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let ui = maho_ext_host::ui::LifecycleUi::new(
+        Arc::new(TestUi),
+        ExtensionRuntime::default(),
+        Arc::new(move |event| {
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event)
+        }),
+    );
+    let dialog = || ExtensionUiDialogOptions {
+        ephemeral: true,
+        ..Default::default()
+    };
+    assert!(!ui.confirm("Confirm", "message", dialog()).await);
+    let _ = ui.select("Select", &["a".to_owned()], dialog()).await;
+    let _ = ui.input("Input", None, dialog()).await;
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 6);
+    for (pair, expected) in events.chunks(2).zip([
+        (UiPromptKind::Confirm, "Confirm"),
+        (UiPromptKind::Select, "Select"),
+        (UiPromptKind::Input, "Input"),
+    ]) {
+        assert!(
+            matches!(&pair[0], ExtensionEvent::UiPromptStart { kind, title: Some(title) } if *kind == expected.0 && title == expected.1)
+        );
+        assert!(
+            matches!(&pair[1], ExtensionEvent::UiPromptEnd { kind, title: Some(title) } if *kind == expected.0 && title == expected.1)
+        );
+    }
+}
+
 #[test]
 fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     let runtime = ExtensionRuntime::default();
@@ -235,6 +272,66 @@ async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
         panic.downcast_ref::<ExtensionFailure>().unwrap().message,
         "replaced during dialog"
     );
+}
+struct RenderCountingUi(std::sync::atomic::AtomicUsize);
+impl ExtensionUi for RenderCountingUi {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("UI not available".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
+    fn request_render(&self) -> Result<(), ExtensionFailure> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+// A repaint requested through the lifecycle wrapper reaches the bound UI; a stale runtime rejects it.
+#[test]
+fn lifecycle_ui_forwards_request_render_while_active() {
+    let inner = Arc::new(RenderCountingUi(Default::default()));
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(inner.clone(), runtime.clone(), Arc::new(|_| {}));
+    ui.request_render().unwrap();
+    assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    runtime.invalidate("replaced");
+    assert_eq!(ui.request_render().unwrap_err().message, "replaced");
+    assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(
@@ -326,6 +423,7 @@ fn failure() -> ExtensionHandler {
                 stack: Some("test-stack".into()),
                 class: None,
                 code: None,
+                abort_reason: None,
             })
         })
     })
@@ -411,6 +509,54 @@ async fn before_agent_start_chains_in_senpi_order() {
         runner.errors.len()
     );
 }
+#[tokio::test]
+async fn before_agent_start_routes_before_prompt_messages_separately() {
+    fn message(
+        custom_type: &'static str,
+        placement: Option<BeforeAgentStartPlacement>,
+    ) -> ExtensionHandler {
+        Arc::new(move |_, _| {
+            Box::pin(async move {
+                let result = BeforeAgentStartEventResult {
+                    system_prompt_parts: None,
+                    system_prompt: None,
+                    message: Some(CustomMessage {
+                        custom_type: custom_type.into(),
+                        content: vec![ToolContent::text(custom_type)],
+                        display: false,
+                        details: None,
+                    }),
+                };
+                Ok(match placement {
+                    Some(placement) => EventResult::BeforeAgentStartPlaced(result, placement),
+                    None => EventResult::BeforeAgentStart(result),
+                })
+            })
+        })
+    }
+    let mut runner = runner(vec![
+        extension(
+            "placed",
+            EventKind::BeforeAgentStart,
+            message("A", Some(BeforeAgentStartPlacement::BeforePrompt)),
+        ),
+        extension("appended", EventKind::BeforeAgentStart, message("B", None)),
+    ]);
+    let merged = runner
+        .emit_before_agent_start(before())
+        .await
+        .unwrap()
+        .unwrap();
+    let types = |messages: &[CustomMessage]| {
+        messages
+            .iter()
+            .map(|message| message.custom_type.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(types(&merged.before_prompt_messages), ["A"]);
+    assert_eq!(types(&merged.messages), ["B"]);
+}
+
 #[tokio::test]
 async fn failing_handler_is_isolated_and_reported() {
     let mut runner = runner(vec![
@@ -1549,6 +1695,7 @@ async fn removal_notification_runs_after_invalidation_without_reviving_context()
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     runner.bind_context_actions(actions).unwrap();
     runner.invalidate("replaced");
@@ -1809,6 +1956,7 @@ async fn idle_wait_rejects_context_invalidated_during_host_wait() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let mut ctx = runner.create_context().unwrap();
@@ -1869,6 +2017,7 @@ fn retained_tool_context_getters_reject_invalidated_runtime() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let context = runner.create_context().unwrap();
@@ -1905,6 +2054,7 @@ fn retained_context_actions_cannot_bypass_runtime_invalidation() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     runner.bind_context_actions(host.clone()).unwrap();
     let context = runner.create_context().unwrap();
@@ -3584,7 +3734,9 @@ struct ContextActions {
     revision: std::sync::atomic::AtomicU64,
     aborted: Mutex<Option<AbortSource>>,
     monitor: Mutex<Option<PrivateMonitorFixture>>,
+    activity: ActivityListeners,
 }
+type ActivityListeners = Arc<Mutex<Vec<(u64, UserActivityListener)>>>;
 impl ExtensionSessionSettings for ContextActions {
     fn get_retry_fallback_settings(&self) -> RetryFallbackSettings {
         RetryFallbackSettings {
@@ -3613,6 +3765,21 @@ impl ExtensionSessionSettings for ContextActions {
     }
 }
 impl ExtensionContextActions for ContextActions {
+    fn on_user_activity(&self, listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.activity
+            .lock()
+            .expect("user activity listeners fixture")
+            .push((id, listener));
+        let activity = Arc::clone(&self.activity);
+        Some(Box::new(move || {
+            activity
+                .lock()
+                .expect("user activity listeners fixture")
+                .retain(|(existing, _)| *existing != id)
+        }))
+    }
     fn set_approved_monitor_parent(
         &self,
         id: &str,
@@ -3848,12 +4015,67 @@ impl ExtensionContextActions for ContextActions {
         None
     }
 }
+/// senpi runner.ts `onUserActivity`: a listener failure is reported through the runner's error
+/// listeners instead of escaping into the host, and the subscription ends with the runtime.
+#[test]
+fn user_activity_listener_failures_are_reported_and_retirement_unsubscribes() {
+    let actions = Arc::new(ContextActions {
+        revision: std::sync::atomic::AtomicU64::new(0),
+        aborted: Mutex::new(None),
+        monitor: Mutex::new(None),
+        activity: Default::default(),
+    });
+    let mut runner = runner(vec![]);
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&errors);
+    runner.on_error(Arc::new(move |error: &ExtensionError| {
+        seen.lock().unwrap().push(error.clone())
+    }));
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let context = runner.create_context().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&calls);
+    let _unsubscribe = context
+        .on_user_activity(Arc::new(move |kind: UserActivityKind| {
+            recorded.lock().unwrap().push(kind);
+            panic!("listener failed");
+        }))
+        .unwrap()
+        .expect("host reports activity");
+    let deliver = |kind| {
+        let listeners: Vec<_> = actions
+            .activity
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, listener)| Arc::clone(listener))
+            .collect();
+        for listener in listeners {
+            listener(kind);
+        }
+    };
+
+    deliver(UserActivityKind::Draft);
+    assert_eq!(*calls.lock().unwrap(), [UserActivityKind::Draft]);
+    let reported = errors.lock().unwrap().clone();
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0].event, "user_activity");
+    assert_eq!(reported[0].extension_path, RUNTIME_EXTENSION_PATH);
+    assert_eq!(reported[0].error, "listener failed");
+
+    // Retirement releases the host-side subscription, not just silences it.
+    runner.invalidate("replaced");
+    assert!(actions.activity.lock().unwrap().is_empty());
+    deliver(UserActivityKind::Prompt);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
 #[tokio::test]
 async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() {
     let actions = Arc::new(ContextActions {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -3953,6 +4175,7 @@ fn retained_context_companions_read_live_tier_and_guard_capability_access() {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -4083,6 +4306,7 @@ async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![
         extension("first", EventKind::BeforeAgentStart, prompt("1")),
@@ -4107,6 +4331,7 @@ fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -4151,6 +4376,7 @@ async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
@@ -4188,6 +4414,7 @@ async fn retained_kernel_tools_invoke_scope_returns_false_on_invalidated_context
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
@@ -4395,6 +4622,7 @@ async fn concurrent_context_reload_requests_share_one_host_operation() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -4432,6 +4660,7 @@ async fn nested_kernel_invocations_restore_outer_capability_scope() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions).unwrap();
@@ -4613,6 +4842,7 @@ async fn handler_provider_preparation_excludes_its_owner_without_reentering_sess
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     runner.emit(ExtensionEvent::AgentStart).await.unwrap();
@@ -4626,6 +4856,7 @@ async fn context_session_manager_identity_is_stable_across_dispatches() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let first = runner.create_context().unwrap();
@@ -4647,6 +4878,7 @@ async fn cached_context_adapter_does_not_retain_the_runner_through_a_cycle() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let observed = Arc::downgrade(&actions);
     let mut runner = runner(vec![extension("a", EventKind::BeforeAgentStart, none())]);
@@ -5354,6 +5586,7 @@ fn retained_context_observes_live_mcp_declarations() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let retained = runner.create_context().unwrap();
@@ -5400,6 +5633,7 @@ fn retained_context_forwards_complete_resolved_settings_without_snapshotting() {
         revision: std::sync::atomic::AtomicU64::new(23),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -5629,6 +5863,7 @@ fn monitor_forwarding_keeps_private_host_state_and_rejects_mismatched_calls() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(Some(("call".into(), input.clone(), None))),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -5669,6 +5904,7 @@ fn forged_monitor_json_never_supplies_private_parent_and_stale_context_cannot_mu
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(Some(("call".into(), input.clone(), None))),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -5722,4 +5958,131 @@ async fn move_emission_returns_each_failure_and_runs_later_handlers() {
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].extension_path, "bad");
     assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+}
+fn never() -> ExtensionHandler {
+    Arc::new(|_, _| Box::pin(std::future::pending()))
+}
+// senpi#3650: a lifecycle handler that never settles is stopped at the host budget, reported once, and the
+// emission moves on to the next handler.
+#[tokio::test(start_paused = true)]
+async fn lifecycle_handler_past_its_budget_is_reported_and_skipped() {
+    use maho_ext_host::handler_budget::*;
+    let stalls = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&stalls);
+    let ran = Arc::new(Mutex::new(false));
+    let after = Arc::clone(&ran);
+    let next: ExtensionHandler = Arc::new(move |_, _| {
+        *after.lock().unwrap() = true;
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![
+        extension("held", EventKind::AgentStart, never()),
+        extension("next", EventKind::AgentStart, next),
+    ]);
+    runner.set_event_handler_budget(
+        Arc::new(|| {
+            Ok(ExtensionHandlerBudget {
+                warn_ms: 0,
+                timeout_ms: 100,
+            })
+        }),
+        Arc::new(move |stall: &ExtensionHandlerStall| {
+            seen.lock()
+                .unwrap()
+                .push((stall.event.clone(), stall.stage))
+        }),
+        None,
+    );
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    assert_eq!(
+        runner
+            .errors
+            .iter()
+            .map(|error| (error.event.as_str(), error.error.as_str()))
+            .collect::<Vec<_>>(),
+        [("agent_start", "handler timed out after 100ms")]
+    );
+    assert_eq!(
+        *stalls.lock().unwrap(),
+        [(
+            "agent_start".to_string(),
+            ExtensionHandlerStallStage::Timeout
+        )]
+    );
+    assert!(*ran.lock().unwrap());
+}
+// senpi#3650: with the budget disabled the turn deadline still releases a held turn_start handler.
+#[tokio::test(start_paused = true)]
+async fn turn_deadline_releases_a_held_lifecycle_handler() {
+    use maho_ext_host::handler_budget::*;
+    let mut runner = runner(vec![extension("held", EventKind::TurnStart, never())]);
+    runner.set_event_handler_budget(
+        Arc::new(|| Ok(ExtensionHandlerBudget::UNBOUNDED)),
+        Arc::new(|_: &ExtensionHandlerStall| {}),
+        Some(Arc::new(|| 3)),
+    );
+    let releaser = runner.clone();
+    let release = async {
+        // The emission registers its held wait on its first poll; release turn 3 once it is held.
+        let mut released = 0;
+        while released == 0 {
+            tokio::task::yield_now().await;
+            released = releaser.release_held_handlers(3);
+        }
+        released
+    };
+    let (emitted, released) = tokio::join!(
+        runner.emit(ExtensionEvent::TurnStart {
+            turn_index: 0,
+            timestamp: 0
+        }),
+        release
+    );
+    emitted.unwrap();
+    assert_eq!(released, 1);
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(
+        runner.errors[0].error,
+        "handler released by the turn deadline"
+    );
+}
+// senpi#3650: an invalid budget setting falls back to the defaults, so timely handlers still run in order.
+#[tokio::test(start_paused = true)]
+async fn invalid_handler_budget_keeps_awaiting_handlers_in_order() {
+    use maho_ext_host::handler_budget::*;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let first_order = Arc::clone(&order);
+    let second_order = Arc::clone(&order);
+    let first: ExtensionHandler = Arc::new(move |_, _| {
+        let order = Arc::clone(&first_order);
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            order.lock().unwrap().push("slow");
+            Ok(EventResult::None)
+        })
+    });
+    let second: ExtensionHandler = Arc::new(move |_, _| {
+        second_order.lock().unwrap().push("next");
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![
+        extension("a", EventKind::AgentEnd, first),
+        extension("b", EventKind::AgentEnd, second),
+    ]);
+    runner.set_event_handler_budget(
+        Arc::new(|| Err("extensionEventHandlerTimeoutMs must be a non-negative integer".into())),
+        Arc::new(|_: &ExtensionHandlerStall| {}),
+        None,
+    );
+    runner
+        .emit(ExtensionEvent::AgentEnd {
+            messages: Vec::new(),
+            aborted: None,
+            will_retry: None,
+            abort_source: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(*order.lock().unwrap(), ["slow", "next"]);
+    assert!(runner.errors.is_empty());
 }

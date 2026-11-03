@@ -1,65 +1,152 @@
-use serde_json::Value;
-use super::{token_store::McpStoredAuth,oauth_provider::REFRESH_LEEWAY_MS,oauth_errors::{OAuthFlowError,OAuthFailureKind}};
-use super::{oauth::{OAuthRequestError,OAuthServerInfo,request_tokens,add_resource_param,normalize_resource_url},oauth_provider::{McpOAuthProvider,OAuthTokens,merge_tokens_into_stored_auth,stored_auth_to_tokens}};
+use super::{
+    oauth::{
+        OAuthRequestError, OAuthServerInfo, add_resource_param, normalize_resource_url,
+        request_tokens,
+    },
+    oauth_provider::{
+        McpOAuthProvider, OAuthTokens, merge_tokens_into_stored_auth, stored_auth_to_tokens,
+    },
+};
+use super::{
+    oauth_errors::{OAuthFailureKind, OAuthFlowError},
+    oauth_provider::REFRESH_LEEWAY_MS,
+    token_store::McpStoredAuth,
+};
 use futures::FutureExt;
+use serde_json::Value;
 use std::sync::Arc;
-type RefreshFuture=futures::future::Shared<futures::future::BoxFuture<'static,Result<OAuthTokens,OAuthRequestError>>>;
+type RefreshFuture = futures::future::Shared<
+    futures::future::BoxFuture<'static, Result<OAuthTokens, OAuthRequestError>>,
+>;
 /// Injection seam for the refresh manager (upstream `RefreshManagerOptions`,
 /// `mcp/auth/oauth-refresh.ts:15`). The pinned constructor takes `fetchFn`, `maxRetries`,
 /// `retryDelayMs` and `discover`; this port keeps the transport client as the `fetchFn`
 /// equivalent (it is passed in), and this struct carries the rest.
-pub type DiscoverFn=Arc<dyn Fn(&str)->futures::future::BoxFuture<'static,Result<OAuthServerInfo,OAuthRequestError>>+Send+Sync>;
-#[derive(Clone,Default)]
-pub struct RefreshManagerOptions { pub discover:Option<DiscoverFn>, pub max_retries:Option<usize>, pub retry_delay_ms:Option<u64> }
-static REFRESHES:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,(u64,RefreshFuture)>>>=std::sync::LazyLock::new(Default::default);
-static NEXT_REFRESH_ID:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
-fn refreshes()->std::sync::MutexGuard<'static,std::collections::HashMap<String,(u64,RefreshFuture)>> {REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
+pub type DiscoverFn = Arc<
+    dyn Fn(&str) -> futures::future::BoxFuture<'static, Result<OAuthServerInfo, OAuthRequestError>>
+        + Send
+        + Sync,
+>;
+#[derive(Clone, Default)]
+pub struct RefreshManagerOptions {
+    pub discover: Option<DiscoverFn>,
+    pub max_retries: Option<usize>,
+    pub retry_delay_ms: Option<u64>,
+}
+static REFRESHES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, RefreshFuture)>>,
+> = std::sync::LazyLock::new(Default::default);
+static NEXT_REFRESH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn refreshes()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<String, (u64, RefreshFuture)>> {
+    REFRESHES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 /// Whether a token refresh is currently running for this server URL (any manager in the process).
-pub fn is_refresh_in_progress(server_url:&str)->bool {refreshes().contains_key(server_url)}
+pub fn is_refresh_in_progress(server_url: &str) -> bool {
+    refreshes().contains_key(server_url)
+}
 /// Number of token refreshes currently running in the process.
-pub fn active_refresh_count()->usize {refreshes().len()}
-pub struct McpRefreshManager {provider:Arc<McpOAuthProvider>,client:reqwest::Client,discover:Option<DiscoverFn>,pub max_retries:usize,pub retry_delay:std::time::Duration}
+pub fn active_refresh_count() -> usize {
+    refreshes().len()
+}
+pub struct McpRefreshManager {
+    provider: Arc<McpOAuthProvider>,
+    client: reqwest::Client,
+    discover: Option<DiscoverFn>,
+    pub max_retries: usize,
+    pub retry_delay: std::time::Duration,
+}
 impl McpRefreshManager {
-    pub fn new(provider:Arc<McpOAuthProvider>,client:reqwest::Client)->Self {Self::new_with_options(provider,client,RefreshManagerOptions::default())}
-    pub fn new_with_options(provider:Arc<McpOAuthProvider>,client:reqwest::Client,options:RefreshManagerOptions)->Self {Self {provider,client,discover:options.discover,max_retries:options.max_retries.unwrap_or(2),retry_delay:std::time::Duration::from_millis(options.retry_delay_ms.unwrap_or(50))}}
-    pub async fn ensure_fresh(&self)->Result<Option<OAuthTokens>,OAuthRequestError> {
+    pub fn new(provider: Arc<McpOAuthProvider>, client: reqwest::Client) -> Self {
+        Self::new_with_options(provider, client, RefreshManagerOptions::default())
+    }
+    pub fn new_with_options(
+        provider: Arc<McpOAuthProvider>,
+        client: reqwest::Client,
+        options: RefreshManagerOptions,
+    ) -> Self {
+        Self {
+            provider,
+            client,
+            discover: options.discover,
+            max_retries: options.max_retries.unwrap_or(2),
+            retry_delay: std::time::Duration::from_millis(options.retry_delay_ms.unwrap_or(50)),
+        }
+    }
+    pub async fn ensure_fresh(&self) -> Result<Option<OAuthTokens>, OAuthRequestError> {
         // tokens.json read + parse is blocking file I/O; keep it off the async workers.
-        let provider=self.provider.clone();
-        let record=tokio::task::spawn_blocking(move ||provider.store.read()).await.map_err(|error|OAuthRequestError::Invalid(error.to_string()))??;let now=chrono::Utc::now().timestamp_millis() as f64;
-        if record.as_ref().and_then(|record|record.access_token.as_ref()).is_none(){return Ok(None);}
-        if !is_token_stale(record.as_ref(),now){return Ok(stored_auth_to_tokens(record.as_ref(),now));}
+        let provider = self.provider.clone();
+        let record = tokio::task::spawn_blocking(move || provider.store.read())
+            .await
+            .map_err(|error| OAuthRequestError::Invalid(error.to_string()))??;
+        let now = chrono::Utc::now().timestamp_millis() as f64;
+        if record
+            .as_ref()
+            .and_then(|record| record.access_token.as_ref())
+            .is_none()
+        {
+            return Ok(None);
+        }
+        if !is_token_stale(record.as_ref(), now) {
+            return Ok(stored_auth_to_tokens(record.as_ref(), now));
+        }
         self.refresh().await.map(Some)
     }
-    pub fn provider(&self)->&Arc<McpOAuthProvider> {&self.provider}
-    pub async fn refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.coalesced(false).await}
+    pub fn provider(&self) -> &Arc<McpOAuthProvider> {
+        &self.provider
+    }
+    pub async fn refresh(&self) -> Result<OAuthTokens, OAuthRequestError> {
+        self.coalesced(false).await
+    }
     /// Refreshes even when the stored token still looks fresh (used after the server rejected it).
-    pub async fn force_refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.coalesced(true).await}
-    async fn coalesced(&self,force:bool)->Result<OAuthTokens,OAuthRequestError> {
+    pub async fn force_refresh(&self) -> Result<OAuthTokens, OAuthRequestError> {
+        self.coalesced(true).await
+    }
+    async fn coalesced(&self, force: bool) -> Result<OAuthTokens, OAuthRequestError> {
         // One refresh per server URL across every manager in the process. The work runs in a
         // spawned task so it survives the first caller being dropped, and removes its own entry.
-        let key=self.provider.store.server_url.clone();
-        let shared={
-            let mut map=refreshes();
+        let key = self.provider.store.server_url.clone();
+        let shared = {
+            let mut map = refreshes();
             match map.get(&key) {
-                Some((_,existing))=>existing.clone(),
-                None=>{
-                    let id=NEXT_REFRESH_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
-                    let work=self.refresh_locked(force);let owner=key.clone();
-                    let handle=tokio::spawn(async move {
-                        let result=work.await;
-                        let mut map=refreshes();
-                        if map.get(&owner).is_some_and(|(current,_)|*current==id){map.remove(&owner);}
+                Some((_, existing)) => existing.clone(),
+                None => {
+                    let id = NEXT_REFRESH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let work = self.refresh_locked(force);
+                    let owner = key.clone();
+                    let handle = tokio::spawn(async move {
+                        let result = work.await;
+                        let mut map = refreshes();
+                        if map.get(&owner).is_some_and(|(current, _)| *current == id) {
+                            map.remove(&owner);
+                        }
                         result
                     });
-                    let shared:RefreshFuture=async move {handle.await.unwrap_or_else(|error|Err(OAuthRequestError::Invalid(error.to_string())))}.boxed().shared();
-                    map.insert(key,(id,shared.clone()));shared
+                    let shared: RefreshFuture = async move {
+                        handle.await.unwrap_or_else(|error| {
+                            Err(OAuthRequestError::Invalid(error.to_string()))
+                        })
+                    }
+                    .boxed()
+                    .shared();
+                    map.insert(key, (id, shared.clone()));
+                    shared
                 }
             }
         };
         shared.await
     }
-    fn refresh_locked(&self,force:bool)->futures::future::BoxFuture<'static,Result<OAuthTokens,OAuthRequestError>> {
-        let provider=self.provider.clone();let client=self.client.clone();let max_retries=self.max_retries;let delay=self.retry_delay;let discover=self.discover.clone();
+    fn refresh_locked(
+        &self,
+        force: bool,
+    ) -> futures::future::BoxFuture<'static, Result<OAuthTokens, OAuthRequestError>> {
+        let provider = self.provider.clone();
+        let client = self.client.clone();
+        let max_retries = self.max_retries;
+        let delay = self.retry_delay;
+        let discover = self.discover.clone();
         async move {
         let runtime=tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move ||provider.store.with_lock(|store| {
@@ -68,13 +155,26 @@ impl McpRefreshManager {
                 if !force && !is_token_stale(current.as_ref(),now) && let Some(tokens)=stored_auth_to_tokens(current.as_ref(),now){return Ok(tokens);}
                 let refresh=current.as_ref().and_then(|record|record.refresh_token.clone()).ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} has no refresh token",store.server_name)))))?;
                 let info=match &discover {Some(discover)=>discover(&store.server_url).await?,None=>super::oauth::discover(&provider,&client).await?};
+                // senpi#2940/#4194: a refresh token is presented only to the authorization server that issued it. A
+                // grant bound elsewhere, or one that cannot be attributed at all, is a continuity break: drop it and
+                // require a fresh sign-in rather than refreshing silently against whatever server discovery now names.
+                let authorization_server=super::oauth_issuer::validated_authorization_server_issuer(&info,&store.server_name).map_err(OAuthRequestError::Flow)?;
+                let issuer=current.as_ref().and_then(|record|record.issuer.clone());
+                if issuer.is_none() || !super::oauth_issuer::credentials_match_issuer(current.as_ref(),&authorization_server) {
+                    store.write_unlocked(None)?;
+                    let message=match issuer {
+                        None=>format!("MCP server {} has a saved sign-in with no record of the authorization server that issued it; credentials cleared, re-authentication required.",store.server_name),
+                        Some(issuer)=>format!("MCP server {} now uses authorization server {authorization_server}, but its saved sign-in was issued by {issuer}; credentials cleared, re-authentication required.",store.server_name),
+                    };
+                    return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,message))));
+                }
                 let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} is not registered",store.server_name)))))?;
                 let resource=current.as_ref().and_then(|record|record.resource.clone()).unwrap_or_else(||normalize_resource_url(&store.server_url));
                 let mut form=vec![("grant_type".into(),"refresh_token".into()),("refresh_token".into(),refresh.clone())];
                 add_resource_param(&mut form,&resource);
                 for attempt in 0..=max_retries {
                     match request_tokens(&client,&info,&information,form.clone()).await {
-                        Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64)))?;return Ok(tokens);}
+                        Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64,Some(authorization_server.as_str()))))?;return Ok(tokens);}
                         Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::InvalidGrant=>{store.write_unlocked(None)?;return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::InvalidGrant,format!("MCP server {} refresh rejected (invalid_grant); credentials cleared, re-authentication required.",store.server_name)))));}
                         Err(error) if attempt<max_retries && match &error {
                             OAuthRequestError::Flow(flow)=>super::oauth_errors::is_transient_token_error(&serde_json::json!({"errorCode":flow.error.message,"message":flow.error.message})),
@@ -91,12 +191,32 @@ impl McpRefreshManager {
         }.boxed()
     }
 }
-pub fn is_token_stale(record:Option<&McpStoredAuth>,now:f64)->bool {
-    let Some(record)=record else{return true;};
-    if record.access_token.as_ref().is_none_or(String::is_empty){return true;}
-    record.expires_at.is_some_and(|expires|expires-now<=REFRESH_LEEWAY_MS)
+pub fn is_token_stale(record: Option<&McpStoredAuth>, now: f64) -> bool {
+    let Some(record) = record else {
+        return true;
+    };
+    if record.access_token.as_ref().is_none_or(String::is_empty) {
+        return true;
+    }
+    record
+        .expires_at
+        .is_some_and(|expires| expires - now <= REFRESH_LEEWAY_MS)
 }
-pub fn assert_s256_supported(metadata:Option<&Value>,server:&str)->Result<(),Box<OAuthFlowError>> {
-    if metadata.and_then(|metadata|metadata.get("code_challenge_methods_supported")).and_then(Value::as_array).is_some_and(|methods|methods.contains(&Value::String("S256".into()))){return Ok(());}
-    Err(Box::new(OAuthFlowError::new(OAuthFailureKind::S256Unsupported,format!("MCP server {server} authorization server does not advertise PKCE S256 (code_challenge_methods_supported); refusing to authorize without proof-key protection."))))
+pub fn assert_s256_supported(
+    metadata: Option<&Value>,
+    server: &str,
+) -> Result<(), Box<OAuthFlowError>> {
+    if metadata
+        .and_then(|metadata| metadata.get("code_challenge_methods_supported"))
+        .and_then(Value::as_array)
+        .is_some_and(|methods| methods.contains(&Value::String("S256".into())))
+    {
+        return Ok(());
+    }
+    Err(Box::new(OAuthFlowError::new(
+        OAuthFailureKind::S256Unsupported,
+        format!(
+            "MCP server {server} authorization server does not advertise PKCE S256 (code_challenge_methods_supported); refusing to authorize without proof-key protection."
+        ),
+    )))
 }

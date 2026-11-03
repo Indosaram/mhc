@@ -203,8 +203,18 @@ async fn dispatch(
             .expect("registered lifecycle");
     }
 }
+/// Admission no longer waits for recovery: wait for the background chain and the gated DAG attach.
+async fn settle_start(component: &TaskComponent, dag: &maho_omo_task::dag_engine::TaskDagEngine) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        component.bridge.session_start_recovered().await;
+        dag.last_attach().await;
+    })
+    .await
+    .expect("session start recovery deadline");
+}
 fn start_event() -> ExtensionEvent {
     ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -335,6 +345,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
     let mut ctx = support::context();
     ctx.cwd = root.path().into();
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
+    settle_start(&component, &dag).await;
     let activity = Arc::new(Mutex::new(Vec::<JsonValue>::new()));
     let received = activity.clone();
     let activity_subscription = api.events.on(
@@ -376,11 +387,13 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
             definition,
             parent_session_id: "session".into(),
             root_session_id: "session".into(),
+            parent_model: None,
         })
         .expect("start")
         .snapshot
         .run_id;
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
+    settle_start(&component, &dag).await;
     let (attached, attachment) = mpsc::channel();
     let attachment_run = run.clone();
     let subscription = api.events.on(
@@ -463,6 +476,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
     foreign.cwd = root.path().into();
     foreign.session_manager = Arc::new(ForeignSession);
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &foreign).await;
+    settle_start(&component, &dag).await;
     let foreign_listeners = child.listeners.lock().expect("listeners").len();
     child.emit();
     rpc_timers.fire(150);
@@ -482,6 +496,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
     )
     .await;
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
+    settle_start(&component, &dag).await;
     let rebound = child.listeners.lock().expect("listeners").len();
     child.emit();
     rpc_timers.fire(150);

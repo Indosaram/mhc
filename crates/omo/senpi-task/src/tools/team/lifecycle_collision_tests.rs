@@ -248,6 +248,7 @@ fn given_a_first_save_collision_when_the_real_team_create_tool_creates_a_team_th
                     max_wall_clock_minutes: 120,
                 },
                 lead_session_id: "lead-session".to_string(),
+                root_session_id: None,
                 spawn_depth: 1,
                 now: None,
                 member_extension: None,

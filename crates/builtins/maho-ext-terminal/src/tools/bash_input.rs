@@ -10,8 +10,21 @@ pub struct BashInputInput<'a> {
     pub keys: &'a [String],
     pub submit: Option<bool>,
 }
-pub fn execute_bash_input(
-    runtime: Option<&mut TerminalRuntimeSession>,
+/// What bash-input.ts uses of a runtime: `exited` and `session.write`.
+pub trait BashInputRuntime {
+    fn exited(&self) -> Result<bool, crate::runtime_session::RuntimeError>;
+    fn write(&mut self, bytes: &[u8]) -> Result<(), crate::runtime_session::RuntimeError>;
+}
+impl BashInputRuntime for TerminalRuntimeSession {
+    fn exited(&self) -> Result<bool, crate::runtime_session::RuntimeError> {
+        TerminalRuntimeSession::exited(self)
+    }
+    fn write(&mut self, bytes: &[u8]) -> Result<(), crate::runtime_session::RuntimeError> {
+        TerminalRuntimeSession::write(self, bytes)
+    }
+}
+pub fn execute_bash_input<R: BashInputRuntime + ?Sized>(
+    runtime: Option<&mut R>,
     input: BashInputInput<'_>,
 ) -> TerminalToolResult {
     let Some(runtime) = runtime else {
@@ -70,6 +83,140 @@ pub fn execute_bash_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A runtime that records every write; `fail` makes the next write fail like a closed PTY.
+    #[derive(Default)]
+    struct FakeRuntime {
+        exited: bool,
+        writes: Vec<String>,
+        fail: bool,
+    }
+    impl BashInputRuntime for FakeRuntime {
+        fn exited(&self) -> Result<bool, crate::runtime_session::RuntimeError> {
+            Ok(self.exited)
+        }
+        fn write(&mut self, bytes: &[u8]) -> Result<(), crate::runtime_session::RuntimeError> {
+            if self.fail {
+                return Err(crate::runtime_session::RuntimeError::Pty(
+                    std::io::Error::other("pty session is closed").into(),
+                ));
+            }
+            self.writes
+                .push(String::from_utf8_lossy(bytes).into_owned());
+            Ok(())
+        }
+    }
+    fn send(
+        runtime: &mut FakeRuntime,
+        input: Option<&str>,
+        keys: &[&str],
+        submit: Option<bool>,
+    ) -> TerminalToolResult {
+        let keys = keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+        execute_bash_input(
+            Some(runtime),
+            BashInputInput {
+                bash_id: "bash_1",
+                input,
+                keys: &keys,
+                submit,
+            },
+        )
+    }
+    #[test]
+    fn input_defaults_to_submit_and_respects_submit_false() {
+        let mut runtime = FakeRuntime::default();
+        let result = send(&mut runtime, Some("ls"), &[], None);
+        assert_eq!(
+            result.content[0].text,
+            "Sent to bash_1: wrote input + Enter."
+        );
+        let result = send(&mut runtime, Some("partial"), &[], Some(false));
+        assert_eq!(result.content[0].text, "Sent to bash_1: wrote input.");
+        // An empty string is still written, but never auto-submitted.
+        let result = send(&mut runtime, Some(""), &[], None);
+        assert_eq!(result.content[0].text, "Sent to bash_1: wrote input.");
+        let result = send(&mut runtime, Some(""), &[], Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "Sent to bash_1: wrote input + Enter."
+        );
+        assert_eq!(runtime.writes, ["ls\r", "partial", "", "\r"]);
+    }
+    #[test]
+    fn keys_follow_input_and_unknown_keys_are_reported() {
+        let mut runtime = FakeRuntime::default();
+        let result = send(
+            &mut runtime,
+            Some("y"),
+            &["ctrl+c", "bogus", "up"],
+            Some(false),
+        );
+        assert_eq!(result.is_error, None);
+        assert_eq!(
+            result.content[0].text,
+            "Sent to bash_1: wrote input; sent 2 key(s); ignored unknown keys: bogus."
+        );
+        assert_eq!(runtime.writes, ["y", "\x03\x1b[A"]);
+        // Only unknown keys: nothing is written, the note still reports them.
+        let mut runtime = FakeRuntime::default();
+        let result = send(&mut runtime, None, &["nope"], None);
+        assert_eq!(result.is_error, None);
+        assert_eq!(
+            result.content[0].text,
+            "Sent to bash_1: ignored unknown keys: nope."
+        );
+        assert!(runtime.writes.is_empty());
+    }
+    #[test]
+    fn nothing_to_send_exited_and_failed_writes_are_errors() {
+        let mut runtime = FakeRuntime::default();
+        let result = send(&mut runtime, None, &[], None);
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "Nothing to send: provide `input` and/or `keys`."
+        );
+        let mut exited = FakeRuntime {
+            exited: true,
+            ..Default::default()
+        };
+        let result = send(&mut exited, Some("x"), &[], None);
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "Session bash_1 is not running; cannot send input."
+        );
+        assert!(exited.writes.is_empty());
+        let mut closed = FakeRuntime {
+            fail: true,
+            ..Default::default()
+        };
+        let result = send(&mut closed, Some("x"), &[], None);
+        assert_eq!(
+            result.content[0].text,
+            "Failed to write input: pty session is closed"
+        );
+        let result = send(&mut closed, None, &["enter"], None);
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "Failed to send keys: pty session is closed"
+        );
+        let missing = execute_bash_input::<FakeRuntime>(
+            None,
+            BashInputInput {
+                bash_id: "bash_999",
+                input: Some("x"),
+                keys: &[],
+                submit: None,
+            },
+        );
+        assert_eq!(missing.is_error, Some(true));
+        assert_eq!(
+            missing.content[0].text,
+            "No terminal session found with id: bash_999"
+        );
+    }
     use std::time::Duration;
     #[tokio::test]
     async fn literal_input_and_enter_reach_live_pty_without_polling()
@@ -126,7 +273,7 @@ mod tests {
     #[test]
     fn missing_input_and_real_pty_resize() -> Result<(), crate::runtime_session::RuntimeError> {
         assert_eq!(
-            execute_bash_input(
+            execute_bash_input::<TerminalRuntimeSession>(
                 None,
                 BashInputInput {
                     bash_id: "bash_999",

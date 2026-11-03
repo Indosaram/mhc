@@ -459,10 +459,10 @@ fn memory_fields(with_defaults: bool) -> Vec<Field> {
         dd(
             "projection",
             obj(vec![
-                dd("max_entries_per_directory", int_min(0.0), json!(40)),
-                dd("max_bytes", int_min(0.0), json!(24576)),
+                dd("max_entries_per_directory", int_min(0.0), json!(0)),
+                dd("max_bytes", int_min(0.0), json!(40960)),
             ]),
-            json!({}),
+            json!({"max_entries_per_directory": 0, "max_bytes": 40960}),
         ),
         dd(
             "reflection",
@@ -614,6 +614,19 @@ fn computer() -> Rule {
     ])
 }
 
+/// `model_pad`: display captions for the built-in profile families and tiers (no defaults).
+fn model_pad() -> Rule {
+    obj(vec![f(
+        "labels",
+        obj(vec![
+            f("daily", s()),
+            f("geeky", s()),
+            f("normal", s()),
+            f("heavy", s()),
+        ]),
+    )])
+}
+
 fn side_panel() -> Rule {
     obj(vec![
         d("enabled", Rule::Bool, json!(false)),
@@ -678,6 +691,7 @@ fn sections(include_gateway: bool) -> Vec<Field> {
         f("models", catalog()),
         f("model_profiles", model_profiles()),
         f("model_profile", s()),
+        f("model_pad", model_pad()),
         f("memory", memory()),
         f(
             "telemetry",

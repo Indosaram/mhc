@@ -52,7 +52,86 @@ pub type AgentHarnessSystemPromptFn<TContext> = Arc<
     dyn Fn(Option<TContext>, &Context) -> maho_ai::types::BoxFuture<'static, String> + Send + Sync,
 >;
 
+/// Pinned `systemPrompt?: string | ((toolContext, context) => string | Promise<string>)`. A plain
+/// string is returned as is: pinned `resolveSystemPrompt` never resolves `toolContext` for it.
+pub enum AgentHarnessSystemPrompt<TContext> {
+    Text(String),
+    Resolve(AgentHarnessSystemPromptFn<TContext>),
+}
+
+impl<TContext> Clone for AgentHarnessSystemPrompt<TContext> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Text(text) => Self::Text(text.clone()),
+            Self::Resolve(resolve) => Self::Resolve(resolve.clone()),
+        }
+    }
+}
+
+impl<TContext> From<AgentHarnessSystemPromptFn<TContext>> for AgentHarnessSystemPrompt<TContext> {
+    fn from(resolve: AgentHarnessSystemPromptFn<TContext>) -> Self {
+        Self::Resolve(resolve)
+    }
+}
+
+impl<TContext> From<String> for AgentHarnessSystemPrompt<TContext> {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl<TContext> From<&str> for AgentHarnessSystemPrompt<TContext> {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_owned())
+    }
+}
+
 pub type Resources = crate::harness::types::AgentHarnessResources;
+
+/// Pinned `OperationRequest`: the tagged admission request accepted by `AgentLane.accept`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OperationRequest {
+    Prompt {
+        operation_id: Option<String>,
+        prompt: String,
+        images: Vec<maho_ai::types::ImageContent>,
+    },
+    PromptMessages {
+        operation_id: Option<String>,
+        prompt: Vec<crate::types::AgentMessage>,
+    },
+    Skill {
+        operation_id: Option<String>,
+        name: String,
+        additional_instructions: Option<String>,
+    },
+    PromptTemplate {
+        operation_id: Option<String>,
+        name: String,
+        args: Option<Vec<String>>,
+    },
+    Compaction {
+        operation_id: Option<String>,
+        custom_instructions: Option<String>,
+    },
+    Navigation {
+        operation_id: Option<String>,
+        target_id: Option<String>,
+        options: Option<super::runtime::lane::NavigationOptions>,
+    },
+}
+
+/// Pinned `OperationAdmissionResult`.
+pub type OperationAdmissionResult =
+    Result<super::runtime::lane::OperationAdmission, super::runtime::lane::AdmissionError>;
+
+/// Pinned `LaneInfo`: one loaded lane as reported by `AgentHarness.lanes`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaneInfo {
+    pub name: String,
+    pub tip_id: Option<String>,
+    pub operation: Option<CurrentOperationInfo>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriveOptions {
@@ -136,8 +215,8 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     /// Pinned `toolContext?: TContext | ((context) => TContext | Promise<TContext>)`; `None` is
     /// the pinned `undefined`.
     pub tool_context: Option<ToolContextSource<TContext>>,
-    /// Pinned `systemPrompt?: (toolContext, context) => string | Promise<string>`.
-    pub system_prompt: Option<AgentHarnessSystemPromptFn<TContext>>,
+    /// Pinned `systemPrompt?: string | ((toolContext, context) => string | Promise<string>)`.
+    pub system_prompt: Option<AgentHarnessSystemPrompt<TContext>>,
     pub resources: Option<Resources>,
     pub stream_options: Option<AgentHarnessStreamOptions>,
     pub retry: Option<maho_ai::utils::retry::RetryPolicy>,

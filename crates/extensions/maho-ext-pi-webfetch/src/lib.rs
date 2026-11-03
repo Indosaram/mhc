@@ -2,6 +2,7 @@ pub mod webfetch {
     pub mod content;
     pub mod errors;
     pub mod fetcher;
+    pub mod readability;
     pub mod tool;
     pub mod renderers;
 }

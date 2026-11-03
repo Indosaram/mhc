@@ -1137,6 +1137,7 @@ fn start_spec(
         task_summary: persisted.task_summary.clone(),
         parent_session_id: record.parent_session_id.clone(),
         root_session_id: Some(record.root_session_id.clone()),
+        parent_model: record.parent_model.clone(),
         depth: session_depth + 1,
         category,
         subagent_type,
@@ -1146,6 +1147,15 @@ fn start_spec(
         run_in_background: true,
         ..ManagerStartSpec::default()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn start_spec_for_tests(
+    record: &DagRunRecordV1,
+    node_id: &DagNodeId,
+    session_depth: u32,
+) -> ManagerStartSpec {
+    start_spec(record, node_id, session_depth)
 }
 
 const MAX_RECOVERY_READMISSIONS: u32 = 3;

@@ -220,11 +220,53 @@ impl MemoryReflectionLiveWiring {
         now: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
     ) -> Result<(), String> {
+        self.on_settled_observed(session, api, now, ui, None)
+    }
+    /// `onSettled(sessionId, eventCtx, signal)`: an aborted observer never refreshes the footer or syncs
+    /// the RPC snapshot, and a footer write is dropped when the session's identity context changed
+    /// while the refresh ran (checked here before and after the refresh).
+    pub fn on_settled_observed(
+        &mut self,
+        session: &str,
+        api: &maho_ext_api::ExtensionApi,
+        now: i64,
+        ui: Option<&mut dyn MemoryFooterUi>,
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<(), String> {
+        crate::worker::run_liveness::throw_if_aborted(signal)?;
         let context = self.contexts.get(session);
+        let identity = context.map(|context| context.binding.clone());
         let active =
             context.is_some_and(|context| lock(&self.active_runs).is_active(&context.identity));
         self.footer.refresh(context, Some(session), active, now, ui);
-        self.sync_rpc(api, now)
+        let unchanged = self
+            .contexts
+            .get(session)
+            .map(|context| context.binding.clone())
+            == identity;
+        if !unchanged {
+            return Ok(());
+        }
+        self.sync_rpc_observed(api, now, signal)
+    }
+    pub fn sync_rpc_observed(
+        &mut self,
+        api: &maho_ext_api::ExtensionApi,
+        now: i64,
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<(), String> {
+        crate::worker::run_liveness::throw_if_aborted(signal)?;
+        let runs = lock(&self.active_runs);
+        let mut rpc = lock(&self.rpc);
+        rpc.sync_native_with_signal(
+            &Deps {
+                contexts: &self.contexts,
+                runs: &runs,
+            },
+            api,
+            now,
+            signal,
+        )
     }
     pub fn sync_rpc(&mut self, api: &maho_ext_api::ExtensionApi, now: i64) -> Result<(), String> {
         let runs = lock(&self.active_runs);

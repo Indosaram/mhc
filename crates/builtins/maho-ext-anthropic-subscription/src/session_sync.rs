@@ -98,18 +98,11 @@ fn image_neutral_content(content: &Value) -> Value {
             image_ids.push(id[..12].to_owned());
             normalized.push(json!({"type":"image","id":id[..12].to_owned()}));
         } else if block["type"] == "text"
-            && block["text"]
-                .as_str()
-                .is_some_and(|text| text.starts_with("[Image elided:"))
+            && let Some(ids) = block["text"].as_str().and_then(maho_core::image_elision_placeholder::elided_image_ids)
         {
-            if let Some((_, suffix)) = block["text"].as_str().and_then(|text| {
-                text.split_once(" (image id: ")
-                    .or_else(|| text.split_once(" (image ids: "))
-            }) {
-                for id in suffix.trim_end_matches(')').split(", ") {
-                    image_ids.push(id.to_owned());
-                    normalized.push(json!({"type":"image","id":id}));
-                }
+            for id in ids {
+                normalized.push(json!({"type":"image","id":id}));
+                image_ids.push(id);
             }
         } else {
             normalized.push(block.clone());
@@ -252,11 +245,30 @@ mod tests {
     fn image_elision_preserves_sent_message_hash() {
         let image = json!({"role":"user","content":[{"type":"text","text":"before"},{"type":"image","data":"image-data"},{"type":"text","text":"after"}]});
         let id = format!("{:x}", Sha256::digest(b"image-data"));
-        let elided = json!({"role":"user","content":[{"type":"text","text":"before"},{"type":"text","text":format!("[Image elided: an older image was removed to keep the request within the provider's size limit.] (image id: {})",&id[..12])},{"type":"text","text":"after"}]});
+        let placeholder = maho_core::image_elision_placeholder::IMAGE_ELISION_PLACEHOLDER;
+        let elided = json!({"role":"user","content":[{"type":"text","text":"before"},{"type":"text","text":format!("{placeholder} (image id: {})",&id[..12])},{"type":"text","text":"after"}]});
         assert_eq!(
             sent_message_hashes(&[image]),
             sent_message_hashes(&[elided])
         );
+    }
+    #[test]
+    fn malformed_image_placeholders_remain_distinct_sent_content() {
+        let prefix = maho_core::image_elision_placeholder::IMAGE_ELISION_PLACEHOLDER;
+        for text in [
+            "[Image elided: something else] (image id: 012345abcdef)".to_owned(),
+            format!("{prefix} (image id: xyz)"),
+            format!("{prefix} (image id: 012345ABCDEF)"),
+            format!("{prefix} (image id: 012345abcdef) trailing"),
+            "[Image elided: no id]".to_owned(),
+        ] {
+            let message = json!({"role":"user","content":[{"type":"image","data":"image-data"},{"type":"text","text":text}]});
+            let mut changed = message.clone();
+            changed["content"][1]["text"] = json!("different text");
+            let normalized = image_neutral_content(&message["content"]);
+            assert_eq!(normalized[1], message["content"][1]);
+            assert_ne!(sent_message_hashes(&[message]), sent_message_hashes(&[changed]));
+        }
     }
     #[test]
     fn delta_preserves_empty_text_images_and_raw_string_blocks() {

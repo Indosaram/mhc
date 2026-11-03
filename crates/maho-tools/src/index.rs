@@ -76,11 +76,13 @@ pub fn create_coding_tools(cwd: &Path, options: ToolsOptions) -> Vec<maho_agent:
     crate::tool_definition_wrapper::wrap_tool_definitions(
         create_coding_tool_definitions(cwd, options),
         None,
+        None,
     )
 }
 pub fn create_read_only_tools(cwd: &Path, options: ToolsOptions) -> Vec<maho_agent::AgentTool> {
     crate::tool_definition_wrapper::wrap_tool_definitions(
         create_read_only_tool_definitions(cwd, options),
+        None,
         None,
     )
 }

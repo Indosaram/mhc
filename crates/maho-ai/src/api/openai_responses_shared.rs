@@ -4,11 +4,14 @@
 //! conversion into the Responses input shape, and the state machine that turns `ResponseStreamEvent`s
 //! into `AssistantMessageEvent`s.
 //!
-//! Two deviations from the TS source, neither of them wire-visible: `sealContextProvenance` attaches
-//! a non-enumerable provenance object in senpi, which a `serde_json` value cannot carry (and which is
-//! never serialized to the provider payload), so the option is accepted and has no effect; and the
-//! streaming scratch buffers (`partialJson`, `customInput`) live in this module's slot table rather
-//! than on the content block, so a persisted block is identical without senpi's delete pass.
+//! Two deviations from the TS source, neither of them wire-visible: senpi's request-local context
+//! provenance rides as a non-enumerable property on the message and on each converted input item,
+//! which neither a typed `Message` nor a `serde_json` value can carry, so
+//! [`convert_responses_messages_with_provenance`] takes it index-aligned with `context.messages` and
+//! returns it index-aligned with the input items (`sealContextProvenance` seals or verifies exactly as
+//! senpi does, and nothing reaches the provider payload); and the streaming scratch buffers
+//! (`partialJson`, `customInput`) live in this module's slot table rather than on the content block,
+//! so a persisted block is identical without senpi's delete pass.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::pin::Pin;
@@ -25,7 +28,8 @@ use crate::api::constrained_sampling::{
     resolve_json_schema_strict_sampling,
 };
 use crate::api::responses_completion_grace::format_responses_completion_stall;
-use crate::api::transform_messages::{TransformMessagesOptions, transform_messages};
+use crate::api::transform_messages::{TransformMessagesOptions, transform_messages_with_sources};
+use crate::context_provenance::ContextProvenance;
 use crate::models::{calculate_cost, supports_configuration_update};
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, GrammarFormat,
@@ -276,12 +280,76 @@ pub fn convert_responses_messages(
     allowed_tool_call_providers: &BTreeSet<String>,
     options: &ConvertResponsesMessagesOptions,
 ) -> Vec<Value> {
+    convert_responses_messages_with_provenance(
+        model,
+        context,
+        allowed_tool_call_providers,
+        options,
+        &[],
+    )
+    .0
+}
+
+/// senpi `contextProvenanceForInput`: seal an unsealed provenance with the message fingerprint, or
+/// keep a sealed one only while the message still matches it.
+fn context_provenance_for_input(
+    provenance: &ContextProvenance,
+    message: &Message,
+    seal: bool,
+) -> Option<ContextProvenance> {
+    let fingerprint = serde_json::to_string(message).ok()?;
+    match provenance.get("integrity") {
+        None if seal => {
+            let mut sealed = provenance.clone();
+            sealed.insert("integrity".into(), Value::String(fingerprint));
+            Some(sealed)
+        }
+        Some(Value::String(stored)) if *stored == fingerprint => Some(provenance.clone()),
+        _ => None,
+    }
+}
+
+/// Carry the source provenance onto the resolved messages: resolution only drops or merges system
+/// messages and clones the rest, so the others pair with their source in order.
+fn align_context_provenance(
+    source: &[Message],
+    resolved: &[Message],
+    provenance: &[Option<ContextProvenance>],
+) -> Vec<Option<ContextProvenance>> {
+    let mut cursor = 0;
+    resolved
+        .iter()
+        .map(|message| {
+            let found = source[cursor..].iter().position(|candidate| candidate == message)?;
+            cursor += found + 1;
+            provenance.get(cursor - 1).cloned().flatten()
+        })
+        .collect()
+}
+
+/// `convertResponsesMessages` with senpi's request-local provenance as a typed side channel:
+/// `provenance` is index-aligned with `context.messages`, the second vector with the returned input
+/// items. User, assistant and tool-result items take their message's provenance when
+/// `seal_context_provenance` seals it or its stored integrity still matches (`withContextProvenance`).
+pub fn convert_responses_messages_with_provenance(
+    model: &Model,
+    context: &Context,
+    allowed_tool_call_providers: &BTreeSet<String>,
+    options: &ConvertResponsesMessagesOptions,
+    provenance: &[Option<ContextProvenance>],
+) -> (Vec<Value>, Vec<Option<ContextProvenance>>) {
     let resolved_context = crate::types::transcript::resolve_provider_context(
         context,
         model.compat.as_ref().is_some_and(|compat| {
             compat.openai_responses().supports_mid_convo_system_messages == Some(true)
         }),
     );
+    let resolved_provenance = if provenance.iter().any(Option::is_some) {
+        align_context_provenance(&context.messages, &resolved_context.messages, provenance)
+    } else {
+        Vec::new()
+    };
+    let seal = options.seal_context_provenance == Some(true);
     let context = &resolved_context;
     let transcript = crate::types::transcript::normalize_context(context);
     let declared_tools = Some(crate::types::transcript::get_declared_tools(
@@ -322,7 +390,7 @@ pub fn convert_responses_messages(
         format!("{normalized_call_id}|{normalized_item_id}")
     };
 
-    let transformed_messages = transform_messages(
+    let transformed_messages = transform_messages_with_sources(
         &context.messages,
         model,
         Some(&normalize_tool_call_id),
@@ -363,7 +431,18 @@ pub fn convert_responses_messages(
     }
 
     let mut msg_index: usize = 0;
-    for msg in &transformed_messages {
+    let mut item_provenance: Vec<Option<ContextProvenance>> = Vec::new();
+    let mut current_provenance: Option<ContextProvenance> = None;
+    for (msg, source) in &transformed_messages {
+        // Every item the previous message pushed carries its provenance.
+        item_provenance.resize(messages.len(), current_provenance.take());
+        current_provenance = match msg {
+            Message::User(_) | Message::Assistant(_) | Message::ToolResult(_) => source
+                .and_then(|index| resolved_provenance.get(index))
+                .and_then(Option::as_ref)
+                .and_then(|provenance| context_provenance_for_input(provenance, msg, seal)),
+            _ => None,
+        };
         match msg {
             Message::System(system) => {
                 let text = crate::utils::text::render_system_message_update(
@@ -423,6 +502,10 @@ pub fn convert_responses_messages(
                             == Some("configuration_update") =>
                     {
                         *messages.last_mut().expect("just checked") = next;
+                        // senpi replaces the item with a fresh object, which carries no provenance.
+                        if let Some(last) = item_provenance.last_mut() {
+                            *last = None;
+                        }
                     }
                     _ => messages.push(next),
                 }
@@ -728,8 +811,9 @@ pub fn convert_responses_messages(
         }
         msg_index += 1;
     }
+    item_provenance.resize(messages.len(), current_provenance.take());
 
-    messages
+    (messages, item_provenance)
 }
 
 /// `convertResponsesTools`.
@@ -1151,6 +1235,7 @@ pub async fn process_responses_stream(
     model: &Model,
     options: &ResponsesStreamOptions<'_>,
 ) -> Result<(), ResponsesStreamError> {
+    crate::utils::assistant_capture::enable_assistant_capture(stream);
     let mut state = StreamState::new();
 
     let mut buffer = String::new();
@@ -1328,6 +1413,26 @@ fn push_tool_call_delta(
     });
 }
 
+/// `pushAssistantProgress(stream, { type: "message_block_state", contentIndex, phase, block })`
+/// for the provider-native block at `content_index`.
+fn push_native_block_state(
+    stream: &AssistantMessageEventStream,
+    output: &AssistantMessage,
+    content_index: usize,
+    phase: crate::utils::assistant_capture::BlockPhase,
+) {
+    if let Some(block) = output.content.get(content_index) {
+        crate::utils::assistant_capture::push_assistant_progress(
+            stream,
+            crate::utils::assistant_capture::AssistantProgress::block_state(
+                content_index,
+                phase,
+                block,
+            ),
+        );
+    }
+}
+
 fn create_slot(
     output_index: usize,
     item: &Value,
@@ -1385,10 +1490,18 @@ fn create_slot(
             slot.partial_json = Some(field_str(item, "arguments").unwrap_or_default().to_owned());
             state.output_slots.insert(output_index, slot);
             state.partial_json_blocks.insert(content_index);
-            stream.push(AssistantMessageEvent::ToolcallStart {
-                content_index,
-                partial: output.clone(),
-            });
+            stream.push_with_hint(
+                AssistantMessageEvent::ToolcallStart {
+                    content_index,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint {
+                    raw_argument_prefix: Some(
+                        field_str(item, "arguments").unwrap_or_default().to_owned(),
+                    ),
+                    ..Default::default()
+                },
+            );
         }
         "custom_tool_call" => {
             let input_property = options
@@ -1448,6 +1561,12 @@ fn create_slot(
             state.output_slots.insert(
                 output_index,
                 Slot::new(SlotKind::ProviderNative, content_index),
+            );
+            push_native_block_state(
+                stream,
+                output,
+                content_index,
+                crate::utils::assistant_capture::BlockPhase::Insert,
             );
         }
     }
@@ -1647,11 +1766,20 @@ fn handle_event(
                     .cloned()
                     .unwrap_or_default();
             }
-            if let Some(delta) = arguments.strip_prefix(previous_partial_json.as_str())
-                && !delta.is_empty()
-            {
-                let slot = state.output_slots.get(&output_index).expect("checked");
-                push_tool_call_delta(slot, Some(delta.to_owned()), output, stream);
+            if let Some(delta) = arguments.strip_prefix(previous_partial_json.as_str()) {
+                if !delta.is_empty() {
+                    let slot = state.output_slots.get(&output_index).expect("checked");
+                    push_tool_call_delta(slot, Some(delta.to_owned()), output, stream);
+                }
+            } else {
+                crate::utils::assistant_capture::push_assistant_progress(
+                    stream,
+                    crate::utils::assistant_capture::AssistantProgress::MessageToolArgumentsReset {
+                        content_index,
+                        parsed_through: crate::utils::assistant_capture::utf16_len(&arguments),
+                        raw_argument_prefix: arguments.clone(),
+                    },
+                );
             }
         }
         "response.custom_tool_call_input.delta" => {
@@ -1722,6 +1850,12 @@ fn handle_event(
                     output,
                     state,
                 )?;
+                push_native_block_state(
+                    stream,
+                    output,
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::End,
+                );
                 state
                     .finalized_native_image_output_indexes
                     .insert(output_index);
@@ -1907,6 +2041,12 @@ fn handle_event(
                     block.subtype = item_type;
                     block.raw = item;
                 }
+                push_native_block_state(
+                    stream,
+                    output,
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::End,
+                );
                 state.output_slots.remove(&output_index);
             }
             state.open_items = state.open_items.saturating_sub(1);
@@ -1914,7 +2054,7 @@ fn handle_event(
         }
         "response.completed" | "response.incomplete" => {
             let response = event.get("response").cloned().unwrap_or(Value::Null);
-            finalize_response(&response, output, model, options, state)?;
+            finalize_response(&response, output, stream, model, options, state)?;
         }
         "error" => {
             let nested = event.get("error");
@@ -1960,6 +2100,7 @@ fn handle_event(
 fn finalize_response(
     response: &Value,
     output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
     model: &Model,
     options: &ResponsesStreamOptions<'_>,
     state: &mut StreamState,
@@ -1971,7 +2112,7 @@ fn finalize_response(
         .cloned()
         .unwrap_or_default();
     backfill_reasoning_signatures(&response_output, output, state);
-    backfill_native_image_generation_calls(&response_output, output, state)?;
+    backfill_native_image_generation_calls(&response_output, output, stream, options, state)?;
 
     if let Some(id) = field_str(response, "id") {
         output.response_id = Some(id.to_owned());
@@ -2100,6 +2241,8 @@ fn backfill_reasoning_signatures(
 fn backfill_native_image_generation_calls(
     response_output: &[Value],
     output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    options: &ResponsesStreamOptions<'_>,
     state: &mut StreamState,
 ) -> Result<(), ResponsesStreamError> {
     for (output_index, output_item) in response_output.iter().enumerate() {
@@ -2112,13 +2255,15 @@ fn backfill_native_image_generation_calls(
         let Some(image_item) = read_native_image_generation_call(output_item) else {
             continue;
         };
-        match state
+        // `existingSlot ?? createSlot(outputIndex, outputItem)`: a missing slot is created (and
+        // its insert recorded) before the end record.
+        let existing = state
             .output_slots
             .get(&output_index)
             .filter(|slot| slot.kind == SlotKind::ProviderNative)
-        {
-            Some(slot) => {
-                let content_index = slot.content_index;
+            .map(|slot| slot.content_index);
+        let content_index = match existing {
+            Some(content_index) => {
                 reconcile_native_image_slot(
                     output_index,
                     content_index,
@@ -2126,29 +2271,20 @@ fn backfill_native_image_generation_calls(
                     output,
                     state,
                 )?;
+                content_index
             }
             None => {
                 let content_index = output.content.len();
-                let raw = reconcile_native_image_generation_call(&image_item);
-                reconcile_native_image_slot(
-                    output_index,
-                    content_index,
-                    &image_item,
-                    output,
-                    state,
-                )?;
-                output
-                    .content
-                    .push(ContentBlock::ProviderNative(ProviderNativeContent {
-                        subtype: String::from("image_generation_call"),
-                        raw,
-                    }));
-                state.output_slots.insert(
-                    output_index,
-                    Slot::new(SlotKind::ProviderNative, content_index),
-                );
+                create_slot(output_index, output_item, output, stream, options, state)?;
+                content_index
             }
-        }
+        };
+        push_native_block_state(
+            stream,
+            output,
+            content_index,
+            crate::utils::assistant_capture::BlockPhase::End,
+        );
         state.output_slots.remove(&output_index);
     }
     Ok(())
@@ -2176,6 +2312,60 @@ mod tests {
             "compat": capability.map(|value| json!({"supportsConfigurationUpdate": value})),
         }))
         .expect("model fixture")
+    }
+
+    #[test]
+    fn seal_context_provenance_seals_then_verifies_message_integrity() {
+        let model = test_model("openai-responses", "m", None);
+        let user = |text: &str| {
+            Message::User(crate::types::UserMessage {
+                content: UserContent::Text(text.into()),
+                timestamp: 0,
+            })
+        };
+        let marker: ContextProvenance =
+            serde_json::from_value(json!({"scope": "s", "ordinal": 0})).expect("marker");
+        let convert = |messages: Vec<Message>, provenance: &[Option<ContextProvenance>], seal| {
+            convert_responses_messages_with_provenance(
+                &model,
+                &Context {
+                    system_prompt: Some("prompt".into()),
+                    messages,
+                    tools: None,
+                    active_tool_names: None,
+                },
+                &BTreeSet::new(),
+                &ConvertResponsesMessagesOptions {
+                    seal_context_provenance: Some(seal),
+                    ..ConvertResponsesMessagesOptions::default()
+                },
+                provenance,
+            )
+        };
+        // Sealing stamps the source message fingerprint onto its own input item only.
+        let (items, sealed) = convert(
+            vec![user("kept"), user("tail")],
+            &[Some(marker.clone()), None],
+            true,
+        );
+        assert_eq!(items.len(), 3);
+        assert_eq!(sealed.len(), 3);
+        assert_eq!(sealed[0], None, "the system prompt item carries no provenance");
+        let stamp = sealed[1].clone().expect("sealed provenance");
+        assert_eq!(stamp["ordinal"], json!(0));
+        assert_eq!(
+            stamp["integrity"],
+            json!(serde_json::to_string(&user("kept")).expect("fingerprint"))
+        );
+        assert_eq!(sealed[2], None);
+        // Without sealing an unsealed marker never reaches an item.
+        let (_, unsealed) = convert(vec![user("kept")], &[Some(marker)], false);
+        assert_eq!(unsealed, vec![None, None]);
+        // A sealed marker survives an unchanged message and is dropped once the message changes.
+        let (_, verified) = convert(vec![user("kept")], &[Some(stamp.clone())], false);
+        assert_eq!(verified[1], Some(stamp.clone()));
+        let (_, changed) = convert(vec![user("edited")], &[Some(stamp)], true);
+        assert_eq!(changed[1], None);
     }
 
     #[test]

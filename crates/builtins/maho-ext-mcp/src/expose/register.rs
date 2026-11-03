@@ -1,5 +1,5 @@
 use super::schema_compat::{
-    McpToolNameEntry, build_mcp_tool_names, convert_json_schema_to_type_box, map_mcp_tool_result,
+    McpToolNameEntry, build_mcp_tool_names, map_mcp_tool_result,
 };
 use crate::{
     catalog::McpToolCatalogEntry,
@@ -8,19 +8,12 @@ use crate::{
 };
 use maho_ext_api::{ToolContent, ToolDefinition, ToolError, ToolExecutionMode, ToolResult};
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{path::PathBuf, sync::Arc};
 #[derive(Clone)]
 pub struct McpNamedCatalogEntry {
     pub entry: McpToolCatalogEntry,
     pub name: String,
 }
-static NEXT_PROGRESS_TOKEN: AtomicU64 = AtomicU64::new(0);
 pub fn map_mcp_catalog_names(entries: &[McpToolCatalogEntry]) -> Vec<McpNamedCatalogEntry> {
     let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
         .expect("compiled collation data is available");
@@ -55,55 +48,96 @@ pub fn build_mcp_tool_definitions(
     map_mcp_catalog_names(entries).into_iter().map(|named|{
         let entry=named.entry;let label=format!("{}/{}",entry.server,entry.tool);
         let description=entry.description.clone().unwrap_or_else(||format!("MCP tool {label}"));
-        let schema=convert_json_schema_to_type_box(&entry.schema).schema;
-        let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
+        let schema=super::schema_compat::convert_json_schema_to_type_box_with(&entry.schema,entry.modern).schema;
+        let defaults=McpGuardDefaults {agent_dir:agent_dir.clone(),artifacts:artifacts.clone(),output_guard:output_guard.clone()};
+        let identity_entry=entry.clone();let name=named.name.clone();
         let mut tool=ToolDefinition::new(&named.name,&description,schema,Arc::new(move |call|{
-            let entry=entry.clone();let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
+            let entry=entry.clone();let defaults=defaults.clone();let name=name.clone();
             Box::pin(async move {
                 call.signal.check()?;
-                let params=if call.params.is_object(){call.params}else{json!({})};
-                let operation=||async {
-                if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
-                    return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
-                }
-                let client=if let Some(runtime)=&entry.runtime {
-                    runtime.health.ensure_connection(&runtime.connection).await?;
-                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                    runtime.connection.client()?
-                }else{
-                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                    match &entry.connection {Some(connection)=>connection.client()?,None=>entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?}
-                };
-                let send=||async {
-                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else if let Some(connection)=&entry.connection {connection.client()?}else{client.clone()};
-                let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
-                let mut notifications=client.notifications.subscribe();
-                let mut notifications_open=true;
-                let request=client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
-                let result=loop {tokio::select! {
-                    biased;
-                    notification=notifications.recv(),if notifications_open=>{
-                        let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(tokio::sync::broadcast::error::RecvError::Closed)=>{notifications_open=false;continue}};
-                        let progress=value.get("params").unwrap_or(&Value::Null);
-                        if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
-                            let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
-                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool})), structured_content: None, is_error: None }).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
-                        }
-                    }
-                    result=&mut request=>{call.signal.check().map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;break result?;},
-                }};
-                Ok::<_,crate::errors::McpError>(result)
-                };
-                if let Some(runtime)=&entry.runtime {crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,send).await}else{send().await}
-                };
-                let result=if let Some(runtime)=&entry.runtime {
-                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,operation)).await
-                }else{operation().await}.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;
-                mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
+                let params=if call.params.is_object() || entry.modern {call.params.clone()}else{json!({})};
+                // register.ts: the invocation input is the definition's own (record) arguments.
+                let invocation=crate::invocation::McpInvocation::from_call(&call,&name,params.clone());
+                execute_mcp_catalog_entry(&entry,params,&call,&invocation,&defaults).await
             })
         }));
+        // register.ts `registerDispatchIdentity(schema, () => entry.invocation?.identity(entry))`.
+        maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(&mut tool,move |_|identity_entry.invocation.as_ref().map(|resolver|resolver.identity(&identity_entry)));
         tool.label=label;tool.execution_mode=Some(ToolExecutionMode::Parallel);tool
     }).collect()
+}
+
+/// The output-guard settings a definition falls back to when its catalog entry carries none.
+#[derive(Clone)]
+pub struct McpGuardDefaults {
+    pub agent_dir: PathBuf,
+    pub artifacts: Arc<McpOutputArtifacts>,
+    pub output_guard: Option<OutputGuardSettings>,
+}
+
+/// register.ts `executeMcpCatalogEntry`: the guarded call path for one catalog entry, shared by the direct and
+/// searchable definitions and the Tier-C proxy. A resolver refusal is a guarded `{error}` result; the call's
+/// dispatch approval never outlives it.
+pub async fn execute_mcp_catalog_entry(
+    entry: &McpToolCatalogEntry,
+    params: Value,
+    call: &maho_ext_api::ToolCall<'_>,
+    invocation: &crate::invocation::McpInvocation<'_>,
+    defaults: &McpGuardDefaults,
+) -> Result<ToolResult, ToolError> {
+    struct Forget(Option<maho_ext_api::invocation_input::InvocationInput>);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            if let Some(input) = &self.0 {
+                maho_ext_permission_system::dispatch::forget_dispatch_approval(input);
+            }
+        }
+    }
+    let _forget = Forget(invocation.input_identity.clone());
+    // invocation.ts validates against the current schema; without a resolver the offered modern schema is
+    // checked here, and an unusable schema refuses the call as schema_changed.
+    // A refusal is a result the model can read, not a thrown error (senpi-mcp-34/35).
+    let refusal=if entry.invocation.is_none() && entry.modern {
+        match crate::modern::tool_schema::compile_modern_schema(&entry.schema) {
+            Err(error)=>Some(format!("{}: {}",error.code.as_str(),error.message)),
+            Ok(validator) if !validator.validate(&params)=>Some("Arguments do not match the current MCP tool schema.".to_owned()),
+            Ok(_)=>None,
+        }
+    } else {None};
+    let outcome=match refusal {
+        Some(message)=>super::call::McpCallOutcome::Refused(crate::invocation::McpInvocationError {
+            kind:crate::invocation::McpInvocationErrorKind::SchemaChanged,
+            message,
+            server:entry.server.clone(),
+            tool:entry.tool.clone(),
+            current_definition:Some(entry.schema.clone()),
+        }),
+        None=>super::call::call_mcp_tool_for(entry,params,call.id,&call.signal,call.on_update.as_deref(),Some(invocation)).await?,
+    };
+    match outcome {
+        super::call::McpCallOutcome::Refused(error) => {
+            let block=json!({"type":"text","text":json!({"error":error}).to_string()});
+            let guarded=apply_mcp_output_guard(std::slice::from_ref(&block),McpOutputGuardOptions {
+                agent_dir:entry.agent_dir.as_deref().unwrap_or(&defaults.agent_dir),
+                artifacts:Some(entry.artifacts.as_deref().unwrap_or(&defaults.artifacts)),
+                server:&entry.server,
+                output_guard:entry.output_guard.as_ref().or(defaults.output_guard.as_ref()),
+            });
+            let content=guarded.iter().map(|block|ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or(""))).collect();
+            Ok(ToolResult {
+                content,
+                details:Some(maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"error":error,"preview":error.kind.as_str(),"server":entry.server,"tool":entry.tool}))),
+                structured_content:None,
+                is_error:None,
+            })
+        }
+        super::call::McpCallOutcome::Called {entry:current,result} => {
+            let mut details_entry=(*current).clone();
+            // The details name the offered tool (`server`/`tool` of `entry`), as upstream.
+            details_entry.server=entry.server.clone();details_entry.tool=entry.tool.clone();
+            mapped_guarded_result(&details_entry,&result,current.agent_dir.as_deref().or(entry.agent_dir.as_deref()).unwrap_or(&defaults.agent_dir),current.artifacts.as_ref().or(entry.artifacts.as_ref()).unwrap_or(&defaults.artifacts),current.output_guard.as_ref().or(entry.output_guard.as_ref()).or(defaults.output_guard.as_ref()))
+        }
+    }
 }
 pub fn mapped_guarded_result(
     entry: &McpToolCatalogEntry,
@@ -123,10 +157,12 @@ pub fn mapped_guarded_result(
     let mapped = map_mcp_tool_result(&normalized);
     if mapped.get("ok") == Some(&Value::Bool(false)) {
         return Err(ToolError::Message(
-            mapped["error"]["message"]
-                .as_str()
-                .unwrap_or("MCP tool returned an error result.")
-                .into(),
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                mapped["error"]["message"]
+                    .as_str()
+                    .unwrap_or("MCP tool returned an error result."),
+                "<redacted>",
+            ),
         ));
     }
     let blocks = mapped
@@ -180,4 +216,61 @@ pub fn mapped_guarded_result(
         structured_content: None,
         is_error: None,
     })
+}
+
+/// register.ts `truncatePreview`: at most 120 UTF-16 units, else the first 117 plus `...`.
+fn truncate_preview(value: &str) -> String {
+    let units = value.encode_utf16().collect::<Vec<_>>();
+    if units.len() <= 120 {
+        value.to_owned()
+    } else {
+        format!("{}...", String::from_utf16_lossy(&units[..117]))
+    }
+}
+
+/// JavaScript `String.prototype.trim`: Unicode white space and the BOM, but not NEL (U+0085).
+pub(crate) fn js_trim(value: &str) -> &str {
+    value.trim_matches(|character: char| {
+        (character.is_whitespace() && character != '\u{85}') || character == '\u{feff}'
+    })
+}
+
+/// The text `details.preview ?? fallback` interpolates into a template literal.
+pub(crate) fn details_preview(details: &Value, fallback: &str) -> String {
+    match details.get("preview") {
+        None | Some(Value::Null) => fallback.to_owned(),
+        Some(Value::String(preview)) => preview.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// register.ts `renderCall`/`renderResult` for a direct or searchable MCP tool:
+/// the call is the bold `toolTitle` `name <args JSON preview>`, the result is the
+/// `toolOutput` `name: running` while partial, else `name: <details.preview>`.
+pub fn mcp_tool_renderers(name: &str) -> crate::tool_registrar::McpToolRenderers {
+    use maho_tui::components::text::Text;
+    let call_name = name.to_owned();
+    let result_name = name.to_owned();
+    maho_ext_api::ToolRenderers {
+        render_call: Some(Arc::new(move |args, theme, _context| {
+            let preview = truncate_preview(&args.to_string());
+            let title = format!("{call_name} {preview}");
+            Box::new(Text::with_padding(
+                theme.fg("toolTitle", &theme.bold(js_trim(&title))),
+                0,
+                0,
+            ))
+        })),
+        render_result: Some(Arc::new(move |result, options, theme, _context| {
+            let title = if options.is_partial {
+                format!("{result_name}: running")
+            } else {
+                format!(
+                    "{result_name}: {}",
+                    details_preview(&result.details, "(empty result)")
+                )
+            };
+            Box::new(Text::with_padding(theme.fg("toolOutput", &title), 0, 0))
+        })),
+    }
 }

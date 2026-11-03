@@ -106,3 +106,28 @@ async fn subscriptions_drop_malformed_notifications_before_callbacks() {
     list_task.abort();resource_task.abort();let _=list_task.await;let _=resource_task.await;
     client.close().await.unwrap();
 }
+#[test]
+fn tombstone_render_call_marks_the_tool_removed_without_a_result_renderer() {
+    use crate::support::{padded,render_call_lines,render_result_lines};
+    let lines=render_call_lines(mcp_tombstone_renderers("mcp_fx_removed"),json!({}),40).unwrap();
+    assert_eq!(lines,vec![padded("\x1b[38;2;4;5;6mmcp_fx_removed (removed)\x1b[39m","mcp_fx_removed (removed)",40)]);
+    assert!(render_result_lines(mcp_tombstone_renderers("mcp_fx_removed"),&maho_ext_api::AgentToolResult::text("x"),false,40).is_none());
+}
+#[test]
+fn session_registrar_publishes_tombstone_renderer_and_keeps_earlier_renderers() {
+    use maho_ext_mcp::tool_registrar::{McpToolRegistrar,SessionMcpToolRegistrar};
+    let runtime=maho_ext_api::ExtensionRuntime::default();
+    let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("<builtin:mcp>",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),runtime.clone());
+    let registrar=SessionMcpToolRegistrar::from_api(&api);
+    registrar.register_tool_with_renderers(build_mcp_tombstone_definition("mcp_fx_first","fx"),mcp_tombstone_renderers("mcp_fx_first")).unwrap();
+    // A second retained handle adopts the live renderers, so its publication keeps the first tombstone's.
+    let other=SessionMcpToolRegistrar::from_api(&api);
+    other.register_tool_with_renderers(build_mcp_tombstone_definition("mcp_fx_second","fx"),mcp_tombstone_renderers("mcp_fx_second")).unwrap();
+    let theme=crate::support::render_theme();
+    for name in ["mcp_fx_first","mcp_fx_second"] {
+        let renderers=runtime.live_erased_tool_renderer("<builtin:mcp>",name).flatten().unwrap();
+        assert!(renderers.has_call_renderer());assert!(!renderers.has_result_renderer());
+        let visible=format!("{name} (removed)");
+        assert_eq!(renderers.render_call(&json!({}),&theme,40).unwrap(),vec![crate::support::padded(&format!("\x1b[38;2;4;5;6m{visible}\x1b[39m"),&visible,40)]);
+    }
+}

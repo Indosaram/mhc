@@ -18,6 +18,9 @@ pub struct SharedMcpLease {
     released: AtomicBool,
     local_generation: AtomicU64,
     refresh_catalog: AtomicBool,
+    /// Upstream lease `requestLifetimeSignal`: this owner's origins end on its own bump or release, never
+    /// another owner's.
+    request_lifetime: std::sync::Mutex<maho_ext_api::AbortSignal>,
 }
 impl SharedMcpLease {
     pub fn base_connection(&self) -> Arc<crate::connection::ServerConnection> {
@@ -31,6 +34,7 @@ impl SharedMcpLease {
             released: AtomicBool::new(false),
             local_generation: AtomicU64::new(0),
             refresh_catalog: AtomicBool::new(false),
+            request_lifetime: std::sync::Mutex::new(maho_ext_api::AbortSignal::default()),
         })
     }
     fn assert_attached(&self) -> Result<(), McpError> {
@@ -61,8 +65,22 @@ impl SharedMcpLease {
         self.shared.connect().await?;
         Ok(())
     }
+    pub fn request_lifetime_signal(&self) -> maho_ext_api::AbortSignal {
+        self.request_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
     pub fn bump_generation(&self) -> Result<(), McpError> {
         self.assert_attached()?;
+        {
+            let mut lifetime = self
+                .request_lifetime
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lifetime.abort();
+            *lifetime = maho_ext_api::AbortSignal::default();
+        }
         self.local_generation.fetch_add(1, Ordering::AcqRel);
         self.refresh_catalog.store(true, Ordering::Release);
         Ok(())
@@ -111,6 +129,7 @@ impl SharedMcpLease {
     }
     pub fn dispose(&self) {
         if !self.released.swap(true, Ordering::AcqRel) {
+            self.request_lifetime_signal().abort();
             self.shared.release(self.owner);
         }
     }

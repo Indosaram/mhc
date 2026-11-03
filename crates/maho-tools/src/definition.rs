@@ -80,22 +80,39 @@ pub trait ToolContext: Send + Sync {
             "Approved monitor parent is unavailable".into(),
         ))
     }
+    /// The concrete host context behind this view, for callers that need host-only state (an MCP
+    /// call reads the extension context its permission fence is evaluated in). `None` by default.
+    fn as_any(&self) -> Option<&(dyn std::any::Any + Send + Sync + 'static)> {
+        None
+    }
 }
 
 /// Cloneable abort subscription; receivers observe cancellation even when registered afterwards.
 #[derive(Clone, Debug)]
-pub struct AbortSignal(tokio::sync::watch::Sender<bool>);
+pub struct AbortSignal(tokio::sync::watch::Sender<Option<Option<String>>>);
 impl Default for AbortSignal {
     fn default() -> Self {
-        Self(tokio::sync::watch::channel(false).0)
+        Self(tokio::sync::watch::channel(None).0)
     }
 }
 impl AbortSignal {
     pub fn abort(&self) {
-        self.0.send_replace(true);
+        self.abort_with_reason(None);
+    }
+    pub fn abort_with_reason(&self, reason: Option<String>) {
+        self.0.send_if_modified(|state| {
+            if state.is_some() {
+                return false;
+            }
+            *state = Some(reason);
+            true
+        });
+    }
+    pub fn reason(&self) -> Option<String> {
+        self.0.borrow().as_ref().cloned().flatten()
     }
     pub fn is_aborted(&self) -> bool {
-        *self.0.borrow()
+        self.0.borrow().is_some()
     }
     pub fn check(&self) -> Result<(), ToolError> {
         if self.is_aborted() {
@@ -107,7 +124,7 @@ impl AbortSignal {
     pub async fn cancelled(&self) {
         let mut receiver = self.0.subscribe();
         loop {
-            if *receiver.borrow_and_update() {
+            if receiver.borrow_and_update().is_some() {
                 return;
             }
             if receiver.changed().await.is_err() {
@@ -224,6 +241,31 @@ impl ToolPermissionRequest {
 pub type ToolPermissionParser =
     Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
 
+/// Identity of the owner of a dispatched operation (senpi `DispatchIdentity.owner`): compared by
+/// identity, never by value, so a replaced offer never matches the one that was approved.
+#[derive(Clone, Debug, Default)]
+pub struct ToolDispatchOwner(Arc<()>);
+impl ToolDispatchOwner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ToolDispatchOwner {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ToolDispatchOwner {}
+/// senpi `DispatchIdentity`: the offered operation a call dispatches, as shown when it was approved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolDispatchIdentity {
+    pub owner: ToolDispatchOwner,
+    pub metadata: String,
+    pub operation: Option<String>,
+}
+pub type ToolDispatchIdentityResolver =
+    Arc<dyn Fn(&Value) -> Option<ToolDispatchIdentity> + Send + Sync>;
+
 /// Where a tool runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolPlacement {
@@ -297,6 +339,9 @@ pub struct ToolDefinition {
     pub execute: ToolExecutor,
     pub kernel_prelude: Option<KernelPrelude>,
     pub permission_parser: Option<ToolPermissionParser>,
+    /// senpi `registerDispatchIdentity(parameters, identity)`: the operation this offered definition
+    /// dispatches for an input. Scoped to the definition, so a replaced offer drops it.
+    pub dispatch_identity: Option<ToolDispatchIdentityResolver>,
     /// `serverPinned`: set by built-in tool factories that capture injected operations or a policy override; such a
     /// definition always executes on the session's server process, even when `placement` is `Child`.
     pub server_pinned: Option<bool>,
@@ -328,6 +373,7 @@ impl ToolDefinition {
             workspace_effect: None,
             execution_mode: None,
             permission_parser: None,
+            dispatch_identity: None,
             kernel_prelude: None,
             output_schema: None,
             server_pinned: None,

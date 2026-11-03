@@ -853,7 +853,7 @@ impl RemoteSessionProxy {
 
     /// senpi's `prompt`.
     pub async fn prompt(&self, message: &str, options: Value) -> Result<(), RpcClientError> {
-        let result = self.client.prompt(message, options).await;
+        let result = self.client.prompt(message, options).await.map(|_| ());
         self.settle_unit("prompt", result)
     }
 

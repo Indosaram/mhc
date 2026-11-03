@@ -41,6 +41,6 @@ async fn discovery_falls_back_to_origin_without_resource_metadata() {
     let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/.well-known/oauth-authorization-server",get(move ||{let metadata=metadata.clone();async move {Json(metadata)}}))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let mut provider=McpOAuthProvider::new(McpTokenStore::new(root.path(),"fallback",&format!("http://{address}/mcp")));provider.require_https=false;
     let client=reqwest::Client::new();let info=discover(&provider,&client).await.unwrap();
-    assert_eq!(info.authorization_server_url,format!("http://{address}/mcp"));assert_eq!(info.authorization_server_metadata,expected);assert!(info.resource_metadata.is_null());
+    assert_eq!(info.authorization_server_url,format!("http://{address}/"));assert_eq!(info.authorization_server_metadata,expected);assert!(info.resource_metadata.is_null());
     drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }

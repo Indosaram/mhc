@@ -1,5 +1,6 @@
 use maho_ext_api::{EventKind, EventResult, ExtensionApi};
 use std::sync::{Arc, Mutex, PoisonError};
+use tokio::sync::watch;
 pub const TASK_USAGE_HINT_FLAG: &str = "omo-task-usage-hint";
 pub fn wire_task_usage_guidance(
     api: &mut ExtensionApi,
@@ -238,5 +239,108 @@ mod tests {
             shutdown_notice(true, true).is_some_and(|notice| notice.contains("cannot be resumed"))
         );
         assert!(shutdown_notice(true, false).is_some_and(|notice| notice.contains("continues")));
+    }
+}
+
+/// One session start's recovery state (`event-bridge.ts` `startup` controller + `reconciledGate`).
+pub struct StartState {
+    active: std::sync::atomic::AtomicBool,
+    reconciled: watch::Sender<Option<bool>>,
+    recovered: watch::Sender<bool>,
+}
+
+impl StartState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active: std::sync::atomic::AtomicBool::new(true),
+            reconciled: watch::channel(None).0,
+            recovered: watch::channel(false).0,
+        })
+    }
+
+    /// False once a newer start, a switch or a shutdown retired this start.
+    pub fn active(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Settles the reconcile gate with whether this start is still current; the first call wins.
+    pub fn settle_reconciled(&self) {
+        let current = self.active();
+        self.reconciled.send_if_modified(|value| {
+            value.is_none() && {
+                *value = Some(current);
+                true
+            }
+        });
+    }
+
+    /// Marks the whole recovery chain as ended.
+    pub fn finish(&self) {
+        self.recovered.send_replace(true);
+    }
+
+    fn retire(&self) {
+        self.active
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.settle_reconciled();
+    }
+}
+
+/// What the task event bridge hands to the components that must run after its reconcile.
+#[derive(Clone)]
+pub struct EventBridge(Arc<Mutex<Arc<StartState>>>);
+
+impl Default for EventBridge {
+    fn default() -> Self {
+        // Before any start the gate is open and current, like `Promise.resolve(true)`.
+        let initial = StartState::new();
+        initial.settle_reconciled();
+        initial.finish();
+        Self(Arc::new(Mutex::new(initial)))
+    }
+}
+
+impl EventBridge {
+    /// Retires the previous start and opens a new one.
+    pub fn begin(&self) -> Arc<StartState> {
+        let next = StartState::new();
+        let previous = std::mem::replace(
+            &mut *self.0.lock().unwrap_or_else(PoisonError::into_inner),
+            next.clone(),
+        );
+        previous.retire();
+        next
+    }
+
+    /// Retires the current start (session switch or shutdown).
+    pub fn abort(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retire();
+    }
+
+    fn current(&self) -> Arc<StartState> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Settles when the latest session start's task reconcile finished; false when a newer start superseded it.
+    pub async fn after_session_start_reconcile(&self) -> bool {
+        let mut receiver = self.current().reconciled.subscribe();
+        receiver
+            .wait_for(Option::is_some)
+            .await
+            .ok()
+            .and_then(|value| *value)
+            .unwrap_or(false)
+    }
+
+    /// Settles when the latest session start's whole recovery chain ended.
+    pub async fn session_start_recovered(&self) {
+        let mut receiver = self.current().recovered.subscribe();
+        let _ = receiver.wait_for(|done| *done).await;
     }
 }

@@ -43,6 +43,7 @@ impl McpToolRegistrar for RecordingRegistrar {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> {Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())}
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> {*self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names; Ok(())}
     fn register_tool(&self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {self.registered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(definition.name); Ok(())}
+    fn register_tool_with_renderers(&self, definition: ToolDefinition, _renderers: maho_ext_mcp::tool_registrar::McpToolRenderers) -> Result<(), ExtensionFailure> {self.register_tool(definition)}
 }
 
 struct NoToolsActions;
@@ -54,7 +55,7 @@ impl ExtensionActions for NoToolsActions {
 }
 
 fn entry(server: &str, tool: &str) -> McpToolCatalogEntry {
-    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), description: Some(format!("{tool} tool")), annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, connection: None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None}
+    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), output_schema: None, modern: false, description: Some(format!("{tool} tool")), annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, connection: None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None, request_origin: None, invocation: None}
 }
 
 fn input(registered: Vec<McpToolCatalogEntry>, active: Vec<McpToolCatalogEntry>, search_mode: bool, proxy_gateways: Vec<(String, Vec<McpToolCatalogEntry>)>) -> McpTierBRegistrationInput {
@@ -72,8 +73,8 @@ fn registrar_with_base() -> Arc<RecordingRegistrar> {
 fn seed_cache(agent_dir: &std::path::Path, name: &str, declaration: &maho_ext_api::RegisteredMcpServerDeclaration) {
     let mut wire = maho_ext_mcp::config_schema::ServerConfigWire::from(&declaration.config);
     wire.cwd.get_or_insert_with(|| declaration.registration_cwd.to_string_lossy().into_owned());
-    let hash = maho_ext_mcp::config::hash_config(&maho_ext_mcp::config::normalize_server(wire)).expect("hash the seeded server config");
-    maho_ext_mcp::catalog_cache::write_mcp_cached_server(agent_dir, name, maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash: hash, fetched_at: chrono::Utc::now().timestamp_millis() as f64, tools: vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})], resources: vec![], prompts: vec![], instructions: None}).expect("write the seeded mcp catalog");
+    let hash = maho_ext_mcp::config::hash_config(&maho_ext_mcp::config::normalize_server(wire), Some(agent_dir)).expect("hash the seeded server config");
+    maho_ext_mcp::catalog_cache::write_mcp_cached_server(agent_dir, name, maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash: hash, fetched_at: chrono::Utc::now().timestamp_millis() as f64, tools: vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})], resources: vec![], prompts: vec![], instructions: None}).expect("write the seeded mcp catalog");
 }
 
 #[test]
@@ -209,7 +210,7 @@ async fn cached_service_registration_connects_on_first_call_and_reads_current_cl
     seed_cache(root.path(),"fx",&declaration);
     service.attach_session(root.path(),root.path(),&Default::default(),true,&[declaration]).await.unwrap();
     let connection_entry=service.connections["fx"].entry.clone();let connection=connection_entry.lock().await.connection.clone();
-    connection_entry.lock().await.cached_catalog=Some(McpCachedServerCatalog {config_hash:"fixture".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None});
+    connection_entry.lock().await.cached_catalog=Some(McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"fixture".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None});
     let prepared=maho_ext_mcp::service_register::prepare_mcp_service_registration_entries(service.config.as_ref().unwrap(),&[connection_entry]).await;
     let current=prepared[0].connection.clone();let connect=prepared[0].ensure_cached_tool_connected.clone();
     let mut catalog_entry=entry("fx","tool_1");catalog_entry.connection=Some(current);catalog_entry.ensure_connected=Some(connect);

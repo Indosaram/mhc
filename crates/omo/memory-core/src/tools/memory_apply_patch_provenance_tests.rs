@@ -1,7 +1,8 @@
-use crate::tools::memory::MemoryToolProvenanceInput;
-use crate::tools::memory_apply_patch::MemoryApplyPatchParams;
+use crate::tools::memory::{MemoryToolLock, MemoryToolProvenanceInput};
+use crate::tools::memory_apply_patch::{MemoryApplyPatchParams, run_memory_apply_patch};
 use crate::tools::memory_apply_patch_test_support::{
-    create_patch_fixture, memory_apply_patch, test_author, test_params,
+    RecordingLock, create_patch_fixture, git, matches_short_sha_message, memory_apply_patch,
+    test_author, test_params,
 };
 
 #[test]
@@ -79,4 +80,65 @@ fn test_non_origin_remote_reports_harness_sync() {
     let res = memory_apply_patch(&repo, &test_params("upstream test", patch)).expect("apply");
 
     assert!(res.message.contains("harness will sync after the turn"));
+}
+
+#[test]
+fn given_a_delete_and_configured_remote_when_applied_then_writer_lock_deletion_and_remote_shape_are_pinned()
+ {
+    let (temp, repo) =
+        create_patch_fixture(&[("system/delete.md", "---\ndescription: Delete me\n---\nbody")]);
+    let remote = temp.path().join("remote.git");
+    git(
+        temp.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("utf-8 path"),
+        ],
+    );
+    let lock = RecordingLock::default();
+    let patch = "*** Begin Patch\n*** Delete File: system/delete.md\n*** End Patch";
+
+    let res = run_memory_apply_patch(
+        &repo,
+        &test_params("remove stale memory", patch),
+        Some(&lock as &dyn MemoryToolLock),
+    )
+    .expect("apply");
+
+    assert_eq!(*lock.domains.borrow(), vec!["memory-write".to_string()]);
+    assert!(repo.ls_tree(None, None).expect("ls_tree").is_empty());
+    assert!(
+        matches_short_sha_message(
+            &res.message,
+            "memory_apply_patch committed (",
+            "); harness will sync after the turn."
+        ),
+        "{}",
+        res.message
+    );
+    let commit = res.commit.expect("commit");
+    assert_eq!(commit.subject, "remove stale memory");
+    assert_eq!(commit.affected_paths, vec!["system/delete.md".to_string()]);
+}
+
+#[test]
+fn given_a_rejected_reason_when_locked_then_the_lock_is_never_taken() {
+    let (_temp, repo) = create_patch_fixture(&[]);
+    let lock = RecordingLock::default();
+
+    let error = run_memory_apply_patch(
+        &repo,
+        &test_params("  ", "*** Begin Patch\n*** End Patch"),
+        Some(&lock as &dyn MemoryToolLock),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("'reason' must be a non-empty string")
+    );
+    assert!(lock.domains.borrow().is_empty());
 }

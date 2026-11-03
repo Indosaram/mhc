@@ -5,3 +5,5 @@
 mod native_factory;
 #[path = "policy.rs"]
 mod policy;
+#[path = "restored_keepalive.rs"]
+mod restored_keepalive;

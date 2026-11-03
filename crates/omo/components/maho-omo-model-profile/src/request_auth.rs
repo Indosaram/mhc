@@ -65,6 +65,46 @@ pub struct AuthFailure {
     pub error: Option<ExtensionFailure>,
 }
 
+/// A candidate kept although its login refresh failed transiently during the probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefreshUnavailableKeep {
+    pub provider: String,
+    pub model: String,
+    /// Class and code of the transient-refresh error (for example `OAuthRefreshUnavailableError/oauth`).
+    pub error_kind: String,
+    /// Closed transport fact (`ECONNREFUSED`, `http_503`, `TimeoutError`), or `unknown`.
+    pub cause_kind: String,
+}
+
+/// The class a host gives a transient refresh failure (senpi `OAuthRefreshUnavailableError`:
+/// connection refused, timeout, 408/429/5xx). It says nothing about the sign-in, and the first turn
+/// retries it, so it never skips the provider. Native `ExtensionFailure` carries no `cause` chain, so
+/// the marker is the class name and the closed cause fact rides in `code` after a `:` when present
+/// (`oauth:http_503`).
+pub const REFRESH_UNAVAILABLE_CLASS: &str = "OAuthRefreshUnavailableError";
+
+fn is_refresh_unavailable(error: &ExtensionFailure) -> bool {
+    error.class.as_deref() == Some(REFRESH_UNAVAILABLE_CLASS)
+}
+
+/// Only closed facts (an error code, an HTTP status, a timeout class) leave the failure; never a
+/// message, URL or body.
+fn transient_cause_kind(error: &ExtensionFailure) -> String {
+    error
+        .code
+        .as_deref()
+        .and_then(|code| code.split_once(':'))
+        .map(|(_, cause)| cause)
+        .filter(|cause| {
+            !cause.is_empty()
+                && cause.len() <= 40
+                && cause
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+        .map_or_else(|| "unknown".to_owned(), str::to_owned)
+}
+
 /// The subset of senpi's credential reading the probe performs: the named slots and the pinned one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CredentialSlots {
@@ -94,7 +134,11 @@ pub async fn credential_slots(registry: &dyn ModelRegistry, provider: &str) -> C
 /// error carries no machine code. Read from the typed classification - the message is NEVER
 /// inspected, so a message whose leading token is key material cannot leak it into `errorKind`.
 fn error_kind(error: &ExtensionFailure) -> String {
-    let class = error.class.as_deref().filter(|class| !class.is_empty()).unwrap_or("Error");
+    let class = error
+        .class
+        .as_deref()
+        .filter(|class| !class.is_empty())
+        .unwrap_or("Error");
     match error.code.as_deref().filter(|code| !code.is_empty()) {
         Some(code) => format!("{class}/{code}"),
         None => class.to_owned(),
@@ -122,6 +166,21 @@ pub async fn probe_request_auth(
     model_id: &str,
     model: &Model,
 ) -> Option<AuthFailure> {
+    probe_request_auth_with_keep(registry, may_rotate, provider, model_id, model, &mut |_| {}).await
+}
+
+/// [`probe_request_auth`] that also reports a candidate kept despite a transient refresh failure.
+/// The model-scope check still runs on that slot, so a model whose own request configuration fails
+/// is skipped as before; only a model probe cut short by the transient refresh leaves the candidate
+/// kept unchecked.
+pub async fn probe_request_auth_with_keep(
+    registry: &dyn ModelRegistry,
+    may_rotate: bool,
+    provider: &str,
+    model_id: &str,
+    model: &Model,
+    on_refresh_unavailable: &mut (dyn FnMut(RefreshUnavailableKeep) + Send),
+) -> Option<AuthFailure> {
     let slots = credential_slots(registry, provider).await;
     // The engine's selection: without rotation only the flat credential is used; with it, a pin is
     // the only slot, otherwise any resolving slot serves.
@@ -137,9 +196,13 @@ pub async fn probe_request_auth(
 
     let mut resolved_slot: Option<String> = None;
     let mut resolved = false;
+    let mut unavailable: Option<Option<String>> = None;
     let mut last_error: Option<ExtensionFailure> = None;
     for slot in &candidates {
-        match registry.get_provider_auth_for_slot(provider, slot.as_deref()).await {
+        match registry
+            .get_provider_auth_for_slot(provider, slot.as_deref())
+            .await
+        {
             // `Ok(None)` means the provider needs no credential (headers-only compatibility config),
             // which the first turn also accepts; only an error is a failure.
             Ok(_) => {
@@ -147,11 +210,17 @@ pub async fn probe_request_auth(
                 resolved_slot = slot.clone();
                 break;
             }
-            Err(error) => last_error = Some(error),
+            Err(error) => {
+                if is_refresh_unavailable(&error) && unavailable.is_none() {
+                    unavailable = Some(slot.clone());
+                }
+                last_error = Some(error);
+            }
         }
     }
-    if !resolved {
-        let error = last_error.unwrap_or_else(|| ExtensionFailure::new("credential resolution failed"));
+    if !resolved && unavailable.is_none() {
+        let error =
+            last_error.unwrap_or_else(|| ExtensionFailure::new("credential resolution failed"));
         return Some(AuthFailure {
             provider: provider.to_owned(),
             model: model_id.to_owned(),
@@ -163,15 +232,47 @@ pub async fn probe_request_auth(
 
     // The MODEL overload carries the SAME slot the provider scope resolved on, so the model's own
     // headers resolve against that account rather than the flat/default credential.
-    match registry.get_api_key_and_headers_for_slot(model, resolved_slot.as_deref()).await {
+    // A slot whose refresh is only temporarily unavailable may serve the first turn after its retry,
+    // so the provider stays eligible and the model-scope check runs on that slot.
+    let model_slot = if resolved {
+        resolved_slot
+    } else {
+        unavailable.flatten()
+    };
+    match registry
+        .get_api_key_and_headers_for_slot(model, model_slot.as_deref())
+        .await
+    {
         Ok(ResolvedRequestAuth { .. }) => None,
-        Err(error) => Some(AuthFailure {
-            provider: provider.to_owned(),
-            model: model_id.to_owned(),
-            reason: AuthFailureReason::Request,
-            error_kind: error_kind(&error),
-            error: Some(error),
-        }),
+        Err(error) if is_refresh_unavailable(&error) => {
+            on_refresh_unavailable(RefreshUnavailableKeep {
+                provider: provider.to_owned(),
+                model: model_id.to_owned(),
+                error_kind: error_kind(&error),
+                cause_kind: transient_cause_kind(&error),
+            });
+            None
+        }
+        Err(error) => {
+            // After a transient provider probe the model probe re-runs the credential resolution; a
+            // failure there is still provider-scope (`refresh` or `credentials`), anything else is
+            // this model's request configuration.
+            let reason = if !resolved
+                && error.class.as_deref() == Some("ModelsError")
+                && error.code.is_some()
+            {
+                provider_failure_reason(&error)
+            } else {
+                AuthFailureReason::Request
+            };
+            Some(AuthFailure {
+                provider: provider.to_owned(),
+                model: model_id.to_owned(),
+                reason,
+                error_kind: error_kind(&error),
+                error: Some(error),
+            })
+        }
     }
 }
 
@@ -260,7 +361,9 @@ pub fn sanitized_error_chain_detail(error: &(dyn std::error::Error + 'static)) -
 /// `ExtensionFailure` carries no `cause` field, so its own `source()` is `None` and this reports the
 /// top failure; the chain walk itself lives in [`sanitized_error_chain_detail`].
 pub fn sanitized_auth_error_detail(error: Option<&ExtensionFailure>) -> String {
-    error.map(|failure| sanitized_error_chain_detail(failure)).unwrap_or_default()
+    error
+        .map(|failure| sanitized_error_chain_detail(failure))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -287,18 +390,31 @@ mod tests {
     }
 
     fn chain(depth: usize) -> Wrapped {
-        let mut error = Wrapped { message: "link 0", cause: None };
+        let mut error = Wrapped {
+            message: "link 0",
+            cause: None,
+        };
         let messages = ["link 1", "link 2", "link 3", "link 4", "link 5"];
         for message in messages.iter().take(depth.saturating_sub(1)) {
-            error = Wrapped { message, cause: Some(Box::new(error)) };
+            error = Wrapped {
+                message,
+                cause: Some(Box::new(error)),
+            };
         }
         error
     }
 
     #[test]
     fn the_cause_chain_is_joined_with_arrows_and_keeps_the_inner_class_name() {
-        let inner = ExtensionFailure::classified("exchange rejected", Some("OAuthRefreshExchangeError".to_owned()), None);
-        let outer = Wrapped { message: "refresh failed", cause: Some(Box::new(inner)) };
+        let inner = ExtensionFailure::classified(
+            "exchange rejected",
+            Some("OAuthRefreshExchangeError".to_owned()),
+            None,
+        );
+        let outer = Wrapped {
+            message: "refresh failed",
+            cause: Some(Box::new(inner)),
+        };
         assert_eq!(
             sanitized_error_chain_detail(&outer),
             "refresh failed <- OAuthRefreshExchangeError: exchange rejected"
@@ -316,6 +432,9 @@ mod tests {
     #[test]
     fn a_failure_without_a_cause_reports_only_itself() {
         let failure = ExtensionFailure::classified("nope", Some("ModelsError".to_owned()), None);
-        assert_eq!(sanitized_auth_error_detail(Some(&failure)), "ModelsError: nope");
+        assert_eq!(
+            sanitized_auth_error_detail(Some(&failure)),
+            "ModelsError: nope"
+        );
     }
 }

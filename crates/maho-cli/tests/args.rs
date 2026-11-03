@@ -401,3 +401,92 @@ fn extension_flags_section_lists_flags_with_value_hint_and_fallback_description(
     );
     assert!(extension_flags_text(&[]).is_empty());
 }
+// senpi v2026.10.27-2 cli-spawned-by-args.test.ts (oh-my-openagent#10782).
+#[test]
+fn spawned_by_parses_one_json_object_without_consuming_the_prompt() {
+    let value = parse(&[
+        "--spawned-by",
+        r#"{"parentSessionId":"parent","rootSessionId":"root","taskId":"task"}"#,
+        "hello",
+    ]);
+    let spawned_by = value.spawned_by.expect("ancestry");
+    assert_eq!(spawned_by.parent_session_id, "parent");
+    assert_eq!(spawned_by.root_session_id, "root");
+    assert_eq!(spawned_by.task_id, "task");
+    assert_eq!(value.messages, vec!["hello".to_owned()]);
+    assert!(value.diagnostics.is_empty());
+    assert!(value.unknown_flags.is_empty());
+}
+#[test]
+fn spawned_by_rejects_malformed_ancestry() {
+    let mut cases: Vec<String> = ["{", "null", "[]", "true", r#""parent:root:task""#, "{}"]
+        .map(str::to_owned)
+        .to_vec();
+    for key in ["parentSessionId", "rootSessionId", "taskId"] {
+        for bad in [
+            None,
+            Some(serde_json::json!("")),
+            Some(serde_json::json!(1)),
+            Some(serde_json::Value::Null),
+        ] {
+            let mut ancestry = serde_json::json!({"parentSessionId":"parent","rootSessionId":"root","taskId":"task"});
+            match bad {
+                None => {
+                    ancestry.as_object_mut().expect("object").remove(key);
+                }
+                Some(value) => ancestry[key] = value,
+            }
+            cases.push(ancestry.to_string());
+        }
+    }
+    for case in cases {
+        let value = parse(&["--spawned-by", case.as_str()]);
+        assert_eq!(value.diagnostics.len(), 1, "{case}");
+        assert!(value.diagnostics[0].error, "{case}");
+        assert!(value.spawned_by.is_none(), "{case}");
+    }
+}
+#[test]
+fn spawned_by_rejects_a_missing_value() {
+    let value = parse(&["--spawned-by"]);
+    assert_eq!(value.diagnostics.len(), 1);
+    assert!(value.diagnostics[0].error);
+    let value = parse(&["--spawned-by", "--offline"]);
+    assert_eq!(value.diagnostics.len(), 1);
+    assert!(value.offline);
+}
+// senpi v2026.10.27-2 host-cli-presenter: only descriptor 4 is a presenter bootstrap.
+#[test]
+fn mcp_presenter_flags_parse_and_reject_other_descriptors() {
+    let value = parse(&["--mcp-presenter-fd", "4", "--mcp-presenter-enforcement"]);
+    assert_eq!(value.presenter_bootstrap_fd, Some(4));
+    assert!(value.mcp_presenter_enforcement);
+    assert!(value.diagnostics.is_empty());
+    let value = parse(&["--mcp-presenter-fd", "3"]);
+    assert_eq!(value.presenter_bootstrap_fd, None);
+    assert!(value.diagnostics[0].error);
+}
+// senpi v2026.10.27-2 main.ts:529: ancestry is ignored, with a warning, unless the session is fresh.
+#[test]
+fn spawned_by_is_ignored_with_a_warning_when_resuming_or_forking() {
+    let ancestry = r#"{"parentSessionId":"parent","rootSessionId":"root","taskId":"task"}"#;
+    assert_eq!(
+        spawned_by_ignored_warning(&parse(&["--spawned-by", ancestry])),
+        None
+    );
+    for reuse in [
+        &["--resume"][..],
+        &["--continue"][..],
+        &["--session", "s.jsonl"][..],
+        &["--fork", "s.jsonl"][..],
+    ] {
+        let mut values = vec!["--spawned-by", ancestry];
+        values.extend_from_slice(reuse);
+        assert_eq!(
+            spawned_by_ignored_warning(&parse(&values)),
+            Some("--spawned-by is ignored when resuming or forking a session."),
+            "{reuse:?}"
+        );
+    }
+    assert_eq!(spawned_by_ignored_warning(&parse(&["--resume"])), None);
+}

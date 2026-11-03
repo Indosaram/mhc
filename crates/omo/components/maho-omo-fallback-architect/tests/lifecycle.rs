@@ -207,3 +207,56 @@ async fn typed_classifier_refusal_arms_fallback() {
     assert_eq!(messages[0].custom_type, "omo-fallback-architect:directive");
     assert_eq!(messages[1].custom_type, "omo-fallback-architect:notice");
 }
+
+#[derive(Default)]
+struct RecordingLogger(Mutex<Vec<(String, String, Option<JsonValue>)>>);
+impl ComponentLogger for RecordingLogger {
+    fn info(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("info".into(), message.into(), details.cloned())); }
+    fn warn(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("warn".into(), message.into(), details.cloned())); }
+    fn error(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("error".into(), message.into(), details.cloned())); }
+}
+
+// fallback-architect.test.ts: the gate receives the registry from the event context.
+#[tokio::test]
+async fn gate_receives_registry_from_event_context() {
+    let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let observed = seen.clone();
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("fallback", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    FallbackArchitectComponent {
+        has_architect_category: Some(Arc::new(move |_: &std::path::Path, registry: Option<&dyn ModelRegistry>| {
+            observed.lock().expect("seen").push(registry.map_or(0, |r| std::ptr::from_ref(r).cast::<()>() as usize));
+            true
+        })),
+    }
+    .register(&mut api);
+    let ctx = support::context();
+    let expected = std::ptr::from_ref(ctx.model_registry.as_ref()).cast::<()>() as usize;
+    let mut event = refusal();
+    api.registered.handlers[&EventKind::MessageEnd][0](&mut event, &ctx).await.expect("dispatch");
+    let mut event = selection(ModelSelectSource::Fallback);
+    api.registered.handlers[&EventKind::ModelSelect][0](&mut event, &ctx).await.expect("dispatch");
+    assert_eq!(*seen.lock().expect("seen"), vec![expected]);
+    assert_eq!(actions.0.lock().expect("messages").iter().filter(|m| m.custom_type == maho_omo_fallback_architect::directive::FALLBACK_ARCHITECT_DIRECTIVE_TYPE).count(), 1);
+}
+
+// index.ts logger routing: inactive-category skip and directive injection reach the component logger.
+#[tokio::test]
+async fn skip_and_injection_are_logged_through_context_logger() {
+    for (gate, expected) in [
+        (false, ("omo-senpi fallback-architect skipped", serde_json::json!({"reason": "architect-category-inactive"}))),
+        (true, ("omo-senpi fallback-architect directive injected", serde_json::json!({"from": "anthropic/claude-fable-5", "to": "anthropic/fallback"}))),
+    ] {
+        let (api, _) = register(gate);
+        let logger = Arc::new(RecordingLogger::default());
+        let mut ctx = support::context();
+        ctx.logger = Some(logger.clone());
+        let mut event = refusal();
+        api.registered.handlers[&EventKind::MessageEnd][0](&mut event, &ctx).await.expect("dispatch");
+        let mut event = selection(ModelSelectSource::Fallback);
+        api.registered.handlers[&EventKind::ModelSelect][0](&mut event, &ctx).await.expect("dispatch");
+        assert_eq!(*logger.0.lock().expect("log"), vec![("info".to_string(), expected.0.to_string(), Some(expected.1))]);
+    }
+}

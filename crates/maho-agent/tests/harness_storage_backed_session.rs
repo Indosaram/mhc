@@ -29,6 +29,7 @@ fn metadata() -> SessionMetadata {
         cwd: Some("/workspace".to_owned()),
         parent_session_id: None,
         legacy_parent_session_path: None,
+        path: None,
     }
 }
 
@@ -669,7 +670,7 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
 async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary() {
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
-    let pending = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage { timing: None, failure_source: None,
+    let pending = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage { credential_served_recently: None, timing: None, failure_source: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,

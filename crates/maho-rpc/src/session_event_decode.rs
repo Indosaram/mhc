@@ -133,6 +133,9 @@ fn queued_input(value: &Value) -> Option<QueuedInput> {
         text: get(value, "text")?,
         mode: streaming_behavior(value.get("mode")?.as_str()?)?,
         enqueue_order: get(value, "enqueueOrder")?,
+        queued_id: get(value, "queuedId").unwrap_or_default(),
+        revision: get(value, "revision").unwrap_or(1),
+        client_message_id: get(value, "clientMessageId"),
     })
 }
 
@@ -253,6 +256,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
             to: get(record, "to")?,
             chain_key: get(record, "chainKey")?,
             reason: get(record, "reason")?,
+            limit: get(record, "limit"),
         }),
         "retry_fallback_exhausted" => Some(E::RetryFallbackExhausted {
             chain_key: get(record, "chainKey")?,
@@ -265,6 +269,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
         "retry_fallback_reverted" => Some(E::RetryFallbackReverted {
             from: get(record, "from")?,
             to: get(record, "to")?,
+            cause: get(record, "cause"),
         }),
         "model_changed" => Some(E::ModelChanged {
             model: get(record, "model")?,
@@ -391,6 +396,17 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
             selector: get(record, "selector")?,
             ok: get(record, "ok")?,
             error_message: get(record, "errorMessage"),
+        }),
+        "model_config_error" => Some(E::ModelConfigError {
+            model: get(record, "model")?,
+            provider: get(record, "provider")?,
+            error_excerpt: get(record, "errorExcerpt")?,
+        }),
+        "session_recovered" => Some(E::SessionRecovered {
+            cause: get(record, "cause")?,
+            backup_path: get(record, "backupPath")?,
+            dropped_bytes: get(record, "droppedBytes")?,
+            notice: get(record, "notice")?,
         }),
         "session_tool_child" => Some(E::SessionToolChild {
             state: get(record, "state")?,
@@ -532,6 +548,9 @@ mod tests {
                     text: "t".into(),
                     mode: StreamingBehavior::Steer,
                     enqueue_order: 7,
+                    queued_id: "q_3".into(),
+                    revision: 2,
+                    client_message_id: Some("c-1".into()),
                 }],
             },
             AgentSessionEvent::SessionToolChild {
@@ -549,6 +568,17 @@ mod tests {
             AgentSessionEvent::BashExecutionUpdate {
                 id: Some("b".into()),
                 delta: "out".into(),
+            },
+            AgentSessionEvent::ModelConfigError {
+                model: "p/m".into(),
+                provider: "p".into(),
+                error_excerpt: "model not found".into(),
+            },
+            AgentSessionEvent::SessionRecovered {
+                cause: "disk_full".into(),
+                backup_path: "/s.jsonl.torn".into(),
+                dropped_bytes: 12,
+                notice: "repaired".into(),
             },
         ];
         for event in events {

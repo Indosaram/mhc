@@ -2,7 +2,7 @@
 //! (queue, steer or revive), the full `task_cancel` contract, `/task-kill`, the gateway steering
 //! channel and the delegated-run inbox (the §1.1 exception to `gateway.md` §5).
 use crate::manager::{TaskManager, WrittenSteer};
-use crate::record::{PendingMessage, TaskRecord, TaskStatus, now_ms, pid_alive};
+use crate::record::{PendingMessage, TaskRecord, TaskStatus, is_task_child, now_ms};
 use crate::runner::BoxFuture;
 use crate::settings::TASK_ID_ENV;
 use maho_ext_api::{ExtensionContext, ExtensionMode, ExtensionUiDialogOptions, NotificationType};
@@ -318,9 +318,21 @@ fn try_steer(manager: &TaskManager, caller: &Caller, id: &str, message: &str) ->
     }
     let path = channel.steer(&record.session_id, &caller.session_id, message)?;
     if manager.live_here(id) {
+        // The gateway delivery id is the message's identity (task.md Delta D7); it is also kept
+        // in the pending list so a restarted parent can tell whether the child recorded it.
+        let mut pending = pending_message(message);
+        if let Some(delivery_id) = crate::steering::delivery_id_of(&path) {
+            pending.id = delivery_id;
+        }
+        let stored = pending.clone();
+        let _ = manager.update(id, move |record| {
+            if record.status.is_active() && !record.pending_messages.iter().any(|m| m.id == stored.id) {
+                record.pending_messages.push(stored);
+            }
+        });
         steers.entry(id.to_owned()).or_default().push(WrittenSteer {
             path,
-            message: pending_message(message),
+            message: pending,
         });
     }
     Some(Outcome::new(
@@ -379,10 +391,17 @@ pub async fn cancel(
         // Queued or running here: stop the run; `finish` records `cancelled` with the reason and
         // drops the pending list.
         // Steers the child has not drained yet are dropped with the pending list.
-        let dropped = record.pending_messages.len()
-            + lock(manager.steers())
-                .get(&id)
-                .map_or(0, |steers| steers.iter().filter(|steer| steer.path.exists()).count());
+        // Pending entries of written steers count only while the child has not drained them.
+        let dropped = {
+            let steers = lock(manager.steers());
+            let written = steers.get(&id).map(Vec::as_slice).unwrap_or_default();
+            record
+                .pending_messages
+                .iter()
+                .filter(|m| !written.iter().any(|steer| steer.message.id == m.id))
+                .count()
+                + written.iter().filter(|steer| steer.path.exists()).count()
+        };
         lock(manager.cancelling()).insert(id.clone(), reason.clone());
         token.cancel();
         let settled = manager.wait(&id, Some(CANCEL_SETTLE)).await;
@@ -413,8 +432,9 @@ pub async fn cancel(
             json!({"id": id, "status": previous.as_str()}),
         ),
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Interrupted => {
-            // Owned by another process (running) or by none (interrupted).
-            let signalled = match record.pid.filter(|pid| previous == TaskStatus::Running && pid_alive(*pid)) {
+            // Owned by another process (running) or by none (interrupted). The pid is signalled
+            // only while it is still this task's child (task.md Delta D8).
+            let signalled = match record.pid.filter(|_| previous == TaskStatus::Running && is_task_child(&record)) {
                 Some(pid) => {
                     crate::manager::terminate(pid);
                     true

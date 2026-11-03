@@ -30,11 +30,17 @@ pub fn live_hold_kinds(entries: &[SessionEntry]) -> Vec<String> {
     }
     holds.into_values().collect()
 }
+/// A user Stop is live: any `session_hold` except the interrupted-run gate (senpi#4206).
+fn stop_hold_in_pause_state(state: &serde_json::Value) -> bool {
+    state["holds"].as_array().is_some_and(|holds| {
+        holds
+            .iter()
+            .any(|hold| hold["kind"] == "session_hold" && hold["key"] != "interrupted-run")
+    })
+}
 pub fn stop_hold_live(ctx: &ExtensionContext) -> bool {
     match ctx.get_pause_state() {
-        Ok(state) => state["holds"]
-            .as_array()
-            .is_some_and(|holds| holds.iter().any(|hold| hold["kind"] == "session_hold")),
+        Ok(state) => stop_hold_in_pause_state(&state),
         Err(error) => {
             maho_ext_api::diagnostic(&format!("Goal Stop pause state unavailable: {error}"));
             false
@@ -55,7 +61,7 @@ pub fn mark_stop_resumed(pi: &ExtensionApi, goal_id: &str) -> Result<(), Extensi
 }
 pub fn paused_by_stop(ctx: &ExtensionContext, goal_id: &str) -> bool {
     ctx.session_manager
-        .get_entries()
+        .get_entries_of_kinds(&["custom"])
         .iter()
         .rev()
         .find_map(|entry| {
@@ -90,6 +96,30 @@ mod tests {
             ]),
             vec!["session_hold"]
         );
+    }
+}
+
+#[cfg(test)]
+mod interrupted_run_tests {
+    use super::*;
+    // senpi 8c5b96cb9b stop-pause.ts: the interrupted-run gate is a session_hold the user did not place.
+    #[test]
+    fn interrupted_run_gate_is_not_a_user_stop() {
+        let live =
+            |holds| stop_hold_in_pause_state(&serde_json::json!({"pauseSeq":1,"holds":holds}));
+        assert!(!live(
+            serde_json::json!([{"kind":"session_hold","key":"interrupted-run"}])
+        ));
+        assert!(live(
+            serde_json::json!([{"kind":"session_hold","key":"stop"}])
+        ));
+        assert!(live(serde_json::json!([
+            {"kind":"session_hold","key":"interrupted-run"},
+            {"kind":"session_hold","key":"session_hold:2"}
+        ])));
+        assert!(!live(
+            serde_json::json!([{"kind":"run_fence","key":"run:task:a"}])
+        ));
     }
 }
 

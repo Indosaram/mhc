@@ -6,11 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use super::shared_host::{
-    SHARED_HOST_ENABLE_ENV_SUFFIX, SharedHostMount, is_truthy_env_flag, join_shared_host,
-    shared_host_setting_enabled, should_join_shared_host,
-};
-
 /// Longest an idle frame loop goes without rebuilding the mode's lines, for a change that reached
 /// the mode without a repaint signal.
 const IDLE_REBUILD_BACKSTOP_MS: u64 = 1_000;
@@ -86,37 +81,6 @@ impl Component for LinesBuffer {
     fn invalidate(&mut self) {}
 }
 
-/// senpi `main.ts`: join the shared session host before the interactive runtime is mounted, using
-/// the policy in `core/shared-host-policy.ts`.
-pub async fn mount_shared_host(
-    session: &maho_core::agent_session::AgentSession,
-    parsed: &super::args::Args,
-) -> Option<SharedHostMount> {
-    let env = maho_core::config::current_env();
-    let enable_env = is_truthy_env_flag(
-        maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &env).as_deref(),
-    );
-    let setting_enabled = session.with_settings_manager(shared_host_setting_enabled);
-    if !should_join_shared_host(
-        maho_core::project_trust::AppMode::Interactive,
-        enable_env,
-        setting_enabled,
-    ) {
-        return None;
-    }
-    let agent_dir = session.agent_dir();
-    let model = session.model();
-    let binding = maho_interactive::interactive_host_runtime::HostSessionBinding {
-        session_path: session.session_file(),
-        cwd: session.cwd(),
-        agent_dir: PathBuf::from(&agent_dir),
-        provider: Some(model.provider.clone()),
-        model: Some(model.id.clone()),
-        thinking_level: parsed.thinking.clone(),
-    };
-    Some(join_shared_host(binding, &agent_dir, None).await)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     session: Arc<maho_core::agent_session::AgentSession>,
@@ -141,13 +105,6 @@ pub async fn run(
             let _ = version_sender.send(StartupNotice::NewVersion(release));
         }
     });
-    let shared_host = mount_shared_host(&session, parsed).await;
-    if let Some(message) = shared_host
-        .as_ref()
-        .and_then(SharedHostMount::warning_message)
-    {
-        maho_core::output_guard::maho_write_stderr(&format!("{message}\n"));
-    }
     let theme_setting = parsed
         .use_theme
         .clone()
@@ -192,6 +149,10 @@ pub async fn run(
             auth_notices,
             auto_trust_on_reload_cwd,
             initial_title_prompt: initial.initial_title_prompt.clone(),
+            mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
+            local_mcp_presenter: Some(Arc::new(
+                crate::cli::mcp_local_presenter::register_local_mcp_presenter,
+            )),
         },
     );
     *mode
@@ -205,12 +166,6 @@ pub async fn run(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
         Some(PathBuf::from(crate::config::get_themes_dir()));
-    if let Some(host) = shared_host
-        .as_ref()
-        .and_then(|mount| mount.outcome.session_host())
-    {
-        mode.set_session_host(host);
-    }
     // senpi `options.tuiMode ?? settingsManager.getTuiMode()`: the flag, then the persisted setting.
     let fullscreen = parsed
         .tui_mode
@@ -249,7 +204,7 @@ pub async fn run(
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
     // senpi `registerSignalHandlers`: SIGTERM/SIGHUP shut down gracefully (terminal restore, then
-    // the caller's `session_shutdown`); SIGWINCH re-reports the width to a mounted shared host.
+    // the caller's `session_shutdown`).
     #[cfg(unix)]
     let mut signals = {
         use tokio::signal::unix::{SignalKind, signal};
@@ -257,7 +212,6 @@ pub async fn run(
         (
             install(SignalKind::terminate())?,
             install(SignalKind::hangup())?,
-            install(SignalKind::window_change())?,
         )
     };
     // senpi `run()`: the version check and tmux probe start asynchronously; their notices land in
@@ -407,15 +361,11 @@ pub async fn run(
             #[cfg(unix)]
             {
                 let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-                let (terminate, hangup, resize) = &mut signals;
+                let (terminate, hangup) = &mut signals;
                 if terminate.poll_recv(&mut context).is_ready() || hangup.poll_recv(&mut context).is_ready() {
                     crate::utils::shell::kill_tracked_detached_children();
                     mode.shutdown_requested = true;
                     break;
-                }
-                if resize.poll_recv(&mut context).is_ready()
-                    && let Some(maho_interactive::interactive_host_runtime::InteractiveHostRuntimeOutcome::Remote(runtime)) = shared_host.as_ref().map(|mount| &mount.outcome) {
-                    runtime.set_client_info(f64::from(terminal.columns())).await;
                 }
             }
             while let Ok(notice) = notices.try_recv() {
@@ -636,6 +586,9 @@ pub async fn run(
         }
         Ok(())
     }.await;
+    // senpi `shutdown`: `sessionControlHost.disposeActive()` before the runtime is disposed, so the
+    // endpoint's header-only rule and unregistration run while the session is still live.
+    mode.dispose_session_control().await;
     // senpi `shutdown`: drain in-flight Kitty key release events before stopping, so escape
     // sequences cannot leak to the parent shell over slow SSH (signal and interactive quit alike).
     terminal.drain_input(1000, 50);
@@ -673,7 +626,6 @@ pub async fn run(
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, fullscreen);
     screen.base_mut().reset_for_stop();
-    drop(shared_host);
     if startup_benchmark {
         // senpi: `interactiveMode.stop(); stopThemeWatcher(); printTimings(); process.exit(0)`.
         maho_interactive::interactive_stderr_guard::restore_interactive_stderr();

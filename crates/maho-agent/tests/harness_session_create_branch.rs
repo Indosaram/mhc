@@ -20,6 +20,7 @@ fn create_session() -> Arc<StorageBackedSession> {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage,
         StorageBackedSessionOptions::default(),

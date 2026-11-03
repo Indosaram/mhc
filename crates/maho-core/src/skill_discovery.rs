@@ -102,16 +102,23 @@ pub fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
     Some(if negated { format!("!{prefixed}") } else { prefixed })
 }
 
-/// `addIgnoreRules`.
-pub fn add_ignore_rules(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str) {
+/// `addIgnoreRules`: applies the ignore files present in `entries`, the listing of `dir` the walk already
+/// read, so no directory pays a probe per ignore-file name (omo#11437). Names compare case-insensitively,
+/// as the former existence probe did on case-insensitive volumes; a name that does not open is skipped.
+pub fn add_ignore_rules_from_entries(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str, entries: &[PathBuf]) {
     let relative_dir = relative_path(root_dir, dir);
     let prefix = if relative_dir.is_empty() { String::new() } else { format!("{}/", to_posix_path(&relative_dir)) };
+    let names: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|entry| entry.file_name())
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .collect();
 
     for filename in IGNORE_FILE_NAMES {
-        let ignore_path = Path::new(dir).join(filename);
-        if !ignore_path.exists() {
+        if !names.contains(filename) {
             continue;
         }
+        let ignore_path = Path::new(dir).join(filename);
         let Ok(content) = std::fs::read_to_string(&ignore_path) else {
             continue;
         };
@@ -122,6 +129,15 @@ pub fn add_ignore_rules(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str) {
             .collect();
         ig.add(&patterns);
     }
+}
+
+/// Listing wrapper for callers outside the walk (package manager auto-discovery), which have not read `dir` yet;
+/// the walks in this crate pass their own listing to `add_ignore_rules_from_entries`.
+pub fn add_ignore_rules(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str) {
+    let entries: Vec<PathBuf> = crate::utils::read_dir_sorted(dir)
+        .map(|entries| entries.into_iter().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    add_ignore_rules_from_entries(ig, dir, root_dir, &entries);
 }
 
 fn relative_path(root: &str, dir: &str) -> String {
@@ -175,6 +191,8 @@ pub struct SkillWalkOptions {
     pub provenance: Option<crate::skill_access::SkillProvenance>,
     pub allowed_set: Option<crate::skill_access::SkillAllowedSet>,
     pub ancestry: Option<std::collections::BTreeSet<String>>,
+    /// Optional cache owned by a single discovery pass, never retained on a Skill.
+    pub realpath: Option<crate::skill_access::RealpathFn>,
 }
 
 /// `collectSkillEntries`.
@@ -207,9 +225,11 @@ pub fn collect_skill_entries_with_options(
         }
     }
 
-    let canonical = std::fs::canonicalize(dir)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| dir.to_string());
+    let canonical = match options.realpath.as_ref() {
+        Some(realpath) => realpath(Path::new(dir)).map(|p| p.to_string_lossy().into_owned()),
+        None => std::fs::canonicalize(dir).map(|p| p.to_string_lossy().into_owned()),
+    }
+    .unwrap_or_else(|_| dir.to_string());
     if let Some(ref ancestry) = options.ancestry
         && ancestry.contains(&canonical) {
             return entries;
@@ -219,12 +239,12 @@ pub fn collect_skill_entries_with_options(
 
     let root = root_dir.unwrap_or(dir).to_string();
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
-    add_ignore_rules(&mut matcher, dir, &root);
 
     let Ok(dir_entries) = crate::utils::read_dir_sorted(dir) else {
         return entries;
     };
     let dir_entries: Vec<PathBuf> = dir_entries.into_iter().map(|entry| entry.path()).collect();
+    add_ignore_rules_from_entries(&mut matcher, dir, &root, &dir_entries);
 
     for full_path in &dir_entries {
         let Some(name) = full_path.file_name().map(|name| name.to_string_lossy().into_owned()) else {

@@ -101,6 +101,7 @@ async fn dag_start_attaches_after_task_recovery_and_switch_detaches_after_task_c
     });
     let context = support::context();
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

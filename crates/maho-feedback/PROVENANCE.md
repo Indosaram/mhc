@@ -26,3 +26,17 @@
   environment variable names, on-disk paths) are reproduced from the spec as it requires.
 - Tests (`tests/spec.rs`) were written from the spec's numbered acceptance tests; no upstream or
   OmO fixtures were reused.
+
+## Unit feedback-5152 (omo v5.1.52 delta)
+
+- Method: **C** (clean room). Built from the `## Delta (omo v5.1.52, 2026-10-30)` section of
+  `docs/cleanroom/specs/feedback.md` at spec commit `da2b172b`; unit `feedback-5152`.
+- Allowed inputs (and the only ones used): that spec, this crate's existing MIT code, and the MIT
+  `maho-ext-api` `ComponentLogger` / `ExtensionContext::logger` API. No SUL, OmO or upstream
+  source, checkout, cache or web page was opened.
+- New: `src/digest.rs` (SHA-256 written from FIPS 180-4 for the body digest header),
+  `src/signin.rs` (sign-in token policy, injectable store), `src/install.rs` (reinstall step);
+  typed refusals and the error-code table in `src/model.rs` / `src/reports.rs`. The error-code
+  list and header/env names are interface facts reproduced from the spec.
+- Tests (`tests/spec.rs`, module `delta_5152`, plus updated t09/t10/t11/t13/t14) were written
+  from the delta's given/when/then cases; no upstream fixtures were reused.

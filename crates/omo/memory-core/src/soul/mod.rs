@@ -7,6 +7,6 @@ pub use paths::{
     MEMORY_SOUL_EDIT_RESULT_TOKEN, SOUL_EDIT_RESULT_LINE, SOUL_PATHS, touches_soul_path,
 };
 pub use watermark::{
-    ConsumeSoulNoticeOptions, SOUL_NOTICE_WATERMARK_FILENAME, SoulNotice, WatermarkError,
-    consume_soul_notice_delta,
+    ConsumeSoulNoticeOptions, SOUL_NOTICE_WATERMARK_FILENAME, SoulNotice, SoulWarnSink,
+    WatermarkError, consume_soul_notice_delta, consume_soul_notice_delta_with_warn,
 };

@@ -178,6 +178,7 @@ pub fn built_in_tools_options(
         // under in-process, and the tool child's `user.bash` job under child (senpi#3566 todo 9), while truncation
         // and rendering stay on the server.
         bash: maho_tools::bash::BashToolOptions {
+            redact_secrets_in_output: settings.get_bash_redact_secrets_in_output(),
             command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),
@@ -422,11 +423,28 @@ pub async fn create_agent_session(
             .expect("SDK session retained during tool execution");
             Arc::new(extension_context::create(&session))
         });
+    // senpi `wrapRegisteredTools(..., this._toolDispatcher)`: built-in calls run through the session's dispatcher,
+    // so its `tool_dispatched` observers see them.
+    let dispatch_accessor = session_accessor.clone();
+    let dispatcher: maho_tools::tool_definition_wrapper::ToolRunDispatcher =
+        Arc::new(move |definition, call| {
+            let session = dispatch_accessor
+                .get()
+                .expect("SDK session initialized before tool execution")(
+            )
+            .expect("SDK session retained during tool execution");
+            crate::tool_dispatch::tool_dispatcher::dispatch_tool_call(
+                session.tool_dispatcher(),
+                definition,
+                call,
+            )
+        });
     let mut base_tools = BTreeMap::new();
     for (name, definition) in definitions {
         let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(
             definition,
             Some(context_factory.clone()),
+            Some(dispatcher.clone()),
         );
         base_tools.insert(name, tool);
     }
@@ -507,7 +525,11 @@ pub async fn create_agent_session(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     let provider_retry_settings = settings.get_provider_retry_settings();
+    // senpi sdk.ts: one internal channel per session, handed to both the Agent and the AgentSession at construction
+    // and never exported.
+    let internal_channel = maho_agent::create_internal_agent_channel();
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
+        internal_channel: Some(internal_channel.clone()),
         initial_state: Some(maho_agent::agent::PartialAgentState {
             model,
             thinking_level: Some(thinking_level),
@@ -516,9 +538,15 @@ pub async fn create_agent_session(
             tools: Some(active_tools),
             ..Default::default()
         }),
-        stream_fn: Some(Arc::new(move |model, context, options| {
-            runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple))
-        })),
+        stream_fn: Some({
+            // Every model request runs in the session cwd, so subprocess-backed lanes start there.
+            let stream_cwd = cwd.clone();
+            Arc::new(move |model, context, options| {
+                let mut simple = options.map(|options| options.simple).unwrap_or_default();
+                simple.stream.request.cwd = Some(stream_cwd.clone());
+                runtime_for_stream.stream_simple(model, context, Some(simple))
+            })
+        }),
         get_api_key: Some(Arc::new(move |provider| {
             let runtime = runtime_for_auth.clone();
             Box::pin(async move { api_key_from_auth(runtime.get_auth(&provider).await) })
@@ -586,6 +614,7 @@ pub async fn create_agent_session(
                     .session_start_event
                     .take()
                     .unwrap_or(maho_ext_api::SessionStartEvent {
+                        sizes_only: false,
                         reason: maho_ext_api::SessionReason::Startup,
                         initial_model_provenance: None,
                         previous_session_file: None,
@@ -603,7 +632,7 @@ pub async fn create_agent_session(
         .as_ref()
         .map(|loaded| loaded.runtime.flag_values())
         .unwrap_or_default();
-    let session = crate::agent_session::AgentSession::new_with_tool_runtime(
+    let session = crate::agent_session::AgentSession::new_with_internal_channel(
         crate::agent_session::AgentSessionConfig {
             agent,
             session_manager: manager,
@@ -631,6 +660,7 @@ pub async fn create_agent_session(
             auto_title_sessions: options.auto_title_sessions,
         },
         options.tool_runtime,
+        Some(internal_channel),
     )
     .map_err(|error| error.to_string())?;
     // senpi `new AgentSession({ promptSurface, browserEngine })`: set before the first prompt is built.
@@ -1036,6 +1066,78 @@ mod tests {
             );
             assert_eq!(context.messages.len(), 1);
         }
+    }
+
+    /// senpi test/suite/regressions/2848-sdk-boundary-cwd.test.ts: every model request the SDK session's agent
+    /// streams carries the session cwd, overriding whatever the caller's options held, so subprocess-backed lanes
+    /// (the Claude SDK lane) start in the session cwd.
+    #[tokio::test]
+    async fn sdk_stream_requests_carry_the_session_cwd() {
+        use maho_ai::providers::faux::{
+            FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider,
+        };
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let faux = faux_provider(RegisterFauxProviderOptions {
+            models: Some(vec![FauxModelDefinition {
+                id: "faux-1".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .expect("faux provider");
+        faux.core.set_responses(vec![
+            faux_assistant_message("ok", Default::default()).into(),
+        ]);
+        let mut runtime =
+            ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(Vec::new()),
+                ..Default::default()
+            })
+            .expect("model runtime");
+        runtime.register_native_provider(faux.provider.clone());
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()),
+            agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()),
+            model_runtime: Some(runtime),
+            session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()),
+            ..Default::default()
+        })
+        .await
+        .expect("SDK session");
+        let mut options = maho_agent::types::AgentStreamOptions::default();
+        options.simple.stream.request.cwd = Some("/caller-cwd".into());
+        options.simple.stream.request.api_key = Some("fixture-key".into());
+        let model = faux.get_model(Some("faux-1")).expect("model");
+        let stream = created.session.agent().stream_function()(
+            &model,
+            &maho_ai::types::Context {
+                active_tool_names: None,
+                system_prompt: None,
+                messages: Vec::new(),
+                tools: None,
+            },
+            Some(options),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+            .await
+            .expect("bounded stream")
+            .expect("result");
+        created.session.dispose().await;
+        let log = faux.get_call_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0]
+                .options
+                .as_ref()
+                .expect("options")
+                .request
+                .cwd
+                .as_deref(),
+            Some(cwd.as_str())
+        );
     }
 
     #[tokio::test]

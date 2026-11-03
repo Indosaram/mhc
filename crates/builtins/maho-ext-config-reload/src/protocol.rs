@@ -6,69 +6,221 @@ pub const CONFIG_WATCH_READY: &str = "config-watch:ready";
 pub const CONFIG_WATCH_CHANGED: &str = "config-watch:changed";
 pub const CONFIG_WATCH_RELOADED: &str = "config-watch:reloaded";
 pub const CONFIG_WATCH_REJECTED: &str = "config-watch:rejected";
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ConfigWatchTargetKind { File, Dir }
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConfigWatchTarget { pub path: String, pub kind: ConfigWatchTargetKind, pub filter_globs: Option<Vec<String>> }
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConfigWatchRegistration { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTarget> }
-pub fn registration_fingerprint(registration: &ConfigWatchRegistration, has_validate: bool) -> String {
- let targets: Vec<_> = registration.targets.iter().map(|target| serde_json::json!({"path":target.path,"kind":match target.kind { ConfigWatchTargetKind::File => "file", ConfigWatchTargetKind::Dir => "dir" },"filterGlobs":target.filter_globs})).collect();
- serde_json::json!({"id":registration.id,"displayName":registration.display_name,"targets":targets,"hasValidate":has_validate}).to_string()
+/// `configWatchChannels`: the in-process channel names keyed by role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfigWatchChannels {
+    pub register: &'static str,
+    pub unregister: &'static str,
+    pub ready: &'static str,
+    pub changed: &'static str,
+    pub reloaded: &'static str,
+    pub rejected: &'static str,
 }
-pub fn registration_has_restricted_target(registration: &ConfigWatchRegistration, cwd: &Path, agent_dir: &Path) -> bool {
- let resolve = |path: &Path| {
-  let mut normalized = PathBuf::new();
-  for component in path.components() { match component { Component::ParentDir => { normalized.pop(); }, Component::CurDir => {}, other => normalized.push(other.as_os_str()) } }
-  normalized
- };
- let agent = resolve(&if agent_dir.is_absolute() { agent_dir.into() } else { cwd.join(agent_dir) });
- let protected: Vec<_> = ["auth.json", "sessions", "logs"].into_iter().map(|name| agent.join(name)).collect();
- registration.targets.iter().any(|target| {
-  let path = crate::index::resolve_watch_path(&target.path, cwd);
-  let safe = target.kind == ConfigWatchTargetKind::Dir
-   && !protected.iter().any(|protected| path.starts_with(protected))
-   && target.filter_globs.as_ref().is_some_and(|filters| !filters.is_empty() && filters.iter().all(|filter| {
-    filter.strip_prefix('/').is_some_and(|anchored| {
-     let filtered = resolve(&path.join(anchored));
-     protected.iter().all(|protected| !filtered.starts_with(protected) && !protected.starts_with(&filtered))
+pub const CONFIG_WATCH_CHANNELS: ConfigWatchChannels = ConfigWatchChannels {
+    register: CONFIG_WATCH_REGISTER,
+    unregister: CONFIG_WATCH_UNREGISTER,
+    ready: CONFIG_WATCH_READY,
+    changed: CONFIG_WATCH_CHANGED,
+    reloaded: CONFIG_WATCH_RELOADED,
+    rejected: CONFIG_WATCH_REJECTED,
+};
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigWatchTargetKind {
+    File,
+    Dir,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigWatchTarget {
+    pub path: String,
+    pub kind: ConfigWatchTargetKind,
+    pub filter_globs: Option<Vec<String>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigWatchRegistration {
+    pub id: String,
+    pub display_name: String,
+    pub targets: Vec<ConfigWatchTarget>,
+}
+pub fn registration_fingerprint(
+    registration: &ConfigWatchRegistration,
+    has_validate: bool,
+) -> String {
+    let targets: Vec<_> = registration.targets.iter().map(|target| serde_json::json!({"path":target.path,"kind":match target.kind { ConfigWatchTargetKind::File => "file", ConfigWatchTargetKind::Dir => "dir" },"filterGlobs":target.filter_globs})).collect();
+    serde_json::json!({"id":registration.id,"displayName":registration.display_name,"targets":targets,"hasValidate":has_validate}).to_string()
+}
+pub fn registration_has_restricted_target(
+    registration: &ConfigWatchRegistration,
+    cwd: &Path,
+    agent_dir: &Path,
+) -> bool {
+    let resolve = |path: &Path| {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                Component::CurDir => {}
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        normalized
+    };
+    let agent = resolve(&if agent_dir.is_absolute() {
+        agent_dir.into()
+    } else {
+        cwd.join(agent_dir)
+    });
+    let protected: Vec<_> = ["auth.json", "sessions", "logs"]
+        .into_iter()
+        .map(|name| agent.join(name))
+        .collect();
+    registration.targets.iter().any(|target| {
+        let path = crate::index::resolve_watch_path(&target.path, cwd);
+        let safe = target.kind == ConfigWatchTargetKind::Dir
+            && !protected
+                .iter()
+                .any(|protected| path.starts_with(protected))
+            && target.filter_globs.as_ref().is_some_and(|filters| {
+                !filters.is_empty()
+                    && filters.iter().all(|filter| {
+                        filter.strip_prefix('/').is_some_and(|anchored| {
+                            let filtered = resolve(&path.join(anchored));
+                            protected.iter().all(|protected| {
+                                !filtered.starts_with(protected)
+                                    && !protected.starts_with(&filtered)
+                            })
+                        })
+                    })
+            });
+        !safe
+            && protected
+                .iter()
+                .any(|protected| path.starts_with(protected) || protected.starts_with(&path))
     })
-   }));
-  !safe && protected.iter().any(|protected| path.starts_with(protected) || protected.starts_with(&path))
- })
 }
-fn strings(value: &Value) -> Option<Vec<String>> { value.as_array()?.iter().map(|entry| entry.as_str().map(str::to_owned)).collect() }
+fn strings(value: &Value) -> Option<Vec<String>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|entry| entry.as_str().map(str::to_owned))
+        .collect()
+}
 pub fn parse_config_watch_target(value: &Value) -> Option<ConfigWatchTarget> {
- let object = value.as_object()?;
- Some(ConfigWatchTarget { path: object.get("path")?.as_str()?.into(), kind: match object.get("kind")?.as_str()? { "file" => ConfigWatchTargetKind::File, "dir" => ConfigWatchTargetKind::Dir, _ => return None }, filter_globs: match object.get("filterGlobs") { Some(value) => Some(strings(value)?), None => None } })
+    let object = value.as_object()?;
+    Some(ConfigWatchTarget {
+        path: object.get("path")?.as_str()?.into(),
+        kind: match object.get("kind")?.as_str()? {
+            "file" => ConfigWatchTargetKind::File,
+            "dir" => ConfigWatchTargetKind::Dir,
+            _ => return None,
+        },
+        filter_globs: match object.get("filterGlobs") {
+            Some(value) => Some(strings(value)?),
+            None => None,
+        },
+    })
+}
+/// `isConfigWatchTarget`.
+pub fn is_config_watch_target(value: &Value) -> bool {
+    parse_config_watch_target(value).is_some()
+}
+/// `isConfigWatchRegistration` for wire payloads. A JSON payload cannot carry the optional
+/// `validate` function, so any `validate` key is rejected; in-process validators use the native type.
+pub fn is_config_watch_registration(value: &Value) -> bool {
+    parse_config_watch_registration(value).is_some()
 }
 pub fn parse_config_watch_registration(value: &Value) -> Option<ConfigWatchRegistration> {
- let object = value.as_object()?;
- if object.contains_key("validate") { return None; }
- Some(ConfigWatchRegistration { id: object.get("id")?.as_str()?.into(), display_name: object.get("displayName")?.as_str()?.into(), targets: object.get("targets")?.as_array()?.iter().map(parse_config_watch_target).collect::<Option<_>>()? })
+    let object = value.as_object()?;
+    if object.contains_key("validate") {
+        return None;
+    }
+    Some(ConfigWatchRegistration {
+        id: object.get("id")?.as_str()?.into(),
+        display_name: object.get("displayName")?.as_str()?.into(),
+        targets: object
+            .get("targets")?
+            .as_array()?
+            .iter()
+            .map(parse_config_watch_target)
+            .collect::<Option<_>>()?,
+    })
 }
 pub fn is_config_watch_validation(value: &Value) -> bool {
- match value.get("ok").and_then(Value::as_bool) { Some(true) => true, Some(false) => value.get("errors").and_then(strings).is_some(), None => false }
+    match value.get("ok").and_then(Value::as_bool) {
+        Some(true) => true,
+        Some(false) => value.get("errors").and_then(strings).is_some(),
+        None => false,
+    }
 }
-pub fn is_config_watch_unregistration(value: &Value) -> bool { value.get("id").is_some_and(Value::is_string) }
-pub fn is_config_watch_reloaded(value: &Value) -> bool { value.get("registrationId").is_some_and(Value::is_string) && value.get("paths").and_then(strings).is_some() }
-pub fn is_config_watch_changed(value: &Value) -> bool { is_config_watch_reloaded(value) && value.get("deferred").is_some_and(Value::is_boolean) }
-pub fn is_config_watch_rejected(value: &Value) -> bool { is_config_watch_reloaded(value) && value.get("errors").and_then(strings).is_some() }
+pub fn is_config_watch_unregistration(value: &Value) -> bool {
+    value.get("id").is_some_and(Value::is_string)
+}
+pub fn is_config_watch_reloaded(value: &Value) -> bool {
+    value.get("registrationId").is_some_and(Value::is_string)
+        && value.get("paths").and_then(strings).is_some()
+}
+pub fn is_config_watch_changed(value: &Value) -> bool {
+    is_config_watch_reloaded(value) && value.get("deferred").is_some_and(Value::is_boolean)
+}
+pub fn is_config_watch_rejected(value: &Value) -> bool {
+    is_config_watch_reloaded(value) && value.get("errors").and_then(strings).is_some()
+}
 pub fn matches_config_watch_filter(path: &str, filters: &[String]) -> bool {
- if filters.is_empty() { return true; }
- let normalized = path.replace('\\', "/");
- let basename = normalized.rsplit('/').next().unwrap_or("");
- filters.iter().any(|filter| {
-  if let Some(anchored) = filter.strip_prefix('/') { normalized == anchored }
-  else if let Some(suffix) = filter.strip_prefix('*') { normalized.ends_with(suffix) }
-  else { basename == filter || normalized.ends_with(&format!("/{filter}")) }
- })
+    if filters.is_empty() {
+        return true;
+    }
+    let normalized = path.replace('\\', "/");
+    let basename = normalized.rsplit('/').next().unwrap_or("");
+    filters.iter().any(|filter| {
+        if let Some(anchored) = filter.strip_prefix('/') {
+            normalized == anchored
+        } else if let Some(suffix) = filter.strip_prefix('*') {
+            normalized.ends_with(suffix)
+        } else {
+            basename == filter || normalized.ends_with(&format!("/{filter}"))
+        }
+    })
 }
-pub fn resolve_config_watch_registrations(registrations: impl IntoIterator<Item = ConfigWatchRegistration>) -> Vec<ConfigWatchRegistration> {
- let mut resolved: Vec<ConfigWatchRegistration> = Vec::new();
- for registration in registrations {
-  if let Some(existing) = resolved.iter_mut().find(|existing| existing.id == registration.id) { *existing = registration; }
-  else { resolved.push(registration); }
- }
- resolved
+pub fn resolve_config_watch_registrations(
+    registrations: impl IntoIterator<Item = ConfigWatchRegistration>,
+) -> Vec<ConfigWatchRegistration> {
+    let mut resolved: Vec<ConfigWatchRegistration> = Vec::new();
+    for registration in registrations {
+        if let Some(existing) = resolved
+            .iter_mut()
+            .find(|existing| existing.id == registration.id)
+        {
+            *existing = registration;
+        } else {
+            resolved.push(registration);
+        }
+    }
+    resolved
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn channels_and_guards_match_the_wire_contract() {
+        assert_eq!(CONFIG_WATCH_CHANNELS.register, "config-watch:register");
+        assert_eq!(CONFIG_WATCH_CHANNELS.rejected, "config-watch:rejected");
+        assert!(is_config_watch_target(
+            &json!({"path": "a", "kind": "dir", "filterGlobs": ["/x"]})
+        ));
+        assert!(!is_config_watch_target(
+            &json!({"path": "a", "kind": "socket"})
+        ));
+        assert!(!is_config_watch_target(
+            &json!({"path": "a", "kind": "file", "filterGlobs": [1]})
+        ));
+        assert!(is_config_watch_registration(
+            &json!({"id": "i", "displayName": "d", "targets": [{"path": "a", "kind": "file"}]})
+        ));
+        assert!(!is_config_watch_registration(
+            &json!({"id": "i", "displayName": "d", "targets": [{"path": "a"}]})
+        ));
+        assert!(!is_config_watch_registration(&json!(["id"])));
+    }
 }

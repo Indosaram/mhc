@@ -33,7 +33,7 @@ pub enum PromptInput {
     Messages(Vec<crate::types::AgentMessage>),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NavigationOptions {
     pub summarize: bool,
     pub label: Option<String>,
@@ -337,6 +337,45 @@ impl Lane {
             .ok_or_else(|| session_invariant_error("Lane has no installed self reference"))
     }
 
+    /// Pinned `Lane.activeDrive?.operationId`: the operation whose drive pass is installed, if any.
+    pub fn active_drive_operation_id(&self) -> Option<String> {
+        self.active_drive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|drive| drive.operation_id.clone())
+    }
+
+    /// Pinned test constructor argument `() => config`: edit the process-local drive configuration
+    /// a standalone lane reads, as procedure-level fixtures do before driving it.
+    #[doc(hidden)]
+    pub fn update_drive_config(&self, update: impl FnOnce(&mut Config<()>)) {
+        update(
+            &mut self
+                .drive_config
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+    }
+
+    /// Pinned test assignment `lane.activeDrive = drive`: install (or clear) the drive pass that
+    /// procedure-level fixtures drive directly, without the public `drive` claim.
+    #[doc(hidden)]
+    pub fn set_active_drive(&self, drive: Option<Arc<Drive>>) {
+        *self
+            .active_drive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = drive;
+        self.state_change.notify_waiters();
+    }
+
+    /// Test hook: a `state_change` notification future. Register (and `enable`) it before checking
+    /// the condition it guards so a concurrent `notify_waiters` is not lost.
+    #[doc(hidden)]
+    pub fn state_changed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.state_change.notified()
+    }
+
     fn active_drive_matching(&self, operation_id: &str) -> Option<Arc<Drive>> {
         self.active_drive
             .lock()
@@ -426,6 +465,97 @@ impl Lane {
         self.assert_open()?;
         let model = self.state().configuration.model;
         Ok(self.models.get_model(&model.provider, &model.model_id))
+    }
+
+    /// Pinned `Lane.accept(request, context)`: dispatch one tagged admission request to its
+    /// acceptance procedure, returning `Closed` instead of throwing once the lane is closed.
+    pub async fn accept(
+        &self,
+        request: crate::harness::agent_harness::OperationRequest,
+        context: &Context,
+    ) -> Result<crate::harness::agent_harness::OperationAdmissionResult, SessionError> {
+        use crate::harness::agent_harness::OperationRequest;
+        if let Err(error) = self.assert_open() {
+            return if error.kind == SessionErrorKind::Closed {
+                Ok(Err(AdmissionError::Closed {
+                    message: error.message,
+                }))
+            } else {
+                Err(error)
+            };
+        }
+        match request {
+            OperationRequest::Compaction {
+                operation_id,
+                custom_instructions,
+            } => {
+                self.accept_compaction(
+                    custom_instructions,
+                    operation_id,
+                    self.run_settings(),
+                    context,
+                )
+                .await
+            }
+            OperationRequest::Navigation {
+                operation_id,
+                target_id,
+                options,
+            } => {
+                self.accept_navigation(
+                    target_id,
+                    options.unwrap_or_default(),
+                    operation_id,
+                    self.run_settings(),
+                    context,
+                )
+                .await
+            }
+            OperationRequest::Prompt {
+                operation_id,
+                prompt,
+                images,
+            } => {
+                self.accept_prompt(
+                    PromptInput::Text {
+                        text: prompt,
+                        images,
+                    },
+                    operation_id,
+                    self.run_settings(),
+                    context,
+                )
+                .await
+            }
+            OperationRequest::PromptMessages {
+                operation_id,
+                prompt,
+            } => {
+                self.accept_prompt(
+                    PromptInput::Messages(prompt),
+                    operation_id,
+                    self.run_settings(),
+                    context,
+                )
+                .await
+            }
+            OperationRequest::Skill {
+                operation_id,
+                name,
+                additional_instructions,
+            } => {
+                self.accept_skill(&name, additional_instructions, operation_id, context)
+                    .await
+            }
+            OperationRequest::PromptTemplate {
+                operation_id,
+                name,
+                args,
+            } => {
+                self.accept_prompt_template(&name, args.unwrap_or_default(), operation_id, context)
+                    .await
+            }
+        }
     }
 
     pub async fn accept_skill(
@@ -2150,7 +2280,9 @@ impl Lane {
                         entry_id: id.clone(),
                         kind,
                     };
-                    let pending = PendingEntry::Message { payload: Box::new(message) };
+                    let pending = PendingEntry::Message {
+                        payload: Box::new(message),
+                    };
                     queues.push(queued_item(&item, &pending)?);
                     state.inbox.push(item);
                     let writes = vec![
@@ -2349,8 +2481,13 @@ impl Lane {
         message: crate::types::AgentMessage,
         context: &Context,
     ) -> Result<String, SessionError> {
-        self.append(PendingEntry::Message { payload: Box::new(message) }, context)
-            .await
+        self.append(
+            PendingEntry::Message {
+                payload: Box::new(message),
+            },
+            context,
+        )
+        .await
     }
 
     pub async fn append_custom_entry(

@@ -51,6 +51,8 @@ pub mod engine_runners;
 pub mod eval_handle_host;
 #[path = "event_registration.rs"]
 pub mod event_registration;
+#[path = "host_liveness_notice.rs"]
+pub mod host_liveness_notice;
 #[path = "host_timers.rs"]
 pub mod host_timers;
 #[path = "lead_message_sink.rs"]

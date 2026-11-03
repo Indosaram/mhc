@@ -6,8 +6,11 @@ use maho_ai::auth::headers::{has_credential_headers, is_credential_header_name};
 use maho_ai::auth::types::{AuthCheck, AuthContext, AuthType};
 use maho_ai::types::ProviderHeaders;
 
+use crate::config_reference_resolver::{
+    ConfigReferenceContext, ConfigValue, assert_config_reference_authority,
+};
 use crate::resolve_config_value::{
-    get_config_value_env_var_names, is_command_config_value, is_config_value_configured,
+    get_config_value_env_var_names_of, is_command_config_value_of, is_config_value_configured_of,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,13 +30,13 @@ pub enum ConfiguredHeaderAuthStatus {
 
 struct EffectiveHeader {
     name: String,
-    value: String,
+    value: ConfigValue,
     source: HeaderAuthStatusSource,
 }
 
 fn effective_headers(
-    config_headers: Option<&BTreeMap<String, String>>,
-    extension_headers: Option<&BTreeMap<String, String>>,
+    config_headers: Option<&BTreeMap<String, ConfigValue>>,
+    extension_headers: Option<&BTreeMap<String, ConfigValue>>,
 ) -> BTreeMap<String, EffectiveHeader> {
     let mut effective = BTreeMap::new();
     add_headers(
@@ -49,13 +52,22 @@ fn effective_headers(
     effective
 }
 
+/// senpi `addHeaders`: an extension header carrying a reference is refused as `forbidden`, and a models.json
+/// reference needs its remembered trusted origin (senpi#3858). A refused header is not counted as configured.
 fn add_headers(
     target: &mut BTreeMap<String, EffectiveHeader>,
-    headers: Option<&BTreeMap<String, String>>,
+    headers: Option<&BTreeMap<String, ConfigValue>>,
     source: HeaderAuthStatusSource,
 ) {
     if let Some(headers) = headers {
         for (name, value) in headers {
+            let extension = (source == HeaderAuthStatusSource::ExtensionHeaders)
+                .then(|| ConfigReferenceContext::extension(format!("extension.headers.{name}")));
+            if assert_config_reference_authority(value, extension.as_ref()).is_err()
+                || assert_config_reference_authority(value, None).is_err()
+            {
+                continue;
+            }
             target.insert(
                 name.to_lowercase(),
                 EffectiveHeader {
@@ -74,6 +86,17 @@ fn single_header(name: &str, value: &str) -> ProviderHeaders {
     headers
 }
 
+/// senpi `isConfiguredCredentialHeader`: a reference value on a credential header counts as configured.
+fn is_configured_credential_header(header: &EffectiveHeader) -> bool {
+    is_credential_header_name(&header.name)
+        && match &header.value {
+            ConfigValue::String(value) => {
+                has_credential_headers(Some(&single_header(&header.name, value)))
+            }
+            ConfigValue::Reference { .. } => true,
+        }
+}
+
 fn source_label(source: HeaderAuthStatusSource) -> &'static str {
     match source {
         HeaderAuthStatusSource::ExtensionHeaders => "extension_headers",
@@ -82,8 +105,8 @@ fn source_label(source: HeaderAuthStatusSource) -> &'static str {
 }
 
 pub fn configured_header_auth_status(
-    config_headers: Option<&BTreeMap<String, String>>,
-    extension_headers: Option<&BTreeMap<String, String>>,
+    config_headers: Option<&BTreeMap<String, ConfigValue>>,
+    extension_headers: Option<&BTreeMap<String, ConfigValue>>,
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> Option<ConfiguredHeaderAuthStatus> {
     let mut saw_credential_header = false;
@@ -92,15 +115,15 @@ pub fn configured_header_auth_status(
             continue;
         }
         saw_credential_header = true;
-        if is_command_config_value(&header.value) {
+        if is_command_config_value_of(&header.value) {
             return Some(ConfiguredHeaderAuthStatus::Configured {
                 source: "models_json_command".to_owned(),
                 label: None,
             });
         }
-        let env_names = get_config_value_env_var_names(&header.value);
-        if !env_names.is_empty() {
-            if is_config_value_configured(&header.value, env) {
+        let env_names = get_config_value_env_var_names_of(&header.value);
+        if header.value.as_str().is_some() && !env_names.is_empty() {
+            if is_config_value_configured_of(&header.value, env) {
                 return Some(ConfiguredHeaderAuthStatus::Configured {
                     source: "environment".to_owned(),
                     label: Some(env_names.join(", ")),
@@ -108,7 +131,7 @@ pub fn configured_header_auth_status(
             }
             continue;
         }
-        if has_credential_headers(Some(&single_header(&header.name, &header.value))) {
+        if is_configured_credential_header(header) {
             return Some(ConfiguredHeaderAuthStatus::Configured {
                 source: source_label(header.source).to_owned(),
                 label: None,
@@ -123,19 +146,12 @@ pub fn configured_header_auth_status(
 }
 
 pub fn header_auth_resolution_source(
-    config_headers: Option<&BTreeMap<String, String>>,
-    extension_headers: Option<&BTreeMap<String, String>>,
+    config_headers: Option<&BTreeMap<String, ConfigValue>>,
+    extension_headers: Option<&BTreeMap<String, ConfigValue>>,
 ) -> Option<String> {
     let headers = effective_headers(config_headers, extension_headers);
-    let mut values = ProviderHeaders::new();
     for header in headers.values() {
-        values.insert(header.name.clone(), Some(header.value.clone()));
-    }
-    if !has_credential_headers(Some(&values)) {
-        return None;
-    }
-    for header in headers.values() {
-        if !has_credential_headers(Some(&single_header(&header.name, &header.value))) {
+        if !is_configured_credential_header(header) {
             continue;
         }
         return Some(match header.source {
@@ -147,7 +163,7 @@ pub fn header_auth_resolution_source(
 }
 
 pub async fn check_configured_header_auth(
-    headers: Option<&BTreeMap<String, String>>,
+    headers: Option<&BTreeMap<String, ConfigValue>>,
     ctx: &dyn AuthContext,
     source: Option<&str>,
 ) -> Option<AuthCheck> {
@@ -156,14 +172,14 @@ pub async fn check_configured_header_auth(
         if !is_credential_header_name(&header.name) {
             continue;
         }
-        if is_command_config_value(&header.value) {
+        if header.value.is_reference() || is_command_config_value_of(&header.value) {
             return Some(AuthCheck {
                 ambient: false,
                 source: source.map(str::to_owned),
                 auth_type: AuthType::ApiKey,
             });
         }
-        let env_names = get_config_value_env_var_names(&header.value);
+        let env_names = get_config_value_env_var_names_of(&header.value);
         let mut configured = true;
         for env_name in &env_names {
             if ctx.env(env_name).await.is_none() {
@@ -171,7 +187,7 @@ pub async fn check_configured_header_auth(
                 break;
             }
         }
-        if configured && has_credential_headers(Some(&single_header(&header.name, &header.value))) {
+        if configured && is_configured_credential_header(header) {
             return Some(AuthCheck {
                 ambient: false,
                 source: source.map(str::to_owned),
@@ -186,11 +202,34 @@ pub async fn check_configured_header_auth(
 mod tests {
     use super::*;
 
-    fn headers(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    fn headers(entries: &[(&str, &str)]) -> BTreeMap<String, ConfigValue> {
         entries
             .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .map(|(name, value)| ((*name).to_owned(), ConfigValue::from(*value)))
             .collect()
+    }
+
+    /// senpi test/suite/regressions/3858-reference-capability.test.ts: a trusted reference header is a configured
+    /// credential; the same reference from an extension (or without an origin) is not.
+    #[test]
+    fn reference_headers_count_only_with_trusted_origin() {
+        let mut trusted: ConfigValue =
+            serde_json::from_value(serde_json::json!({"$env": "TOKEN"})).expect("reference");
+        crate::config_reference_resolver::remember_config_reference_origin(
+            &mut trusted,
+            ConfigReferenceContext::trusted("/m.json", "providers.p.headers.Authorization"),
+        );
+        let config = BTreeMap::from([("Authorization".to_owned(), trusted.clone())]);
+        assert_eq!(
+            header_auth_resolution_source(Some(&config), None).as_deref(),
+            Some("models.json headers")
+        );
+        let extension = BTreeMap::from([("Authorization".to_owned(), trusted)]);
+        assert_eq!(header_auth_resolution_source(None, Some(&extension)), None);
+        let bare: ConfigValue =
+            serde_json::from_value(serde_json::json!({"$env": "TOKEN"})).expect("reference");
+        let config = BTreeMap::from([("Authorization".to_owned(), bare)]);
+        assert_eq!(header_auth_resolution_source(Some(&config), None), None);
     }
 
     #[test]

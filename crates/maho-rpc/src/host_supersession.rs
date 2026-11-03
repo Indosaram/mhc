@@ -1,4 +1,23 @@
 use crate::socket_ownership::EndpointOwnership;
+/// senpi `SupersededEndpoint`: the public path a generation serves, the entry it bound there, and whether the
+/// host has already settled (draining or shutting down) and has nothing left to notice.
+pub struct SupersededEndpoint {
+    pub path: String,
+    pub identity: Option<crate::socket_ownership::SocketFileIdentity>,
+    pub settled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+}
+impl SupersededEndpoint {
+    /// Starts [`watch_for_supersession`] on this endpoint.
+    pub fn watch(self, on_lost: impl FnOnce(EndpointLoss) + Send + 'static) -> SupersessionWatch {
+        let settled = self.settled;
+        watch_for_supersession(
+            self.path,
+            self.identity,
+            move || settled.as_ref().is_some_and(|settled| settled()),
+            on_lost,
+        )
+    }
+}
 /// Handle for the supersession watcher task; dropping or stopping it ends the watch.
 pub struct SupersessionWatch {
     task: tokio::task::JoinHandle<()>,
@@ -225,6 +244,21 @@ mod tests {
         assert_eq!(loss, EndpointLoss::Replaced);
         watch.stop();
         drop((original, newer));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn an_endpoint_without_identity_is_never_claimed_superseded() {
+        let endpoint = SupersededEndpoint {
+            path: "/nonexistent/socket".into(),
+            identity: None,
+            settled: Some(Box::new(|| false)),
+        };
+        let (lost_tx, lost_rx) = tokio::sync::oneshot::channel::<EndpointLoss>();
+        let watch = endpoint.watch(move |loss| {
+            let _ = lost_tx.send(loss);
+        });
+        // The watch task ends without a loss, which drops the sender.
+        assert!(lost_rx.await.is_err());
+        watch.stop();
     }
     #[test]
     fn unknown_resets_consecutive_absence_and_loss_latches() {

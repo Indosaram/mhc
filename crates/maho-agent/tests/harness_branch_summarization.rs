@@ -323,6 +323,7 @@ fn reader(entries: Vec<Entry>) -> (FakeBranch, FakeSession) {
                 cwd: None,
                 parent_session_id: None,
                 legacy_parent_session_path: None,
+                path: None,
             },
             id_generator: Arc::new(|_| "generated".to_owned()),
         },

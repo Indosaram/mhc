@@ -5,14 +5,83 @@ pub const DETACH_CONNECTION_CAPABILITY: &str = "detach_connection";
 pub struct ProbeHostOptions<'a> {
     pub socket: &'a str,
     pub timeout_ms: Option<u64>,
+    /// Credential lookup only (senpi `RpcKeyOptions.keyRoot`); never selects a configuration profile.
+    pub key_root: Option<&'a std::path::Path>,
 }
 /// The running host's identity, or `None` when nothing is serving the endpoint.
 pub async fn probe_host(options: ProbeHostOptions<'_>) -> Option<HostProtocolInfo> {
-    probe_protocol_info(
+    let probe = probe_protocol_info(
         options.socket,
         options.timeout_ms.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS),
+    );
+    match options.key_root {
+        Some(root) => with_rpc_key_root(root.to_path_buf(), probe).await,
+        None => probe.await,
+    }
+}
+
+tokio::task_local! {
+    static RPC_KEY_ROOT: std::path::PathBuf;
+}
+/// Runs `operation` with `root` as the key root every endpoint proof inside it reads (senpi rpc-auth-client
+/// `withRpcKeyRoot`); concurrent operations keep separate roots.
+pub async fn with_rpc_key_root<F: std::future::Future>(
+    root: std::path::PathBuf,
+    operation: F,
+) -> F::Output {
+    RPC_KEY_ROOT.scope(root, operation).await
+}
+/// senpi rpc-auth-client `rpcKeyRoot`: the explicit option, then an enclosing [`with_rpc_key_root`], then
+/// `SENPI_RPC_KEY_ROOT`, then the caller's default (a target's agent dir), then this profile's agent dir.
+pub fn rpc_key_root(
+    explicit: Option<&std::path::Path>,
+    default_root: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    rpc_key_root_with(
+        explicit,
+        std::env::var("SENPI_RPC_KEY_ROOT").ok().as_deref(),
+        default_root,
     )
-    .await
+}
+/// [`rpc_key_root`] with the environment value passed in.
+pub fn rpc_key_root_with(
+    explicit: Option<&std::path::Path>,
+    env_root: Option<&str>,
+    default_root: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    if let Some(explicit) = explicit {
+        return explicit.to_path_buf();
+    }
+    if let Ok(scoped) = RPC_KEY_ROOT.try_with(Clone::clone) {
+        return scoped;
+    }
+    env_root
+        .filter(|root| !root.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| default_root.map(ToOwned::to_owned))
+        .unwrap_or_else(default_key_root)
+}
+/// This profile's agent dir, read the way a client resolves it without a settings manager.
+fn default_key_root() -> std::path::PathBuf {
+    for name in [
+        "OMO_CODING_AGENT_DIR",
+        "SENPI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_DIR",
+    ] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            return std::path::absolute(value.trim())
+                .unwrap_or_else(|_| std::path::PathBuf::from(value.trim()));
+        }
+    }
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    for path in [home.join(".omo/agent"), home.join(".omo")] {
+        if path.join("settings.json").exists() {
+            return path;
+        }
+    }
+    home.join(".senpi/agent")
 }
 const PROBE_REQUEST_ID: &str = "ensure-host-probe";
 #[derive(Default)]
@@ -196,6 +265,92 @@ pub async fn probe_session_count(socket_path: &str, timeout_ms: u64) -> Option<u
     .map(Vec::len)
 }
 
+/// `probe_protocol_info` for a read that must not count as host activity, such as `host status`.
+pub async fn observe_protocol_info(socket_path: &str, timeout_ms: u64) -> Option<HostProtocolInfo> {
+    let request = serde_json::json!({
+        "id": PROBE_REQUEST_ID,
+        "type": "get_protocol_info",
+        crate::host_observe_request::OBSERVE_REQUEST_FIELD: true,
+    });
+    parse_host_protocol_info(
+        &connect_and_ask(socket_path, &request, timeout_ms)
+            .await
+            .answer?,
+    )
+}
+
+/// The session count together with the connection that answered it, kept open so the SAME host can be asked
+/// again after its public path was handed to somebody else: the recount reaches the process that was counted,
+/// never whoever serves the path by then (senpi `HeldSessionCount`).
+#[cfg(unix)]
+pub struct HeldSessionCount {
+    pub sessions: usize,
+    reader: tokio::io::BufReader<tokio::net::UnixStream>,
+    asked: usize,
+}
+#[cfg(unix)]
+impl HeldSessionCount {
+    /// Asks the counted host again over the held connection; `None` when it no longer answers.
+    pub async fn recount(&mut self, timeout_ms: u64) -> Option<usize> {
+        self.asked += 1;
+        let id = format!("{PROBE_REQUEST_ID}-recount-{}", self.asked);
+        let request =
+            serde_json::json!({"id": id, "type": "list_sessions", "include_workers": true});
+        let answer = ask_on(&mut self.reader, &request, timeout_ms).await?;
+        session_count_of(&answer)
+    }
+}
+#[cfg(unix)]
+async fn ask_on(
+    reader: &mut tokio::io::BufReader<tokio::net::UnixStream>,
+    request: &Value,
+    timeout_ms: u64,
+) -> Option<Value> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let id = request["id"].clone();
+    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
+        reader
+            .get_mut()
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .ok()?;
+        loop {
+            let mut line = Vec::new();
+            if reader.read_until(b'\n', &mut line).await.ok()? == 0 {
+                return None;
+            }
+            let Ok(frame) = serde_json::from_slice::<Value>(&line) else {
+                continue;
+            };
+            if frame["id"] == id && frame["success"] == true {
+                return Some(frame.get("data").cloned().unwrap_or(Value::Null));
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+#[cfg(unix)]
+fn session_count_of(reply: &Value) -> Option<usize> {
+    reply.get("sessions")?.as_array().map(Vec::len)
+}
+/// senpi `holdSessionCount`: `None` when the host does not answer with a session list.
+#[cfg(unix)]
+pub async fn hold_session_count(socket_path: &str, timeout_ms: u64) -> Option<HeldSessionCount> {
+    let request = serde_json::json!({"id": PROBE_REQUEST_ID, "type": "list_sessions", "include_workers": true});
+    let (socket, _) = authenticated_host_socket(socket_path, &request, timeout_ms, None)
+        .await
+        .ok()?;
+    let mut reader = tokio::io::BufReader::new(socket.into_stream().ok()?);
+    let answer = ask_on(&mut reader, &request, timeout_ms).await?;
+    Some(HeldSessionCount {
+        sessions: session_count_of(&answer)?,
+        reader,
+        asked: 0,
+    })
+}
+
 /// Authenticated raw request. Identity failures are typed, never mistaken for a missing endpoint.
 #[cfg(unix)]
 pub async fn ask_host_authenticated(
@@ -249,7 +404,12 @@ pub async fn authenticated_host_socket(
     let mut command = if request["type"] == "get_protocol_info" {
         request.clone()
     } else {
-        serde_json::json!({"type":"get_protocol_info","observe":true})
+        // senpi rpc-auth-client.ts `connectAuthenticatedRpcSocket` default first frame.
+        let mut first = serde_json::json!({"type":"get_protocol_info","observe":true});
+        if let Some(origin) = crate::host_observe_request::process_origin_host_instance() {
+            first[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD] = origin.into();
+        }
+        first
     };
     command["auth"] = serde_json::json!({"client_nonce":nonce});
     let info = match socket.request(command).await {
@@ -282,31 +442,7 @@ pub async fn authenticated_host_socket(
                 }));
             }
         }
-        let root = std::env::var("SENPI_RPC_KEY_ROOT")
-            .ok()
-            .filter(|root| !root.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| agent_dir.map(ToOwned::to_owned))
-            .unwrap_or_else(|| {
-                for name in [
-                    "OMO_CODING_AGENT_DIR",
-                    "SENPI_CODING_AGENT_DIR",
-                    "PI_CODING_AGENT_DIR",
-                ] {
-                    if let Ok(value) = std::env::var(name)
-                        && !value.trim().is_empty() {
-                            return std::path::absolute(value.trim())
-                                .unwrap_or_else(|_| std::path::PathBuf::from(value.trim()));
-                        }
-                }
-                let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
-                for path in [home.join(".omo/agent"), home.join(".omo")] {
-                    if path.join("settings.json").exists() {
-                        return path;
-                    }
-                }
-                home.join(".senpi/agent")
-            });
+        let root = rpc_key_root(None, agent_dir);
         if let Some(key) = socket_auth::read_key(&root, launch)? {
             socket_auth::verify_server(&key, auth, &nonce, endpoint)?;
             let proof = socket_auth::proof(
@@ -392,6 +528,94 @@ mod tests {
             probe_session_count(path.to_str().unwrap(), 1000).await,
             Some(2)
         );
+        serve.await.unwrap();
+    }
+    #[tokio::test]
+    async fn key_root_prefers_explicit_then_scope_then_env_then_default() {
+        use std::path::Path;
+        assert_eq!(
+            rpc_key_root_with(
+                Some(Path::new("/flag")),
+                Some("/env"),
+                Some(Path::new("/d"))
+            ),
+            Path::new("/flag")
+        );
+        assert_eq!(
+            rpc_key_root_with(None, Some("/env"), Some(Path::new("/d"))),
+            Path::new("/env")
+        );
+        assert_eq!(
+            rpc_key_root_with(None, Some(" "), Some(Path::new("/d"))),
+            Path::new("/d")
+        );
+        let scoped = with_rpc_key_root("/scope".into(), async {
+            tokio::task::yield_now().await;
+            (
+                rpc_key_root_with(None, Some("/env"), None),
+                rpc_key_root_with(Some(Path::new("/client")), Some("/env"), None),
+            )
+        })
+        .await;
+        assert_eq!(scoped.0, Path::new("/scope"));
+        assert_eq!(scoped.1, Path::new("/client"));
+        // Separate roots across concurrent operations.
+        let (a, b) = tokio::join!(
+            with_rpc_key_root("/root-a".into(), async {
+                tokio::task::yield_now().await;
+                rpc_key_root_with(None, None, None)
+            }),
+            with_rpc_key_root("/root-b".into(), async {
+                tokio::task::yield_now().await;
+                rpc_key_root_with(None, None, None)
+            })
+        );
+        assert_eq!(
+            (a.as_path(), b.as_path()),
+            (Path::new("/root-a"), Path::new("/root-b"))
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_held_session_count_recounts_over_the_same_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("count.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let serve = tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio::io::BufReader::new(socket);
+            let mut sessions = 2;
+            loop {
+                let mut line = String::new();
+                if socket.read_line(&mut line).await.unwrap() == 0 {
+                    return;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let data = if request["type"] == "get_protocol_info" {
+                    serde_json::json!({})
+                } else {
+                    let listed =
+                        serde_json::json!({"sessions": vec![serde_json::json!({}); sessions]});
+                    sessions = 0;
+                    listed
+                };
+                let response = serde_json::json!({"id":request["id"],"success":true,"data":data});
+                socket
+                    .get_mut()
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut held = hold_session_count(path.to_str().unwrap(), 1000)
+            .await
+            .expect("held");
+        assert_eq!(held.sessions, 2);
+        // The path is gone; the held connection still reaches the counted host.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(held.recount(1000).await, Some(0));
+        drop(held);
         serve.await.unwrap();
     }
     #[cfg(unix)]

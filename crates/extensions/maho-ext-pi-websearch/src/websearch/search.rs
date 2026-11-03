@@ -3,6 +3,20 @@ use super::native::provider_name;
 use super::providers::{build_search_request,normalize_search_response};
 use std::time::{Duration,SystemTime,UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
+#[derive(Debug, PartialEq, Eq)]
+pub enum SearchError {
+    Aborted,
+    Request(String),
+}
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aborted => formatter.write_str("The operation was aborted."),
+            Self::Request(message) => formatter.write_str(message),
+        }
+    }
+}
+impl std::error::Error for SearchError {}
 fn now_milliseconds()->f64{SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(|error|-(error.duration().as_millis() as f64),|duration|duration.as_millis() as f64)}
 #[derive(Debug,Default)]
 pub struct SearchRoutingState{pub round_robin_cursor:usize,pub success_counts:Vec<f64>}
@@ -45,9 +59,9 @@ pub fn format_search_text(details:&SearchDetails)->String{
     for (index,item) in details.results.iter().enumerate(){lines.push(format!("{}. {}",index+1,item.title));lines.push(format!("   {}",item.url));if let Some(snippet)=item.snippet.as_ref().filter(|snippet|!snippet.is_empty()){lines.push(format!("   {snippet}"));}}
     lines.push(String::new());lines.push("REMINDER: Include relevant sources from the URLs above in the final answer.".into());lines.join("\n")
 }
-pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProviderEntry,request:&SearchRequest,signal:Option<&CancellationToken>)->Result<SearchDetails,String>{
-    let started=now_milliseconds();let built=build_search_request(&config.config,request).map_err(|error|error.to_string())?;
-    if signal.is_some_and(CancellationToken::is_cancelled){return Err("The operation was aborted.".into());}
+pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProviderEntry,request:&SearchRequest,signal:Option<&CancellationToken>)->Result<SearchDetails,SearchError>{
+    if signal.is_some_and(CancellationToken::is_cancelled){return Err(SearchError::Aborted);}
+    let started=now_milliseconds();let built=build_search_request(&config.config,request).map_err(|error|SearchError::Request(error.to_string()))?;
     let timeout_ms=config.config.timeout_ms.unwrap_or(60_000.0).trunc().max(1.0);
     let mut details=SearchDetails{provider:config.config.provider,entry_id:config.config.id.clone(),query:request.query.clone(),results:Vec::new(),duration_ms:0.0,truncated:false,strategy:None,attempts:None,answer:None,error:None};
     let operation=async{
@@ -57,7 +71,7 @@ pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProvi
         let response=builder.send().await.map_err(|error|error.to_string())?;let status=response.status();let text=response.text().await.map_err(|error|error.to_string())?;Ok::<_,String>((status,text))
     };
     let cancellation=async{match signal{Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};
-    let response=tokio::select!{biased;()=cancellation=>return Err("The operation was aborted.".into()),result=tokio::time::timeout(Duration::from_secs_f64(timeout_ms/1000.0),operation)=>result.unwrap_or_else(|_|Err(format!("Search timed out after {timeout_ms}ms")))};
+    let response=tokio::select!{biased;()=cancellation=>return Err(SearchError::Aborted),result=tokio::time::timeout(Duration::from_secs_f64(timeout_ms/1000.0),operation)=>result.unwrap_or_else(|_|Err(format!("Search timed out after {timeout_ms}ms")))};
     let (status,text)=match response{Ok(response)=>response,Err(error)=>{details.duration_ms=now_milliseconds()-started;details.error=Some(error);return Ok(details);}};
     let payload=if config.config.provider==SearchProvider::DuckduckgoHtml{serde_json::json!({"html":text})}else{serde_json::from_str(&text).unwrap_or_else(|_|serde_json::json!({}))};
     if !status.is_success(){
@@ -72,7 +86,7 @@ pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProvi
     if details.results.is_empty(){details.error=Some(format!("Search provider {} returned no results for \"{}\".",provider_entry_label(provider_name(config.config.provider),config.config.id.as_deref(),None),request.query));}Ok(details)
 }
 pub type SearchAttemptListener<'a>=dyn FnMut(&str,&[SearchAttempt],&[String])+Send+'a;
-pub async fn perform_search(client:&reqwest::Client,config:&WebsearchConfig,request:&SearchRequest,signal:Option<&CancellationToken>,state:&mut SearchRoutingState,mut on_attempt:Option<&mut SearchAttemptListener<'_>>)->Result<SearchDetails,String>{
+pub async fn perform_search(client:&reqwest::Client,config:&WebsearchConfig,request:&SearchRequest,signal:Option<&CancellationToken>,state:&mut SearchRoutingState,mut on_attempt:Option<&mut SearchAttemptListener<'_>>)->Result<SearchDetails,SearchError>{
     let started=now_milliseconds();let order=select_order(config.strategy,&config.providers,state);let mut attempts=Vec::new();
     let labels=order.iter().filter_map(|index|config.providers.get(*index)).map(|entry|provider_entry_label(provider_name(entry.config.provider),entry.config.id.as_deref(),None)).collect::<Vec<_>>();
     let mut collected:Vec<SearchResultItem>=Vec::new();let mut selected=None;

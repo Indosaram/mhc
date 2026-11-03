@@ -36,7 +36,7 @@ pub fn update_usage(model: &Model, output: &mut AssistantMessage, usage: &Value,
     maho_ai::models::calculate_cost(model, &mut output.usage);
 }
 pub fn empty_output(model: &Model, now: i64) -> AssistantMessage {
-    AssistantMessage {
+    AssistantMessage { credential_served_recently: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_breakpoint: None,

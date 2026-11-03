@@ -11,15 +11,35 @@ fn metadata_and_sequence_roundtrip_and_delete_are_session_scoped() {
         parent_session_id: Some("parent".into()),
         cwd: None,
         legacy_parent_session_path: None,
+        path: Some("/db/session.sqlite".into()),
     };
     insert_session(&db, &metadata, 1).unwrap();
     assert!(has_session(&db, "session").unwrap());
     assert_eq!(
-        metadata_from_row(read_session(&db, "session").unwrap(), 1).unwrap(),
+        metadata_from_row(
+            "/db/session.sqlite",
+            read_session(&db, "session").unwrap(),
+            1
+        )
+        .unwrap(),
         metadata
     );
-    assert!(metadata_from_row(read_session(&db, "session").unwrap(), 0).is_err());
-    assert!(metadata_from_row(read_session(&db, "session").unwrap(), 2).is_err());
+    assert!(
+        metadata_from_row(
+            "/db/session.sqlite",
+            read_session(&db, "session").unwrap(),
+            0
+        )
+        .is_err()
+    );
+    assert!(
+        metadata_from_row(
+            "/db/session.sqlite",
+            read_session(&db, "session").unwrap(),
+            2
+        )
+        .is_err()
+    );
     advance_next_seq(&db, "session", 4).unwrap();
     assert_eq!(read_session(&db, "session").unwrap().next_seq, 4);
     assert!(advance_next_seq(&db, "missing", 4).is_err());

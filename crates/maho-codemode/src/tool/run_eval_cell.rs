@@ -337,7 +337,7 @@ pub async fn run_eval_cell(
         on_message: Some(Arc::new(move |message| {
             let _ = messages_tx.send(message.clone());
         })),
-        resolve_at_start: None,
+        resolve_at_start: load_at_start(&invocation, &options),
         bridge_cell_token: None,
         host_executor: super::magic_cell_host::plan_magic_cell(
             &invocation.input.code,
@@ -637,26 +637,35 @@ pub async fn run_eval_cell(
                 }
                 failed_execution.finish();
                 let detached = failed_cell.lock().expect("managed cell lock").was_detached;
-                failed_manager.lock().expect("cell manager lock").fail(&failed_cell, &error);
+                failed_manager
+                    .lock()
+                    .expect("cell manager lock")
+                    .fail(&failed_cell, &error);
                 if let Some(callback) = &failed_options.on_cell_settled {
                     let completed_at = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("system clock")
-                        .as_secs_f64() * 1000.0;
-                    callback(super::eval_execution_event::build_eval_execution_event_payload(
-                        super::eval_execution_event::BuildEvalExecutionEventOptions {
-                            cell_id: &failed_cell_id,
-                            language: failed_language,
-                            started_at,
-                            completed_at,
-                            queued_ms: 0.0,
-                            detached,
-                            metrics: &[],
-                            tool_calls: &[],
-                            state_error: Some(&error),
-                            outcome: super::eval_execution_event::EvalExecutionSettleOutcome::Error(&error),
-                        },
-                    ));
+                        .as_secs_f64()
+                        * 1000.0;
+                    callback(
+                        super::eval_execution_event::build_eval_execution_event_payload(
+                            super::eval_execution_event::BuildEvalExecutionEventOptions {
+                                cell_id: &failed_cell_id,
+                                language: failed_language,
+                                started_at,
+                                completed_at,
+                                queued_ms: 0.0,
+                                detached,
+                                metrics: &[],
+                                tool_calls: &[],
+                                state_error: Some(&error),
+                                outcome:
+                                    super::eval_execution_event::EvalExecutionSettleOutcome::Error(
+                                        &error,
+                                    ),
+                            },
+                        ),
+                    );
                 }
                 Err(error)
             }
@@ -750,6 +759,36 @@ fn emit_early_failure(
     }
 }
 
+/// run-eval-cell.ts `resolveAtStart` for `%load`: the file is read when the cell's turn comes in
+/// the kernel's queue, with the session cwd and artifacts directory as roots.
+fn load_at_start(
+    invocation: &EvalCellInvocation,
+    options: &CreateEvalToolOptions,
+) -> Option<super::types::ResolveAtStart> {
+    let Ok(Some(super::magic_cells::MagicCell::Load(target))) =
+        super::magic_cells::parse_magic_cell(&invocation.input.code)
+    else {
+        return None;
+    };
+    let load_options = super::load_cell::LoadCellOptions {
+        cwd: invocation
+            .context
+            .as_ref()
+            .map(|context| context.cwd.clone())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default(),
+        artifacts_dir: options.artifacts_dir.clone(),
+    };
+    Some(Arc::new(move || {
+        super::load_cell::load_cell(&target, &load_options).map(|loaded| {
+            (
+                loaded.code,
+                Some(loaded.source_file.to_string_lossy().into_owned()),
+            )
+        })
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,3 +842,4 @@ mod tests {
         );
     }
 }
+

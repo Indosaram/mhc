@@ -18,6 +18,10 @@ mod top_level_task;
 mod types;
 
 pub use crate::storage::{try_clear_boulder_state, try_write_boulder_state};
+pub use crate::storage::{
+    MomusReviewArtifactInput, MomusReviewVerdict, format_momus_review_artifact,
+    get_plan_reviews_dir, hash_plan_content, is_contained_plan_path, write_momus_review_artifact,
+};
 pub use crate::storage::{find_newest_session_transcript_ms_precise, is_work_stale_precise};
 
 pub use crate::constants::{

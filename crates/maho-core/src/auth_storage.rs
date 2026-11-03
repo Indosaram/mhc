@@ -151,13 +151,12 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             "Invalid auth.json credential for provider \"{provider_id}\""
         ));
     };
+    // A key object must be exactly a reference shape (senpi#3858 `assertCredentialReferences`).
+    crate::auth_credential_values::assert_credential_references(provider_id, credential)
+        .map_err(|error| error.to_string())?;
     match object.get("type").and_then(Value::as_str) {
         Some("api_key") => {
-            let key_ok = match object.get("key") {
-                None => true,
-                Some(Value::String(_)) => true,
-                Some(_) => false,
-            };
+            let key_ok = crate::auth_credential_values::is_valid_stored_key(object.get("key"));
             let env_ok = match object.get("env") {
                 None => true,
                 Some(Value::Object(env)) => env.values().all(Value::is_string),
@@ -816,6 +815,20 @@ impl ReadOnlyAuthStorage {
         let Some(credential) = read_by_provider_id(&self.data, provider_id) else {
             return Ok(None);
         };
+        // senpi `resolveReadOnlyCredential`: references resolve against this auth.json (senpi#3858).
+        let has_reference = credential
+            .get("key")
+            .is_some_and(maho_ai::utils::config_reference::is_config_reference);
+        if has_reference {
+            return crate::auth_credential_values::resolve_read_only_credential(
+                credential,
+                provider_id,
+                &self.auth_path,
+            )
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string());
+        }
         let Some(key) = credential_key(&credential) else {
             return Ok(Some(credential));
         };
@@ -831,6 +844,27 @@ impl ReadOnlyAuthStorage {
             credential["key"] = Value::from(resolved);
         }
         Ok(Some(credential))
+    }
+
+    /// senpi `ReadOnlyAuthStorage.readSlot`: only the selected slot's reference resolves.
+    pub async fn read_slot(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+    ) -> Result<Option<maho_ai::auth::types::Credential>, String> {
+        let credential = read_by_provider_id(&self.data, provider_id);
+        let auth_path = self.auth_path.clone();
+        let provider = provider_id.to_owned();
+        crate::auth_credential_values::resolve_stored_slot(
+            credential,
+            provider_id,
+            slot_name,
+            Some(&self.auth_path),
+            |flat| async move {
+                crate::auth_credential_values::resolve_read_only_credential(flat, &provider, &auth_path).await
+            },
+        )
+        .await
     }
 
     pub fn list(&self) -> Vec<(String, CredentialKind)> {

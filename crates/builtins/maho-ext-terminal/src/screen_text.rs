@@ -2,6 +2,7 @@ pub const DEFAULT_SCROLLBACK: usize = 1_000;
 const MIN_SIZE: usize = 1;
 const MAX_SIZE: usize = 10_000;
 pub const MIN_REPLAY_HISTORY_LENGTH: usize = 4_096;
+pub const MAX_REPLAY_HISTORY_LENGTH: usize = 1_000_000;
 
 pub fn normalize_dimension(value: usize, fallback: usize) -> usize {
     if value == 0 {
@@ -19,7 +20,7 @@ pub fn normalize_replay_history_length(cols: usize, rows: usize, scrollback: usi
     cols.max(MIN_SIZE)
         .saturating_mul(rows.saturating_add(scrollback).saturating_add(1).max(MIN_SIZE))
         .saturating_mul(4)
-        .max(MIN_REPLAY_HISTORY_LENGTH)
+        .clamp(MIN_REPLAY_HISTORY_LENGTH, MAX_REPLAY_HISTORY_LENGTH)
 }
 
 pub fn decode_input(value: &[u8]) -> String {
@@ -49,7 +50,8 @@ mod tests {
     #[test]
     fn replay_budget_has_upstream_bounds() {
         assert_eq!(normalize_replay_history_length(1, 1, 0), MIN_REPLAY_HISTORY_LENGTH);
-        assert_eq!(normalize_replay_history_length(300, 80, 1_000), 1_297_200);
+        assert_eq!(normalize_replay_history_length(300, 80, 1_000), MAX_REPLAY_HISTORY_LENGTH);
+        assert_eq!(normalize_replay_history_length(100, 40, 100), 56_400);
     }
 
     #[test]

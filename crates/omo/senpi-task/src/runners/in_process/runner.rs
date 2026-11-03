@@ -169,8 +169,14 @@ impl InProcessRunner {
                 error,
             )
         };
+        let spawned_by = crate::runners::child_ancestry::SpawnedBy {
+            parent_session_id: spec.parent_session_id.clone(),
+            root_session_id: spec.root_session_id.clone(),
+            task_id: spec.task_id.clone(),
+        };
         let session_manager =
-            ChildSessionManager::create(&spec.cwd, session_dir).map_err(|error| {
+            ChildSessionManager::create_with_spawned_by(&spec.cwd, session_dir, Some(spawned_by))
+                .map_err(|error| {
                 create_failed(HostError {
                     message: error.to_string(),
                 })

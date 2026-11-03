@@ -14,6 +14,9 @@ pub struct MemoryStaticOptions {
     pub resolve_context: crate::prompt::PromptContextResolver,
     pub resolve_tool_context: crate::tools::MemoryContextResolver,
     pub write_notice: Option<crate::tools::WriteNoticeGate>,
+    /// The bound session for the write notice's size and timeline (pin `resolveSessionId: () =>
+    /// activeSession.current`).
+    pub write_notice_session: Option<crate::tools::WriteNoticeSessionResolver>,
     pub tool_exposure: Option<maho_ext_api::ToolExposure>,
     pub resolve_cwd: Arc<dyn Fn() -> PathBuf + Send + Sync>,
     pub captured_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
@@ -104,6 +107,10 @@ pub fn register_memory_static(
         })
     });
     if let Some(load_settings) = options.load_settings {
+        let limits_settings = load_settings.clone();
+        handler.set_projection_limits(Some(Arc::new(move |identity: &str| {
+            crate::projection_limits::projection_limits(&limits_settings(), identity)
+        })));
         let sender = Arc::new(maho_ext_api::ExtensionApi::new(
             maho_ext_api::LoadedExtension::new(
                 "memory-notice-inputs",
@@ -114,6 +121,7 @@ pub fn register_memory_static(
             api.events.clone(),
             api.runtime.clone(),
         ));
+        let notice_warn = options.warn.clone();
         let inputs = Arc::new(crate::wiring_notice_inputs::create_memory_notice_inputs(
             crate::wiring_notice_inputs::MemoryNoticeInputsOptions {
                 resolve_context: options.resolve_context.clone(),
@@ -122,6 +130,12 @@ pub fn register_memory_static(
                     if let Ok(value) = serde_json::to_value(record) {
                         let _ = sender.append_entry(custom_type, Some(value));
                     }
+                })),
+                on_warn: Some(Arc::new(move |message, detail| {
+                    notice_warn(&match detail {
+                        Some(detail) => format!("{message}: {detail}"),
+                        None => message.to_owned(),
+                    })
                 })),
             },
         ));
@@ -143,6 +157,7 @@ pub fn register_memory_static(
         options.resolve_tool_context,
         crate::tools::MemoryToolsOptions {
             write_notice: options.write_notice,
+            write_notice_session: options.write_notice_session,
             exposure: options.tool_exposure,
             on_commit: Some(on_commit),
             ..Default::default()
@@ -214,6 +229,7 @@ mod tests {
                 resolve_context: resolve,
                 resolve_tool_context: Arc::new(|| None),
                 write_notice: None,
+                write_notice_session: None,
                 tool_exposure: None,
                 resolve_cwd: Arc::new(PathBuf::new),
                 captured_tools: Arc::new(Vec::new),
@@ -311,6 +327,7 @@ mod tests {
                 resolve_context: resolve,
                 resolve_tool_context: Arc::new(move || tool_context.clone()),
                 write_notice: Some(gate),
+                write_notice_session: None,
                 tool_exposure: None,
                 resolve_cwd: Arc::new(PathBuf::new),
                 captured_tools: Arc::new(Vec::new),
@@ -472,6 +489,7 @@ mod tests {
                 resolve_context: resolve,
                 resolve_tool_context: Arc::new(move || Some(context.clone())),
                 write_notice: None,
+                write_notice_session: None,
                 tool_exposure: None,
                 resolve_cwd: Arc::new(PathBuf::new),
                 captured_tools: Arc::new(Vec::new),

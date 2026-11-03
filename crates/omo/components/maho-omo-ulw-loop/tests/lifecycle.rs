@@ -969,6 +969,7 @@ async fn shell_tool_result_activates_the_footer_immediately()
     ctx.ui = ui.clone();
     ctx.goal_store_file = Some(goal);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

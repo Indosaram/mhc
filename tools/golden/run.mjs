@@ -192,7 +192,7 @@ async function renderTuiScreenInner(senpi, spec) {
 	}
 	await term.flush();
 	return [
-		{ file: `${spec.name}.ansi`, content: stream },
+		{ file: `${spec.name}.ansi.json`, content: `${JSON.stringify(stream)}\n` },
 		{
 			file: `${spec.name}.${term.columns}x${term.rows}.json`,
 			content: `${JSON.stringify(serializeScreen(term), null, 1)}\n`,

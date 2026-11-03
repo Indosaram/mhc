@@ -5,7 +5,7 @@ use super::tool_dispatcher::{ToolChildKindCall, ToolChildKindRunner};
 use crate::utils::shell::get_shell_env;
 use base64::Engine;
 use maho_tools::{
-    bash::{BashExecOptions, BashExit, BashOperations},
+    bash::{BashExecOptions, BashExit, BashOperations, BashStream},
     definition::{ToolError, ToolFuture},
 };
 use serde_json::{Map, Value};
@@ -41,6 +41,7 @@ impl BashOperations for ChildBashOperations {
         Box::pin(async move {
             let BashExecOptions {
                 on_data,
+                redact_secrets_in_output,
                 signal,
                 timeout,
                 env,
@@ -60,6 +61,10 @@ impl BashOperations for ChildBashOperations {
                 Value::String(cwd.to_string_lossy().into_owned()),
             );
             args.insert("env".into(), Value::Object(shell_env));
+            args.insert(
+                "redactSecretsInOutput".into(),
+                Value::Bool(redact_secrets_in_output),
+            );
             if let Some(shell_path) = &self.shell_path {
                 args.insert("shellPath".into(), Value::String(shell_path.clone()));
             }
@@ -76,7 +81,11 @@ impl BashOperations for ChildBashOperations {
                     on_update: Some(Arc::new(move |update: Value| {
                         if let Some(chunk) = chunk_of(&update) {
                             // A sink failure cannot reach the child's stream; the job ends by its own exit.
-                            let _ = sink(&chunk);
+                            let stream = match update.get("stream").and_then(Value::as_str) {
+                                Some("stderr") => BashStream::Stderr,
+                                _ => BashStream::Stdout,
+                            };
+                            let _ = sink(&chunk, stream);
                         }
                     })),
                 },

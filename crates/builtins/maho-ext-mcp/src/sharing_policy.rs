@@ -1,40 +1,104 @@
+use crate::config_schema::{McpServerConfig, Transport};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use sha2::{Digest,Sha256};
-use serde_json::{Value,json};
-use crate::config_schema::{McpServerConfig,Transport};
 
-fn has_session_values(config:&McpServerConfig,cwd:Option<&str>)->bool {
-    let variables=regex::Regex::new(r"(?i)(?:cwd|session|^PWD$|^OLDPWD$)").unwrap_or_else(|error|panic!("constant regex: {error}"));
-    let templates=regex::Regex::new(r"(?i)\$\{[^}]*(?:cwd|session|PWD)[^}]*\}").unwrap_or_else(|error|panic!("constant regex: {error}"));
-    let values=config.command.iter().chain(config.args.iter().flatten()).chain(config.env.iter().flat_map(|env|env.values()));
-    config.env.as_ref().is_some_and(|env|env.keys().any(|key|variables.is_match(key))) ||
-        values.clone().chain(config.cwd.iter()).any(|value|templates.is_match(value)) ||
-        cwd.is_some_and(|cwd|values.clone().any(|value|value.contains(cwd)))
+fn has_session_values(config: &McpServerConfig, cwd: Option<&str>) -> bool {
+    let variables = regex::Regex::new(r"(?i)(?:cwd|session|^PWD$|^OLDPWD$)")
+        .unwrap_or_else(|error| panic!("constant regex: {error}"));
+    let templates = regex::Regex::new(r"(?i)\$\{[^}]*(?:cwd|session|PWD)[^}]*\}")
+        .unwrap_or_else(|error| panic!("constant regex: {error}"));
+    // A reference slot holds no string to inspect (upstream: `typeof value === "string"`).
+    let reference = |field: String| config.references.contains_key(&field);
+    let args = config
+        .args
+        .iter()
+        .flatten()
+        .enumerate()
+        .filter(|(index, _)| !reference(format!("args.{index}")))
+        .map(|(_, value)| value);
+    let env_values = config
+        .env
+        .iter()
+        .flat_map(|env| env.iter())
+        .filter(|(key, _)| !reference(format!("env.{key}")))
+        .map(|(_, value)| value);
+    let values = config.command.iter().chain(args).chain(env_values);
+    config
+        .env
+        .as_ref()
+        .is_some_and(|env| env.keys().any(|key| variables.is_match(key)))
+        || values
+            .clone()
+            .chain(config.cwd.iter())
+            .any(|value| templates.is_match(value))
+        || cwd.is_some_and(|cwd| values.clone().any(|value| value.contains(cwd)))
 }
-pub fn inherit_mcp_sharing_scope(source:&McpServerConfig,target:&mut McpServerConfig) {
-    target.session_dependent|=source.session_dependent || has_session_values(source,None);
+pub fn inherit_mcp_sharing_scope(source: &McpServerConfig, target: &mut McpServerConfig) {
+    target.session_dependent |= source.session_dependent || has_session_values(source, None);
 }
-pub fn shareable(config:&McpServerConfig,cwd:Option<&str>)->bool {
-    config.transport==Some(Transport::Http) || (!config.session_dependent && !has_session_values(config,cwd))
+pub fn shareable(config: &McpServerConfig, cwd: Option<&str>) -> bool {
+    config.transport == Some(Transport::Http)
+        || (!config.session_dependent && !has_session_values(config, cwd))
 }
-fn stable_json(value:&Value)->String {
+fn stable_json(value: &Value) -> String {
     match value {
-        Value::Object(map)=>{
-            let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
-            let mut keys=map.keys().collect::<Vec<_>>();keys.sort_by(|left,right|collator.compare(left,right));
-            format!("{{{}}}",keys.into_iter().map(|key|format!("{}:{}",json!(key),stable_json(&map[key]))).collect::<Vec<_>>().join(","))
+        Value::Object(map) => {
+            let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+                .expect("compiled collation data is available");
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort_by(|left, right| collator.compare(left, right));
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!("{}:{}", json!(key), stable_json(&map[key])))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
         }
-        Value::Array(values)=>format!("[{}]",values.iter().map(stable_json).collect::<Vec<_>>().join(",")),
-        _=>value.to_string(),
+        Value::Array(values) => format!(
+            "[{}]",
+            values.iter().map(stable_json).collect::<Vec<_>>().join(",")
+        ),
+        _ => value.to_string(),
     }
 }
-pub fn shared_mcp_key(name:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,agent_dir:&str,process_cwd:&str)->String {
-    let stdio=config.transport==Some(Transport::Stdio);
-    let mut merged=env.cloned().unwrap_or_default();merged.extend(config.env.clone().unwrap_or_default());
-    let bearer=config.bearer_token_env.as_ref().and_then(|name|env.and_then(|env|env.get(name)).cloned().or_else(||std::env::var(name).ok()));
-    let identity=json!({"agentDir":agent_dir,"name":name,"type":config.transport,"url":if stdio {None}else{config.url.as_ref()},
+/// Transport identity excludes per-owner exposure and idle/keep-alive policy. `credential_identity` is the
+/// connection's `mcpCredentialIdentity` (always keyed, `null` when unknown); a project skill server's authority
+/// (read from `config.project_authority`, upstream `options.projectPolicy`) adds its declaration, policy and
+/// skill-authority digests.
+pub fn shared_mcp_key(
+    name: &str,
+    config: &McpServerConfig,
+    env: Option<&BTreeMap<String, String>>,
+    credential_identity: Option<&str>,
+    agent_dir: &str,
+    process_cwd: &str,
+) -> String {
+    let stdio = config.transport == Some(Transport::Stdio);
+    let mut merged = env.cloned().unwrap_or_default();
+    merged.extend(config.env.clone().unwrap_or_default());
+    let bearer = config.bearer_token_env.as_ref().and_then(|name| {
+        env.and_then(|env| env.get(name))
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+    });
+    let identity = json!({"agentDir":agent_dir,"name":name,"type":config.transport,"url":if stdio {None}else{config.url.as_ref()},
         "command":if stdio {config.command.as_ref()}else{None},"args":if stdio {config.args.as_ref()}else{None},
         "cwd":if stdio {Some(config.cwd.as_deref().unwrap_or(process_cwd))}else{None},"env":if stdio {Some(merged)}else{None},
-        "headers":config.headers,"auth":config.auth,"oauth":config.oauth,"bearer":bearer,"connectTimeoutMs":config.connect_timeout_ms,"logLevel":config.log_level});
-    format!("{:x}",Sha256::digest(stable_json(&identity)))
+        "headers":config.headers,"auth":config.auth,"oauth":config.oauth,"bearer":bearer,"connectTimeoutMs":config.connect_timeout_ms,"logLevel":config.log_level,
+        "credentialIdentity":credential_identity});
+    let mut identity = identity;
+    if let (Some(authority), Some(identity)) = (
+        crate::project_skill_policy::get_project_mcp_authority(config),
+        identity.as_object_mut(),
+    ) {
+        identity.insert("declarationDigest".into(), json!(authority.identity));
+        identity.insert("policyDigest".into(), json!(authority.policy_digest));
+        identity.insert(
+            "skillAuthorityDigest".into(),
+            json!(authority.provenance_digest),
+        );
+    }
+    format!("{:x}", Sha256::digest(stable_json(&identity)))
 }

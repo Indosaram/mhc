@@ -419,6 +419,7 @@ async fn disabled_flag_prevents_injection_and_widget() {
         .set_flag("no-nested-agents", FlagValue::Boolean(true));
     runner
         .emit(ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

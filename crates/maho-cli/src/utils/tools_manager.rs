@@ -43,11 +43,42 @@ pub fn release_version_from_redirect(repo: &str, status: u16, location: Option<&
     let tag = percent_encoding::percent_decode_str(tag).decode_utf8().map_err(|error| error.to_string())?;
     Ok(tag.strip_prefix('v').unwrap_or(&tag).to_owned())
 }
-pub async fn get_latest_version(repo: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|error| error.to_string())?;
-    let request = client.get(format!("https://github.com/{repo}/releases/latest")).header("User-Agent", "mhc-coding-agent").build().map_err(|error| error.to_string())?;
-    let response = super::management_http::fetch_with_retry(&client, request, None, super::management_http::FetchRetryOptions { timeout_ms: Some(10000), ..Default::default() }).await?;
-    release_version_from_redirect(repo, response.status().as_u16(), response.headers().get("location").and_then(|location| location.to_str().ok()))
+/// One HTTP request the tool installer makes (senpi `fetchWithRetry(url, init, { timeoutMs })`).
+pub struct ToolFetchRequest { pub url: String, pub follow_redirects: bool, pub user_agent: Option<String>, pub timeout_ms: u64 }
+pub type ToolFetchError = Box<dyn std::error::Error + Send + Sync>;
+pub type ToolFetchBody = futures::stream::BoxStream<'static, Result<Vec<u8>, ToolFetchError>>;
+pub struct ToolFetchResponse { pub status: u16, pub location: Option<String>, pub body: ToolFetchBody }
+/// The HTTP seam under `getLatestVersion`/`downloadTool` (upstream tests stub the global `fetch`).
+pub trait ToolFetch: Send + Sync {
+    fn fetch(&self, request: ToolFetchRequest) -> futures::future::BoxFuture<'_, Result<ToolFetchResponse, ToolFetchError>>;
+}
+/// Production fetch: reqwest through `management_http::fetch_with_retry`.
+pub struct ReqwestToolFetch;
+impl ToolFetch for ReqwestToolFetch {
+    fn fetch(&self, request: ToolFetchRequest) -> futures::future::BoxFuture<'_, Result<ToolFetchResponse, ToolFetchError>> {
+        Box::pin(async move {
+            let client = if request.follow_redirects { reqwest::Client::new() } else { reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|error| error.to_string())? };
+            let mut builder = client.get(&request.url);
+            if let Some(user_agent) = &request.user_agent { builder = builder.header("User-Agent", user_agent); }
+            let built = builder.build().map_err(|error| error.to_string())?;
+            let response = super::management_http::fetch_with_retry(&client, built, None, super::management_http::FetchRetryOptions { timeout_ms: Some(request.timeout_ms), ..Default::default() }).await?;
+            let location = response.headers().get("location").and_then(|location| location.to_str().ok()).map(str::to_owned);
+            let status = response.status().as_u16();
+            use futures::StreamExt;
+            let body = futures::stream::unfold(Some(response), |response| async move {
+                let mut response = response?;
+                match response.chunk().await { Ok(Some(chunk)) => Some((Ok(chunk.to_vec()), Some(response))), Ok(None) => None, Err(error) => Some((Err(ToolFetchError::from(error.to_string())), None)) }
+            }).boxed();
+            Ok::<_, ToolFetchError>(ToolFetchResponse { status, location, body })
+        })
+    }
+}
+pub async fn get_latest_version(repo: &str) -> Result<String, String> { get_latest_version_with(&ReqwestToolFetch, repo).await.map_err(|error| error.to_string()) }
+pub async fn get_latest_version_with(fetch: &dyn ToolFetch, repo: &str) -> Result<String, ToolFetchError> {
+    let response = fetch.fetch(ToolFetchRequest { url: format!("https://github.com/{repo}/releases/latest"), follow_redirects: false, user_agent: Some("mhc-coding-agent".to_owned()), timeout_ms: 10000 }).await?;
+    // Only the status and headers matter here; discard the body.
+    drop(response.body);
+    Ok(release_version_from_redirect(repo, response.status, response.location.as_deref())?)
 }
 async fn extraction_command(command: &str, args: &[&str]) -> Result<(), String> {
     let output = tokio::process::Command::new(command).args(args).output().await.map_err(|error| format!("{command}: {error}"))?;
@@ -105,24 +136,30 @@ pub async fn install_archive(archive: &Path, bin: &Path, binary_name: &str, asse
     if let Err(error) = cleanup && error.kind() != std::io::ErrorKind::NotFound { return Err(error.to_string()); }
     result
 }
-async fn download_tool(tool: Tool, bin: &Path, platform: &str, architecture: &str) -> Result<String, String> {
-    let version = if matches!(tool, Tool::Fd) && platform == "darwin" && architecture == "x64" { "10.3.0".to_owned() } else { get_latest_version(tool.repo()).await? };
+async fn download_tool(fetch: &dyn ToolFetch, tool: Tool, bin: &Path, platform: &str, architecture: &str) -> Result<String, ToolFetchError> {
+    let version = if matches!(tool, Tool::Fd) && platform == "darwin" && architecture == "x64" { "10.3.0".to_owned() } else { get_latest_version_with(fetch, tool.repo()).await? };
     let asset = asset_name(tool, &version, platform, architecture).ok_or_else(|| format!("Unsupported platform: {platform}/{architecture}"))?;
     std::fs::create_dir_all(bin).map_err(|error| error.to_string())?;
     let prefix = if matches!(tool, Tool::Fd) { "v" } else { "" };
     let url = format!("https://github.com/{}/releases/download/{prefix}{version}/{asset}", tool.repo());
-    let client = reqwest::Client::new();
-    let request = client.get(&url).build().map_err(|error| error.to_string())?;
-    let mut response = super::management_http::fetch_with_retry(&client, request, None, super::management_http::FetchRetryOptions { timeout_ms: Some(120000), ..Default::default() }).await?;
-    if !response.status().is_success() { return Err(format!("Download failed with HTTP {}: {url}", response.status().as_u16())); }
+    let mut response = fetch.fetch(ToolFetchRequest { url: url.clone(), follow_redirects: true, user_agent: None, timeout_ms: 120000 }).await?;
+    if !(200..300).contains(&response.status) { return Err(format!("Download failed with HTTP {}: {url}", response.status).into()); }
     let archive = bin.join(&asset);
     let mut file = tokio::fs::File::create(&archive).await.map_err(|error| error.to_string())?;
+    use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? { file.write_all(&chunk).await.map_err(|error| error.to_string())?; }
+    while let Some(chunk) = response.body.next().await { file.write_all(&chunk?).await.map_err(|error| error.to_string())?; }
     file.shutdown().await.map_err(|error| error.to_string())?;
     drop(file);
     let binary = format!("{}{}", tool.binary(), if platform == "win32" { ".exe" } else { "" });
-    install_archive(&archive, bin, &binary, &asset, platform).await
+    Ok(install_archive(&archive, bin, &binary, &asset, platform).await?)
+}
+/// senpi's status message for a failed download: the error and its cause chain, depth-capped at 5.
+fn error_chain(error: &ToolFetchError) -> String {
+    let mut messages: Vec<String> = Vec::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&**error);
+    for _ in 0..5 { let Some(error) = current else { break; }; let message = error.to_string(); if !messages.contains(&message) { messages.push(message); } current = error.source(); }
+    messages.join(": ")
 }
 pub struct ToolStatus { pub kind: &'static str, pub message: String }
 pub async fn ensure_tool(tool: Tool, on_status: impl FnMut(ToolStatus)) -> Option<String> {
@@ -130,7 +167,10 @@ pub async fn ensure_tool(tool: Tool, on_status: impl FnMut(ToolStatus)) -> Optio
     let architecture = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
     ensure_tool_in(tool, Path::new(&crate::config::get_bin_dir()), &std::env::vars().collect(), platform, architecture, on_status).await
 }
-pub async fn ensure_tool_in(tool: Tool, bin: &Path, env: &BTreeMap<String, String>, platform: &str, architecture: &str, mut on_status: impl FnMut(ToolStatus)) -> Option<String> {
+pub async fn ensure_tool_in(tool: Tool, bin: &Path, env: &BTreeMap<String, String>, platform: &str, architecture: &str, on_status: impl FnMut(ToolStatus)) -> Option<String> {
+    ensure_tool_with(&ReqwestToolFetch, tool, bin, env, platform, architecture, on_status).await
+}
+pub async fn ensure_tool_with(fetch: &dyn ToolFetch, tool: Tool, bin: &Path, env: &BTreeMap<String, String>, platform: &str, architecture: &str, mut on_status: impl FnMut(ToolStatus)) -> Option<String> {
     if let Some(path) = get_tool_path_in(tool, bin, env, platform) { return Some(path); }
     let name = if matches!(tool, Tool::Fd) { "fd" } else { "ripgrep" };
     if env.get("MAHO_OFFLINE").or_else(|| env.get("PI_OFFLINE")).is_some_and(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes")) {
@@ -138,8 +178,8 @@ pub async fn ensure_tool_in(tool: Tool, bin: &Path, env: &BTreeMap<String, Strin
     }
     if platform == "android" { on_status(ToolStatus { kind: "warning", message: format!("{name} not found. Install with: pkg install {name}") }); return None; }
     on_status(ToolStatus { kind: "info", message: format!("{name} not found. Downloading...") });
-    match download_tool(tool, bin, platform, architecture).await {
+    match download_tool(fetch, tool, bin, platform, architecture).await {
         Ok(path) => { on_status(ToolStatus { kind: "info", message: format!("{name} installed to {path}") }); Some(path) }
-        Err(error) => { on_status(ToolStatus { kind: "warning", message: format!("Failed to download {name}: {error}") }); None }
+        Err(error) => { on_status(ToolStatus { kind: "warning", message: format!("Failed to download {name}: {}", error_chain(&error)) }); None }
     }
 }

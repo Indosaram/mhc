@@ -10,14 +10,18 @@ autotests = false
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "macros"] }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-core = { path = "../../maho-core" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
+maho-ext-imagegen = { path = "../maho-ext-imagegen" }
+maho-tools = { path = "../../maho-tools" }
+unicode-normalization = "=0.1.25"
+regex.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-maho-tools = { path = "../../maho-tools" }
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-ai = { path = "../../maho-ai" }
 maho-agent = { path = "../../maho-agent" }

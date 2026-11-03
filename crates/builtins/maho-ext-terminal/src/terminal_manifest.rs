@@ -30,8 +30,31 @@ pub struct TerminalManifestWriter {
     entries: IndexMap<String, ManifestMonitor>,
     backgrounds: IndexMap<String, ManifestBackgroundSession>,
     pending: BTreeMap<String, TerminalManifestCheckpoint>,
+    /// Shared so a live rpc watch can checkpoint without the writer lock (`rpc_checkpoint_sink`).
+    pending_rpc: std::sync::Arc<std::sync::Mutex<BTreeMap<String, TerminalManifestRpcCheckpoint>>>,
     pub persist_failure: Option<SidecarError>,
+    /// Where a restored rpc watch looks for endpoints (upstream `CheckpointedRpcRestoreDeps.agentDir`);
+    /// `None` is `getAgentDir()`.
+    pub rpc_agent_dir: Option<std::path::PathBuf>,
+    /// Orphans found by `reap_orphans`, attached to the next restore's results by monitor id.
+    reaped: BTreeMap<String, crate::restore_digest::Orphan>,
+    /// Test seam for `reapBeforeRespawn` (upstream `RestartableCommandDeps.reapOrphan`).
+    pub reap_orphan: Option<ReapOrphan>,
 }
+/// `reapBeforeRespawn(runtime, monitorId)`.
+pub type ReapOrphan = std::sync::Arc<
+    dyn Fn(
+            crate::process_identity::ChildProcessIdentity,
+            String,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::io::Result<crate::orphan_reaper::ReapResult>,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
 impl TerminalManifestWriter {
     pub fn new(session_dir: &std::path::Path, session_id: &str) -> Self {
         Self {
@@ -40,10 +63,80 @@ impl TerminalManifestWriter {
             entries: IndexMap::new(),
             backgrounds: IndexMap::new(),
             pending: BTreeMap::new(),
+            pending_rpc: Default::default(),
             persist_failure: None,
+            rpc_agent_dir: None,
+            reaped: BTreeMap::new(),
+            reap_orphan: None,
         }
     }
+    /// Upstream restartable-command `reapOrphan` + `orphanOf`, run before the synchronous apply: for
+    /// every command watch the restore will re-spawn that recorded its child, confirm the old
+    /// watcher still runs and stop its tree. A kill reports `killed`, an unconfirmable pid
+    /// `unverified`, a dead one nothing.
+    pub async fn reap_orphans(&mut self, state: &TerminalManifest, now: f64) -> std::io::Result<()> {
+        self.reaped.clear();
+        for monitor in &state.monitors {
+            let Some(runtime) = &monitor.runtime else {
+                continue;
+            };
+            let respawned = monitor.runtime_kind == MonitorRuntimeKind::Command
+                && monitor.expires_at.is_none_or(|expiry| expiry > now)
+                && (monitor.persistent
+                    || monitor.deadline_ms.is_some_and(|deadline| deadline > now))
+                // durable-command.ts:136-138: the lost checks run before reapOrphan, so a watch
+                // the restore reports lost (no command, no absolute or existing cwd) is never
+                // reaped and carries no orphan.
+                && monitor.command.as_deref().is_some_and(|command| !command.is_empty())
+                && monitor.cwd.as_deref().is_some_and(|cwd| {
+                    std::path::Path::new(cwd).is_absolute() && std::path::Path::new(cwd).is_dir()
+                });
+            if !respawned {
+                continue;
+            }
+            let reaped = match &self.reap_orphan {
+                Some(reap) => reap(runtime.clone(), monitor.monitor_id.clone()).await,
+                None => {
+                    crate::orphan_reaper::reap_before_respawn(
+                        runtime,
+                        &monitor.monitor_id,
+                        &crate::orphan_reaper::OwnerProbes::default(),
+                        &crate::orphan_reaper::KillTreeOptions::default(),
+                    )
+                    .await
+                }
+            }?;
+            let action = match reaped {
+                result if result.action == crate::orphan_reaper::ReapAction::Killed => {
+                    Some(crate::restore_digest::OrphanAction::Killed)
+                }
+                result if result.reason.is_some() => {
+                    Some(crate::restore_digest::OrphanAction::Unverified)
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.reaped.insert(
+                    monitor.monitor_id.clone(),
+                    crate::restore_digest::Orphan {
+                        pid: runtime.pid,
+                        action,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
     pub async fn record_register(&mut self, registration: MonitorRegistration, now: f64) {
+        self.record_register_with(registration.into(), now).await;
+    }
+    /// `recordRegister` with the registration's optional ephemeral `deadlineMs`.
+    pub async fn record_register_with(&mut self, recorded: RecordedRegistration, now: f64) {
+        let RecordedRegistration {
+            registration,
+            deadline_ms,
+            runtime,
+        } = recorded;
         let (
             description,
             runtime_kind,
@@ -51,15 +144,18 @@ impl TerminalManifestWriter {
             path,
             event,
             filter,
+            human_input,
             wakes_per_hour,
             cwd,
             approved_parent,
             persistent,
+            rpc,
         ) = match registration.spec {
             MonitorSpec::Command {
                 description,
                 command,
                 filter,
+                human_input,
                 wakes_per_hour,
                 cwd,
                 persistent,
@@ -70,10 +166,12 @@ impl TerminalManifestWriter {
                 None,
                 None,
                 filter,
+                human_input.filter(|human_input| *human_input),
                 wakes_per_hour,
                 cwd,
                 None,
                 persistent,
+                None,
             ),
             MonitorSpec::File {
                 description,
@@ -91,18 +189,44 @@ impl TerminalManifestWriter {
                 Some(event),
                 None,
                 None,
+                None,
                 Some(cwd),
                 approved_parent,
                 persistent,
+                None,
+            ),
+            MonitorSpec::Rpc {
+                description,
+                target,
+                events,
+                exclude,
+                filter,
+                persistent,
+            } => (
+                description,
+                MonitorRuntimeKind::Rpc,
+                None,
+                None,
+                None,
+                filter,
+                None,
+                None,
+                None,
+                None,
+                persistent,
+                Some((target, events, exclude)),
             ),
         };
         let durability_class = if !persistent {
             MonitorDurabilityClass::Ephemeral
         } else if runtime_kind == MonitorRuntimeKind::File {
             MonitorDurabilityClass::CheckpointedFile
+        } else if runtime_kind == MonitorRuntimeKind::Rpc {
+            MonitorDurabilityClass::CheckpointedRpc
         } else {
             MonitorDurabilityClass::RestartableCommand
         };
+        let (target, events, exclude) = rpc.unwrap_or_default();
         self.entries.insert(
             registration.monitor_id.clone(),
             ManifestMonitor {
@@ -115,9 +239,14 @@ impl TerminalManifestWriter {
                 path,
                 event,
                 filter,
+                human_input,
                 wakes_per_hour,
                 cwd,
                 approved_parent,
+                target: (!target.is_empty()).then_some(target),
+                events,
+                exclude,
+                rpc_checkpoint: None,
                 created_at: now,
                 expires_at: persistent.then_some(now + DURABLE_MONITOR_EXPIRY_MS as f64),
                 persistent,
@@ -128,13 +257,52 @@ impl TerminalManifestWriter {
                     start_ms: now,
                     count: 0.0,
                 },
+                runtime: runtime.filter(|_| runtime_kind == MonitorRuntimeKind::Command),
+                deadline_ms: deadline_ms.filter(|_| !persistent),
             },
         );
         self.persist(now).await;
     }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    /// Upstream SF-2 `seedFromDisk`: a reload generation's fresh writer starts from the manifest
+    /// the previous generation wrote (its unsuspended entries and background sessions), so the
+    /// first post-reload write keeps the pre-reload watches. An unreadable manifest seeds nothing.
+    pub async fn seed_from_disk(&mut self) {
+        let Ok(Some(state)) = self.read_restore_state().await else {
+            return;
+        };
+        for entry in state.monitors {
+            if !entry.suspended {
+                self.entries.insert(entry.monitor_id.clone(), entry);
+            }
+        }
+        for background in state.background_sessions {
+            self.backgrounds.insert(background.id.clone(), background);
+        }
+    }
+    /// The session's terminal state dir (`<sessionDir>/extensions/terminal`) the store lives in.
+    pub fn terminal_dir(&self) -> Option<&std::path::Path> {
+        std::path::Path::new(self.store.file_path()).parent()
+    }
     pub fn adopt_restored(&mut self, mut entry: ManifestMonitor) {
         entry.suspended = false;
         self.entries.insert(entry.monitor_id.clone(), entry);
+    }
+    /// Drops a re-adopted entry whose restored command ended inside the grace window (upstream
+    /// adopts only a watch still live after the grace), so the next persist leaves it out.
+    pub fn forget_restored(&mut self, monitor_id: &str) {
+        self.entries.shift_remove(monitor_id);
+    }
+    /// Upstream `persistRestored`: rewrite a readable manifest to the restore's truth at once, so a
+    /// watch that did not come back is never re-run by a later start.
+    pub async fn persist_restored(&mut self, now: f64) {
+        self.persist(now).await;
+    }
+    /// The stable ids of the recorded entries, in order.
+    pub fn monitor_ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
     }
     pub fn durable_count(&self) -> usize {
         self.entries
@@ -183,6 +351,14 @@ impl TerminalManifestWriter {
         settings: &crate::settings::ResolvedTerminalSettings,
     ) -> crate::restore::RestoreDigest {
         let state = self.read_restore_state().await;
+        if let Ok(Some(manifest)) = &state
+            && let Err(error) = self.reap_orphans(manifest, now).await {
+            maho_ext_api::diagnostic(&format!("Terminal restore failed: {error}"));
+            return crate::restore::RestoreDigest {
+                store_error: true,
+                ..Default::default()
+            };
+        }
         self.apply_restore_state(state, manager, registry, now, shell, settings)
     }
     pub fn apply_restore_state(
@@ -204,19 +380,85 @@ impl TerminalManifestWriter {
                 return digest;
             }
         };
+        // Upstream `restoreTerminalState`: the downtime is an upper bound measured from the
+        // manifest's last write, never an exact gap.
+        let downtime_ms = (now - state.updated_at).max(0.0);
+        let terminal_dir = self.terminal_dir().map(std::path::Path::to_path_buf);
+        let restored =
+            |monitor: &ManifestMonitor, outcome: &'static str| crate::restore::RestoredMonitor {
+                monitor_id: monitor.monitor_id.clone(),
+                description: monitor.description.clone(),
+                file: monitor.runtime_kind
+                    == crate::terminal_manifest_model::MonitorRuntimeKind::File,
+                outcome,
+                command: monitor.command.clone(),
+                path: monitor.path.clone(),
+                reason: None,
+                orphan: None,
+            };
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {
                 digest.expired += 1;
+                digest.results.push(restored(&monitor, "expired"));
                 continue;
             }
+            // An ephemeral watch whose runtime deadline has not passed comes back with exactly the
+            // time it had left (upstream `RestoreContext.remainingMs`); otherwise it is lost.
+            let remaining_ms = monitor
+                .deadline_ms
+                .filter(|deadline| *deadline > now)
+                .map(|deadline| deadline - now);
+            let restore_environment = crate::durable_command::RestoreEnvironment {
+                downtime_ms,
+                terminal_dir: terminal_dir.clone(),
+                remaining_ms,
+            };
+            let mut reason = None;
             let outcome = match monitor.durability_class {
-                MonitorDurabilityClass::Ephemeral => RestoreOutcome::Lost,
-                MonitorDurabilityClass::RestartableCommand => {
-                    crate::durable_command::restore_configured_command(
+                MonitorDurabilityClass::CheckpointedRpc => {
+                    let restored = self.restore_rpc(&monitor, None, manager, registry);
+                    reason = restored.reason;
+                    restored.outcome
+                }
+                MonitorDurabilityClass::Ephemeral
+                    if remaining_ms.is_some()
+                        && monitor.runtime_kind == MonitorRuntimeKind::Rpc =>
+                {
+                    let restored = self.restore_rpc(&monitor, remaining_ms, manager, registry);
+                    reason = restored.reason;
+                    restored.outcome
+                }
+                MonitorDurabilityClass::Ephemeral
+                    if remaining_ms.is_some()
+                        && monitor.runtime_kind == MonitorRuntimeKind::Command =>
+                {
+                    crate::durable_command::restore_configured_command_in(
                         &monitor,
                         manager,
                         shell,
                         settings,
+                        &restore_environment,
+                        |_, runtime, record| registry.register(runtime, record),
+                    )
+                }
+                MonitorDurabilityClass::Ephemeral if remaining_ms.is_some() => {
+                    crate::durable_file::restore_file_in(
+                        &monitor,
+                        registry,
+                        manager,
+                        None,
+                        now,
+                        remaining_ms,
+                    )
+                }
+                MonitorDurabilityClass::Ephemeral => RestoreOutcome::Lost,
+                MonitorDurabilityClass::RestartableCommand => {
+                    crate::durable_command::restore_configured_command_in(
+                        &monitor,
+                        manager,
+                        shell,
+                        settings,
+                        &restore_environment,
                         |_, runtime, record| registry.register(runtime, record),
                     )
                 }
@@ -230,8 +472,20 @@ impl TerminalManifestWriter {
                 RestoreOutcome::Lost => digest.lost += 1,
                 RestoreOutcome::AttachedElsewhere => digest.attached_elsewhere += 1,
             }
+            let mut result = restored(&monitor, outcome.bucket());
+            result.reason = reason;
+            result.orphan = self.reaped.remove(&monitor.monitor_id);
+            digest.results.push(result);
             if matches!(outcome, RestoreOutcome::Restored | RestoreOutcome::Muted) {
-                self.adopt_restored(monitor.clone());
+                // Upstream adopts the entry with the fresh runtime identity, so the NEXT crash
+                // stops this process instead of starting a copy.
+                let mut adopted = monitor.clone();
+                if monitor.runtime_kind == MonitorRuntimeKind::Command
+                    && let Some(id) = manager.resolve_id(&monitor.monitor_id)
+                {
+                    adopted.runtime = manager.get(&id).and_then(|runtime| runtime.identity());
+                }
+                self.adopt_restored(adopted);
                 registry.adopt_fire_window(&monitor.monitor_id, &monitor.fire_window);
                 if let Some(id) = manager.resolve_id(&monitor.monitor_id)
                     && let Some(checkpoint) = registry.file_checkpoint(&id)
@@ -241,7 +495,49 @@ impl TerminalManifestWriter {
             }
         }
         digest.lost += state.background_sessions.len();
+        digest.background_sessions = state
+            .background_sessions
+            .iter()
+            .map(|session| crate::restore::RestoredBackground {
+                id: session.id.clone(),
+                command: session.command.clone(),
+            })
+            .collect();
         digest
+    }
+    /// The `checkpointed-rpc` handler (`durable_rpc`): the watch is armed under the registry now
+    /// and its endpoint join runs on the runtime.
+    fn restore_rpc(
+        &self,
+        monitor: &ManifestMonitor,
+        remaining_ms: Option<f64>,
+        manager: &mut crate::manager::TerminalManager,
+        registry: &mut crate::monitor_registry::MonitorRegistry,
+    ) -> crate::durable_rpc::RpcRestoreResult {
+        let source = registry.rpc_source();
+        let mut arm = |options| {
+            let (id, _, start) = source.arm(options)?;
+            tokio::spawn(start);
+            Ok(id)
+        };
+        let mut pause = |ids: &[String]| {
+            registry.pause(ids);
+        };
+        let mut bind = |monitor_id: &str, runtime_id: &str| {
+            manager.bind_monitor_id(monitor_id, runtime_id);
+        };
+        crate::durable_rpc::restore_checkpointed_rpc(
+            monitor,
+            remaining_ms,
+            crate::durable_rpc::CheckpointedRpcRestoreDeps {
+                arm: &mut arm,
+                pause: &mut pause,
+                writer: Some(self.rpc_checkpoint_sink()),
+                bind_monitor_id: Some(&mut bind),
+                session_id: Some(self.session_id.clone()),
+                agent_dir: self.rpc_agent_dir.clone(),
+            },
+        )
     }
     pub async fn observe_monitor_state(
         &mut self,
@@ -285,15 +581,48 @@ impl TerminalManifestWriter {
     pub fn schedule_checkpoint(&mut self, id: &str, checkpoint: TerminalManifestCheckpoint) {
         self.pending.insert(id.to_owned(), checkpoint);
     }
+    /// Upstream `scheduleRpcCheckpoint`: an rpc watch's view (hosts, statuses), absorbed with the
+    /// file checkpoints on the next flush or shutdown.
+    pub fn schedule_rpc_checkpoint(&mut self, id: &str, checkpoint: TerminalManifestRpcCheckpoint) {
+        self.rpc_checkpoint_sink()(id, checkpoint);
+    }
+    /// `scheduleRpcCheckpoint` as a sink a live rpc watch holds (no writer lock taken).
+    pub fn rpc_checkpoint_sink(&self) -> crate::rpc_monitor_source::RpcCheckpointSink {
+        let pending = self.pending_rpc.clone();
+        std::sync::Arc::new(move |id, checkpoint| {
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.to_owned(), checkpoint);
+        })
+    }
+    fn take_pending_rpc(&self) -> BTreeMap<String, TerminalManifestRpcCheckpoint> {
+        std::mem::take(
+            &mut self
+                .pending_rpc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
     fn absorb_pending(&mut self) {
         for (id, checkpoint) in std::mem::take(&mut self.pending) {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.last_checkpoint = Some(checkpoint);
             }
         }
+        for (id, checkpoint) in self.take_pending_rpc() {
+            if let Some(entry) = self.entries.get_mut(&id) {
+                entry.rpc_checkpoint = Some(checkpoint);
+            }
+        }
     }
     pub async fn flush(&mut self, now: f64) {
-        if !self.pending.is_empty() {
+        let rpc_pending = !self
+            .pending_rpc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
+        if !self.pending.is_empty() || rpc_pending {
             self.absorb_pending();
             self.persist(now).await;
         }
@@ -427,11 +756,16 @@ mod tests {
         let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
         let digest = next.restore_live(&mut manager, &mut registry, 30.0).await;
         assert_eq!(
-            digest,
-            crate::restore::RestoreDigest {
-                muted: 1,
-                ..Default::default()
-            }
+            (digest.muted, digest.restored, digest.lost, digest.expired),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(
+            digest
+                .results
+                .iter()
+                .map(|result| (result.monitor_id.as_str(), result.outcome))
+                .collect::<Vec<_>>(),
+            [("mon_saved", "muted")]
         );
         assert_eq!(next.durable_count(), 1);
         assert!(!next.entries["mon_saved"].suspended);
@@ -486,6 +820,7 @@ mod tests {
                             description: id.to_owned(),
                             command: "read value".to_owned(),
                             filter: None,
+                            human_input: None,
                             wakes_per_hour: None,
                             cwd: Some(dir.path().to_string_lossy().into_owned()),
                             persistent,
@@ -509,17 +844,75 @@ mod tests {
             )
             .await;
         assert_eq!(
-            digest,
-            crate::restore::RestoreDigest {
-                expired: 1,
-                lost: 2,
-                ..Default::default()
-            }
+            (digest.expired, digest.lost, digest.restored, digest.muted),
+            (1, 2, 0, 0)
+        );
+        assert_eq!(
+            digest
+                .results
+                .iter()
+                .filter(|result| result.outcome == "expired")
+                .count(),
+            1
         );
         assert_eq!(manager.size(), 0);
         assert!(registry.snapshot().is_empty());
         assert_eq!(next.durable_count(), 0);
         assert!(next.entries.is_empty());
+        registry.dispose();
+    }
+    /// restore.ts: an ephemeral command watch with time left on its recorded `deadlineMs` is handed
+    /// to the command handler (and adopted); `humanInput` and `deadlineMs` survive the round-trip.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ephemeral_command_with_time_left_is_restored_with_its_deadline_and_human_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = TerminalManifestWriter::new(dir.path(), "s");
+        writer
+            .record_register_with(
+                MonitorRegistration {
+                    monitor_id: "mon_ephemeral".to_owned(),
+                    spec: MonitorSpec::Command {
+                        description: "inbox".to_owned(),
+                        command: "read value".to_owned(),
+                        filter: None,
+                        human_input: Some(true),
+                        wakes_per_hour: None,
+                        cwd: Some(dir.path().to_string_lossy().into_owned()),
+                        persistent: false,
+                    },
+                }
+                .with_deadline_ms(Some(100_000.0)),
+                1.0,
+            )
+            .await;
+        let saved = writer.store.read().await.unwrap().unwrap();
+        assert_eq!(saved["monitors"][0]["humanInput"], true);
+        assert_eq!(saved["monitors"][0]["deadlineMs"], 100_000.0);
+        let mut next = TerminalManifestWriter::new(dir.path(), "s");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next
+            .restore_live(&mut manager, &mut registry, 40_000.0)
+            .await;
+        assert_eq!((digest.restored, digest.lost), (1, 0));
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].monitor_id.as_deref(), Some("mon_ephemeral"));
+        assert_eq!(snapshot[0].persistent, Some(false));
+        assert!(snapshot[0].deadline_ms.is_some());
+        assert_eq!(next.entries["mon_ephemeral"].human_input, Some(true));
+        registry.dispose();
+        manager.teardown().unwrap();
+        // Past its deadline the same entry is lost and never spawns.
+        let mut late = TerminalManifestWriter::new(dir.path(), "s");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = late
+            .restore_live(&mut manager, &mut registry, 100_001.0)
+            .await;
+        assert_eq!((digest.restored, digest.lost), (0, 1));
+        assert_eq!(manager.size(), 0);
         registry.dispose();
     }
     #[tokio::test]
@@ -534,6 +927,7 @@ mod tests {
                         description: "watch".to_owned(),
                         command: "true".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some("/tmp".to_owned()),
                         persistent: true,
@@ -592,6 +986,7 @@ mod tests {
                             "stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\""
                                 .to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some(dir.path().to_string_lossy().into_owned()),
                         persistent: true,
@@ -625,6 +1020,74 @@ mod tests {
         registry.dispose();
         manager.teardown().unwrap();
     }
+    /// terminal-manifest.ts `scheduleRpcCheckpoint` + `#entryFor` (rpc): a persistent rpc spec is
+    /// the `checkpointed-rpc` class with its target/events/exclude, and its view is absorbed on
+    /// flush; a restore re-arms it under its `mon_` id (an agent dir with no endpoints joins none).
+    #[tokio::test]
+    async fn rpc_spec_records_checkpointed_rpc_absorbs_its_checkpoint_and_restores_under_its_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = TerminalManifestWriter::new(dir.path(), "s");
+        writer
+            .record_register(
+                MonitorRegistration {
+                    monitor_id: "mon_RPC".to_owned(),
+                    spec: MonitorSpec::Rpc {
+                        description: "kids".to_owned(),
+                        target: "all".to_owned(),
+                        events: Some(crate::rpc_monitor_targets::RpcEvents::All),
+                        exclude: Some(vec!["message_update".to_owned()]),
+                        filter: Some("idle".to_owned()),
+                        persistent: true,
+                    },
+                },
+                10.0,
+            )
+            .await;
+        let entry = &writer.entries["mon_RPC"];
+        assert_eq!(entry.runtime_kind, MonitorRuntimeKind::Rpc);
+        assert_eq!(
+            entry.durability_class,
+            MonitorDurabilityClass::CheckpointedRpc
+        );
+        assert_eq!(entry.target.as_deref(), Some("all"));
+        assert_eq!(entry.cwd, None);
+        let checkpoint: TerminalManifestRpcCheckpoint = serde_json::from_value(serde_json::json!({
+            "hosts":{"/h.sock":{"instanceId":"i","generation":"3"}},"statuses":{"/h.sock#s1":"idle"}}))
+        .unwrap();
+        writer.rpc_checkpoint_sink()("mon_RPC", checkpoint.clone());
+        writer.flush(20.0).await;
+        let persisted = crate::restore::parse_terminal_manifest(
+            &writer.store.read().await.unwrap().unwrap(),
+            "s",
+        )
+        .unwrap();
+        assert_eq!(persisted.monitors[0].rpc_checkpoint, Some(checkpoint));
+        assert_eq!(
+            persisted.monitors[0].events,
+            Some(crate::rpc_monitor_targets::RpcEvents::All)
+        );
+        writer.record_shutdown(30.0).await;
+        let mut next = TerminalManifestWriter::new(dir.path(), "s");
+        next.rpc_agent_dir = Some(dir.path().join("agent"));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let state = next.read_restore_state().await;
+        let digest = next.apply_restore_state(
+            state,
+            &mut manager,
+            &mut registry,
+            40.0,
+            None,
+            &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+        );
+        assert_eq!((digest.restored, digest.lost), (1, 0));
+        assert_eq!(manager.resolve_id("mon_RPC"), Some("rpc_1".to_owned()));
+        assert_eq!(next.durable_count(), 1);
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot[0].monitor_id.as_deref(), Some("mon_RPC"));
+        assert_eq!(snapshot[0].filter.as_deref(), Some("idle"));
+        registry.dispose();
+    }
     #[tokio::test]
     async fn missing_stable_identity_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -643,6 +1106,267 @@ mod tests {
         );
     }
 }
+/// terminal-restore-session.test.ts (a)/(a2): a persistent command watch records its child's
+/// identity; after a crash (the old watcher still running) the next restore confirms and stops it
+/// before re-spawning once, reports it as an orphan, and records the NEW child, so a second crash
+/// stops the respawned watcher in turn.
+#[cfg(all(test, target_os = "linux"))]
+mod orphan_tests {
+    use super::*;
+
+    fn now_ms() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
+    }
+
+    /// Spawn a watch as the monitor tool does (stable id in the environment), and record it with
+    /// its runtime identity.
+    async fn record_live_watch(
+        dir: &std::path::Path,
+        manager: &mut crate::manager::TerminalManager,
+        monitor_id: &str,
+    ) -> crate::process_identity::ChildProcessIdentity {
+        let command = "while true; do read line; done";
+        let options = crate::tools::spawn::command_options(command, Some(dir), None)
+            .expect("fixture command options")
+            .0
+            .env(crate::shared::MONITOR_ENV_ID, monitor_id);
+        let id = manager.create(command, options).expect("create fixture watch");
+        manager.bind_monitor_id(monitor_id, &id);
+        let identity = manager.get(&id).expect("registered watch").identity().expect("watch identity");
+        let mut writer = TerminalManifestWriter::new(dir, "orphans");
+        writer
+            .record_register_with(
+                MonitorRegistration {
+                    monitor_id: monitor_id.to_owned(),
+                    spec: MonitorSpec::Command {
+                        description: "ticker".into(),
+                        command: command.into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: Some(dir.to_string_lossy().into_owned()),
+                        persistent: true,
+                    },
+                }
+                .with_deadline_ms(None)
+                .with_runtime(Some(identity.clone())),
+                now_ms(),
+            )
+            .await;
+        writer.record_shutdown(now_ms()).await;
+        identity
+    }
+
+    /// The next process's restore: reap, then re-spawn. Returns the orphan reported and the
+    /// identity the manifest now records for the watch.
+    async fn restart(
+        dir: &std::path::Path,
+        manager: &mut crate::manager::TerminalManager,
+        registry: &mut crate::monitor_registry::MonitorRegistry,
+    ) -> (
+        Option<crate::restore_digest::Orphan>,
+        crate::process_identity::ChildProcessIdentity,
+    ) {
+        let mut next = TerminalManifestWriter::new(dir, "orphans");
+        let digest = next.restore_live(manager, registry, now_ms()).await;
+        assert_eq!(digest.restored, 1, "{digest:?}");
+        next.persist_restored(now_ms()).await;
+        let saved = next.read_restore_state().await.expect("read restored state").expect("saved restore state");
+        (
+            digest.results[0].orphan.clone(),
+            saved.monitors[0].runtime.clone().expect("fresh runtime recorded"),
+        )
+    }
+
+    /// Resolves once the watcher `monitor_id` runs under in `manager` has exited: the crashed
+    /// generation's runtime still observes its child, so the reaper's kill is an exit event.
+    async fn exited(manager: &mut crate::manager::TerminalManager, monitor_id: &str) {
+        let id = manager.resolve_id(monitor_id).expect("bound watch");
+        let mut exit = manager.get(&id).expect("live runtime").subscribe_exit();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            exit.wait_for(Option::is_some),
+        )
+        .await
+        .expect("orphan stopped")
+        .expect("exit channel open");
+    }
+
+    #[tokio::test]
+    async fn a_crash_orphan_is_stopped_and_two_crashes_leave_exactly_one_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        // The crashed generation's manager is leaked: its watcher keeps running, as after a crash.
+        let crashed = Box::leak(Box::new(crate::manager::TerminalManager::default()));
+        let first = record_live_watch(&dir, crashed, "mon_ORPHANTICKER01").await;
+        assert!(crate::orphan_reaper::is_process_alive(first.pid));
+
+        // (a) The next process stops the old watcher, re-spawns once, and reports it.
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, respawned) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(
+            orphan,
+            Some(crate::restore_digest::Orphan {
+                pid: first.pid,
+                action: crate::restore_digest::OrphanAction::Killed
+            })
+        );
+        exited(crashed, "mon_ORPHANTICKER01").await;
+        assert_ne!(respawned.pid, first.pid);
+        assert!(crate::orphan_reaper::is_process_alive(respawned.pid));
+        assert_eq!(manager.size(), 1);
+
+        // (a2) A second crash: the restore recorded the NEW process, so it is the one stopped.
+        let crashed_again = Box::leak(Box::new(manager));
+        std::mem::forget(registry);
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, third) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(
+            orphan,
+            Some(crate::restore_digest::Orphan {
+                pid: respawned.pid,
+                action: crate::restore_digest::OrphanAction::Killed
+            })
+        );
+        exited(crashed_again, "mon_ORPHANTICKER01").await;
+        assert!(crate::orphan_reaper::is_process_alive(third.pid));
+        registry.dispose();
+        manager.teardown().unwrap();
+        let _ = (crashed.teardown(), crashed_again.teardown());
+    }
+
+    /// durable-command.ts:136-140: a watch the restore reports lost (empty command, relative or
+    /// missing cwd) is never handed to the reaper and carries no orphan.
+    #[tokio::test]
+    async fn a_lost_watch_is_never_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        let missing = dir.join("gone").to_string_lossy().into_owned();
+        let present = dir.to_string_lossy().into_owned();
+        // The last case is the control: a restorable watch IS handed to the reaper.
+        for (command, cwd, reaps) in [
+            ("", Some(present.clone()), 0),
+            ("cat", Some("relative/dir".to_owned()), 0),
+            ("cat", Some(missing), 0),
+            ("cat", None, 0),
+            ("cat", Some(present.clone()), 1),
+        ] {
+            let mut state = crate::restore::parse_terminal_manifest(
+                &serde_json::json!({"monitors":[{"monitorId":"mon_LOSTWATCH00001","sessionId":"orphans","description":"lost","runtimeKind":"command","durabilityClass":"restartable-command","command":"cat","cwd":present,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),
+                "orphans",
+            )
+            .unwrap();
+            let monitor = &mut state.monitors[0];
+            monitor.command = Some(command.to_owned());
+            monitor.cwd = cwd.clone();
+            monitor.runtime = Some(crate::process_identity::ChildProcessIdentity {
+                pid: std::process::id(),
+                process_group_id: None,
+                started_at_ms: 0.0,
+                boot_at_ms: 0.0,
+                argv: vec!["cat".to_owned()],
+            });
+            let mut writer = TerminalManifestWriter::new(&dir, "orphans");
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = calls.clone();
+            writer.reap_orphan = Some(std::sync::Arc::new(move |_, _| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(crate::orphan_reaper::ReapResult {
+                        action: crate::orphan_reaper::ReapAction::Killed,
+                        reason: None,
+                    })
+                })
+            }));
+            writer.reap_orphans(&state, now_ms()).await.unwrap();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), reaps, "{command:?} {cwd:?}");
+            assert_eq!(writer.reaped.len(), reaps, "an orphan only for a reaped watch");
+        }
+    }
+
+    /// A recorded pid that is no longer this watcher (dead) reports no orphan; a reaper that cannot
+    /// confirm it reports it unverified and kills nothing.
+    #[tokio::test]
+    async fn a_dead_or_unverifiable_orphan_is_reported_as_such() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        let crashed = Box::leak(Box::new(crate::manager::TerminalManager::default()));
+        record_live_watch(&dir, crashed, "mon_ORPHANUNVERIF1").await;
+        // The watcher is gone before the restart: its recorded pid is dead.
+        let id = crashed.resolve_id("mon_ORPHANUNVERIF1").unwrap();
+        let mut exit = crashed.get(&id).unwrap().subscribe_exit();
+        crashed.teardown().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), exit.wait_for(Option::is_some))
+            .await
+            .expect("watcher stopped")
+            .expect("exit channel open");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, _) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(orphan, None);
+        registry.dispose();
+        manager.teardown().unwrap();
+
+        let mut next = TerminalManifestWriter::new(&dir, "orphans");
+        next.reap_orphan = Some(std::sync::Arc::new(|runtime, _| {
+            Box::pin(async move {
+                Ok(crate::orphan_reaper::ReapResult {
+                    action: crate::orphan_reaper::ReapAction::None,
+                    reason: Some(format!("previous watcher pid {} unverifiable", runtime.pid)),
+                })
+            })
+        }));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+        assert_eq!(
+            digest.results[0].orphan.as_ref().map(|orphan| orphan.action),
+            Some(crate::restore_digest::OrphanAction::Unverified)
+        );
+        registry.dispose();
+        manager.teardown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn orphan_kill_error_aborts_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(temp.path()).unwrap();
+        let mut crashed = crate::manager::TerminalManager::default();
+        let watch = record_live_watch(&dir, &mut crashed, "mon_ORPHANKILLFAIL1").await;
+        assert!(crate::orphan_reaper::is_process_alive(watch.pid));
+
+        let mut next = TerminalManifestWriter::new(&dir, "orphans");
+        next.reap_orphan = Some(std::sync::Arc::new(|_, _| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "kill tree failed: operation not permitted",
+                ))
+            })
+        }));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+
+        assert!(digest.store_error);
+        assert_eq!(digest.restored, 0);
+        assert_eq!(manager.size(), 0);
+        assert!(crate::orphan_reaper::is_process_alive(watch.pid));
+
+        registry.dispose();
+        manager.teardown().unwrap();
+        let id = crashed.resolve_id("mon_ORPHANKILLFAIL1").expect("watch id");
+        let mut exited = crashed.get(&id).expect("watch").subscribe_exit();
+        crashed.teardown().expect("stop original watcher");
+        tokio::time::timeout(std::time::Duration::from_secs(10), exited.wait_for(Option::is_some))
+            .await.expect("watch exit deadline").expect("watch exit");
+    }
+}
+
 #[cfg(test)]
 mod debounce_tests {
     use super::*;
@@ -663,6 +1387,7 @@ mod debounce_tests {
                         description: "watch".to_owned(),
                         command: "true".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some("/tmp".to_owned()),
                         persistent: true,

@@ -90,11 +90,27 @@ pub const DEFAULT_MODEL_PROFILE_ID: &str = DEFAULT_MODEL_PROFILE_ORDER[0];
 /// Saved builtin ids that start the unset default unless the user defines that name.
 pub const RETIRED_MODEL_PROFILE_IDS: &[&str] = &["recommended"];
 
-const CLAUDE_PROVIDERS: &[&str] = &["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"];
-const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai", "opencode-go"];
+const CLAUDE_PROVIDERS: &[&str] = &[
+    "anthropic-subscription",
+    "anthropic",
+    "anthropic-api",
+    "github-copilot",
+    "opencode",
+];
+const KIMI_PROVIDERS: &[&str] = &[
+    "kimi-coding",
+    "kimi-for-coding",
+    "moonshotai",
+    "opencode-go",
+];
 // Engine Z.AI ids. `omo setup` imports OpenCode's `zai-coding-plan` key as `zai` (#8799).
 const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
-const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copilot", "opencode"];
+const GPT_PROVIDERS: &[&str] = &[
+    "chatgpt-subscription",
+    "openai",
+    "github-copilot",
+    "opencode",
+];
 // GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
 // so their rungs list just those; Obsessive · Normal heads with GPT-6 Astra on every GPT provider and
 // falls back through those two-lane rungs to GPT-5.6 Sol, which keeps the profile on every GPT provider.
@@ -104,20 +120,66 @@ const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
 const OBSESSIVE_CAUTION: &str = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
 
 const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
-    BuiltinRung { providers: KIMI_PROVIDERS, model: "kimi-k3", variant: Some("max") },
-    BuiltinRung { providers: GLM_PROVIDERS, model: "glm-5.3", variant: Some("max") },
+    BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: "claude-opus-5-5",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: KIMI_PROVIDERS,
+        model: "kimi-k3.1-pro",
+        variant: Some("max"),
+    },
+    BuiltinRung {
+        providers: GLM_PROVIDERS,
+        model: "glm-5.3",
+        variant: Some("max"),
+    },
 ];
-const DAILY_HEAVY_MODELS: &[BuiltinRung] =
-    &[BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-fable-5-1", variant: Some("xhigh") }];
+use model_core::{FABLE_55_LAUNCH_ID, FABLE_55_RELEASED};
+const DAILY_HEAVY_LAUNCH_MODELS: &[BuiltinRung] = &[
+    BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: FABLE_55_LAUNCH_ID,
+        variant: Some("xhigh"),
+    },
+    BuiltinRung {
+        providers: CLAUDE_PROVIDERS,
+        model: "claude-fable-5-1",
+        variant: Some("xhigh"),
+    },
+];
+const DAILY_HEAVY_MODELS: &[BuiltinRung] = match DAILY_HEAVY_LAUNCH_MODELS.split_first() {
+    Some((_, released)) if !FABLE_55_RELEASED => released,
+    _ => DAILY_HEAVY_LAUNCH_MODELS,
+};
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
-    BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-astra", variant: Some("medium") },
-    BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol-fast", variant: Some("medium") },
-    BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol", variant: Some("medium") },
-    BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-5.6-sol", variant: Some("medium") },
+    BuiltinRung {
+        providers: GPT_PROVIDERS,
+        model: "gpt-6-astra",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_6_1_PROVIDERS,
+        model: "gpt-6.1-sol-fast",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_6_1_PROVIDERS,
+        model: "gpt-6.1-sol",
+        variant: Some("medium"),
+    },
+    BuiltinRung {
+        providers: GPT_PROVIDERS,
+        model: "gpt-5.6-sol",
+        variant: Some("medium"),
+    },
 ];
-const GEEKY_HEAVY_MODELS: &[BuiltinRung] =
-    &[BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-astra", variant: Some("high") }];
+const GEEKY_HEAVY_MODELS: &[BuiltinRung] = &[BuiltinRung {
+    providers: GPT_PROVIDERS,
+    model: "gpt-6-astra",
+    variant: Some("high"),
+}];
 
 // Key order is the order a picker renders. `deep` is deliberately NOT an id: builtin delegation
 // categories already carry that name, and the two axes never compete (a profile picks the MAIN
@@ -181,13 +243,39 @@ mod tests {
     #[test]
     fn every_builtin_is_a_lane_in_default_order() {
         let profiles = builtin_model_profiles();
-        assert_eq!(profiles.keys().copied().collect::<Vec<_>>(), DEFAULT_MODEL_PROFILE_ORDER);
+        assert_eq!(
+            profiles.keys().copied().collect::<Vec<_>>(),
+            DEFAULT_MODEL_PROFILE_ORDER
+        );
         assert_eq!(DEFAULT_MODEL_PROFILE_ID, "daily-normal");
         assert_eq!(RETIRED_MODEL_PROFILE_IDS, &["recommended"]);
         assert!(!profiles.contains_key("recommended"));
-        let axes: Vec<_> = profiles.values()
+        let axes: Vec<_> = profiles
+            .values()
             .map(|profile| (profile.family.as_str(), profile.tier.as_str()))
             .collect();
-        assert_eq!(axes, [("daily", "normal"), ("daily", "heavy"), ("geeky", "normal"), ("geeky", "heavy")]);
+        assert_eq!(
+            axes,
+            [
+                ("daily", "normal"),
+                ("daily", "heavy"),
+                ("geeky", "normal"),
+                ("geeky", "heavy")
+            ]
+        );
+    }
+
+    #[test]
+    fn daily_heavy_stages_the_launch_gated_fable_55_rung_but_drops_it_until_released() {
+        assert_eq!(DAILY_HEAVY_LAUNCH_MODELS[0].model, "claude-fable-5-5");
+        let heavy = &builtin_model_profiles()["daily-heavy"];
+        assert!(
+            heavy
+                .models
+                .iter()
+                .all(|rung| rung.model != "claude-fable-5-5")
+        );
+        assert_eq!(heavy.models[0].model, "claude-fable-5-1");
+        assert_eq!(heavy.models[0].variant, Some("xhigh"));
     }
 }

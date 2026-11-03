@@ -79,4 +79,11 @@ pub const ERROR_CODES: &[&str] = &[
     "CursorRestoreFailed",
     "FocusRestoreFailed",
     "TransactionFailed",
+    "InputBusy",
+    "ControlRequired",
+    "CaptureUnavailable",
+    "UserIntervened",
+    "AxUnconfirmed",
+    "SpaceUnsupported",
+    "SpaceMoveDenied",
 ];

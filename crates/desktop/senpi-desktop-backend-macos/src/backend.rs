@@ -12,10 +12,11 @@ use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, DisplaySelector,
     FrontWindow, Target,
 };
+use senpi_desktop_core::user_input::UserPresses;
 
 use crate::ax::{MacAx, is_trusted};
 use crate::capture::{MacCapture, Screencapture};
-use crate::input::{CANARY_STOP_REASON, CanaryMode, CanaryResult, MacInput};
+use crate::input::{CANARY_STOP_REASON, CanaryMode, CanaryResult, MacInput, UserInputWatch};
 
 #[path = "permissions.rs"]
 pub(crate) mod permissions;
@@ -24,6 +25,7 @@ pub struct MacosBackend {
     capture: MacCapture,
     input: MacInput,
     ax: MacAx,
+    user_input: UserInputWatch,
 }
 
 impl MacosBackend {
@@ -32,6 +34,7 @@ impl MacosBackend {
             capture: MacCapture::new(display, Screencapture::system()),
             input: MacInput::new(CanaryMode::Session)?,
             ax: MacAx::new(),
+            user_input: UserInputWatch::default(),
         })
     }
 
@@ -78,6 +81,7 @@ impl MacosBackend {
             display_count,
             focus_guard: true,
             stop_reason: canary_failed.then(|| CANARY_STOP_REASON.to_string()),
+            intervention_watch: Some(self.user_input.state()),
             ..DesktopCapabilities::unavailable()
         }
     }
@@ -240,8 +244,20 @@ impl Backend for MacosBackend {
     fn screen_locked(&mut self) -> CoreResult<bool> {
         crate::cursor::screen_locked()
     }
+
+    fn watch_user_input(&mut self) {
+        self.user_input.start();
+    }
+
+    fn take_user_presses(&mut self) -> UserPresses {
+        self.user_input.take()
+    }
 }
 
 fn permission_label(granted: bool) -> String {
     if granted { "granted" } else { "denied" }.to_string()
 }
+
+#[cfg(test)]
+#[path = "backend_tests.rs"]
+mod tests;

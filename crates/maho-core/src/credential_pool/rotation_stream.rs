@@ -12,7 +12,28 @@ use crate::credential_pool::slots::{CredentialSlotSource, PooledCredential, rend
 use crate::credential_pool::state_store::{
     BlockReason, CredentialSlotRepository, CredentialSlotState, acquire_half_open_lease,
 };
-use crate::resolve_config_value::resolve_config_value;
+use crate::resolve_config_value::{get_config_value_env_var_names_of, resolve_config_value_of};
+use maho_ai::utils::config_reference_error::ConfigReferenceError;
+
+/// Skipped-slot notices already printed in this process (field + reason; never a value).
+static WARNED_SLOT_REFERENCES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn warn_skipped_slot(error: &ConfigReferenceError) {
+    let notice = format!(
+        "{}: configuration reference {}; skipping credential slot",
+        error.field, error.reason
+    );
+    // Slots are listed on every request; a broken unused slot warns once per process, not once per turn.
+    if WARNED_SLOT_REFERENCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(notice.clone())
+    {
+        crate::output_guard::maho_write_stderr(&format!("{notice}\n"));
+    }
+}
 
 /// The exact hash the claude-sdk-oauth affinity oracle uses, so pools never remap.
 pub fn sha256_slot_hasher(input: &str) -> u64 {
@@ -61,7 +82,8 @@ pub struct RotationPolicy {
 #[derive(Debug, Clone, Default)]
 pub struct PolicySlotRef {
     pub env: Option<String>,
-    pub value: Option<String>,
+    /// senpi#3858: a command/template string or a configuration reference.
+    pub value: Option<crate::config_reference_resolver::ConfigValue>,
 }
 
 pub struct RotationSources<'a> {
@@ -102,8 +124,12 @@ fn block_reason_str(reason: BlockReason) -> &'static str {
     }
 }
 
-async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
+/// The named policy slots plus the first reference error of a slot that was skipped (senpi#3858).
+async fn policy_slots(
+    sources: &RotationSources<'_>,
+) -> (Vec<EnvCredentialSlot>, Option<ConfigReferenceError>) {
     let mut slots = Vec::new();
+    let mut reference_error = None;
     for (name, reference) in &sources.policy.slots {
         let env_var_name = reference
             .env
@@ -111,7 +137,26 @@ async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
             .unwrap_or_else(|| format!("models.json:{name}"));
         let key = match (&reference.env, &reference.value) {
             (Some(env_var), _) => (sources.env)(env_var),
-            (None, Some(value)) => resolve_config_value(value, None).await,
+            (None, Some(value)) => {
+                // A string resolves against an empty overlay as before; a reference gets only the env vars it names.
+                let env: std::collections::HashMap<String, String> = if value.is_reference() {
+                    get_config_value_env_var_names_of(value)
+                        .into_iter()
+                        .filter_map(|name| (sources.env)(&name).map(|value| (name, value)))
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
+                let env = value.is_reference().then_some(&env);
+                match resolve_config_value_of(value, env, None).await {
+                    Ok(key) => key,
+                    Err(error) => {
+                        warn_skipped_slot(&error);
+                        reference_error.get_or_insert(error);
+                        continue;
+                    }
+                }
+            }
             (None, None) => None,
         };
         let Some(key) = key.filter(|key| !key.is_empty()) else {
@@ -124,7 +169,7 @@ async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
             source: CredentialSlotSource::Env,
         });
     }
-    slots
+    (slots, reference_error)
 }
 
 /// The slots a credential can actually use: a slot of the other kind never projects (senpi#3486).
@@ -157,7 +202,7 @@ pub async fn list_rotation_slots(
 ) -> Result<Vec<RotationSlot>, String> {
     let provider_id = sources.provider_id.clone();
     let repository = sources.repository;
-    let named = policy_slots(sources).await;
+    let (named, reference_error) = policy_slots(sources).await;
     if let Some(credential) = &sources.credential {
         let state = repository.list_slots(&provider_id, "stored").await?;
         let mut slots = Vec::new();
@@ -217,6 +262,12 @@ pub async fn list_rotation_slots(
             slots.push(overlay_state(base, applicable));
         }
         if named.is_empty() {
+            // The first reference error surfaces only when no slot remains.
+            if slots.is_empty()
+                && let Some(error) = reference_error
+            {
+                return Err(error.to_string());
+            }
             return Ok(slots);
         }
         let named_slots = list_env_rotation_slots(sources, &named, acquire_leases).await?;
@@ -225,6 +276,11 @@ pub async fn list_rotation_slots(
     }
     let mut env_slots = discover_env_slots(&provider_id, sources.env);
     env_slots.extend(named);
+    if env_slots.is_empty()
+        && let Some(error) = reference_error
+    {
+        return Err(error.to_string());
+    }
     list_env_rotation_slots(sources, &env_slots, acquire_leases).await
 }
 
@@ -955,7 +1011,7 @@ mod tests {
             "literal".to_owned(),
             PolicySlotRef {
                 env: None,
-                value: Some(home_var.to_owned()),
+                value: Some(home_var.into()),
             },
         );
         let slots = list_rotation_slots(&sources, true).await.expect("slots");
@@ -963,6 +1019,56 @@ mod tests {
         assert!(names.contains(&"named"));
         assert!(names.contains(&"literal"));
         assert!(!names.contains(&"missing"));
+    }
+
+    /// senpi test/suite/regressions/3858-model-references.test.ts: a slot whose reference fails is skipped; the
+    /// error surfaces only when no slot remains.
+    #[tokio::test]
+    async fn an_unresolvable_reference_slot_is_skipped_and_raised_only_when_nothing_remains() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repository = repository(&tmp);
+        let env = |name: &str| (name == "GOOD_KEY").then(|| "good-value".to_owned());
+        let reference = |name: &str| {
+            let mut value: crate::config_reference_resolver::ConfigValue =
+                serde_json::from_value(serde_json::json!({"$env": name})).expect("reference");
+            crate::config_reference_resolver::remember_config_reference_origin(
+                &mut value,
+                crate::config_reference_resolver::ConfigReferenceContext::trusted(
+                    "/cfg/models.json",
+                    format!("providers.p.credentials.slots.{name}.value"),
+                ),
+            );
+            value
+        };
+        let mut sources = sources(&repository, None, &env, 1_000);
+        sources.policy.slots.insert(
+            "broken".to_owned(),
+            PolicySlotRef {
+                env: None,
+                value: Some(reference("UNSET_REFERENCE_KEY")),
+            },
+        );
+        let error = list_rotation_slots(&sources, false)
+            .await
+            .expect_err("only a broken slot");
+        assert!(error.contains("configuration reference unset"), "{error}");
+        sources.policy.slots.insert(
+            "good".to_owned(),
+            PolicySlotRef {
+                env: None,
+                value: Some(reference("GOOD_KEY")),
+            },
+        );
+        let slots = list_rotation_slots(&sources, false)
+            .await
+            .expect("good slot remains");
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| slot.slot.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["good"]
+        );
     }
 
     #[test]

@@ -528,3 +528,108 @@ Owner: Phase 3 (desktop/TUI side panel)
 
 Only key names, types, enumerations, bounds and defaults (interface facts) are listed. No
 description text, comments or code from the SUL sources or the generated schema is included.
+
+## Delta (omo v5.1.52)
+
+Written 2026-10-30 from the sync-5152 census rows (no SUL source opened). It supersedes the
+listed defaults above; in D1 the key names, types and bounds are unchanged. D2 (added 2026-11-01)
+adds one optional key; it supersedes the earlier review note that left `model_pad` unspecified.
+
+### D1. `memory.projection` defaults
+
+Interface facts (new defaults of the merged view):
+
+- `memory.projection` : object default={"max_entries_per_directory": 0, "max_bytes": 40960}
+- `memory.projection.max_entries_per_directory` : integer (minimum=0) default=0 (was 40)
+- `memory.projection.max_bytes` : integer (minimum=0) default=40960 (was 24576)
+
+Unchanged: both keys still accept any integer >= 0. A value the user writes always wins over the
+default, at top level, inside a harness block or a profile. `memory.agents.<name>.projection.*`
+still has no default of its own. When it is absent, the agent falls back to `memory.projection`,
+so the agent inherits the new defaults. This delta changes only the default values; it does not
+change what a given value means.
+
+Error cases: as before, a negative or non-integer value is an invalid-value for that key. It is
+pruned from its layer (config.md §4.4 step 5), and the default then applies in the merged view
+(config.md §6.4).
+
+Tests:
+- Given `{"memory": {"enabled": true}}` (a `memory` section without `projection`), when the
+  merged view is built, then
+  `memory.projection.max_entries_per_directory` is `0` and `memory.projection.max_bytes` is
+  `40960`.
+- Given `{"memory": {"projection": {"max_bytes": 24576}}}`, then `max_bytes` is `24576` and
+  `max_entries_per_directory` is `0`.
+- Given `{"memory": {"projection": {"max_entries_per_directory": 40}}}`, then the value `40` is
+  kept and `max_bytes` is `40960`.
+- Given the regenerated JSON Schema, then the `default` of the two keys is `0` and `40960`.
+
+### D2. `model_pad` (new optional key)
+
+Interface facts (key names and types; no defaults):
+
+- `model_pad` : object
+- `model_pad.labels` : object
+- `model_pad.labels.daily` : string
+- `model_pad.labels.geeky` : string
+- `model_pad.labels.normal` : string
+- `model_pad.labels.heavy` : string
+
+Where it may appear: at top level, inside the typed harness blocks (`[native]`, `[senpi]`,
+`[codex]`) and inside `profiles.<name>`, with the same shape everywhere. It follows the ordinary
+merge and view rules of config.md §5-§6 (a later layer's value for a label wins; the harness
+block and profile overlay it like any other key of those blocks).
+
+Meaning: display text only. Each label key is one of the `family` values (`daily`, `geeky`) or
+`tier` values (`normal`, `heavy`) of `model_profiles`, and its string is the caption a client may
+show for that value wherever it groups the built-in profiles by family and tier. When a label is
+absent the client chooses its own caption. Nothing in mhc's model selection or profile resolution
+depends on these strings: setting them changes no profile's name, chain, default or result.
+
+Validation: both objects are strict. An unknown key under `model_pad` or `model_pad.labels` is
+removed with the unknown-keys diagnostic (config.md §4.4). A label that is not a string is an
+invalid value: it is pruned from its layer and the merged view has no value for it. No default is
+ever filled in, so a file without `model_pad` produces a view without it.
+
+Composition rules (top of this file): `model_pad` joins the key list of a typed harness block,
+which also makes it valid inside `profiles.<name>`.
+
+Tests:
+- Given `{"model_pad": {"labels": {"daily": "Everyday", "heavy": "Big"}}}`, when the file is
+  loaded, then there is no diagnostic and the view has those two labels and no `geeky`/`normal`.
+- Given `{"model_pad": {"labels": {"daily": "A", "wide": "B"}}}`, then one unknown-keys
+  diagnostic names `model_pad.labels.wide`, and `daily` is kept.
+- Given `{"model_pad": {"size": 2}}`, then one unknown-keys diagnostic names `model_pad.size`.
+- Given `{"model_pad": {"labels": {"normal": 3}}}`, then one invalid-value diagnostic is reported
+  and the view has no `normal` label.
+- Given `{"[native]": {"model_pad": {"labels": {"geeky": "Nerd"}}}}` and, in another test,
+  `{"profiles": {"p": {"model_pad": {"labels": {"geeky": "Nerd"}}}}}` with that profile active,
+  then the view's `model_pad.labels.geeky` is `"Nerd"`.
+- Given a file without `model_pad`, then the view has no `model_pad` key.
+- Given the regenerated JSON Schema, then `model_pad` and `model_pad.labels` have
+  `additionalProperties: false` and the four labels are strings without a default.
+
+### Mapping
+
+Every census row routed to an MIT crate that changes a user-writable key or its default:
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-memory-18 | D1 | APPLIES | projection defaults change to 0 / 40960 (was 40 / 24576) |
+| omo-cores-12 | D1 | APPLIES | the same projection defaults, as the config-schema side of the change |
+| omo-cores-11 | D2 | APPLIES | new optional `model_pad` key accepted at top level, in harness blocks and in profiles |
+
+Rows that were checked and change no key in this inventory are mapped in their own specs: the
+built-in fallback-chain rows in `task.md` D6, the comment-checker cache row in
+`sensitive-output.md` D4, the gateway attachment row in `gateway.md`, and the telemetry rows in
+`telemetry.md`. They are not cited here, so each row has exactly one mapping (2026-11-01).
+
+Leak self-check:
+
+- [x] no fenced code block (only inline user-config JSON examples);
+- [x] no sentence translates or paraphrases a SUL comment, doc comment or prompt (facts taken from
+      the census row summary only);
+- [x] the only constants reproduced are key names, bounds and defaults, which are interface facts;
+- [x] no new identifier is introduced (D2 adds only user-file key names, which are interface
+      facts; its caption meaning is described in the writer's own words);
+- [x] no OmO-original feature is specified.

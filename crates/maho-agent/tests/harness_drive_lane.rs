@@ -110,7 +110,8 @@ async fn resolves_model_from_shared_registry_without_requiring_registration_for_
         .await
         .unwrap();
     assert!(lane.get_model().unwrap().is_none());
-    let faux = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = faux.get_model(None).unwrap();
     lane.set_model(
         LaneModelRef {
@@ -184,6 +185,7 @@ async fn gated_lane() -> Result<
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage.clone(),
         StorageBackedSessionOptions::default(),
@@ -291,6 +293,7 @@ async fn failed_lane_command_faults_harness_and_every_lane() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage.clone(),
         StorageBackedSessionOptions::default(),
@@ -624,6 +627,7 @@ async fn options_constructor_installs_custom_provider_messages_and_projectors() 
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions::default())),
         StorageBackedSessionOptions::default(),
@@ -970,7 +974,8 @@ async fn records_adjustment_usage_without_changing_branch_tip() {
         .lane("main", None, &BACKGROUND_CONTEXT)
         .await
         .unwrap();
-    let usage = maho_ai::types::Usage { context_usage: None,
+    let usage = maho_ai::types::Usage {
+        context_usage: None,
         input: 7,
         total_tokens: 7,
         ..Default::default()
@@ -1101,6 +1106,7 @@ async fn fixture() -> Harness {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage,
         StorageBackedSessionOptions::default(),
@@ -1112,7 +1118,8 @@ async fn fixture() -> Harness {
 }
 
 fn faux_model() -> maho_ai::model::Model {
-    maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider")
+    maho_ai::providers::faux::faux_provider(Default::default())
+        .expect("valid faux provider")
         .get_model(None)
         .expect("faux provider ships a model")
 }
@@ -1133,6 +1140,7 @@ async fn options_constructor_seeds_lane_configuration_and_drive_config() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage,
         StorageBackedSessionOptions::default(),
@@ -1356,6 +1364,7 @@ async fn facade_lane_with_faux(
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),
@@ -1790,7 +1799,8 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
     let marker = "tool-context-marker";
     std::fs::write(dir.path().join("note.txt"), marker).expect("temp file");
 
-    let faux = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = faux.get_model(None).expect("faux provider ships a model");
     let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions {
         auth: Some(Arc::new(FacadeAuth)),
@@ -1805,6 +1815,7 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),
@@ -2041,7 +2052,8 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
             }),
             ..Default::default()
         },
-    ).expect("valid faux provider");
+    )
+    .expect("valid faux provider");
     let model = faux.get_model(None).expect("faux provider ships a model");
     let initial_handle = maho_ai::types::DeferredHandle {
         provider: model.provider.clone(),
@@ -2077,6 +2089,7 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),
@@ -2238,7 +2251,8 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
     use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
     use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
 
-    let faux = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = faux.get_model(None).expect("faux provider ships a model");
     let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions {
         auth: Some(Arc::new(FacadeAuth)),
@@ -2256,6 +2270,7 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),
@@ -2282,7 +2297,7 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
                     Arc::new(|_context| Box::pin(async { "lazy-context".to_owned() }));
                 resolve
             })),
-            system_prompt: Some(system_prompt),
+            system_prompt: Some(system_prompt.into()),
             resources: None,
             stream_options: None,
             retry: None,
@@ -2318,4 +2333,483 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
         .expect("system prompt resolved")
         .expect("sender alive");
     assert_eq!(seen.as_deref(), Some("lazy-context"));
+}
+
+/// Pinned `resolveSystemPrompt`: a plain-string `systemPrompt` is used as is and the configured
+/// `toolContext` resolver never runs for it.
+#[tokio::test]
+async fn string_system_prompt_is_used_without_resolving_tool_context() {
+    use maho_agent::harness::agent_harness::{
+        AgentHarnessOptions, AgentHarnessSystemPrompt, ToolContextResolver, ToolContextSource,
+    };
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions {
+        auth: Some(Arc::new(FacadeAuth)),
+        ..Default::default()
+    }));
+    models.set_provider(faux.provider.clone());
+    faux.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into(),
+    ]);
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata {
+            id: "string-prompt".into(),
+            created_at: 1,
+            storage_version: 1,
+            cwd: None,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+            path: None,
+        },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions {
+            now: Some(Arc::new(|| 10)),
+        })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let resolve: ToolContextResolver<String> = {
+        let resolutions = resolutions.clone();
+        Arc::new(move |_context| {
+            resolutions.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { "unused".to_owned() })
+        })
+    };
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<String> {
+            session,
+            models,
+            model: model.clone(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools: Vec::new(),
+            tool_context: Some(ToolContextSource::Resolve(resolve)),
+            system_prompt: Some(AgentHarnessSystemPrompt::Text("plain prompt".into())),
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("the constructor attaches");
+    let lane = harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("lane");
+    let outcome = lane
+        .prompt(
+            PromptInput::Text {
+                text: "hi".into(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    assert!(matches!(outcome, RunOutcome::Settled(_)));
+    let log = faux.get_call_log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log[0].context.system_prompt.as_deref(),
+        Some("plain prompt")
+    );
+    assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+}
+
+// --- harness.test.ts: remaining runtime Harness scenarios (senpi 903b8336) ---
+
+/// Pinned harness.test.ts provider wrapper: forwards to faux, recording each `streamSimple`
+/// request's `sessionId`.
+struct SessionIdRecordingProvider {
+    inner: Arc<dyn maho_ai::models::Provider>,
+    session_ids: Mutex<Vec<Option<String>>>,
+}
+
+impl maho_ai::models::Provider for SessionIdRecordingProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn auth(&self) -> Option<&maho_ai::auth::types::ProviderAuth> {
+        self.inner.auth()
+    }
+    fn get_models(&self) -> Vec<maho_ai::model::Model> {
+        self.inner.get_models()
+    }
+    fn stream(
+        &self,
+        model: &maho_ai::model::Model,
+        context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>,
+    ) -> maho_ai::types::AssistantMessageEventStream {
+        self.inner.stream(model, context, options)
+    }
+    fn stream_simple(
+        &self,
+        model: &maho_ai::model::Model,
+        context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::SimpleStreamOptions>,
+    ) -> maho_ai::types::AssistantMessageEventStream {
+        self.session_ids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(
+                options
+                    .as_ref()
+                    .and_then(|options| options.stream.session_id.clone()),
+            );
+        self.inner.stream_simple(model, context, options)
+    }
+}
+
+#[tokio::test]
+async fn uses_one_stable_provider_session_id_per_lane() {
+    use maho_agent::harness::agent_harness::AgentHarnessOptions;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::PromptInput;
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    faux.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message("main one", Default::default()).into(),
+        maho_ai::providers::faux::faux_assistant_message("main two", Default::default()).into(),
+        maho_ai::providers::faux::faux_assistant_message("review", Default::default()).into(),
+    ]);
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let provider = Arc::new(SessionIdRecordingProvider {
+        inner: faux.provider.clone(),
+        session_ids: Mutex::new(Vec::new()),
+    });
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions {
+        auth: Some(Arc::new(FacadeAuth)),
+        ..Default::default()
+    }));
+    models.set_provider(provider.clone());
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata {
+            id: "shared-session".into(),
+            created_at: 1,
+            storage_version: 1,
+            cwd: None,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+            path: None,
+        },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions::default())),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<()> {
+            session,
+            models,
+            model,
+            thinking_level: None,
+            active_tool_names: Some(vec![]),
+            tools: Vec::new(),
+            tool_context: None,
+            system_prompt: None,
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("harness attaches");
+    let main = harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("main lane");
+    let review = harness
+        .lane("review", None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("review lane");
+    for (lane, text) in [(&main, "one"), (&main, "two"), (&review, "review")] {
+        lane.prompt(
+            PromptInput::Text {
+                text: text.into(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    }
+    assert_eq!(
+        *provider
+            .session_ids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+        vec![
+            Some("shared-session:main".to_owned()),
+            Some("shared-session:main".to_owned()),
+            Some("shared-session:review".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn serializes_commands_from_different_agent_lanes_on_the_one_session_line() {
+    use std::time::Duration;
+    let harness = fixture().await;
+    let main = harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    let review = harness
+        .lane("review", None, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let first_order = order.clone();
+    let first = tokio::spawn(async move {
+        main.command(
+            move |_, _| {
+                Box::pin(async move {
+                    first_order.lock().unwrap().push("main:start");
+                    let _ = started_tx.send(());
+                    let _ = gate_rx.await;
+                    first_order.lock().unwrap().push("main:end");
+                    Ok(LaneCommand::Return { result: () })
+                })
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), started_rx)
+        .await
+        .expect("main command starts")
+        .expect("started sender");
+    // The review command must wait for the main command's Session line before planning.
+    let (queued_tx, queued_rx) = tokio::sync::oneshot::channel::<()>();
+    let second_order = order.clone();
+    let second = tokio::spawn(async move {
+        let _ = queued_tx.send(());
+        review
+            .command(
+                move |_, _| {
+                    Box::pin(async move {
+                        second_order.lock().unwrap().push("review");
+                        Ok(LaneCommand::Return { result: () })
+                    })
+                },
+                &BACKGROUND_CONTEXT,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), queued_rx)
+        .await
+        .expect("review command is submitted")
+        .expect("queued sender");
+    tokio::task::yield_now().await;
+    assert_eq!(*order.lock().unwrap(), ["main:start"]);
+    gate_tx.send(()).expect("release main command");
+    tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("main settles")
+        .expect("main task")
+        .expect("main command");
+    tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("review settles")
+        .expect("review task")
+        .expect("review command");
+    assert_eq!(*order.lock().unwrap(), ["main:start", "main:end", "review"]);
+}
+
+#[tokio::test]
+async fn keeps_agent_lane_appends_operation_aware_while_exposing_the_branch_surface_directly() {
+    use maho_agent::harness::runtime::lane::PromptInput;
+    use maho_agent::harness::session::values::{branch_tip, lane_state, pending_entry};
+    let (lane, _faux) = facade_lane().await;
+    let idle = lane
+        .append_custom_entry("idle".into(), None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("idle append");
+    assert_eq!(lane.get_tip_id().unwrap(), Some(idle));
+
+    lane.accept_prompt(
+        PromptInput::Text {
+            text: "run".into(),
+            images: vec![],
+        },
+        None,
+        lane_run_settings(),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("accept does not fault")
+    .expect("prompt admits");
+    let accepted_tip = lane.get_tip_id().unwrap();
+    let pending = lane
+        .append_custom_entry(
+            "pending".into(),
+            Some(serde_json::json!({"queued": true})),
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("pending append");
+
+    assert_eq!(lane.get_tip_id().unwrap(), accepted_tip);
+    let read = |address: maho_agent::harness::session::values::Value| {
+        let session = lane.session.clone();
+        async move {
+            session
+                .get_value(&address, &BACKGROUND_CONTEXT)
+                .await
+                .unwrap()
+                .map(|stored| stored.value)
+        }
+    };
+    assert_eq!(
+        read(branch_tip("main")).await,
+        Some(serde_json::to_value(&accepted_tip).unwrap())
+    );
+    assert_eq!(
+        read(pending_entry(&pending)).await,
+        Some(
+            serde_json::json!({"type": "custom", "customType": "pending", "payload": {"queued": true}})
+        )
+    );
+    assert_eq!(
+        read(lane_state("main")).await.expect("lane state")["inbox"],
+        serde_json::json!([{"entryId": pending, "kind": "write"}])
+    );
+}
+
+#[tokio::test]
+async fn preserves_value_update_publication_and_delivery() {
+    let harness = Arc::new(fixture().await);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    let reader = harness.clone();
+    let _subscription = harness.events.on(
+        "value_update",
+        Arc::new(move |event, _| {
+            let sink = sink.clone();
+            let reader = reader.clone();
+            Box::pin(async move {
+                let maho_agent::harness::events::HarnessEventPayload::ValueUpdate { value, .. } =
+                    &event.payload
+                else {
+                    return;
+                };
+                let entry = if value == "session_name" {
+                    format!(
+                        "name:{}",
+                        reader
+                            .get_name(&BACKGROUND_CONTEXT)
+                            .await
+                            .unwrap()
+                            .unwrap_or_default()
+                    )
+                } else {
+                    value.clone()
+                };
+                sink.lock().unwrap().push(entry);
+            })
+        }),
+    );
+
+    harness
+        .set_name(Some("named".into()), &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    harness
+        .set_label("entry", Some("label".into()), &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        harness.get_name(&BACKGROUND_CONTEXT).await.unwrap(),
+        Some("named".into())
+    );
+    assert_eq!(
+        harness
+            .get_label("entry", &BACKGROUND_CONTEXT)
+            .await
+            .unwrap(),
+        Some("label".into())
+    );
+    assert_eq!(*seen.lock().unwrap(), ["name:named", "entry_label"]);
+}
+
+#[tokio::test]
+async fn memory_session_repo_creation_also_remains_branchless() {
+    use maho_agent::harness::session::types::{SessionCreateOptions, SessionRepo};
+    use maho_agent::harness::session::{MemorySessionRepo, MemorySessionRepoOptions};
+    let repo = MemorySessionRepo::new(MemorySessionRepoOptions::default());
+    let session = repo
+        .create(
+            SessionCreateOptions {
+                id: Some("repo-session".into()),
+                parent_session_id: None,
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("create session");
+    assert!(
+        session
+            .branch("main", &BACKGROUND_CONTEXT)
+            .await
+            .expect("branch lookup")
+            .is_none()
+    );
+    session.close(&BACKGROUND_CONTEXT).await;
+    repo.close(&BACKGROUND_CONTEXT).await;
+}
+
+/// Pinned `harness.lanes(context)` returns `LaneInfo { name, tipId, operation }` per loaded lane
+/// (harness.test.ts: `toMatchObject([{ name: "main", tipId: null }])`).
+#[tokio::test]
+async fn lane_infos_report_name_tip_and_current_operation() {
+    let harness = fixture().await;
+    assert!(
+        harness
+            .lane_infos(&BACKGROUND_CONTEXT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.lane_infos(&BACKGROUND_CONTEXT).await.unwrap(),
+        vec![maho_agent::harness::agent_harness::LaneInfo {
+            name: "main".into(),
+            tip_id: None,
+            operation: None,
+        }]
+    );
+    harness.close(&BACKGROUND_CONTEXT).await;
+    assert!(harness.lane_infos(&BACKGROUND_CONTEXT).await.is_err());
 }

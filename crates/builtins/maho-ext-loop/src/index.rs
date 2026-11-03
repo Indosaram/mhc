@@ -24,7 +24,7 @@ pub fn prepare_loop_tick(entry:&crate::types::CronEntry,tick:&crate::scheduler::
 pub fn deliver_loop_tick(api:&maho_ext_api::ExtensionApi,prepared:PreparedLoopTick,busy:bool)->Result<(),maho_ext_api::ExtensionFailure> {
     if prepared.defer { return Err(maho_ext_api::ExtensionFailure::new("Loop extension command must be deferred until settlement")); }
     api.append_entry(LOOP_TICK_ENTRY_TYPE,Some(serde_json::to_value(prepared.entry).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?))?;
-    api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(maho_ext_api::StreamingBehavior::FollowUp) })
+    api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(maho_ext_api::StreamingBehavior::Steer) })
 }
 #[derive(Clone,Debug,PartialEq,Serialize)]
 #[serde(rename_all="camelCase")]
@@ -97,16 +97,16 @@ impl Drop for NodeTimerPort { fn drop(&mut self) { for handle in self.handles.va
     #[test] fn slash_dispatch_tokenization_uses_ecmascript_whitespace() {
         for (separator,deferred) in [('\u{feff}',true),('\u{0085}',false)] {
             let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&Default::default()); scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"/test".into(),reentry_prompt:"/loop /test".into(),payload:crate::types::LoopPayload::Prompt { prompt:format!("/test{separator}args") } },"a".into(),0.0);
-            let tick=crate::scheduler::LoopTick { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,coalesced:false }; let commands=[maho_ext_api::SlashCommandInfo { name:"test".into(),..Default::default() }];
+            let tick=crate::scheduler::LoopTick { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,deliver_as:maho_ext_api::StreamingBehavior::Steer,coalesced:false }; let commands=[maho_ext_api::SlashCommandInfo { name:"test".into(),..Default::default() }];
             assert_eq!(prepare_loop_tick(&scheduler.state.entries["a"],&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,true,&commands).unwrap().defer,deferred);
         }
     }
-    #[test] fn bound_tick_transport_appends_before_followup_and_expands_templates() {
+    #[test] fn bound_tick_transport_appends_before_steer_and_expands_templates() {
         use maho_ext_api::*;
         struct Capture(std::sync::Mutex<Vec<String>>);
         impl ExtensionActions for Capture {
             fn append_entry(&self,kind:&str,data:Option<JsonValue>)->Result<(),ExtensionFailure> { assert_eq!(kind,LOOP_TICK_ENTRY_TYPE); assert_eq!(data.unwrap()["deliveryId"],"d"); self.0.lock().unwrap().push("entry".into()); Ok(()) }
-            fn send_user_message(&self,content:UserMessageContent,options:SendUserMessageOptions)->Result<(),ExtensionFailure> { assert!(matches!(content,UserMessageContent::Text(_))); assert!(options.expand_prompt_templates); assert_eq!(options.deliver_as,Some(StreamingBehavior::FollowUp)); self.0.lock().unwrap().push("message".into()); Ok(()) }
+            fn send_user_message(&self,content:UserMessageContent,options:SendUserMessageOptions)->Result<(),ExtensionFailure> { assert!(matches!(content,UserMessageContent::Text(_))); assert!(options.expand_prompt_templates); assert_eq!(options.deliver_as,Some(StreamingBehavior::Steer)); self.0.lock().unwrap().push("message".into()); Ok(()) }
             fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected custom message".into()) }
             fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(Vec::new()) }
         }
@@ -118,7 +118,7 @@ impl Drop for NodeTimerPort { fn drop(&mut self) { for handle in self.handles.va
     #[test] fn busy_registered_slash_payload_is_deferred_but_plain_prompt_is_not() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&Default::default());
         scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"/test".into(),reentry_prompt:"/loop /test".into(),payload:crate::types::LoopPayload::Prompt { prompt:"/test args".into() } },"a".into(),0.0);
-        let tick=crate::scheduler::LoopTick { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,coalesced:false };
+        let tick=crate::scheduler::LoopTick { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,deliver_as:maho_ext_api::StreamingBehavior::Steer,coalesced:false };
         let entry=&scheduler.state.entries["a"]; let commands=vec![maho_ext_api::SlashCommandInfo { name:"test".into(),..Default::default() }];
         assert!(prepare_loop_tick(entry,&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,true,&commands).unwrap().defer);
         assert!(!prepare_loop_tick(entry,&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,false,&commands).unwrap().defer);

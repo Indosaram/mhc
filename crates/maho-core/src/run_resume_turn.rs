@@ -14,6 +14,10 @@ pub struct HeldWake {
     pub message: Value,
 }
 pub trait RunResumePorts: Send + Sync {
+    /// senpi `resumeCause`: a Stop resume by default; an interrupted run's open resumes as "interrupted".
+    fn resume_cause(&self) -> crate::stop_resume_directive::ResumeCause {
+        crate::stop_resume_directive::ResumeCause::Stop
+    }
     fn held_inputs(&self) -> Vec<HeldInput>;
     fn continue_inputs(&self) -> Vec<String>;
     fn held_wakes(&self) -> Vec<HeldWake>;
@@ -43,6 +47,7 @@ pub async fn start_run_resume_turn(ports: Arc<dyn RunResumePorts>) -> RunResumeT
     let inputs = ports.held_inputs();
     let continues = ports.continue_inputs();
     let wakes = ports.held_wakes();
+    let directive = crate::stop_resume_directive::stop_resume_directive(ports.resume_cause());
     let mut content = Vec::new();
     for input in &inputs {
         content.push(json!({"type":"text","text":format!("The user wrote while the run was paused:\n{}",input.text)}));
@@ -51,11 +56,14 @@ pub async fn start_run_resume_turn(ports: Arc<dyn RunResumePorts>) -> RunResumeT
     for wake in &wakes {
         content.extend(parts_of(&wake.message["content"]));
     }
-    content.push(json!({"type":"text","text":"<system-reminder>The user stopped the previous turn and has now resumed. Tool calls that the Stop interrupted show an aborted result; they were not re-run and their side effects may be partial. Check their effects before repeating any of them, then continue the work.</system-reminder>"}));
+    content.push(json!({"type":"text","text":directive.content}));
     let (settled, until) = tokio::sync::watch::channel(false);
     let started = ports.turn_started(until);
-    let message =
-        json!({"customType":"session-resumed","content":content,"display":!inputs.is_empty()});
+    let mut message =
+        json!({"customType":directive.custom_type,"content":content,"display":!inputs.is_empty()});
+    if let Some(details) = directive.details {
+        message["details"] = details;
+    }
     let sending_ports = ports.clone();
     let sending = tokio::spawn(async move {
         let result = sending_ports.send(message).await;

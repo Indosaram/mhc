@@ -30,7 +30,7 @@ pub fn package_command_name(command: PackageCommand) -> &'static str {
         PackageCommand::List => "list",
     }
 }
-pub const CONFIG_COMMAND_USAGE: &str = "mhc config [-l] [--approve|--no-approve]";
+pub use crate::cli::config_command_help::{CONFIG_COMMAND_USAGE, config_command_help};
 pub fn package_command_help(command: PackageCommand) -> String {
     let body = match command {
         PackageCommand::Install => {
@@ -47,9 +47,6 @@ pub fn package_command_help(command: PackageCommand) -> String {
         }
     };
     format!("Usage:\n  {}\n\n{body}\n", package_command_usage(command))
-}
-pub fn config_command_help() -> &'static str {
-    "Usage:\n  mhc config [-l] [--approve|--no-approve]\n  mhc config import-pi [auth.json|keybindings.json|models.json|settings.json ...]\n\nOpen the resource configuration TUI to enable or disable package resources.\nWithout -l, starts in global settings (~/.omo/agent/settings.json).\nPress Tab in the TUI to switch between global and project-local modes.\n\nimport-pi copies selected Pi config files, or all changed files when none are named.\nExisting destination files are backed up before import.\n\nOptions:\n  -l, --local       Edit project overrides (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command with -l\n  -na, --no-approve Ignore project-local files for this command with -l\n\n"
 }
 pub struct ConfigCommandOptions {
     pub local: bool,
@@ -381,6 +378,7 @@ async fn command_settings(
                 emit_project_trust: Some(&emit),
                 project_trust_context: &context,
                 on_extension_error: None,
+                on_trust_store_error: None,
             },
         )
         .await;

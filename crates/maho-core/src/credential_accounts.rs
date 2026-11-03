@@ -34,6 +34,25 @@ impl CredentialAccountSource {
     }
 }
 
+/// Why a blocked account sits out (senpi#4327): `AuthError` means the key was rejected and is skipped until its
+/// re-probe time, `RateLimit` is a cooldown, `Disabled` lasts until the credential is replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialAccountBlockedReason {
+    AuthError,
+    RateLimit,
+    Disabled,
+}
+
+impl CredentialAccountBlockedReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthError => "auth_error",
+            Self::RateLimit => "rate_limit",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
 /// Account metadata safe to surface: names and health only, never key material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialAccountSummary {
@@ -41,9 +60,45 @@ pub struct CredentialAccountSummary {
     pub display_name: Option<String>,
     pub source: CredentialAccountSource,
     pub blocked: bool,
+    /// Present only while `blocked`; absent when the stored block names no reason.
+    pub blocked_reason: Option<CredentialAccountBlockedReason>,
+    /// Epoch ms when the block lifts (the re-probe time for `AuthError`); absent for `Disabled`.
+    pub blocked_until: Option<u64>,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
+}
+
+/// senpi `storedModelBlocks` + `blockedModels`: the slot's live `modelBlocks` entries
+/// (`{model: {blockedUntil}}`), malformed entries skipped, expired ones dropped. The pool sidecar
+/// carries no model blocks in this port, so the stored slot is the only source.
+fn blocked_models(slot: &Value, now: u64) -> Vec<CredentialAccountBlockedModel> {
+    let Some(blocks) = slot.get("modelBlocks").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|(model, block)| {
+            // senpi `numberField`: any finite number; anthropic-subscription writes floats.
+            let until = block
+                .get("blockedUntil")
+                .and_then(Value::as_f64)
+                .filter(|until| until.is_finite())?;
+            (until > now as f64).then(|| CredentialAccountBlockedModel {
+                model: model.clone(),
+                until: until as i64,
+            })
+        })
+        .collect()
 }
 
 pub fn assert_valid_account_name(name: &str) -> Result<(), String> {
@@ -101,23 +156,110 @@ fn slot_source(slot: &Value) -> Option<CredentialAccountSource> {
     }
 }
 
+/// senpi `SlotBlock`: `blocked` with its reason and, unless disabled, the time it lifts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotBlock {
+    pub blocked: bool,
+    pub blocked_reason: Option<CredentialAccountBlockedReason>,
+    pub blocked_until: Option<u64>,
+}
+
+fn account_blocked_reason(reason: Option<&str>) -> Option<CredentialAccountBlockedReason> {
+    match reason {
+        Some("auth_error") => Some(CredentialAccountBlockedReason::AuthError),
+        Some("rate_limit") => Some(CredentialAccountBlockedReason::RateLimit),
+        Some("account_disabled") => Some(CredentialAccountBlockedReason::Disabled),
+        _ => None,
+    }
+}
+
+/// A live block with its reason and, unless disabled, the time it lifts.
+fn live_block(reason: Option<&str>, blocked_until: Option<u64>, now: u64) -> SlotBlock {
+    let blocked_reason = account_blocked_reason(reason);
+    if blocked_reason == Some(CredentialAccountBlockedReason::Disabled) {
+        return SlotBlock {
+            blocked: true,
+            blocked_reason,
+            blocked_until: None,
+        };
+    }
+    match blocked_until {
+        Some(until) if until > now => SlotBlock {
+            blocked: true,
+            blocked_reason,
+            blocked_until: Some(until),
+        },
+        _ => SlotBlock::default(),
+    }
+}
+
+fn block_reason_str(reason: crate::credential_pool::state_store::BlockReason) -> &'static str {
+    use crate::credential_pool::state_store::BlockReason;
+    match reason {
+        BlockReason::AuthError => "auth_error",
+        BlockReason::RateLimit => "rate_limit",
+        BlockReason::AccountDisabled => "account_disabled",
+    }
+}
+
+fn sidecar_block(
+    sidecar: Option<&crate::credential_pool::state_store::CredentialSlotState>,
+    now: u64,
+) -> SlotBlock {
+    if slot_health(sidecar, now) != SlotHealth::Blocked {
+        return SlotBlock::default();
+    }
+    live_block(
+        sidecar
+            .and_then(|state| state.block_reason)
+            .map(block_reason_str),
+        sidecar.and_then(|state| state.blocked_until),
+        now,
+    )
+}
+
 /// Block state has two authoritative sources: the slot's own fields inside auth.json and the pool
-/// sidecar. Reading only one would silently downgrade a real block to available.
+/// sidecar. Reading only one would silently downgrade a real block to available (senpi#4327 merge).
 pub fn slot_blocked(
     slot: &Value,
     sidecar: Option<&crate::credential_pool::state_store::CredentialSlotState>,
     now: u64,
-) -> bool {
-    if slot_health(sidecar, now) == SlotHealth::Blocked {
-        return true;
+) -> SlotBlock {
+    let from_sidecar = sidecar_block(sidecar, now);
+    let from_slot = live_block(
+        slot.get("blockReason").and_then(Value::as_str),
+        slot.get("blockedUntil").and_then(Value::as_u64),
+        now,
+    );
+    // A disabled account outranks a timed block from the other source: it never lifts on its own.
+    if from_slot.blocked_reason == Some(CredentialAccountBlockedReason::Disabled) {
+        return from_slot;
     }
-    match slot.get("blockReason").and_then(Value::as_str) {
-        Some("auth_error") | Some("account_disabled") => true,
-        _ => slot
-            .get("blockedUntil")
-            .and_then(Value::as_u64)
-            .map(|until| until > now)
-            .unwrap_or(false),
+    if from_sidecar.blocked_reason == Some(CredentialAccountBlockedReason::Disabled)
+        || !from_slot.blocked
+    {
+        return from_sidecar;
+    }
+    if !from_sidecar.blocked {
+        return from_slot;
+    }
+    // Both sources hold a timed block: the account is usable only once the later one lifts, and a rejected
+    // key stays the reason so a client still skips it.
+    let later = if from_slot.blocked_until.unwrap_or(0) > from_sidecar.blocked_until.unwrap_or(0) {
+        from_slot
+    } else {
+        from_sidecar
+    };
+    let rejected = [from_sidecar, from_slot]
+        .iter()
+        .any(|block| block.blocked_reason == Some(CredentialAccountBlockedReason::AuthError));
+    if rejected {
+        SlotBlock {
+            blocked_reason: Some(CredentialAccountBlockedReason::AuthError),
+            ..later
+        }
+    } else {
+        later
     }
 }
 
@@ -218,12 +360,16 @@ pub async fn summarize_credential_accounts(
             // A block belongs to the material that earned it; a re-login starts clean.
             let applicable = persisted
                 .filter(|state| state.credential_revision.as_deref() == Some(revision.as_str()));
+            let block = slot_blocked(&slot, applicable, now);
             summaries.push(CredentialAccountSummary {
                 name: name.clone(),
                 display_name,
                 source: slot_source(&slot).unwrap_or(CredentialAccountSource::Login),
-                blocked: slot_blocked(&slot, applicable, now),
+                blocked: block.blocked,
+                blocked_reason: block.blocked_reason,
+                blocked_until: block.blocked_until,
                 pinned: pinned.as_deref() == Some(name.as_str()),
+                blocked_models: blocked_models(&slot, now),
                 unused: !usable.contains(&name),
             });
         }
@@ -240,12 +386,16 @@ pub async fn summarize_credential_accounts(
             .await?;
         let applicable = persisted
             .filter(|state| state.credential_revision.as_deref() == Some(revision.as_str()));
+        let block = sidecar_block(applicable, now);
         summaries.push(CredentialAccountSummary {
             name: slot.name.clone(),
             display_name: None,
             source: CredentialAccountSource::Env,
-            blocked: slot_health(applicable, now) == SlotHealth::Blocked,
+            blocked: block.blocked,
+            blocked_reason: block.blocked_reason,
+            blocked_until: block.blocked_until,
             pinned: pinned.as_deref() == Some(slot.name.as_str()),
+            blocked_models: Vec::new(),
             unused: false,
         });
     }
@@ -572,6 +722,52 @@ pub fn credential_to_map(credential: &Value) -> Map<String, Value> {
     credential.as_object().cloned().unwrap_or_default()
 }
 #[cfg(test)]
+mod block_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// senpi test/suite/regressions/4327-account-block-reason.test.ts: slot and sidecar blocks merge.
+    #[test]
+    fn slot_and_sidecar_blocks_merge_with_reason_and_expiry() {
+        let sidecar = |reason: &str, until: u64| {
+            serde_json::from_value::<crate::credential_pool::state_store::CredentialSlotState>(
+                json!({"stateVersion": 1, "blockReason": reason, "blockedUntil": until}),
+            )
+            .expect("state")
+        };
+        let disabled = slot_blocked(
+            &json!({"blockReason": "account_disabled"}),
+            Some(&sidecar("rate_limit", 500)),
+            100,
+        );
+        assert_eq!(
+            disabled.blocked_reason,
+            Some(CredentialAccountBlockedReason::Disabled)
+        );
+        assert_eq!(disabled.blocked_until, None);
+        let merged = slot_blocked(
+            &json!({"blockReason": "auth_error", "blockedUntil": 200}),
+            Some(&sidecar("rate_limit", 500)),
+            100,
+        );
+        assert_eq!(
+            merged,
+            SlotBlock {
+                blocked: true,
+                blocked_reason: Some(CredentialAccountBlockedReason::AuthError),
+                blocked_until: Some(500)
+            }
+        );
+        let expired = slot_blocked(
+            &json!({"blockReason": "rate_limit", "blockedUntil": 50}),
+            None,
+            100,
+        );
+        assert_eq!(expired, SlotBlock::default());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth_storage::AuthStorage;
@@ -665,6 +861,49 @@ mod tests {
             accounts
                 .iter()
                 .all(|account| account.source == CredentialAccountSource::Login)
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_lists_live_model_blocks_from_the_stored_slot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"fable":{"blockedUntil":500},"opus":{"blockedUntil":50},"bad":{}}},
+            {"name":"other","key":"other-key"}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "fable".into(),
+                until: 500
+            }]
+        );
+        assert!(!accounts[0].blocked);
+        assert!(accounts[1].blocked_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_reads_float_model_block_expiries_as_anthropic_subscription_writes_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"opus":{"blockedUntil":500.0},"fable":{"blockedUntil":50.0}}}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "opus".into(),
+                until: 500
+            }]
         );
     }
 

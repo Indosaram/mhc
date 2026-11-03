@@ -26,7 +26,7 @@ pub trait ProcessProbes: Sync {
 pub fn same_process_start(left: u64, right: u64) -> bool {
     left.abs_diff(right) <= 3_000
 }
-fn same_boot(left: u64, right: u64) -> bool {
+pub(crate) fn same_boot(left: u64, right: u64) -> bool {
     left.abs_diff(right) <= 120_000
 }
 
@@ -48,7 +48,7 @@ pub(crate) struct Holder {
     pub(crate) process_started_at_ms: u64,
 }
 
-fn native_identity() -> std::result::Result<(u64, u64), String> {
+pub(crate) fn native_identity() -> std::result::Result<(u64, u64), String> {
     static IDENTITY: OnceLock<std::result::Result<(u64, u64), String>> = OnceLock::new();
     IDENTITY.get_or_init(|| {
         #[cfg(target_os = "linux")]

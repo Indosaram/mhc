@@ -6,10 +6,11 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
-use senpi_desktop_safety::{Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor};
+use senpi_desktop_safety::{Chord, StopPathError, StopPathId, StopPathListener, Supervisor};
 
 use super::chord::Hotkey;
 use super::hotkey::{self, Run};
+use super::pending::PendingStop;
 
 const THREAD_NAME: &str = "senpi-desktop-killswitch";
 const THREAD_UNAVAILABLE: &str = "killswitch-thread-unavailable";
@@ -35,6 +36,7 @@ pub(super) struct Control {
 
 pub(super) struct Shared {
     supervisor: Arc<Supervisor>,
+    stop_pending: PendingStop,
     pub(super) hotkey: Mutex<Hotkey>,
     pub(super) control: Mutex<Control>,
     pub(super) changed: Condvar,
@@ -67,8 +69,10 @@ impl Shared {
     }
 
     pub(super) fn chord_pressed(&self) {
-        self.supervisor.trigger_stop(StopSource::Hotkey);
-        self.update(|control| control.stops = control.stops.saturating_add(1));
+        self.stop_pending.request(&self.supervisor);
+        if self.stop_pending.complete(&self.supervisor) {
+            self.update(|control| control.stops = control.stops.saturating_add(1));
+        }
     }
 
     /// Asks the thread to re-register; `force` also re-registers a live one.
@@ -153,6 +157,7 @@ impl StopPathListener for HotkeyListener {
         }
         let shared = Arc::new(Shared {
             supervisor: sup,
+            stop_pending: PendingStop::default(),
             hotkey: Mutex::new(hotkey),
             control: Mutex::new(Control::default()),
             changed: Condvar::new(),

@@ -212,6 +212,7 @@ async fn member_process_registers_scoped_send_and_steers_inbox_mail_on_session_s
     api.runtime.bind(injected.clone());
     let context = support::context();
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

@@ -12,6 +12,45 @@ pub struct HostIdlePolicy {
     pub idle_eviction_ms: f64,
     pub empty_exit_ms: f64,
 }
+/// senpi `sessionMemory`: one `list_sessions` row's heap split. NATIVE-DIVERGENCE: a native host has no JS
+/// main-thread heap, so `main_heap_bytes` is 0; the kernel figures come from the codemode kernel registry.
+pub fn session_memory(
+    kernels: &[maho_core::memory_report::kernel_registry_read::HostKernelMemoryRow],
+    session_id: &str,
+) -> serde_json::Value {
+    let (count, bytes) = kernels
+        .iter()
+        .filter(|kernel| kernel.session_id == session_id)
+        .fold((0u64, 0u64), |(count, bytes), kernel| {
+            (count + 1, bytes + kernel.live_bytes)
+        });
+    serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":bytes,"kernel_count":count})
+}
+/// senpi `createZeroSessionTrim` + the trim half of `startHostObservers`: a host that drops to zero sessions (or a
+/// 2 GB+ host whose count drops) reports one `host_trimmed` record. NATIVE-DIVERGENCE: a native process has no
+/// garbage collector to run, so `collect` answers `false` and the record reports `collected: false`.
+pub fn create_zero_session_trim(
+    emit: impl FnMut(serde_json::Value) + Send + 'static,
+    sessions: impl FnMut() -> usize + Send + 'static,
+) -> crate::host_zero_session_trim::ZeroSessionTrimmer {
+    let started = std::time::Instant::now();
+    crate::host_zero_session_trim::ZeroSessionTrimmer::new(
+        crate::host_zero_session_trim::ZeroSessionTrimmerOptions {
+            emit: Box::new(emit),
+            sessions: Box::new(sessions),
+            now: Box::new(|| crate::connection_handler::now_ms() as u64),
+            monotonic_now: Box::new(move || started.elapsed().as_millis() as u64),
+            read_footprint: Box::new(|| {
+                let footprint = maho_core::process_footprint::read_own_footprint();
+                crate::host_zero_session_trim::ProcessFootprint {
+                    bytes: footprint.bytes,
+                    measure: footprint.measure.as_str().to_owned(),
+                }
+            }),
+            collect: Box::new(|| false),
+        },
+    )
+}
 pub enum HostMonitorSample {
     Lag(crate::loop_lag_watchdog::LagSample),
     Memory(crate::host_memory_sampler::MemorySample),
@@ -61,6 +100,11 @@ pub async fn run_host_monitors(
     );
     tokio::join!(stall, pressure);
     unsubscribe();
+}
+/// The Windows presenter control pipe (senpi `presenterPipePath`). Its name comes from its own random value, never
+/// the host's public protocol instanceId, so nothing can learn it before the host listens and squat it.
+pub fn presenter_pipe_path() -> String {
+    format!(r"\\.\pipe\senpi-presenter-{}", uuid::Uuid::new_v4())
 }
 pub fn resolve_host_idle_policy(
     env: &HashMap<String, String>,
@@ -132,6 +176,8 @@ pub struct HostCore {
     memory_pressure: std::sync::atomic::AtomicBool,
     /// `set_client_info` capabilities a connection sent before it attached (senpi `pendingCapabilities`).
     pending_capabilities: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Each connection's opens still in flight (senpi `opensByConnection`): an open's barrier settles when it answers.
+    opens_by_connection: std::sync::Mutex<OpensByConnection>,
     bindings: tokio::sync::Mutex<
         std::collections::BTreeMap<
             String,
@@ -162,23 +208,111 @@ pub struct HostCore {
     active_requests: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     /// Woken whenever a request settles (senpi `requestSettledListeners`).
     request_settled: tokio::sync::Notify,
+    /// The writer's MCP presenter state (senpi `SessionEventWriter` presenter half); enabled only by enforcement.
+    pub presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+    /// `--mcp-presenter-fd 4` (senpi `MultiSessionHostOptions.presenterBootstrapFd`), adopted (close-on-exec) as
+    /// soon as the host is configured so no child this host spawns inherits it.
+    presenter_bootstrap:
+        std::sync::Mutex<Option<crate::mcp_presenter_bootstrap::AdoptedPresenterBootstrap>>,
+    /// The private control endpoint a socket host opens when it was launched with enforcement and a bootstrap.
+    presenter_control:
+        std::sync::Mutex<Option<std::sync::Arc<crate::mcp_presenter_control::McpPresenterControl>>>,
+    /// The conditional idle handover a POSIX socket host can perform, with its endpoint and loaded runtime (senpi
+    /// `HostCoreGate`); unset, `begin_handover` is refused `handover_unsupported`.
+    handover: std::sync::OnceLock<HostHandoverGate>,
+    /// The public endpoint clients dial (senpi `hostSessionContext(...).host_socket`), set once a socket host knows it:
+    /// a hosted session's control endpoint is this socket.
+    public_socket: std::sync::OnceLock<String>,
+    /// senpi `HostCoreHooks.runtimeBuildId`: the runtime this host loaded at startup, reported by `get_protocol_info`
+    /// on every platform (the idle handover that also reads it is POSIX-only).
+    runtime_build_id: std::sync::OnceLock<String>,
+    /// Requests in flight that carry no session (an open being admitted): the idle judgement waits for them.
+    sessionless_requests: std::sync::atomic::AtomicUsize,
+    /// senpi `HostCoreGate.answering`: `begin_handover` requests whose answer has not been delivered yet.
+    handover_answering: std::sync::atomic::AtomicUsize,
+    /// Woken whenever a `begin_handover` answer was delivered.
+    handover_answered: tokio::sync::Notify,
+}
+/// senpi `HostCoreGate`'s state: the idle handover, this host's endpoint (a `begin_handover` naming another agent
+/// dir is refused), and the runtime build id `get_protocol_info` reports.
+pub struct HostHandoverGate {
+    pub handover: crate::host_idle_handover::HostIdleHandover,
+    pub endpoint: crate::host_handover_wire::HostEndpoint,
+    pub runtime_build_id: Option<String>,
 }
 /// A refused open: the wire message, and the registry code when one carried it (`session_path_in_use`).
 struct OpenRefusal {
     message: String,
     code: Option<String>,
+    /// `errorData` a client acts on (`session_output_overflow { sessionId, sessionPath, action }`).
+    data: Option<serde_json::Value>,
 }
 impl OpenRefusal {
+    fn with_data(
+        message: impl Into<String>,
+        code: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code.into()),
+            data: Some(data),
+        }
+    }
     fn plain(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: None,
+            data: None,
         }
     }
+    /// senpi router `error(id, command, code(cause), detail(cause))`: the registry's detail (who holds a path, when
+    /// to retry) rides as `errorData`.
     fn from_registry(error: &crate::session_registry::RpcSessionRegistryError) -> Self {
         Self {
             message: error.to_string(),
             code: Some(error.code.clone()),
+            data: error.detail.clone(),
+        }
+    }
+    fn sealed(data: serde_json::Value) -> Self {
+        Self {
+            message: crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned(),
+            code: Some(crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned()),
+            data: Some(data),
+        }
+    }
+}
+/// A sessionless request in flight, until dropped.
+struct SessionlessGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for SessionlessGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// senpi `HostCoreGate.intercept`'s `answering` entry: held until the `begin_handover` answer was delivered.
+struct HandoverAnswering<'a>(&'a HostCore);
+impl<'a> HandoverAnswering<'a> {
+    fn new(core: &'a HostCore) -> Self {
+        core.handover_answering
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(core)
+    }
+}
+impl Drop for HandoverAnswering<'_> {
+    fn drop(&mut self) {
+        self.0
+            .handover_answering
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.handover_answered.notify_waiters();
+    }
+}
+/// Re-checks a pending handover once a routed request settles (senpi `handover?.observe()` in `dispatch`).
+struct HandoverObserve<'a>(Option<&'a crate::host_idle_handover::HostIdleHandover>);
+impl Drop for HandoverObserve<'_> {
+    fn drop(&mut self) {
+        if let Some(handover) = self.0 {
+            handover.observe();
         }
     }
 }
@@ -210,18 +344,35 @@ impl HostCore {
         options: HostCoreOptions,
         default_writer: std::sync::Arc<crate::session_event_writer::SessionWriterActor>,
     ) -> Self {
+        let presenters =
+            std::sync::Arc::<crate::session_event_writer::SessionMcpPresenters>::default();
+        let fanout = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::session_event_fanout::SessionEventFanout::default(),
+        ));
+        // senpi `fanout.onConnectionClosed`: a connection reaped on a failed queue loses its presenter state. The
+        // detach never re-enters the fanout: a revoked grant is no longer current, so no private frame is sent.
+        let reaped = std::sync::Arc::downgrade(&presenters);
+        fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_on_connection_closed(std::sync::Arc::new(move |id| {
+                if let Some(presenters) = reaped.upgrade() {
+                    presenters.unregister_connection(id);
+                }
+            }));
         Self {
             registry: tokio::sync::Mutex::new(
                 crate::session_registry::RpcSessionRegistry::default(),
             ),
             default_writer,
             attachments: Default::default(),
-            fanout: Default::default(),
+            fanout,
             blocked: Default::default(),
             widths: Default::default(),
             activity: Default::default(),
             memory_pressure: std::sync::atomic::AtomicBool::new(false),
             pending_capabilities: Default::default(),
+            opens_by_connection: Default::default(),
             bindings: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             options,
             tool_runtime: crate::host_capabilities::ToolRuntimeKind::InProcess,
@@ -234,12 +385,172 @@ impl HostCore {
             handover_parked_dir: std::sync::OnceLock::new(),
             active_requests: Default::default(),
             request_settled: tokio::sync::Notify::new(),
+            presenters,
+            presenter_bootstrap: std::sync::Mutex::new(None),
+            presenter_control: std::sync::Mutex::new(None),
+            handover: std::sync::OnceLock::new(),
+            public_socket: std::sync::OnceLock::new(),
+            runtime_build_id: std::sync::OnceLock::new(),
+            sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
+            handover_answering: std::sync::atomic::AtomicUsize::new(0),
+            handover_answered: tokio::sync::Notify::new(),
+        }
+    }
+    /// Installs the conditional idle handover (senpi `runSocketHost` `canHandOver`): the operation judges idleness
+    /// over this core and performs the successor launch with this host's successor enrollment channel
+    /// ([`Self::presenter_successor_bootstrap`]). The first call wins.
+    pub fn enable_idle_handover(
+        self: &std::sync::Arc<Self>,
+        endpoint: crate::host_handover_wire::HostEndpoint,
+        runtime_build_id: String,
+    ) {
+        let idle = std::sync::Arc::downgrade(self);
+        let identity_build = runtime_build_id.clone();
+        let performer = std::sync::Arc::downgrade(self);
+        let perform_endpoint = endpoint.clone();
+        let handover = crate::host_idle_handover::HostIdleHandover::new(
+            crate::host_idle_handover::HostIdleHandoverOptions {
+                identity: Box::new(move || crate::host_idle_handover::HostIdentityView {
+                    instance_id: crate::protocol_identity::host_instance_id().to_owned(),
+                    generation: crate::protocol_identity::host_generation(
+                        &std::env::vars().collect(),
+                    ),
+                    runtime_build_id: Some(identity_build.clone()),
+                }),
+                is_idle: Box::new(move || idle.upgrade().is_some_and(|core| core.is_host_idle())),
+                perform: Box::new(move |request| {
+                    let core = performer.upgrade();
+                    let endpoint = perform_endpoint.clone();
+                    Box::pin(async move {
+                        let bootstrap = match &core {
+                            Some(core) => core.presenter_successor_bootstrap().await,
+                            None => None,
+                        };
+                        crate::host_handover_wire::perform_idle_handover(
+                            request,
+                            &endpoint.socket,
+                            &endpoint.agent_dir,
+                            bootstrap,
+                        )
+                        .await
+                    })
+                }),
+                poll_ms: None,
+                log: Some(Box::new(|line: &str| eprintln!("senpi rpc host: {line}"))),
+            },
+        );
+        let _ = self.handover.set(HostHandoverGate {
+            handover,
+            endpoint,
+            runtime_build_id: Some(runtime_build_id),
+        });
+    }
+    /// senpi `HostCoreHooks.runtimeBuildId`: reported by `get_protocol_info`; the first call wins.
+    pub fn set_runtime_build_id(&self, runtime_build_id: String) {
+        let _ = self.runtime_build_id.set(runtime_build_id);
+    }
+    /// senpi `isHostIdle` over this core: no sessionless request in flight and every session settled.
+    ///
+    /// ADAPTATION: senpi's registry is synchronous; the in-process registry here is an async lock, and a judgement
+    /// made while another task holds it (an open, a close, a sweep) answers "not idle". That is the same answer the
+    /// work in progress would give, and the idle handover re-judges on its next poll and after every request.
+    fn is_host_idle(&self) -> bool {
+        let sessionless = self
+            .sessionless_requests
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0;
+        let in_flight = |id: &str| self.active_request_count(id) > 0;
+        match &self.workers {
+            Some(workers) => {
+                let rows = workers.list_sessions(true);
+                let candidates = rows
+                    .iter()
+                    .filter_map(|row| row["sessionId"].as_str())
+                    .map(|id| crate::session_drain::DrainCandidate {
+                        session_id: id,
+                        session_path: None,
+                        worker_handoff_busy: workers
+                            .worker(id)
+                            .is_some_and(|worker| worker.handoff_busy()),
+                        activity: None,
+                    })
+                    .collect();
+                crate::host_handover_wire::is_host_idle(candidates, sessionless, in_flight)
+            }
+            None => {
+                let Ok(registry) = self.registry.try_lock() else {
+                    return false;
+                };
+                let rows = registry.list_sessions(true);
+                let candidates = rows
+                    .iter()
+                    .filter_map(|row| row["sessionId"].as_str())
+                    .map(|id| crate::session_drain::DrainCandidate {
+                        session_id: id,
+                        session_path: None,
+                        worker_handoff_busy: false,
+                        activity: registry
+                            .get(id)
+                            .and_then(|entry| entry.runtime.as_ref())
+                            .map(|runtime| Ok(runtime.session().activity_snapshot())),
+                    })
+                    .collect();
+                crate::host_handover_wire::is_host_idle(candidates, sessionless, in_flight)
+            }
         }
     }
     /// Names the daemon directory the handoff-parked record lives under (senpi `handoverParkedDir`); the first
     /// call wins.
     pub fn set_handover_parked_dir(&self, dir: std::path::PathBuf) {
         let _ = self.handover_parked_dir.set(dir);
+    }
+    /// senpi `createHostCore` `pathReservations`: the cross-generation claims the in-process registry publishes for
+    /// its sessions' files, in the daemon directory of the endpoint clients dial (a told
+    /// `SENPI_RPC_HOST_DAEMON_DIR` wins). Two generations of this daemon can be alive at once during a handoff; these
+    /// claims keep them off one session file. A worker-runtime host keeps its own claims per worker.
+    pub async fn install_endpoint_reservations(&self, endpoint_socket: Option<&str>) {
+        if let Some(socket) = endpoint_socket {
+            let _ = self.public_socket.set(socket.to_owned());
+        }
+        if self.workers.is_some() {
+            return;
+        }
+        let reservations = crate::host_reservations::create_endpoint_reservations(
+            &self.options.agent_dir,
+            endpoint_socket,
+            crate::protocol_identity::host_instance_id().to_owned(),
+            |message| eprintln!("senpi rpc host: {message}"),
+        )
+        .map(|reservations| reservations.with_public_socket(endpoint_socket.map(str::to_owned)));
+        self.registry
+            .lock()
+            .await
+            .set_path_reservations(reservations);
+    }
+    /// senpi `HostCoreGate.answered`: settles once every `begin_handover` being answered has its answer. A host idle at
+    /// once drains the moment its successor takes the socket, and its shutdown waits here so the caller that asked is
+    /// told the outcome instead of reading a closed connection.
+    pub async fn handover_answered(&self) {
+        loop {
+            // Registered before the count is read, so a delivery between the read and the wait still wakes it.
+            let answered = self.handover_answered.notified();
+            tokio::pin!(answered);
+            answered.as_mut().enable();
+            if self
+                .handover_answering
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return;
+            }
+            answered.await;
+        }
+    }
+    /// senpi shutdown `handover?.dispose()`: a pending idle handover stops its timer with the host.
+    pub fn dispose_handover(&self) {
+        if let Some(gate) = self.handover.get() {
+            gate.handover.dispose();
+        }
     }
     /// Whether a handoff drain is running (senpi `router.draining`).
     pub fn is_draining(&self) -> bool {
@@ -337,6 +648,86 @@ impl HostCore {
         self.tool_runtime = tool_runtime;
         self
     }
+    /// Host deployment policy; never derived from client capabilities or project settings (senpi
+    /// `MultiSessionHostOptions.mcpPresenterEnforcement`): private MCP forms are enforced and
+    /// `mcp_form_presenter_v1` is advertised.
+    pub fn with_mcp_presenter_enforcement(self, enforce: bool) -> Self {
+        if enforce {
+            self.presenters.enable();
+        }
+        self
+    }
+    /// `--mcp-presenter-fd 4`: the inherited enrollment channel a socket host opens its presenter control with.
+    /// The descriptor is adopted here: it is close-on-exec from now on and closed when the host drops it.
+    pub fn with_presenter_bootstrap_fd(self, fd: Option<i32>) -> Self {
+        if let Some(adopted) =
+            fd.and_then(crate::mcp_presenter_bootstrap::adopt_presenter_bootstrap_fd)
+        {
+            *self
+                .presenter_bootstrap
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(adopted);
+        }
+        self
+    }
+    /// A deferred handover's successor enrollment channel (senpi `presenterControl?.successorBootstrap()`).
+    pub async fn presenter_successor_bootstrap(
+        &self,
+    ) -> Option<crate::mcp_presenter_wire::BoxedPrivateStream> {
+        let control = self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        control.successor_bootstrap().await
+    }
+    /// senpi `runSocketHost` presenter startup: with a bootstrap descriptor and enforcement, open the private
+    /// control endpoint in a private temp dir and enroll over the descriptor; otherwise the descriptor is dropped.
+    /// Bootstrap is optional authority, never a reason to fail the host.
+    #[cfg(unix)]
+    async fn start_presenter_control(
+        self: &std::sync::Arc<Self>,
+    ) -> Option<tempfile_dir::PresenterDir> {
+        let adopted = self
+            .presenter_bootstrap
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()?;
+        let bootstrap = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream_from(adopted)?;
+        if !self.presenters.enabled() {
+            drop(bootstrap);
+            return None;
+        }
+        let dir = tempfile_dir::PresenterDir::create()?;
+        let control = std::sync::Arc::new(crate::mcp_presenter_control::McpPresenterControl::new(
+            std::sync::Arc::new(PresenterWriter {
+                presenters: std::sync::Arc::clone(&self.presenters),
+                fanout: std::sync::Arc::clone(&self.fanout),
+            }),
+            self.presenters.enable(),
+            &dir.path.join("control.sock").to_string_lossy(),
+        ));
+        if control.listen().await.is_err() {
+            control.dispose();
+            return None;
+        }
+        control.bootstrap(bootstrap);
+        *self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+        Some(dir)
+    }
+    fn dispose_presenter_control(&self) {
+        let control = self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(control) = control {
+            control.dispose();
+        }
+    }
     /// The tool runtime this host advertises.
     pub fn tool_runtime(&self) -> crate::host_capabilities::ToolRuntimeKind {
         self.tool_runtime
@@ -369,9 +760,24 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .register(connection, actor);
+        // A private frame is written raw on the connection's control lane, never through a session queue.
+        let fanout = std::sync::Arc::downgrade(&self.fanout);
+        let id = connection.to_owned();
+        self.presenters.register_connection(
+            connection,
+            std::sync::Arc::new(move |frame| {
+                fanout.upgrade().is_some_and(|fanout| {
+                    fanout
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .enqueue_raw(&id, frame)
+                })
+            }),
+        );
     }
     /// Unregisters a connection's sink, its capabilities and its render widths.
     pub fn unregister_connection(&self, connection: &str) {
+        self.presenters.unregister_connection(connection);
         self.fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -401,6 +807,11 @@ impl HostCore {
     fn advertised_capabilities(&self) -> Vec<String> {
         use crate::custom_capability::*;
         let mut capabilities = Vec::<String>::new();
+        // senpi `multiSessionHostCapabilities`: `mcp_form_presenter_v1` only when this deployment enforces presenters.
+        let presenter = self
+            .presenters
+            .enabled()
+            .then_some(crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
         // senpi `hostToolRuntimeCapabilities`: the host's own placement first; a negotiated `tool_runtime:*` never overrides it.
         let tool_runtime = crate::host_capabilities::host_tool_runtime_capabilities(
             self.tool_runtime,
@@ -408,6 +819,17 @@ impl HostCore {
         );
         for capability in [
             "multi_session",
+            SNAPSHOT_CURSOR_CAPABILITY,
+            UI_ANSWER_LEDGER_CAPABILITY,
+        ]
+        .into_iter()
+        .chain(presenter)
+        .chain([
+            ATTACH_SESSION_CAPABILITY,
+            RELEASE_ATTACHMENT_CAPABILITY,
+            // `release_session` already counts only OTHER connections' attachments (`other_attachments`).
+            RELEASE_CALLER_AWARE_CAPABILITY,
+            RECLAIM_SESSION_CAPABILITY,
             AUTO_TITLE_SESSIONS_CAPABILITY,
             MEDIA_PLACEHOLDERS_CAPABILITY,
             crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
@@ -416,11 +838,18 @@ impl HostCore {
             SESSION_HELD_CAPABILITY,
             RESUME_SESSION_CAPABILITY,
             ATTENDED_CAPABILITY,
+            // `get_state`/`get_entries` marked `observe` never attach, and history reads page backward too (senpi#4267).
+            OBSERVE_READS_CAPABILITY,
+            ENTRIES_TAIL_CAPABILITY,
             RETAIN_ON_DISCONNECT_CAPABILITY,
             SESSION_CONTEXT_CAPABILITY,
+            SESSION_STATUS_CAPABILITY,
+            DIALOG_OBSERVER_CAPABILITY,
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
+            crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
+            DETACH_CONNECTION_CAPABILITY,
             MEMORY_WRITE_DENY_CAPABILITY,
             MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
             EFFECT_TOOLS_DENY_CAPABILITY,
@@ -428,8 +857,7 @@ impl HostCore {
             SUPERVISOR_WORK_TOOLS_CAPABILITY,
             MEMORY_RECEIPTS_CAPABILITY,
             MEMORY_FORGET_CAPABILITY,
-        ]
-        .into_iter()
+        ])
         .chain(std::iter::once(
             crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
         ))
@@ -438,6 +866,10 @@ impl HostCore {
             if !capabilities.iter().any(|existing| existing == capability) {
                 capabilities.push(capability.to_owned());
             }
+        }
+        if self.handover.get().is_some() {
+            capabilities
+                .push(crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY.into());
         }
         if self
             .handoff_enabled
@@ -484,8 +916,153 @@ impl HostCore {
             record,
         );
     }
+    /// Re-reads one session's registry half into the status source (senpi `registryStatusSource` reads it live);
+    /// a handle no registry holds any more leaves the source.
+    async fn sync_status(&self, session_id: &str) {
+        use crate::session_status_source::{RegistryEntryFields, StatusRuntime, entry_view};
+        let projected = match &self.workers {
+            Some(workers) => workers.with_entry(session_id, |entry| {
+                (
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: &entry.cwd,
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
+                    StatusRuntime::Worker(std::sync::Arc::clone(&entry.worker)),
+                )
+            }),
+            None => self.registry.lock().await.get(session_id).map(|entry| {
+                // A switch replaces the session in place, so its live cwd is the session's, not the runtime's.
+                let cwd = entry.runtime.as_ref().map_or_else(
+                    || entry.profile.runtime.cwd.clone(),
+                    |runtime| runtime.session().cwd(),
+                );
+                (
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: &cwd,
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
+                    entry
+                        .runtime
+                        .as_ref()
+                        .map_or(StatusRuntime::None, |runtime| {
+                            StatusRuntime::Session(std::sync::Arc::clone(runtime))
+                        }),
+                )
+            }),
+        };
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut hub = fanout
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match projected {
+            Some((entry, runtime)) => hub.source.upsert(session_id, entry, runtime),
+            None => hub.source.remove(session_id),
+        }
+    }
+    /// Syncs the session's registry half, then publishes one status change (senpi `writer.status.publish`).
+    async fn publish_status(
+        &self,
+        session_id: &str,
+        cause: crate::session_status::SessionStatusCause,
+        by: crate::session_status::SessionStatusActor,
+        context_only: bool,
+    ) {
+        self.sync_status(session_id).await;
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = std::sync::Arc::clone(&fanout.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        hub.stream
+            .publish(&hub.source, &*fanout, session_id, cause, by, context_only);
+    }
+    /// `subscribe_sessions` (senpi `answerSubscribeSessions` + the router's two-hop activation): the answer carrying
+    /// the `seq 0` snapshot is on the connection's FIFO before the subscription goes live.
+    fn subscribe_sessions(&self, connection: Option<&str>, request: &serde_json::Value) {
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = std::sync::Arc::clone(&fanout.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        let answered = crate::session_status_commands::answer_subscribe_sessions(
+            request,
+            connection,
+            &mut hub.stream,
+            &hub.source,
+            &*fanout,
+        );
+        let (Some(connection), Some(subscription)) = (connection, answered.activate) else {
+            drop(guard);
+            drop(fanout);
+            return self.respond_value(connection, "", answered.answer);
+        };
+        // Both locks are held across the answer and the activation, so no delta can land between them.
+        match fanout.enqueue_control(connection, &answered.answer) {
+            Ok(true) => hub.stream.activate(&*fanout, &subscription),
+            Ok(false) | Err(_) => {
+                hub.stream.unsubscribe(connection, &subscription);
+                eprintln!("senpi rpc subscribe answer could not be delivered to {connection}");
+            }
+        }
+    }
+    /// `unsubscribe_sessions` (senpi `answerUnsubscribeSessions`).
+    fn unsubscribe_sessions(&self, connection: Option<&str>, request: &serde_json::Value) {
+        let answer = {
+            let fanout = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut status = fanout
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::session_status_commands::answer_unsubscribe_sessions(
+                request,
+                connection,
+                &mut status.stream,
+            )
+        };
+        self.respond_value(connection, "", answer);
+    }
     /// Drops every per-connection record of a handle the host ended (senpi `forgetSessionOwnership`).
     fn forget_session(&self, session_id: &str) {
+        {
+            let fanout = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut hub = fanout
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            hub.source.remove(session_id);
+            hub.stream.forget(session_id);
+        }
+        self.presenters.dispose_session(session_id);
         self.fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -628,6 +1205,51 @@ impl HostCore {
                 session_id: session_id.into(),
                 reason: Some("released".into()),
                 session_path: Some(session_path.to_owned()),
+            })
+        {
+            self.route(session_id, None, value);
+        }
+        self.forget_session(session_id);
+        true
+    }
+    /// The park teardown of `unload_session` (senpi `tearDownUnloaded`): claimed while still open, every attachment
+    /// drained, the runtime disposed and the path reservation freed, sealed `session_parked { reason: "unloaded" }`.
+    /// `false` when another close already owns the entry.
+    async fn tear_down_unloaded(&self, session_id: &str, session_path: &str) -> bool {
+        if let Some(workers) = &self.workers {
+            if workers.force_close(session_id).is_none() {
+                return false;
+            }
+            if let Some(worker) = workers.worker(session_id) {
+                worker.cancel_pending_extension_ui_requests();
+            }
+            let _ = workers.close_marked(session_id).await;
+        } else {
+            {
+                let mut registry = self.registry.lock().await;
+                let Some(entry) = registry.get_mut(session_id) else {
+                    return false;
+                };
+                if entry.close.state != crate::session_registry::RpcSessionState::Open {
+                    return false;
+                }
+                entry.close.attachments = 0;
+                entry.close.state = crate::session_registry::RpcSessionState::Closing;
+            }
+            if let Some(binding) = self.bindings.lock().await.remove(session_id) {
+                binding.cancel_pending_extension_ui_requests();
+                binding.dispose().await;
+            }
+            let mut registry = self.registry.lock().await;
+            let _ = registry
+                .close_marked(session_id, self.options.close_grace_ms)
+                .await;
+        }
+        if let Ok(value) =
+            serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionParked {
+                session_id: session_id.into(),
+                session_path: session_path.to_owned(),
+                reason: Some("unloaded".into()),
             })
         {
             self.route(session_id, None, value);
@@ -817,7 +1439,13 @@ impl HostCore {
     fn respond_value(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
         self.respond_record(connection, session_id, value);
     }
-    fn respond_record(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
+    fn respond_record(
+        &self,
+        connection: Option<&str>,
+        session_id: &str,
+        mut value: serde_json::Value,
+    ) {
+        crate::lifecycle_delivery::observe_lifecycle_delivery(&mut value);
         if let Some(connection) = connection {
             match self
                 .fanout
@@ -864,6 +1492,31 @@ impl HostCore {
             },
         );
     }
+    /// A refusal whose stable code is also `errorCode`, with the `errorData` a client acts on (senpi router `error`).
+    fn refuse(
+        &self,
+        connection: Option<&str>,
+        id: Option<String>,
+        command: &str,
+        code: &str,
+        data: serde_json::Value,
+        session_id: Option<String>,
+    ) {
+        self.respond(
+            connection,
+            &crate::rpc_types::RpcResponse {
+                id,
+                record_type: crate::rpc_types::ResponseRecordType::Response,
+                command: command.into(),
+                session_id,
+                result: crate::rpc_types::RpcResponseResult::Error {
+                    error: code.into(),
+                    error_code: Some(code.into()),
+                    error_data: Some(data),
+                },
+            },
+        );
+    }
     fn success(
         &self,
         connection: Option<&str>,
@@ -883,21 +1536,55 @@ impl HostCore {
             },
         );
     }
+    fn write_presenter_reply(&self, connection: Option<&str>, reply: &serde_json::Value) {
+        write_presenter_reply(
+            &std::sync::Arc::downgrade(&self.fanout),
+            &self.default_writer,
+            &std::sync::Arc::downgrade(&self.presenters),
+            connection,
+            reply,
+        );
+    }
     /// Feed one inbound JSONL line on one connection (senpi's `handle` inside `createHostCore`).
-    pub async fn handle(&self, connection: Option<&str>, line: &str) -> Result<(), String> {
+    pub async fn handle(
+        self: &std::sync::Arc<Self>,
+        connection: Option<&str>,
+        line: &str,
+    ) -> Result<(), String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            self.error(
-                connection,
-                None,
-                "parse",
+            // With presenters enabled a parse error never echoes the (possibly private) body.
+            let message = if self.presenters.enabled() {
+                "Invalid command".to_owned()
+            } else {
                 format!(
                     "Failed to parse command: {}",
                     crate::connection_handler::json_parse_error_message(line)
-                ),
-                None,
-            );
+                )
+            };
+            self.error(connection, None, "parse", message, None);
             return Ok(());
         };
+        // senpi `writer.handleMcpForm(parsed)`: private records bypass the gate, queues, snapshots and replay.
+        if let Some(reply) = self.presenters.handle(&value, connection) {
+            self.write_presenter_reply(connection, &reply);
+            return Ok(());
+        }
+        // senpi `gate.intercept`: the conditional idle handover's own request, answered with `success: true`
+        // whatever the verdict (a foreign agent dir is refused before the operation).
+        if value["type"] == crate::host_handover_wire::BEGIN_HANDOVER_COMMAND
+            && let Some(record) = value.as_object()
+        {
+            let gate = self.handover.get();
+            let _answering = HandoverAnswering::new(self);
+            let answer = crate::host_handover_wire::answer_begin_handover(
+                gate.map(|gate| &gate.handover),
+                gate.map(|gate| &gate.endpoint),
+                record,
+            )
+            .await;
+            self.respond_record(connection, "", answer);
+            return Ok(());
+        }
         if let Some(error) = crate::rpc_input_validation::rpc_command_shape_error(&value) {
             self.error(
                 connection,
@@ -943,10 +1630,126 @@ impl HostCore {
             );
             return Ok(());
         }
+        // senpi router `handle`: socket ownership is checked before lifecycle routing and worker dispatch.
+        let kind = value["type"].as_str().unwrap_or_default();
+        let attached = command.session_id.as_deref().is_some_and(|session_id| {
+            self.attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .owns(connection, session_id)
+        });
+        match crate::session_attachment_gate::attachment_gate(
+            connection,
+            kind,
+            command.session_id.as_deref(),
+            attached,
+            || std::env::vars().collect(),
+        ) {
+            crate::session_attachment_gate::AttachmentGate::Pass => {}
+            crate::session_attachment_gate::AttachmentGate::Warn(line) => eprintln!("{line}"),
+            crate::session_attachment_gate::AttachmentGate::Refuse => {
+                self.refuse(
+                    connection,
+                    command.id.clone(),
+                    kind,
+                    crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                    crate::session_attachment_gate::not_attached_detail(),
+                    command.session_id.clone(),
+                );
+                return Ok(());
+            }
+        }
+        // senpi `HostCoreGate.dispatch`: while a handover is pending, new work is refused; everything else is routed.
+        if let Some(gate) = self.handover.get()
+            && let Some(view) = gate.handover.view()
+            && !gate.handover.admits(kind)
+        {
+            let refusal =
+                crate::host_handover_wire::handover_refusal(command.id.as_deref(), kind, &view);
+            self.respond_record(connection, "", refusal);
+            return Ok(());
+        }
+        let _settled = HandoverObserve(self.handover.get().map(|gate| &gate.handover));
+        // A warm holds no session and no path, so it stays out of the accounting a drain or idle window waits on.
+        let warm = matches!(command.body, crate::rpc_types::RpcCommandBody::Warm { .. });
+        let _sessionless = (command.session_id.is_none() && !warm).then(|| {
+            self.sessionless_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            SessionlessGuard(&self.sessionless_requests)
+        });
         // senpi router `handle`: every routed request counts against its session until it answers, so a
         // release can tell other work from itself.
         let _request = self.begin_request(command.session_id.as_deref());
         match &command.body {
+            crate::rpc_types::RpcCommandBody::AttachSession {
+                durable_session_id,
+                expected_host_instance,
+            } => {
+                let session_id = command.session_id.clone().unwrap_or_default();
+                match self
+                    .attach_session(
+                        connection,
+                        &session_id,
+                        durable_session_id,
+                        expected_host_instance,
+                    )
+                    .await
+                {
+                    Ok(()) => self.success(
+                        connection,
+                        command.id.clone(),
+                        "attach_session",
+                        Some(crate::session_attachment_commands::attach_reply(
+                            &session_id,
+                        )),
+                        Some(session_id),
+                    ),
+                    Err((code, data)) => self.refuse(
+                        connection,
+                        command.id.clone(),
+                        "attach_session",
+                        code,
+                        data,
+                        Some(session_id),
+                    ),
+                }
+            }
+            crate::rpc_types::RpcCommandBody::ReleaseAttachment => {
+                let session_id = command.session_id.clone().unwrap_or_default();
+                self.release_attachment(connection, command.id.clone(), session_id)
+                    .await;
+            }
+            crate::rpc_types::RpcCommandBody::ReclaimSession {
+                session_path,
+                durable_session_id,
+                expected_host_instance,
+            } => match self
+                .reclaim_session(
+                    connection,
+                    session_path,
+                    durable_session_id,
+                    expected_host_instance,
+                )
+                .await
+            {
+                Ok(session_id) => self.success(
+                    connection,
+                    command.id.clone(),
+                    "reclaim_session",
+                    Some(crate::session_attachment_commands::reclaim_reply(
+                        &session_id,
+                    )),
+                    None,
+                ),
+                Err((code, data)) => self.refuse(
+                    connection,
+                    command.id.clone(),
+                    "reclaim_session",
+                    code,
+                    data,
+                    None,
+                ),
+            },
             crate::rpc_types::RpcCommandBody::GetProtocolInfo => {
                 // senpi `process.argv.slice(2)`: every CLI argument after the executable.
                 let argv = std::env::args().skip(1).collect::<Vec<_>>();
@@ -956,9 +1759,14 @@ impl HostCore {
                         .map_or_else(
                             || serde_json::json!({}),
                             |profile| {
-                                crate::protocol_identity::protocol_identity(
+                                // The agent dir this host captured at startup: only a client of it may
+                                // replace this host (#3560).
+                                crate::protocol_identity::protocol_identity_for(
                                     profile,
                                     &std::env::vars().collect(),
+                                    &std::path::absolute(&self.options.agent_dir)
+                                        .unwrap_or_else(|_| self.options.agent_dir.clone())
+                                        .to_string_lossy(),
                                 )
                             },
                         );
@@ -969,6 +1777,15 @@ impl HostCore {
                     .into();
                 data["capabilities"] = serde_json::json!(self.advertised_capabilities());
                 data["mode"] = "multi".into();
+                let gate = self.handover.get();
+                crate::host_handover_wire::with_host_identity(
+                    &mut data,
+                    self.runtime_build_id
+                        .get()
+                        .map(String::as_str)
+                        .or_else(|| gate.and_then(|gate| gate.runtime_build_id.as_deref())),
+                    gate.and_then(|gate| gate.handover.view()).as_ref(),
+                );
                 self.success(
                     connection,
                     command.id.clone(),
@@ -1018,6 +1835,9 @@ impl HostCore {
                     {
                         eprintln!("senpi rpc connection {connection} failed: {error}");
                     }
+                    // A connection that stops declaring `interactive_user` + `mcp_form_presenter_v1` loses its grants.
+                    self.presenters
+                        .capabilities_changed(connection, &capabilities);
                     if let Some(session_id) = &command.session_id {
                         self.widths
                             .lock()
@@ -1065,8 +1885,75 @@ impl HostCore {
                     );
                 }
             }
+            // senpi router: a warm holds no session and no path, so it is answered outside the drain accounting.
+            // This host builds runtimes whole and has no prepare-only factory, so it answers `unsupported` and
+            // does not advertise `warm` (senpi: a registry without `warm`).
+            crate::rpc_types::RpcCommandBody::Warm { .. } => {
+                let answer = crate::host_warm::answer_warm(
+                    &value,
+                    crate::host_warm::WarmHost {
+                        draining: self.is_draining(),
+                        warm: None,
+                        cwd: &self.options.cwd,
+                        host_context: None,
+                    },
+                )
+                .await;
+                self.respond_record(connection, "", answer);
+            }
+            // senpi router `detachConnection`: answered only once the asking connection's attachments are released.
+            crate::rpc_types::RpcCommandBody::DetachConnection => {
+                let id = command.id.clone().map(serde_json::Value::from);
+                let answer =
+                    crate::connection_detach::detach_connection(id.as_ref(), connection, |owner| {
+                        let core = std::sync::Arc::clone(self);
+                        async move {
+                            // senpi `releaseConnection`: a detached connection keeps no session role and no
+                            // session's records reach it any more; the socket itself stays open.
+                            core.connection_roles
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .release(&owner);
+                            let owned = core
+                                .attachments
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .owned_by(&owner);
+                            for (session_id, _) in &owned {
+                                core.presenters.detach(&owner, session_id);
+                                core.fanout
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .detach(&owner, session_id);
+                            }
+                            core.release_connection(&owner).await
+                        }
+                    })
+                    .await;
+                self.respond_record(connection, "", answer);
+            }
+            // senpi router: every subscription account's latest limit windows, answered without a session.
+            crate::rpc_types::RpcCommandBody::GetSubscriptionLimits => {
+                let accounts = serde_json::to_value(
+                    maho_core::subscription_limits::limit_store::subscription_limits().snapshot(),
+                )
+                .unwrap_or_else(|_| serde_json::json!([]));
+                self.success(
+                    connection,
+                    command.id.clone(),
+                    "get_subscription_limits",
+                    Some(serde_json::json!({ "accounts": accounts })),
+                    None,
+                );
+            }
             crate::rpc_types::RpcCommandBody::ListSessions { include_workers } => {
-                let sessions = self.list_rows(include_workers.unwrap_or(false)).await;
+                let mut sessions = self.list_rows(include_workers.unwrap_or(false)).await;
+                let kernels =
+                    maho_core::memory_report::kernel_registry_read::read_codemode_kernel_rows();
+                for row in &mut sessions {
+                    let memory = session_memory(&kernels, row["sessionId"].as_str().unwrap_or(""));
+                    row["memory"] = memory;
+                }
                 self.success(
                     connection,
                     command.id.clone(),
@@ -1087,6 +1974,8 @@ impl HostCore {
                     );
                     return Ok(());
                 }
+                // Settles once the open answered (dropped at the end of this arm).
+                let _barrier = self.open_barrier(connection, command.id.as_deref());
                 match self
                     .open_session_inner(connection, &command.body, None)
                     .await
@@ -1097,6 +1986,20 @@ impl HostCore {
                             command.id.clone(),
                             "open_session",
                             Some(data),
+                            None,
+                        );
+                    }
+                    Err(OpenRefusal {
+                        code: Some(code),
+                        data: Some(data),
+                        ..
+                    }) => {
+                        self.refuse(
+                            connection,
+                            command.id.clone(),
+                            "open_session",
+                            &code,
+                            data,
                             None,
                         );
                     }
@@ -1143,6 +2046,32 @@ impl HostCore {
                 };
                 let response = crate::session_release::release_session(&port, &release).await;
                 self.respond_value(connection, &session_id, response);
+            }
+            crate::rpc_types::RpcCommandBody::UnloadSession { .. } => {
+                let Some(session_id) = command.session_id.clone() else {
+                    self.error(
+                        connection,
+                        command.id.clone(),
+                        "unload_session",
+                        crate::rpc_types::RPC_ERROR_MISSING_SESSION_ID,
+                        None,
+                    );
+                    return Ok(());
+                };
+                let port = HostUnloadPort {
+                    release: HostReleasePort {
+                        core: self,
+                        connection,
+                    },
+                };
+                let response = crate::session_unload::unload_session(&port, &value).await;
+                self.respond_value(connection, &session_id, response);
+            }
+            crate::rpc_types::RpcCommandBody::SubscribeSessions => {
+                self.subscribe_sessions(connection, &value);
+            }
+            crate::rpc_types::RpcCommandBody::UnsubscribeSessions => {
+                self.unsubscribe_sessions(connection, &value);
             }
             crate::rpc_types::RpcCommandBody::SetSessionContext { patch } => {
                 let Some(session_id) = command.session_id.clone() else {
@@ -1204,11 +2133,14 @@ impl HostCore {
                     Ok(Some((reservation, claim))) => {
                         self.default_writer.release_close_response(reservation);
                         if let Some(connection) = connection {
-                            self.release_owner_attachment(connection, &session_id);
+                            self.release_owner_attachment(connection, &session_id).await;
                         }
                         // Only the LAST attachment tears the session down; a surviving attachment keeps
                         // the shared binding and its event stream (senpi `close`/`claimClose`).
                         if claim.finalizer != Some(true) {
+                            // senpi `close`: a surviving attachment is a detach; the last one seals instead.
+                            self.publish_status(&session_id, "detach", "client", false)
+                                .await;
                             self.success(
                                 connection,
                                 command.id.clone(),
@@ -1273,6 +2205,24 @@ impl HostCore {
                     }
                 }
             }
+            // senpi session-router-routing.ts: a receipt of a session this host has not loaded is read from its
+            // transcript, never by loading it.
+            crate::rpc_types::RpcCommandBody::GetEffectStatus {
+                effect_id,
+                session_path: Some(session_path),
+            } if command.session_id.is_none() => {
+                let id = command
+                    .id
+                    .clone()
+                    .map_or(serde_json::Value::Null, Into::into);
+                let answer = crate::effect_commands::answer_effect_from_transcript(
+                    &id,
+                    session_path,
+                    effect_id,
+                )
+                .await;
+                self.respond_record(connection, "", answer);
+            }
             _ => {
                 let Some(session_id) = command.session_id.clone() else {
                     self.error(
@@ -1284,6 +2234,20 @@ impl HostCore {
                     );
                     return Ok(());
                 };
+                // An open session whose output is sealed answers every command with the recovery it needs.
+                if self.default_writer.is_session_sealed(&session_id)
+                    && self.session_open(&session_id).await
+                {
+                    self.refuse(
+                        connection,
+                        command.id.clone(),
+                        value["type"].as_str().unwrap_or_default(),
+                        crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW,
+                        serde_json::json!({"sessionId":session_id,"action":"unload_and_reopen"}),
+                        Some(session_id),
+                    );
+                    return Ok(());
+                }
                 if let Some(workers) = &self.workers {
                     let kind = value["type"].as_str().unwrap_or_default().to_owned();
                     match workers.get_for_command(
@@ -1345,7 +2309,12 @@ impl HostCore {
                             CURRENT_CONNECTION
                                 .scope(connection.map(str::to_owned), binding.handle(&value)),
                         )
-                        .await?
+                        .await?;
+                        // senpi `createEntrySwitchSession` -> `syncRuntimeMetadata`: a replacement in place moves
+                        // the entry's file, durable id and path claim with it.
+                        if replaces_session(&value) {
+                            self.registry.lock().await.sync_runtime_metadata();
+                        }
                     }
                     None => self.error(
                         connection,
@@ -1497,6 +2466,10 @@ impl HostCore {
                 as std::sync::Arc<
                     dyn crate::session_worker_client::WorkerSecurityWriter,
                 >),
+            presenters: self
+                .presenters
+                .enabled()
+                .then(|| std::sync::Arc::clone(&self.presenters)),
         }
     }
     /// `open_session` on the worker runtime (senpi `WorkerSessionRegistry.openSession` + the router's
@@ -1517,6 +2490,7 @@ impl HostCore {
             thinking_level,
             permission_preset,
             retain_on_disconnect,
+            expected_host_instance,
             kind,
             context,
             auto_title,
@@ -1525,6 +2499,7 @@ impl HostCore {
             prompt_surface,
             browser_engine,
             retry_fallback,
+            spawned_by,
         } = body
         else {
             return Err(OpenRefusal::plain(
@@ -1537,9 +2512,66 @@ impl HostCore {
                 crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
             ))
         };
-        // senpi session-command-router `open`: only `attended:false` (observational open) is accepted.
-        if *attended == Some(true) {
+        if crate::session_router_open_profile::invalid_spawned_by(spawned_by) {
+            return Err(OpenRefusal::plain(
+                crate::rpc_types::RPC_ERROR_INVALID_SPAWNED_BY,
+            ));
+        }
+        let instance_id = crate::protocol_identity::host_instance_id();
+        let attach_only = expected_host_instance.is_some();
+        if let Some(expected) = expected_host_instance.as_ref() {
+            if let Some(err) =
+                crate::rpc_input_validation::expected_host_instance_error(Some(expected))
+            {
+                let msg = format!(
+                    "{}: {err}",
+                    crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
+                );
+                return Err(OpenRefusal::with_data(
+                    msg.clone(),
+                    msg,
+                    serde_json::json!({
+                        "reason": "invalid_expected_host_instance",
+                        "action": "supply_host_instance",
+                    }),
+                ));
+            }
+            let raw_str = expected.as_str().unwrap_or_default();
+            if raw_str != instance_id {
+                return Err(OpenRefusal::with_data(
+                    crate::rpc_types::RPC_ERROR_OWNER_CHANGED,
+                    crate::rpc_types::RPC_ERROR_OWNER_CHANGED,
+                    serde_json::json!({
+                        "reason": "host_instance_mismatch",
+                        "action": "rediscover_holder",
+                        "expectedHostInstance": raw_str,
+                        "hostInstance": instance_id,
+                    }),
+                ));
+            }
+        }
+        if let Some(att) = attended.as_ref()
+            && att != &serde_json::Value::Bool(false)
+        {
             return Err(invalid("attended must be false or omitted".to_owned()));
+        }
+        if let Some(err) = crate::rpc_input_validation::session_kind_error(kind.as_ref()) {
+            return Err(OpenRefusal::plain(format!(
+                "{}: {err}",
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_KIND
+            )));
+        }
+        if let Some(err) = crate::rpc_input_validation::session_context_error(context.as_ref()) {
+            return Err(OpenRefusal {
+                message: format!("{}: {err}", crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT),
+                code: Some(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT.to_owned()),
+                data: None,
+            });
+        }
+        if let Some(err) =
+            crate::rpc_input_validation::session_auto_title_error(auto_title.as_ref())
+        {
+            return Err(invalid(err.to_owned()));
         }
         if let Some(reason) =
             crate::rpc_input_validation::prompt_surface_error(prompt_surface.as_ref())
@@ -1551,13 +2583,33 @@ impl HostCore {
         {
             return Err(invalid(reason.to_owned()));
         }
+        if provider.is_some() != model_id.is_some() {
+            return Err(invalid(
+                "provider and modelId must be given together".to_owned(),
+            ));
+        }
         if let Some(reason) =
             crate::rpc_input_validation::retry_fallback_error(retry_fallback.as_ref())
         {
             return Err(invalid(reason));
         }
+        let parsed_kind = kind
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| match s {
+                "worker" => Some(maho_ext_api::SessionKind::Worker),
+                "interactive" => Some(maho_ext_api::SessionKind::Interactive),
+                _ => None,
+            });
+        let parsed_context = context.as_ref().and_then(|c| {
+            c.as_object().map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect::<std::collections::BTreeMap<String, String>>()
+            })
+        });
         // Session-role policy shape errors are typed `invalid_session_context` before any admission.
-        if let Some(error) = crate::rpc_input_validation::session_policy_error(context.as_ref()) {
+        if let Some(error) = crate::rpc_input_validation::session_policy_error(parsed_context.as_ref()) {
             return Err(OpenRefusal::plain(format!(
                 "{}: {error}",
                 crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
@@ -1569,19 +2621,17 @@ impl HostCore {
                 permission_preset: permission_preset.clone(),
                 creation_model: provider.clone().zip(model_id.clone()),
                 initial_thinking_level: thinking_level.clone(),
-                auto_title: *auto_title,
+                auto_title: auto_title.as_ref().and_then(serde_json::Value::as_bool),
                 prompt_size_inventory: None,
             },
             session_path: session_path.clone(),
             durable_session_id: durable_session_id.clone(),
-            session_kind: kind.map(|kind| match kind {
-                crate::rpc_types::SessionKind::Worker => maho_ext_api::SessionKind::Worker,
-                crate::rpc_types::SessionKind::Interactive => {
-                    maho_ext_api::SessionKind::Interactive
-                }
-            }),
-            session_context: context.clone(),
-            attended: (*attended == Some(false)).then_some(false),
+            session_kind: parsed_kind,
+            session_context: parsed_context,
+            attended: attended
+                .as_ref()
+                .and_then(serde_json::Value::as_bool)
+                .and_then(|b| (!b).then_some(false)),
             prompt_surface: prompt_surface
                 .as_ref()
                 .and_then(serde_json::Value::as_str)
@@ -1592,16 +2642,19 @@ impl HostCore {
                 .map(str::to_owned),
             retry_fallback: retry_fallback.clone(),
             holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
-                host_instance: Some(crate::protocol_identity::host_instance_id().to_owned()),
+                host_instance: Some(instance_id.to_owned()),
                 host_socket: None,
                 host_daemon_dir: std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV)
                     .ok()
                     .filter(|dir| !dir.is_empty()),
             }),
+            // senpi `open`: `{ ...profile, spawnedBy: ancestry }` once validated.
+            spawned_by: serde_json::from_value(spawned_by.clone()).ok(),
+            session_start_reason: None,
         };
         let retain = retain_on_disconnect.unwrap_or(false);
         let opened = self
-            .open_admitted(connection, profile, retain, overlay)
+            .open_admitted(connection, profile, retain, overlay, attach_only)
             .await;
         // senpi `open`: a successful open of a path drops any park record for it, so a later successor does not
         // reopen a session a client already took back.
@@ -1618,18 +2671,66 @@ impl HostCore {
         profile: crate::session_registry::RpcSessionLaunchProfile,
         retain: bool,
         overlay: Option<&serde_json::Value>,
+        attach_only: bool,
     ) -> Result<serde_json::Value, OpenRefusal> {
         if let Some(workers) = self.workers.clone() {
             return self
-                .open_worker_session(&workers, connection, profile, retain, overlay)
+                .open_worker_session(&workers, connection, profile, retain, overlay, attach_only)
                 .await;
         }
-        let admitted = {
-            let mut registry = self.registry.lock().await;
-            registry.admit_open(profile.clone(), retain, crate::connection_handler::now_ms())
+        // senpi `attachToOpenSession`: a path still opening is waited on (bounded, this waiter only) with no
+        // registry lock held, then admitted again so the reopen attaches to the session it opened.
+        let admitted = loop {
+            let admitted = {
+                let mut registry = self.registry.lock().await;
+                registry.admit_open_with_policy(
+                    profile.clone(),
+                    retain,
+                    crate::connection_handler::now_ms(),
+                    attach_only,
+                )
+            };
+            match admitted {
+                Ok(crate::session_registry::OpenAdmission::Wait {
+                    completion,
+                    session_path,
+                }) => {
+                    if let Err(error) = crate::session_registry_attach::wait_open_completion(
+                        completion,
+                        &session_path,
+                    )
+                    .await
+                    {
+                        break Err(error);
+                    }
+                }
+                other => break other,
+            }
         };
         match admitted {
             Err(error) => Err(OpenRefusal::from_registry(&error)),
+            Ok(crate::session_registry::OpenAdmission::Wait { .. }) => Err(OpenRefusal::plain(
+                crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,
+            )),
+            Ok(crate::session_registry::OpenAdmission::Attached(handle))
+                if self.default_writer.is_session_sealed(&handle) =>
+            {
+                // A reattach to a session whose output is already sealed undoes only this attachment and keeps the
+                // seal intact until an explicit unload parks it for a fresh open by path (senpi#3913).
+                let session_path = {
+                    let mut registry = self.registry.lock().await;
+                    let path = registry
+                        .get(&handle)
+                        .and_then(|entry| entry.session_path.clone());
+                    let _ = registry.mark_close(&handle, true);
+                    path
+                };
+                let mut data = serde_json::json!({"sessionId":handle,"action":"unload_and_reopen"});
+                if let Some(path) = session_path {
+                    data["sessionPath"] = path.into();
+                }
+                Err(OpenRefusal::sealed(data))
+            }
             Ok(crate::session_registry::OpenAdmission::Attached(handle)) => {
                 // senpi session-registry.ts: an attach that ends a retained session's parked
                 // (zero-attachment) window tells its extensions `session_resumed`.
@@ -1651,15 +2752,25 @@ impl HostCore {
                 }
                 // A second client joins the live session: register it with the fanout so it
                 // receives the session's records and the in-flight snapshot (senpi `open`).
-                self.attach_connection(connection, &handle).await;
+                self.attach_connection(connection, &handle)
+                    .await
+                    .map_err(|error| OpenRefusal::plain(error.to_string()))?;
                 let state = self.session_state(&handle).await;
+                self.publish_status(&handle, "attach", "client", false)
+                    .await;
                 Ok(serde_json::json!({"sessionId":handle,"state":state,"attached":true}))
             }
             Ok(crate::session_registry::OpenAdmission::Create(handle)) => {
                 let created = {
                     let mut registry = self.registry.lock().await;
+                    // senpi `runtimeProfile`: a resume drops the create-only model and thinking level and starts
+                    // with `session_start { reason: "resume" }`.
+                    let runtime_profile = registry.take_runtime_profile(&handle).unwrap_or(profile);
                     registry
-                        .create_admitted_runtime(&handle, (self.options.create_runtime)(profile))
+                        .create_admitted_runtime(
+                            &handle,
+                            (self.options.create_runtime)(runtime_profile),
+                        )
                         .await
                 };
                 if let Err(error) = created {
@@ -1672,7 +2783,10 @@ impl HostCore {
                     }
                 }
                 let state = self.session_state(&handle).await;
-                self.attach_connection(connection, &handle).await;
+                self.attach_connection(connection, &handle)
+                    .await
+                    .map_err(|error| OpenRefusal::plain(error.to_string()))?;
+                self.publish_status(&handle, "open", "client", false).await;
                 Ok(serde_json::json!({"sessionId":handle,"state":state}))
             }
         }
@@ -1783,13 +2897,17 @@ impl HostCore {
                 &refused.reason,
                 &refused.action,
             ),
-            Ok(context) => self.success(
-                connection,
-                id,
-                "set_session_context",
-                Some(serde_json::json!({"context": context})),
-                Some(session_id),
-            ),
+            Ok(context) => {
+                self.publish_status(&session_id, "context", "client", true)
+                    .await;
+                self.success(
+                    connection,
+                    id,
+                    "set_session_context",
+                    Some(serde_json::json!({"context": context})),
+                    Some(session_id),
+                )
+            }
         }
     }
     async fn open_worker_session(
@@ -1799,19 +2917,43 @@ impl HostCore {
         profile: crate::session_registry::RpcSessionLaunchProfile,
         retain: bool,
         overlay: Option<&serde_json::Value>,
+        attach_only: bool,
     ) -> Result<serde_json::Value, OpenRefusal> {
+        let requested = profile.clone();
         let opened = workers
             .open_session(
                 profile,
                 retain,
                 crate::connection_handler::now_ms(),
+                attach_only,
                 |handle| self.worker_routes(workers, handle),
             )
             .await;
         let (handle, attached) = match opened {
             Err(error) => return Err(OpenRefusal::from_registry(&error)),
             Ok(crate::worker_session_registry::WorkerOpen::Created(handle)) => (handle, false),
-            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => (handle, true),
+            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle))
+                if self.default_writer.is_session_sealed(&handle) =>
+            {
+                // senpi `open`: lost output cannot be replayed, so a reattach to a sealed session undoes only this
+                // attachment and keeps the seal until an explicit unload parks it (senpi#3913).
+                let session_path = workers
+                    .with_entry(&handle, |entry| entry.session_path.clone())
+                    .flatten();
+                let _ = workers.mark_close(&handle, true);
+                let mut data = serde_json::json!({"sessionId":handle,"action":"unload_and_reopen"});
+                if let Some(path) = session_path {
+                    data["sessionPath"] = path.into();
+                }
+                return Err(OpenRefusal::sealed(data));
+            }
+            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => {
+                // senpi worker `attach`: the surface, browser engine and permission preset follow the client.
+                if let Err(error) = workers.apply_attach_profile(&handle, &requested).await {
+                    eprintln!("senpi rpc session {handle} attach profile failed: {error}");
+                }
+                (handle, true)
+            }
         };
         if !attached && let Some(overlay) = overlay.and_then(serde_json::Value::as_object) {
             let overlay = overlay.clone();
@@ -1834,6 +2976,7 @@ impl HostCore {
                     .cloned()
             })
             .unwrap_or_else(|| self.options.capabilities.clone());
+        let mut declared = false;
         {
             let mut fanout = self
                 .fanout
@@ -1841,10 +2984,11 @@ impl HostCore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fanout.set_session_kind(&handle, kind);
             if let Some(connection) = connection {
-                if fanout.targets.capabilities(connection).is_none()
-                    && let Err(error) = fanout.set_capabilities(connection, &capabilities)
-                {
-                    eprintln!("senpi rpc connection {connection} failed: {error}");
+                if fanout.targets.capabilities(connection).is_none() {
+                    if let Err(error) = fanout.set_capabilities(connection, &capabilities) {
+                        eprintln!("senpi rpc connection {connection} failed: {error}");
+                    }
+                    declared = true;
                 }
                 if let Err(error) =
                     fanout.attach(connection, &handle, crate::connection_handler::now_ms())
@@ -1854,12 +2998,23 @@ impl HostCore {
             }
         }
         if let Some(connection) = connection {
+            // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+            if declared {
+                self.presenters
+                    .capabilities_changed(connection, &capabilities);
+            }
             self.attachments
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .attach(connection, &handle);
+            self.presenters.attach(connection, &handle);
         }
         worker.set_connection_roles(std::sync::Arc::clone(&self.connection_roles));
+        // senpi `SessionWorkerClient.bind`: the host's lane for this worker registers with the writer.
+        if !attached && let Some(lane) = worker.acceptance() {
+            self.default_writer
+                .register_acceptance(&self.fanout, &handle, lane);
+        }
         if !attached
             && let Err(error) = worker
                 .bind(
@@ -1871,7 +3026,7 @@ impl HostCore {
                 .await
         {
             if let Some(connection) = connection {
-                self.release_owner_attachment(connection, &handle);
+                self.release_owner_attachment(connection, &handle).await;
             }
             if workers.force_close(&handle).is_some() {
                 let _ = workers.close_marked(&handle).await;
@@ -1886,6 +3041,13 @@ impl HostCore {
         if attached {
             data["attached"] = true.into();
         }
+        self.publish_status(
+            &handle,
+            if attached { "attach" } else { "open" },
+            "client",
+            false,
+        )
+        .await;
         Ok(data)
     }
     /// `close_session` on the worker runtime: only the LAST attachment ends the worker, whose actual
@@ -1930,9 +3092,11 @@ impl HostCore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .release(connection, &session_id);
-            self.release_owner_attachment(connection, &session_id);
+            self.release_owner_attachment(connection, &session_id).await;
         }
         if claim.finalizer != Some(true) {
+            self.publish_status(&session_id, "detach", "client", false)
+                .await;
             self.success(connection, id, "close_session", None, Some(session_id));
             return;
         }
@@ -1964,15 +3128,21 @@ impl HostCore {
     /// Attaches one opening connection to a session (senpi `open`): ownership, the fanout target
     /// with its capabilities and late-joiner replay, the session's visibility class, and the shared
     /// binding the first opener creates. A stdio open owns no connection and keeps no binding.
-    async fn attach_connection(&self, connection: Option<&str>, session_id: &str) {
-        let (runtime, kind) = {
+    async fn attach_connection(
+        &self,
+        connection: Option<&str>,
+        session_id: &str,
+    ) -> Result<(), maho_core::structured_session_lane::StructuredLaneUnavailableError> {
+        let (runtime, kind, lane, scope) = {
             let registry = self.registry.lock().await;
             match registry.get(session_id) {
                 Some(entry) => (
                     entry.runtime.as_ref().map(std::sync::Arc::clone),
                     entry.identity.kind,
+                    entry.acceptance.clone(),
+                    entry.scope.clone(),
                 ),
-                None => return,
+                None => return Ok(()),
             }
         };
         let capabilities = connection
@@ -1984,6 +3154,7 @@ impl HostCore {
                     .cloned()
             })
             .unwrap_or_else(|| self.options.capabilities.clone());
+        let mut declared = false;
         {
             let mut fanout = self
                 .fanout
@@ -1991,10 +3162,11 @@ impl HostCore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fanout.set_session_kind(session_id, kind);
             if let Some(connection) = connection {
-                if fanout.targets.capabilities(connection).is_none()
-                    && let Err(error) = fanout.set_capabilities(connection, &capabilities)
-                {
-                    eprintln!("senpi rpc connection {connection} failed: {error}");
+                if fanout.targets.capabilities(connection).is_none() {
+                    if let Err(error) = fanout.set_capabilities(connection, &capabilities) {
+                        eprintln!("senpi rpc connection {connection} failed: {error}");
+                    }
+                    declared = true;
                 }
                 if let Err(error) =
                     fanout.attach(connection, session_id, crate::connection_handler::now_ms())
@@ -2004,27 +3176,48 @@ impl HostCore {
             }
         }
         let Some(connection) = connection else {
-            return;
+            return Ok(());
         };
+        // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+        if declared {
+            self.presenters
+                .capabilities_changed(connection, &capabilities);
+        }
         self.attachments
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .attach(connection, session_id);
+        self.presenters.attach(connection, session_id);
         let Some(runtime) = runtime else {
-            return;
+            return Ok(());
         };
         let mut bindings = self.bindings.lock().await;
         if bindings.contains_key(session_id) {
-            return;
+            return Ok(());
         }
         let fanout = std::sync::Arc::clone(&self.fanout);
         let writer = std::sync::Arc::clone(&self.default_writer);
         let tag = session_id.to_owned();
+        // senpi `createRpcSessionBinding`: the lane registers with the writer and sees every record first.
+        let acceptance = lane.map(|lane| {
+            self.default_writer.register_acceptance(
+                &self.fanout,
+                session_id,
+                std::sync::Arc::clone(&lane),
+            );
+            crate::session_binding::BindingAcceptance::new(lane, runtime.session().clone())
+        });
         let sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
             std::sync::Arc::new(move |value: serde_json::Value| {
+                if let Some(acceptance) = &acceptance {
+                    acceptance.accept(&value);
+                }
                 let owner = CURRENT_CONNECTION.try_with(Clone::clone).ok().flatten();
                 route_session_record(&fanout, &writer, &tag, owner.as_deref(), value);
             });
+        let structured_scope = scope.clone();
+        let sink =
+            crate::session_binding::closed_scope_record_sink(session_id.to_owned(), scope, sink);
         let binding = std::sync::Arc::new(
             crate::session_binding::create_rpc_session_binding(
                 session_id.to_owned(),
@@ -2032,28 +3225,92 @@ impl HostCore {
                 sink,
                 capabilities,
                 Some(std::sync::Arc::clone(&self.connection_roles)),
+                crate::host_session_control::profile_host_socket(&runtime)
+                    .or_else(|| self.public_socket.get().cloned()),
             )
             .await,
         );
+        // senpi session-binding.ts: `writeStructured` only when `structuredLaneEnabled()`.
+        if crate::structured_session_records::structured_lane_enabled()
+            && let Err(error) = binding.install_structured_lane(
+                runtime.session(),
+                self.default_writer.structured_lanes.clone(),
+                structured_scope,
+            )
+        {
+            drop(bindings);
+            binding.dispose().await;
+            self.attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .release(connection, session_id);
+            self.release_owner_attachment(connection, session_id).await;
+            self.release_owned_session(session_id).await;
+            return Err(error);
+        }
+        // senpi session-binding `bindMcpForms(session, ui)`, only when the deployment enforces presenters.
+        if self.presenters.enabled() {
+            let attached = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .targets
+                .attached_connections(session_id);
+            let (fanout, writer, presenters) = (
+                std::sync::Arc::downgrade(&self.fanout),
+                std::sync::Arc::clone(&self.default_writer),
+                std::sync::Arc::downgrade(&self.presenters),
+            );
+            binding.bind_mcp_forms(
+                &self.presenters,
+                runtime.session(),
+                &attached,
+                std::sync::Arc::new(move |connection, reply| {
+                    write_presenter_reply(&fanout, &writer, &presenters, connection, reply)
+                }),
+            );
+        }
         bindings.insert(session_id.to_owned(), binding);
+        Ok(())
     }
     /// Releases every session a dropped connection still owned (senpi `releaseConnection`). Each
     /// attachment goes through the refcounted detach a close uses, so a session another connection
     /// still holds keeps running, a retained one stays open at zero attachments, and only the last
     /// owner tears it down. A turn in flight runs to settlement first; a drain owns teardown itself.
-    pub async fn release_connection(self: &std::sync::Arc<Self>, connection: &str) {
+    ///
+    /// Answers senpi `releaseConnection`'s `deferred`: the sessions still counting the connection, one whose
+    /// running turn this release would end, or every owned session while the host drains.
+    pub async fn release_connection(self: &std::sync::Arc<Self>, connection: &str) -> Vec<String> {
+        let deferred = self.release_connection_attachments(connection).await;
+        // senpi `releaseConnection`: the release settles only after the connection's opens did.
+        self.opens_settled(connection).await;
+        deferred
+    }
+    async fn release_connection_attachments(
+        self: &std::sync::Arc<Self>,
+        connection: &str,
+    ) -> Vec<String> {
+        let mut deferred = Vec::<String>::new();
+        let mut defer = |session_id: &str| {
+            if !deferred.iter().any(|held| held == session_id) {
+                deferred.push(session_id.to_owned());
+            }
+        };
         let owned = self
             .attachments
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take(connection);
+        for session_id in owned.keys() {
+            self.connection_left(session_id, connection).await;
+        }
         if self
             .drain
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_draining()
         {
-            return;
+            return owned.into_keys().collect();
         }
         if let Some(workers) = self.workers.clone() {
             for (session_id, count) in owned {
@@ -2066,23 +3323,14 @@ impl HostCore {
                         && let Some(worker) =
                             workers.worker(&session_id).filter(|worker| worker.busy())
                     {
-                        let mut settled = worker.settled();
-                        let core = std::sync::Arc::clone(self);
-                        let session_id = session_id.clone();
-                        tokio::spawn(async move {
-                            while worker.busy() && !worker.is_stopped() {
-                                if settled.changed().await.is_err() {
-                                    break;
-                                }
-                            }
-                            core.release_owned_session(&session_id).await;
-                        });
+                        defer(&session_id);
+                        self.release_worker_after_settle(worker, session_id.clone());
                         continue;
                     }
                     self.release_owned_session(&session_id).await;
                 }
             }
-            return;
+            return deferred;
         }
         for (session_id, count) in owned {
             for _ in 0..count {
@@ -2107,45 +3355,127 @@ impl HostCore {
                     && let Some(session) =
                         session.filter(maho_core::agent_session::AgentSession::is_streaming)
                 {
-                    let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
-                    let settled = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
-                    let notify = std::sync::Arc::clone(&settled);
-                    let subscription = session.subscribe(std::sync::Arc::new(
-                        move |event: &maho_ext_api::AgentSessionEvent| {
-                            if matches!(
-                                event,
-                                maho_ext_api::AgentSessionEvent::AgentSettled
-                                    | maho_ext_api::AgentSessionEvent::AgentIdle
-                            ) && let Some(sender) = notify
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .take()
-                            {
-                                let _ = sender.send(());
-                            }
-                        },
-                    ));
-                    // The turn may have settled between the check and the subscription.
-                    if !session.is_streaming()
-                        && let Some(sender) = settled
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take()
-                    {
-                        let _ = sender.send(());
-                    }
-                    let core = std::sync::Arc::clone(self);
-                    let session_id = session_id.clone();
-                    tokio::spawn(async move {
-                        let _ = settled_rx.await;
-                        drop(subscription);
-                        core.release_owned_session(&session_id).await;
-                    });
+                    defer(&session_id);
+                    self.release_after_settle(session, session_id.clone());
                     continue;
                 }
                 self.release_owned_session(&session_id).await;
             }
         }
+        deferred
+    }
+    /// senpi `openWithBarrier`: registers the open under its connection and, for an open with an id, tells the
+    /// connection where it was queued before the open runs - every open accepted anywhere on this host counts,
+    /// since one runtime serves them all (senpi#1844). A stdio open has no connection and no barrier.
+    fn open_barrier(
+        &self,
+        connection: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Option<OpenBarrier<'_>> {
+        let owner = connection?;
+        let (settle, settled) = tokio::sync::watch::channel(false);
+        let in_flight = {
+            let mut opens = self
+                .opens_by_connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let in_flight = opens.values().map(Vec::len).sum::<usize>();
+            opens.entry(owner.to_owned()).or_default().push(settled);
+            in_flight
+        };
+        if let Some(request_id) = request_id {
+            let queued = crate::rpc_types::RpcOpenQueuedEvent {
+                record_type: crate::rpc_types::OpenQueuedType::Queued,
+                for_request: request_id.to_owned(),
+                position: (in_flight + 1) as f64,
+                in_flight: in_flight as f64,
+            };
+            if let Ok(value) = serde_json::to_value(&queued)
+                && let Err(error) = self
+                    .fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .enqueue_control(owner, &value)
+            {
+                eprintln!("senpi rpc connection {owner} failed: {error}");
+            }
+        }
+        Some(OpenBarrier {
+            host: self,
+            owner: owner.to_owned(),
+            settle,
+        })
+    }
+    /// Resolves once every open `connection` had in flight has answered.
+    async fn opens_settled(&self, connection: &str) {
+        let pending = self
+            .opens_by_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(connection)
+            .cloned()
+            .unwrap_or_default();
+        for mut settled in pending {
+            let _ = settled.wait_for(|done| *done).await;
+        }
+    }
+    /// senpi `releaseDisconnectAttachment`'s deferral: subscribes to the turn's settlement and releases the handle
+    /// from a detached task, so neither a dropped connection nor a cancelled command future can skip the release.
+    fn release_after_settle(
+        self: &std::sync::Arc<Self>,
+        session: maho_core::agent_session::AgentSession,
+        session_id: String,
+    ) {
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
+        let settled = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
+        let notify = std::sync::Arc::clone(&settled);
+        let subscription = session.subscribe(std::sync::Arc::new(
+            move |event: &maho_ext_api::AgentSessionEvent| {
+                if matches!(
+                    event,
+                    maho_ext_api::AgentSessionEvent::AgentSettled
+                        | maho_ext_api::AgentSessionEvent::AgentIdle
+                ) && let Some(sender) = notify
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = sender.send(());
+                }
+            },
+        ));
+        // The turn may have settled between the check and the subscription.
+        if !session.is_streaming()
+            && let Some(sender) = settled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            let _ = sender.send(());
+        }
+        let core = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = settled_rx.await;
+            drop(subscription);
+            core.release_owned_session(&session_id).await;
+        });
+    }
+    /// The worker form of [`Self::release_after_settle`] (senpi `worker.subscribeSettled`).
+    fn release_worker_after_settle(
+        self: &std::sync::Arc<Self>,
+        worker: std::sync::Arc<crate::session_worker_client::SessionWorkerClient>,
+        session_id: String,
+    ) {
+        let mut settled = worker.settled();
+        let core = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            while worker.busy() && !worker.is_stopped() {
+                if settled.changed().await.is_err() {
+                    break;
+                }
+            }
+            core.release_owned_session(&session_id).await;
+        });
     }
     /// One owned handle's refcounted detach (senpi `releaseOwnedSession`): tolerant of a lost race,
     /// and only the LAST attachment disposes the binding and closes the runtime.
@@ -2155,6 +3485,8 @@ impl HostCore {
                 return;
             };
             if claim.finalizer != Some(true) {
+                self.publish_status(session_id, "detach", "client", false)
+                    .await;
                 return;
             }
             if let Some(worker) = workers.worker(session_id) {
@@ -2173,7 +3505,10 @@ impl HostCore {
         let Ok(claim) = claim else {
             return;
         };
+        // senpi `releaseOwnedSession`: only a release that leaves the session running is a detach.
         if claim.finalizer != Some(true) {
+            self.publish_status(session_id, "detach", "client", false)
+                .await;
             return;
         }
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
@@ -2265,6 +3600,7 @@ impl HostCore {
                 serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionParked {
                     session_id: session_id.into(),
                     session_path,
+                    reason: Some("idle".into()),
                 })
             }
             None => {
@@ -2400,7 +3736,68 @@ impl HostCore {
                     }
                 }
             };
-            run_host_monitors(
+            // senpi `createZeroSessionTrim` + `onSessionCountChange: (size) => trim.observe(size)`.
+            let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
+                core.session_count().await,
+            ));
+            // The record leaves through a channel: `check` emits under the trimmer lock, which a registry size
+            // change takes while it holds its own state, so the broadcast never runs under either.
+            let (trimmed, mut trimmed_records) = tokio::sync::mpsc::unbounded_channel();
+            let trimmer = std::sync::Arc::new(std::sync::Mutex::new(create_zero_session_trim(
+                move |record| {
+                    let _ = trimmed.send(record);
+                },
+                {
+                    let count = std::sync::Arc::clone(&count);
+                    move || count.load(std::sync::atomic::Ordering::SeqCst)
+                },
+            )));
+            trimmer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .start();
+            let trim_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+            let hook: crate::session_registry::SizeChangeHook = {
+                let (count, trimmer, wake) = (
+                    std::sync::Arc::clone(&count),
+                    std::sync::Arc::clone(&trimmer),
+                    std::sync::Arc::clone(&trim_wake),
+                );
+                std::sync::Arc::new(move |size| {
+                    count.store(size, std::sync::atomic::Ordering::SeqCst);
+                    trimmer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .observe(size);
+                    wake.notify_one();
+                })
+            };
+            match &core.workers {
+                Some(workers) => workers.set_on_size_change(hook),
+                None => core.registry.lock().await.on_size_change = Some(hook),
+            }
+            let trim = crate::host_zero_session_trim::run_zero_session_trimmer(
+                std::sync::Arc::clone(&trimmer),
+                trim_wake,
+                stopped.clone(),
+            );
+            let broadcaster = std::sync::Arc::downgrade(&core);
+            let mut broadcast_stopped = stopped.clone();
+            let broadcast = async move {
+                loop {
+                    tokio::select! {
+                        record = trimmed_records.recv() => match (record, broadcaster.upgrade()) {
+                            (Some(record), Some(core)) => core.broadcast_record(&record),
+                            _ => break,
+                        },
+                        changed = broadcast_stopped.wait_for(|stop| *stop) => {
+                            let _ = changed;
+                            break;
+                        }
+                    }
+                }
+            };
+            let monitors = run_host_monitors(
                 &env,
                 &core.activity,
                 &core.blocked,
@@ -2408,13 +3805,454 @@ impl HostCore {
                 crate::connection_handler::now_ms,
                 publish,
                 stopped,
-            )
-            .await;
+            );
+            tokio::join!(monitors, trim, broadcast);
+            trimmer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stop();
         })
     }
     /// Detaches the closing connection's UI/width state (senpi `releaseOwnerAttachment`); the
     /// ownership count itself was released by the close claim.
-    fn release_owner_attachment(&self, owner: &str, session_id: &str) {
+    /// Whether the registry holds this handle in the `open` state (senpi `registry.peek(id)?.state === "open"`).
+    async fn session_open(&self, session_id: &str) -> bool {
+        let open = |state| state == crate::session_registry::RpcSessionState::Open;
+        match &self.workers {
+            Some(workers) => workers
+                .with_entry(session_id, |entry| open(entry.close.state))
+                .unwrap_or(false),
+            None => self
+                .registry
+                .lock()
+                .await
+                .get(session_id)
+                .is_some_and(|entry| open(entry.close.state)),
+        }
+    }
+    /// The durable id an open handle runs now and whether it is open with a live binding (senpi
+    /// `entry.runtime?.session.sessionId ?? entry.worker?.snapshot?.state.sessionId ?? entry.durableSessionId`).
+    async fn live_identity(&self, session_id: &str) -> Option<(bool, Option<String>, i64)> {
+        if let Some(workers) = &self.workers {
+            return workers.with_entry(session_id, |entry| {
+                let durable = entry
+                    .worker
+                    .snapshot()
+                    .and_then(|snapshot| snapshot.state["sessionId"].as_str().map(str::to_owned))
+                    .or_else(|| entry.durable_session_id.clone());
+                (
+                    entry.close.state == crate::session_registry::RpcSessionState::Open,
+                    durable,
+                    entry.close.attachments,
+                )
+            });
+        }
+        let bound = self.bindings.lock().await.contains_key(session_id);
+        let registry = self.registry.lock().await;
+        registry.get(session_id).map(|entry| {
+            let durable = entry
+                .runtime
+                .as_ref()
+                .map(|runtime| runtime.session().session_id())
+                .or_else(|| entry.durable_session_id.clone());
+            (
+                bound && entry.close.state == crate::session_registry::RpcSessionState::Open,
+                durable,
+                entry.close.attachments,
+            )
+        })
+    }
+    /// senpi `attachLiveSession` + `recordAttachment`: a synchronous refcount change that never opens a path and
+    /// never applies a launch profile; ending a retained session's parked window tells it `session_resumed`.
+    async fn attach_live(&self, owner: &str, session_id: &str) -> Result<(), &'static str> {
+        let now = crate::connection_handler::now_ms();
+        if let Some(workers) = &self.workers {
+            workers
+                .attach_session(session_id, now)
+                .map_err(|_| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
+        } else {
+            let resumed = self
+                .registry
+                .lock()
+                .await
+                .attach_session(session_id, now)
+                .map_err(|_| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
+            if let Some(runtime) = resumed {
+                runtime
+                    .emit_attachment_event(
+                        maho_core::agent_session_runtime::AttachmentEvent::SessionResumed,
+                    )
+                    .await;
+            }
+        }
+        if self.workers.is_some() {
+            let mut fanout = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut declared = None;
+            if fanout.targets.capabilities(owner).is_none() {
+                let capabilities = self
+                    .pending_capabilities
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(owner)
+                    .cloned()
+                    .unwrap_or_else(|| self.options.capabilities.clone());
+                if let Err(error) = fanout.set_capabilities(owner, &capabilities) {
+                    eprintln!("senpi rpc connection {owner} failed: {error}");
+                }
+                declared = Some(capabilities);
+            }
+            if let Err(error) = fanout.attach(owner, session_id, now) {
+                eprintln!("senpi rpc connection {owner} failed: {error}");
+            }
+            drop(fanout);
+            // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+            if let Some(capabilities) = declared {
+                self.presenters.capabilities_changed(owner, &capabilities);
+            }
+            self.attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .attach(owner, session_id);
+            self.presenters.attach(owner, session_id);
+        } else {
+            self.attach_connection(Some(owner), session_id)
+                .await
+                .map_err(|_| "structured_lane_unavailable")?;
+        }
+        Ok(())
+    }
+    /// senpi `attachSession`.
+    async fn attach_session(
+        &self,
+        connection: Option<&str>,
+        session_id: &str,
+        durable_session_id: &serde_json::Value,
+        expected_host_instance: &serde_json::Value,
+    ) -> Result<(), (&'static str, serde_json::Value)> {
+        if self.is_draining() {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_BUSY_LIFECYCLE,
+                crate::session_attachment_commands::draining_refusal_detail(),
+            ));
+        }
+        let unknown = || {
+            (
+                crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,
+                serde_json::json!({}),
+            )
+        };
+        let Some((true, durable, _)) = self.live_identity(session_id).await else {
+            return Err(unknown());
+        };
+        if !crate::session_attachment_commands::identity_matches(
+            durable.as_deref(),
+            durable_session_id,
+            expected_host_instance,
+            crate::protocol_identity::host_instance_id(),
+        ) {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_IDENTITY_MISMATCH,
+                serde_json::json!({}),
+            ));
+        }
+        let Some(owner) = connection else {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                serde_json::json!({"reason":"no_connection"}),
+            ));
+        };
+        self.attach_live(owner, session_id)
+            .await
+            .map_err(|code| (code, serde_json::json!({})))?;
+        // senpi `attach`: every live attachment is published.
+        self.publish_status(session_id, "attach", "client", false)
+            .await;
+        Ok(())
+    }
+    /// senpi `releaseAttachment`: gives up one of the caller's attachments; the session ends only when that was the
+    /// last one, and a turn in flight runs to settlement first (`deferred: true`). A drain owns every outstanding
+    /// physical hold until its park, so it is never preempted.
+    async fn release_attachment(
+        self: &std::sync::Arc<Self>,
+        connection: Option<&str>,
+        id: Option<String>,
+        session_id: String,
+    ) {
+        let owned = connection.is_some_and(|owner| {
+            self.attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .owned_by(owner)
+                .iter()
+                .any(|(owned, _)| *owned == session_id)
+        });
+        let (Some(owner), true) = (connection, owned) else {
+            self.refuse(
+                connection,
+                id,
+                "release_attachment",
+                crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                serde_json::json!({"reason":"not_attached"}),
+                Some(session_id),
+            );
+            return;
+        };
+        let last = self
+            .attachments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owned_by(owner)
+            .iter()
+            .any(|(owned, count)| *owned == session_id && *count == 1);
+        self.attachments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(owner, &session_id);
+        if last {
+            self.release_owner_attachment(owner, &session_id).await;
+        }
+        // The drain owns every outstanding physical hold until its park; never preempt it.
+        let deferred = !self.is_draining() && self.release_disconnect_attachment(&session_id).await;
+        self.success(
+            connection,
+            id,
+            "release_attachment",
+            Some(crate::session_attachment_commands::release_reply(deferred)),
+            Some(session_id),
+        );
+    }
+    /// senpi `releaseDisconnectAttachment`: only the release that would end the session can abort its turn, so that
+    /// one is deferred - never skipped - until the turn settles, from a task no connection owns. `true` means the
+    /// settlement owns the final release; otherwise the release has completed before this returns.
+    async fn release_disconnect_attachment(self: &std::sync::Arc<Self>, session_id: &str) -> bool {
+        let ends_session = |retained: bool, attachments: i64| !retained && attachments <= 1;
+        if let Some(workers) = self.workers.clone() {
+            let busy = workers
+                .with_entry(session_id, |entry| {
+                    entry.close.state == crate::session_registry::RpcSessionState::Open
+                        && ends_session(entry.close.retain_on_disconnect, entry.close.attachments)
+                })
+                .unwrap_or(false)
+                .then(|| workers.worker(session_id))
+                .flatten()
+                .filter(|worker| worker.busy());
+            if let Some(worker) = busy {
+                self.release_worker_after_settle(worker, session_id.to_owned());
+                return true;
+            }
+            self.release_owned_session(session_id).await;
+            return false;
+        }
+        let streaming = {
+            let registry = self.registry.lock().await;
+            registry
+                .get(session_id)
+                .filter(|entry| {
+                    entry.close.state == crate::session_registry::RpcSessionState::Open
+                        && ends_session(entry.close.retain_on_disconnect, entry.close.attachments)
+                })
+                .and_then(|entry| entry.runtime.as_ref())
+                .map(|runtime| runtime.session().clone())
+                .filter(maho_core::agent_session::AgentSession::is_streaming)
+        };
+        if let Some(session) = streaming {
+            self.release_after_settle(session, session_id.to_owned());
+            return true;
+        }
+        self.release_owned_session(session_id).await;
+        false
+    }
+    /// senpi `reclaimSession`: ends the live session holding `sessionPath` for a caller that names its durable id
+    /// and this host, once no other connection is attached. Admission, the visible attach and the claim of ALL the
+    /// caller's holds happen without an await between them that another command could interleave with.
+    async fn reclaim_session(
+        &self,
+        connection: Option<&str>,
+        session_path: &serde_json::Value,
+        durable_session_id: &serde_json::Value,
+        expected_host_instance: &serde_json::Value,
+    ) -> Result<String, (&'static str, serde_json::Value)> {
+        if self.is_draining() {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_BUSY_LIFECYCLE,
+                crate::session_attachment_commands::draining_refusal_detail(),
+            ));
+        }
+        let unknown = || {
+            (
+                crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,
+                serde_json::json!({}),
+            )
+        };
+        let Some(path) = session_path.as_str().filter(|path| !path.is_empty()) else {
+            return Err(unknown());
+        };
+        let canonical = |path: &str| {
+            crate::session_registry::canonical_path(std::path::Path::new(path))
+                .unwrap_or_else(|_| std::path::PathBuf::from(path))
+        };
+        let key = canonical(path);
+        let session_id = self
+            .list_rows(true)
+            .await
+            .into_iter()
+            .find(|row| {
+                row["sessionPath"]
+                    .as_str()
+                    .is_some_and(|path| canonical(path) == key)
+            })
+            .and_then(|row| row["sessionId"].as_str().map(str::to_owned))
+            .ok_or_else(unknown)?;
+        let Some((open, durable, attachments)) = self.live_identity(&session_id).await else {
+            return Err(unknown());
+        };
+        if !open {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_BUSY_LIFECYCLE,
+                serde_json::json!({}),
+            ));
+        }
+        if !expected_host_instance.is_string()
+            || !crate::session_attachment_commands::identity_matches(
+                durable.as_deref(),
+                durable_session_id,
+                expected_host_instance,
+                crate::protocol_identity::host_instance_id(),
+            )
+        {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_IDENTITY_MISMATCH,
+                serde_json::json!({}),
+            ));
+        }
+        let Some(owner) = connection else {
+            return Err((
+                crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                serde_json::json!({"reason":"no_connection"}),
+            ));
+        };
+        let own = self
+            .attachments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owned_by(owner)
+            .into_iter()
+            .find_map(|(owned, count)| (owned == session_id).then_some(count))
+            .unwrap_or(0);
+        let elsewhere = crate::session_attachment_commands::attached_elsewhere(attachments, own);
+        if elsewhere > 0 {
+            return Err((
+                crate::rpc_types::RPC_ERROR_ATTACHED_ELSEWHERE,
+                serde_json::json!({"attachments":elsewhere}),
+            ));
+        }
+        self.attach_live(owner, &session_id)
+            .await
+            .map_err(|code| (code, serde_json::json!({})))?;
+        self.publish_status(&session_id, "attach", "client", false)
+            .await;
+        // claimClose { drainAttachments }: every outstanding hold of the caller goes with this one claim.
+        let finalizer = loop {
+            let claim = match &self.workers {
+                Some(workers) => workers.mark_close(&session_id, false),
+                None => self.registry.lock().await.mark_close(&session_id, false),
+            };
+            match claim {
+                Ok(claim) => {
+                    if let Some(finalizer) = claim.finalizer {
+                        break finalizer;
+                    }
+                }
+                Err(_) => break false,
+            }
+        };
+        {
+            let mut attachments = self
+                .attachments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while attachments.owns(Some(owner), &session_id) {
+                attachments.release(owner, &session_id);
+            }
+        }
+        // The caller stays in the fanout until the seal: the terminal record is delivered to attached connections.
+        self.connection_left(&session_id, owner).await;
+        self.widths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear_width(&session_id, Some(owner));
+        if let Some(dir) = self.handover_parked_dir.get() {
+            crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+        }
+        if finalizer {
+            if let Some(workers) = &self.workers {
+                if let Some(worker) = workers.worker(&session_id) {
+                    worker.cancel_pending_extension_ui_requests();
+                    worker.dispose();
+                }
+                if let Err(error) = workers.close_marked(&session_id).await {
+                    eprintln!("senpi rpc close for session {session_id} failed: {error}");
+                }
+            } else {
+                if let Some(binding) = self.bindings.lock().await.remove(&session_id) {
+                    binding.cancel_pending_extension_ui_requests();
+                    binding.dispose().await;
+                }
+                let closed = self
+                    .registry
+                    .lock()
+                    .await
+                    .close_marked(&session_id, self.options.close_grace_ms)
+                    .await;
+                if let Err(error) = closed {
+                    eprintln!("senpi rpc close for session {session_id} failed: {error}");
+                }
+            }
+            if let Ok(value) =
+                serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
+                    session_id: session_id.clone(),
+                    reason: Some("client_close".into()),
+                    session_path: None,
+                })
+            {
+                // senpi `sealLifecycle(..., attachedOnly = true)`: never broadcast to unattached connections.
+                let stdio = self
+                    .fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .deliver_to_attached(&session_id, value);
+                match stdio {
+                    Ok(Some(record)) => {
+                        let _ = self.default_writer.enqueue(&session_id, record);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("senpi rpc session {session_id} output failed: {error}")
+                    }
+                }
+            }
+        }
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .detach(owner, &session_id);
+        self.forget_session(&session_id);
+        Ok(session_id)
+    }
+    /// senpi `connectionLeft`: whenever a connection stops attaching (owner release, socket drop, reclaim), a
+    /// relocation request asked of that connection ends with it.
+    async fn connection_left(&self, session_id: &str, connection: &str) {
+        let binding = self.bindings.lock().await.get(session_id).cloned();
+        if let Some(binding) = binding {
+            binding.connection_detached(connection);
+        }
+    }
+    async fn release_owner_attachment(&self, owner: &str, session_id: &str) {
+        self.presenters.detach(owner, session_id);
+        self.connection_left(session_id, owner).await;
         self.widths
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2423,6 +4261,31 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .detach(owner, session_id);
+    }
+}
+type OpensByConnection =
+    std::collections::BTreeMap<String, Vec<tokio::sync::watch::Receiver<bool>>>;
+/// One open's barrier (senpi `openWithBarrier`'s `finally`): dropping it settles the open and forgets it.
+struct OpenBarrier<'a> {
+    host: &'a HostCore,
+    owner: String,
+    settle: tokio::sync::watch::Sender<bool>,
+}
+impl Drop for OpenBarrier<'_> {
+    fn drop(&mut self) {
+        let _ = self.settle.send(true);
+        let mut opens = self
+            .host
+            .opens_by_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let own = self.settle.subscribe();
+        if let Some(pending) = opens.get_mut(&self.owner) {
+            pending.retain(|settled| !settled.same_channel(&own));
+            if pending.is_empty() {
+                opens.remove(&self.owner);
+            }
+        }
     }
 }
 /// The writer's side of the worker grant bridge (senpi `SessionEventWriter`'s `settleGrantDialog` /
@@ -2570,7 +4433,7 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         )
         .unwrap_or(u64::MAX)
     }
-    fn prepare_outgoing_state(
+    async fn prepare_outgoing_state(
         &self,
         session_path: &str,
         move_id: &str,
@@ -2578,17 +4441,201 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         crate::session_release::StagedState,
         crate::session_release_interrupt::ReleaseWriteError,
     > {
-        crate::session_release::prepare_outgoing_state(session_path, move_id)
-            .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
+        // senpi `await prepareOutgoingState`: the staging walk runs off the async workers.
+        let (session_path, move_id) = (session_path.to_owned(), move_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::session_release::prepare_outgoing_state(&session_path, &move_id)
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result)
+        .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
     }
     fn discard_outgoing_state(&self, dir: &str) {
-        crate::session_release::discard_outgoing_state(dir);
+        // senpi `await rm(dir, { recursive, force })`. SAFETY-DIVERGENCE(senpi releaseSession): the discard runs from a
+        // drop guard that cannot await, so the removal is detached; a retry stages a fresh attempt folder and
+        // `prepare_outgoing_state` removes any dead attempt left behind, treating one this discard already removed
+        // as gone (senpi `force: true`), so the reply never depends on it.
+        let dir = dir.to_owned();
+        tokio::task::spawn_blocking(move || crate::session_release::discard_outgoing_state(&dir));
     }
     async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
         self.core.tear_down_released(session_id, session_path).await
     }
 }
+/// The router's side of `unload_session` (senpi `unloadSession(port, command)` wiring in `handle`): the release port's
+/// request and attachment counts, plus the unload's own lookup, child count and park teardown.
+struct HostUnloadPort<'a> {
+    release: HostReleasePort<'a>,
+}
+#[async_trait::async_trait]
+impl crate::session_release_interrupt::ReleaseSettlePort for HostUnloadPort<'_> {
+    async fn other_requests_settled(&self, session_id: &str) {
+        crate::session_release_interrupt::ReleaseSettlePort::other_requests_settled(
+            &self.release,
+            session_id,
+        )
+        .await;
+    }
+    fn pending_prompts(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::session_release_interrupt::BoxFuture<'static, ()>> {
+        crate::session_release_interrupt::ReleaseSettlePort::pending_prompts(
+            &self.release,
+            session_id,
+        )
+    }
+}
+#[async_trait::async_trait]
+impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
+    fn draining(&self) -> bool {
+        self.release.core.is_draining()
+    }
+    fn by(&self) -> crate::effect_record::EffectActor {
+        crate::effect_record::EffectActor {
+            connection_id: self.release.connection.unwrap_or("host").to_owned(),
+        }
+    }
+    async fn lookup(&self, session_id: &str) -> Result<crate::session_unload::UnloadEntry, String> {
+        let now = crate::connection_handler::now_ms();
+        if let Some(workers) = &self.release.core.workers {
+            workers
+                .get_for_command(session_id, "unload_session", now)
+                .map_err(|error| error.code)?;
+            return workers
+                .with_entry(session_id, |entry| crate::session_unload::UnloadEntry {
+                    open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+                    session: None,
+                    session_path: entry.session_path.clone(),
+                })
+                .ok_or_else(|| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned());
+        }
+        let mut registry = self.release.core.registry.lock().await;
+        let entry = registry
+            .get_for_command(session_id, "unload_session", now)
+            .map_err(|error| error.code)?;
+        let session = entry.runtime.as_ref().map(|runtime| {
+            std::sync::Arc::new(crate::session_release_adapter::AgentSessionRelease::new(
+                runtime.session().clone(),
+            )) as std::sync::Arc<dyn crate::session_unload::UnloadableSession>
+        });
+        Ok(crate::session_unload::UnloadEntry {
+            open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+            session,
+            session_path: entry.session_path.clone(),
+        })
+    }
+    fn other_requests(&self, session_id: &str) -> usize {
+        crate::session_release::SessionReleasePort::other_requests(&self.release, session_id)
+    }
+    fn other_attachments(&self, session_id: &str) -> u64 {
+        crate::session_release::SessionReleasePort::other_attachments(&self.release, session_id)
+    }
+    async fn open_child_sessions(&self, durable_session_id: &str) -> usize {
+        let rows = match &self.release.core.workers {
+            Some(workers) => workers.list_sessions(true),
+            None => self.release.core.registry.lock().await.list_sessions(true),
+        };
+        open_child_session_count(&rows, durable_session_id)
+    }
+    async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
+        self.release
+            .core
+            .tear_down_unloaded(session_id, session_path)
+            .await
+    }
+}
+/// The session commands that replace the live session in place (senpi `SessionRuntime` new/switch/fork/import).
+fn replaces_session(command: &serde_json::Value) -> bool {
+    matches!(
+        command["type"].as_str(),
+        Some("new_session" | "switch_session" | "fork" | "clone" | "import_jsonl")
+    )
+}
+/// Listed sessions other than `durable_session_id` itself whose context names it as parent or root.
+fn open_child_session_count(rows: &[serde_json::Value], durable_session_id: &str) -> usize {
+    rows.iter()
+        .filter(|row| {
+            row["durableSessionId"] != durable_session_id
+                && (row["context"]["parent_session_id"] == durable_session_id
+                    || row["context"]["root_session_id"] == durable_session_id)
+        })
+        .count()
+}
 tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
+/// The presenter control endpoint's view of this host's writer (senpi `SessionEventWriter` presenter getters).
+#[cfg(unix)]
+struct PresenterWriter {
+    presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+    fanout: std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+}
+#[cfg(unix)]
+impl crate::mcp_presenter_control::McpPresenterWriter for PresenterWriter {
+    fn mcp_form_binding(
+        &self,
+        session_id: &str,
+    ) -> Option<std::sync::Arc<crate::mcp_form_types::McpFormBinding>> {
+        self.presenters.binding(session_id)
+    }
+    fn find_mcp_presenter_connection(
+        &self,
+        nonce: &str,
+    ) -> Option<crate::mcp_presenter_authority::McpPresenterConnection> {
+        self.presenters.find_connection(nonce)
+    }
+    fn connection_capabilities(&self, connection_id: &str) -> Option<Vec<String>> {
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .targets
+            .capabilities(connection_id)
+            .map(<[String]>::to_vec)
+    }
+}
+#[cfg(unix)]
+mod tempfile_dir {
+    /// senpi `mkdtemp(join(tmpdir(), "senpi-presenter-"))`, removed with the host.
+    pub struct PresenterDir {
+        pub path: std::path::PathBuf,
+    }
+    impl PresenterDir {
+        pub fn create() -> Option<Self> {
+            let path =
+                std::env::temp_dir().join(format!("senpi-presenter-{}", uuid::Uuid::new_v4()));
+            crate::host_daemon_paths::create_private_directory(&path).ok()?;
+            Some(Self { path })
+        }
+    }
+    impl Drop for PresenterDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+/// Writes one `mcp_form_reply` raw to the sender's control lane; a failed write detaches its presenter (senpi
+/// `handleMcpForm`). A stdio host (no connection) answers on its default writer.
+fn write_presenter_reply(
+    fanout: &std::sync::Weak<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+    writer: &crate::session_event_writer::SessionWriterActor,
+    presenters: &std::sync::Weak<crate::session_event_writer::SessionMcpPresenters>,
+    connection: Option<&str>,
+    reply: &serde_json::Value,
+) {
+    let Some(connection) = connection else {
+        let _ = writer.enqueue("", reply.clone());
+        return;
+    };
+    let written = fanout.upgrade().is_some_and(|fanout| {
+        fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .enqueue_raw(connection, reply)
+    });
+    if !written && let Some(presenters) = presenters.upgrade() {
+        presenters.reply_failed(connection);
+    }
+}
 /// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
 /// blocking UI requests go to their requester only; content goes to the connections attached to
 /// the session and is remembered for late joiners; lifecycle records follow their visibility
@@ -2598,8 +4645,10 @@ fn route_session_record(
     writer: &crate::session_event_writer::SessionWriterActor,
     session_id: &str,
     owner: Option<&str>,
-    record: serde_json::Value,
+    mut record: serde_json::Value,
 ) {
+    // Every copy, socket or stdio, is stamped where the host enqueues it (senpi `observeLifecycleDelivery`).
+    crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
     let targeted = matches!(
         record["type"].as_str(),
         Some("response" | "bash_execution_update")
@@ -2626,6 +4675,14 @@ fn route_session_record(
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
+    #[test]
+    fn presenter_pipe_paths_are_private_random_pipe_names() {
+        let first = presenter_pipe_path();
+        assert!(first.starts_with(r"\\.\pipe\senpi-presenter-"));
+        assert_eq!(first.len(), r"\\.\pipe\senpi-presenter-".len() + 36);
+        assert_ne!(first, presenter_pipe_path());
+        assert!(!first.contains(crate::protocol_identity::host_instance_id()));
+    }
     fn idle_core() -> std::sync::Arc<HostCore> {
         let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
             |_profile: crate::session_registry::RpcSessionLaunchProfile| -> std::pin::Pin<
@@ -2663,6 +4720,181 @@ mod handoff_tests {
         assert!(!core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
         core.enable_handoff();
         assert!(core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
+    }
+    /// senpi `HostCoreGate.answered`: shutdown waits for a `begin_handover` still being answered, and settles at once
+    /// when none is.
+    #[tokio::test]
+    async fn handover_answered_waits_for_an_answer_in_flight() {
+        let core = idle_core();
+        core.handover_answered().await;
+        let answering = HandoverAnswering::new(&core);
+        let mut waiting = Box::pin(core.handover_answered());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(answering);
+        waiting.await;
+    }
+    #[tokio::test]
+    async fn begin_handover_reaches_the_gate_and_a_foreign_agent_dir_is_refused() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        let request = |agent_dir: &str| {
+            serde_json::json!({"type":"begin_handover","id":"h","operation_id":"op","if_instance_id":"i","if_generation":0,"target_runtime_build_id":"sha256:t","launch":{"command":"x","args":[]},"host_args":[],"env":{},"agent_dir":agent_dir}).to_string()
+        };
+        // Without the gate the request is refused as unsupported.
+        core.handle(Some("c"), &request("/tmp")).await.unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["data"]["refused"], "handover_unsupported");
+        assert!(
+            !core
+                .advertised_capabilities()
+                .iter()
+                .any(|capability| capability
+                    == crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY)
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let ours = temp.path().join("ours");
+        let theirs = temp.path().join("theirs");
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        core.enable_idle_handover(
+            crate::host_handover_wire::HostEndpoint {
+                agent_dir: ours,
+                socket: temp.path().join("s.sock").to_string_lossy().into_owned(),
+            },
+            "sha256:loaded".into(),
+        );
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability
+                    == crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY)
+        );
+        core.handle(Some("c"), &request(&theirs.to_string_lossy()))
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["id"], "h");
+        assert_eq!(answer["success"], true);
+        assert_eq!(answer["data"]["refused"], "foreign_agent_dir");
+        assert!(core.handover.get().unwrap().handover.view().is_none());
+        // An idle host with no sessions and nothing in flight is at its safe idle point.
+        assert!(core.is_host_idle());
+    }
+    /// senpi `withHostIdentity(response, runtimeBuildId, ...)`: the loaded runtime is reported with no idle handover
+    /// installed (a Windows host has none).
+    #[tokio::test]
+    async fn protocol_info_reports_the_runtime_build_id_without_a_handover_gate() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.set_runtime_build_id("sha256:loaded".into());
+        core.handle(Some("c"), r#"{"id":"p","type":"get_protocol_info"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["command"], "get_protocol_info");
+        assert_eq!(answer["data"]["runtimeBuildId"], "sha256:loaded");
+        assert!(answer["data"].get("handover").is_none());
+    }
+    /// senpi `detachConnection`: the asking connection's attachments are gone before the answer, which names
+    /// no session when nothing waits on a turn; a stdio caller is refused.
+    #[tokio::test]
+    async fn detach_connection_releases_the_callers_attachments_before_answering() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "detach_connection")
+        );
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.attachments.lock().unwrap().attach("c", "gone-session");
+        core.handle(Some("c"), r#"{"id":"d","type":"detach_connection"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({"id":"d","type":"response","command":"detach_connection","success":true,"data":{"deferred":[]}})
+        );
+        assert!(
+            !core
+                .attachments
+                .lock()
+                .unwrap()
+                .owns(Some("c"), "gone-session")
+        );
+    }
+    /// senpi router: a host without a prepare-only factory answers `warm` as unsupported and never advertises it.
+    #[tokio::test]
+    async fn warm_answers_unsupported_without_a_prepare_factory() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        assert!(
+            !core
+                .advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "warm")
+        );
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.handle(Some("c"), r#"{"id":"w","type":"warm"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({"id":"w","type":"response","command":"warm","success":true,"data":{"state":"unsupported"}})
+        );
     }
     #[tokio::test]
     async fn protocol_info_advertises_host_capabilities_the_decision_requires() {
@@ -2706,6 +4938,286 @@ mod handoff_tests {
                 "{required}: {capabilities:?}"
             );
         }
+    }
+    #[tokio::test]
+    async fn presenter_capability_is_advertised_only_under_enforcement_and_private_records_never_echo()
+     {
+        let core = idle_core();
+        assert!(!core.advertised_capabilities().iter().any(
+            |capability| capability == crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY
+        ));
+        let Some(core) = std::sync::Arc::try_unwrap(core).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        let core = std::sync::Arc::new(core.with_mcp_presenter_enforcement(true));
+        let capabilities = core.advertised_capabilities();
+        assert_eq!(
+            capabilities
+                .iter()
+                .filter(|capability| *capability
+                    == crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY)
+                .count(),
+            1
+        );
+        // With presenters on, a private record is answered by the writer and a parse error echoes nothing.
+        core.handle(
+            None,
+            r#"{"type":"mcp_form_sync","id":"p","sessionId":"none"}"#,
+        )
+        .await
+        .unwrap();
+        core.handle(None, "{not json").await.unwrap();
+    }
+    /// senpi presenter-rpc "private resolution and the next form survive an outstanding socket drain": private
+    /// frames ride the raw lane, so a peer shed into recovery by an overflowing backlog still receives the request,
+    /// its resolution and the next request, and no overflow error ever previews them.
+    #[tokio::test]
+    async fn private_frames_survive_an_outstanding_socket_drain_recovery_and_overflow() {
+        use tokio::io::AsyncBufReadExt;
+        let Some(core) = std::sync::Arc::try_unwrap(idle_core()).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        let core = core.with_mcp_presenter_enforcement(true);
+        let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let failed = std::sync::Arc::clone(&failures);
+        // A 64-byte pipe nobody reads until the backlog is queued: the drain stays outstanding.
+        let (write, read) = tokio::io::duplex(64);
+        core.register_connection(
+            "human",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                256,
+                30_000,
+                std::sync::Arc::clone(&core.blocked),
+                move |error| failed.lock().unwrap().push(error),
+            ),
+        );
+        core.fanout
+            .lock()
+            .unwrap()
+            .set_capabilities(
+                "human",
+                &[crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY.to_owned()],
+            )
+            .unwrap();
+        let unbind = core
+            .presenters
+            .bind(
+                "session",
+                "durable-socket-drain",
+                std::sync::Arc::new(|| {}),
+                &["human".to_owned()],
+            )
+            .unwrap();
+        let authority = core.presenters.authority().unwrap().clone();
+        let sender = core.presenters.connection("human").unwrap();
+        let owner = authority.enroll(None);
+        let registration = owner
+            .register(
+                unbind.binding(),
+                &sender,
+                crate::mcp_form_types::McpPresenterKind::Desktop,
+            )
+            .unwrap();
+        owner.acquire(&registration).unwrap();
+        // Overflow the 256-byte budget: the resync peer is shed and every later event is dropped until it resyncs.
+        for _ in 0..8 {
+            core.fanout
+                .lock()
+                .unwrap()
+                .enqueue_control(
+                    "human",
+                    &serde_json::json!({"type":"notice","text":"backlog".repeat(10)}),
+                )
+                .unwrap();
+        }
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        let mut seen = Vec::<serde_json::Value>::new();
+        async fn until(
+            lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+            seen: &mut Vec<serde_json::Value>,
+            kind: &str,
+        ) -> serde_json::Value {
+            loop {
+                let line =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                seen.push(value.clone());
+                if value["type"] == kind {
+                    return value;
+                }
+            }
+        }
+        let operation = maho_ai::utils::abort::AbortController::new();
+        // This authority runs on the real clock: give the forms a deadline the test cannot reach.
+        let form = || {
+            let mut input = crate::mcp_form_dialog::tests::input(&operation);
+            input.wire.deadline_ms = 60_000.;
+            input
+        };
+        let presentation = unbind.binding().capture().unwrap();
+        let first = tokio::spawn((presentation.present)(form()));
+        let frame = until(&mut lines, &mut seen, "mcp_form_request").await;
+        let mut envelope = serde_json::json!({});
+        for key in [
+            "sessionId",
+            "bindingEpoch",
+            "attachmentEpoch",
+            "grantId",
+            "dialogId",
+            "dialogToken",
+            "formRevision",
+        ] {
+            envelope[key] = frame[key].clone();
+        }
+        let mut presented = envelope.clone();
+        presented["type"] = "mcp_form_presented".into();
+        authority.receive(&sender, &presented);
+        let mut response = envelope;
+        response["type"] = "mcp_form_response".into();
+        response["action"] = "accept".into();
+        response["content"] = serde_json::json!({"value":"x"});
+        authority.receive(&sender, &response);
+        assert!(first.await.unwrap().human_admission());
+        until(&mut lines, &mut seen, "mcp_form_resolved").await;
+        let second = tokio::spawn((presentation.present)(form()));
+        until(&mut lines, &mut seen, "mcp_form_request").await;
+        unbind.binding().dispose();
+        assert_eq!(
+            second.await.unwrap().kind,
+            crate::mcp_form_types::McpFormOutcomeKind::OperationAborted
+        );
+        let private: Vec<_> = seen
+            .iter()
+            .filter_map(|value| value["type"].as_str())
+            .filter(|kind| kind.starts_with("mcp_form_"))
+            .collect();
+        assert_eq!(
+            private,
+            ["mcp_form_request", "mcp_form_resolved", "mcp_form_request"]
+        );
+        // The backlog was shed (at most the one notice already in flight reached the pipe).
+        assert!(
+            seen.iter()
+                .filter(|value| value["type"] == "notice")
+                .count()
+                <= 1
+        );
+        let token = frame["dialogToken"].as_str().unwrap();
+        assert!(
+            failures
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|error| !error.contains(token))
+        );
+        unbind.unbind(&core.presenters);
+        core.unregister_connection("human");
+    }
+    /// A presenting connection enrolled on `session`, its grant live (`binding.capture()` is `Some`).
+    fn presenting(
+        core: &HostCore,
+        id: &str,
+        session: &str,
+    ) -> crate::session_event_writer::McpFormsUnbind {
+        let unbind = core
+            .presenters
+            .bind(
+                session,
+                &format!("durable-{id}-{session}"),
+                std::sync::Arc::new(|| {}),
+                &[id.to_owned()],
+            )
+            .unwrap();
+        let authority = core.presenters.authority().unwrap().clone();
+        let owner = authority.enroll(None);
+        let registration = owner
+            .register(
+                unbind.binding(),
+                &core.presenters.connection(id).unwrap(),
+                crate::mcp_form_types::McpPresenterKind::Desktop,
+            )
+            .unwrap();
+        owner.acquire(&registration).unwrap();
+        assert!(unbind.binding().capture().is_some());
+        unbind
+    }
+    fn enforcing_core() -> HostCore {
+        let Some(core) = std::sync::Arc::try_unwrap(idle_core()).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        core.with_mcp_presenter_enforcement(true)
+    }
+    /// senpi `setConnectionCapabilities` withdraws on every capability write: the first attach records the
+    /// connection's capabilities, and one without `interactive_user` + `mcp_form_presenter_v1` loses its grants.
+    #[tokio::test]
+    async fn attaching_without_presenter_capabilities_withdraws_the_connections_grants() {
+        let core = enforcing_core();
+        let _client = peer(&core, "c");
+        let unbind = presenting(&core, "c", "rpc-1");
+        {
+            let mut registry = core.registry.lock().await;
+            let mut profile = crate::session_registry::RpcSessionLaunchProfile::default();
+            profile.runtime.cwd = "/tmp".to_owned();
+            assert!(matches!(
+                registry.admit_open(profile, false, 0.),
+                Ok(crate::session_registry::OpenAdmission::Create(handle)) if handle == "rpc-1"
+            ));
+        }
+        core.attach_connection(Some("c"), "rpc-1").await.unwrap();
+        assert!(
+            core.fanout
+                .lock()
+                .unwrap()
+                .targets
+                .capabilities("c")
+                .is_some()
+        );
+        assert!(unbind.binding().capture().is_none());
+        unbind.unbind(&core.presenters);
+    }
+    /// senpi `onConnectionClosed`: a connection the fanout reaps after its queue failed is detached from the
+    /// presenter authority, so its grant no longer presents.
+    #[tokio::test]
+    async fn a_connection_reaped_on_a_failed_queue_loses_its_presenter() {
+        let core = enforcing_core();
+        let (write, read) = tokio::io::duplex(64);
+        drop(read);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
+        let failed_tx = std::sync::Mutex::new(Some(failed_tx));
+        core.register_connection(
+            "gone",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                4096,
+                30_000,
+                std::sync::Arc::clone(&core.blocked),
+                move |_| {
+                    if let Some(failed) = failed_tx.lock().unwrap().take() {
+                        let _ = failed.send(());
+                    }
+                },
+            ),
+        );
+        let unbind = presenting(&core, "gone", "s");
+        core.fanout
+            .lock()
+            .unwrap()
+            .enqueue_control("gone", &serde_json::json!({"type":"notice"}))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), failed_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        core.broadcast_record(&serde_json::json!({"type":"host_notice"}));
+        assert!(!core.fanout.lock().unwrap().is_registered("gone"));
+        assert!(core.presenters.connection("gone").is_none());
+        assert!(unbind.binding().capture().is_none());
+        unbind.unbind(&core.presenters);
     }
     #[tokio::test]
     async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {
@@ -2762,12 +5274,752 @@ mod handoff_tests {
         .unwrap();
         serde_json::from_str(&line).unwrap()
     }
+    /// A host whose in-process sessions run one faux turn held at its first chunk until `gate` opens; `disposed`
+    /// fires when a runtime is torn down. An open naming a `sessionPath` persists the session at that path.
+    fn gated_core(
+        dir: &std::path::Path,
+    ) -> (
+        std::sync::Arc<HostCore>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+    ) {
+        let (gate, gate_rx) = tokio::sync::watch::channel(false);
+        let (calls_tx, calls) = tokio::sync::mpsc::unbounded_channel();
+        let (disposed_tx, disposed) = tokio::sync::mpsc::unbounded_channel();
+        let cwd = dir.to_string_lossy().into_owned();
+        let factory_cwd = cwd.clone();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
+                let cwd = factory_cwd.clone();
+                let session_path = profile.session_path;
+                let gate_rx = gate_rx.clone();
+                let calls_tx = calls_tx.clone();
+                let disposed_tx = disposed_tx.clone();
+                Box::pin(async move {
+                    use maho_ai::providers::faux::{
+                        FauxAssistantMessageOptions, FauxTokenSize, RegisterFauxProviderOptions,
+                        faux_assistant_message, faux_provider,
+                    };
+                    use maho_core::settings_manager::{InMemorySettingsStorage, SettingsManager};
+                    let provider = faux_provider(RegisterFauxProviderOptions {
+                        api: Some("faux".to_owned()),
+                        token_size: Some(FauxTokenSize {
+                            min: Some(1),
+                            max: Some(1),
+                        }),
+                        scheduler_hook: Some(std::sync::Arc::new(move || {
+                            let _ = calls_tx.send(());
+                            let mut gate = gate_rx.clone();
+                            Box::pin(async move {
+                                while !*gate.borrow_and_update() {
+                                    if gate.changed().await.is_err() {
+                                        break;
+                                    }
+                                }
+                            })
+                        })),
+                        ..Default::default()
+                    })
+                    .map_err(|error| error.to_string())?;
+                    let model = provider
+                        .get_model(Some("faux-1"))
+                        .ok_or("the faux provider registers faux-1")?;
+                    provider.set_responses(vec![
+                        faux_assistant_message("done", FauxAssistantMessageOptions::default())
+                            .into(),
+                    ]);
+                    let credentials =
+                        maho_core::auth_storage::AuthStorage::in_memory(Default::default());
+                    credentials.set(
+                        &model.provider,
+                        Some(serde_json::json!({"type":"api_key","key":"faux-test"})),
+                    )?;
+                    let dir = std::path::PathBuf::from(&cwd);
+                    let mut models = maho_core::model_runtime::ModelRuntime::create_sync(
+                        maho_core::model_runtime::CreateModelRuntimeOptions {
+                            models_path: Some(dir.join("models.json")),
+                            auth_path: Some(dir.join("auth.json")),
+                            credentials: Some(std::sync::Arc::new(credentials)),
+                            providers: Some(vec![provider.provider.clone()]),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                    models.register_provider(
+                        &model.provider,
+                        maho_core::provider_composer::ProviderConfigInput {
+                            config: maho_core::model_config_schema::ModelsJsonProvider {
+                                api_key: Some("faux-test".into()),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )?;
+                    let session = maho_core::sdk::create_agent_session(
+                        maho_core::sdk::CreateAgentSessionOptions {
+                            cwd: Some(cwd.clone()),
+                            agent_dir: Some(cwd.clone()),
+                            model_runtime: Some(models),
+                            model: Some(model),
+                            // A profile naming a path gets a persisted manager there, so the registry entry
+                            // keeps its sessionPath (as the CLI factory does); otherwise the session stays in memory.
+                            session_manager: Some(match session_path.as_deref() {
+                                Some(path) => maho_core::session_manager::SessionManager::open(
+                                    path,
+                                    None,
+                                    Some(cwd.as_str()),
+                                    None,
+                                )?,
+                                None => maho_core::session_manager::SessionManager::in_memory(
+                                    &cwd, None, None,
+                                ),
+                            }),
+                            settings_manager: Some(SettingsManager::from_storage(
+                                Box::new(InMemorySettingsStorage::default()),
+                                false,
+                            )),
+                            no_tools: Some(maho_core::sdk::NoToolsMode::All),
+                            auto_title_sessions: Some(false),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .session;
+                    let registry = session.model_registry().clone();
+                    let services = maho_core::agent_session_services::AgentSessionServices {
+                        cwd: cwd.clone(),
+                        agent_dir: cwd,
+                        auth_storage: std::sync::Arc::clone(&registry.auth_storage),
+                        model_registry: registry,
+                        settings_manager: SettingsManager::from_storage(
+                            Box::new(InMemorySettingsStorage::default()),
+                            false,
+                        ),
+                        diagnostics: vec![],
+                    };
+                    let mut runtime = maho_core::agent_session_runtime::AgentSessionRuntime::new(
+                        session,
+                        services,
+                        vec![],
+                        None,
+                        None,
+                    );
+                    runtime.set_before_session_invalidate(Some(Box::new(move || {
+                        let _ = disposed_tx.send(());
+                    })));
+                    Ok(runtime)
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<
+                                        maho_core::agent_session_runtime::AgentSessionRuntime,
+                                        String,
+                                    >,
+                                > + Send,
+                        >,
+                    >
+            },
+        );
+        let writer = std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+            tokio::io::sink(),
+        ));
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: dir.to_path_buf(),
+                cwd,
+                create_runtime,
+                capabilities: Vec::new(),
+                close_grace_ms: 10_000,
+            },
+            writer,
+        ));
+        (core, gate, calls, disposed)
+    }
+    async fn reply_to(
+        reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
+        id: &str,
+    ) -> serde_json::Value {
+        loop {
+            let record = next(reader).await;
+            if record["id"] == id {
+                return record;
+            }
+        }
+    }
+    #[test]
+    fn a_deferred_release_attachment_survives_its_connection_dropping_mid_turn() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, gate, mut calls, mut disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let opened = reply_to(&mut client, "o").await;
+        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+        let prompt =
+            serde_json::json!({"id":"p","type":"prompt","sessionId":session_id,"message":"hi"})
+                .to_string();
+        let prompting = std::sync::Arc::clone(&core);
+        let turn = tokio::spawn(async move { prompting.handle(Some("c"), &prompt).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
+            .await
+            .expect("the turn reaches the provider")
+            .expect("the provider stays alive");
+        let in_flight = core.active_request_count(&session_id);
+        let release =
+            serde_json::json!({"id":"r","type":"release_attachment","sessionId":session_id})
+                .to_string();
+        // The command answers and completes without waiting for the turn: a disconnect can no longer cancel the
+        // deferred release, and its request guard is gone before the wait.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            core.handle(Some("c"), &release),
+        )
+        .await
+        .expect("release_attachment completes while the turn is still running")
+        .unwrap();
+        let reply = reply_to(&mut client, "r").await;
+        assert_eq!(reply["data"]["deferred"], true);
+        assert_eq!(core.active_request_count(&session_id), in_flight);
+        assert!(
+            core.has_session(&session_id).await,
+            "the release waits for the turn"
+        );
+        gate.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), disposed.recv())
+            .await
+            .expect("the deferred release ends the session once its turn settles")
+            .expect("the runtime reports its disposal");
+        let _ = turn.await.unwrap();
+                    });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+    // senpi session-router-routing.ts `unload_session`: the router answers through `unloadSession`; a session with
+    // no file yet is refused (nothing to reopen it by) and stays open.
+    #[tokio::test]
+    async fn unload_session_is_routed_and_a_fileless_session_is_refused_and_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u","type":"unload_session","sessionId":session_id,"children":"maybe"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let invalid = reply_to(&mut client, "u").await;
+        assert_eq!(invalid["success"], false);
+        assert_eq!(
+            invalid["error"],
+            "children must be \"refuse\" or \"detach\"."
+        );
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u2","type":"unload_session","sessionId":session_id})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let refused = reply_to(&mut client, "u2").await;
+        assert_eq!(refused["success"], true);
+        assert_eq!(refused["data"]["outcome"], "refused");
+        assert_eq!(refused["data"]["reason"], "unsupported");
+        assert!(core.has_session(&session_id).await);
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "unload_session")
+        );
+    }
+    // senpi session-router-close.ts `tearDownUnloaded`: an idle session with a file unloads, its attached client
+    // receives `session_parked { reason: "unloaded" }` naming the file, and the handle is gone.
+    #[tokio::test]
+    async fn an_idle_session_with_a_file_unloads_and_parks_as_unloaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd,"sessionPath":path})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u","type":"unload_session","sessionId":session_id})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let mut parked = None;
+        let answer = loop {
+            let record = next(&mut client).await;
+            if record["type"] == "session_parked" {
+                parked = Some(record);
+            } else if record["id"] == "u" {
+                break record;
+            }
+        };
+        assert_eq!(answer["data"]["outcome"], "unloaded", "{answer}");
+        assert_eq!(answer["data"]["sessionPath"], path.as_str());
+        let parked = parked.expect("the park is sealed before the answer");
+        assert_eq!(parked["reason"], "unloaded");
+        assert_eq!(parked["sessionPath"], path.as_str());
+        assert!(!core.has_session(&session_id).await);
+    }
+    #[test]
+    fn open_child_sessions_count_rows_naming_the_session_as_parent_or_root() {
+        let rows = [
+            serde_json::json!({"durableSessionId":"p","context":{}}),
+            serde_json::json!({"durableSessionId":"c1","context":{"parent_session_id":"p"}}),
+            serde_json::json!({"durableSessionId":"c2","context":{"root_session_id":"p"}}),
+            serde_json::json!({"durableSessionId":"x","context":{"parent_session_id":"q"}}),
+        ];
+        assert_eq!(open_child_session_count(&rows, "p"), 2);
+    }
+    // senpi-rpc-session-13 (`connectionLeft`): a connection that stops attaching ends the relocation request that
+    // was asked of it, through the session binding.
+    #[tokio::test]
+    async fn a_dropped_connection_ends_the_relocation_request_it_was_asked() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let binding = core
+            .bindings
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .unwrap();
+        let relocation = binding.relocation().clone();
+        let (asked_tx, mut asked_rx) = tokio::sync::oneshot::channel();
+        let mut asking = Box::pin(relocation.targets(Some("c"), move |record| {
+            let _ = asked_tx.send(record);
+        }));
+        assert!(futures::poll!(&mut asking).is_pending());
+        let asked = asked_rx
+            .try_recv()
+            .expect("the request is sent to the connection");
+        assert_eq!(asked["method"], "list_relocation_targets");
+        core.release_connection("c").await;
+        let answer = asking.await;
+        assert_eq!(answer["reason"], "app_disconnected");
+    }
+    #[tokio::test]
+    async fn tells_the_opener_its_queue_position_before_the_open_completes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c1");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c1"),
+            &serde_json::json!({"id":"open-1","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        // The queued record precedes the open's reply and never wears the response-id field.
+        let queued = loop {
+            let record = next(&mut client).await;
+            assert_ne!(
+                record["id"], "open-1",
+                "the queued record precedes the reply"
+            );
+            if record["type"] == "queued" {
+                break record;
+            }
+        };
+        assert_eq!(queued["type"], "queued");
+        assert_eq!(queued["for_request"], "open-1");
+        assert_eq!(queued["position"], 1.0);
+        assert_eq!(queued["in_flight"], 0.0);
+        assert!(queued.get("id").is_none());
+        assert_eq!(reply_to(&mut client, "open-1").await["success"], true);
+        assert!(core.opens_by_connection.lock().unwrap().is_empty());
+    }
+    // senpi `openWithBarrier`: an open already accepted anywhere on the host counts toward the position, and a
+    // connection's release settles only after its opens did.
+    #[tokio::test]
+    async fn a_concurrent_open_counts_every_open_in_flight_and_release_waits_for_it() {
+        let core = idle_core();
+        let mut second = peer(&core, "c2");
+        let first = core.open_barrier(Some("c1"), Some("open-1")).unwrap();
+        let barrier = core.open_barrier(Some("c2"), Some("open-2")).unwrap();
+        let queued = loop {
+            let record = next(&mut second).await;
+            if record["type"] == "queued" {
+                break record;
+            }
+        };
+        assert_eq!(
+            (queued["position"].as_f64(), queued["in_flight"].as_f64()),
+            (Some(2.0), Some(1.0))
+        );
+        // A stdio open has no connection and no barrier.
+        assert!(core.open_barrier(None, Some("open-3")).is_none());
+        let mut released = Box::pin(core.release_connection("c2"));
+        assert!(
+            futures::poll!(&mut released).is_pending(),
+            "the release waits for the open in flight"
+        );
+        drop(barrier);
+        released.await;
+        assert!(!core.opens_by_connection.lock().unwrap().contains_key("c2"));
+        drop(first);
+        assert!(core.opens_by_connection.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn reclaim_seals_session_closed_to_attached_connections_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut owner = peer(&core, "a");
+        let mut bystander = peer(&core, "b");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        core.handle(
+            Some("a"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd,"sessionPath":path})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut owner, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let durable = core
+            .live_identity(&session_id)
+            .await
+            .and_then(|(_, durable, _)| durable)
+            .unwrap();
+        core.handle(
+            Some("a"),
+            &serde_json::json!({"id":"k","type":"reclaim_session","sessionPath":path,"durableSessionId":durable,"expectedHostInstance":crate::protocol_identity::host_instance_id()})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let closed = loop {
+            let record = next(&mut owner).await;
+            if record["type"] == "session_closed" {
+                break record;
+            }
+            assert_ne!(record["id"], "k", "the reclaim answered before its seal");
+        };
+        assert_eq!(closed["reason"], "client_close");
+        assert_eq!(reply_to(&mut owner, "k").await["success"], true);
+        // The unattached connection's next record is its own reply, not the reclaimed session's seal.
+        core.handle(
+            Some("b"),
+            &serde_json::json!({"id":"m","type":"set_client_info","width":40}).to_string(),
+        )
+        .await
+        .unwrap();
+        loop {
+            let record = next(&mut bystander).await;
+            assert_ne!(record["type"], "session_closed");
+            if record["id"] == "m" {
+                break;
+            }
+        }
+    }
+    #[tokio::test]
+    async fn open_session_merges_the_validated_spawned_by_into_the_launch_profile() {
+        let (profile_tx, mut profiles) = tokio::sync::mpsc::unbounded_channel();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
+                let _ = profile_tx.send(profile);
+                Box::pin(async { Err("the profile is all this test needs".to_owned()) })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<
+                                        maho_core::agent_session_runtime::AgentSessionRuntime,
+                                        String,
+                                    >,
+                                > + Send,
+                        >,
+                    >
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: std::path::PathBuf::from("/tmp"),
+                cwd: "/tmp".to_owned(),
+                create_runtime,
+                capabilities: Vec::new(),
+                close_grace_ms: 0,
+            },
+            std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+                tokio::io::sink(),
+            )),
+        ));
+        let _client = peer(&core, "c");
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":"/tmp","spawnedBy":{"parentSessionId":"p","rootSessionId":"r","taskId":"t"}})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let profile = profiles
+            .try_recv()
+            .expect("the open reached the runtime factory");
+        assert_eq!(
+            profile.spawned_by,
+            Some(maho_core::session_lifecycle_types::SpawnedBy {
+                parent_session_id: "p".into(),
+                root_session_id: "r".into(),
+                task_id: "t".into(),
+            })
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worker_reattach_to_a_sealed_session_is_refused_at_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        // A stand-in worker: answers prepare with the path and commit with an idle snapshot, then stays up.
+        let script = format!(
+            r#"while IFS= read -r line; do
+  r=$(printf '%s' "$line" | sed -n 's/.*"request":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"type":"prepare"'*) printf '{{"type":"prepared","request":%s,"sessionPath":"{path}"}}\n' "$r" ;;
+    *'"type":"commit"'*) printf '{{"type":"ready","request":%s,"snapshot":{{"state":{{"sessionId":"d"}},"sessionPath":"{path}","liveSessionPaths":["{path}"],"busy":false,"streaming":false}}}}\n' "$r" ;;
+    *'"request":'*) printf '{{"type":"result","request":%s}}\n' "$r" ;;
+  esac
+done"#
+        );
+        let spawn: crate::session_worker_client::SpawnSessionWorker =
+            std::sync::Arc::new(move || {
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+            });
+        let core = std::sync::Arc::try_unwrap(idle_core())
+            .ok()
+            .expect("the idle core is uniquely owned")
+            .with_worker_registry(crate::worker_session_registry::WorkerSessionRegistry::new(
+                serde_json::json!({}),
+                spawn,
+                0,
+            ));
+        let core = std::sync::Arc::new(core);
+        let mut client = peer(&core, "c");
+        let open = serde_json::json!({"id":"o","type":"open_session","cwd":temp.path(),"sessionPath":path})
+            .to_string();
+        core.handle(Some("c"), &open).await.unwrap();
+        let opened = reply_to(&mut client, "o").await;
+        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+        let reserved = core
+            .default_writer
+            .reserve_close_response(&session_id, &serde_json::json!({}), true)
+            .unwrap()
+            .unwrap();
+        core.default_writer
+            .complete_close_response(reserved, &session_id, serde_json::json!({}), true, None)
+            .unwrap();
+        let reopen = serde_json::json!({"id":"o2","type":"open_session","cwd":temp.path(),"sessionPath":path})
+            .to_string();
+        core.handle(Some("c"), &reopen).await.unwrap();
+        let refused = reply_to(&mut client, "o2").await;
+        assert_eq!(refused["errorCode"], "session_output_overflow");
+        assert_eq!(refused["errorData"]["action"], "unload_and_reopen");
+        let workers = core.workers.clone().unwrap();
+        assert_eq!(
+            workers.with_entry(&session_id, |entry| entry.close.attachments),
+            Some(1)
+        );
+    }
+    /// dialog-observer.test.ts (senpi#4266): a `dialogs: true` observer that is not attached receives the session's
+    /// dialog feed and its own snapshot marker, never another connection's marker; the owner keeps its content.
+    #[tokio::test]
+    async fn a_dialog_observer_receives_the_dialog_feed_without_attaching() {
+        let core = idle_core();
+        let mut owner = peer(&core, "owner");
+        let mut observer = peer(&core, "observer");
+        core.fanout
+            .lock()
+            .unwrap()
+            .attach("owner", "s", 0.)
+            .unwrap();
+        {
+            let fanout = core.fanout.lock().unwrap();
+            fanout.status.lock().unwrap().source.upsert(
+                "s",
+                crate::session_status_source::entry_view(
+                    crate::session_status_source::RegistryEntryFields {
+                        state: crate::session_registry::RpcSessionState::Open,
+                        kind: maho_ext_api::SessionKind::Interactive,
+                        cwd: "/w",
+                        attachments: 1,
+                        durable_session_id: Some("d1".into()),
+                        session_path: None,
+                        context: &std::collections::BTreeMap::new(),
+                        overlay: None,
+                    },
+                ),
+                crate::session_status_source::StatusRuntime::None,
+            );
+        }
+        core.handle(
+            Some("observer"),
+            r#"{"id":"sub","type":"subscribe_sessions","mirror":"all","dialogs":true,"observe":true}"#,
+        )
+        .await
+        .unwrap();
+        let answer = next(&mut observer).await;
+        assert_eq!(answer["command"], "subscribe_sessions");
+        assert_eq!(answer["data"]["snapshot"][0]["sessionId"], "s");
+        assert_eq!(answer["data"]["snapshot"][0]["seq"], 0);
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("owner"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"owner-marker"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("observer"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"m1"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"ui_request_pending","uiRequestId":"q1","method":"confirm","request":{"method":"confirm"}}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"agent_end","messages":[]}),
+        );
+        let marker = next(&mut observer).await;
+        assert_eq!(
+            (marker["type"].as_str(), marker["markerId"].as_str()),
+            (Some("snapshot_marker"), Some("m1"))
+        );
+        let raised = next(&mut observer).await;
+        assert_eq!(raised["type"], "ui_request_pending");
+        assert_eq!(raised["sessionId"], "s");
+        // Mirrored content, then the status delta it caused, both after the dialog record.
+        assert_eq!(next(&mut observer).await["type"], "agent_end");
+        let status = next(&mut observer).await;
+        assert_eq!(
+            (status["type"].as_str(), status["seq"].as_u64()),
+            (Some("session_status"), Some(1))
+        );
+        // The owner never sees observation records, only the content it is attached to.
+        assert_eq!(next(&mut owner).await["type"], "agent_end");
+        assert!(!core.attachments.lock().unwrap().owns(Some("observer"), "s"));
+    }
     #[tokio::test]
     async fn a_dropped_connection_gives_up_every_attachment_it_held() {
         let core = idle_core();
         core.attachments.lock().unwrap().attach("gone", "s");
         core.release_connection("gone").await;
         assert!(!core.attachments.lock().unwrap().owns(Some("gone"), "s"));
+    }
+    #[tokio::test]
+    async fn attachment_commands_refuse_without_a_live_identity_or_an_attachment() {
+        let core = idle_core();
+        let mut client = peer(&core, "c");
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"a","type":"attach_session","sessionId":"rpc-9","durableSessionId":"d"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let reply = next(&mut client).await;
+        assert_eq!(reply["error"], "unknown_session");
+        assert_eq!(reply["errorCode"], "unknown_session");
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"r","type":"release_attachment","sessionId":"rpc-9"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let reply = next(&mut client).await;
+        assert_eq!(reply["error"], "session_not_attached");
+        assert_eq!(reply["errorData"]["reason"], "not_attached");
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"k","type":"reclaim_session","sessionPath":"","durableSessionId":"d","expectedHostInstance":"h"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next(&mut client).await["error"], "unknown_session");
+        core.begin_drain().await;
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"a2","type":"attach_session","sessionId":"rpc-9","durableSessionId":"d"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let reply = next(&mut client).await;
+        assert_eq!(reply["error"], "session_busy_lifecycle");
+        assert_eq!(reply["errorData"]["reason"], "host_draining");
     }
     #[tokio::test]
     async fn the_idle_policy_reports_an_empty_host_once_its_window_elapses() {
@@ -2817,6 +6069,47 @@ mod handoff_tests {
         assert_eq!(response["sessionId"], "s");
     }
     #[tokio::test]
+    async fn socket_lifecycle_records_and_host_replies_carry_observed_at() {
+        let core = idle_core();
+        let mut client = peer(&core, "c");
+        core.fanout.lock().unwrap().attach("c", "s", 0.).unwrap();
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"session_lifecycle","lifecycle":{"seq":1}}),
+        );
+        assert!(next(&mut client).await["lifecycle"]["observedAt"].is_string());
+        core.respond_record(
+            Some("c"),
+            "s",
+            serde_json::json!({"type":"response","command":"open_session","success":true,"data":{"sessionId":"s","state":{"lifecycle":{"seq":1}}}}),
+        );
+        assert!(next(&mut client).await["data"]["state"]["lifecycle"]["observedAt"].is_string());
+    }
+    #[tokio::test]
+    async fn a_snapshot_marker_is_never_broadcast_to_attachments() {
+        let core = idle_core();
+        let mut client = peer(&core, "c");
+        core.fanout.lock().unwrap().attach("c", "s", 0.).unwrap();
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("c"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"m"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"agent_end"}),
+        );
+        assert_eq!(next(&mut client).await["type"], "agent_end");
+    }
+    #[tokio::test]
     async fn late_joiner_replays_the_in_flight_message() {
         let core = idle_core();
         let _first = peer(&core, "one");
@@ -2857,7 +6150,7 @@ pub fn host_shutdown_signals_from_env() -> HostShutdownSignals {
     let env: HashMap<String, String> = std::env::vars().collect();
     let policy = resolve_host_idle_policy(&env, None, None);
     HostShutdownSignals {
-        watchdog: crate::host_watchdog::read_host_watchdog_config_from_brand_env(&env),
+        watchdog: crate::host_internal_transport::host_watchdog_binding(),
         empty_exit_ms: Some(policy.empty_exit_ms),
     }
 }
@@ -2894,7 +6187,11 @@ pub async fn run_multi_session_host_with_signals(
     #[cfg(any(unix, windows))]
     {
         match listen.as_deref() {
-            None | Some("stdio://") => run_stdio_host(core).await,
+            None | Some("stdio://") => {
+                // A stdio host serves no socket: it publishes claims only into a told daemon directory.
+                core.install_endpoint_reservations(None).await;
+                run_stdio_host(core).await
+            }
             Some(path) => run_socket_host(core, path.to_owned(), signals).await,
         }
     }
@@ -3133,6 +6430,15 @@ async fn run_socket_host(
         watchdog,
         empty_exit_ms,
     } = signals;
+    // senpi `internalHostTransport`: the sealed hop (stdin key), the Windows secret, or the public key filter.
+    let transport = std::sync::Arc::new(crate::host_internal_transport::internal_host_transport(
+        watchdog,
+        secret.clone(),
+        (!pipe_address).then_some((core.options.agent_dir.as_path(), path.as_str())),
+    )?);
+    let watchdog = transport.watchdog_config.clone();
+    let handoff =
+        std::sync::Arc::new(crate::host_handoff_announcement::HandoffAnnouncement::default());
     let public_socket = watchdog
         .as_ref()
         .and_then(|config| config.public_socket.clone());
@@ -3234,6 +6540,33 @@ async fn run_socket_host(
     )
     .dir;
     core.set_handover_parked_dir(daemon_dir.clone());
+    core.install_endpoint_reservations(Some(&endpoint_socket))
+        .await;
+    // senpi `runSocketHost`: the runtime this host loaded, computed once at startup. A successor an idle handover
+    // started for another runtime exits before it listens, leaving its predecessor serving.
+    let runtime_build_id = startup_runtime_build_id(&core.options.cwd);
+    if let Ok(expected) = std::env::var(crate::host_idle_handover::EXPECTED_RUNTIME_BUILD_ID_ENV)
+        && Some(expected.as_str()) != runtime_build_id.as_deref()
+    {
+        eprintln!(
+            "senpi rpc host: runtime {} is not the handover target {expected}; exiting",
+            runtime_build_id.as_deref().unwrap_or("unreadable")
+        );
+        std::process::exit(1);
+    }
+    if let Some(runtime_build_id) = &runtime_build_id {
+        core.set_runtime_build_id(runtime_build_id.clone());
+    }
+    #[cfg(unix)]
+    if let Some(runtime_build_id) = runtime_build_id {
+        core.enable_idle_handover(
+            crate::host_handover_wire::HostEndpoint {
+                agent_dir: core.options.agent_dir.clone(),
+                socket: endpoint_socket.clone(),
+            },
+            runtime_build_id,
+        );
+    }
     {
         let core = core.clone();
         let host_socket = endpoint_socket.clone();
@@ -3264,6 +6597,26 @@ async fn run_socket_host(
     }
     let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
+    // A key record that cannot be published safely ends this host: held connections are refused, never served
+    // keyless (senpi `transport.publish(() => shutdown(1))`).
+    if transport.publish().is_err() {
+        watchdog_task.abort();
+        crate::socket_ownership::unlink_owned_socket(
+            &path,
+            bound,
+            if cfg!(windows) {
+                "win32"
+            } else {
+                std::env::consts::OS
+            },
+            |_| {},
+        );
+        transport.dispose();
+        std::process::exit(1);
+    }
+    let draining_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(unix)]
+    let presenter_dir = core.start_presenter_control().await;
     let connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut next = 0u64;
     let mut draining = false;
@@ -3300,8 +6653,13 @@ async fn run_socket_host(
                     tick=std::time::Duration::from_millis(crate::session_command_router::DRAIN_SWEEP_MS);
                     eprintln!("senpi rpc host: draining for a generation handoff");
                     let superseded=endpoint_superseded(&path,&bound,handoff_public_socket.as_deref(),&public_owner);
-                    let successor=superseded.then(||crate::rpc_types::RpcHostSuccessor{socket:handoff_public_socket.clone().unwrap_or_else(||path.clone())});
-                    if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcHostLifecycleEvent::HostSuperseded{instance_id:crate::protocol_identity::host_instance_id().to_owned(),generation:crate::protocol_identity::host_generation(&std::env::vars().collect::<std::collections::HashMap<String,String>>()),successor}){core.broadcast_record(&value);}
+                    let announced_socket=handoff_public_socket.clone().unwrap_or_else(||path.clone());
+                    let generation=crate::protocol_identity::host_generation(&std::env::vars().collect::<std::collections::HashMap<String,String>>());
+                    // The announcement is registered before the drain is visible to admitting connections.
+                    let announcing=handoff.begin(async{Ok(superseded)},crate::protocol_identity::host_instance_id(),generation,&announced_socket,|message|eprintln!("senpi rpc host: {message}"));
+                    draining_flag.store(true,std::sync::atomic::Ordering::SeqCst);
+                    // A failed announcement still drains: parking is what lets this generation exit (senpi#2285).
+                    if let Some(value)=announcing.await{core.broadcast_record(&value);}
                     core.begin_drain().await;
                 }
             },
@@ -3309,11 +6667,23 @@ async fn run_socket_host(
             accepted=listener.accept()=>{
                 let socket=accepted?;
                 if draining{drop(socket);continue;}
+                // The sealed hop authenticates before the host registers a connection: one that reached the listener
+                // before the drain began still gets the announcement, then a clean close (senpi `deliverLate`).
+                let arrived_before_drain=true;
                 next+=1;let connection=format!("socket-{next}");
                 connections.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 empty_since=None;
-                let core=core.clone();let counter=connections.clone();let secret=secret.clone();
-                tokio::spawn(async move{serve_socket_connection(core,connection,socket,secret).await;counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);});
+                let core=core.clone();let counter=connections.clone();let transport=transport.clone();let handoff=handoff.clone();let draining_flag=draining_flag.clone();
+                tokio::spawn(async move{
+                    if let Some(stream)=transport.admit(socket).await{
+                        if draining_flag.load(std::sync::atomic::Ordering::SeqCst){
+                            let _=handoff.deliver_late(stream,arrived_before_drain);
+                        }else{
+                            serve_socket_connection(core,connection,stream).await;
+                        }
+                    }
+                    counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);
+                });
             }
             ()=tokio::time::sleep(tick)=>{
                 if draining&&core.drain_sweep().await{break;}
@@ -3329,9 +6699,16 @@ async fn run_socket_host(
     let _ = observers_stop.send(true);
     observers.abort();
     idle.abort();
+    core.dispose_handover();
     if let Some(reaper) = reaper {
         reaper.stop();
     }
+    core.dispose_presenter_control();
+    // senpi `await handoverAnswered()`: a handover that completed at once drains this host; its caller still gets the
+    // answer.
+    core.handover_answered().await;
+    #[cfg(unix)]
+    drop(presenter_dir);
     // Ownership-checked: only the entry THIS process bound is removed (senpi `unlinkOwnedSocket`).
     crate::socket_ownership::unlink_owned_socket(
         &path,
@@ -3343,10 +6720,30 @@ async fn run_socket_host(
         },
         |_| {},
     );
+    transport.dispose();
     if let Some(code) = signal_code {
         std::process::exit(code);
     }
     Ok(())
+}
+/// senpi `startupRuntimeBuildId`: this process's runtime id over its launch profile, or `None` (logged) when unreadable.
+#[cfg(any(unix, windows))]
+fn startup_runtime_build_id(cwd: &str) -> Option<String> {
+    let argv = std::env::args().skip(1).collect::<Vec<_>>();
+    let computed = crate::protocol_identity::host_launch_profile(&argv, cwd)
+        .map_err(std::io::Error::other)
+        .and_then(|profile| {
+            crate::runtime_build_id::compute_runtime_build_id(
+                &crate::runtime_build_id::RuntimeBuildIdInput::from_profile(&profile.core),
+            )
+        });
+    match computed {
+        Ok(id) => Some(id),
+        Err(cause) => {
+            eprintln!("senpi rpc host: runtime identity unreadable: {cause}");
+            None
+        }
+    }
 }
 /// Whether the endpoint this host serves is held by another socket entry now (senpi
 /// `runSocketHost`'s `endpointSuperseded`): a supervised host answers for the PUBLIC path its
@@ -3378,20 +6775,9 @@ fn endpoint_superseded(
 async fn serve_socket_connection(
     core: std::sync::Arc<HostCore>,
     connection: String,
-    mut socket: HostStream,
-    secret: Option<std::sync::Arc<Vec<u8>>>,
+    socket: crate::host_lifecycle_proxy::BoxedHop,
 ) {
-    // A wrong or missing secret ends the connection before any JSONL byte is read or answered.
-    if let Some(secret) = secret
-        && crate::socket_transport::authenticate_socket(&mut socket, &secret)
-            .await
-            .is_err()
-    {
-        return;
-    }
-    #[cfg(unix)]
-    let (read, write) = socket.into_split();
-    #[cfg(windows)]
+    // Admission (sealed hop, secret or public key filter) already ran in `InternalHostTransport::admit`.
     let (read, write) = tokio::io::split(socket);
     let failed = connection.clone();
     let actor = crate::socket_event_fanout::SocketEventSinkActor::new(
@@ -3434,6 +6820,302 @@ async fn serve_socket_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_core() -> (std::sync::Arc<HostCore>, tokio::io::DuplexStream, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let (client_read, host_write) = tokio::io::duplex(8192);
+        let writer = std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+            host_write,
+        ));
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            |_profile: crate::session_registry::RpcSessionLaunchProfile| {
+                Box::pin(async { Err("this host opens no session in this test".to_owned()) })
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: directory.path().to_owned(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                create_runtime,
+                capabilities: vec![],
+                close_grace_ms: 10_000,
+            },
+            writer,
+        ));
+        (core, client_read, directory)
+    }
+    #[tokio::test]
+    async fn open_session_rejects_lone_provider_or_model_id() {
+        let (core, _, _directory) = test_core();
+        let cmd1: crate::rpc_types::RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"open_session","provider":"openai"}))
+                .unwrap();
+        let res1 = core.open_session_inner(None, &cmd1.body, None).await;
+        assert_eq!(
+            res1.err().unwrap().message,
+            "invalid_launch_profile: provider and modelId must be given together"
+        );
+
+        let cmd2: crate::rpc_types::RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"open_session","modelId":"gpt-4"}))
+                .unwrap();
+        let res2 = core.open_session_inner(None, &cmd2.body, None).await;
+        assert_eq!(
+            res2.err().unwrap().message,
+            "invalid_launch_profile: provider and modelId must be given together"
+        );
+    }
+    #[tokio::test]
+    async fn open_session_rejects_explicit_null_host_instance() {
+        let (core, _, _directory) = test_core();
+        let command: crate::rpc_types::RpcCommand = serde_json::from_value(
+            serde_json::json!({"type":"open_session","expectedHostInstance":null}),
+        ).unwrap();
+        let refusal = core.open_session_inner(None, &command.body, None).await.err().unwrap();
+        assert_eq!(refusal.data.unwrap()["reason"], "invalid_expected_host_instance");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+    }
+    #[tokio::test]
+    async fn open_session_wire_refusals_and_attach_only_semantics() {
+        let (core, client_read, directory) = test_core();
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(client_read);
+
+        core.handle(
+            None,
+            r#"{"id":"r1","type":"open_session","expectedHostInstance":""}"#,
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r1");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: expectedHostInstance must be a non-empty string"
+        );
+        assert_eq!(
+            resp["errorCode"],
+            "invalid_launch_profile: expectedHostInstance must be a non-empty string"
+        );
+        assert_eq!(
+            resp["errorData"]["reason"],
+            "invalid_expected_host_instance"
+        );
+        assert_eq!(resp["errorData"]["action"], "supply_host_instance");
+
+        core.handle(
+            None,
+            r#"{"id":"r2","type":"open_session","expectedHostInstance":"wrong-inst"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r2");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error"], "owner_changed");
+        assert_eq!(resp["errorCode"], "owner_changed");
+        assert_eq!(resp["errorData"]["reason"], "host_instance_mismatch");
+        assert_eq!(resp["errorData"]["action"], "rediscover_holder");
+        assert_eq!(resp["errorData"]["expectedHostInstance"], "wrong-inst");
+        assert_eq!(
+            resp["errorData"]["hostInstance"],
+            crate::protocol_identity::host_instance_id()
+        );
+
+        let live_id = crate::protocol_identity::host_instance_id();
+        let session_path = directory.path().join("unheld.jsonl");
+        core.handle(
+            None,
+            &serde_json::json!({"id":"r3","type":"open_session","expectedHostInstance":live_id,"sessionPath":session_path}).to_string(),
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r3");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error"], "session_not_held");
+        assert_eq!(resp["errorCode"], "session_not_held");
+        assert_eq!(resp["errorData"]["reason"], "session_not_held");
+        assert_eq!(resp["errorData"]["action"], "rediscover_holder");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+
+        core.handle(
+            None,
+            r#"{"id":"r4","type":"open_session","kind":"unsupported_kind"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r4");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_kind: kind must be \"interactive\" or \"worker\"."
+        );
+
+        core.handle(None, r#"{"id":"r5","type":"open_session","kind":999}"#)
+            .await
+            .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r5");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_kind: kind must be \"interactive\" or \"worker\"."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r6","type":"open_session","context":"raw-string"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r6");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["errorCode"], "invalid_session_context");
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context must be an object of string values."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r7","type":"open_session","context":{"Bad_Key":"val"}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r7");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context key \"Bad_Key\" must match ^[a-z][a-z0-9_]*$."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r8","type":"open_session","context":{"valid":123}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r8");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_session_context: context value for key \"valid\" must be a string."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"policy","type":"open_session","context":{"memory_write":"allow"}}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "policy");
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["errorCode"], "invalid_session_context");
+        assert!(core.registry.lock().await.list_sessions(true).is_empty());
+
+        core.handle(
+            None,
+            r#"{"id":"r9","type":"open_session","auto_title":"not-bool"}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r9");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: auto_title must be a boolean."
+        );
+
+        core.handle(
+            None,
+            r#"{"id":"r10","type":"open_session","attended":true}"#,
+        )
+        .await
+        .unwrap();
+        line.clear();
+        tokio::time::timeout(std::time::Duration::from_secs(5), lines.read_line(&mut line)).await.unwrap().unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(resp["id"], "r10");
+        assert_eq!(resp["success"], false);
+        assert_eq!(
+            resp["error"],
+            "invalid_launch_profile: attended must be false or omitted"
+        );
+    }
+    /// senpi `sessionMemory`: only the session's own kernels count, and a session without one reports zeros.
+    #[test]
+    fn a_rows_memory_sums_only_its_own_kernels() {
+        let kernel = |session: &str, bytes| {
+            maho_core::memory_report::kernel_registry_read::HostKernelMemoryRow {
+                session_id: session.into(),
+                language: "js".into(),
+                live_bytes: bytes,
+                measure: "heap".into(),
+            }
+        };
+        let kernels = [kernel("a", 10), kernel("b", 5), kernel("a", 7)];
+        assert_eq!(
+            session_memory(&kernels, "a"),
+            serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":17,"kernel_count":2})
+        );
+        assert_eq!(
+            session_memory(&kernels, "c"),
+            serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":0,"kernel_count":0})
+        );
+    }
+    /// senpi `createZeroSessionTrim`: a drop to zero is answered by one `host_trimmed` record on the next tick;
+    /// with no collector the record says `collected: false`.
+    #[test]
+    fn a_drop_to_zero_reports_one_uncollected_trim() {
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        let (seen, sessions) = (
+            std::sync::Arc::clone(&records),
+            std::sync::Arc::clone(&count),
+        );
+        let mut trimmer = create_zero_session_trim(
+            move |record| seen.lock().unwrap().push(record),
+            move || sessions.load(std::sync::atomic::Ordering::SeqCst),
+        );
+        trimmer.start();
+        trimmer.observe(1);
+        count.store(0, std::sync::atomic::Ordering::SeqCst);
+        trimmer.observe(0);
+        trimmer.check();
+        trimmer.check();
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["type"], "host_trimmed");
+        assert_eq!(records[0]["collected"], false);
+        assert_eq!(records[0]["sessions"], 0);
+    }
     #[test]
     fn explicit_policy_overrides_environment_and_bad_env_uses_defaults() {
         let env = HashMap::from([

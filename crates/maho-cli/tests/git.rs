@@ -32,3 +32,18 @@ fn hosted_shorthands_preserve_upstream_clone_address() {
     }
     let parsed = parse_git_url("git:user/repo@release").unwrap(); assert_eq!(parsed.repo, "https://user/repo"); assert_eq!(parsed.reference.as_deref(), Some("release"));
 }
+// git-ssh-url.test.ts `toMatchObject` fields that the one-line ports above leave unchecked.
+#[test]
+fn upstream_parsed_sources_carry_host_and_path() {
+    for (input, repo, reference) in [
+        ("https://github.com/user/repo", "https://github.com/user/repo", None),
+        ("ssh://git@github.com/user/repo", "ssh://git@github.com/user/repo", None),
+        ("https://github.com/user/repo@v1.0.0", "https://github.com/user/repo", Some("v1.0.0")),
+        ("git:git@github.com:user/repo", "git@github.com:user/repo", None),
+        ("git:github.com/user/repo", "https://github.com/user/repo", None),
+        ("git:git@github.com:user/repo@v1.0.0", "git@github.com:user/repo", Some("v1.0.0")),
+    ] {
+        let parsed = parse_git_url(input).unwrap();
+        assert_eq!((parsed.host.as_str(), parsed.path.as_str(), parsed.repo.as_str(), parsed.reference.as_deref()), ("github.com", "user/repo", repo, reference), "{input}");
+    }
+}

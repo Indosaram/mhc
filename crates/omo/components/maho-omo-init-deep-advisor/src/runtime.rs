@@ -20,7 +20,7 @@ pub async fn run_advisor_after_preflight(api:&ExtensionApi,context:&ExtensionCon
     }
     if typing() { return Ok(()); }
     let choices=CHOICES.iter().map(|s|(*s).to_owned()).collect::<Vec<_>>();
-    let choice=context.ui.select("Init-deep",&choices,ExtensionUiDialogOptions {timeout_ms:Some(60_000),signal:None}).await;
+    let choice=context.ui.select("Init-deep",&choices,ExtensionUiDialogOptions {timeout_ms:Some(60_000),signal:None,..Default::default()}).await;
     handle_choice(choice.as_deref(),api,preflight,&repo,&eligibility,skills_root,now)
 }
 pub fn prepare_proposal(preflight:&AdvisorPreflight,now:f64) -> std::io::Result<Option<(String,EligibilityResult)>> {

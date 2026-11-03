@@ -1,10 +1,123 @@
 //! Durable session lifecycle controller, shared by session front ends.
 use crate::lifecycle_children::LifecycleChildren;
-use crate::lifecycle_ledger::LifecycleLedger;
+use crate::lifecycle_ledger::{LedgerUpdate, LifecycleLedger};
+use crate::lifecycle_stop::{DeadlineStopCapture, RunStopFacts, same_stop, stop_detail};
+use crate::lifecycle_wait_items::{WaitSourceItems, project_wait_items};
 use crate::session_activity::SessionActivitySnapshot;
 use crate::session_lifecycle_types::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// The `session_hold` key a reopened session installs, before session_start producers run, when its last run
+/// was interrupted: opening a session is not explicit Resume, so automatic work waits for human input or Resume.
+pub use crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY;
+
+/// Children reports a parent's waits name; the rest are counted in `childReportsOmitted`.
+const MAX_CHILD_REPORTS: usize = 32;
+
+#[derive(Clone, Debug)]
+struct OutstandingTool {
+    tool_name: String,
+    tool_call_id: String,
+    since: String,
+}
+
+/// Live run activity (senpi `SessionLifecycleController` `outstandingTools`/`modelSince`): the oldest outstanding
+/// top-level tool, else the model stream in progress. Wire-only; durable records never carry it.
+#[derive(Clone, Debug, Default)]
+pub struct LifecycleActivity {
+    /// Insertion-ordered: the first entry is the oldest outstanding top-level tool.
+    outstanding_tools: Vec<OutstandingTool>,
+    model_since: Option<String>,
+}
+impl LifecycleActivity {
+    pub fn clear(&mut self) {
+        self.outstanding_tools.clear();
+        self.model_since = None;
+    }
+    /// Returns whether the event changed the live activity.
+    pub fn observe(&mut self, event: &maho_agent::types::AgentEvent) -> bool {
+        use maho_agent::types::AgentEvent;
+        match event {
+            AgentEvent::ToolExecutionStart {
+                tool_call_id,
+                tool_name,
+                parent_tool_call_id: None,
+                ..
+            } => {
+                if let Some(tool) = self
+                    .outstanding_tools
+                    .iter_mut()
+                    .find(|tool| &tool.tool_call_id == tool_call_id)
+                {
+                    tool.tool_name = tool_name.clone();
+                    tool.since = now_iso();
+                } else {
+                    self.outstanding_tools.push(OutstandingTool {
+                        tool_name: tool_name.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                        since: now_iso(),
+                    });
+                }
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                parent_tool_call_id: None,
+                ..
+            } => self
+                .outstanding_tools
+                .retain(|tool| &tool.tool_call_id != tool_call_id),
+            // Only the provider stream start is live model activity; prepared/synthetic starts are not.
+            AgentEvent::MessageStart {
+                message,
+                streaming: Some(true),
+            } if message.role() == "assistant" => {
+                self.model_since = Some(now_iso());
+            }
+            AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
+                self.model_since = None;
+            }
+            AgentEvent::AgentEnd { .. } => self.clear(),
+            _ => return false,
+        }
+        true
+    }
+    /// The live `activity` a running lifecycle projects; `None` when the state is not running or nothing is live.
+    pub fn project(&self, state: &str) -> Option<Value> {
+        if state != "running" {
+            return None;
+        }
+        match self.outstanding_tools.first() {
+            Some(oldest) => Some(
+                json!({"kind":"tool","toolName":oldest.tool_name,"toolCallId":oldest.tool_call_id,"since":oldest.since,"outstanding":self.outstanding_tools.len()}),
+            ),
+            None => self
+                .model_since
+                .as_ref()
+                .map(|since| json!({"kind":"model","since":since})),
+        }
+    }
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// `projectWaitItems(record)`: the named items a custody record or source carries, in wire form.
+fn project_record_items(record: &Value, wait: &mut Value) {
+    let detail: WaitSourceItems = serde_json::from_value(json!({
+        "items": record.get("items").cloned().unwrap_or(Value::Null),
+        "omittedItems": record.get("omittedItems").cloned().unwrap_or(Value::Null),
+    }))
+    .unwrap_or_default();
+    let projected = project_wait_items(&detail);
+    if let Some(items) = projected.items {
+        wait["items"] = json!(items);
+    }
+    if let Some(omitted) = projected.omitted_items {
+        wait["omittedItems"] = json!(omitted);
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LifecycleRuntimeFacts {
@@ -39,8 +152,14 @@ pub struct SessionLifecycleController {
     idle_boundary_passed: bool,
     pending_human: bool,
     admitting_human: bool,
+    run_admitted: bool,
     goal: Option<Value>,
     liveness: Option<Value>,
+    stop_facts: Option<RunStopFacts>,
+    deadline_stop: Option<DeadlineStopCapture>,
+    activity: LifecycleActivity,
+    /// A run that ended before this process keeps exactly the stop its record carries; none is derived for it.
+    restored_run_id: Option<String>,
 }
 impl SessionLifecycleController {
     pub fn new(options: SessionLifecycleOptions) -> Self {
@@ -51,6 +170,7 @@ impl SessionLifecycleController {
         let ledger = LifecycleLedger::new(&options.session_id, spawned.as_ref(), &options.entries);
         let children = LifecycleChildren::new(&options.entries);
         let liveness = ledger.last_turn_end.clone();
+        let restored_run_id = ledger.run_id.clone();
         // Move the custody store out while retaining the remaining immutable options.
         let SessionLifecycleOptions {
             session_id,
@@ -76,8 +196,13 @@ impl SessionLifecycleController {
             idle_boundary_passed: false,
             pending_human: false,
             admitting_human: false,
+            run_admitted: false,
             goal: None,
             liveness,
+            stop_facts: None,
+            deadline_stop: None,
+            activity: LifecycleActivity::default(),
+            restored_run_id,
         }
     }
     fn checkpoint(&mut self) {
@@ -95,6 +220,25 @@ impl SessionLifecycleController {
     }
     pub fn requires_human_continuation(&self) -> bool {
         self.ledger.interrupted && !self.pending_human
+    }
+    /// The hold key to install when this session is opened, if its run must wait for a person.
+    pub fn opening_hold_key(&self) -> Option<&'static str> {
+        self.requires_human_continuation()
+            .then_some(INTERRUPTED_RUN_HOLD_KEY)
+    }
+    /// Binding restore: consumed work is discovered before session_start can queue another automatic turn. A
+    /// custody record with a ticket that was consumed, or whose delivery the transcript already holds, marks the
+    /// run interrupted; the later recovery pass still writes interruption/tool records.
+    pub fn mark_interrupted_from_custody(&mut self, delivered: impl Fn(&str) -> bool) {
+        let consumed = self.obligations.active().into_iter().any(|record| {
+            record.ticket_id.as_deref().is_some_and(|ticket| {
+                record.state == crate::work_custody_record::CustodyState::Consumed
+                    || delivered(ticket)
+            })
+        });
+        if consumed {
+            self.ledger.interrupted = true;
+        }
     }
     pub fn next_run_origin(&self) -> EpochOrigin {
         if self.pending_human {
@@ -117,6 +261,10 @@ impl SessionLifecycleController {
         let append = self.options.append.clone();
         self.ledger.human_input(at, |r| append(r));
     }
+    /// A turn was admitted and its run is about to start.
+    pub fn note_run_admitted(&mut self) {
+        self.run_admitted = true;
+    }
     pub fn admission_settled(&mut self) {
         self.admitting_human = false;
         if !self.ledger.run_active
@@ -125,12 +273,20 @@ impl SessionLifecycleController {
         {
             self.pending_human = false;
         }
+        // An admitted run publishes its own opening record when it starts (senpi#3980).
+        if self.run_admitted {
+            return;
+        }
         self.recompute();
     }
     pub fn start_run(&mut self, origin: Option<EpochOrigin>) {
+        self.activity.clear();
         self.admitting_human = false;
+        self.run_admitted = false;
         self.idle_boundary_passed = false;
         self.liveness = None;
+        self.stop_facts = None;
+        self.deadline_stop = None;
         let interrupted = self
             .ledger
             .interrupted
@@ -146,9 +302,19 @@ impl SessionLifecycleController {
             self.obligations.settle_run(&id);
         }
         self.recompute();
-        self.checkpoint();
+        self.publish_unwritten();
+    }
+    fn publish_unwritten(&mut self) {
+        if self.obligations.flush().is_err() {
+            self.ledger.custody_write_failed();
+            return;
+        }
+        let append = self.options.append.clone();
+        self.ledger.publish_unwritten(|r| append(r));
     }
     pub fn idle(&mut self) {
+        self.activity.clear();
+        self.run_admitted = false;
         self.ledger.run_active = false;
         self.idle_boundary_passed = true;
         if let Some(id) = self.ledger.run_id.clone() {
@@ -157,7 +323,49 @@ impl SessionLifecycleController {
         self.recompute();
         self.checkpoint();
     }
+    /// Synchronous core boundaries only; token/progress events never cause activity writes.
+    pub fn observe_activity(&mut self, event: &maho_agent::types::AgentEvent) {
+        if !self.ledger.run_active {
+            return;
+        }
+        if self.activity.observe(event) {
+            self.recompute();
+        }
+    }
+    /// The turn deadline fired: captured before its durable write, for the run it stopped only.
+    pub fn deadline_stopped(&mut self, kind: LifecycleDeadlineKind, at_ms: i64) {
+        if let Some(run_id) = self
+            .ledger
+            .run_id
+            .clone()
+            .filter(|_| self.ledger.run_active)
+        {
+            self.deadline_stop = Some(DeadlineStopCapture {
+                run_id,
+                kind,
+                at: chrono::DateTime::from_timestamp_millis(at_ms)
+                    .unwrap_or_default()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                persisted: None,
+            });
+        }
+    }
+    /// The deadline-stop entry was refused; the captured stop says so, and the snapshot's `persisted` is untouched.
+    pub fn deadline_stop_write_failed(&mut self) {
+        if let Some(stop) = self.deadline_stop.as_mut() {
+            stop.persisted = Some(false);
+        }
+    }
     pub fn goal_facts(&mut self, goal: Option<Value>, input: Option<Value>) {
+        self.goal_facts_with_stop(goal, input, None);
+    }
+    pub fn goal_facts_with_stop(
+        &mut self,
+        goal: Option<Value>,
+        input: Option<Value>,
+        stop: Option<RunStopFacts>,
+    ) {
+        self.stop_facts = stop;
         self.liveness = input.clone();
         self.ledger.last_turn_end = input;
         self.goal_changed(goal);
@@ -175,10 +383,11 @@ impl SessionLifecycleController {
                 .goal
                 .as_ref()
                 .is_none_or(|old| old["status"] != "complete")
-                && let Some(id) = g["id"].as_str() {
-                    let append = self.options.append.clone();
-                    self.ledger.mark_goal_completed(id, |r| append(r));
-                }
+            && let Some(id) = g["id"].as_str()
+        {
+            let append = self.options.append.clone();
+            self.ledger.mark_goal_completed(id, |r| append(r));
+        }
         self.goal = goal;
         self.recompute();
     }
@@ -253,26 +462,59 @@ impl SessionLifecycleController {
             r["childSessionId"] == self.options.session_id
                 && r["taskId"] == self.ledger.current["taskId"]
         });
-        let children = reports
+        let mut child_records = reports
             .iter()
             .filter(|r| {
                 r["childSessionId"] != self.options.session_id && r.get("terminal").is_none()
             })
-            .count()
-            .max(
-                active
-                    .iter()
-                    .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Children)
-                    .map(|r| r.active_count.unwrap_or(1.) as usize)
-                    .sum(),
-            );
-        let background=active.iter().filter(|r|r.kind==crate::work_custody_record::ObligationKind::Background).map(|r|json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64})).collect();
+            .collect::<Vec<_>>();
+        child_records.sort_by(|a, b| {
+            a["taskId"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(b["taskId"].as_str().unwrap_or_default())
+        });
+        let child_reports = child_records
+            .iter()
+            .take(MAX_CHILD_REPORTS)
+            .map(|r| {
+                let mut report = json!({"taskId":r["taskId"],"childSessionId":r["childSessionId"],"runEpoch":r["runEpoch"],"state":r["state"]});
+                for k in ["label", "since"] {
+                    if let Some(v) = r.get(k).filter(|v| !v.is_null()) {
+                        report[k] = v.clone();
+                    }
+                }
+                report
+            })
+            .collect::<Vec<_>>();
+        let project = |r: &crate::work_custody_record::WorkCustodyRecord| {
+            let mut wait = json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64});
+            project_record_items(&serde_json::to_value(r).unwrap_or_default(), &mut wait);
+            wait
+        };
+        let child_sources = active
+            .iter()
+            .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Children)
+            .map(project)
+            .collect::<Vec<_>>();
+        let children = child_records.len().max(
+            active
+                .iter()
+                .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Children)
+                .map(|r| r.active_count.unwrap_or(1.) as usize)
+                .sum(),
+        );
+        let background = active
+            .iter()
+            .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background)
+            .map(project)
+            .collect();
         let facts = evaluate_turn_facts(
             self.liveness.as_ref(),
             self.goal.as_ref(),
-            background, (runtime.pending_messages,
-            children), (self.ledger.run_active,
-            self.ledger.interrupted),
+            background,
+            (runtime.pending_messages, children),
+            (self.ledger.run_active, self.ledger.interrupted),
             &self.ledger.current,
             runtime.activity.is_streaming
                 || runtime.activity.is_compacting
@@ -289,7 +531,18 @@ impl SessionLifecycleController {
             vec![]
         };
         human.extend(self.ledger.attention.reconcile(&facts.synthetic));
-        let waits = json!({"children":children,"background":facts.background,"human":human});
+        let mut waits = json!({"children":children,"background":facts.background,"human":human});
+        if !child_sources.is_empty() {
+            waits["childSources"] = json!(child_sources);
+        }
+        if !child_reports.is_empty() {
+            waits["childReports"] = json!(child_reports);
+        }
+        if child_records.len() > MAX_CHILD_REPORTS {
+            waits["childReportsOmitted"] = json!(child_records.len() - MAX_CHILD_REPORTS);
+        }
+        let stalled = facts.synthetic.iter().any(|(_, kind)| kind == "stalled");
+        let last_stop = self.last_stop(self.liveness.as_ref(), stalled);
         let holds = runtime
             .holds
             .iter()
@@ -314,9 +567,58 @@ impl SessionLifecycleController {
             self.ledger.custody_write_failed();
             return;
         }
+        let activity = self.activity.project(&state);
         let append = self.options.append.clone();
-        self.ledger
-            .update(&state, waits, holds, facts.failure, |r| append(r));
+        self.ledger.update_with(
+            LedgerUpdate {
+                state,
+                waits,
+                holds,
+                failure: facts.failure,
+                last_stop: last_stop.map(|stop| serde_json::to_value(stop).expect("last stop")),
+                activity,
+            },
+            |r| append(r),
+        );
+    }
+    /// Derived only from the current run's own end, bound when its agent_end was emitted: an end processed after a
+    /// later run started sets nothing, and so does a fact refresh that carries no bound turn end, even when the goal
+    /// collector still returns the previous run's end. An unchanged stop keeps its first `at`.
+    fn last_stop(&self, input: Option<&Value>, stalled: bool) -> Option<LifecycleStop> {
+        let existing = self
+            .ledger
+            .current
+            .get("lastStop")
+            .and_then(|stop| serde_json::from_value::<LifecycleStop>(stop.clone()).ok());
+        let Some(run_id) = self.ledger.run_id.clone() else {
+            return existing;
+        };
+        if Some(&run_id) == self.restored_run_id.as_ref()
+            || self.stop_facts.as_ref().and_then(|f| f.run_id.as_ref()) != Some(&run_id)
+        {
+            return existing;
+        }
+        let deadline = self
+            .deadline_stop
+            .as_ref()
+            .filter(|d| input.is_some() && d.run_id == run_id);
+        let Some(detail) = stop_detail(input, self.stop_facts.as_ref(), deadline, stalled) else {
+            return existing;
+        };
+        if let Some(existing) = existing.filter(|stop| same_stop(stop, &detail)) {
+            return Some(existing);
+        }
+        Some(LifecycleStop {
+            cause: detail.cause,
+            run_id,
+            at: detail.at.unwrap_or_else(now_iso),
+            epoch: self.ledger.current["epoch"].as_u64().unwrap_or(0),
+            deadline: detail.deadline,
+            guard: detail.guard,
+            todo: detail.todo,
+            abort_source: detail.abort_source,
+            persisted: detail.persisted,
+        })
     }
 }
 pub struct TurnFacts {
@@ -364,18 +666,20 @@ pub fn evaluate_turn_facts(
                     };
                     let mut b = json!({"source":source,"activeCount":1});
                     if source == "provider-retry"
-                        && let Some(at) = input.get("providerRetryAtMs") {
-                            b["retryAtMs"] = at.clone();
-                        }
+                        && let Some(at) = input.get("providerRetryAtMs")
+                    {
+                        b["retryAtMs"] = at.clone();
+                    }
                     background.push(b);
                 }
                 Some("recovery-staged") => {
                     background.push(json!({"source":"staged-recovery","activeCount":1}))
                 }
                 Some("wake-source")
-                    if !background.iter().any(|b| b["source"] == wake["source"]) => {
-                        background.push(json!({"source":wake["source"],"activeCount":1}));
-                    }
+                    if !background.iter().any(|b| b["source"] == wake["source"]) =>
+                {
+                    background.push(json!({"source":wake["source"],"activeCount":1}));
+                }
                 Some("question-to-user") => question = true,
                 _ => {}
             }
@@ -542,6 +846,196 @@ mod tests {
         c.idle();
         assert_eq!(c.snapshot().state, SessionLifecycleState::WaitingBackground);
     }
+    fn recording_controller(
+        records: Arc<std::sync::Mutex<Vec<Value>>>,
+    ) -> SessionLifecycleController {
+        SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "s".into(),
+            spawned_by: None,
+            read_runtime: Arc::new(LifecycleRuntimeFacts::default),
+            append_child: None,
+            entries: vec![],
+            append: Arc::new(move |r| {
+                records.lock().expect("records").push(r.clone());
+                Ok(())
+            }),
+            custody: Box::new(Store),
+        })
+    }
+    #[test]
+    fn the_oldest_top_level_tool_is_the_live_activity_and_is_never_written() {
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut c = recording_controller(records.clone());
+        c.restore_complete();
+        c.start_run(None);
+        let tool =
+            |id: &str, parent: Option<&str>| maho_agent::types::AgentEvent::ToolExecutionStart {
+                tool_call_id: id.into(),
+                tool_name: "bash".into(),
+                args: Value::Null,
+                parent_tool_call_id: parent.map(str::to_owned),
+            };
+        let written = records.lock().expect("records").len();
+        c.observe_activity(&tool("a", None));
+        c.observe_activity(&tool("b", None));
+        c.observe_activity(&tool("nested", Some("a")));
+        let activity = c.ledger.snapshot()["activity"].clone();
+        assert_eq!(activity["toolCallId"], "a");
+        assert_eq!(activity["outstanding"], 2);
+        assert_eq!(records.lock().expect("records").len(), written);
+        assert!(c.ledger.snapshot()["activityRevision"]["revision"].as_u64() > Some(0));
+        c.idle();
+        assert!(c.ledger.snapshot().get("activity").is_none());
+        assert!(
+            records
+                .lock()
+                .expect("records")
+                .iter()
+                .all(|r| r.get("activity").is_none())
+        );
+    }
+    // senpi 034eda3565 (senpi#3864): only the provider stream start records model activity.
+    #[test]
+    fn model_since_is_recorded_only_at_the_assistant_streaming_start() {
+        use maho_agent::types::{AgentEvent, AgentMessage};
+        use maho_ai::types::{Message, UserContent, UserMessage};
+        let mut c = controller();
+        c.restore_complete();
+        c.start_run(None);
+        let assistant = |text: &str| {
+            AgentMessage::from(Message::Assistant(std::sync::Arc::new(
+                maho_ai::providers::faux::faux_assistant_message(text, Default::default()),
+            )))
+        };
+        let user = AgentMessage::from(Message::User(UserMessage {
+            content: UserContent::Text("Hi".into()),
+            timestamp: 1,
+        }));
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: user,
+            streaming: Some(true),
+        });
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: assistant("Prepared, not streaming"),
+            streaming: None,
+        });
+        assert!(c.ledger.snapshot().get("activity").is_none());
+        let message = assistant("Streaming");
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: message.clone(),
+            streaming: Some(true),
+        });
+        assert_eq!(c.ledger.snapshot()["activity"]["kind"], "model");
+        c.observe_activity(&AgentEvent::MessageEnd { message });
+        assert!(c.ledger.snapshot().get("activity").is_none());
+    }
+    #[test]
+    fn an_admitted_run_writes_one_opening_record() {
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut c = recording_controller(records.clone());
+        c.restore_complete();
+        let before = records.lock().expect("records").len();
+        c.human_input("now");
+        c.note_run_admitted();
+        c.admission_settled();
+        assert_eq!(records.lock().expect("records").len(), before);
+        c.start_run(None);
+        let opened = records.lock().expect("records").len() - before;
+        assert_eq!(opened, 1);
+        assert_eq!(c.snapshot().human_input_revision, 1);
+    }
+    #[test]
+    fn the_runs_own_abort_becomes_its_last_stop_and_a_new_run_clears_it() {
+        let mut c = controller();
+        c.restore_complete();
+        c.start_run(None);
+        let run_id = c.ledger.run_id.clone();
+        c.goal_facts_with_stop(
+            None,
+            Some(json!({"endedBy":"user-abort","expectations":[]})),
+            Some(RunStopFacts {
+                run_id: run_id.clone(),
+                ..Default::default()
+            }),
+        );
+        c.idle();
+        let stop = c.snapshot().last_stop.expect("last stop");
+        assert_eq!(stop.cause, LifecycleStopCause::Aborted);
+        assert_eq!(stop.abort_source, Some(LifecycleAbortSource::User));
+        assert_eq!(Some(stop.run_id), run_id);
+        c.start_run(None);
+        assert!(c.snapshot().last_stop.is_none());
+        // A refresh carrying a stale run's facts sets nothing.
+        c.goal_facts_with_stop(
+            None,
+            Some(json!({"endedBy":"user-abort","expectations":[]})),
+            Some(RunStopFacts {
+                run_id,
+                ..Default::default()
+            }),
+        );
+        assert!(c.snapshot().last_stop.is_none());
+    }
+    #[test]
+    fn a_deadline_captured_for_the_run_explains_its_stop() {
+        let mut c = controller();
+        c.restore_complete();
+        c.start_run(None);
+        c.deadline_stopped(LifecycleDeadlineKind::Inactivity, 0);
+        c.deadline_stop_write_failed();
+        c.goal_facts_with_stop(
+            None,
+            Some(json!({"endedBy":"system-abort","deadlineStop":true,"expectations":[]})),
+            Some(RunStopFacts {
+                run_id: c.ledger.run_id.clone(),
+                ..Default::default()
+            }),
+        );
+        c.idle();
+        let stop = c.snapshot().last_stop.expect("last stop");
+        assert_eq!(stop.cause, LifecycleStopCause::Deadline);
+        assert_eq!(stop.persisted, Some(false));
+        assert_eq!(stop.at, "1970-01-01T00:00:00.000Z");
+    }
+    struct ConsumedStore;
+    impl crate::work_obligations::CustodyStore for ConsumedStore {
+        fn entries(&self) -> Vec<Value> {
+            vec![json!({"type":"custom","customType":"work-custody","data":{
+                "id":"w1","key":"delivery:t1","kind":"background","state":"consumed","ticketId":"t1","sessionId":"s"
+            }})]
+        }
+        fn append(
+            &mut self,
+            _: &crate::work_custody_record::WorkCustodyRecord,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn changed(&mut self) {}
+    }
+    #[test]
+    fn consumed_custody_holds_the_reopened_session_for_a_person() {
+        let mut c = controller();
+        c.mark_interrupted_from_custody(|_| true);
+        assert_eq!(
+            c.opening_hold_key(),
+            None,
+            "no ticketed custody, nothing interrupted"
+        );
+        let mut c = SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "s".into(),
+            spawned_by: None,
+            read_runtime: Arc::new(LifecycleRuntimeFacts::default),
+            append_child: None,
+            entries: vec![],
+            append: Arc::new(|_| Ok(())),
+            custody: Box::new(ConsumedStore),
+        });
+        assert_eq!(c.obligations.active().len(), 1);
+        c.mark_interrupted_from_custody(|_| false);
+        assert_eq!(c.opening_hold_key(), Some(INTERRUPTED_RUN_HOLD_KEY));
+        c.human_input("now");
+        assert_eq!(c.opening_hold_key(), None);
+    }
     #[test]
     fn retries_and_queued_human_input_are_not_stalls() {
         for wake in [
@@ -552,9 +1046,9 @@ mod tests {
             let f = evaluate_turn_facts(
                 Some(&input),
                 None,
-                vec![], (0,
-                0), (false,
-                false),
+                vec![],
+                (0, 0),
+                (false, false),
                 &json!({"role":"root","epoch":1}),
                 false,
             );
@@ -568,9 +1062,9 @@ mod tests {
         let f = evaluate_turn_facts(
             Some(&json!({"endedBy":"provider-error","expectations":[]})),
             None,
-            vec![], (0,
-            0), (false,
-            false),
+            vec![],
+            (0, 0),
+            (false, false),
             &json!({"role":"root","epoch":1}),
             false,
         );

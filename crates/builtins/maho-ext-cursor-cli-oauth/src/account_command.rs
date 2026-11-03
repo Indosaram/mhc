@@ -1,38 +1,98 @@
-use maho_ai::auth::types::{Credential,CredentialStore};
-use crate::accounts::{empty_credential,list_accounts,pin_account,remove_account};
-#[derive(Debug,PartialEq,Eq)]
-pub enum AccountAction {List,Add,Remove(String),Pin(String),Unpin,ImportLocal,ImportNative,Acknowledge,Status,Usage}
-pub fn parse_action(raw:&str)->AccountAction {
-    let mut args=raw.split_whitespace();let action=args.next().unwrap_or("list");let name=args.next();
-    match (action,name) {
-        ("list",_)=>AccountAction::List,("add",_)=>AccountAction::Add,("remove",Some(name))=>AccountAction::Remove(name.into()),
-        ("pin",Some(name))=>AccountAction::Pin(name.into()),("unpin",_)=>AccountAction::Unpin,("import",None|Some("local"))=>AccountAction::ImportLocal,
-        ("import",Some("native"))=>AccountAction::ImportNative,("acknowledge",_)=>AccountAction::Acknowledge,("status",_)=>AccountAction::Status,_=>AccountAction::Usage,
+use crate::accounts::{empty_credential, list_accounts, pin_account, remove_account};
+use maho_ai::auth::types::{Credential, CredentialStore};
+#[derive(Debug, PartialEq, Eq)]
+pub enum AccountAction {
+    List,
+    Add,
+    Remove(String),
+    Pin(String),
+    Unpin,
+    ImportLocal,
+    ImportNative,
+    Acknowledge,
+    Status,
+    Usage,
+}
+pub fn parse_action(raw: &str) -> AccountAction {
+    let mut args = raw.split_whitespace();
+    let action = args.next().unwrap_or("list");
+    let name = args.next();
+    match (action, name) {
+        ("list", _) => AccountAction::List,
+        ("add", _) => AccountAction::Add,
+        ("remove", Some(name)) => AccountAction::Remove(name.into()),
+        ("pin", Some(name)) => AccountAction::Pin(name.into()),
+        ("unpin", _) => AccountAction::Unpin,
+        ("import", None | Some("local")) => AccountAction::ImportLocal,
+        ("import", Some("native")) => AccountAction::ImportNative,
+        ("acknowledge", _) => AccountAction::Acknowledge,
+        ("status", _) => AccountAction::Status,
+        _ => AccountAction::Usage,
     }
 }
-pub async fn mutate_account(store:&dyn CredentialStore,action:AccountAction)->anyhow::Result<Option<Credential>> {
-    store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {
-        let credential=current.as_ref().and_then(Credential::as_oauth).cloned().unwrap_or_else(empty_credential);
-        match action {
-            AccountAction::Remove(name)=> {
-                if !list_accounts(&credential)?.iter().any(|a|a.name==name) {anyhow::bail!("Cursor CLI (OAuth) account '{name}' does not exist.");}
-                Ok(Some(Credential::OAuth(remove_account(&credential,&name)?)))
-            },
-            AccountAction::Pin(name)=> {
-                if !list_accounts(&credential)?.iter().any(|a|a.name==name) {anyhow::bail!("Cursor CLI (OAuth) account '{name}' does not exist.");}
-                Ok(Some(Credential::OAuth(pin_account(&credential,&name)?)))
-            },
-            AccountAction::Unpin=>{let mut unpinned=credential;unpinned.extra.remove("pinned");Ok(Some(Credential::OAuth(unpinned)))},
-            _=>Ok(current),
-        }
-    })),None).await
+pub async fn mutate_account(
+    store: &dyn CredentialStore,
+    action: AccountAction,
+) -> anyhow::Result<Option<Credential>> {
+    store
+        .modify(
+            crate::oauth_login::PROVIDER_ID,
+            Box::new(move |current| {
+                Box::pin(async move {
+                    let credential = current
+                        .as_ref()
+                        .and_then(Credential::as_oauth)
+                        .cloned()
+                        .unwrap_or_else(empty_credential);
+                    match action {
+                        AccountAction::Remove(name) => {
+                            if !list_accounts(&credential)?.iter().any(|a| a.name == name) {
+                                anyhow::bail!(
+                                    "Cursor CLI (OAuth) account '{name}' does not exist."
+                                );
+                            }
+                            Ok(Some(Credential::OAuth(remove_account(&credential, &name)?)))
+                        }
+                        AccountAction::Pin(name) => {
+                            if !list_accounts(&credential)?.iter().any(|a| a.name == name) {
+                                anyhow::bail!(
+                                    "Cursor CLI (OAuth) account '{name}' does not exist."
+                                );
+                            }
+                            Ok(Some(Credential::OAuth(pin_account(&credential, &name)?)))
+                        }
+                        AccountAction::Unpin => {
+                            let mut unpinned = credential;
+                            unpinned.extra.remove("pinned");
+                            Ok(Some(Credential::OAuth(unpinned)))
+                        }
+                        _ => Ok(current),
+                    }
+                })
+            }),
+            None,
+        )
+        .await
 }
-pub fn register(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync::Arc<crate::oauth_login::CursorCliOAuth>) {
-    register_with_router(api,oauth,std::sync::Arc::new(tokio::sync::Mutex::new(crate::session_router::SessionRouter::default())));
+pub fn register(
+    api: &mut maho_ext_api::ExtensionApi,
+    oauth: std::sync::Arc<crate::oauth_login::CursorCliOAuth>,
+) {
+    register_with_router(
+        api,
+        oauth,
+        std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::session_router::SessionRouter::default(),
+        )),
+    );
 }
-pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync::Arc<crate::oauth_login::CursorCliOAuth>,router:std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>) {
-    let store=oauth.store.clone();
-    let runtime=api.runtime.clone();
+pub fn register_with_router(
+    api: &mut maho_ext_api::ExtensionApi,
+    oauth: std::sync::Arc<crate::oauth_login::CursorCliOAuth>,
+    router: std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>,
+) {
+    let store = oauth.store.clone();
+    let runtime = api.runtime.clone();
     api.register_command("cursor-account",Some("List and manage Cursor CLI accounts.".into()),Some("[remove <id> | pin <id> | unpin]".into()),std::sync::Arc::new(move |raw,ctx| {
         let store=store.clone();let oauth=oauth.clone();let router=router.clone();let runtime=runtime.clone();Box::pin(async move {
             runtime.assert_active()?;
@@ -65,7 +125,8 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                         let accounts=list_accounts(&credential)?;let settings=(oauth.settings)();let session=ctx.session_manager.session_id();
                         let pin=settings.pinned_account.as_deref().or(credential.get_extra_str("pinned"));
                         let router=router.lock().await;let record=router.get_record(session);
-                        let selected=record.as_ref().map(|record|record.account_name.clone()).or_else(||crate::affinity::select_account(&accounts,&crate::affinity::CursorAffinityOptions {session_id:Some(session),pinned_account:pin,..Default::default()},(oauth.now)() as f64).ok().map(|slot|slot.name));
+                        let order=crate::accounts::account_order(&credential);
+                        let selected=record.as_ref().map(|record|record.account_name.clone()).or_else(||crate::affinity::select_account(&accounts,&crate::affinity::CursorAffinityOptions {session_id:Some(session),pinned_account:pin,account_order:order.as_deref(),..Default::default()},(oauth.now)() as f64).ok().map(|slot|slot.name));
                         let mut lines=vec!["Cursor CLI (OAuth) status:".into(),"  Auth lane: file-store".into(),"  Context owner: senpi".into(),format!("  Selected account: {}",selected.as_deref().map(|name|if Some(name)==pin {format!("{name} (pinned)")}else {name.into()}).unwrap_or_else(||"none".into())),format!("  Chat id: {}",record.as_ref().map_or("none (no turns yet on this session)",|record|record.chat_id.as_str())),format!("  Last model: {}",record.as_ref().map_or("none",|record|record.last_model.as_str()))];
                         drop(router);
                         let environment=std::env::vars().collect();let home=std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(||ctx.cwd.clone());
@@ -178,7 +239,8 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                         let accounts=list_accounts(&credential)?;
                         let settings=(oauth.settings)();let now=(oauth.now)() as f64;
                         let pin=settings.pinned_account.as_deref().or(credential.get_extra_str("pinned"));
-                        let selection=if accounts.is_empty() {None}else {Some(crate::affinity::select_account(&accounts,&crate::affinity::CursorAffinityOptions {session_id:Some(ctx.session_manager.session_id()),pinned_account:pin,..Default::default()},now))};
+                        let order=crate::accounts::account_order(&credential);
+                        let selection=if accounts.is_empty() {None}else {Some(crate::affinity::select_account(&accounts,&crate::affinity::CursorAffinityOptions {session_id:Some(ctx.session_manager.session_id()),pinned_account:pin,account_order:order.as_deref(),..Default::default()},now))};
                         let selected=selection.as_ref().and_then(|selection|selection.as_ref().ok()).map(|slot|slot.name.as_str());
                         let label=|name:&str|maho_ai::auth::pool::slots::account_label(name,accounts.iter().find(|slot|slot.name==name).and_then(|slot|slot.display_name.as_deref()));
                         let mut lines=vec!["Cursor CLI (OAuth) accounts:".into()];
@@ -244,47 +306,152 @@ mod tests {
         use maho_ai::auth::credential_store::InMemoryCredentialStore;
         let store = InMemoryCredentialStore::new();
         let slot = |name: &str| crate::accounts::CursorCliAccountSlot {
-            name: name.into(), display_name: Some(name.into()), access: name.into(), refresh: "refresh".into(),
-            expires: 1000.0, source: crate::accounts::AccountSource::Login, blocked_until: Some(500.0),
+            name: name.into(),
+            display_name: Some(name.into()),
+            access: name.into(),
+            refresh: "refresh".into(),
+            expires: 1000.0,
+            source: crate::accounts::AccountSource::Login,
+            blocked_until: Some(500.0),
             block_reason: Some(crate::accounts::BlockReason::RateLimit),
         };
-        let credential = crate::accounts::add_account(&crate::accounts::add_account(&empty_credential(), slot("default")).expect("initial slot"), slot("work")).expect("sibling")
-            .with_extra("pinned", serde_json::json!("work"))
-            .with_extra("providerMetadata", serde_json::json!({"revision": 2}));
-        store.modify(crate::oauth_login::PROVIDER_ID, Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })), None).await.expect("seed");
+        let credential = crate::accounts::add_account(
+            &crate::accounts::add_account(&empty_credential(), slot("default"))
+                .expect("initial slot"),
+            slot("work"),
+        )
+        .expect("sibling")
+        .with_extra("pinned", serde_json::json!("work"))
+        .with_extra("providerMetadata", serde_json::json!({"revision": 2}));
+        store
+            .modify(
+                crate::oauth_login::PROVIDER_ID,
+                Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+                None,
+            )
+            .await
+            .expect("seed");
 
-        mutate_account(&store, AccountAction::Remove("default".into())).await.expect("remove");
+        mutate_account(&store, AccountAction::Remove("default".into()))
+            .await
+            .expect("remove");
 
-        let remaining = store.read(crate::oauth_login::PROVIDER_ID, None).await.expect("read").expect("stored").into_oauth().expect("oauth");
+        let remaining = store
+            .read(crate::oauth_login::PROVIDER_ID, None)
+            .await
+            .expect("read")
+            .expect("stored")
+            .into_oauth()
+            .expect("oauth");
         assert_eq!(list_accounts(&remaining).expect("accounts"), [slot("work")]);
         assert_eq!(remaining.get_extra_str("pinned"), Some("work"));
-        assert_eq!(remaining.get_extra("providerMetadata"), Some(&serde_json::json!({"revision": 2})));
+        assert_eq!(
+            remaining.get_extra("providerMetadata"),
+            Some(&serde_json::json!({"revision": 2}))
+        );
     }
     #[test]
     fn arguments_route_actions() {
-        assert_eq!(parse_action(""),AccountAction::List);assert_eq!(parse_action(" pin work "),AccountAction::Pin("work".into()));assert_eq!(parse_action("import native"),AccountAction::ImportNative);assert_eq!(parse_action("import invalid"),AccountAction::Usage);assert_eq!(parse_action("remove"),AccountAction::Usage);
+        assert_eq!(parse_action(""), AccountAction::List);
+        assert_eq!(
+            parse_action(" pin work "),
+            AccountAction::Pin("work".into())
+        );
+        assert_eq!(parse_action("import native"), AccountAction::ImportNative);
+        assert_eq!(parse_action("import invalid"), AccountAction::Usage);
+        assert_eq!(parse_action("remove"), AccountAction::Usage);
     }
     #[test]
     fn arguments_route_every_remaining_action() {
-        assert_eq!(parse_action("list"),AccountAction::List);assert_eq!(parse_action("add"),AccountAction::Add);assert_eq!(parse_action("unpin"),AccountAction::Unpin);
-        assert_eq!(parse_action("remove alpha"),AccountAction::Remove("alpha".into()));assert_eq!(parse_action("import"),AccountAction::ImportLocal);assert_eq!(parse_action("import local"),AccountAction::ImportLocal);
-        assert_eq!(parse_action("acknowledge"),AccountAction::Acknowledge);assert_eq!(parse_action("status"),AccountAction::Status);assert_eq!(parse_action("wat"),AccountAction::Usage);
+        assert_eq!(parse_action("list"), AccountAction::List);
+        assert_eq!(parse_action("add"), AccountAction::Add);
+        assert_eq!(parse_action("unpin"), AccountAction::Unpin);
+        assert_eq!(
+            parse_action("remove alpha"),
+            AccountAction::Remove("alpha".into())
+        );
+        assert_eq!(parse_action("import"), AccountAction::ImportLocal);
+        assert_eq!(parse_action("import local"), AccountAction::ImportLocal);
+        assert_eq!(parse_action("acknowledge"), AccountAction::Acknowledge);
+        assert_eq!(parse_action("status"), AccountAction::Status);
+        assert_eq!(parse_action("wat"), AccountAction::Usage);
     }
     #[tokio::test]
     async fn mutations_pin_unpin_remove_and_reject_missing() {
         use maho_ai::auth::credential_store::InMemoryCredentialStore;
-        let store=InMemoryCredentialStore::new();
-        let credential=crate::accounts::add_account(&crate::accounts::empty_credential(),crate::accounts::CursorCliAccountSlot {name:"alpha".into(),display_name:None,access:"a".into(),refresh:"r".into(),expires:1.0,source:crate::accounts::AccountSource::Login,blocked_until:None,block_reason:None}).expect("slot");
-        store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
-        assert!(mutate_account(&store,AccountAction::Pin("missing".into())).await.is_err());
-        assert!(mutate_account(&store,AccountAction::Remove("missing".into())).await.is_err());
-        mutate_account(&store,AccountAction::Pin("alpha".into())).await.expect("pin");
-        let pinned=store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth");
-        assert_eq!(pinned.get_extra_str("pinned"),Some("alpha"));
-        assert!(mutate_account(&store,AccountAction::Unpin).await.expect("unpin").is_some());
-        let unpinned=store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth");
-        assert_eq!(unpinned.get_extra_str("pinned"),None);
-        mutate_account(&store,AccountAction::Remove("alpha".into())).await.expect("remove");
-        assert!(crate::accounts::list_accounts(&store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth")).expect("list").is_empty());
+        let store = InMemoryCredentialStore::new();
+        let credential = crate::accounts::add_account(
+            &crate::accounts::empty_credential(),
+            crate::accounts::CursorCliAccountSlot {
+                name: "alpha".into(),
+                display_name: None,
+                access: "a".into(),
+                refresh: "r".into(),
+                expires: 1.0,
+                source: crate::accounts::AccountSource::Login,
+                blocked_until: None,
+                block_reason: None,
+            },
+        )
+        .expect("slot");
+        store
+            .modify(
+                crate::oauth_login::PROVIDER_ID,
+                Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+                None,
+            )
+            .await
+            .expect("seed");
+        assert!(
+            mutate_account(&store, AccountAction::Pin("missing".into()))
+                .await
+                .is_err()
+        );
+        assert!(
+            mutate_account(&store, AccountAction::Remove("missing".into()))
+                .await
+                .is_err()
+        );
+        mutate_account(&store, AccountAction::Pin("alpha".into()))
+            .await
+            .expect("pin");
+        let pinned = store
+            .read(crate::oauth_login::PROVIDER_ID, None)
+            .await
+            .expect("read")
+            .expect("credential")
+            .into_oauth()
+            .expect("oauth");
+        assert_eq!(pinned.get_extra_str("pinned"), Some("alpha"));
+        assert!(
+            mutate_account(&store, AccountAction::Unpin)
+                .await
+                .expect("unpin")
+                .is_some()
+        );
+        let unpinned = store
+            .read(crate::oauth_login::PROVIDER_ID, None)
+            .await
+            .expect("read")
+            .expect("credential")
+            .into_oauth()
+            .expect("oauth");
+        assert_eq!(unpinned.get_extra_str("pinned"), None);
+        mutate_account(&store, AccountAction::Remove("alpha".into()))
+            .await
+            .expect("remove");
+        assert!(
+            crate::accounts::list_accounts(
+                &store
+                    .read(crate::oauth_login::PROVIDER_ID, None)
+                    .await
+                    .expect("read")
+                    .expect("credential")
+                    .into_oauth()
+                    .expect("oauth")
+            )
+            .expect("list")
+            .is_empty()
+        );
     }
 }

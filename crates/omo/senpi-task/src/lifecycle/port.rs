@@ -56,6 +56,8 @@ pub trait ResidentHandle: Send + Sync {
     fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> {
         Ok(())
     }
+    /// Re-reads inputs whose acknowledgement was lost (TS `reconcileInputs?`); a no-op by default.
+    fn reconcile_inputs(&self) {}
 }
 
 /// The live-handle registry the lifecycle consults and prunes.
@@ -107,6 +109,7 @@ pub enum RespawnFailureCode {
     TeamInactive,
     RunPaused,
     RespawnFailed,
+    HostDraining { retry_after_ms: Option<u64> },
 }
 
 impl RespawnFailureCode {
@@ -119,7 +122,12 @@ impl RespawnFailureCode {
             Self::TeamInactive => "team_inactive",
             Self::RunPaused => "run_paused",
             Self::RespawnFailed => "respawn_failed",
+            Self::HostDraining { .. } => "host_draining",
         }
+    }
+
+    pub fn is_host_draining(self) -> bool {
+        matches!(self, Self::HostDraining { .. })
     }
 }
 
@@ -136,6 +144,25 @@ pub enum RespawnResult {
         code: RespawnFailureCode,
         reason: String,
     },
+}
+
+impl RespawnResult {
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::Failed {
+                code: RespawnFailureCode::HostDraining { retry_after_ms },
+                ..
+            } => *retry_after_ms,
+            _ => None,
+        }
+    }
+
+    pub fn is_host_draining(&self) -> bool {
+        match self {
+            Self::Failed { code, .. } => code.is_host_draining(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

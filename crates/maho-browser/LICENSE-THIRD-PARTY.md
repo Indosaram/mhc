@@ -8,7 +8,9 @@ as the MIT License requires.
 `assets/page-snapshot.js` is a copy of `src/page-bundle.js` from https://github.com/code-yeongyu/omowright
 at a019fdfbc337bd917d10b8f3d64026b3549e0b2c (identifiers renamed, see the file header), and
 `src/{cdp,transport,page,keys,computer}.rs` port parts of its `src/pipe.js`, `src/connection.js`,
-`src/core.js`, `src/cua.js` and `src/dialog-policy.js`.
+`src/core.js`, `src/cua.js` and `src/dialog-policy.js`; `src/page/{frames,network_snoop,har,trace,events,bridge}.rs`
+port its `src/frames-snapshot.js`, `src/network-snoop.js`, `src/har.js`, `src/trace.js`, `src/events.js`,
+`src/bridge-transport.js` and `src/bridge-schemas.js`.
 
 ```
 MIT License
@@ -53,7 +55,10 @@ Copyright (c) 2026 Yeongyu Kim
 
 ## oh-my-pi
 
-`src/launch.rs` ports `packages/coding-agent/src/tools/browser/launch.ts` and the tool surface follows
+`src/launch.rs`, `src/launch/stealth.rs` and `src/launch/chrome_for_testing.rs` port
+`packages/coding-agent/src/tools/browser/launch.ts` (at f59bbac3 and 3a2758b6), `assets/stealth/*.txt`
+are copies of `packages/coding-agent/src/tools/puppeteer/*_stealth_*.txt` and
+`assets/stealth/injection.js` is the injection wrapper of `buildStealthInjectionScript`; the tool surface follows
 `packages/coding-agent/src/tools/{browser,computer}.ts` from https://github.com/can1357/oh-my-pi at
 f59bbac3d56e8b485fef466388b1cb5be4b93123.
 

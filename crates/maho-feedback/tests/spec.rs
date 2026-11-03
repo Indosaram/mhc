@@ -1,7 +1,7 @@
 //! Tests written from docs/cleanroom/specs/feedback.md, section 8 (acceptance tests 1-15).
 
 use jiff::{SignedDuration, Timestamp};
-use maho_ext_api::{NotificationType, SessionEntry};
+use maho_ext_api::{ComponentLogger, NotificationType, SessionEntry};
 use maho_feedback::client::ClientIdentity;
 use maho_feedback::collect::{
     SessionHeader, collect_logs, config_text, render_session, scrub_config, shorten_body,
@@ -66,6 +66,25 @@ impl FakeIntake {
     }
 }
 
+/// Records warnings.
+#[derive(Default)]
+struct FakeLogger {
+    warnings: Mutex<Vec<(String, Option<Value>)>>,
+}
+
+impl ComponentLogger for FakeLogger {
+    fn info(&self, _message: &str, _details: Option<&Value>) {}
+
+    fn warn(&self, message: &str, details: Option<&Value>) {
+        self.warnings
+            .lock()
+            .expect("lock")
+            .push((message.into(), details.cloned()));
+    }
+
+    fn error(&self, _message: &str, _details: Option<&Value>) {}
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     agent_dir: PathBuf,
@@ -74,6 +93,7 @@ struct Fixture {
     intake: Arc<FakeIntake>,
     config: Arc<Mutex<Value>>,
     store: Arc<Store>,
+    logger: Arc<FakeLogger>,
 }
 
 impl Fixture {
@@ -89,6 +109,7 @@ impl Fixture {
             intake: Arc::new(FakeIntake::default()),
             config: Arc::new(Mutex::new(json!({"theme": "dark"}))),
             store: Arc::new(Store::default()),
+            logger: Arc::new(FakeLogger::default()),
         }
     }
 
@@ -135,6 +156,7 @@ impl Fixture {
             os: "linux".into(),
             arch: "x86_64".into(),
             kernel: "6.1.0".into(),
+            logger: Some(Arc::clone(&self.logger) as Arc<dyn ComponentLogger>),
         }
     }
 
@@ -276,6 +298,7 @@ fn t01_without_a_redactor_nothing_is_collected_or_sent() {
     let backend = ReportsBackend {
         reports: reports.clone(),
         request: PrepareRequest::default(),
+        sign_in: None,
     };
     block_on(flow::run(ReportKind::Bug, "it broke", &ui, &backend));
     let notices = ui.notices();
@@ -682,7 +705,7 @@ fn t09_submit_success_posts_records_and_forgets_the_draft() {
     assert_eq!(request.header("authorization"), Some("Bearer tok-1"));
     let body: Value = serde_json::from_str(&request.body).expect("body");
     assert_eq!(body["kind"], "bug");
-    assert_eq!(body["redactorVersion"], "1");
+    assert_eq!(body["redactorVersion"], "1.0.0");
     assert_eq!(body["title"], format!("Crash on {MASK} save"));
     assert_eq!(body["client"]["omo"], "1.2.3");
     assert_eq!(body["client"]["senpi"], "0.9.0");
@@ -773,7 +796,11 @@ fn t10_caller_idempotency_key_and_conflict() {
         "description": "d",
         "idempotencyKey": "bad key"
     })));
-    assert_eq!(result, json!({"kind": "refused", "reason": "unavailable"}));
+    // Delta D2: a conflict without a caller key is a typed service rejection.
+    assert_eq!(
+        result,
+        json!({"kind": "refused", "reason": "service-rejected", "code": "conflict"})
+    );
     assert_eq!(
         fx.intake.requests()[1].header("idempotency-key"),
         Some(format!("feedback-{draft_id}").as_str())
@@ -802,7 +829,7 @@ fn t11_refusals_map_and_rate_limit_keeps_the_draft() {
             "rate-limited",
             true,
         ),
-        (500, "<html>oops</html>", "unavailable", true),
+        (500, "<html>oops</html>", "service-unavailable", true),
     ];
     for (status, body, reason, kept) in cases {
         let draft = reports.prepare_json(&json!({"sessionId": null}));
@@ -810,11 +837,8 @@ fn t11_refusals_map_and_rate_limit_keeps_the_draft() {
         fx.intake.respond(status, body);
         let result =
             block_on(reports.submit_json(&json!({"draftId": draft_id, "description": "d"})));
-        assert_eq!(
-            result,
-            json!({"kind": "refused", "reason": reason}),
-            "status {status}"
-        );
+        assert_eq!(result["kind"], "refused", "status {status}");
+        assert_eq!(result["reason"], reason, "status {status}");
         assert_eq!(fx.store.has_draft(&draft_id), kept, "status {status}");
         if status == 429 {
             fx.intake.respond(201, r#"{"id":"rep_retry"}"#);
@@ -906,6 +930,7 @@ fn t13_uploads_off_saves_a_private_local_report() {
         serde_json::from_str(&std::fs::read_to_string(&expected).expect("read")).expect("json");
     assert_eq!(body["kind"], "feedback");
     assert_eq!(body["sections"][0]["text"], "hi");
+    assert_eq!(body["redactorVersion"], "1.0.0");
     assert!(!fx.store.has_draft(&draft_id));
 
     #[cfg(unix)]
@@ -1036,6 +1061,15 @@ fn t14_refusals_notify_an_error_with_a_hint() {
         Refusal::SecretDetected,
         Refusal::TooLarge,
         Refusal::RateLimited,
+        Refusal::SignInRequired,
+        Refusal::ServiceRejected {
+            code: "invalid_request".into(),
+            request_id: None,
+        },
+        Refusal::ServiceUnavailable {
+            code: "internal".into(),
+            request_id: None,
+        },
         Refusal::Unavailable,
     ] {
         let (message, level) = flow::result_notice(&SubmitResult::Refused(reason));
@@ -1089,4 +1123,405 @@ fn t15_rpc_session_choice_follows_live_sessions() {
     fx.store.session_ended("first");
     let empty = reports.prepare_json(&json!({}));
     assert_eq!(section_text(&empty, "session"), None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Delta omo v5.1.52 (D1-D4)
+
+mod delta_5152 {
+    use super::*;
+    use maho_feedback::digest::sha256_hex;
+    use maho_feedback::install::{missing_installation_message, reinstall_step};
+    use maho_feedback::signin::{SignInError, SignInStore, StoredSignIn, UNUSABLE_SIGN_IN_WARNING};
+
+    fn submit_with(fx: &Fixture, status: u16, body: &str, input: Value) -> Value {
+        let reports = fx.reports();
+        let draft = reports.prepare_json(&json!({"sessionId": null}));
+        let mut input = input;
+        input["draftId"] = draft["draftId"].clone();
+        if input.get("description").is_none() {
+            input["description"] = json!("d");
+        }
+        fx.intake.respond(status, body);
+        block_on(reports.submit_json(&input))
+    }
+
+    fn refused(status: u16, body: &str) -> Value {
+        submit_with(&Fixture::new(), status, body, json!({}))
+    }
+
+    #[test]
+    fn sha256_known_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    // D1
+    #[test]
+    fn d1_length_and_digest_headers_cover_the_exact_body() {
+        let fx = Fixture::new();
+        let result = submit_with(
+            &fx,
+            201,
+            r#"{"id":"rep_1"}"#,
+            json!({"description": "caf\u{e9} \u{1F600} broke"}),
+        );
+        assert_eq!(result["kind"], "sent");
+        let request = &fx.intake.requests()[0];
+        assert!(request.body.len() > request.body.chars().count());
+        assert_eq!(
+            request.header("content-length"),
+            Some(request.body.len().to_string().as_str())
+        );
+        assert_eq!(
+            request.header("x-omo-content-sha256"),
+            Some(sha256_hex(request.body.as_bytes()).as_str())
+        );
+        let body: Value = serde_json::from_str(&request.body).expect("json");
+        assert_eq!(body["redactorVersion"], "1.0.0");
+        assert_eq!(request.header("content-type"), Some("application/json"));
+        assert!(request.header("idempotency-key").is_some());
+    }
+
+    // D2: one case per table row group.
+    #[test]
+    fn d2_codes_map_to_typed_refusals() {
+        let error = |code: &str| json!({"error": {"code": code}}).to_string();
+        assert_eq!(
+            refused(400, &error("secret_detected"))["reason"],
+            "secret-detected"
+        );
+        assert_eq!(
+            refused(400, &error("rate_limited"))["reason"],
+            "rate-limited"
+        );
+        for code in ["unauthorized", "device_revoked", "anonymous_closed"] {
+            assert_eq!(
+                refused(400, &error(code)),
+                json!({"kind": "refused", "reason": "sign-in-required"}),
+                "{code}"
+            );
+        }
+        for code in ["not_available", "internal"] {
+            assert_eq!(
+                refused(400, &error(code)),
+                json!({"kind": "refused", "reason": "service-unavailable", "code": code}),
+                "{code}"
+            );
+        }
+        for code in ["invalid_request", "quota_exceeded", "access_not_open"] {
+            assert_eq!(
+                refused(400, &error(code)),
+                json!({"kind": "refused", "reason": "service-rejected", "code": code}),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn d2_unknown_or_missing_code_falls_back_to_status() {
+        assert_eq!(refused(401, "")["reason"], "sign-in-required");
+        assert_eq!(
+            refused(403, r#"{"error":{"code":"weird"}}"#)["reason"],
+            "sign-in-required"
+        );
+        assert_eq!(refused(413, "")["reason"], "too-large");
+        assert_eq!(refused(429, "")["reason"], "rate-limited");
+        assert_eq!(
+            refused(500, "<html>boom</html>"),
+            json!({"kind": "refused", "reason": "service-unavailable", "code": "unknown"})
+        );
+        assert_eq!(
+            refused(418, r#"{"error":{"code":"weird"}}"#),
+            json!({"kind": "refused", "reason": "service-rejected", "code": "unknown"})
+        );
+    }
+
+    #[test]
+    fn d2_request_id_kept_only_when_well_formed_and_clean() {
+        let with_id =
+            |id: &str| json!({"error": {"code": "invalid_request", "requestId": id}}).to_string();
+        assert_eq!(
+            refused(400, &with_id("req_ab-12"))["requestId"],
+            "req_ab-12"
+        );
+        assert!(refused(400, &with_id("a b")).get("requestId").is_none());
+        assert!(
+            refused(400, &with_id(&format!("req_{SECRET}")))
+                .get("requestId")
+                .is_none()
+        );
+        assert!(
+            refused(400, &with_id(&"x".repeat(129)))
+                .get("requestId")
+                .is_none()
+        );
+        assert!(refused(400, &with_id("")).get("requestId").is_none());
+    }
+
+    #[test]
+    fn d2_conflict_without_caller_key_is_rejected_with_conflict() {
+        assert_eq!(
+            refused(409, r#"{"error":{"code":"conflict"}}"#),
+            json!({"kind": "refused", "reason": "service-rejected", "code": "conflict"})
+        );
+        let fx = Fixture::new();
+        let result = submit_with(
+            &fx,
+            409,
+            r#"{"error":{"code":"conflict"}}"#,
+            json!({"idempotencyKey": "feedback-mine_1234"}),
+        );
+        assert_eq!(result, json!({"kind": "already-sent"}));
+    }
+
+    #[test]
+    fn d2_service_refusal_is_logged_as_warning() {
+        let fx = Fixture::new();
+        submit_with(
+            &fx,
+            503,
+            r#"{"error":{"code":"not_configured","requestId":"rq-9"}}"#,
+            json!({}),
+        );
+        let warnings = fx.logger.warnings.lock().expect("lock").clone();
+        assert_eq!(warnings.len(), 1);
+        let details = warnings[0].1.clone().expect("details");
+        assert_eq!(details["reason"], "service-unavailable");
+        assert_eq!(details["code"], "not_configured");
+        assert_eq!(details["requestId"], "rq-9");
+    }
+
+    #[test]
+    fn d2_messages_name_code_request_id_and_next_step() {
+        let rejected = flow::refusal_message(&Refusal::ServiceRejected {
+            code: "unsupported_version".into(),
+            request_id: Some("rq-1".into()),
+        });
+        assert!(rejected.contains("unsupported_version"));
+        assert!(rejected.contains("rq-1"));
+        assert!(rejected.contains("support"));
+        assert!(rejected.to_lowercase().contains("updat"));
+        let unavailable = flow::refusal_message(&Refusal::ServiceUnavailable {
+            code: "internal".into(),
+            request_id: None,
+        });
+        assert!(unavailable.contains("internal"));
+        assert!(unavailable.contains("later"));
+        assert!(!unavailable.contains("support"));
+        assert!(flow::refusal_message(&Refusal::SignInRequired).contains("ign in"));
+        // The JSON form round-trips through the flow parser.
+        let parsed = flow::parse_result(&json!({
+            "kind": "refused", "reason": "service-rejected", "code": "not_found", "requestId": "r1"
+        }));
+        assert_eq!(
+            parsed,
+            SubmitResult::Refused(Refusal::ServiceRejected {
+                code: "not_found".into(),
+                request_id: Some("r1".into()),
+            })
+        );
+    }
+
+    // D3
+
+    struct FakeSignIn {
+        stored: Result<Option<StoredSignIn>, SignInError>,
+        reads: Mutex<usize>,
+        refreshes: Mutex<usize>,
+    }
+
+    impl FakeSignIn {
+        fn new(stored: Result<Option<StoredSignIn>, SignInError>) -> Arc<Self> {
+            Arc::new(Self {
+                stored,
+                reads: Mutex::new(0),
+                refreshes: Mutex::new(0),
+            })
+        }
+    }
+
+    impl SignInStore for FakeSignIn {
+        fn read(&self) -> Result<Option<StoredSignIn>, SignInError> {
+            *self.reads.lock().expect("lock") += 1;
+            self.stored.clone()
+        }
+
+        fn refresh(&self) -> Result<Option<StoredSignIn>, SignInError> {
+            *self.refreshes.lock().expect("lock") += 1;
+            self.stored.clone()
+        }
+    }
+
+    fn token(fx: &Fixture, valid_for_secs: i64, uncertain: bool) -> StoredSignIn {
+        StoredSignIn {
+            access_token: "stored-tok".into(),
+            expires_at: fx
+                .now
+                .lock()
+                .expect("lock")
+                .checked_add(SignedDuration::from_secs(valid_for_secs))
+                .expect("time"),
+            refresh_uncertain: uncertain,
+        }
+    }
+
+    /// Runs `/bug` through the real backend and returns (ui, intake requests).
+    fn run_bug(fx: &Fixture, store: Option<Arc<FakeSignIn>>) -> (FakeUi, Vec<HttpRequest>) {
+        let ui = FakeUi::default();
+        ui.selections
+            .lock()
+            .expect("lock")
+            .push_back(Some(SEND.to_owned()));
+        fx.intake.respond(201, r#"{"id":"rep_s"}"#);
+        let backend = ReportsBackend {
+            reports: fx.reports(),
+            request: PrepareRequest::default(),
+            sign_in: store.map(|store| store as Arc<dyn SignInStore>),
+        };
+        block_on(flow::run(ReportKind::Bug, "broken", &ui, &backend));
+        (ui, fx.intake.requests())
+    }
+
+    fn warnings(ui: &FakeUi) -> Vec<String> {
+        ui.notices()
+            .into_iter()
+            .filter(|(_, kind)| *kind == NotificationType::Warning)
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    #[test]
+    fn d3_valid_stored_token_is_sent_as_bearer() {
+        let fx = Fixture::new();
+        let store = FakeSignIn::new(Ok(Some(token(&fx, 3600, false))));
+        let (ui, requests) = run_bug(&fx, Some(Arc::clone(&store)));
+        assert_eq!(
+            requests[0].header("authorization"),
+            Some("Bearer stored-tok")
+        );
+        assert!(warnings(&ui).is_empty());
+        assert_eq!(*store.refreshes.lock().expect("lock"), 0);
+    }
+
+    #[test]
+    fn d3_token_expiring_within_thirty_seconds_goes_anonymous_with_warning() {
+        let fx = Fixture::new();
+        let store = FakeSignIn::new(Ok(Some(token(&fx, 10, false))));
+        let (ui, requests) = run_bug(&fx, Some(Arc::clone(&store)));
+        assert!(requests[0].header("authorization").is_none());
+        assert_eq!(warnings(&ui), [UNUSABLE_SIGN_IN_WARNING.to_owned()]);
+        assert_eq!(*store.refreshes.lock().expect("lock"), 0);
+        // The warning comes before the result notification.
+        let notices = ui.notices();
+        assert_eq!(notices[0].1, NotificationType::Warning);
+        assert!(notices[1].0.contains("rep_s"));
+    }
+
+    #[test]
+    fn d3_expired_uncertain_or_failed_store_goes_anonymous_with_warning() {
+        let fx = Fixture::new();
+        for stored in [
+            Ok(Some(token(&fx, -60, false))),
+            Ok(Some(token(&fx, 3600, true))),
+            Err(SignInError::Failed("locked".into())),
+        ] {
+            let fx = Fixture::new();
+            let (ui, requests) = run_bug(&fx, Some(FakeSignIn::new(stored)));
+            assert!(requests[0].header("authorization").is_none());
+            assert_eq!(warnings(&ui).len(), 1);
+        }
+    }
+
+    #[test]
+    fn d3_no_stored_sign_in_or_no_store_is_silent_anonymous() {
+        for store in [
+            None,
+            Some(FakeSignIn::new(Ok(None))),
+            Some(FakeSignIn::new(Err(SignInError::SignedOut))),
+        ] {
+            let fx = Fixture::new();
+            let (ui, requests) = run_bug(&fx, store);
+            assert!(requests[0].header("authorization").is_none());
+            assert!(warnings(&ui).is_empty());
+        }
+    }
+
+    #[test]
+    fn d3_uploads_off_never_reads_the_store() {
+        let fx = Fixture::new();
+        fx.set_env("OMO_DISABLE_FEEDBACK", "1");
+        let store = FakeSignIn::new(Ok(Some(token(&fx, 3600, false))));
+        let (ui, requests) = run_bug(&fx, Some(Arc::clone(&store)));
+        assert!(requests.is_empty());
+        assert_eq!(*store.reads.lock().expect("lock"), 0);
+        assert!(warnings(&ui).is_empty());
+    }
+
+    // D4
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        move |key: &str| map.get(key).cloned()
+    }
+
+    #[test]
+    fn d4_reinstall_command_is_trimmed_and_named() {
+        let env = env_of(&[("MAHO_REINSTALL_COMMAND", "  curl -fsSL x | sh  ")]);
+        let step = reinstall_step(&env);
+        assert!(step.contains("curl -fsSL x | sh"));
+        assert!(!step.contains("  curl"));
+        let legacy = env_of(&[("OMO_REINSTALL_COMMAND", "  curl -fsSL x | sh  ")]);
+        assert!(reinstall_step(&legacy).contains("curl -fsSL x | sh"));
+    }
+
+    #[test]
+    fn d4_blank_or_unset_names_no_command() {
+        let plain = reinstall_step(&env_of(&[]));
+        assert_eq!(
+            reinstall_step(&env_of(&[("MAHO_REINSTALL_COMMAND", "   ")])),
+            plain
+        );
+        assert_eq!(
+            reinstall_step(&env_of(&[("OMO_REINSTALL_COMMAND", "")])),
+            plain
+        );
+        assert!(plain.to_lowercase().contains("reinstall mhc"));
+        assert!(!plain.contains(':'));
+    }
+
+    #[test]
+    fn d4_new_name_wins_over_legacy() {
+        let env = env_of(&[
+            ("MAHO_REINSTALL_COMMAND", "new-install"),
+            ("OMO_REINSTALL_COMMAND", "old-install"),
+        ]);
+        let step = reinstall_step(&env);
+        assert!(step.contains("new-install"));
+        assert!(!step.contains("old-install"));
+    }
+
+    #[test]
+    fn d4_message_states_failure_missing_part_step_and_new_session() {
+        let env = env_of(&[("MAHO_REINSTALL_COMMAND", "get-mhc")]);
+        let message = missing_installation_message("Could not load mhc 1.2.3", true, &env);
+        assert!(message.contains("Could not load mhc 1.2.3"));
+        assert!(message.contains("missing"));
+        assert!(message.contains("get-mhc"));
+        assert!(message.contains("new session"));
+        assert!(!missing_installation_message("x", false, &env).contains("new session"));
+    }
 }

@@ -28,6 +28,7 @@ use serde_json::Value;
 /// Resolves a sync principal to the device name it signed in as.
 pub type DeviceNameLookup = dyn Fn(&str) -> Option<String> + Send + Sync;
 
+pub use crate::projection_expiry::MEMORY_EXPIRED_METADATA_TOKEN;
 pub const PROJECTION_PIN_ENTRY_TYPE: &str = "omo-memory:projection-pin";
 pub const MEMORY_CHANGES_METADATA_TOKEN: &str =
     "Memory changed after this session's prompt was pinned to";
@@ -49,6 +50,9 @@ pub struct ProjectionPinRecord {
     pub noticed_through: Option<String>,
     pub compaction_id: Option<String>,
     pub pinned_at_ms: f64,
+    /// Expiry instants up to this one were announced; absent means none since the pin (#11450).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_noticed_through_ms: Option<f64>,
     /// The suppression generation the pin was taken under; `None` before the first forget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suppression_generation: Option<String>,
@@ -66,9 +70,14 @@ pub enum ProjectionRepinReason {
 }
 
 /// The revision a turn compiles at, plus the changes it must announce.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectionTurn {
     pub revision: Option<String>,
+    /// The instant `expires` is evaluated at for this turn's block: the pin instant.
+    pub as_of_ms: f64,
+    /// Expiry instants after the pin and up to this one were already announced.
+    pub expiry_noticed_through_ms: f64,
+    pub now_ms: f64,
     pub changes: Option<ProjectedChanges>,
     pub repinned: Option<ProjectionRepinReason>,
     /// Devices whose synced commits brought these changes, by name; empty when none were synced.
@@ -83,6 +92,13 @@ pub struct ProjectionAdvanceInput<'a> {
     pub head: Option<String>,
 }
 
+/// What `peek` returns: the revision the next turn compiles at and its expiry instant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeekedPin {
+    pub revision: Option<String>,
+    pub as_of_ms: f64,
+}
+
 /// Port of the upstream `ProjectionPins` interface.
 pub trait ProjectionPins {
     fn advance(
@@ -93,10 +109,14 @@ pub trait ProjectionPins {
     /// The revision the next `advance` compiles at, without recording, caching or announcing
     /// anything: a `before_agent_start` preview must compose the real turn's bytes and leave the
     /// session untouched.
-    ///
-    /// BLOCKED consumer: `maho_ext_api::BeforeAgentStartEvent` has no `preview` flag, so nothing
-    /// native can call this yet. See the boundary report for the exact missing field.
-    fn peek(&self, input: ProjectionAdvanceInput<'_>) -> Result<Option<String>, GitError>;
+    fn peek(&self, input: ProjectionAdvanceInput<'_>) -> Result<PeekedPin, GitError>;
+    /// Records that expiry instants up to `through_ms` were announced to the session.
+    fn notice_expiries(
+        &self,
+        session_id: &str,
+        through_ms: f64,
+        record: &dyn Fn(&ProjectionPinRecord),
+    );
     /// `/recompile`: every session repins to HEAD on its next turn.
     fn request_refresh(&self);
 }
@@ -261,7 +281,7 @@ impl ProjectionPins for NativeProjectionPins {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = now;
     }
 
-    fn peek(&self, input: ProjectionAdvanceInput<'_>) -> Result<Option<String>, GitError> {
+    fn peek(&self, input: ProjectionAdvanceInput<'_>) -> Result<PeekedPin, GitError> {
         let resolved = self.resolve(input.repo, input.session_id, input.branch)?;
         let pinned = resolved
             .reason
@@ -269,9 +289,47 @@ impl ProjectionPins for NativeProjectionPins {
             .then_some(resolved.state)
             .flatten();
         Ok(match pinned {
-            Some(state) => state.revision,
-            None => input.head,
+            Some(state) => PeekedPin {
+                revision: state.revision,
+                as_of_ms: state.pinned_at_ms,
+            },
+            None => PeekedPin {
+                revision: input.head,
+                as_of_ms: self.now_ms(),
+            },
         })
+    }
+
+    fn notice_expiries(
+        &self,
+        session_id: &str,
+        through_ms: f64,
+        record: &dyn Fn(&ProjectionPinRecord),
+    ) {
+        let cached = self
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(|live| (live.record.clone(), live.epoch));
+        let Some((cached, epoch)) = cached else {
+            return;
+        };
+        let noticed = ProjectionPinRecord {
+            expiry_noticed_through_ms: Some(through_ms),
+            ..cached
+        };
+        self.live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                session_id.to_string(),
+                LivePin {
+                    record: noticed.clone(),
+                    epoch,
+                },
+            );
+        record(&noticed);
     }
 
     fn advance(
@@ -280,6 +338,7 @@ impl ProjectionPins for NativeProjectionPins {
         record: &dyn Fn(&ProjectionPinRecord),
     ) -> Result<ProjectionTurn, GitError> {
         let resolved = self.resolve(input.repo, input.session_id, input.branch)?;
+        let now_ms = self.now_ms();
         let reason = resolved.reason;
         let pinned = if reason.is_none() {
             resolved.state
@@ -299,13 +358,17 @@ impl ProjectionPins for NativeProjectionPins {
                 revision: head.clone(),
                 noticed_through: head.clone(),
                 compaction_id: resolved.compaction_id,
-                pinned_at_ms: self.now_ms(),
+                pinned_at_ms: now_ms,
+                expiry_noticed_through_ms: None,
                 suppression_generation: resolved.generation.ok().flatten(),
             };
             self.store_live(input.session_id, fresh.clone());
             record(&fresh);
             return Ok(ProjectionTurn {
                 revision: head,
+                as_of_ms: now_ms,
+                expiry_noticed_through_ms: now_ms,
+                now_ms,
                 changes: None,
                 repinned: Some(reason.unwrap_or(ProjectionRepinReason::FirstTurn)),
                 sources: Vec::new(),
@@ -316,6 +379,11 @@ impl ProjectionPins for NativeProjectionPins {
         if state.noticed_through == input.head {
             return Ok(ProjectionTurn {
                 revision: state.revision,
+                as_of_ms: state.pinned_at_ms,
+                expiry_noticed_through_ms: state
+                    .expiry_noticed_through_ms
+                    .unwrap_or(state.pinned_at_ms),
+                now_ms,
                 changes: None,
                 repinned: None,
                 sources: Vec::new(),
@@ -345,6 +413,11 @@ impl ProjectionPins for NativeProjectionPins {
         if is_empty_projected_changes(&changes) {
             return Ok(ProjectionTurn {
                 revision: state.revision,
+                as_of_ms: state.pinned_at_ms,
+                expiry_noticed_through_ms: state
+                    .expiry_noticed_through_ms
+                    .unwrap_or(state.pinned_at_ms),
+                now_ms,
                 changes: None,
                 repinned: None,
                 sources: Vec::new(),
@@ -358,6 +431,11 @@ impl ProjectionPins for NativeProjectionPins {
         };
         Ok(ProjectionTurn {
             revision: state.revision,
+            as_of_ms: state.pinned_at_ms,
+            expiry_noticed_through_ms: state
+                .expiry_noticed_through_ms
+                .unwrap_or(state.pinned_at_ms),
+            now_ms,
             changes: Some(changes),
             repinned: None,
             sources,
@@ -408,6 +486,10 @@ fn parse_pin_record(value: &Value) -> Option<ProjectionPinRecord> {
         noticed_through,
         compaction_id,
         pinned_at_ms,
+        expiry_noticed_through_ms: value
+            .get("expiryNoticedThroughMs")
+            .and_then(Value::as_f64)
+            .filter(|noticed| noticed.is_finite()),
         suppression_generation,
     })
 }
@@ -791,6 +873,7 @@ mod tests {
             noticed_through: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             compaction_id: None,
             pinned_at_ms: 0.0,
+            expiry_noticed_through_ms: None,
             suppression_generation: None,
         };
         let pins = NativeProjectionPins::with_now(Box::new(|| 2.0));
@@ -818,7 +901,8 @@ mod tests {
                 branch: &[],
                 head: head.clone()
             })
-            .expect("peek"),
+            .expect("peek")
+            .revision,
             head
         );
 
@@ -831,7 +915,10 @@ mod tests {
                 head: repo.head().expect("head")
             })
             .expect("peek"),
-            pinned.revision
+            PeekedPin {
+                revision: pinned.revision.clone(),
+                as_of_ms: 1.0
+            }
         );
     }
 
@@ -897,5 +984,28 @@ mod tests {
         assert!(line.contains("reference/19.md"));
         assert!(!line.contains("reference/20.md"));
         assert!(line.contains("5 more"));
+    }
+
+    #[test]
+    fn expiry_notices_persist_a_watermark_that_survives_a_resume() {
+        let (_dir, repo) = fixture();
+        let pins = NativeProjectionPins::with_now(Box::new(|| 1.0));
+        let (first, _) = advance(&pins, &repo, &[], SESSION);
+        assert_eq!(first.as_of_ms, 1.0);
+        assert_eq!(first.expiry_noticed_through_ms, 1.0);
+
+        let recorded: std::cell::RefCell<Vec<ProjectionPinRecord>> = Default::default();
+        pins.notice_expiries(SESSION, 50.0, &|record| {
+            recorded.borrow_mut().push(record.clone())
+        });
+        let records = recorded.into_inner();
+        assert_eq!(records[0].expiry_noticed_through_ms, Some(50.0));
+
+        let resumed = NativeProjectionPins::with_now(Box::new(|| 90.0));
+        let branch = [pin_entry(&records[0])];
+        let (second, _) = advance(&resumed, &repo, &branch, SESSION);
+        assert_eq!(second.as_of_ms, 1.0);
+        assert_eq!(second.expiry_noticed_through_ms, 50.0);
+        assert_eq!(second.now_ms, 90.0);
     }
 }

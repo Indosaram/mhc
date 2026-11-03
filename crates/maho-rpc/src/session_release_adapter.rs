@@ -1,10 +1,8 @@
 //! `ReleasableSession` over a real `AgentSession` (senpi `session-release.ts` reads `AgentSession` directly; the
 //! Rust release works against the trait in `session_release_interrupt`, and this is the adapter the host lends it).
 //!
-//! Gaps against upstream, named where they sit: `AgentSession` has no `externalAdmission` ledger, so admission
-//! open/closed is only recorded here (`admission_closed`) and no deliveries are ever pending; it has no
-//! `whenQueueClearRecorded` (its `clear_queue` is synchronous), and `SessionManager` has no `persistHeaderNow`, so the
-//! header write is done here from the manager's own header and entries.
+//! Admission is delegated to the session's external-admission ledger. Queue clearing is synchronous;
+//! header persistence uses the manager's own header and entries.
 use crate::session_release_interrupt::{ReleasableSession, ReleaseWriteError, SubscriptionGuard};
 use async_trait::async_trait;
 use maho_core::agent_session::{AgentSession, ClearedQueue};
@@ -149,10 +147,12 @@ impl ReleasableSession for AgentSessionRelease {
         let Some(file) = self.session.session_file() else {
             return Ok(None);
         };
-        let maho_core::session_move::extension_state::OutgoingState { attempt, dir } = maho_core::session_move::extension_state::prepare_outgoing_state(
-            std::path::Path::new(&file),
-            move_id,
-        )?;
+        let maho_core::session_move::extension_state::OutgoingState { attempt, dir } =
+            maho_core::session_move::extension_state::prepare_outgoing_state(
+                std::path::Path::new(&file),
+                move_id,
+            )
+            .await?;
         self.session.emit_extension_event(
             "session_move_export",
             &serde_json::json!({"moveId":move_id,"dir":dir}),
@@ -201,5 +201,26 @@ impl ReleasableSession for AgentSessionRelease {
         self.session
             .emit_session_move(move_id.to_owned(), dir.into(), None)
             .await
+    }
+}
+
+/// `unload_session` reads the same live session plus its wake sources and durable id. No `EffectSession` adapter over
+/// `AgentSession` exists yet (the effect ledger is driven through `EffectSession` fakes only), so an `effectId` unload
+/// is refused as `unsupported`, as senpi does for a session without an effect ledger.
+impl crate::session_unload::UnloadableSession for AgentSessionRelease {
+    fn active_wake_sources(&self) -> Vec<String> {
+        self.session.active_wake_sources()
+    }
+
+    fn durable_session_id(&self) -> String {
+        self.session.session_id()
+    }
+
+    fn session_file(&self) -> Option<String> {
+        self.session.session_file()
+    }
+
+    fn effect_session(&self) -> Option<Arc<dyn crate::effect_session::EffectSession>> {
+        None
     }
 }

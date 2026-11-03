@@ -1,4 +1,5 @@
-pub type ListenerCallback = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
+pub type ListenerCallback =
+    std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
 use crate::session_release_interrupt::BoxFuture;
 use crate::session_worker_protocol::{SESSION_WORKER_LIMITS, WorkerDisplay};
 pub fn apply_display(display: &mut WorkerDisplay, next: WorkerDisplay) -> bool {
@@ -47,6 +48,9 @@ struct WorkerPort {
         std::collections::HashMap<u64, crate::session_worker_signals::WorkerSignal>,
     >,
     next: std::sync::atomic::AtomicU64,
+    /// Set by `commit` when the host owns an acceptance lane; each output frame then carries the next ordinal.
+    ordered: std::sync::atomic::AtomicBool,
+    output_ordinal: std::sync::atomic::AtomicU64,
 }
 impl WorkerPort {
     fn send(&self, message: &crate::session_worker_protocol::SessionWorkerWire) {
@@ -147,6 +151,10 @@ struct WorkerState {
     closing: std::sync::atomic::AtomicBool,
     /// One session per isolate: the roles of the connections it serves, adopted from the host before each command.
     roles: crate::session_binding::SharedConnectionRoles,
+    /// The worker's private MCP forms (senpi `privateForms`); consulted before every other host message.
+    private_forms: crate::mcp_form_worker::McpFormWorker,
+    /// The bound private forms, held for the session's lifetime (senpi `privateForms.bind` result).
+    private_binding: std::sync::Mutex<Option<crate::mcp_form_worker::WorkerFormsBinding>>,
 }
 type SessionWorkerConfigurationHandle = std::sync::Arc<SessionWorkerConfiguration>;
 tokio::task_local! {static WORKER_CONNECTION:Option<String>;}
@@ -218,6 +226,35 @@ fn publish_output(
         streaming: session.is_streaming(),
     };
     let connection = WORKER_CONNECTION.try_with(Clone::clone).ok().flatten();
+    // senpi `WorkerEventWriter.enqueue` ordered frames: ordinal, carrier, and the journal before the record.
+    let ordered = port.ordered.load(std::sync::atomic::Ordering::SeqCst);
+    let replaced = record["type"] == "session_replaced";
+    let (ordinal, recovery, transitions, bootstrap) = if ordered {
+        let ordinal = port
+            .output_ordinal
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let recovery = session.recovery_carrier(&record).map(Into::into);
+        let (transitions, bootstrap) = if replaced {
+            let transcript =
+                session.with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            (
+                None,
+                Some(crate::session_worker_protocol::WorkerBootstrap {
+                    transcript: crate::session_worker_protocol::within_frame_limit(transcript),
+                }),
+            )
+        } else {
+            let drained = session.with_session_manager_mut(|manager| manager.drain_transcript());
+            (
+                (!drained.is_empty())
+                    .then(|| crate::session_worker_protocol::within_frame_limit(drained)),
+                None,
+            )
+        };
+        (Some(ordinal), recovery, transitions, bootstrap)
+    } else {
+        (None, None, None, None)
+    };
     port.exchange(
         |signal| crate::session_worker_protocol::SessionWorkerWire::Output {
             record,
@@ -225,16 +262,17 @@ fn publish_output(
             signal,
             activity,
             snapshot: replacement,
+            ordinal,
+            recovery,
+            transitions,
+            bootstrap,
         },
         "session_worker_output_denied",
     );
 }
 /// senpi `WorkerEventWriter.settleGrantDialog`: the grant dialog for `id` settled in this isolate, so the host may
 /// stop waiting for an answer and forget the connection it routed it to.
-pub fn publish_grant_settled(
-    publish: &dyn Fn(serde_json::Value),
-    id: &str,
-) {
+pub fn publish_grant_settled(publish: &dyn Fn(serde_json::Value), id: &str) {
     publish(serde_json::json!({"type": "security_grant_settled", "id": id}));
 }
 
@@ -248,7 +286,9 @@ pub type GrantSelect =
 pub fn bind_security_presentations(
     durable_id: &str,
     attach_grant: impl FnOnce(&str, GrantSelect) -> Box<dyn Fn() + Send + Sync>,
-    subscribe_notices: impl FnOnce(Box<dyn Fn(serde_json::Value) + Send + Sync>) -> Box<dyn Fn() + Send + Sync>,
+    subscribe_notices: impl FnOnce(
+        Box<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) -> Box<dyn Fn() + Send + Sync>,
     select: GrantSelect,
     publish: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
 ) -> Box<dyn Fn() + Send + Sync> {
@@ -282,10 +322,13 @@ impl WorkerState {
                 request,
                 configuration,
                 profile,
+                subscription_limits,
             } => {
                 if lock(&self.prepared).is_some() {
                     return Err("Session worker already prepared".into());
                 }
+                // The host's records as of the prepare, before any turn here reads the store (senpi#3695).
+                crate::session_worker_limit_mirror::adopt_wire(&subscription_limits);
                 let configuration = std::sync::Arc::new((self.configure)(&configuration)?);
                 let mut profile = crate::session_worker_protocol::profile_from_wire(&profile)?;
                 let path = match &profile.session_path {
@@ -317,14 +360,18 @@ impl WorkerState {
                     session_path,
                 }))
             }
-            H::Commit { request } => {
+            H::Commit {
+                request,
+                acceptance,
+                recovery_epoch,
+            } => {
                 let Some((configuration, profile)) = lock(&self.prepared).clone() else {
                     return Err("Invalid session commit".into());
                 };
                 if self.current().is_some() {
                     return Err("Invalid session commit".into());
                 }
-                let mut registry = crate::session_registry::RpcSessionRegistry::default();
+                let mut registry = crate::session_worker_registry::create_session_worker_registry();
                 let crate::session_registry::OpenAdmission::Create(handle) = registry
                     .admit_open(profile.clone(), false, crate::connection_handler::now_ms())
                     .map_err(|error| error.to_string())?
@@ -341,11 +388,27 @@ impl WorkerState {
                     runtime,
                     scope: entry.scope.clone(),
                 });
+                let ordered = acceptance == Some(true);
+                self.port
+                    .ordered
+                    .store(ordered, std::sync::atomic::Ordering::SeqCst);
+                if let Some(epoch) = &recovery_epoch {
+                    session.runtime.session().set_session_recovery_epoch(epoch);
+                }
+                let bootstrap = ordered.then(|| crate::session_worker_protocol::WorkerBootstrap {
+                    transcript: crate::session_worker_protocol::within_frame_limit(
+                        session
+                            .runtime
+                            .session()
+                            .with_session_manager_mut(|manager| manager.begin_transcript_journal()),
+                    ),
+                });
                 let value = snapshot(session.runtime.session());
                 *lock(&self.session) = Some(session);
                 Ok(Some(W::Ready {
                     request,
                     snapshot: value,
+                    bootstrap,
                 }))
             }
             H::Bind {
@@ -354,6 +417,7 @@ impl WorkerState {
                 display,
                 connection,
                 roles,
+                mcp_forms_enforced,
             } => {
                 self.adopt_roles(connection.as_deref(), roles.as_deref());
                 let session = self.current().ok_or("Invalid session binding")?;
@@ -378,11 +442,28 @@ impl WorkerState {
                                 sink,
                                 display.capabilities,
                                 Some(std::sync::Arc::clone(&self.roles)),
+                                crate::host_session_control::profile_host_socket(&session.runtime),
                             ),
                         )
                         .await,
                 );
                 *lock(&self.binding) = Some(binding);
+                // senpi `WorkerEventWriter.bindMcpForms`: enforced forms bind through the host, admitted by this session.
+                if mcp_forms_enforced {
+                    let admitted = session.runtime.session().weak_accessor();
+                    let bound = self
+                        .private_forms
+                        .bind(
+                            &session.runtime.session().session_id(),
+                            std::sync::Arc::new(move || {
+                                if let Some(session) = admitted() {
+                                    session.admit_human_answer();
+                                }
+                            }),
+                        )
+                        .await?;
+                    *lock(&self.private_binding) = Some(bound);
+                }
                 let port = std::sync::Arc::clone(&self.port);
                 let events = session.runtime.session().weak_accessor();
                 let subscription = session.runtime.session().subscribe(std::sync::Arc::new(
@@ -447,6 +528,38 @@ impl WorkerState {
                     error: None,
                 }))
             }
+            // senpi `prompt_surface` / `browser_engine`: the attach that names one moves the live session to it.
+            // NATIVE-DIVERGENCE(senpi `entry.runtime.setPromptSurface`): the runtime is shared behind an `Arc`, so the
+            // live session takes the value; a later replacement re-reads it from the session.
+            H::PromptSurface { request, surface } => {
+                let session = self.current().ok_or("session_closing")?;
+                let surface = match surface.as_str() {
+                    "terminal" => maho_ext_api::PromptSurface::Terminal,
+                    "app" => maho_ext_api::PromptSurface::App,
+                    "chat" => maho_ext_api::PromptSurface::Chat,
+                    _ => return Err(format!("Invalid prompt surface: {surface}")),
+                };
+                session.runtime.session().set_prompt_surface(surface);
+                Ok(Some(W::Result {
+                    request,
+                    error: None,
+                }))
+            }
+            H::BrowserEngine { request, engine } => {
+                let session = self.current().ok_or("session_closing")?;
+                session.runtime.session().set_browser_engine(engine);
+                Ok(Some(W::Result {
+                    request,
+                    error: None,
+                }))
+            }
+            // senpi `entry.runtime.setPermissionPreset(preset)` sets the `permission-preset` extension flag and syncs
+            // the Full-access trust; maho-core exposes no runtime seam for either, so the worker refuses instead of
+            // pretending the preset moved.
+            H::PermissionPreset { .. } => {
+                self.current().ok_or("session_closing")?;
+                Err("permission_preset_unsupported".into())
+            }
             H::Display { .. } => Ok(Some(W::ControlDone {
                 control: crate::session_worker_protocol::WorkerControlKind::Display,
             })),
@@ -458,6 +571,10 @@ impl WorkerState {
                 Ok(Some(W::ControlDone {
                     control: crate::session_worker_protocol::WorkerControlKind::CancelUi,
                 }))
+            }
+            H::SubscriptionLimits { accounts } => {
+                crate::session_worker_limit_mirror::adopt_wire(&accounts);
+                Ok(None)
             }
             H::CancelGrant { id } => {
                 // `binding?.handle({ type: "extension_ui_response", id, cancelled: true })`: the dialog nobody can
@@ -474,9 +591,15 @@ impl WorkerState {
                 }
                 Ok(None)
             }
+            // Consumed by `private_forms.receive` before dispatch; never reaches here.
+            H::McpFormBound { .. }
+            | H::McpFormAvailability { .. }
+            | H::McpFormSettlement { .. } => Ok(None),
             H::Close => {
                 self.closing
                     .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.private_forms.abort_all();
+                drop(lock(&self.private_binding).take());
                 drop(lock(&self.subscription).take());
                 let binding = lock(&self.binding).take();
                 if let Some(binding) = binding {
@@ -501,6 +624,8 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         out: std::sync::Mutex::new(std::io::stdout()),
         pending: Default::default(),
         next: std::sync::atomic::AtomicU64::new(1),
+        ordered: std::sync::atomic::AtomicBool::new(false),
+        output_ordinal: std::sync::atomic::AtomicU64::new(0),
     });
     // senpi \`installWriteReservation(canonicalPath)\`: every session writer asks the host first.
     let reserve = std::sync::Arc::clone(&port);
@@ -532,6 +657,20 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         subscription: Default::default(),
         closing: std::sync::atomic::AtomicBool::new(false),
         roles: Default::default(),
+        private_forms: {
+            let port = std::sync::Arc::clone(&port);
+            crate::mcp_form_worker::McpFormWorker::new(std::sync::Arc::new(move |message| {
+                port.send(&message)
+            }))
+        },
+        private_binding: Default::default(),
+    });
+    // A turn in this worker reports into its own store; the host mirrors it so its clients see it (senpi#3695).
+    let mirror_port = std::sync::Arc::clone(&port);
+    let _limit_mirror = crate::session_worker_limit_mirror::subscribe_mirror(move |limits| {
+        mirror_port.send(
+            &crate::session_worker_protocol::SessionWorkerWire::SubscriptionLimits { limits },
+        );
     });
     let (messages, mut inbox) = tokio::sync::mpsc::unbounded_channel::<
         crate::session_worker_protocol::HostToSessionWorker,
@@ -559,16 +698,32 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         }
     });
     while let Some(message) = inbox.recv().await {
+        // senpi `if (privateForms.receive(message)) return`: private messages are consumed first, in order.
+        if state.private_forms.receive(&message) {
+            continue;
+        }
         let state = std::sync::Arc::clone(&state);
         tokio::spawn(async move {
             let request = match &message {
                 crate::session_worker_protocol::HostToSessionWorker::Prepare {
                     request, ..
                 }
-                | crate::session_worker_protocol::HostToSessionWorker::Commit { request }
+                | crate::session_worker_protocol::HostToSessionWorker::Commit { request, .. }
                 | crate::session_worker_protocol::HostToSessionWorker::Bind { request, .. }
                 | crate::session_worker_protocol::HostToSessionWorker::Command {
                     request, ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::PromptSurface {
+                    request,
+                    ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::BrowserEngine {
+                    request,
+                    ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::PermissionPreset {
+                    request,
+                    ..
                 } => Some(*request),
                 _ => None,
             };
@@ -598,6 +753,53 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn idle_worker() -> std::sync::Arc<WorkerState> {
+        let port = std::sync::Arc::new(WorkerPort {
+            out: std::sync::Mutex::new(std::io::stdout()),
+            pending: Default::default(),
+            next: std::sync::atomic::AtomicU64::new(1),
+            ordered: std::sync::atomic::AtomicBool::new(false),
+            output_ordinal: std::sync::atomic::AtomicU64::new(0),
+        });
+        std::sync::Arc::new(WorkerState {
+            port,
+            configure: Box::new(|_| Err("unused".into())),
+            prepared: Default::default(),
+            session: Default::default(),
+            binding: Default::default(),
+            subscription: Default::default(),
+            closing: std::sync::atomic::AtomicBool::new(false),
+            roles: Default::default(),
+            private_forms: crate::mcp_form_worker::McpFormWorker::new(std::sync::Arc::new(|_| {})),
+            private_binding: Default::default(),
+        })
+    }
+    // senpi `prompt_surface` / `browser_engine` / `permission_preset`: with no live runtime the request fails
+    // `session_closing`, so the host's attach reports the closing session instead of hanging.
+    #[tokio::test]
+    async fn attach_setters_before_a_runtime_answer_session_closing() {
+        use crate::session_worker_protocol::HostToSessionWorker as H;
+        let worker = idle_worker();
+        for message in [
+            H::PromptSurface {
+                request: 1,
+                surface: "app".into(),
+            },
+            H::BrowserEngine {
+                request: 2,
+                engine: "builtin".into(),
+            },
+            H::PermissionPreset {
+                request: 3,
+                preset: "guarded".into(),
+            },
+        ] {
+            assert_eq!(
+                worker.handle(message).await.err().as_deref(),
+                Some("session_closing")
+            );
+        }
+    }
     #[test]
     fn display_rejects_stale_revision_but_accepts_equal() {
         let mut display = WorkerDisplay {
@@ -646,8 +848,7 @@ mod tests {
     #[test]
     fn binding_security_presentations_mirrors_notices_and_detaches_both() {
         let attached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let listener: ListenerCallback =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let listener: ListenerCallback = std::sync::Arc::new(std::sync::Mutex::new(None));
         let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let detached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

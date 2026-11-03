@@ -4,39 +4,100 @@ use std::{path::Path, sync::Arc};
 #[derive(Default)]
 struct RecordingActions(std::sync::Mutex<Vec<(String, Option<JsonValue>)>>);
 impl ExtensionActions for RecordingActions {
- fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { Err("unexpected message".into()) }
- fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Err("unexpected user message".into()) }
- fn append_entry(&self, kind: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> {
-  self.0.lock().expect("entries").push((kind.into(), data)); Ok(())
- }
- fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
+    fn send_message(
+        &self,
+        _: CustomMessage,
+        _: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        Err("unexpected message".into())
+    }
+    fn send_user_message(
+        &self,
+        _: UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        Err("unexpected user message".into())
+    }
+    fn append_entry(&self, kind: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+        self.0.lock().expect("entries").push((kind.into(), data));
+        Ok(())
+    }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+        Ok(Vec::new())
+    }
 }
 
 struct TestSession;
 impl ToolSessionManager for TestSession {
-    fn session_id(&self) -> &str { "session" }
-    fn session_file(&self) -> Option<&Path> { None }
+    fn session_id(&self) -> &str {
+        "session"
+    }
+    fn session_file(&self) -> Option<&Path> {
+        None
+    }
 }
 impl SessionManager for TestSession {
-    fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_leaf_id(&self) -> Option<String> { None }
-    fn get_session_name(&self) -> Option<String> { None }
+    fn get_entries(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_branch(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_leaf_id(&self) -> Option<String> {
+        None
+    }
+    fn get_session_name(&self) -> Option<String> {
+        None
+    }
 }
 struct TestRegistry;
 impl ModelRegistry for TestRegistry {
-    fn get_all(&self) -> Vec<Model> { Vec::new() }
-    fn get_available(&self) -> Vec<Model> { Vec::new() }
-    fn find(&self, _: &str, _: &str) -> Option<Model> { None }
-    fn has_configured_auth(&self, _: &Model) -> bool { false }
-    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+    fn get_all(&self) -> Vec<Model> {
+        Vec::new()
+    }
+    fn get_available(&self) -> Vec<Model> {
+        Vec::new()
+    }
+    fn find(&self, _: &str, _: &str) -> Option<Model> {
+        None
+    }
+    fn has_configured_auth(&self, _: &Model) -> bool {
+        false
+    }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
 }
-struct TestUi;
+#[derive(Default)]
+struct TestUi(std::sync::Mutex<Vec<(String, NotificationType)>>);
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-    fn notify(&self, _: &str, _: NotificationType) {}
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn notify(&self, message: &str, kind: NotificationType) {
+        self.0.lock().expect("notices").push((message.into(), kind));
+    }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
     fn set_header(&self, _: Option<ComponentFactory>) {}
@@ -44,131 +105,480 @@ impl ExtensionUi for TestUi {
     fn set_title(&self, _: &str) {}
     fn paste_to_editor(&self, _: &str) {}
     fn set_editor_text(&self, _: &str) {}
-    fn get_editor_text(&self) -> String { String::new() }
-    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
-    fn theme(&self) -> Theme { Theme::default() }
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("UI not available".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
 }
 fn context() -> ExtensionContext {
-    ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
-        session_manager: Arc::new(TestSession), model_registry: Arc::new(TestRegistry), model: None, thinking_level: None,
-        service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
-        loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
-        is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
-        is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
-        registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
+    ExtensionContext {
+        ui: Arc::new(TestUi::default()),
+        mode: ExtensionMode::Print,
+        has_ui: false,
+        cwd: "/tmp".into(),
+        agent_dir: "/tmp/agent".into(),
+        session_manager: Arc::new(TestSession),
+        model_registry: Arc::new(TestRegistry),
+        model: None,
+        thinking_level: None,
+        service_tier: None,
+        effective_service_tier: None,
+        scoped_models: Vec::new(),
+        goal_store_file: None,
+        loaded_extension_paths: Vec::new(),
+        signal: None,
+        steering_signal: None,
+        is_idle_fn: Arc::new(|| true),
+        wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
+        is_project_trusted_fn: Arc::new(|| true),
+        is_compacting_fn: Arc::new(|| false),
+        get_system_prompt_fn: Arc::new(|| "base".into()),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
+        registered_mcp_servers: Vec::new(),
+        update_tool_hook_status: None,
+        idle_coordinator: None,
+        logger: None,
+        defer_macrotask: None,
+        compaction_signal: Default::default(),
+    }
 }
 fn with_cwd(mut ctx: ExtensionContext, cwd: &std::path::Path) -> ExtensionContext {
     ctx.cwd = cwd.into();
-    ctx.get_system_prompt_options_fn = Arc::new({ let cwd = cwd.to_path_buf(); move || BuildSystemPromptOptions { cwd: cwd.clone(), ..Default::default() } });
+    ctx.get_system_prompt_options_fn = Arc::new({
+        let cwd = cwd.to_path_buf();
+        move || BuildSystemPromptOptions {
+            cwd: cwd.clone(),
+            ..Default::default()
+        }
+    });
     ctx
 }
 
 #[tokio::test]
 async fn static_hook_reemits_from_base_and_omits_native_context() {
- let root = tempfile::tempdir().unwrap();
- std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
- let instructions = root.path().join("AGENTS.md");
- std::fs::write(&instructions, "fixture").unwrap();
- let ctx = with_cwd(context(), root.path());
- let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
- let home = tempfile::tempdir().unwrap();
- maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
- let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: (ctx.get_system_prompt_options_fn)() });
- let hook = &api.registered.handlers[&EventKind::BeforeAgentStart][0];
- let first = hook(&mut event, &ctx).await.unwrap();
- let second = hook(&mut event, &ctx).await.unwrap();
- match (first, second) {
-  (EventResult::BeforeAgentStart(first), EventResult::BeforeAgentStart(second)) => { assert_eq!(first.system_prompt, second.system_prompt); assert!(first.system_prompt.unwrap().contains(maho_ext_rules::rules::constants::PROJECT_RULES_START_MARKER)); },
-  _ => panic!("missing static injection"),
- }
- let ExtensionEvent::BeforeAgentStart(payload) = &mut event else { unreachable!() };
- payload.system_prompt_options.context_files.push(ContextFile { path: instructions.to_string_lossy().into_owned(), content: "fixture".into() });
- assert!(matches!(hook(&mut event, &ctx).await.unwrap(), EventResult::None));
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
+    let instructions = root.path().join("AGENTS.md");
+    std::fs::write(&instructions, "fixture").unwrap();
+    let ctx = with_cwd(context(), root.path());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let home = tempfile::tempdir().unwrap();
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: String::new(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: "base".into(),
+        system_prompt_options: (ctx.get_system_prompt_options_fn)(),
+    });
+    let hook = &api.registered.handlers[&EventKind::BeforeAgentStart][0];
+    let first = hook(&mut event, &ctx).await.unwrap();
+    let second = hook(&mut event, &ctx).await.unwrap();
+    match (first, second) {
+        (EventResult::BeforeAgentStart(first), EventResult::BeforeAgentStart(second)) => {
+            assert_eq!(first.system_prompt, second.system_prompt);
+            assert!(
+                first
+                    .system_prompt
+                    .unwrap()
+                    .contains(maho_ext_rules::rules::constants::PROJECT_RULES_START_MARKER)
+            );
+        }
+        _ => panic!("missing static injection"),
+    }
+    let ExtensionEvent::BeforeAgentStart(payload) = &mut event else {
+        unreachable!()
+    };
+    payload
+        .system_prompt_options
+        .context_files
+        .push(ContextFile {
+            path: instructions.to_string_lossy().into_owned(),
+            content: "fixture".into(),
+            scope: None,
+        });
+    assert!(matches!(
+        hook(&mut event, &ctx).await.unwrap(),
+        EventResult::None
+    ));
 }
 
 #[tokio::test]
 async fn dynamic_hook_injects_structural_grammar_matched_rule() {
- let root = tempfile::tempdir().unwrap();
- std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
- std::fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
- std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: ['**/*.{rs,ts}']\n---\nfixture grammar rule").unwrap();
- std::fs::write(root.path().join("sample.rs"), "fn main() {}").unwrap();
- let ctx = with_cwd(context(), root.path());
- let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
- api.runtime.bind(Arc::new(RecordingActions::default()));
- let home = tempfile::tempdir().unwrap();
- maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
- let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "call".into(), input: serde_json::json!({"path": "sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
- let hook = &api.registered.handlers[&EventKind::ToolResult][0];
- let result = hook(&mut event, &ctx).await.unwrap();
- let EventResult::ToolResult(result) = result else { panic!("expected dynamic rule injection") };
- let text = result.content.expect("injected content").into_iter().find_map(|content| match content { ToolContent::Text { text, .. } => Some(text), _ => None }).expect("injected text");
- assert!(text.contains("fixture grammar rule"), "{text}");
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
+    std::fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
+    std::fs::write(
+        root.path().join(".omo/rules/grammar.md"),
+        "---\nglobs: ['**/*.{rs,ts}']\n---\nfixture grammar rule",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("sample.rs"), "fn main() {}").unwrap();
+    let ctx = with_cwd(context(), root.path());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    api.runtime.bind(Arc::new(RecordingActions::default()));
+    let home = tempfile::tempdir().unwrap();
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "read".into(),
+        tool_call_id: "call".into(),
+        input: serde_json::json!({"path": "sample.rs"}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    let hook = &api.registered.handlers[&EventKind::ToolResult][0];
+    let result = hook(&mut event, &ctx).await.unwrap();
+    let EventResult::ToolResult(result) = result else {
+        panic!("expected dynamic rule injection")
+    };
+    let text = result
+        .content
+        .expect("injected content")
+        .into_iter()
+        .find_map(|content| match content {
+            ToolContent::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .expect("injected text");
+    assert!(text.contains("fixture grammar rule"), "{text}");
 }
 
 #[tokio::test]
 async fn dynamic_hook_injects_extglob_rule_for_matching_target() {
- let root = tempfile::tempdir().expect("project");
- std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
- std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
- std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: '**/*.@(rs|ts)'\n---\nfixture").expect("rule");
- std::fs::write(root.path().join("sample.rs"), "fn main() {}").expect("target");
- let ctx = with_cwd(context(), root.path());
- let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
- let actions = Arc::new(RecordingActions::default());
- api.runtime.bind(actions.clone());
- let home = tempfile::tempdir().expect("home");
- maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
- let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "call".into(), input: serde_json::json!({"path": "sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
- let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx).await.expect("dispatch");
- assert!(matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if !content.is_empty()));
- let entries = actions.0.lock().expect("activation entries");
- assert_eq!(entries.len(), 1);
- assert_eq!(entries[0].0, maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE);
+    let root = tempfile::tempdir().expect("project");
+    std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
+    std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
+    std::fs::write(
+        root.path().join(".omo/rules/grammar.md"),
+        "---\nglobs: '**/*.@(rs|ts)'\n---\nfixture",
+    )
+    .expect("rule");
+    std::fs::write(root.path().join("sample.rs"), "fn main() {}").expect("target");
+    let ctx = with_cwd(context(), root.path());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let actions = Arc::new(RecordingActions::default());
+    api.runtime.bind(actions.clone());
+    let home = tempfile::tempdir().expect("home");
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "read".into(),
+        tool_call_id: "call".into(),
+        input: serde_json::json!({"path": "sample.rs"}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
+        .await
+        .expect("dispatch");
+    assert!(
+        matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if !content.is_empty())
+    );
+    let entries = actions.0.lock().expect("activation entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].0,
+        maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE
+    );
 }
 
 #[tokio::test]
 async fn registered_hook_tracks_dynamic_injection_across_session_transitions() {
- let root = tempfile::tempdir().expect("project");
- std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
- std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
- std::fs::write(root.path().join(".omo/rules/native.md"), "---\nglobs: \"*.rs\"\n---\ndynamic fixture").expect("rule");
- std::fs::write(root.path().join("file.rs"), "target").expect("target");
- let ctx = with_cwd(context(), root.path());
- let mut api = ExtensionApi::new(LoadedExtension::new("rules", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
- let actions = Arc::new(RecordingActions::default());
- api.runtime.bind(actions.clone());
- let home = tempfile::tempdir().expect("home");
- let mut config = maho_ext_rules::config::config_from_environment(|_| None);
- config.mode = maho_ext_rules::rules::types::RulesMode::Dynamic;
- maho_ext_rules::Rules::register_with_config(&mut api, config, home.path().into());
+    let root = tempfile::tempdir().expect("project");
+    std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
+    std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
+    std::fs::write(
+        root.path().join(".omo/rules/native.md"),
+        "---\nglobs: \"*.rs\"\n---\ndynamic fixture",
+    )
+    .expect("rule");
+    std::fs::write(root.path().join("file.rs"), "target").expect("target");
+    let ctx = with_cwd(context(), root.path());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let actions = Arc::new(RecordingActions::default());
+    api.runtime.bind(actions.clone());
+    let home = tempfile::tempdir().expect("home");
+    let mut config = maho_ext_rules::config::config_from_environment(|_| None);
+    config.mode = maho_ext_rules::rules::types::RulesMode::Dynamic;
+    maho_ext_rules::Rules::register_with_config(&mut api, config, home.path().into());
 
- let mut results = Vec::new();
- for step in 0..5 {
-  if step >= 3 {
-   let compact = if step == 3 {
-    SessionCompactEvent::Rejected { reason: CompactionReason::Extension, request_id: "compact".into(), rejection_cause: CompactionRejectionCause::CancelledByExtension }
-   } else {
-    SessionCompactEvent::Accepted { reason: CompactionReason::Extension, request_id: "compact".into(), compaction_entry: SessionEntry { id: "compact".into(), parent_id: None, timestamp: "0".into(), kind: "compaction".into(), data: serde_json::Value::Null }, from_extension: true, will_retry: false }
-   };
-   let mut event = ExtensionEvent::SessionCompact(compact);
-   api.registered.handlers[&EventKind::SessionCompact][0](&mut event, &ctx).await.expect("compact dispatch");
-  }
-  let failed = step == 2;
-  let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "read-1".into(), input: serde_json::json!({"path":root.path().join("file.rs")}), content: vec![ToolContent::text("target")], details: None, is_error: failed, usage: None });
-  let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx).await.expect("tool dispatch");
-  results.push(matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if content.len() > 1));
- }
+    let mut results = Vec::new();
+    for step in 0..5 {
+        if step >= 3 {
+            let compact = if step == 3 {
+                SessionCompactEvent::Rejected {
+                    reason: CompactionReason::Extension,
+                    request_id: "compact".into(),
+                    rejection_cause: CompactionRejectionCause::CancelledByExtension,
+                }
+            } else {
+                SessionCompactEvent::Accepted {
+                    reason: CompactionReason::Extension,
+                    request_id: "compact".into(),
+                    compaction_entry: SessionEntry {
+                        id: "compact".into(),
+                        parent_id: None,
+                        timestamp: "0".into(),
+                        kind: "compaction".into(),
+                        data: serde_json::Value::Null,
+                    },
+                    from_extension: true,
+                    will_retry: false,
+                }
+            };
+            let mut event = ExtensionEvent::SessionCompact(compact);
+            api.registered.handlers[&EventKind::SessionCompact][0](&mut event, &ctx)
+                .await
+                .expect("compact dispatch");
+        }
+        let failed = step == 2;
+        let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+            tool_name: "read".into(),
+            tool_call_id: "read-1".into(),
+            input: serde_json::json!({"path":root.path().join("file.rs")}),
+            content: vec![ToolContent::text("target")],
+            details: None,
+            is_error: failed,
+            usage: None,
+        });
+        let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
+            .await
+            .expect("tool dispatch");
+        results.push(matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if content.len() > 1));
+    }
 
- assert_eq!(results, vec![true, false, false, false, true]);
- let entries = actions.0.lock().expect("activation entries");
- let activations = entries.iter().filter(|(kind, _)| kind == maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE).collect::<Vec<_>>();
- assert_eq!(activations.len(), 2);
- assert_eq!(entries.iter().filter(|(kind, _)| kind == "pi-rules.scan").count(), 1);
- for (_, data) in activations {
-  let value = data.as_ref().expect("activation data");
-  assert_eq!(value["kind"], "project-rules");
-  assert_eq!(value["rules"].as_array().expect("activation rules").len(), 1);
- }
+    assert_eq!(results, vec![true, false, false, false, true]);
+    let entries = actions.0.lock().expect("activation entries");
+    let activations = entries
+        .iter()
+        .filter(|(kind, _)| kind == maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE)
+        .collect::<Vec<_>>();
+    assert_eq!(activations.len(), 2);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|(kind, _)| kind == "pi-rules.scan")
+            .count(),
+        1
+    );
+    for (_, data) in activations {
+        let value = data.as_ref().expect("activation data");
+        assert_eq!(value["kind"], "project-rules");
+        assert_eq!(
+            value["rules"].as_array().expect("activation rules").len(),
+            1
+        );
+    }
+}
+
+fn write_file(root: &Path, relative: &str, content: &str) -> std::path::PathBuf {
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+    std::fs::write(&path, content).expect("write fixture");
+    path
+}
+
+#[tokio::test]
+async fn natively_loaded_ancestor_agents_md_is_not_reinjected_by_the_repository_walk() {
+    let root = tempfile::tempdir().expect("root");
+    write_file(root.path(), "repo/.git/HEAD", "ref: refs/heads/main\n");
+    let root_agents = write_file(root.path(), "repo/AGENTS.md", "ROOT-AGENTS-NATIVE\n");
+    write_file(
+        root.path(),
+        "repo/.github/instructions/ts.instructions.md",
+        "---\napplyTo: \"packages/**/*.ts\"\n---\nREPO-TS\n",
+    );
+    write_file(root.path(), "repo/packages/app/package.json", "{}\n");
+    let target = write_file(root.path(), "repo/packages/app/src/main.ts", "export {};\n");
+    let cwd = root.path().join("repo/packages/app");
+    let ctx = with_cwd(context(), &cwd);
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    api.runtime.bind(Arc::new(RecordingActions::default()));
+    let home = tempfile::tempdir().expect("home");
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let mut options = (ctx.get_system_prompt_options_fn)();
+    options.context_files.push(ContextFile {
+        path: root_agents.to_string_lossy().into_owned(),
+        content: "ROOT-AGENTS-NATIVE\n".into(),
+        scope: None,
+    });
+    let mut start = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: "read main.ts".into(),
+        trigger: "prompt".into(),
+        preview: false,
+        images: None,
+        system_prompt: "BASE".into(),
+        system_prompt_options: options,
+    });
+    api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut start, &ctx)
+        .await
+        .expect("before_agent_start");
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "read".into(),
+        tool_call_id: "call-read-main".into(),
+        input: serde_json::json!({"path": target}),
+        content: vec![ToolContent::text("export {};")],
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
+        .await
+        .expect("tool_result");
+    let EventResult::ToolResult(ToolResultEventResult {
+        content: Some(content),
+        ..
+    }) = result
+    else {
+        panic!("expected dynamic injection")
+    };
+    let text = content
+        .into_iter()
+        .filter_map(|block| match block {
+            ToolContent::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("REPO-TS"), "{text}");
+    assert!(!text.contains("ROOT-AGENTS-NATIVE"), "{text}");
+}
+
+#[tokio::test]
+async fn preview_before_agent_start_does_not_consume_static_marks() {
+    let root = tempfile::tempdir().expect("root");
+    write_file(root.path(), "Cargo.toml", "");
+    write_file(
+        root.path(),
+        ".omo/rules/always.md",
+        "---\nalwaysApply: true\nglobs: \"*.rs\"\n---\nALWAYS\n",
+    );
+    let target = write_file(root.path(), "file.rs", "target");
+    let ctx = with_cwd(context(), root.path());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    api.runtime.bind(Arc::new(RecordingActions::default()));
+    let home = tempfile::tempdir().expect("home");
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let mut start = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+        prompt: String::new(),
+        trigger: "prompt".into(),
+        preview: true,
+        images: None,
+        system_prompt: "BASE".into(),
+        system_prompt_options: (ctx.get_system_prompt_options_fn)(),
+    });
+    let preview = api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut start, &ctx)
+        .await
+        .expect("preview");
+    assert!(
+        matches!(preview, EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt: Some(ref prompt), .. }) if prompt.contains("ALWAYS"))
+    );
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "read".into(),
+        tool_call_id: "call".into(),
+        input: serde_json::json!({"path": target}),
+        content: vec![ToolContent::text("target")],
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
+        .await
+        .expect("tool_result");
+    assert!(
+        matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if content.len() > 1)
+    );
+}
+
+#[tokio::test]
+async fn rules_show_without_a_rule_id_is_rejected() {
+    let root = tempfile::tempdir().expect("root");
+    let ui = Arc::new(TestUi::default());
+    let mut ctx = with_cwd(context(), root.path());
+    ctx.ui = ui.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let home = tempfile::tempdir().expect("home");
+    maho_ext_rules::Rules::register_with_config(
+        &mut api,
+        maho_ext_rules::config::config_from_environment(|_| None),
+        home.path().into(),
+    );
+    let command = api
+        .registered
+        .commands
+        .iter()
+        .find(|command| command.name == "rules")
+        .expect("rules command");
+    (command.handler)("show", &ctx).await.expect("show");
+    assert_eq!(
+        *ui.0.lock().expect("notices"),
+        [("Rule ID is required".to_owned(), NotificationType::Error)]
+    );
 }

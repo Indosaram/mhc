@@ -93,22 +93,63 @@ pub struct MemoryIdentityRuntime {
     pub store: Arc<ReflectionReservationStore>,
     pub runner: crate::worker::runner::SenpiSubprocessRunner,
     pub sandbox: IdentitySandbox,
+    /// The one identity-wide reconcile in flight (upstream `reconciliation`).
+    reconciliation: std::sync::Mutex<Option<ReconcileFlight>>,
 }
+type ReconcileOutcome = Result<Vec<(String, String)>, String>;
+/// The shared flight: its first observer owns cancellation; others wait for its outcome.
+struct ReconcileFlight {
+    id: u64,
+    signal: Option<maho_ext_api::AbortSignal>,
+    done: tokio::sync::watch::Receiver<Option<ReconcileOutcome>>,
+}
+struct ClearFlight<'a> {
+    slot: &'a std::sync::Mutex<Option<ReconcileFlight>>,
+    id: u64,
+}
+impl Drop for ClearFlight<'_> {
+    fn drop(&mut self) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|flight| flight.id == self.id) {
+            *slot = None;
+        }
+    }
+}
+static NEXT_FLIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub fn create_identity_runtime(
     identity: MemoryIdentityContext,
     settings: &serde_json::Value,
 ) -> Result<MemoryIdentityRuntime, String> {
     let store = create_identity_reservation_store(&identity, settings)?;
     let mut runner = crate::worker::runner::SenpiSubprocessRunner::default();
-    runner.admission_memory_root = identity.durable_root.parent().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf);
+    runner.admission_memory_root = identity
+        .durable_root
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf);
     Ok(MemoryIdentityRuntime {
         identity,
         store,
         runner,
         sandbox: Default::default(),
+        reconciliation: Default::default(),
     })
 }
 impl MemoryIdentityRuntime {
+    /// A runtime over an existing reservation store (the CLI worker shares one store per identity).
+    pub fn with_store(identity: MemoryIdentityContext, store: Arc<ReflectionReservationStore>) -> Self {
+        Self {
+            identity,
+            store,
+            runner: Default::default(),
+            sandbox: Default::default(),
+            reconciliation: Default::default(),
+        }
+    }
+
     pub async fn launch<
         F: std::future::Future<
                 Output = Result<crate::worker::runner_types::ReflectionRunResult, String>,
@@ -155,8 +196,94 @@ impl MemoryIdentityRuntime {
         recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
         launch: &dyn Fn(&memory_core::reflection::ReservedRun),
     ) -> Result<Vec<(String, String)>, String> {
+        self.reconcile_with_signal(now, recovery, launch, None)
+            .await
+    }
+    /// One identity-wide pass, including any already-admitted durable transition. Its first observer
+    /// owns cancellation; an independent caller retries a foreign abort once. The flight is never
+    /// cleared on timeout alone: a committed transition may still be finishing.
+    pub async fn reconcile_with_signal(
+        &self,
+        now: &dyn Fn() -> i64,
+        recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
+        launch: &dyn Fn(&memory_core::reflection::ReservedRun),
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<Vec<(String, String)>, String> {
+        use crate::worker::run_liveness::{OBSERVATION_ABORTED, throw_if_aborted};
+        let mut attempt = 0;
+        loop {
+            throw_if_aborted(signal)?;
+            // Join the flight in progress, or become its driver.
+            let joined = {
+                let mut slot = self
+                    .reconciliation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match slot.as_ref() {
+                    Some(flight) => Err((flight.done.clone(), flight.signal.clone())),
+                    None => {
+                        let (publish, done) = tokio::sync::watch::channel(None);
+                        let id = NEXT_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        *slot = Some(ReconcileFlight {
+                            id,
+                            signal: signal.cloned(),
+                            done,
+                        });
+                        Ok((id, publish))
+                    }
+                }
+            };
+            let outcome = match joined {
+                Ok((id, publish)) => {
+                    // Clears the flight even when the driver future is dropped mid-pass; joiners then
+                    // see the closed channel as a cancelled flight.
+                    let _clear = ClearFlight {
+                        slot: &self.reconciliation,
+                        id,
+                    };
+                    let outcome = self.drive_reconcile(now, recovery, launch, signal).await;
+                    drop(_clear);
+                    let _ = publish.send(Some(outcome.clone()));
+                    // The flight's owner reports what the pass did: a failure is not masked by its abort.
+                    outcome.as_ref().map_err(Clone::clone)?;
+                    outcome
+                }
+                Err((mut done, flight_signal)) => {
+                    let outcome = match done.wait_for(Option::is_some).await {
+                        Ok(value) => value
+                            .clone()
+                            .unwrap_or_else(|| Err(OBSERVATION_ABORTED.to_owned())),
+                        // The driver was dropped before publishing: it was cancelled, not finished.
+                        Err(_) => Err(OBSERVATION_ABORTED.to_owned()),
+                    };
+                    // A foreign observer's abort is not this caller's: retry once as its own flight.
+                    let foreign_abort = outcome
+                        .as_ref()
+                        .is_err_and(|error| error == OBSERVATION_ABORTED)
+                        && flight_signal
+                            .as_ref()
+                            .is_some_and(maho_ext_api::AbortSignal::is_aborted)
+                        && signal.map(|own| own.is_aborted()) != Some(true);
+                    if foreign_abort && attempt == 0 {
+                        attempt += 1;
+                        continue;
+                    }
+                    outcome
+                }
+            };
+            throw_if_aborted(signal)?;
+            return outcome;
+        }
+    }
+    async fn drive_reconcile(
+        &self,
+        now: &dyn Fn() -> i64,
+        recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
+        launch: &dyn Fn(&memory_core::reflection::ReservedRun),
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<Vec<(String, String)>, String> {
         let identity = as_memory_identity(&self.identity);
-        crate::worker::run_reconciliation::reconcile_reflection_runs_with_options(
+        crate::worker::run_reconciliation::reconcile_reflection_runs_with_signal(
             &crate::worker::run_finalization_types::RunFinalizationContext {
                 identity: &identity,
                 reservation: self.store.as_ref(),
@@ -168,6 +295,7 @@ impl MemoryIdentityRuntime {
             recovery,
             None,
             true,
+            signal,
         )
         .await
     }
@@ -245,10 +373,15 @@ mod tests {
             &'a self,
             _: &'a std::path::Path,
             _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
         ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
             Box::pin(async { Ok(()) })
         }
-        fn wait_until(&self, _: f64) -> crate::worker::run_reconciliation::ReconcileFuture<'_> {
+        fn wait_until<'a>(
+            &'a self,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
             Box::pin(async { Ok(()) })
         }
         fn signal_group(&self, _: u64, _: &str) -> Result<(), String> {
@@ -481,7 +614,9 @@ mod tests {
             },
         );
         let mut sandbox = IdentitySandbox::default();
-        let args = crate::worker::spawn_types::ReflectionSpawnArgs { memory_root: None, max_concurrent_runs: None,
+        let args = crate::worker::spawn_types::ReflectionSpawnArgs {
+            memory_root: None,
+            max_concurrent_runs: None,
             command: "child".into(),
             args: vec![],
             cwd: root.path().into(),
@@ -540,6 +675,252 @@ mod tests {
             assert_eq!(
                 result.env.get(name).map(String::as_str),
                 Some("/granted/agent")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_aborted_observer_stops_before_reconciling_and_a_clean_pass_leaves_no_flight() {
+        let root = tempfile::tempdir().unwrap();
+        let context = {
+            let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+            crate::engine_session::prepare_memory_engine_session(
+                "agent",
+                &paths,
+                Default::default(),
+            )
+            .unwrap();
+            MemoryIdentityContext::new(
+                "agent".into(),
+                paths,
+                crate::binding::MemorySessionBinding {
+                    identity: "agent".into(),
+                    repo_path_hash: "hash".into(),
+                    bound_at: 0.0,
+                },
+            )
+        };
+        let runtime = create_identity_runtime(
+            context,
+            &crate::reflection_settings::resolve_memory_settings(None).unwrap(),
+        )
+        .unwrap();
+        let now = || 4_000_000_000_000_i64;
+        let launch = |_: &memory_core::reflection::ReservedRun| {};
+        let signal = maho_ext_api::AbortSignal::default();
+        signal.abort();
+        let aborted = runtime
+            .reconcile_with_signal(&now, &SweepRecovery, &launch, Some(&signal))
+            .await;
+        assert_eq!(
+            aborted,
+            Err(crate::worker::run_liveness::OBSERVATION_ABORTED.to_owned())
+        );
+        assert!(runtime.reconciliation.lock().unwrap().is_none());
+        assert!(
+            runtime
+                .reconcile(&now, &SweepRecovery, &launch)
+                .await
+                .is_ok()
+        );
+        assert!(runtime.reconciliation.lock().unwrap().is_none());
+    }
+
+    /// The recovery port of the overlapping-observer test: the first outcome wait parks until the
+    /// test releases it with a scripted result; every later wait returns at once.
+    struct GatedRecovery {
+        entered: tokio::sync::Notify,
+        release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
+        waits: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::worker::run_reconciliation::ReflectionRecoveryPort for GatedRecovery {
+        fn hostname(&self) -> String {
+            "host".into()
+        }
+        fn pid_liveness(&self, _: u32) -> memory_core::locks::ProcessLiveness {
+            memory_core::locks::ProcessLiveness::Alive
+        }
+        fn process_start(&self, _: u32) -> Option<String> {
+            None
+        }
+        fn classify(
+            &self,
+            _: Option<u64>,
+            _: Option<Option<&str>>,
+        ) -> crate::worker::run_liveness::RunProcessVerdict {
+            crate::worker::run_liveness::RunProcessVerdict::Alive
+        }
+        fn wait_outcome<'a>(
+            &'a self,
+            _: &'a std::path::Path,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
+            self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let gate = self.release.lock().unwrap().take();
+            Box::pin(async move {
+                match gate {
+                    Some(gate) => {
+                        self.entered.notify_one();
+                        gate.await.expect("released")
+                    }
+                    None => Ok(()),
+                }
+            })
+        }
+        fn wait_until<'a>(
+            &'a self,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
+            Box::pin(async { Ok(()) })
+        }
+        fn signal_group(&self, _: u64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn fail(
+            &self,
+            _: &std::path::Path,
+            _: &crate::worker::reservation_run_ledger::ReservationRunLedger,
+            _: bool,
+            _: bool,
+        ) -> Result<Option<crate::worker::run_finalization_types::ReservationRunResult>, String>
+        {
+            Ok(None)
+        }
+        fn abandon(
+            &self,
+            _: &std::path::Path,
+            _: &crate::worker::reservation_run_ledger::ReservationRunLedger,
+        ) -> Result<Option<crate::worker::run_finalization_types::ReservationRunResult>, String>
+        {
+            Ok(None)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Overlap {
+        Manual,
+        Different,
+        Aborted,
+        Shared,
+        Success,
+        Failure,
+    }
+
+    #[tokio::test]
+    async fn overlapping_identity_observers_each_own_their_cancellation() {
+        use crate::worker::run_liveness::OBSERVATION_ABORTED;
+        for kind in [
+            Overlap::Manual,
+            Overlap::Different,
+            Overlap::Aborted,
+            Overlap::Shared,
+            Overlap::Success,
+            Overlap::Failure,
+        ] {
+            // Given: an identity whose one live run makes the reconcile pass wait on its outcome.
+            let root = tempfile::tempdir().unwrap();
+            let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+            crate::engine_session::prepare_memory_engine_session(
+                "agent",
+                &paths,
+                Default::default(),
+            )
+            .unwrap();
+            let run = paths.reflection.join("runs/run-1");
+            std::fs::create_dir_all(&run).unwrap();
+            crate::worker::run_artifacts::write_run_json_atomic(
+                &run.join("ledger.json"),
+                &serde_json::json!({"version":1,"runId":"run-1","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":100,"terminationGraceMs":5,"deadlineAt":105,"mergePolicy":"auto","worktreeDir":"missing","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"missing/.git","gitFileSnapshot":"gitdir: missing","commonConfigPath":"config","commonConfigSnapshot":null,"pid":42,"processStart":"supervisor","childPid":43,"childProcessStart":"child"}),
+                0o600,
+            )
+            .unwrap();
+            let context = MemoryIdentityContext::new(
+                "agent".into(),
+                paths,
+                crate::binding::MemorySessionBinding {
+                    identity: "agent".into(),
+                    repo_path_hash: "hash".into(),
+                    bound_at: 0.0,
+                },
+            );
+            let runtime = create_identity_runtime(
+                context,
+                &crate::reflection_settings::resolve_memory_settings(None).unwrap(),
+            )
+            .unwrap();
+            let (release, gate) = tokio::sync::oneshot::channel();
+            let recovery = GatedRecovery {
+                entered: tokio::sync::Notify::new(),
+                release: std::sync::Mutex::new(Some(gate)),
+                waits: Default::default(),
+            };
+            let now = || 0_i64;
+            let launch = |_: &memory_core::reflection::ReservedRun| {};
+            let controller = maho_ext_api::AbortSignal::default();
+            let joiner = maho_ext_api::AbortSignal::default();
+            let second_signal = match kind {
+                Overlap::Manual => None,
+                Overlap::Shared => Some(&controller),
+                _ => Some(&joiner),
+            };
+            // When: the first observer owns the flight and a second joins it before it settles.
+            let first = runtime.reconcile_with_signal(&now, &recovery, &launch, Some(&controller));
+            let second = async {
+                recovery.entered.notified().await;
+                let second = runtime.reconcile_with_signal(&now, &recovery, &launch, second_signal);
+                tokio::pin!(second);
+                tokio::select! {
+                    biased;
+                    _ = &mut second => panic!("the joiner settled before the flight"),
+                    () = std::future::ready(()) => {}
+                }
+                if matches!(kind, Overlap::Aborted) {
+                    joiner.abort();
+                }
+                if !matches!(kind, Overlap::Success) {
+                    controller.abort();
+                }
+                let scripted = match kind {
+                    Overlap::Failure => Err("reservation read failed".to_owned()),
+                    _ => Ok(()),
+                };
+                release.send(scripted).unwrap();
+                second.await
+            };
+            let (first, second) = tokio::join!(first, second);
+            // Then
+            let aborted = Err(OBSERVATION_ABORTED.to_owned());
+            let failure = Err("reservation read failed".to_owned());
+            let expected_first = match kind {
+                Overlap::Success => Ok(vec![]),
+                Overlap::Failure => failure.clone(),
+                _ => aborted.clone(),
+            };
+            let expected_second = match kind {
+                Overlap::Shared | Overlap::Aborted => aborted,
+                Overlap::Failure => failure,
+                _ => Ok(vec![]),
+            };
+            assert_eq!(first, expected_first, "{kind:?} first");
+            assert_eq!(second, expected_second, "{kind:?} second");
+            let passes = match kind {
+                Overlap::Manual | Overlap::Different => 2,
+                _ => 1,
+            };
+            assert_eq!(
+                recovery.waits.load(std::sync::atomic::Ordering::SeqCst),
+                passes,
+                "{kind:?} passes"
+            );
+            assert!(
+                runtime.reconciliation.lock().unwrap().is_none(),
+                "{kind:?} flight"
+            );
+            assert!(
+                runtime.reconcile(&now, &recovery, &launch).await.is_ok(),
+                "{kind:?} later pass"
             );
         }
     }

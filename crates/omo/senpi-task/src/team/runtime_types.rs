@@ -218,6 +218,7 @@ pub struct CreateTeamDeps {
     pub state_dir: StateDirConfig,
     pub team_bounds: TeamTaskBounds,
     pub lead_session_id: String,
+    pub root_session_id: Option<String>,
     pub spawn_depth: u32,
     pub now: Option<TeamNowFn>,
     pub member_extension: Option<TeamMemberExtensionConfig>,

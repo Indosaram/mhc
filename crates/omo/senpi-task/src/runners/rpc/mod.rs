@@ -3,6 +3,7 @@
 pub mod errors;
 pub mod exit_mapping;
 pub mod handle;
+pub mod heartbeat;
 pub mod model_admission;
 pub mod native_run_pause;
 pub mod parent_extensions;

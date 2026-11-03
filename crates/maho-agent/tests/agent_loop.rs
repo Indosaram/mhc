@@ -992,3 +992,101 @@ async fn the_recording_sink_receives_the_same_sequence_as_the_stream() {
     assert_eq!(events.first().map(support::event_name), Some("agent_start"));
     assert_eq!(events.last().map(support::event_name), Some("agent_end"));
 }
+
+// senpi#3029: consumers key persisted entries by the message_end object, so a normalized copy loses
+// its entry. Ported from agent-loop.test.ts "emits $label on message_end already normalized and
+// hands that object to finishTurn and turn_end".
+async fn settled_stop_reason_case(response: AssistantMessage, normalized: StopReason) {
+    let (tool, _) = recording_tool("echo");
+    let finished: Arc<std::sync::Mutex<Vec<AssistantMessage>>> = Arc::default();
+    let finished_sink = finished.clone();
+    let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
+    config.finish_turn = Some(Arc::new(move |context, _| {
+        finished_sink
+            .lock()
+            .expect("finished")
+            .push(context.message);
+        Box::pin(async { None })
+    }));
+    let (emit, recorded) = support::recording_sink();
+    run_agent_loop(
+        vec![user_message("run")],
+        context_with(vec![tool]),
+        config,
+        emit,
+        None,
+        Some(scripted_stream_fn(vec![
+            response,
+            assistant(vec![text_block("end")], StopReason::Stop),
+        ])),
+    )
+    .await;
+    let events = recorded.lock().expect("events").clone();
+    let ended: Vec<AssistantMessage> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageEnd { message } => message.as_assistant().cloned(),
+            _ => None,
+        })
+        .collect();
+    let turn_ended: Vec<AssistantMessage> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TurnEnd { message, .. } => message.as_assistant().cloned(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended[0].stop_reason, normalized);
+    assert_eq!(finished.lock().expect("finished")[0], ended[0]);
+    assert_eq!(turn_ended[0], ended[0]);
+}
+
+#[tokio::test]
+async fn emits_a_stop_response_with_a_pending_tool_call_already_normalized_on_message_end() {
+    settled_stop_reason_case(
+        assistant(
+            vec![tool_call("tool-1", "echo", json!({}))],
+            StopReason::Stop,
+        ),
+        StopReason::ToolUse,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn emits_a_tool_use_response_without_a_tool_call_already_normalized_on_message_end() {
+    settled_stop_reason_case(
+        assistant(vec![text_block("done")], StopReason::ToolUse),
+        StopReason::Stop,
+    )
+    .await;
+}
+
+// senpi 034eda3565: only the provider stream `start` marks `message_start` as streaming.
+#[tokio::test]
+async fn marks_only_the_provider_stream_start_as_streaming() {
+    let partial = assistant(vec![], StopReason::Stop);
+    let done = assistant(vec![text_block("hi")], StopReason::Stop);
+    let events = collect_with_timeout(&agent_loop(
+        vec![user_message("Hello")],
+        context_with(Vec::new()),
+        AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
+        None,
+        Some(stream_fn_of(vec![
+            AssistantMessageEvent::Start { partial },
+            AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: done,
+            },
+        ])),
+    ))
+    .await;
+    let starts: Vec<(&str, Option<bool>)> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageStart { message, streaming } => Some((message.role(), *streaming)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts, vec![("user", None), ("assistant", Some(true))]);
+}

@@ -15,7 +15,11 @@ use super::workstation::{
     BuildWorkstationSectionOptions, WorkstationDialect, build_workstation_section,
 };
 use crate::skills::{FileReadTool, Skill, format_skills_for_prompt};
-use crate::system_prompt::ContextFile;
+use crate::system_prompt::{ContextFile, ContextFileScope};
+
+const USER_INSTRUCTIONS_HEADER: &str = "\n\n## User Instructions\n\nThe user's own instruction files (below) are standing instructions from the user. They override the default working style above, including whether, when, and how to ask the user questions; only an explicit instruction in the current conversation outranks them.\n\n";
+
+const PROJECT_CONTEXT_HEADER: &str = "\n\n## Project Context\n\nProject instruction files (below, and in [Directory Context: ...] blocks injected during reads) apply to work under their directory and override the default working style above, including whether, when, and how to ask the user questions; deeper files win on conflict; explicit user instructions override.\n\n";
 
 /// `PROMPT_SURFACE_ENV_VAR`.
 pub const PROMPT_SURFACE_ENV_VAR: &str = "SENPI_PROMPT_SURFACE";
@@ -107,11 +111,15 @@ pub fn build_dynamic_system_prompt_parts(options: &BuildDynamicSystemPromptOptio
     if let Some(tuning) = options.tuning_section.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         parts.push(part("tuning", "prompt-preset", format!("\n\n{tuning}")));
     }
-    if !options.context_files.is_empty() {
-        parts.push(part("project_context", "dynamic-prompt", "\n\n## Project Context\n\nProject instruction files (below, and in [Directory Context: ...] blocks injected during reads) bind files under their directory; deeper files win on conflict; explicit user instructions override.\n\n".to_owned()));
-        for (index, file) in options.context_files.iter().enumerate() {
+    // Instruction files outrank the core's and presets' default working style, asking included.
+    let user_files: Vec<&ContextFile> = options.context_files.iter().filter(|file| file.scope == Some(ContextFileScope::User)).collect();
+    let project_files: Vec<&ContextFile> = options.context_files.iter().filter(|file| file.scope != Some(ContextFileScope::User)).collect();
+    for (files, header) in [(user_files, USER_INSTRUCTIONS_HEADER), (project_files, PROJECT_CONTEXT_HEADER)] {
+        if files.is_empty() { continue; }
+        parts.push(part("project_context", "dynamic-prompt", header.to_owned()));
+        for (index, file) in files.iter().enumerate() {
             let text = format!("### {}\n\n{}", file.path, file.content.trim_end());
-            parts.push(part("project_context", &file.path, if index + 1 == options.context_files.len() { text.trim_end().to_owned() } else { format!("{text}\n\n") }));
+            parts.push(part("project_context", &file.path, if index + 1 == files.len() { text.trim_end().to_owned() } else { format!("{text}\n\n") }));
         }
     }
     let skills = format_skills_for_prompt(&options.skills, FileReadTool::Read);
@@ -230,11 +238,28 @@ mod tests {
         options.context_files = vec![ContextFile {
             path: "/work/AGENTS.md".to_string(),
             content: "rules  \n".to_string(),
+            scope: None,
         }];
         let prompt = build_dynamic_system_prompt(&options);
         assert!(prompt.contains("## Project Context"));
         assert!(prompt.contains("### /work/AGENTS.md\n\nrules\n"));
-        assert!(prompt.contains("bind files under their directory; deeper files win on conflict; explicit user instructions override."));
+        assert!(prompt.contains("apply to work under their directory and override the default working style above"));
+        assert!(!prompt.contains("## User Instructions"));
+    }
+
+    #[test]
+    fn user_scoped_files_get_their_own_section_before_project_context() {
+        let mut options = options();
+        options.context_files = vec![
+            ContextFile { path: "/work/AGENTS.md".to_string(), content: "project".to_string(), scope: None },
+            ContextFile { path: "/home/u/AGENTS.md".to_string(), content: "mine".to_string(), scope: Some(ContextFileScope::User) },
+        ];
+        let prompt = build_dynamic_system_prompt(&options);
+        let user = prompt.find("## User Instructions").expect("user section");
+        let project = prompt.find("## Project Context").expect("project section");
+        assert!(user < project);
+        assert!(prompt.find("### /home/u/AGENTS.md").expect("user file") < project);
+        assert!(prompt.find("### /work/AGENTS.md").expect("project file") > project);
     }
 
     #[test]
@@ -262,6 +287,81 @@ mod tests {
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("<workstation>"));
         assert!(!prompt.contains("Current working directory:"));
+    }
+
+    // senpi test/dynamic-prompt/build.test.ts cases not covered above.
+    #[test]
+    fn the_intent_gate_forces_verbalization() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("I read this as"));
+        assert!(!prompt.contains("Keep the routing decision internal"));
+    }
+
+    #[test]
+    fn working_the_task_and_verification_carry_their_disciplines() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("loosely relevant"));
+        assert!(prompt.contains("Stop searching when"));
+        for tier in ["V1", "V2", "V3"] {
+            assert!(prompt.contains(tier), "{tier}");
+        }
+    }
+
+    #[test]
+    fn policies_are_language_agnostic_and_style_names_the_smallest_change() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("Hard Blocks"));
+        assert!(!prompt.contains("as any"));
+        assert!(!prompt.contains("ts-ignore"));
+        assert!(prompt.contains("Smallest correct change"));
+    }
+
+    #[test]
+    fn renders_the_handoff_section_exactly_once() {
+        assert_eq!(
+            build_dynamic_system_prompt(&options())
+                .matches("## Handoff")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn no_tuning_section_by_default() {
+        assert!(!build_dynamic_system_prompt(&options()).contains("## Model Notes"));
+    }
+
+    // senpi#2093: date and cwd reach the model as an environment-context message instead.
+    #[test]
+    fn carries_no_working_directory_and_is_byte_identical_across_directories() {
+        let mut first = options();
+        first.cwd = "/test/project".to_string();
+        let prompt = build_dynamic_system_prompt(&first);
+        assert!(!prompt.contains("Current date:"));
+        assert!(!prompt.contains("Current working directory:"));
+        assert!(!prompt.contains("/test/project"));
+        let mut second = options();
+        second.cwd = "C:\\Users\\test\\other".to_string();
+        assert_eq!(build_dynamic_system_prompt(&second), prompt);
+    }
+
+    #[test]
+    fn excludes_skills_with_disable_model_invocation() {
+        let mut options = options();
+        let mut hidden = skill("hidden-skill");
+        hidden.disable_model_invocation = true;
+        options.skills = vec![hidden];
+        assert!(!build_dynamic_system_prompt(&options).contains("hidden-skill"));
+    }
+
+    #[test]
+    fn includes_custom_prompt_guidelines() {
+        let mut options = options();
+        options.prompt_guidelines = vec!["Use read to examine files instead of cat or sed.".into()];
+        assert!(
+            build_dynamic_system_prompt(&options)
+                .contains("Use read to examine files instead of cat or sed.")
+        );
     }
 
     #[test]

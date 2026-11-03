@@ -3,6 +3,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::fable_55_launch::FABLE_55_LAUNCH;
+use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
+
 const DEFAULT_ANTHROPIC_ACTUAL_LIMIT: i64 = 200_000;
 const ANTHROPIC_GA_1M_LIMIT: i64 = 1_000_000;
 
@@ -84,6 +87,9 @@ pub fn resolve_actual_context_limit_with_env(
         .and_then(|cache| cache.get(&format!("{provider_id}/{model_id}")))
         .copied();
 
+    if model_id == FABLE_55_LAUNCH_ID {
+        return cached_limit.or_else(|| FABLE_55_LAUNCH.limit.as_ref().and_then(|limit| limit.context));
+    }
     if !is_anthropic_provider(provider_id, model_id) {
         return cached_limit;
     }

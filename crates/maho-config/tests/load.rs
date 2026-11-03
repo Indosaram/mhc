@@ -721,3 +721,228 @@ fn disabled_mcp_builtins_are_a_union_across_layers() {
         vec!["context7".to_owned(), "grep_app".to_owned()]
     );
 }
+
+// ---- memory.projection defaults (config-keys.md, Delta v5.1.52 D1) -------------------------
+
+#[test]
+fn memory_without_projection_gets_the_new_projection_defaults() {
+    let t = Tree::new();
+    t.write("home/.omo/omo.jsonc", r#"{"memory": {"enabled": true}}"#);
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_entries_per_directory"], json!(0));
+    assert_eq!(projection["max_bytes"], json!(40960));
+}
+
+#[test]
+fn written_projection_max_bytes_wins_and_entries_default_to_zero() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"projection": {"max_bytes": 24576}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_bytes"], json!(24576));
+    assert_eq!(projection["max_entries_per_directory"], json!(0));
+}
+
+#[test]
+fn written_projection_entries_win_and_max_bytes_defaults_to_40960() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"projection": {"max_entries_per_directory": 40}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_entries_per_directory"], json!(40));
+    assert_eq!(projection["max_bytes"], json!(40960));
+}
+
+#[test]
+fn negative_projection_value_is_pruned_and_the_default_applies() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"enabled": true, "projection": {"max_bytes": -1}}}"#,
+    );
+    let r = t.load("home");
+    assert_eq!(kinds(&r), vec![DiagnosticKind::InvalidValue]);
+    assert_eq!(
+        r.diagnostics[0].issues,
+        vec!["memory.projection.max_bytes".to_string()]
+    );
+    assert_eq!(r.view["memory"]["projection"]["max_bytes"], json!(40960));
+}
+
+#[test]
+fn schema_defaults_of_projection_keys_are_0_and_40960() {
+    use maho_config::schema::{Rule, document_rule};
+    fn field<'a>(rule: &'a Rule, name: &str) -> &'a maho_config::schema::Field {
+        match rule {
+            Rule::Object(fields) => fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("field {name}")),
+            other => panic!("not an object rule: {other:?}"),
+        }
+    }
+    let projection = field(&field(document_rule(), "memory").rule, "projection");
+    assert_eq!(
+        projection.default,
+        Some(json!({"max_entries_per_directory": 0, "max_bytes": 40960}))
+    );
+    let entries = field(&projection.rule, "max_entries_per_directory");
+    let bytes = field(&projection.rule, "max_bytes");
+    assert_eq!(entries.default, Some(json!(0)));
+    assert_eq!(bytes.default, Some(json!(40960)));
+}
+
+// ---- model_pad (config-keys.md, Delta v5.1.52 D2) ------------------------------------------
+
+#[test]
+fn model_pad_labels_are_kept_without_defaults() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"model_pad": {"labels": {"daily": "Everyday", "heavy": "Big"}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(
+        r.view["model_pad"],
+        json!({"labels": {"daily": "Everyday", "heavy": "Big"}})
+    );
+}
+
+#[test]
+fn model_pad_unknown_label_is_removed() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"model_pad": {"labels": {"daily": "A", "wide": "B"}}}"#,
+    );
+    let r = t.load("home");
+    assert_eq!(kinds(&r), vec![DiagnosticKind::UnknownKeys]);
+    assert_eq!(
+        r.diagnostics[0].issues,
+        vec!["model_pad.labels.wide".to_string()]
+    );
+    assert_eq!(r.view["model_pad"]["labels"], json!({"daily": "A"}));
+}
+
+#[test]
+fn model_pad_unknown_key_is_removed() {
+    let t = Tree::new();
+    t.write("home/.omo/omo.jsonc", r#"{"model_pad": {"size": 2}}"#);
+    let r = t.load("home");
+    assert_eq!(kinds(&r), vec![DiagnosticKind::UnknownKeys]);
+    assert_eq!(r.diagnostics[0].issues, vec!["model_pad.size".to_string()]);
+    assert!(
+        r.view
+            .get("model_pad")
+            .is_none_or(|pad| pad.get("size").is_none())
+    );
+}
+
+#[test]
+fn model_pad_non_string_label_is_pruned() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"model_pad": {"labels": {"normal": 3}}}"#,
+    );
+    let r = t.load("home");
+    assert_eq!(kinds(&r), vec![DiagnosticKind::InvalidValue]);
+    assert!(r.view["model_pad"]["labels"].get("normal").is_none());
+}
+
+#[test]
+fn model_pad_in_native_block_reaches_the_view() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"[native]": {"model_pad": {"labels": {"geeky": "Nerd"}}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(r.view["model_pad"]["labels"]["geeky"], json!("Nerd"));
+}
+
+#[test]
+fn model_pad_in_active_profile_reaches_the_view() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"profiles": {"p": {"model_pad": {"labels": {"geeky": "Nerd"}}}}}"#,
+    );
+    let cwd = t.mkdir("home");
+    let r = load(
+        &LoadOptions::new(&cwd)
+            .with_env(t.env())
+            .with_account_home(None)
+            .with_profile(Some("p".into())),
+    );
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(r.view["model_pad"]["labels"]["geeky"], json!("Nerd"));
+}
+
+#[test]
+fn file_without_model_pad_has_no_model_pad_in_view() {
+    let t = Tree::new();
+    t.write("home/.omo/omo.jsonc", r#"{"telemetry": {"enabled": true}}"#);
+    let r = t.load("home");
+    assert!(r.view.get("model_pad").is_none());
+}
+
+#[test]
+fn schema_model_pad_is_strict_with_string_labels_and_no_defaults() {
+    use maho_config::schema::{Field, Rule, document_rule};
+    fn field<'a>(rule: &'a Rule, name: &str) -> &'a Field {
+        match rule {
+            Rule::Object(fields) => fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("field {name}")),
+            other => panic!("not an object rule: {other:?}"),
+        }
+    }
+    let pad = field(document_rule(), "model_pad");
+    assert!(pad.default.is_none());
+    let labels = field(&pad.rule, "labels");
+    assert!(labels.default.is_none());
+    match &labels.rule {
+        Rule::Object(fields) => {
+            let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
+            assert_eq!(names, vec!["daily", "geeky", "normal", "heavy"]);
+            for label in fields {
+                assert!(label.default.is_none());
+                assert!(!label.required);
+                assert!(matches!(
+                    label.rule,
+                    Rule::Str {
+                        allowed: None,
+                        min_len: 0,
+                        pattern: None
+                    }
+                ));
+            }
+        }
+        other => panic!("labels is not a strict object: {other:?}"),
+    }
+    for block in ["[native]", "[senpi]", "[codex]"] {
+        assert!(matches!(
+            field(&field(document_rule(), block).rule, "model_pad").rule,
+            Rule::Object(_)
+        ));
+    }
+    let profiles = &field(document_rule(), "profiles").rule;
+    let Rule::Map(profile) = profiles else {
+        panic!("profiles is not a map: {profiles:?}");
+    };
+    assert!(matches!(field(profile, "model_pad").rule, Rule::Object(_)));
+}

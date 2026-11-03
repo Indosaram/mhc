@@ -56,6 +56,11 @@ pub struct ControlSendInput {
 /// Outcome of the manager `send_to_task` call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SendOutcome {
+    Unresponsive {
+        task_id: String,
+        retryable: bool,
+        reason: String,
+    },
     Stale {
         task_id: String,
         run_epoch: u64,
@@ -170,6 +175,15 @@ impl SendManager for TaskManager {
         )
         .map_err(|error| error.to_string())?;
         Ok(match outcome {
+            SteeringSendOutcome::Unresponsive {
+                task_id,
+                retryable,
+                reason,
+            } => SendOutcome::Unresponsive {
+                task_id,
+                retryable,
+                reason,
+            },
             SteeringSendOutcome::Steered {
                 task_id,
                 status,
@@ -402,6 +416,11 @@ impl<'de> Deserialize<'de> for ShutdownFailedCode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SendResultDetails {
+    Unresponsive {
+        task_id: String,
+        retryable: bool,
+        reason: String,
+    },
     Steered {
         task_id: String,
         #[serde(serialize_with = "serialize_task_status")]
@@ -472,6 +491,7 @@ pub enum SendResultDetails {
 impl SendResultDetails {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Unresponsive { .. } => "unresponsive",
             Self::Steered { .. } => "steered",
             Self::Revived { .. } => "revived",
             Self::Stale { .. } => "stale",

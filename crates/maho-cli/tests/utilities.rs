@@ -75,3 +75,16 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned())
 #[test] fn option_parser_preserves_repeatable_order() { let result = parse_options(&args(&["-e=a", "-e", "b"]), &[string_option("-e", true)]); assert_eq!(result.values["-e"], args(&["a", "b"])); }
 #[test] fn html_decodes_named_and_numeric_prefix_entities() { use maho_cli::utils::html::*; assert_eq!(decode_html_entity("amp").as_deref(), Some("&")); assert_eq!(decode_html_entity("#x1f600").as_deref(), Some("😀")); assert_eq!(decode_html_entity("#65tail").as_deref(), Some("A")); assert!(decode_html_entity("#-1").is_none()); let entity = decode_html_entity_at("😀&amp;", 2).unwrap(); assert_eq!(entity.length, 5); assert_eq!(entity.text, "&"); }
 #[tokio::test] async fn sleep_cancels_on_signal() { let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None); assert!(maho_cli::utils::sleep::sleep(60_000, Some(&controller.signal())).await.is_err()); }
+#[test]
+fn html_entities_follow_js_parse_int_and_utf16_offsets() {
+    use maho_cli::utils::html::*;
+    assert_eq!(decode_html_entity("#x0x41").as_deref(), Some("A"), "parseInt(text, 16) skips a 0x prefix");
+    assert_eq!(decode_html_entity("#X41").as_deref(), Some("A"));
+    assert_eq!(decode_html_entity("#x110000"), None, "beyond the last code point");
+    assert_eq!(decode_html_entity("nbsp"), None, "only the five named entities");
+    let text = "\u{e9}&lt;x";
+    let entity = decode_html_entity_at(text, 1).expect("entity after a non-ASCII character");
+    assert_eq!((entity.text.as_str(), entity.length), ("<", 4));
+    assert!(decode_html_entity_at("&abcdefghijklmnopq;", 0).is_none(), "more than 16 units to the semicolon");
+    assert!(decode_html_entity_at("&amp", 0).is_none(), "no semicolon");
+}

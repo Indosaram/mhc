@@ -283,7 +283,7 @@ pub fn read_session_surface(context: Option<&ExtensionContext>) -> SessionSurfac
     let manager = context.session_manager.clone();
     let read_entries: ReadEntries = Arc::new(move || {
         manager
-            .get_entries()
+            .get_entries_of_kinds(&["custom"])
             .iter()
             .filter_map(entry_like)
             .collect()

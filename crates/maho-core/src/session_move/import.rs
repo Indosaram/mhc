@@ -7,7 +7,8 @@ use super::ownership::*;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-pub type RepositoryIdentityReader<'a> = &'a dyn Fn(&Path) -> Result<Option<RepositoryIdentity>, String>;
+pub type RepositoryIdentityReader<'a> =
+    &'a dyn Fn(&Path) -> Result<Option<RepositoryIdentity>, String>;
 pub struct ImportMovedSessionOptions<'a> {
     pub bundle_dir: &'a Path,
     pub target_cwd: &'a Path,
@@ -16,9 +17,9 @@ pub struct ImportMovedSessionOptions<'a> {
     pub from: Option<&'a str>,
     pub read_identity: Option<RepositoryIdentityReader<'a>>,
 }
-pub fn import_outcome(file: &Path, move_id: &str) -> LandingOutcome {
+pub async fn import_outcome(file: &Path, move_id: &str) -> LandingOutcome {
     let mut outcome = LandingOutcome::Absent;
-    for entry in super::entries(file) {
+    for entry in super::entries(file).await {
         if entry["type"] != "custom" || entry["data"]["move_id"] != move_id {
             continue;
         }
@@ -38,15 +39,30 @@ pub async fn answer_move_status(
     move_id: &str,
     session_file: Option<&Path>,
 ) -> Result<MoveStatus, String> {
-    let landed = |target: &str| import_outcome(Path::new(target), move_id);
-    let Some(file) = session_file.filter(|file| file.exists()) else {
-        return ledger
-            .answer_status_with(move_id, false, false, Some(&landed))
-            .await
-            .map_err(|e| e.to_string());
+    let landed = |target: String| -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = LandingOutcome> + Send>,
+    > {
+        let move_id = move_id.to_owned();
+        Box::pin(async move {
+            let target = PathBuf::from(target);
+            if super::path_exists(&target).await {
+                import_outcome(&target, &move_id).await
+            } else {
+                LandingOutcome::Absent
+            }
+        })
     };
-    crate::session_sidecar_store::serialize_by_key(&super::session_lock::move_lock_key(file), async {
-        let outcome = import_outcome(file, move_id);
+    let file = match session_file {
+        Some(file) if super::path_exists(file).await => file,
+        _ => {
+            return ledger
+                .answer_status_with(move_id, false, false, Some(&landed))
+                .await
+                .map_err(|e| e.to_string());
+        }
+    };
+    crate::session_sidecar_store::serialize_by_key(&super::session_lock::move_lock_key(file).await, async {
+        let outcome = import_outcome(file, move_id).await;
         if outcome == LandingOutcome::Absent { return Err(format!("move_mismatch: {} is not the copy this device imported for move {move_id}; nothing was answered", file.display())); }
         ledger.answer_status_with(move_id, true, outcome == LandingOutcome::Revoked, Some(&landed)).await.map_err(|e| e.to_string())
     }).await
@@ -55,24 +71,26 @@ pub async fn import_moved_session(
     options: ImportMovedSessionOptions<'_>,
 ) -> Result<PathBuf, String> {
     let manifest = read_manifest(options.bundle_dir).map_err(|e| e.to_string())?;
-    let cwd = super::session_lock::real_session_path(options.target_cwd);
-    let session_dir = options
-        .session_dir
-        .map(super::session_lock::real_session_path)
-        .unwrap_or_else(|| {
-            PathBuf::from(crate::session_manager::get_default_session_dir(
-                &cwd.to_string_lossy(),
-            ))
-        });
+    let cwd = super::session_lock::real_session_path_async(options.target_cwd).await;
+    let session_dir = match options.session_dir {
+        Some(dir) => super::session_lock::real_session_path_async(dir).await,
+        None => PathBuf::from(crate::session_manager::get_default_session_dir(
+            &cwd.to_string_lossy(),
+        )),
+    };
     let target = session_dir.join(&manifest.session_file_name);
-    let landed = || import_outcome(&target, &manifest.move_id) != LandingOutcome::Absent;
-    if landed() {
+    // Once this move's file landed, the move records no failure: only its `accepted` write can have been lost.
+    let landed = || async {
+        super::path_exists(&target).await
+            && import_outcome(&target, &manifest.move_id).await != LandingOutcome::Absent
+    };
+    if landed().await {
         options
             .ledger
             .confirm_landed(
                 &manifest.move_id,
                 &target.to_string_lossy(),
-                import_outcome(&target, &manifest.move_id) == LandingOutcome::Revoked,
+                import_outcome(&target, &manifest.move_id).await == LandingOutcome::Revoked,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -81,7 +99,7 @@ pub async fn import_moved_session(
     if let Err(error) = verify_bundle_async(options.bundle_dir, &manifest).await {
         options
             .ledger
-            .fail_unless_landed(&manifest.move_id, FailReason::BundleInvalid, landed)
+            .fail_unless_landed(&manifest.move_id, FailReason::BundleInvalid, landed())
             .await
             .map_err(|e| e.to_string())?;
         return Err(error.to_string());
@@ -91,7 +109,7 @@ pub async fn import_moved_session(
         None => read_identity(&cwd).await?,
     };
     if !same_repository(manifest.repository.as_ref(), identity.as_ref()) {
-        if !landed() {
+        if !landed().await {
             options
                 .ledger
                 .decline(&manifest.move_id, DeclineReason::Repository)
@@ -124,43 +142,51 @@ pub async fn import_moved_session(
             .commit(
                 &manifest.move_id,
                 &target.to_string_lossy(),
-                || land(&staged, &target, &cwd, &manifest),
-                || {
-                    replace_predecessor(&target, &manifest.session_id, &session_dir)?;
+                land(&staged, &target, &cwd, &manifest),
+                async {
+                    replace_predecessor(&target, &manifest.session_id, &session_dir).await?;
+                    // Before the rename: a crash here re-copies on retry, and after it the state is already in place.
                     place_extension_state(
                         &staging,
                         &manifest,
                         &super::extension_state::moved_state_dir(&target, &manifest.move_id)?,
                     )
+                    .await
                 },
             )
             .await
             .map_err(|e| e.to_string())?;
         move_step(MoveStep::ImportAccepted)?;
-        super::remove(&staging)?;
+        super::remove(&staging).await?;
         Ok(file)
     }
     .await;
     if let Err(error) = &result
-        && !error.contains("move_fenced") && !error.contains("can no longer be imported") {
-            let reason = if error.contains("could not be verified") {
-                FailReason::BundleInvalid
-            } else {
-                FailReason::ImportFailed
-            };
-            options
-                .ledger
-                .fail_unless_landed(&manifest.move_id, reason, landed)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        && !error.contains("move_fenced")
+        && !error.contains("can no longer be imported")
+    {
+        let reason = if error.contains("could not be verified") {
+            FailReason::BundleInvalid
+        } else {
+            FailReason::ImportFailed
+        };
+        options
+            .ledger
+            .fail_unless_landed(&manifest.move_id, reason, landed())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     result
 }
-fn replace_predecessor(target: &Path, session_id: &str, session_dir: &Path) -> Result<(), String> {
-    if !target.exists() {
+async fn replace_predecessor(
+    target: &Path,
+    session_id: &str,
+    session_dir: &Path,
+) -> Result<(), String> {
+    if !super::path_exists(target).await {
         return Ok(());
     }
-    let entries = super::entries(target);
+    let entries = super::entries(target).await;
     if header_session_id(&entries) != Some(session_id)
         || session_ownership(&entries) == SessionOwnership::Writable
     {
@@ -170,29 +196,32 @@ fn replace_predecessor(target: &Path, session_id: &str, session_dir: &Path) -> R
         ));
     }
     let extensions = session_dir.join("extensions");
-    if extensions.exists() {
-        for entry in std::fs::read_dir(extensions).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+    if super::path_exists(&extensions).await {
+        let mut entries = tokio::fs::read_dir(extensions)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+            if entry.file_type().await.map_err(|e| e.to_string())?.is_dir() {
                 super::remove(&entry.path().join(format!(
                     "{}.json",
                     crate::session_sidecar_store::encoded_session_id(session_id)
-                )))?;
+                )))
+                .await?;
             }
         }
     }
-    super::remove(&session_dir.join("resident-blobs").join(session_id))?;
-    super::remove(target)
+    super::remove(&session_dir.join("resident-blobs").join(session_id)).await?;
+    super::remove(target).await
 }
-pub fn stage_payloads(
+pub async fn stage_payloads(
     bundle_dir: &Path,
     manifest: &MoveManifest,
     staging: &Path,
 ) -> Result<(), String> {
     for file in manifest.payloads.iter().flat_map(|p| &p.files) {
         let to = staging.join(".payloads").join(&file.path);
-        super::copy(&bundle_dir.join(&file.path), &to)?;
-        if sha256_file(&to).map_err(|e| e.to_string())? != file.sha256 {
+        super::copy(&bundle_dir.join(&file.path), &to).await?;
+        if sha256_file_async(&to).await.map_err(|e| e.to_string())? != file.sha256 {
             return Err(
                 MoveBundleInvalidError::new(format!("{} changed in transit", file.path))
                     .to_string(),
@@ -201,7 +230,7 @@ pub fn stage_payloads(
     }
     Ok(())
 }
-pub fn place_extension_state(
+pub async fn place_extension_state(
     staging: &Path,
     manifest: &MoveManifest,
     dir: &Path,
@@ -215,7 +244,7 @@ pub fn place_extension_state(
     if files.is_empty() {
         return Ok(());
     }
-    super::remove(dir)?;
+    super::remove(dir).await?;
     for file in files {
         super::copy(
             &staging.join(".payloads").join(&file.path),
@@ -224,7 +253,8 @@ pub fn place_extension_state(
                     .strip_prefix(EXTENSION_STATE_PREFIX)
                     .ok_or("invalid extension state path")?,
             ),
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }
@@ -235,44 +265,54 @@ async fn stage(
     from: &str,
 ) -> Result<PathBuf, String> {
     let file = staging.join(&manifest.session_file_name);
-    if !file.exists() || import_outcome(&file, &manifest.move_id) == LandingOutcome::Absent {
-        super::remove(staging)?;
-        super::copy(&bundle_dir.join(&manifest.session.path), &file)?;
+    if !super::path_exists(&file).await
+        || import_outcome(&file, &manifest.move_id).await == LandingOutcome::Absent
+    {
+        super::remove(staging).await?;
+        super::copy(&bundle_dir.join(&manifest.session.path), &file).await?;
         for item in &manifest.sidecars {
             super::copy(
                 &bundle_dir.join(&item.path),
                 &staging.join(item.path.strip_prefix("files/").unwrap_or(&item.path)),
-            )?;
+            )
+            .await?;
         }
-        stage_payloads(bundle_dir, manifest, staging)?;
+        stage_payloads(bundle_dir, manifest, staging).await?;
         super::append_custom(
             &file,
             SESSION_MOVED_IN,
             json!({"move_id":manifest.move_id,"session_id":manifest.session_id,"from":from,"bundle_sha256":manifest.session.sha256,"moved_in_at":crate::session_manager::now_iso_millis()}),
-        )?;
+        )
+        .await?;
     }
     super::requeue::requeue_input(&file, &manifest.move_id, &manifest.dropped_user_messages)
         .await?;
     Ok(file)
 }
-fn land(
+async fn land(
     staged: &Path,
     target: &Path,
     cwd: &Path,
     manifest: &MoveManifest,
 ) -> Result<PathBuf, String> {
-    let content = std::fs::read_to_string(staged).map_err(|e| e.to_string())?;
+    let content = tokio::fs::read_to_string(staged)
+        .await
+        .map_err(|e| e.to_string())?;
     let (first, rest) = content.split_once('\n').unwrap_or((&content, ""));
     let mut header: serde_json::Value = serde_json::from_str(first).map_err(|e| e.to_string())?;
     header["cwd"] = json!(cwd.to_string_lossy());
     let dir = target.parent().ok_or("missing target directory")?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| e.to_string())?;
     let temp = dir.join(format!(
         ".{}.rebind-{}.tmp",
         manifest.session_file_name,
         std::process::id()
     ));
-    std::fs::write(&temp, format!("{header}\n{rest}")).map_err(|e| e.to_string())?;
+    tokio::fs::write(&temp, format!("{header}\n{rest}"))
+        .await
+        .map_err(|e| e.to_string())?;
     for item in &manifest.sidecars {
         let relative = item.path.strip_prefix("files/").unwrap_or(&item.path);
         super::copy(
@@ -281,10 +321,13 @@ fn land(
                 .ok_or("missing staging directory")?
                 .join(relative),
             &dir.join(relative),
-        )?;
+        )
+        .await?;
     }
-    std::fs::rename(temp, target).map_err(|e| e.to_string())?;
-    super::remove(staged)?;
+    tokio::fs::rename(temp, target)
+        .await
+        .map_err(|e| e.to_string())?;
+    super::remove(staged).await?;
     Ok(target.into())
 }
 fn same_repository(a: Option<&RepositoryIdentity>, b: Option<&RepositoryIdentity>) -> bool {

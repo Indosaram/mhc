@@ -10,6 +10,12 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 static MIGRATED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+fn migrated() -> std::sync::MutexGuard<'static, HashSet<PathBuf>> {
+    MIGRATED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 pub fn move_parked_entries(
     layout: &FactsQueueLayout,
     records: &[FactsFailureRecord],
@@ -23,6 +29,9 @@ pub fn move_parked_entries(
     if suffixes.is_empty() {
         return Ok(0);
     }
+    // A non-restore move that had been marked migrated re-marks it only once every rename has
+    // succeeded, so a failed rename mid-move is retried rather than skipped.
+    let was_migrated = !restore && migrated().remove(&layout.queue_dir);
     let (source, target) = if restore {
         (&layout.parked_dir, &layout.queue_dir)
     } else {
@@ -30,7 +39,12 @@ pub fn move_parked_entries(
     };
     let names = match fs::read_dir(source) {
         Ok(names) => names,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if was_migrated {
+                migrated().insert(layout.queue_dir.clone());
+            }
+            return Ok(0);
+        }
         Err(error) => return Err(error),
     };
     let pattern = regex::Regex::new(r"^\d{8}T\d{9}Z-[a-f0-9]{12}-[a-f0-9]{8}\.json$")
@@ -49,14 +63,13 @@ pub fn move_parked_entries(
         fs::rename(entry.path(), target.join(name.as_ref()))?;
         moved += 1;
     }
+    if was_migrated {
+        migrated().insert(layout.queue_dir.clone());
+    }
     Ok(moved)
 }
 pub fn migrate_parked_entries(layout: &FactsQueueLayout) -> io::Result<()> {
-    let mut migrated = MIGRATED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if migrated.contains(&layout.queue_dir) {
+    if migrated().contains(&layout.queue_dir) {
         return Ok(());
     }
     match fs::read_to_string(&layout.failures_path) {
@@ -69,7 +82,7 @@ pub fn migrate_parked_entries(layout: &FactsQueueLayout) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    migrated.insert(layout.queue_dir.clone());
+    migrated().insert(layout.queue_dir.clone());
     Ok(())
 }
 
@@ -147,5 +160,65 @@ mod tests {
         .unwrap();
         migrate_parked_entries(&layout).unwrap();
         assert!(!path.exists());
+    }
+
+    fn parked_record() -> FactsFailureRecord {
+        FactsFailureRecord {
+            conversation_id: "conversation".into(),
+            end_message_id: "end".into(),
+            end_snapshot_line: 1,
+            state: FactsFailureState::Parked,
+            streak: 1,
+            first_failure_at: "2026-10-27T00:00:00.000Z".into(),
+            last_failure_at: "2026-10-27T00:00:00.000Z".into(),
+            last_reason: FactsFailureReason::ChildExit,
+            last_detail: None,
+            last_failure_id: "failure".into(),
+            next_eligible_at: None,
+            parked_at: Some("2026-10-27T00:00:00.000Z".into()),
+        }
+    }
+
+    #[test]
+    fn a_failed_move_leaves_a_migrated_queue_unmarked_so_it_is_retried() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let layout = FactsQueueLayout::new(root.path().join("queue"));
+        fs::create_dir_all(&layout.queue_dir).expect("queue dir");
+        let record = parked_record();
+        let name = format!(
+            "20261027T000000000Z{}",
+            queue_entry_suffix(&record.conversation_id, &record.end_message_id)
+        );
+        fs::write(layout.queue_dir.join(&name), "{}").expect("entry");
+        migrated().insert(layout.queue_dir.clone());
+        // A file where the parked directory belongs makes the move fail before any rename.
+        fs::write(&layout.parked_dir, "blocker").expect("blocker");
+
+        assert!(move_parked_entries(&layout, std::slice::from_ref(&record), false).is_err());
+        assert!(!migrated().contains(&layout.queue_dir));
+
+        fs::remove_file(&layout.parked_dir).expect("unblock");
+        assert_eq!(
+            move_parked_entries(&layout, std::slice::from_ref(&record), false).expect("move"),
+            1
+        );
+        assert!(layout.parked_dir.join(&name).exists());
+        migrated().remove(&layout.queue_dir);
+    }
+
+    #[test]
+    fn a_successful_move_keeps_a_migrated_queue_marked() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let layout = FactsQueueLayout::new(root.path().join("queue"));
+        fs::create_dir_all(&layout.queue_dir).expect("queue dir");
+        migrated().insert(layout.queue_dir.clone());
+        let record = parked_record();
+
+        assert_eq!(
+            move_parked_entries(&layout, std::slice::from_ref(&record), false).expect("move"),
+            0
+        );
+        assert!(migrated().contains(&layout.queue_dir));
+        migrated().remove(&layout.queue_dir);
     }
 }

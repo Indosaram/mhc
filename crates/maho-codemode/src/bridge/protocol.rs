@@ -1,37 +1,56 @@
-use serde_json::Value;
 use base64::Engine;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const BRIDGE_FRAME_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default)]
-pub struct LocalRoots(pub Vec<(String,String)>);
-impl<const N:usize> From<[(String,String);N]> for LocalRoots {
-    fn from(entries:[(String,String);N])->Self {Self(entries.into())}
+pub struct LocalRoots(pub Vec<(String, String)>);
+impl<const N: usize> From<[(String, String); N]> for LocalRoots {
+    fn from(entries: [(String, String); N]) -> Self {
+        Self(entries.into())
+    }
 }
 impl serde::Serialize for LocalRoots {
-    fn serialize<S:serde::Serializer>(&self,serializer:S)->Result<S::Ok,S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut folded=Vec::<(String,&str)>::new();
-        for (key,value) in &self.0 {
-            let key=key.to_lowercase();
-            if let Some((_,previous))=folded.iter_mut().find(|(existing,_)|existing==&key) {*previous=value;} else {folded.push((key,value));}
+        let mut folded = Vec::<(String, &str)>::new();
+        for (key, value) in &self.0 {
+            let key = key.to_lowercase();
+            if let Some((_, previous)) = folded.iter_mut().find(|(existing, _)| existing == &key) {
+                *previous = value;
+            } else {
+                folded.push((key, value));
+            }
         }
-        let mut map=serializer.serialize_map(Some(folded.len()))?;
-        for (key,value) in folded {map.serialize_entry(&key,value)?;}
+        let mut map = serializer.serialize_map(Some(folded.len()))?;
+        for (key, value) in folded {
+            map.serialize_entry(&key, value)?;
+        }
         map.end()
     }
 }
 impl<'de> serde::Deserialize<'de> for LocalRoots {
-    fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Visitor;
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value=LocalRoots;
-            fn expecting(&self,f:&mut std::fmt::Formatter)->std::fmt::Result {f.write_str("an ordered local-root object")}
-            fn visit_map<M:serde::de::MapAccess<'de>>(self,mut map:M)->Result<LocalRoots,M::Error> {
-                let mut entries=Vec::<(String,String)>::new();
-                while let Some((key,value))=map.next_entry::<String,String>()? {
-                    if let Some((_,existing))=entries.iter_mut().find(|(existing,_)|existing==&key) {*existing=value;} else {entries.push((key,value));}
+            type Value = LocalRoots;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an ordered local-root object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<LocalRoots, M::Error> {
+                let mut entries = Vec::<(String, String)>::new();
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    if let Some((_, existing)) =
+                        entries.iter_mut().find(|(existing, _)| existing == &key)
+                    {
+                        *existing = value;
+                    } else {
+                        entries.push((key, value));
+                    }
                 }
                 Ok(LocalRoots(entries))
             }
@@ -40,7 +59,9 @@ impl<'de> serde::Deserialize<'de> for LocalRoots {
     }
 }
 
-pub fn generate_correlation_id() -> String { uuid::Uuid::new_v4().to_string() }
+pub fn generate_correlation_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
 
 pub fn generate_bridge_token(byte_length: usize) -> Result<String, getrandom::Error> {
     let mut bytes = vec![0; byte_length];
@@ -55,8 +76,15 @@ pub struct BridgeTokenMismatch;
 pub fn verify_bridge_token(expected: &str, received: &str) -> Result<(), BridgeTokenMismatch> {
     let expected = Sha256::digest(expected.as_bytes());
     let received = Sha256::digest(received.as_bytes());
-    let difference = expected.iter().zip(received).fold(0u8, |difference, (left, right)| difference | (left ^ right));
-    if difference == 0 { Ok(()) } else { Err(BridgeTokenMismatch) }
+    let difference = expected
+        .iter()
+        .zip(received)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right));
+    if difference == 0 {
+        Ok(())
+    } else {
+        Err(BridgeTokenMismatch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -91,86 +119,225 @@ pub struct BridgeConnectionConfig {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KernelMemoryThresholds { pub gc_watermark_bytes: u64, pub notice_bytes: u64, pub ceiling_bytes: u64 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KernelMemoryGlobal { pub name: String, pub bytes: u64, #[serde(default, skip_serializing_if = "Option::is_none")] pub approximate: Option<bool> }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KernelMemoryReport {
-    pub live_bytes: u64, pub measure: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub approximate: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub gc_ran: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub globals: Option<Vec<KernelMemoryGlobal>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub over_ceiling: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub recycled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub notice: Option<String>,
+pub struct KernelMemoryThresholds {
+    pub gc_watermark_bytes: u64,
+    pub notice_bytes: u64,
+    pub ceiling_bytes: u64,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeEnvironmentRevision { pub revision: u64, pub root: Option<String> }
+pub struct KernelMemoryGlobal {
+    pub name: String,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approximate: Option<bool>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelMemoryReport {
+    pub live_bytes: u64,
+    pub measure: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approximate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_ran: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub globals: Option<Vec<KernelMemoryGlobal>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over_ceiling: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recycled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeEnvironmentRevision {
+    pub revision: u64,
+    pub root: Option<String>,
+}
 
 pub fn encode_bridge_frame(message: &Value) -> Result<String, serde_json::Error> {
     Ok(format!("{}\n", serde_json::to_string(message)?))
 }
 
-pub fn parse_bridge_json_line(line: &str, max_bytes: Option<usize>) -> Result<Value, BridgeDecodeError> {
+pub fn parse_bridge_json_line(
+    line: &str,
+    max_bytes: Option<usize>,
+) -> Result<Value, BridgeDecodeError> {
     let max_bytes = max_bytes.unwrap_or(BRIDGE_FRAME_MAX_BYTES);
     if line.len() > max_bytes {
-        return Err(BridgeDecodeError { code: BridgeDecodeErrorCode::FrameTooLarge, message: format!("Bridge frame exceeds {max_bytes} bytes") });
+        return Err(BridgeDecodeError {
+            code: BridgeDecodeErrorCode::FrameTooLarge,
+            message: format!("Bridge frame exceeds {max_bytes} bytes"),
+        });
     }
     let line = line.strip_suffix('\n').unwrap_or(line);
     if line.is_empty() {
-        return Err(BridgeDecodeError { code: BridgeDecodeErrorCode::EmptyFrame, message: "Bridge frame was empty".into() });
+        return Err(BridgeDecodeError {
+            code: BridgeDecodeErrorCode::EmptyFrame,
+            message: "Bridge frame was empty".into(),
+        });
     }
     if line.contains('\n') {
-        return Err(BridgeDecodeError { code: BridgeDecodeErrorCode::MultipleFrames, message: "Bridge frame contained more than one LF record".into() });
+        return Err(BridgeDecodeError {
+            code: BridgeDecodeErrorCode::MultipleFrames,
+            message: "Bridge frame contained more than one LF record".into(),
+        });
     }
-    serde_json::from_str(line).map_err(|error| BridgeDecodeError { code: BridgeDecodeErrorCode::MalformedJson, message: error.to_string() })
+    serde_json::from_str(line).map_err(|error| BridgeDecodeError {
+        code: BridgeDecodeErrorCode::MalformedJson,
+        message: error.to_string(),
+    })
 }
 
-pub fn decode_bridge_frame(line: &str, max_bytes: Option<usize>) -> Result<Value, BridgeDecodeError> {
+pub fn decode_bridge_frame(
+    line: &str,
+    max_bytes: Option<usize>,
+) -> Result<Value, BridgeDecodeError> {
     let parsed = parse_bridge_json_line(line, max_bytes)?;
-    if valid_host_message(&parsed) || is_kernel_to_host_message(&parsed) { return Ok(parsed); }
-    Err(BridgeDecodeError { code: BridgeDecodeErrorCode::InvalidMessage, message: "Invalid bridge message".into() })
+    if valid_host_message(&parsed) || is_kernel_to_host_message(&parsed) {
+        return Ok(parsed);
+    }
+    Err(BridgeDecodeError {
+        code: BridgeDecodeErrorCode::InvalidMessage,
+        message: "Invalid bridge message".into(),
+    })
 }
 
-pub(crate) fn string(value: &Value, key: &str) -> bool { value.get(key).is_some_and(Value::is_string) }
-pub(crate) fn nonempty(value: &Value, key: &str) -> bool { value.get(key).and_then(Value::as_str).is_some_and(|s| !s.is_empty()) }
-pub(crate) fn optional(value: &Value, key: &str, valid: impl FnOnce(&Value) -> bool) -> bool { value.get(key).is_none_or(valid) }
-pub(crate) fn strings(value: &Value) -> bool { value.as_array().is_some_and(|values| values.iter().all(|v| v.as_str().is_some_and(|s| !s.is_empty()))) }
-fn map_strings(value: &Value) -> bool { value.as_object().is_some_and(|values| values.values().all(Value::is_string)) }
+pub(crate) fn string(value: &Value, key: &str) -> bool {
+    value.get(key).is_some_and(Value::is_string)
+}
+pub(crate) fn nonempty(value: &Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+}
+pub(crate) fn optional(value: &Value, key: &str, valid: impl FnOnce(&Value) -> bool) -> bool {
+    value.get(key).is_none_or(valid)
+}
+pub(crate) fn strings(value: &Value) -> bool {
+    value.as_array().is_some_and(|values| {
+        values
+            .iter()
+            .all(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+    })
+}
+fn map_strings(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|values| values.values().all(Value::is_string))
+}
 pub(crate) fn integer(value: &Value, minimum: u64) -> bool {
     value.as_u64().is_some_and(|n| n >= minimum)
-        || value.as_f64().is_some_and(|n| n >= minimum as f64 && n.fract() == 0.0)
+        || value
+            .as_f64()
+            .is_some_and(|n| n >= minimum as f64 && n.fract() == 0.0)
 }
 pub(crate) fn error(value: &Value) -> bool {
-    value.is_object() && string(value, "message") && ["name", "stack", "code"].iter().all(|key| optional(value, key, Value::is_string))
+    value.is_object()
+        && string(value, "message")
+        && ["name", "stack", "code"]
+            .iter()
+            .all(|key| optional(value, key, Value::is_string))
 }
 fn connection(value: &Value) -> bool {
-    value.is_object() && value.get("port").is_some_and(|v| integer(v, 1) && v.as_f64().is_some_and(|n| n <= 65_535.0))
-        && nonempty(value, "token") && optional(value, "localRoots", map_strings)
-        && optional(value, "artifactsDir", Value::is_string) && optional(value, "parallelPoolWidth", |v| integer(v, 1))
+    value.is_object()
+        && value
+            .get("port")
+            .is_some_and(|v| integer(v, 1) && v.as_f64().is_some_and(|n| n <= 65_535.0))
+        && nonempty(value, "token")
+        && optional(value, "localRoots", map_strings)
+        && optional(value, "artifactsDir", Value::is_string)
+        && optional(value, "parallelPoolWidth", |v| integer(v, 1))
 }
 fn valid_host_message(value: &Value) -> bool {
     match value.get("type").and_then(Value::as_str) {
-        Some("init") => nonempty(value, "sessionId") && value.get("connection").is_some_and(connection)
-            && optional(value, "sessionEnv", map_strings) && optional(value, "kernelGeneration", |v| integer(v, 1))
-            && optional(value, "hostToolNames", strings) && optional(value, "foreignLanguageNames", strings)
-            && optional(value, "memory", |v| v.is_object() && ["gcWatermarkBytes", "noticeBytes", "ceilingBytes"].iter().all(|key| v.get(key).is_some_and(|item| integer(item, 0)))),
-        Some("run") => nonempty(value, "cellId") && string(value, "code") && optional(value, "timeoutMs", |v| integer(v, 1))
-            && optional(value, "envRoot", Value::is_string) && optional(value, "sourceFile", |v| v.as_str().is_some_and(|s| !s.is_empty()))
-            && optional(value, "preludes", |v| v.is_object() && v.get("install").and_then(Value::as_array).is_some_and(|items| items.iter().all(|item| item.get("python").is_some_and(Value::is_string) && item.get("exports").is_some_and(strings))) && v.get("remove").is_some_and(strings)),
-        Some("tool-reply") => nonempty(value, "callId") && match value.get("ok").and_then(Value::as_bool) {
-            Some(true) => value.get("value").is_some(), Some(false) => value.get("error").is_some_and(error), None => false,
-        },
+        Some("init") => {
+            nonempty(value, "sessionId")
+                && value.get("connection").is_some_and(connection)
+                && optional(value, "sessionEnv", map_strings)
+                && optional(value, "kernelGeneration", |v| integer(v, 1))
+                && optional(value, "hostToolNames", strings)
+                && optional(value, "foreignLanguageNames", strings)
+                && optional(value, "memory", |v| {
+                    v.is_object()
+                        && ["gcWatermarkBytes", "noticeBytes", "ceilingBytes"]
+                            .iter()
+                            .all(|key| v.get(key).is_some_and(|item| integer(item, 0)))
+                })
+        }
+        Some("run") => {
+            nonempty(value, "cellId")
+                && string(value, "code")
+                && optional(value, "timeoutMs", |v| integer(v, 1))
+                && optional(value, "envRoot", Value::is_string)
+                && optional(value, "sourceFile", |v| {
+                    v.as_str().is_some_and(|s| !s.is_empty())
+                })
+                && optional(value, "preludes", |v| {
+                    v.is_object()
+                        && v.get("install")
+                            .and_then(Value::as_array)
+                            .is_some_and(|items| {
+                                items.iter().all(|item| {
+                                    item.get("python").is_some_and(Value::is_string)
+                                        && item.get("exports").is_some_and(strings)
+                                })
+                            })
+                        && v.get("remove").is_some_and(strings)
+                })
+        }
+        Some("tool-reply") => {
+            nonempty(value, "callId")
+                && match value.get("ok").and_then(Value::as_bool) {
+                    Some(true) => value.get("value").is_some(),
+                    Some(false) => value.get("error").is_some_and(error),
+                    None => false,
+                }
+        }
         Some("interrupt") => optional(value, "reason", Value::is_string),
         Some("close") => true,
-        Some("webview-port") => nonempty(value, "requestId") && match value.get("ok").and_then(Value::as_bool) { Some(true) => value.get("port").is_some(), Some(false) => value.get("error").is_some_and(error), None => false },
+        Some("webview-port") => {
+            nonempty(value, "requestId")
+                && match value.get("ok").and_then(Value::as_bool) {
+                    Some(true) => value.get("port").is_some(),
+                    Some(false) => value.get("error").is_some_and(error),
+                    None => false,
+                }
+        }
         Some("memory-query") => nonempty(value, "requestId"),
         Some("memory-globals") => nonempty(value, "cellId"),
         _ => super::kernel_tools_protocol::valid_host_message(value),
     }
+}
+
+/// senpi memory-protocol.ts `kernelMemoryGlobalSchema` array (`maxItems: 8`).
+fn memory_globals(value: &Value) -> bool {
+    value.as_array().is_some_and(|values| {
+        values.len() <= 8
+            && values.iter().all(|item| {
+                item.is_object()
+                    && nonempty(item, "name")
+                    && item.get("bytes").is_some_and(|v| integer(v, 0))
+                    && optional(item, "approximate", Value::is_boolean)
+            })
+    })
+}
+/// senpi memory-protocol.ts `kernelMemoryReportSchema`: the memory report carried on a `result` frame.
+fn memory_report(value: &Value) -> bool {
+    value.is_object()
+        && value.get("liveBytes").is_some_and(|v| integer(v, 0))
+        && matches!(
+            value.get("measure").and_then(Value::as_str),
+            Some("heap" | "footprint")
+        )
+        && ["approximate", "gcRan", "overCeiling", "recycled"]
+            .iter()
+            .all(|key| optional(value, key, Value::is_boolean))
+        && optional(value, "globals", memory_globals)
+        && optional(value, "notice", Value::is_string)
 }
 
 pub fn is_kernel_to_host_message(value: &Value) -> bool {
@@ -178,22 +345,44 @@ pub fn is_kernel_to_host_message(value: &Value) -> bool {
         Some("ready") => optional(value, "memoryGlobals", Value::is_boolean),
         Some("closed") => true,
         Some("init-failed") => value.get("error").is_some_and(error),
-        Some("text") => matches!(value.get("stream").and_then(Value::as_str), Some("stdout" | "stderr")) && string(value, "data"),
+        Some("text") => {
+            matches!(
+                value.get("stream").and_then(Value::as_str),
+                Some("stdout" | "stderr")
+            ) && string(value, "data")
+        }
         Some("display") => nonempty(value, "mimeType") && string(value, "dataBase64"),
-        Some("tool-call") => nonempty(value, "callId") && nonempty(value, "toolName") && value.get("args").is_some(),
+        Some("tool-call") => {
+            nonempty(value, "callId") && nonempty(value, "toolName") && value.get("args").is_some()
+        }
         Some("log") => string(value, "message"),
         Some("phase") => string(value, "title"),
-        Some("status") => value.get("event").is_some_and(|event| event.is_object() && string(event, "op")),
+        Some("status") => value
+            .get("event")
+            .is_some_and(|event| event.is_object() && string(event, "op")),
         Some("webview-connect") => nonempty(value, "requestId"),
-        Some("memory-query-result") => nonempty(value, "requestId") && value.get("liveBytes").is_some_and(|v| integer(v, 0)) && value.get("measure").and_then(Value::as_str) == Some("heap"),
-        Some("memory-globals-result") => nonempty(value, "cellId") && value.get("globals").and_then(Value::as_array).is_some_and(|values| values.len() <= 8 && values.iter().all(|item| nonempty(item, "name") && item.get("bytes").is_some_and(|v| integer(v, 0)) && optional(item, "approximate", Value::is_boolean))),
-        Some("result") => nonempty(value, "cellId") && value.get("durationMs").is_some_and(|v| integer(v, 0))
-            && optional(value, "memory", Value::is_object) && optional(value, "notice", Value::is_string)
-            && optional(value, "kernelState", |v| matches!(v.as_str(), Some("lost" | "restarted" | "not-run")))
-            && match value.get("ok").and_then(Value::as_bool) {
-                Some(true) => optional(value, "valueRepr", Value::is_string),
-                Some(false) => value.get("error").is_some_and(error), None => false,
-            },
+        Some("memory-query-result") => {
+            nonempty(value, "requestId")
+                && value.get("liveBytes").is_some_and(|v| integer(v, 0))
+                && value.get("measure").and_then(Value::as_str) == Some("heap")
+        }
+        Some("memory-globals-result") => {
+            nonempty(value, "cellId") && value.get("globals").is_some_and(memory_globals)
+        }
+        Some("result") => {
+            nonempty(value, "cellId")
+                && value.get("durationMs").is_some_and(|v| integer(v, 0))
+                && optional(value, "memory", memory_report)
+                && optional(value, "notice", Value::is_string)
+                && optional(value, "kernelState", |v| {
+                    matches!(v.as_str(), Some("lost" | "restarted" | "not-run"))
+                })
+                && match value.get("ok").and_then(Value::as_bool) {
+                    Some(true) => optional(value, "valueRepr", Value::is_string),
+                    Some(false) => value.get("error").is_some_and(error),
+                    None => false,
+                }
+        }
         Some("kernel-memory-collected") => value.get("liveBytes").is_some_and(|v| integer(v, 0)),
         _ => super::kernel_tools_protocol::valid_kernel_message(value),
     }

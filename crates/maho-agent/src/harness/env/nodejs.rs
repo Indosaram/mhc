@@ -107,7 +107,8 @@ fn resolve_path(cwd: &str, path: &str) -> String {
             .to_string_lossy()
             .into_owned();
     } else if normalized.starts_with("file://")
-        && let Some(path) = file_url_path(&normalized) {
+        && let Some(path) = file_url_path(&normalized)
+    {
         normalized = path;
     }
     let candidate = Path::new(&normalized);
@@ -417,7 +418,9 @@ fn find_bash_on_path() -> Option<String> {
 }
 
 /// `getShellConfig(customShellPath)`.
-pub(crate) fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, ExecutionError> {
+pub(crate) fn get_shell_config(
+    custom_shell_path: Option<&str>,
+) -> Result<ShellConfig, ExecutionError> {
     if let Some(custom) = custom_shell_path {
         if path_exists(custom) {
             return ok(get_bash_shell_config(custom));
@@ -758,7 +761,13 @@ pub struct NodeExecutionEnv {
     shell_path: Option<String>,
     shell_env: Option<std::collections::BTreeMap<String, String>>,
     active_child_pids: Arc<Mutex<Vec<u32>>>,
+    create_temp_file_hook: Option<CreateTempFileHook>,
 }
+
+/// Rust stand-in for overriding `NodeExecutionEnv.createTempFile` in a subclass: receives the
+/// requested prefix and the default creation result, and returns the path `exec` spills to.
+pub type CreateTempFileHook =
+    Arc<dyn Fn(Option<&str>, Result<String, FileError>) -> Result<String, FileError> + Send + Sync>;
 
 impl NodeExecutionEnv {
     pub fn new(cwd: impl Into<String>) -> Self {
@@ -767,6 +776,7 @@ impl NodeExecutionEnv {
             shell_path: None,
             shell_env: None,
             active_child_pids: Arc::new(Mutex::new(Vec::new())),
+            create_temp_file_hook: None,
         }
     }
 
@@ -780,6 +790,12 @@ impl NodeExecutionEnv {
         shell_env: Option<std::collections::BTreeMap<String, String>>,
     ) -> Self {
         self.shell_env = shell_env;
+        self
+    }
+
+    /// Install a `createTempFile` override (the pinned tests subclass the env for this).
+    pub fn with_create_temp_file_hook(mut self, hook: Option<CreateTempFileHook>) -> Self {
+        self.create_temp_file_hook = hook;
         self
     }
 
@@ -1187,25 +1203,32 @@ impl FileSystem for NodeExecutionEnv {
         context: &'a Context,
     ) -> BoxFuture<'a, Result<String, FileError>> {
         Box::pin(async move {
-            let dir = match self
-                .create_temp_dir(Some("tmp-".to_string()), context)
-                .await
-            {
-                Ok(dir) => dir,
-                Err(error) => return err(error),
-            };
-            let file_path = Path::new(&dir)
-                .join(format!(
-                    "{}{}{}",
-                    prefix.unwrap_or_default(),
-                    random_uuid(),
-                    suffix.unwrap_or_default()
-                ))
-                .to_string_lossy()
-                .into_owned();
-            match std::fs::write(&file_path, "") {
-                Ok(()) => ok(file_path),
-                Err(error) => err(to_file_error(&error, Some(&file_path))),
+            let created = async {
+                let dir = match self
+                    .create_temp_dir(Some("tmp-".to_string()), context)
+                    .await
+                {
+                    Ok(dir) => dir,
+                    Err(error) => return err(error),
+                };
+                let file_path = Path::new(&dir)
+                    .join(format!(
+                        "{}{}{}",
+                        prefix.clone().unwrap_or_default(),
+                        random_uuid(),
+                        suffix.unwrap_or_default()
+                    ))
+                    .to_string_lossy()
+                    .into_owned();
+                match std::fs::write(&file_path, "") {
+                    Ok(()) => ok(file_path),
+                    Err(error) => err(to_file_error(&error, Some(&file_path))),
+                }
+            }
+            .await;
+            match &self.create_temp_file_hook {
+                Some(hook) => hook(prefix.as_deref(), created),
+                None => created,
             }
         })
     }
@@ -1434,7 +1457,7 @@ impl NodeExecutionEnv {
                         Some(chunk) => {
                             capture.push_bytes(chunk.as_slice());
                             if spill_enabled
-                                && let Err(error) = spill.push(chunk.as_slice(), capture.truncated()) {
+                                && let Err(error) = self.push_spill(&mut spill, &capture, chunk.as_slice(), context).await {
                                 kill_process_tree(pid);
                                 outcome = Some(ExecOutcome::SpillFailed(error));
                                 break;
@@ -1469,20 +1492,23 @@ impl NodeExecutionEnv {
         {
             capture.push_bytes(chunk.as_slice());
             if spill_enabled
-                && let Err(error) = spill.push(chunk.as_slice(), capture.truncated()) {
-                    kill_process_tree(pid);
-                    if !matches!(
-                        outcome,
-                        Some(
-                            ExecOutcome::TimedOut
-                                | ExecOutcome::Aborted
-                                | ExecOutcome::SpillFailed(_)
-                                | ExecOutcome::CallbackFailed
-                        )
-                    ) {
-                        outcome = Some(ExecOutcome::SpillFailed(error));
-                    }
-                    break;
+                && let Err(error) = self
+                    .push_spill(&mut spill, &capture, chunk.as_slice(), context)
+                    .await
+            {
+                kill_process_tree(pid);
+                if !matches!(
+                    outcome,
+                    Some(
+                        ExecOutcome::TimedOut
+                            | ExecOutcome::Aborted
+                            | ExecOutcome::SpillFailed(_)
+                            | ExecOutcome::CallbackFailed
+                    )
+                ) {
+                    outcome = Some(ExecOutcome::SpillFailed(error));
+                }
+                break;
             }
         }
 
@@ -1497,7 +1523,6 @@ impl NodeExecutionEnv {
                 active.remove(index);
             }
         }
-        spill.finish(&capture);
         capture.finish();
         capture.flush();
         let callbacks = capture.settle_callbacks().await;
@@ -1552,6 +1577,40 @@ impl NodeExecutionEnv {
                 })
             }
         }
+    }
+}
+
+impl NodeExecutionEnv {
+    /// Pinned `startSpill`: the first truncating chunk creates the spill through
+    /// `createTempFile({ prefix: "pi-output-", suffix: ".log" })` and publishes its path at once.
+    async fn push_spill(
+        &self,
+        spill: &mut SpillState,
+        capture: &OutputCapture,
+        chunk: &[u8],
+        context: &Context,
+    ) -> Result<(), ExecutionError> {
+        let truncated = capture.truncated();
+        let spill_context = crate::harness::context::without_abort_signal(context);
+        if spill.path.is_none() && !chunk.is_empty() && truncated {
+            let created = self
+                .create_temp_file(
+                    Some("pi-output-".to_string()),
+                    Some(".log".to_string()),
+                    &spill_context,
+                )
+                .await;
+            match created {
+                Ok(path) => {
+                    capture.set_spill_path(&path);
+                    spill.path = Some(path);
+                }
+                Err(error) => {
+                    return Err(spill_error(std::io::Error::other(error.message)));
+                }
+            }
+        }
+        spill.push(chunk, truncated)
     }
 }
 
@@ -1634,6 +1693,7 @@ impl SpillState {
                 self.append(&buffered).map_err(spill_error)?;
             }
             self.append(chunk).map_err(spill_error)?;
+            self.started = true;
         } else {
             self.prefix.push(chunk.to_vec());
         }
@@ -1641,13 +1701,6 @@ impl SpillState {
     }
 
     fn append(&mut self, chunk: &[u8]) -> std::io::Result<()> {
-        if self.path.is_none() {
-            let dir = Path::new(&temp_dir()).join(format!("tmp-{}", random_uuid()));
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join(format!("pi-output-{}.log", random_uuid()));
-            self.path = Some(path.to_string_lossy().into_owned());
-            self.started = true;
-        }
         match &self.path {
             Some(path) => std::fs::OpenOptions::new()
                 .append(true)
@@ -1655,12 +1708,6 @@ impl SpillState {
                 .open(path)?
                 .write_all(chunk),
             None => Err(std::io::Error::other("Spill path was not initialized")),
-        }
-    }
-
-    fn finish(&mut self, capture: &OutputCapture) {
-        if let Some(path) = self.path.clone() {
-            capture.set_spill_path(&path);
         }
     }
 }

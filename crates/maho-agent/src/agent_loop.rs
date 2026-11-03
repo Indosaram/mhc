@@ -17,18 +17,23 @@ use maho_ai::types::{
     Usage, UserContent,
 };
 use maho_ai::utils::abort::{AbortController, AbortReason, AbortSignal};
+use maho_ai::utils::assistant_capture::{
+    AssistantProgress, AssistantRecord, BlockMetadata, Captured, CapturedEvent, assistant_records,
+    carry_assistant_capture, get_assistant_capture, is_assistant_progress,
+};
 use maho_ai::utils::event_stream::{EventStream, StreamError};
 use maho_ai::utils::validation::validate_tool_arguments;
 use tokio::sync::oneshot;
 
 use crate::assistant_terminal_state::{
     AgentStreamError, PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, TerminalAssistantMessageEvent,
-    create_terminal_failure_assistant_message, demote_tool_use_without_tool_calls,
-    is_stream_idle_timeout_error, normalize_terminal_assistant_message, now_ms,
-    promote_stop_with_pending_tool_calls, should_finalize_idle_as_stop,
+    create_terminal_failure_assistant_message, is_stream_idle_timeout_error,
+    normalize_terminal_assistant_message, now_ms, settle_stop_reason, should_finalize_idle_as_stop,
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
+use crate::internal_events::{CapturedEventSink, InternalLoopConfig};
+use crate::invocation_input::{InvocationInput, invoke_with_input};
 use crate::response_timing::create_response_timing_recorder;
 use crate::stream_fn::get_default_stream_fn;
 use crate::tool_arguments::prepare_agent_tool_call_arguments;
@@ -45,6 +50,19 @@ pub type AgentEventSink =
 
 async fn send(emit: &AgentEventSink, event: AgentEvent) {
     emit(event).await;
+}
+
+/// `emit(carryAssistantCapture(source, event, terminal))`: with a capture-aware sink (a run that
+/// started with an internal listener) the event keeps its carrier; otherwise it is emitted bare.
+async fn send_captured(
+    emit: &AgentEventSink,
+    captured: Option<&CapturedEventSink>,
+    event: Captured<AgentEvent>,
+) {
+    match captured {
+        Some(sink) => sink(event).await,
+        None => emit(event.value).await,
+    }
 }
 
 fn assistant_event(message: &AssistantMessage) -> AgentMessage {
@@ -127,6 +145,7 @@ pub async fn run_agent_loop(
             &emit,
             AgentEvent::MessageStart {
                 message: prompt.clone(),
+                streaming: None,
             },
         )
         .await;
@@ -309,6 +328,7 @@ async fn run_loop(
                         &emit,
                         AgentEvent::MessageStart {
                             message: message.clone(),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -400,9 +420,7 @@ async fn run_loop(
                 idle_timeout_ms,
             )
             .await;
-            let message = demote_tool_use_without_tool_calls(promote_stop_with_pending_tool_calls(
-                streamed.message,
-            ));
+            let message = streamed.message;
             let provider_tool_results = streamed.provider_tool_results;
             new_messages.push(assistant_event(&message));
             let mut tool_results: Vec<ToolResultMessage> = Vec::new();
@@ -412,6 +430,7 @@ async fn run_loop(
                     &emit,
                     AgentEvent::MessageStart {
                         message: message.clone(),
+                        streaming: None,
                     },
                 )
                 .await;
@@ -634,6 +653,7 @@ async fn run_loop(
                     &emit,
                     AgentEvent::MessageStart {
                         message: failure.clone(),
+                        streaming: None,
                     },
                 )
                 .await;
@@ -785,6 +805,7 @@ pub(crate) async fn emit_run_failure(
         emit,
         AgentEvent::MessageStart {
             message: failure.clone(),
+            streaming: None,
         },
     )
     .await;
@@ -966,7 +987,7 @@ struct ThinkingTiming {
 /// This is where AgentMessage[] gets transformed to Message[] for the LLM.
 async fn stream_assistant_response(
     context: &mut AgentContext,
-    config: &AgentLoopConfig,
+    config: &InternalLoopConfig,
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
     stream_function: StreamFn,
@@ -1076,6 +1097,17 @@ async fn stream_assistant_response(
                     )));
                 })
             };
+            // Without an internal listener the loop reads the public stream exactly as before: no
+            // records, no carriers.
+            let sink = config.internal_progress_sink.clone();
+            let captured_sink = config
+                .captured_event_sink
+                .as_ref()
+                .filter(|_| sink.is_some());
+            if sink.is_some() {
+                // Attached before the first read: it turns capture on for this stream.
+                let _ = assistant_records(&response);
+            }
             let mut event_reader = AssistantEventReader::new(
                 response.clone(),
                 stream_idle_timeout_ms,
@@ -1086,14 +1118,25 @@ async fn stream_assistant_response(
             );
             event_reader.configured_start_timeout_ms =
                 normalize_timeout_ms(config.stream_start_timeout_ms);
+            event_reader.records = sink.is_some();
 
-            let mut finalized: Option<AssistantMessage> = None;
+            let mut finalized: Option<(AssistantMessage, CapturedEvent)> = None;
             loop {
                 let next = match event_reader.next().await {
                     Ok(next) => next,
                     Err(error) => return Err(error),
                 };
-                let Some(event) = next else { break };
+                let Some(record) = next else { break };
+                let captured = match record {
+                    AssistantRecord::Progress(progress) => {
+                        if let Some(sink) = &sink {
+                            sink(progress).await;
+                        }
+                        continue;
+                    }
+                    AssistantRecord::Event(event) => event,
+                };
+                let event = captured.value.clone();
                 let terminal = match &event {
                     AssistantMessageEvent::Done { .. } => Some(TerminalAssistantMessageEvent::Done),
                     AssistantMessageEvent::Error { reason, .. } => {
@@ -1107,9 +1150,11 @@ async fn stream_assistant_response(
                     _ => None,
                 };
                 if let Some(terminal) = terminal {
-                    let final_message =
-                        normalize_terminal_assistant_message(result().await?, terminal);
-                    finalized = Some(final_message);
+                    let final_message = settle_stop_reason(normalize_terminal_assistant_message(
+                        result().await?,
+                        terminal,
+                    ));
+                    finalized = Some((final_message, captured));
                     break;
                 }
                 match &event {
@@ -1117,11 +1162,17 @@ async fn stream_assistant_response(
                         response_timing.started();
                         context.messages.push(assistant_event(partial));
                         added_partial = true;
-                        send(
+                        send_captured(
                             emit,
-                            AgentEvent::MessageStart {
-                                message: assistant_event(partial),
-                            },
+                            captured_sink,
+                            carry_assistant_capture(
+                                &captured,
+                                AgentEvent::MessageStart {
+                                    message: assistant_event(partial),
+                                    streaming: Some(true),
+                                },
+                                None,
+                            ),
                         )
                         .await;
                     }
@@ -1139,13 +1190,24 @@ async fn stream_assistant_response(
                                     });
                             let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                             let mut updated = partial.clone();
-                            set_thinking_block_timing(
+                            let stamped = set_thinking_block_timing(
                                 &mut updated,
                                 *content_index,
                                 started_at,
                                 ended_at,
                             );
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
+                            if stamped {
+                                send_timing_progress(
+                                    sink.as_ref(),
+                                    &captured,
+                                    *content_index,
+                                    started_at,
+                                    ended_at,
+                                )
+                                .await;
+                            }
                         }
                     }
                     AssistantMessageEvent::ThinkingDelta {
@@ -1164,7 +1226,8 @@ async fn stream_assistant_response(
                                     timing.ended_at,
                                 );
                             }
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
                         }
                     }
                     AssistantMessageEvent::ThinkingEnd {
@@ -1174,17 +1237,31 @@ async fn stream_assistant_response(
                     } => {
                         if added_partial {
                             let mut updated = partial.clone();
+                            let mut stamped = None;
                             if let Some(timing) = thinking_timing.get_mut(content_index) {
                                 timing.ended_at = Some(now_ms());
                                 let (started_at, ended_at) = (timing.started_at, timing.ended_at);
-                                set_thinking_block_timing(
+                                if set_thinking_block_timing(
                                     &mut updated,
                                     *content_index,
                                     started_at,
                                     ended_at,
-                                );
+                                ) {
+                                    stamped = Some((started_at, ended_at));
+                                }
                             }
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
+                            if let Some((started_at, ended_at)) = stamped {
+                                send_timing_progress(
+                                    sink.as_ref(),
+                                    &captured,
+                                    *content_index,
+                                    started_at,
+                                    ended_at,
+                                )
+                                .await;
+                            }
                         }
                     }
                     AssistantMessageEvent::TextStart { partial, .. }
@@ -1195,16 +1272,29 @@ async fn stream_assistant_response(
                     | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
                         if added_partial {
                             response_timing.observe(&event);
-                            emit_message_update(emit, context, partial.clone(), event).await;
+                            emit_message_update(
+                                emit,
+                                captured_sink,
+                                context,
+                                partial.clone(),
+                                &captured,
+                            )
+                            .await;
                         }
                     }
                     AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
                 }
             }
 
-            let final_message = match finalized {
-                Some(final_message) => final_message,
-                None => result().await?,
+            // The terminal carrier holds the final normalized message; a stream that ended without
+            // a terminal event emits bare events.
+            let (final_message, source) = match finalized {
+                Some((final_message, source)) => (final_message, Some(source)),
+                None => (settle_stop_reason(result().await?), None),
+            };
+            let carry = |event: AgentEvent, terminal: &AssistantMessage| match &source {
+                Some(source) => carry_assistant_capture(source, event, Some(terminal)),
+                None => Captured::bare(event),
             };
             let mut final_message = final_message;
             propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
@@ -1214,19 +1304,28 @@ async fn stream_assistant_response(
                 }
             } else {
                 context.messages.push(assistant_event(&final_message));
-                send(
+                send_captured(
                     emit,
-                    AgentEvent::MessageStart {
-                        message: assistant_event(&final_message),
-                    },
+                    captured_sink,
+                    carry(
+                        AgentEvent::MessageStart {
+                            message: assistant_event(&final_message),
+                            streaming: None,
+                        },
+                        &final_message,
+                    ),
                 )
                 .await;
             }
-            send(
+            send_captured(
                 emit,
-                AgentEvent::MessageEnd {
-                    message: assistant_event(&final_message),
-                },
+                captured_sink,
+                carry(
+                    AgentEvent::MessageEnd {
+                        message: assistant_event(&final_message),
+                    },
+                    &final_message,
+                ),
             )
             .await;
             Ok(StreamedAssistantResponse {
@@ -1268,7 +1367,7 @@ async fn stream_assistant_response(
                 })
             {
                 let partial = partial_message.cloned();
-                let mut final_message = AssistantMessage {
+                let final_message = AssistantMessage { credential_served_recently: None,
                     content: partial
                         .as_ref()
                         .map(|message| message.content.clone())
@@ -1304,7 +1403,9 @@ async fn stream_assistant_response(
                     stop_details: None,
                     deferred: None,
                     error_message: None,
-                    error_cause: partial.as_ref().and_then(|message| message.error_cause),
+                    error_cause: partial
+                        .as_ref()
+                        .and_then(|message| message.error_cause.clone()),
                     provider_diagnostic: None,
                     abort_source: None,
                     failure_source: None,
@@ -1313,6 +1414,7 @@ async fn stream_assistant_response(
                     timing: None,
                     timestamp: partial.as_ref().map(|m| m.timestamp).unwrap_or_else(now_ms),
                 };
+                let mut final_message = settle_stop_reason(final_message);
                 propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
                 if added_partial {
                     if let Some(last) = context.messages.last_mut() {
@@ -1324,6 +1426,7 @@ async fn stream_assistant_response(
                         emit,
                         AgentEvent::MessageStart {
                             message: assistant_event(&final_message),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -1373,6 +1476,7 @@ async fn stream_assistant_response(
                         emit,
                         AgentEvent::MessageStart {
                             message: assistant_event(&final_message),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -1422,36 +1526,67 @@ async fn stream_assistant_response(
 
 async fn emit_message_update(
     emit: &AgentEventSink,
+    captured_sink: Option<&CapturedEventSink>,
     context: &mut AgentContext,
     updated: AssistantMessage,
-    event: AssistantMessageEvent,
+    event: &CapturedEvent,
 ) {
     let message = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(updated)));
     if let Some(last) = context.messages.last_mut() {
         *last = message.clone();
     }
-    send(
+    send_captured(
         emit,
-        AgentEvent::MessageUpdate {
-            message,
-            assistant_message_event: event,
-        },
+        captured_sink,
+        carry_assistant_capture(
+            event,
+            AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event: event.value.clone(),
+            },
+            None,
+        ),
     )
     .await;
 }
 
+/// Agent-stamped thinking timing, stamped after provider capture: it amends this event's seed or
+/// end block, so it follows the `message_update` it amends. Only captured, non-delta events.
+async fn send_timing_progress(
+    sink: Option<&crate::internal_events::ProgressSink>,
+    event: &CapturedEvent,
+    content_index: usize,
+    started_at: i64,
+    ended_at: Option<i64>,
+) {
+    let Some(sink) = sink else { return };
+    if get_assistant_capture(event).is_none() {
+        return;
+    }
+    sink(Arc::new(AssistantProgress::metadata(BlockMetadata {
+        content_index,
+        started_at: Some(started_at),
+        ended_at,
+        ..BlockMetadata::default()
+    })))
+    .await;
+}
+
+/// Returns whether the block at `content_index` is a thinking block that now carries the timing.
 fn set_thinking_block_timing(
     message: &mut AssistantMessage,
     content_index: usize,
     started_at: i64,
     ended_at: Option<i64>,
-) {
+) -> bool {
     if let Some(ContentBlock::Thinking(block)) = message.content.get_mut(content_index) {
         block.started_at = Some(started_at);
         if ended_at.is_some() {
             block.ended_at = ended_at;
         }
+        return true;
     }
+    false
 }
 
 fn propagate_thinking_timing(
@@ -1574,6 +1709,11 @@ struct AssistantEventReader {
     start_timeout_ms: Option<u64>,
     configured_start_timeout_ms: Option<u64>,
     saw_first_event: bool,
+    /// Provider silence since the last public event: internal progress records re-arm neither
+    /// bound.
+    silent_ms: u64,
+    /// Read ordered capture records (`assistantRecords(response)`) instead of the public stream.
+    records: bool,
     signal: Option<AbortSignal>,
     on_idle_timeout: Option<Arc<dyn Fn(AgentStreamError) + Send + Sync>>,
 }
@@ -1594,6 +1734,8 @@ impl AssistantEventReader {
             start_timeout_ms: normalize_timeout_ms(stream_start_timeout_ms),
             configured_start_timeout_ms: normalize_timeout_ms(stream_start_timeout_ms),
             saw_first_event: false,
+            silent_ms: 0,
+            records: false,
             signal: Some(signal),
             on_idle_timeout,
         }
@@ -1607,11 +1749,25 @@ impl AssistantEventReader {
                 timeout_ms: self.configured_start_timeout_ms.unwrap_or(timeout_ms),
             }
         } else {
-            AgentStreamError::IdleTimeout { timeout_ms }
+            AgentStreamError::IdleTimeout {
+                timeout_ms: self.idle_timeout_ms.unwrap_or(timeout_ms),
+            }
         }
     }
 
-    async fn next(&mut self) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    async fn read_one(&self) -> Result<Option<AssistantRecord>, StreamError> {
+        if self.records {
+            self.stream.next_record().await
+        } else {
+            Ok(self
+                .stream
+                .next()
+                .await?
+                .map(|event| AssistantRecord::Event(Captured::bare(event))))
+        }
+    }
+
+    async fn next(&mut self) -> Result<Option<AssistantRecord>, AgentStreamError> {
         if let Some(signal) = self.signal.as_ref()
             && signal.aborted()
         {
@@ -1623,12 +1779,26 @@ impl AssistantEventReader {
         } else {
             self.idle_timeout_ms
         };
+        let read_started_at = tokio::time::Instant::now();
         let result = match read_timeout_ms {
-            Some(timeout_ms) => self.read_with_timeout(timeout_ms).await,
+            Some(timeout_ms) => {
+                self.read_with_timeout(timeout_ms.saturating_sub(self.silent_ms).max(1))
+                    .await
+            }
             None => self.read_without_timeout().await,
         }?;
-        if result.is_some() {
-            self.saw_first_event = true;
+        match &result {
+            Some(record) if is_assistant_progress(record) => {
+                let elapsed =
+                    u64::try_from(read_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.silent_ms = self.silent_ms.saturating_add(elapsed);
+            }
+            _ => {
+                self.silent_ms = 0;
+                if result.is_some() {
+                    self.saw_first_event = true;
+                }
+            }
         }
         Ok(result)
     }
@@ -1636,9 +1806,7 @@ impl AssistantEventReader {
     /// With no idle bound the read still races the abort signal, exactly as
     /// `readNextAssistantEvent` does whenever an abort promise exists: aborting mid-stream must
     /// tear the request down instead of waiting forever for a provider event that never comes.
-    async fn read_without_timeout(
-        &mut self,
-    ) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    async fn read_without_timeout(&mut self) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let signal = self.signal.clone();
         let abort_future = async move {
             match signal {
@@ -1649,14 +1817,14 @@ impl AssistantEventReader {
         tokio::select! {
             biased;
             _ = abort_future => Err(abort_error(self.signal.as_ref())),
-            result = self.stream.next() => result.map_err(stream_error),
+            result = self.read_one() => result.map_err(stream_error),
         }
     }
 
     async fn read_with_timeout(
         &mut self,
         timeout_ms: u64,
-    ) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    ) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1687,7 +1855,7 @@ impl AssistantEventReader {
                     }
                     return Err(error);
                 }
-                result = self.stream.next() => {
+                result = self.read_one() => {
                     return result.map_err(stream_error);
                 }
             }
@@ -2106,6 +2274,8 @@ enum ToolCallPreparation {
         tool: Box<AgentTool>,
         args: serde_json::Value,
         requested_name: Option<String>,
+        /// Identity of this call's validated input, shared by preflight, execution and result hooks.
+        input: InvocationInput,
     },
     Immediate {
         tool_call: AgentToolCall,
@@ -2277,12 +2447,14 @@ async fn prepare_tool_call(
                 tool_call,
                 tool,
                 args,
+                input,
                 ..
             } => ToolCallPreparation::Prepared {
                 tool_call,
                 tool,
                 args,
                 requested_name: Some(requested_name),
+                input,
             },
             ToolCallPreparation::Immediate {
                 tool_call,
@@ -2330,16 +2502,19 @@ async fn prepare_resolved_tool_call(
     };
     let validated_args = prepared_tool_call.args.clone();
     let mut effective_args = validated_args.clone();
+    let input = InvocationInput::new();
     if let Some(before_tool_call) = config.before_tool_call.clone() {
-        let before_result = before_tool_call(
-            crate::types::BeforeToolCallContext {
-                assistant_message: assistant_message.clone(),
-                tool_call: prepared_tool_call.tool_call.clone(),
-                args: validated_args.clone(),
-                context: Arc::clone(current_context),
-            },
-            signal.clone(),
-        )
+        let before_result = invoke_with_input(input.clone(), || {
+            before_tool_call(
+                crate::types::BeforeToolCallContext {
+                    assistant_message: assistant_message.clone(),
+                    tool_call: prepared_tool_call.tool_call.clone(),
+                    args: validated_args.clone(),
+                    context: Arc::clone(current_context),
+                },
+                signal.clone(),
+            )
+        })
         .await;
         if signal.as_ref().is_some_and(AbortSignal::aborted) {
             return ToolCallPreparation::Immediate {
@@ -2385,6 +2560,7 @@ async fn prepare_resolved_tool_call(
         tool: Box::new(tool.clone()),
         args: effective_args,
         requested_name: None,
+        input,
     }
 }
 
@@ -2418,6 +2594,7 @@ async fn execute_prepared_tool_call_with_update(
         tool_call,
         tool,
         args,
+        input,
         ..
     } = prepared
     else {
@@ -2470,12 +2647,14 @@ async fn execute_prepared_tool_call_with_update(
         })
     };
 
-    let execution = (tool.execute)(
-        tool_call.id.clone(),
-        args.clone(),
-        signal.clone(),
-        Some(on_update.clone()),
-    );
+    let execution = invoke_with_input(input.clone(), || {
+        (tool.execute)(
+            tool_call.id.clone(),
+            args.clone(),
+            signal.clone(),
+            Some(on_update.clone()),
+        )
+    });
     // The execution is detached so a losing abort race leaves it running, as the TS
     // `Promise.race` does (the abandoned promise keeps executing there).
     let (sender, receiver) = oneshot::channel();
@@ -2527,6 +2706,7 @@ async fn finalize_executed_tool_call(
         tool_call,
         requested_name,
         args,
+        input,
         ..
     } = prepared
     else {
@@ -2540,17 +2720,19 @@ async fn finalize_executed_tool_call(
     let mut is_error = executed.is_error;
 
     if let Some(after_tool_call) = config.after_tool_call.clone() {
-        let after_result = after_tool_call(
-            crate::types::AfterToolCallContext {
-                assistant_message: assistant_message.clone(),
-                tool_call: tool_call.clone(),
-                args: args.clone(),
-                result: result.clone(),
-                is_error,
-                context: Arc::clone(current_context),
-            },
-            signal.clone(),
-        )
+        let after_result = invoke_with_input(input.clone(), || {
+            after_tool_call(
+                crate::types::AfterToolCallContext {
+                    assistant_message: assistant_message.clone(),
+                    tool_call: tool_call.clone(),
+                    args: args.clone(),
+                    result: result.clone(),
+                    is_error,
+                    context: Arc::clone(current_context),
+                },
+                signal.clone(),
+            )
+        })
         .await;
         if let Some(after_result) = after_result {
             // Structured content not replaced along with the content may no longer match it.
@@ -2640,6 +2822,7 @@ async fn emit_tool_result_message(tool_result_message: &ToolResultMessage, emit:
         emit,
         AgentEvent::MessageStart {
             message: message.clone(),
+            streaming: None,
         },
     )
     .await;
@@ -2859,7 +3042,7 @@ mod provider_context_tests {
             .expect("events")
             .iter()
             .filter_map(|event| match event {
-                AgentEvent::MessageStart { message } => Some(("start", message.role())),
+                AgentEvent::MessageStart { message, .. } => Some(("start", message.role())),
                 AgentEvent::MessageEnd { message } => Some(("end", message.role())),
                 _ => None,
             })
@@ -3171,7 +3354,7 @@ mod audit_gap_tests {
         // Then: neither provider nor transcript saw the claimed input.
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(restored.load(Ordering::SeqCst), 1);
-        assert!(!events.lock().expect("events").iter().any(|event| matches!(event, AgentEvent::MessageStart { message } if message.role() == "user")));
+        assert!(!events.lock().expect("events").iter().any(|event| matches!(event, AgentEvent::MessageStart { message, .. } if message.role() == "user")));
     }
 
     #[tokio::test(start_paused = true)]
@@ -3273,6 +3456,86 @@ mod audit_gap_tests {
         assert!(outcome.is_error);
         assert!(context.messages.is_empty());
         assert!(outcome.result.nested_calls.is_none());
+    }
+
+    #[tokio::test]
+    async fn each_prepared_call_shares_one_input_identity_across_hooks_and_execution() {
+        use crate::invocation_input::{InvocationInput, current_invocation_input};
+        // Given: a tool and both hooks that record the input identity they run under.
+        type Seen = Arc<Mutex<Vec<(&'static str, Option<InvocationInput>)>>>;
+        fn record(stage: &'static str, seen: &Seen) {
+            seen.lock()
+                .expect("seen")
+                .push((stage, current_invocation_input()));
+        }
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let executed = seen.clone();
+        let tool = AgentTool {
+            label: "write".into(),
+            prepare_arguments: None,
+            execute: Arc::new(move |_, _, _, _| {
+                record("execute", &executed);
+                Box::pin(async { AgentToolResult::text("ok") })
+            }),
+            replay: None,
+            execution_mode: None,
+            tool: Tool {
+                name: "write".into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type":"object"}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+        };
+        let (before, after) = (seen.clone(), seen.clone());
+        let options = || RunToolCallOptions {
+            assistant_message: response(StopReason::ToolUse),
+            context: Arc::new(AgentContext::default()),
+            tools: vec![tool.clone()],
+            before_tool_call: Some({
+                let before = before.clone();
+                Arc::new(move |_, _| {
+                    record("before", &before);
+                    Box::pin(async { None })
+                })
+            }),
+            after_tool_call: Some({
+                let after = after.clone();
+                Arc::new(move |_, _| {
+                    record("after", &after);
+                    Box::pin(async { None })
+                })
+            }),
+            signal: None,
+            on_update: None,
+        };
+        let call = ToolCall {
+            id: "same-provider-id".into(),
+            name: "write".into(),
+            arguments: Default::default(),
+            incomplete: None,
+            error_message: None,
+            thought_signature: None,
+            namespace: None,
+        };
+        // When: two identical calls with the same provider ID run through the pipeline.
+        run_tool_call(call.clone(), options()).await;
+        run_tool_call(call, options()).await;
+        // Then: each call has one identity across its stages, and the two calls differ.
+        let seen = seen.lock().expect("seen").clone();
+        let stages: Vec<&str> = seen.iter().map(|(stage, _)| *stage).collect();
+        assert_eq!(
+            stages,
+            ["before", "execute", "after", "before", "execute", "after"]
+        );
+        let ids: Vec<InvocationInput> = seen
+            .into_iter()
+            .map(|(_, id)| id.expect("scoped identity"))
+            .collect();
+        assert!(ids[0] == ids[1] && ids[1] == ids[2]);
+        assert!(ids[3] == ids[4] && ids[4] == ids[5]);
+        assert!(ids[0] != ids[3]);
     }
 
     #[test]

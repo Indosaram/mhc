@@ -4,6 +4,7 @@ use super::{
     session_router::{Attachment, SessionRouter},
     types::*,
 };
+use crate::transport_json as json;
 use crate::{
     client::service_wire::parse_service_call,
     protocol::{
@@ -14,7 +15,6 @@ use crate::{
 };
 use maho_chord::context::{BACKGROUND_CONTEXT, TODO_CONTEXT, with_cancel};
 use maho_chord::types::JsonValue as Value;
-use crate::transport_json as json;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -55,9 +55,18 @@ pub struct Server {
     on_connection_count_changed: Option<ConnectionCountObserver>,
     connections: AtomicUsize,
     started: AtomicBool,
+    /// Pinned `startPromise`: `true` while `start` is running its listeners; `close` waits for it.
+    starting: watch::Sender<bool>,
     listener_shutdown: Mutex<Option<watch::Sender<bool>>>,
     closed: watch::Sender<Option<Result<(), ServerError>>>,
     close_lock: Mutex<()>,
+}
+/// Clears `Server::starting` when a start settles or is cancelled.
+struct StartingGuard<'a>(&'a watch::Sender<bool>);
+impl Drop for StartingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
+    }
 }
 impl Server {
     pub fn new(
@@ -127,6 +136,7 @@ impl Server {
             on_connection_count_changed,
             connections: AtomicUsize::new(0),
             started: AtomicBool::new(false),
+            starting: watch::channel(false).0,
             listener_shutdown: Mutex::new(None),
             closed,
             close_lock: Mutex::new(()),
@@ -180,25 +190,44 @@ impl Server {
     /// Pinned `Server.start()`: start the owned listeners, rolling back every already-started
     /// listener and the server state when any listener fails to start.
     pub async fn start(self: &Arc<Self>) -> Result<(), ServerError> {
-        if self.closing.load(Ordering::SeqCst) {
-            return Err(ServerError::new(
-                "internal_error",
-                "Server is already closed",
-            ));
-        }
-        if self.started.swap(true, Ordering::SeqCst) {
+        // Pinned `start()` checks started, then starting, then closing, in that order.
+        if self.started.load(Ordering::SeqCst) {
             return Err(ServerError::new(
                 "internal_error",
                 "Server is already started",
             ));
         }
+        if self.starting.send_replace(true) {
+            return Err(ServerError::new(
+                "internal_error",
+                "Server is already starting",
+            ));
+        }
+        // Pinned `finally { startPromise = undefined }`: clearing `starting` on drop also covers a
+        // cancelled start future, so a waiting `close` is never left parked.
+        let _starting = StartingGuard(&self.starting);
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(ServerError::new(
+                "internal_error",
+                "Server is closing or closed",
+            ));
+        }
         let (shutdown, signal) = watch::channel(false);
         *self.listener_shutdown.lock().await = Some(shutdown);
-        match ServerListeners::new(self.listeners.clone())
+        let started = ServerListeners::new(self.listeners.clone())
             .start(self.clone(), signal)
-            .await
-        {
-            Ok(()) => Ok(()),
+            .await;
+        self.settle_start(started).await
+    }
+    async fn settle_start(
+        &self,
+        started: Result<(), super::listener::ListenerStartFailure>,
+    ) -> Result<(), ServerError> {
+        match started {
+            Ok(()) => {
+                self.started.store(true, Ordering::SeqCst);
+                Ok(())
+            }
             Err(failure) => {
                 // Pinned `startInternal` catch: mark closing, then close the server state; the
                 // started listeners were already rolled back by `ServerListeners::start`.
@@ -225,11 +254,20 @@ impl Server {
         }
     }
     pub async fn close(&self) -> Result<(), ServerError> {
+        // Pinned `close()` marks closing before `closeInternal` waits for a running start, so a
+        // listener that finishes starting is closed instead of left accepting.
+        self.closing.store(true, Ordering::SeqCst);
+        let mut starting = self.starting.subscribe();
+        if starting.wait_for(|starting| !*starting).await.is_err() {
+            return Err(ServerError::new(
+                "internal_error",
+                "Server start signal was dropped",
+            ));
+        }
         let _close = self.close_lock.lock().await;
         if let Some(result) = self.closed.borrow().clone() {
             return result;
         }
-        self.closing.store(true, Ordering::SeqCst);
         if let Some(shutdown) = self.listener_shutdown.lock().await.take() {
             shutdown.send_replace(true);
         }
@@ -245,6 +283,7 @@ impl Server {
                 &format!("{}; {}", router_error.message, listener_error.message),
             )),
         };
+        self.started.store(false, Ordering::SeqCst);
         self.closed.send_replace(Some(result.clone()));
         result
     }
@@ -354,7 +393,9 @@ impl Server {
                 "version",
                 &format!(
                     "Unsupported protocol version {}; expected {PROTOCOL_VERSION}",
-                    hello["version"].as_u64().map_or_else(|| "invalid".into(), |version| version.to_string())
+                    hello["version"]
+                        .as_u64()
+                        .map_or_else(|| "invalid".into(), |version| version.to_string())
                 ),
             ))
         } else {
@@ -435,7 +476,9 @@ impl Server {
             crate::client::service_wire::ServiceStateEncoder,
         >::new()));
         let mut requests = JoinSet::new();
-        let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<maho_chord::types::JsString>::new()));
+        let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<
+            maho_chord::types::JsString,
+        >::new()));
         let mut pending = remaining;
         let result=async {
             match tokio::time::timeout_at(handshake_deadline,send(

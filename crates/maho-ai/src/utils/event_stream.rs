@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{oneshot, watch};
 
 use crate::types::{AssistantMessage, AssistantMessageEvent};
+use crate::utils::assistant_capture::{
+    AssistantCapture, CaptureHint, CaptureSlot, Captured, FrozenProgress, ProgressPush, Record,
+};
+use crate::utils::provider_error::sanitize_provider_error_message;
 
 /// Error a stream was failed with (`fail(error)`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,20 +72,31 @@ impl StreamError {
     }
 }
 
-type Waiter<T> = oneshot::Sender<Result<Option<T>, StreamError>>;
+type Waiter<T> = oneshot::Sender<Result<Option<Record<T>>, StreamError>>;
 type CancellationHandler =
     Box<dyn FnOnce() -> crate::types::BoxFuture<'static, Result<(), StreamError>> + Send>;
 
 struct State<T, R> {
-    queue: VecDeque<T>,
+    queue: VecDeque<Record<T>>,
     waiting: VecDeque<Waiter<T>>,
+    /// Assistant capture bookkeeping; unused by non-assistant streams.
+    capture: CaptureSlot,
     done: bool,
     error: Option<StreamError>,
     result: Option<Result<R, StreamError>>,
 }
 
+/// Runs under the queue lock before an event is queued: sanitize it and build its capture
+/// (TS `AssistantMessageEventStream.push`). `None` on generic streams.
+/// `captured` is true when the event already carries its source capture, which wins.
+type PushHook<T> =
+    fn(&mut T, &mut CaptureSlot, &CaptureHint, bool) -> Option<Arc<AssistantCapture>>;
+
 struct Inner<T, R> {
     state: Mutex<State<T, R>>,
+    push_hook: Option<PushHook<T>>,
+    /// Applied to a final result passed to `end` (TS `AssistantMessageEventStream.end`).
+    end_hook: Option<fn(&mut R)>,
     result_tx: watch::Sender<bool>,
     local_work_depth: AtomicUsize,
     cancellation_handler: Mutex<Option<CancellationHandler>>,
@@ -111,12 +126,24 @@ impl<T, R> std::fmt::Debug for EventStream<T, R> {
 
 impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
     pub fn new(is_complete: fn(&T) -> bool, extract_result: fn(&T) -> R) -> Self {
+        Self::with_hooks(is_complete, extract_result, None, None)
+    }
+
+    fn with_hooks(
+        is_complete: fn(&T) -> bool,
+        extract_result: fn(&T) -> R,
+        push_hook: Option<PushHook<T>>,
+        end_hook: Option<fn(&mut R)>,
+    ) -> Self {
         let (result_tx, _) = watch::channel(false);
         Self {
             inner: Arc::new(Inner {
+                push_hook,
+                end_hook,
                 state: Mutex::new(State {
                     queue: VecDeque::new(),
                     waiting: VecDeque::new(),
+                    capture: CaptureSlot::default(),
                     done: false,
                     error: None,
                     result: None,
@@ -257,39 +284,96 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
         }
     }
 
-    /// Events queued and not yet consumed.
+    /// Events queued and not yet consumed (progress records are internal and never listed).
     pub fn queue(&self) -> Vec<T> {
-        self.state().queue.iter().cloned().collect()
+        self.state()
+            .queue
+            .iter()
+            .filter_map(|entry| match entry {
+                Record::Event(event) => Some(event.value.clone()),
+                Record::Progress(_) => None,
+            })
+            .collect()
     }
 
     pub fn push(&self, event: T) {
+        self.push_with_hint(event, CaptureHint::default());
+    }
+
+    /// `push(event, hint)`: the hint describes the producer-time frontier of a captured block.
+    pub fn push_with_hint(&self, event: T, hint: CaptureHint) {
+        self.push_captured(Captured::bare(event), hint);
+    }
+
+    /// Push an event that may already carry its source capture (a relay). A carried capture wins
+    /// over a fresh one (TS `captures.has(event)`); otherwise the stream captures it itself.
+    pub fn push_captured(&self, event: Captured<T>, hint: CaptureHint) {
         let mut state = self.state();
         if state.done {
             return;
         }
-        if (self.inner.is_complete)(&event) {
+        let Captured {
+            value: mut event,
+            capture: carried,
+        } = event;
+        let fresh = match self.inner.push_hook {
+            // Classify raw provider errors and redact before capture or publication (senpi#4282).
+            Some(hook) => hook(&mut event, &mut state.capture, &hint, carried.is_some()),
+            None => None,
+        };
+        let event = Captured {
+            value: event,
+            capture: carried.or(fresh),
+        };
+        if (self.inner.is_complete)(&event.value) {
             state.done = true;
-            let result = (self.inner.extract_result)(&event);
+            let result = (self.inner.extract_result)(&event.value);
             self.settle(&mut state, Ok(result));
         }
-        let mut event = Some(event);
+        Self::deliver(&mut state, Record::Event(event));
+    }
+
+    fn deliver(state: &mut State<T, R>, entry: Record<T>) {
+        let mut entry = Some(entry);
         while let Some(waiter) = state.waiting.pop_front() {
-            let Some(value) = event.take() else { break };
+            let Some(value) = entry.take() else { break };
             match waiter.send(Ok(Some(value))) {
                 Ok(()) => return,
-                Err(Ok(Some(returned))) => event = Some(returned),
+                Err(Ok(Some(returned))) => entry = Some(returned),
                 Err(_) => return,
             }
         }
-        if let Some(value) = event {
+        if let Some(value) = entry {
             state.queue.push_back(value);
         }
+    }
+
+    /// `enqueueProgress`: a frozen progress record takes its place in the ordered queue.
+    fn enqueue_progress(&self, progress: ProgressPush) {
+        let mut state = self.state();
+        if state.done {
+            return;
+        }
+        if let Some(frozen) = state.capture.freeze_progress(progress) {
+            Self::deliver(&mut state, Record::Progress(frozen));
+        }
+    }
+
+    pub(crate) fn push_progress(&self, progress: ProgressPush) {
+        self.enqueue_progress(progress);
+    }
+
+    pub(crate) fn with_capture_slot(&self, f: impl FnOnce(&mut CaptureSlot)) {
+        f(&mut self.state().capture);
     }
 
     pub fn end(&self, result: Option<R>) {
         let mut state = self.state();
         state.done = true;
-        if let Some(result) = result {
+        if let Some(mut result) = result {
+            if let Some(hook) = self.inner.end_hook {
+                hook(&mut result);
+            }
             self.settle(&mut state, Ok(result));
         }
         for waiter in state.waiting.drain(..) {
@@ -311,11 +395,25 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
     }
 
     /// Next event; `Ok(None)` once the stream ended, `Err` once it failed and the queue drained.
+    /// The public iterator is the capture downgrade boundary: it skips progress records and never
+    /// yields a capture.
     pub async fn next(&self) -> Result<Option<T>, StreamError> {
+        loop {
+            match self.next_record().await? {
+                None => return Ok(None),
+                Some(Record::Event(event)) => return Ok(Some(event.value)),
+                Some(Record::Progress(_)) => {}
+            }
+        }
+    }
+
+    /// Next ordered record (event with its capture, or progress) for internal readers
+    /// (`assistant_records` / `assistant_events`).
+    pub async fn next_record(&self) -> Result<Option<Record<T>>, StreamError> {
         let rx = {
             let mut state = self.state();
-            if let Some(event) = state.queue.pop_front() {
-                return Ok(Some(event));
+            if let Some(entry) = state.queue.pop_front() {
+                return Ok(Some(entry));
             }
             if let Some(error) = &state.error {
                 return Err(error.clone());
@@ -396,9 +494,85 @@ pub(crate) fn extract_message(event: &AssistantMessageEvent) -> AssistantMessage
 
 pub type AssistantMessageEventStream = EventStream<AssistantMessageEvent, AssistantMessage>;
 
+fn sanitize_event(event: &mut AssistantMessageEvent) {
+    match event {
+        AssistantMessageEvent::Done { message, .. } => sanitize_provider_error_message(message),
+        AssistantMessageEvent::Error { error, .. } => sanitize_provider_error_message(error),
+        AssistantMessageEvent::Start { partial }
+        | AssistantMessageEvent::TextStart { partial, .. }
+        | AssistantMessageEvent::TextDelta { partial, .. }
+        | AssistantMessageEvent::TextEnd { partial, .. }
+        | AssistantMessageEvent::ThinkingStart { partial, .. }
+        | AssistantMessageEvent::ThinkingDelta { partial, .. }
+        | AssistantMessageEvent::ThinkingEnd { partial, .. }
+        | AssistantMessageEvent::ToolcallStart { partial, .. }
+        | AssistantMessageEvent::ToolcallDelta { partial, .. }
+        | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
+            sanitize_provider_error_message(partial)
+        }
+    }
+}
+
+fn assistant_push_hook(
+    event: &mut AssistantMessageEvent,
+    capture: &mut CaptureSlot,
+    hint: &CaptureHint,
+    captured: bool,
+) -> Option<Arc<AssistantCapture>> {
+    sanitize_event(event);
+    if captured {
+        capture.decide();
+        return None;
+    }
+    match capture.relay_hint(event, hint) {
+        Some(relay) => capture.capture_event(event, &relay),
+        None => capture.capture_event(event, hint),
+    }
+}
+
 impl AssistantMessageEventStream {
     pub fn assistant() -> Self {
-        EventStream::new(is_terminal, extract_message)
+        EventStream::with_hooks(
+            is_terminal,
+            extract_message,
+            Some(assistant_push_hook),
+            Some(sanitize_provider_error_message),
+        )
+    }
+
+    /// `new AssistantMessageEventStream({ captureBlocks })`.
+    pub fn with_capture_blocks(capture_blocks: bool) -> Self {
+        let stream = Self::assistant();
+        if capture_blocks {
+            stream.with_capture_slot(CaptureSlot::enable);
+        }
+        stream
+    }
+
+    /// Runs a projection step that copies `source` 1:1 to a new index. The copy is built from
+    /// source blocks read after later deltas landed, so its capture relays the source's
+    /// emission-time record instead of freezing the copy. Only the step's first push of the
+    /// source's type is that copy; any later one records nothing.
+    pub fn relaying<V>(
+        &self,
+        source: std::mem::Discriminant<AssistantMessageEvent>,
+        capture: Option<Arc<AssistantCapture>>,
+        project: impl FnOnce() -> V,
+    ) -> V {
+        struct EndRelay<'a>(&'a AssistantMessageEventStream);
+        impl Drop for EndRelay<'_> {
+            fn drop(&mut self) {
+                self.0.with_capture_slot(CaptureSlot::end_relay);
+            }
+        }
+        self.with_capture_slot(|slot| slot.begin_relay(source, capture));
+        let _end = EndRelay(self);
+        project()
+    }
+
+    /// Relay a frozen progress record another stream captured, unchanged.
+    pub fn push_frozen_progress(&self, progress: FrozenProgress) {
+        self.enqueue_progress(ProgressPush::Frozen(progress));
     }
 }
 
@@ -437,6 +611,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

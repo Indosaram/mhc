@@ -1287,3 +1287,278 @@ fn admission_lease_held_past_the_bounded_wait_defers_without_error() {
             .contains(&deferred(&record.task_id, "lock_contended"))
     );
 }
+
+#[test]
+fn host_draining_respawn_retries_bounded_by_max_drain_attempts_and_records_suspension() {
+    let temp = temp_store();
+    let record = with_v1(
+        &temp.store,
+        seed(
+            &temp.store,
+            "st_0d000001",
+            Running,
+            PersistedOnly,
+            "process",
+        ),
+    );
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+    let waited = Arc::new(Mutex::new(Vec::new()));
+    let waited_clone = Arc::clone(&waited);
+
+    let mut deps = LifecycleDeps::new(
+        temp.store.clone(),
+        Arc::new(FakeRegistry::default()),
+        default_settings(),
+    );
+    deps.host_pid = Some(HOST_PID);
+    deps.now = Some(Arc::new(|| 9_000_000));
+    deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
+        max_drain_attempts: 4,
+        default_retry_after_ms: 2000,
+        daemon_loss_backoff_ms: vec![],
+        deferred_retry_backoff_ms: vec![],
+    });
+    deps.host_retry_wait = Some(Arc::new(move |ms| {
+        waited_clone.lock().unwrap().push(ms);
+    }));
+    deps.respawn = Some(Arc::new(move |_fresh: &TaskRecord, _| {
+        attempts_clone.fetch_add(1, Ordering::SeqCst);
+        RespawnResult::Failed {
+            disposition: RespawnDisposition::Retryable,
+            code: RespawnFailureCode::HostDraining {
+                retry_after_ms: Some(300),
+            },
+            reason: "host is draining generation 1".into(),
+        }
+    }));
+    deps.reattach = Some(Arc::new(|_, _| ReattachResult::Ok));
+
+    let lifecycle = create_task_lifecycle(deps);
+    let outcomes = lifecycle.reconcile_on_session_start(Some(PARENT)).expect("reconcile").outcomes;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(*waited.lock().unwrap(), vec![300, 300, 300]);
+    let task_outcome = outcomes.iter().find(|o| o.task_id == record.task_id).expect("outcome");
+    assert_eq!(task_outcome.kind, ReconcileOutcomeKind::Deferred);
+    assert_eq!(task_outcome.reason.as_deref(), Some("host_draining"));
+
+    let loaded = temp.store.load(&record.task_id).unwrap().unwrap();
+    assert_eq!(loaded.suspension_reason, Some(crate::state::SuspensionReason::HostDraining));
+}
+
+#[test]
+fn host_draining_respawn_succeeds_on_intermediate_attempt() {
+    let temp = temp_store();
+    let record = with_v1(
+        &temp.store,
+        seed(
+            &temp.store,
+            "st_0d000002",
+            Running,
+            PersistedOnly,
+            "process",
+        ),
+    );
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+    let waited = Arc::new(Mutex::new(Vec::new()));
+    let waited_clone = Arc::clone(&waited);
+
+    let mut deps = LifecycleDeps::new(
+        temp.store.clone(),
+        Arc::new(FakeRegistry::default()),
+        default_settings(),
+    );
+    deps.host_pid = Some(HOST_PID);
+    deps.now = Some(Arc::new(|| 9_000_000));
+    deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
+        max_drain_attempts: 5,
+        default_retry_after_ms: 2000,
+        daemon_loss_backoff_ms: vec![],
+        deferred_retry_backoff_ms: vec![],
+    });
+    deps.host_retry_wait = Some(Arc::new(move |ms| {
+        waited_clone.lock().unwrap().push(ms);
+    }));
+    deps.respawn = Some(Arc::new(move |fresh: &TaskRecord, _| {
+        let count = attempts_clone.fetch_add(1, Ordering::SeqCst);
+        if count < 2 {
+            RespawnResult::Failed {
+                disposition: RespawnDisposition::Retryable,
+                code: RespawnFailureCode::HostDraining {
+                    retry_after_ms: Some(150),
+                },
+                reason: "draining".into(),
+            }
+        } else {
+            success(&fresh.task_id)
+        }
+    }));
+    deps.reattach = Some(Arc::new(|_, _| ReattachResult::Ok));
+
+    let lifecycle = create_task_lifecycle(deps);
+    let outcomes = lifecycle.reconcile_on_session_start(Some(PARENT)).expect("reconcile").outcomes;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(*waited.lock().unwrap(), vec![150, 150]);
+    let task_outcome = outcomes.iter().find(|o| o.task_id == record.task_id).expect("outcome");
+    assert_eq!(task_outcome.kind, ReconcileOutcomeKind::Resumed);
+
+    let loaded = temp.store.load(&record.task_id).unwrap().unwrap();
+    assert_eq!(loaded.suspension_reason, None);
+}
+
+#[test]
+fn non_drain_respawn_failure_is_never_retried() {
+    let temp = temp_store();
+    let record = with_v1(
+        &temp.store,
+        seed(
+            &temp.store,
+            "st_0d000003",
+            Running,
+            PersistedOnly,
+            "process",
+        ),
+    );
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+    let waited = Arc::new(Mutex::new(Vec::new()));
+    let waited_clone = Arc::clone(&waited);
+
+    let mut deps = LifecycleDeps::new(
+        temp.store.clone(),
+        Arc::new(FakeRegistry::default()),
+        default_settings(),
+    );
+    deps.host_pid = Some(HOST_PID);
+    deps.now = Some(Arc::new(|| 9_000_000));
+    deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
+        max_drain_attempts: 5,
+        default_retry_after_ms: 2000,
+        daemon_loss_backoff_ms: vec![],
+        deferred_retry_backoff_ms: vec![],
+    });
+    deps.host_retry_wait = Some(Arc::new(move |ms| {
+        waited_clone.lock().unwrap().push(ms);
+    }));
+    deps.respawn = Some(Arc::new(move |_fresh: &TaskRecord, _| {
+        attempts_clone.fetch_add(1, Ordering::SeqCst);
+        RespawnResult::Failed {
+            disposition: RespawnDisposition::Retryable,
+            code: RespawnFailureCode::RespawnFailed,
+            reason: "generic rpc failure".into(),
+        }
+    }));
+    deps.reattach = Some(Arc::new(|_, _| ReattachResult::Ok));
+
+    let lifecycle = create_task_lifecycle(deps);
+    let outcomes = lifecycle.reconcile_on_session_start(Some(PARENT)).expect("reconcile").outcomes;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(waited.lock().unwrap().is_empty());
+    let task_outcome = outcomes.iter().find(|o| o.task_id == record.task_id).expect("outcome");
+    assert_eq!(task_outcome.kind, ReconcileOutcomeKind::Deferred);
+    assert_eq!(task_outcome.reason.as_deref(), Some("session_unavailable"));
+}
+
+#[test]
+fn host_draining_uses_default_retry_after_when_none_provided() {
+    let temp = temp_store();
+    with_v1(
+        &temp.store,
+        seed(
+            &temp.store,
+            "st_0d000004",
+            Running,
+            PersistedOnly,
+            "process",
+        ),
+    );
+    let waited = Arc::new(Mutex::new(Vec::new()));
+    let waited_clone = Arc::clone(&waited);
+
+    let mut deps = LifecycleDeps::new(
+        temp.store.clone(),
+        Arc::new(FakeRegistry::default()),
+        default_settings(),
+    );
+    deps.host_pid = Some(HOST_PID);
+    deps.now = Some(Arc::new(|| 9_000_000));
+    deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
+        max_drain_attempts: 2,
+        default_retry_after_ms: 1234,
+        daemon_loss_backoff_ms: vec![],
+        deferred_retry_backoff_ms: vec![],
+    });
+    deps.host_retry_wait = Some(Arc::new(move |ms| {
+        waited_clone.lock().unwrap().push(ms);
+    }));
+    deps.respawn = Some(Arc::new(move |_fresh: &TaskRecord, _| {
+        RespawnResult::Failed {
+            disposition: RespawnDisposition::Retryable,
+            code: RespawnFailureCode::HostDraining {
+                retry_after_ms: None,
+            },
+            reason: "draining without retry hint".into(),
+        }
+    }));
+    deps.reattach = Some(Arc::new(|_, _| ReattachResult::Ok));
+
+    let lifecycle = create_task_lifecycle(deps);
+    let _ = lifecycle.reconcile_on_session_start(Some(PARENT)).expect("reconcile");
+
+    assert_eq!(*waited.lock().unwrap(), vec![1234]);
+}
+
+#[test]
+fn host_draining_wait_stops_when_claim_moves_to_another_host() {
+    let temp = temp_store();
+    let record = with_v1(
+        &temp.store,
+        seed(&temp.store, "st_0d000005", Running, PersistedOnly, "process"),
+    );
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let started = Arc::clone(&attempts);
+    let store = temp.store.clone();
+    let task_id = record.task_id.clone();
+    let mut deps = LifecycleDeps::new(
+        temp.store.clone(),
+        Arc::new(FakeRegistry::default()),
+        default_settings(),
+    );
+    deps.host_pid = Some(HOST_PID);
+    deps.now = Some(Arc::new(|| 9_000_000));
+    deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
+        max_drain_attempts: 4,
+        default_retry_after_ms: 2000,
+        daemon_loss_backoff_ms: vec![],
+        deferred_retry_backoff_ms: vec![],
+    });
+    deps.host_retry_wait = Some(Arc::new(move |_| {
+        store.mutate(&task_id, |current: &TaskRecord| {
+            let mut next = current.clone();
+            next.host_pid = Some(HOST_PID + 1);
+            next
+        }).expect("move claim during drain wait");
+    }));
+    deps.respawn = Some(Arc::new(move |_, _| {
+        started.fetch_add(1, Ordering::SeqCst);
+        RespawnResult::Failed {
+            disposition: RespawnDisposition::Retryable,
+            code: RespawnFailureCode::HostDraining { retry_after_ms: Some(1) },
+            reason: "draining".into(),
+        }
+    }));
+    deps.reattach = Some(Arc::new(|_, _| panic!("stale claim must not reattach")));
+    let outcomes = create_task_lifecycle(deps)
+        .reconcile_on_session_start(Some(PARENT)).expect("reconcile").outcomes;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let outcome = outcomes.iter().find(|entry| entry.task_id == record.task_id).expect("outcome");
+    assert_eq!(outcome.kind, ReconcileOutcomeKind::Deferred);
+    let current = temp.store.load(&record.task_id).expect("load").expect("record");
+    assert_eq!(current.host_pid, Some(HOST_PID + 1));
+    assert_eq!(current.residency_state, Resident);
+    assert_eq!(current.suspension_reason, None);
+}

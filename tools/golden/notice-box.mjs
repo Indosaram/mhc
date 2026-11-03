@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 const source = process.env.SENPI_SRC;
 if (!source) throw new Error("SENPI_SRC is required");
-const PIN = "903b83367545bea516f35fc7f7c7cb692847988d";
+const PIN = "59d58cee59d76bbecc83be828b59ff5420eb74df";
 const git = async (...args) => {
   const child = Bun.spawn(["git", "-C", source, ...args], { stdout: "pipe", stderr: "pipe" });
   const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);

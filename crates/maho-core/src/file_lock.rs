@@ -138,6 +138,14 @@ impl HeldFileLock {
     pub fn release(&self) {
         self.released.store(true, Ordering::SeqCst);
     }
+    /// senpi `lockWithLossHandling({ onLost })` for a lock acquired elsewhere: replaces the callback
+    /// the next loss reports to.
+    pub fn set_on_lost(&self, on_lost: OnLostCallback) {
+        *self
+            .on_lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = on_lost;
+    }
     pub fn owns_directory(&self) -> bool {
         std::fs::read_to_string(&self.token_path).is_ok_and(|t| t == self.token)
     }
@@ -155,10 +163,7 @@ pub async fn lock_with_loss_handling(
     let held = guard
         .held_lock()
         .ok_or("broker locks are managed by their host")?;
-    *held
-        .on_lost
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = on_lost;
+    held.set_on_lost(on_lost);
     Ok((guard, held))
 }
 #[cfg(test)]

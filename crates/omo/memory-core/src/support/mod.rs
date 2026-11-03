@@ -1,5 +1,6 @@
 //! Dependency-free primitives shared by every memory-core module.
 
+pub mod errno;
 pub mod host;
 pub mod paths;
 pub mod random;

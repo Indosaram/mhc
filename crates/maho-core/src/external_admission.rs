@@ -11,15 +11,38 @@ struct InputState {
     holds: IndexMap<u64, bool>,
     listeners: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
+/// senpi `onEmitted` listener: told the delivery id whose transcript entry was just written.
+pub type EmittedListener = Arc<dyn Fn(&str) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct ExternalAdmission {
     input: Arc<Mutex<InputState>>,
     ledger: Arc<Mutex<AdmissionLedger>>,
+    emitted_listeners: Arc<Mutex<Vec<(u64, EmittedListener)>>>,
+    next_emitted_listener: Arc<std::sync::atomic::AtomicU64>,
 }
+/// Removes an `on_emitted` listener when dropped.
+pub struct EmittedSubscription {
+    listeners: std::sync::Weak<Mutex<Vec<(u64, EmittedListener)>>>,
+    id: u64,
+}
+impl Drop for EmittedSubscription {
+    fn drop(&mut self) {
+        if let Some(listeners) = self.listeners.upgrade() {
+            listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(id, _)| *id != self.id);
+        }
+    }
+}
+/// A durable-custody reservation (senpi `PendingLane` function): held while the restored delivery is still owned.
+pub type RestoredOwnership = Arc<dyn Fn() -> bool + Send + Sync>;
 #[derive(Default)]
 struct AdmissionLedger {
     epoch: u64,
     pending: IndexMap<String, String>,
+    /// Restored queued deliveries custody will replay, reserved before recovery or gateway admission (senpi#11209).
+    restored: IndexMap<String, RestoredOwnership>,
     emitted: IndexSet<String>,
     failed: IndexMap<String, String>,
     file_takes_writes: Option<bool>,
@@ -65,7 +88,54 @@ impl Drop for InputHold {
         self.end();
     }
 }
+impl AdmissionLedger {
+    fn holds(&self, id: &str) -> bool {
+        self.pending.contains_key(id)
+            || self.restored.contains_key(id)
+            || self.emitted.contains(id)
+            || self.failed.contains_key(id)
+    }
+}
 impl ExternalAdmission {
+    /// Releases restored reservations no longer owned. The ownership closures read custody (session manager,
+    /// work obligations), so they run after the ledger lock is released, never under it.
+    fn release_restored(&self) {
+        let restored: Vec<(String, RestoredOwnership)> = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restored
+            .iter()
+            .map(|(id, owned)| (id.clone(), owned.clone()))
+            .collect();
+        let released: Vec<String> = restored
+            .into_iter()
+            .filter(|(_, owned)| !owned())
+            .map(|(id, _)| id)
+            .collect();
+        if released.is_empty() {
+            return;
+        }
+        let mut l = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in &released {
+            l.restored.shift_remove(id);
+        }
+    }
+    /// senpi `restoreQueued`: durable custody will replay this delivery; reserve its id before asynchronous recovery
+    /// or gateway admission. Recovery chooses the payload's queue lane; this only tracks durable ownership.
+    pub fn restore_queued(&self, delivery_id: &str, is_owned: RestoredOwnership) {
+        let mut l = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if l.holds(delivery_id) {
+            return;
+        }
+        l.restored.insert(delivery_id.to_owned(), is_owned);
+    }
     pub fn has_input_work(&self) -> bool {
         !self
             .input
@@ -146,6 +216,7 @@ impl ExternalAdmission {
         deliver: impl FnOnce(Value, &str) -> Result<(), String>,
     ) -> Result<Value, String> {
         let gate = self.gate(editor);
+        self.release_restored();
         let mut l = self
             .ledger
             .lock()
@@ -155,7 +226,7 @@ impl ExternalAdmission {
         }
         let id = input["delivery_id"].as_str().ok_or("missing delivery id")?;
         let result = |kind: &str, epoch: u64| json!({"kind":kind,"turn_epoch":epoch});
-        if l.pending.contains_key(id) || l.emitted.contains(id) || l.failed.contains_key(id) {
+        if l.holds(id) {
             return Ok(result("already_admitted", l.epoch));
         }
         if gate["can_admit"] != true {
@@ -193,11 +264,13 @@ impl ExternalAdmission {
         Ok(result(kind, epoch))
     }
     pub fn list(&self) -> Value {
+        self.release_restored();
         let l = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut r = json!({"pending":l.pending.keys().collect::<Vec<_>>(),"emitted":l.emitted.iter().collect::<Vec<_>>()});
+        let pending: Vec<&String> = l.pending.keys().chain(l.restored.keys()).collect();
+        let mut r = json!({"pending":pending,"emitted":l.emitted.iter().collect::<Vec<_>>()});
         if !l.failed.is_empty() {
             r["failed"] = json!(
                 l.failed
@@ -208,15 +281,49 @@ impl ExternalAdmission {
         }
         r
     }
-    pub fn observe_persisted(&self, message: &Value) {
-        let mut l = self
-            .ledger
+    /// senpi `onEmitted`: an admitted delivery's own transcript entry was written (once per delivery).
+    pub fn on_emitted(&self, listener: EmittedListener) -> EmittedSubscription {
+        let id = self
+            .next_emitted_listener
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.emitted_listeners
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        l.file_takes_writes = Some(true);
-        if let Some(id) = delivery_id_of(message) {
-            l.pending.shift_remove(id);
-            l.emitted.insert(id.into());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, listener));
+        EmittedSubscription {
+            listeners: Arc::downgrade(&self.emitted_listeners),
+            id,
+        }
+    }
+    pub fn observe_persisted(&self, message: &Value) {
+        let emitted = {
+            let mut l = self
+                .ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            l.file_takes_writes = Some(true);
+            match delivery_id_of(message) {
+                Some(id) if !l.emitted.contains(id) => {
+                    l.pending.shift_remove(id);
+                    l.restored.shift_remove(id);
+                    l.emitted.insert(id.into());
+                    Some(id.to_owned())
+                }
+                _ => None,
+            }
+        };
+        // Listeners run with no ledger lock held, so one may read the ledger (senpi emits after the add).
+        if let Some(id) = emitted {
+            let listeners: Vec<EmittedListener> = self
+                .emitted_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(_, listener)| Arc::clone(listener))
+                .collect();
+            for listener in listeners {
+                listener(&id);
+            }
         }
     }
     pub fn observe_refused(&self, message: &Value, error: String) {
@@ -228,6 +335,7 @@ impl ExternalAdmission {
         if let Some(id) = delivery_id_of(message)
             && !l.emitted.contains(id) {
                 l.pending.shift_remove(id);
+                l.restored.shift_remove(id);
                 l.failed.insert(id.into(), error);
             }
     }
@@ -245,12 +353,14 @@ impl ExternalAdmission {
             }
         }
     }
+    /// Cleared carriers are no longer held; custody not yet enqueued for recovery still owns its delivery.
     pub fn drop_queued(&self) {
-        self.ledger
+        self.release_restored();
+        let mut l = self
+            .ledger
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pending
-            .retain(|_, lane| lane == "start");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        l.pending.retain(|_, lane| lane == "start");
     }
 }
 pub fn delivery_message(input: &Value) -> Value {
@@ -323,7 +433,68 @@ mod delivery_tests {
                 .expect("dedupe")["kind"],
             "already_admitted"
         );
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&seen);
+        let subscription = admission.on_emitted(Arc::new(move |id| {
+            recorded.lock().unwrap().push(id.to_owned())
+        }));
         admission.observe_persisted(&delivery_message(&input));
         assert_eq!(admission.list()["emitted"], json!(["d"]));
+        // senpi `observePersisted`: a delivery is emitted once; its listeners hear it once.
+        admission.observe_persisted(&delivery_message(&input));
+        drop(subscription);
+        let other = json!({"delivery_id":"e","deliverAs":"steer"});
+        admission.observe_persisted(&delivery_message(&other));
+        assert_eq!(admission.list()["emitted"], json!(["d", "e"]));
+        assert_eq!(*seen.lock().unwrap(), vec!["d".to_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod restored_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// senpi test/suite/regressions/11209-restored-external-delivery.test.ts and
+    /// 11209-restored-reservation-queue-clear.test.ts: a restored delivery keeps its reservation across a queue
+    /// clear while owned, and is released once custody no longer owns it.
+    #[test]
+    fn a_restored_delivery_is_reserved_until_custody_releases_it() {
+        let admission = ExternalAdmission::default();
+        let owned = Arc::new(AtomicBool::new(true));
+        let reader = owned.clone();
+        admission.restore_queued("d", Arc::new(move || reader.load(Ordering::SeqCst)));
+        let input = json!({"delivery_id":"d","text":"hi","deliverAs":"followUp"});
+        assert_eq!(
+            admission
+                .admit(&input, &json!({}), false, |_, _| panic!("reserved"))
+                .expect("dedupe")["kind"],
+            "already_admitted"
+        );
+        admission.drop_queued();
+        assert_eq!(admission.list()["pending"], json!(["d"]));
+        owned.store(false, Ordering::SeqCst);
+        assert_eq!(admission.list()["pending"], json!([]));
+        let mut delivered = false;
+        admission
+            .admit(&input, &json!({}), false, |_, _| {
+                delivered = true;
+                Ok(())
+            })
+            .expect("admit");
+        assert!(delivered);
+    }
+
+    /// The ownership check runs outside the ledger lock, so a closure that reads the admission itself (as
+    /// custody reads do through the session) cannot self-deadlock.
+    #[test]
+    fn an_ownership_check_runs_outside_the_ledger_lock() {
+        let admission = ExternalAdmission::default();
+        let reader = admission.clone();
+        admission.restore_queued("d", Arc::new(move || reader.turn_epoch() == 0));
+        assert_eq!(admission.list()["pending"], json!(["d"]));
+        admission.begin_turn();
+        admission.drop_queued();
+        assert_eq!(admission.list()["pending"], json!([]));
     }
 }

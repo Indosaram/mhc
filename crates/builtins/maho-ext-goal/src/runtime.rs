@@ -258,7 +258,10 @@ impl GoalRuntime {
                     .lock()
                     .map_err(|error| ExtensionFailure::new(error.to_string()))?
                     .dispose();
-                crate::persistence::migrate_legacy_goal_file_default(&reference)
+                // `migrateLegacyGoal` imports under the goal lock, so a concurrent writer cannot
+                // overwrite a fresh import.
+                crate::store::migrate_legacy_goal(&reference)
+                    .await
                     .map_err(failure)?;
                 goal = crate::store::read_goal(&reference).map_err(failure)?;
                 state.context = Some(context.clone());
@@ -358,17 +361,25 @@ impl GoalRuntime {
                         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
                     monitor.sync_goal(goal.as_ref());
                     monitor.reset_length_recovery_after_clean_stop(goal.as_ref(), messages);
+                    monitor.last_turn_progress = (false, false);
                     if let Some(goal) = goal
                         .as_ref()
                         .filter(|goal| goal.status == GoalStatus::Active)
                     {
+                        // A person's words delivered by a human-input monitor are new input, like a typed message.
+                        let human_input = messages
+                            .iter()
+                            .any(crate::continuation::is_human_input_monitor_notification);
                         let used_tools =
-                            crate::continuation::continuation_turn_used_tools(messages);
+                            crate::continuation::continuation_turn_used_tools(messages)
+                                || human_input;
                         monitor.record_assistant_output(
                             &crate::lifecycle_helpers::last_assistant_text(messages),
                             used_tools,
                         );
                         monitor.record_toolless_continuation_turn(&goal.id, used_tools);
+                        let tool_effect = monitor.record_tool_effect(messages);
+                        monitor.last_turn_progress = (tool_effect, human_input);
                     }
                 }
                 if route == crate::agent_end_continuation::GoalAgentEndRoute::ProviderFailure {
@@ -1457,6 +1468,7 @@ mod tests {
         runtime
             .event(
                 &ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,

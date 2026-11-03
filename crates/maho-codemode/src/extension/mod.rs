@@ -1,6 +1,8 @@
+pub mod eval_cells_rpc;
 pub mod eval_notifier;
 pub mod eval_status;
 pub mod eval_status_ticker;
+pub mod idle_parking_kernel;
 pub mod kernel_preludes;
 pub mod kernel_registration;
 pub mod kernel_registry;

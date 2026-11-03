@@ -1,8 +1,8 @@
 use std::{collections::{BTreeSet,VecDeque},io::Write,path::{Path,PathBuf}};
 use serde_json::{Value,json};
-use sha2::{Digest,Sha256};
 use fancy_regex::Regex;
-pub fn fingerprint_secret(secret:&str)->String {format!("{:x}",Sha256::digest(secret))[..8].into()}
+/// A keyed fingerprint (senpi#3858): never an offline-guessable plain hash of the secret.
+pub fn fingerprint_secret(secret:&str)->String {crate::config_identity_key::keyed_fingerprint(secret)}
 fn redaction(secret:&str,secrets:&mut BTreeSet<String>)->String {
     if !secret.is_empty() && !secret.starts_with("<redacted:"){secrets.insert(secret.into());}
     format!("<redacted:{}>",fingerprint_secret(secret))
@@ -86,7 +86,8 @@ impl McpLogger {
         let mut entry=json!({"timestamp":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis,true),"server":self.server,"level":level,"severity":severity,"channel":channel,"message":message});
         if let Some(data)=data {entry["data"]=data;}
         let mut text=entry.to_string();let mut secrets=secrets.into_iter().collect::<Vec<_>>();secrets.sort_by_key(|s|std::cmp::Reverse(s.len()));
-        for secret in secrets {text=text.replace(&secret,&format!("<redacted:{}>",fingerprint_secret(&secret)));}Ok(text)
+        for secret in secrets {text=text.replace(&secret,&format!("<redacted:{}>",fingerprint_secret(&secret)));}
+        Ok(maho_core::config_reference_redaction::redact_resolved_reference_values(&text,"<redacted>"))
     }
     pub fn log(&mut self,level:&str,message:&str,data:Option<&Value>,channel:Option<&str>)->Result<(),Box<fancy_regex::Error>> {
         let line=self.format_line(level,message,data,channel.unwrap_or("server"))?;self.push_ring(line.clone());

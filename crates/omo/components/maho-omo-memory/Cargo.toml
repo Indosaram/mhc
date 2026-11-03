@@ -27,7 +27,7 @@ serde_json.workspace = true
 sha1 = "=0.10.6"
 sha2 = { workspace = true }
 regress = { version = "=0.12.0", features = ["utf16"] }
-chrono = { workspace = true, features = ["std"] }
+chrono = { workspace = true, features = ["std", "clock"] }
 notify = "=8.2.0"
 loro = "=1.16.2"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net", "sync", "fs"] }

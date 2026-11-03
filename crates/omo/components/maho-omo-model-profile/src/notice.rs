@@ -27,9 +27,15 @@ pub fn auth_failed_details(failures: &[AuthFailure]) -> Option<JsonValue> {
         .map(|failure| {
             JsonValue::Object(
                 [
-                    ("provider".to_owned(), JsonValue::String(failure.provider.clone())),
+                    (
+                        "provider".to_owned(),
+                        JsonValue::String(failure.provider.clone()),
+                    ),
                     ("model".to_owned(), JsonValue::String(failure.model.clone())),
-                    ("reason".to_owned(), JsonValue::String(failure.reason.as_str().to_owned())),
+                    (
+                        "reason".to_owned(),
+                        JsonValue::String(failure.reason.as_str().to_owned()),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -37,7 +43,9 @@ pub fn auth_failed_details(failures: &[AuthFailure]) -> Option<JsonValue> {
         })
         .collect();
     Some(JsonValue::Object(
-        [("authFailed".to_owned(), JsonValue::Array(entries))].into_iter().collect(),
+        [("authFailed".to_owned(), JsonValue::Array(entries))]
+            .into_iter()
+            .collect(),
     ))
 }
 
@@ -57,6 +65,16 @@ fn reauthenticate(provider: &str, mode: Option<&str>) -> String {
         format!("re-authenticate {provider} in Provider authentication settings")
     } else {
         format!("re-authenticate {provider} in an interactive session with /login {provider}")
+    }
+}
+
+// The same split for a profile none of whose models is available: sign in or pick a model where the
+// host offers it.
+fn unavailable_step(mode: Option<&str>) -> &'static str {
+    if mode == Some("rpc") {
+        "to use it, sign in to one of these providers in Provider authentication settings or choose a model in the composer"
+    } else {
+        "to use it, log in to one of these providers in an interactive session with /login or start with --model"
     }
 }
 
@@ -92,7 +110,13 @@ pub fn notice_content(
     mode: Option<&str>,
 ) -> String {
     match resolution {
-        ModelProfileResolution::Resolved { profile, provider, model_id, reasoning, skipped } => {
+        ModelProfileResolution::Resolved {
+            profile,
+            provider,
+            model_id,
+            reasoning,
+            skipped,
+        } => {
             let model = format!("{provider}/{model_id}");
             let reasoning = reasoning
                 .as_ref()
@@ -121,9 +145,10 @@ pub fn notice_content(
         ModelProfileResolution::Unavailable { profile, chain } => {
             if auth_failures.is_empty() {
                 format!(
-                    "OmO Native: model profile {} has no available model; none of the chain is in this session's model registry ({}); keeping senpi's default model",
+                    "OmO Native: model profile {} has no available model; none of the chain is in this session's model registry ({}); keeping senpi's default model; {}",
                     profile_label(profile),
-                    chain.join(", ")
+                    chain.join(", "),
+                    unavailable_step(mode)
                 )
             } else {
                 format!(

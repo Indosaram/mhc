@@ -2,6 +2,7 @@ import { isKernelGlobal } from "./worker-shadow-guard.js";
 
 export function indirectEval(source, filename) {
 	const withPragma = filename ? `${source}\n//# sourceURL=${filename}` : source;
+	// oxlint-disable-next-line eslint/no-eval -- The persistent kernel evaluates user cells in global scope to retain their bindings.
 	const geval = globalThis.eval;
 	return geval(withPragma);
 }
@@ -720,6 +721,7 @@ function captureLastExpression(code) {
 	return `${head}return ${tail.replace(/;+$/u, "")};`;
 }
 
+// oxlint-disable-next-line eslint/no-misleading-character-class -- ECMAScript identifiers permit ZWNJ and ZWJ as individual continuation characters.
 const LABEL_PREFIX_RE = /^[\p{ID_Start}$_][\p{ID_Continue}\u200c\u200d$]*\s*:/u;
 
 function isStatementOnly(source) {

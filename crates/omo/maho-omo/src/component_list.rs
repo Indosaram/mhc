@@ -16,8 +16,28 @@ use crate::compose::OmoSenpiComponent;
 /// Upstream `getBuiltinSkillsRoot()`: the packaged `skills/` directory beside the extension.
 pub const SKILLS_ROOT_ENV: &str = "OMO_SENPI_SKILLS_ROOT";
 
+/// Upstream `getBuiltinSkillsRoot(env)` (omo v5.1.52 telemetry/product-identity.ts): a valid
+/// `OMO_BUNDLED_SKILLS_DIR` wins (an invalid one is reported once through the shared ledger), then
+/// the native `OMO_SENPI_SKILLS_ROOT` / packaged-root default.
 pub fn builtin_skills_root() -> PathBuf {
-    skills_root_from(std::env::var(SKILLS_ROOT_ENV).ok())
+    skills_root_with_override(
+        std::env::var(maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV).ok(),
+        std::env::var(SKILLS_ROOT_ENV).ok(),
+    )
+}
+
+fn skills_root_with_override(override_dir: Option<String>, env_root: Option<String>) -> PathBuf {
+    let env: BTreeMap<String, String> = override_dir
+        .map(|value| {
+            (
+                maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV.to_owned(),
+                value,
+            )
+        })
+        .into_iter()
+        .collect();
+    maho_omo_bundled_skills::resolve_bundled_skills_override(&env, None, None)
+        .unwrap_or_else(|| skills_root_from(env_root))
 }
 
 /// The `OMO_SENPI_SKILLS_ROOT` contract: a set, non-empty value wins; otherwise the packaged
@@ -204,8 +224,9 @@ pub fn omo_components(
         "side-panel",
         maho_omo_side_panel::native::NativeSidePanel,
     ));
-    components.push(component(
-        "telemetry",
+    // Upstream registers telemetry with `ctx.logger`, so an invalid skills override reaches the component
+    // log; bind the shared runtime logger at register time (same pattern as config-watch below).
+    let telemetry = std::sync::Arc::new(std::sync::Mutex::new(
         maho_omo_telemetry::omo_native_component::OmoNativeTelemetryComponent::with_default_config(
             maho_omo_telemetry::index::SenpiTelemetryOptions {
                 env: Some(
@@ -220,6 +241,17 @@ pub fn omo_components(
             },
             skills_root.clone(),
         ),
+    ));
+    components.push(OmoSenpiComponent::from_context_register(
+        "telemetry",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            let mut telemetry = telemetry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            telemetry.logger = Some(runtime.logger());
+            telemetry.register(api);
+        },
     ));
     components.push(component(
         "ultrawork",
@@ -302,14 +334,23 @@ pub fn omo_components(
             .register(api);
         },
     ));
-    components.push(component(
+    let feedback_env = options.env.clone();
+    let feedback_state_dir = options.state_dir.clone();
+    components.push(OmoSenpiComponent::from_context_register(
         "feedback",
-        maho_omo_feedback::FeedbackComponent::new(maho_omo_feedback::FeedbackComponentOptions {
-            env: Some(options.env.clone()),
-            state_dir: Some(options.state_dir.clone()),
-            omo_version: Some(env!("CARGO_PKG_VERSION").into()),
-            ..Default::default()
-        }),
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            maho_omo_feedback::FeedbackComponent::new(
+                maho_omo_feedback::FeedbackComponentOptions {
+                    env: Some(feedback_env.clone()),
+                    state_dir: Some(feedback_state_dir.clone()),
+                    omo_version: Some(env!("CARGO_PKG_VERSION").into()),
+                    logger: Some(runtime.logger()),
+                    ..Default::default()
+                },
+            )
+            .register(api);
+        },
     ));
     components.push(component(
         "browser-bridge",
@@ -418,6 +459,24 @@ mod tests {
         assert_eq!(
             skills_root_from(Some("/custom/omo/skills".to_owned())),
             PathBuf::from("/custom/omo/skills")
+        );
+    }
+
+    #[test]
+    fn a_valid_bundled_skills_override_wins_over_the_env_root() {
+        let dir = tempfile::tempdir().expect("override dir");
+        let override_dir = dir.path().to_string_lossy().into_owned();
+        assert_eq!(
+            skills_root_with_override(Some(override_dir), Some("/custom/omo/skills".to_owned())),
+            dir.path()
+        );
+        assert_eq!(
+            skills_root_with_override(
+                Some("relative/skills".to_owned()),
+                Some("/custom/omo/skills".to_owned())
+            ),
+            PathBuf::from("/custom/omo/skills"),
+            "an invalid override falls back to the env root"
         );
     }
 

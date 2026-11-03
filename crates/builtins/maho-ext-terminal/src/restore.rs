@@ -69,20 +69,99 @@ fn checkpoint(value: &Value) -> Result<TerminalManifestCheckpoint> {
         present: boolean(raw, "present")?,
     })
 }
+fn runtime_identity(
+    raw: &Map<String, Value>,
+    field: &str,
+) -> Result<crate::process_identity::ChildProcessIdentity> {
+    let value = object(
+        raw.get(field).unwrap_or(&Value::Null),
+        &format!("field {field} must be an object"),
+    )?;
+    let argv = value
+        .get("argv")
+        .and_then(Value::as_array)
+        .and_then(|argv| {
+            argv.iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| invalid(format!("field {field}.argv must be an array of strings")))?;
+    let pid = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .map(|v| v as u32)
+            .ok_or_else(|| invalid(format!("field {field}.{key} must be a finite number")))
+    };
+    Ok(crate::process_identity::ChildProcessIdentity {
+        pid: pid("pid")?,
+        process_group_id: if value.contains_key("processGroupId") {
+            Some(pid("processGroupId")?)
+        } else {
+            None
+        },
+        started_at_ms: num(value, "startedAtMs")?,
+        boot_at_ms: num(value, "bootAtMs")?,
+        argv,
+    })
+}
+fn strings(raw: &Map<String, Value>, field: &str) -> Result<Vec<String>> {
+    raw.get(field)
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| invalid(format!("field {field} must be an array of strings")))
+}
+fn rpc_checkpoint(value: &Value) -> Result<TerminalManifestRpcCheckpoint> {
+    let message = "field rpcCheckpoint must be an object";
+    let raw = object(value, message)?;
+    let hosts = object(raw.get("hosts").unwrap_or(&Value::Null), message)?;
+    let statuses = object(raw.get("statuses").unwrap_or(&Value::Null), message)?;
+    let mut checkpoint = TerminalManifestRpcCheckpoint::default();
+    for (socket, host) in hosts {
+        let host = object(host, "field rpcCheckpoint.hosts entries must be objects")?;
+        checkpoint.hosts.insert(
+            socket.clone(),
+            crate::rpc_monitor_watch::RpcHostIdentity {
+                instance_id: str_field(host, "instanceId")?,
+                generation: str_field(host, "generation")?,
+            },
+        );
+    }
+    for (key, status) in statuses {
+        let status = status
+            .as_str()
+            .ok_or_else(|| invalid("field rpcCheckpoint.statuses values must be strings"))?;
+        checkpoint.statuses.insert(key.clone(), status.to_owned());
+    }
+    Ok(checkpoint)
+}
 fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
     let raw = object(value, "a monitor entry must be an object")?;
-    let runtime_kind = match one_of(raw, "runtimeKind", &["command", "file"])? {
+    let runtime_kind = match one_of(raw, "runtimeKind", &["command", "file", "rpc"])? {
         "command" => MonitorRuntimeKind::Command,
-        _ => MonitorRuntimeKind::File,
+        "file" => MonitorRuntimeKind::File,
+        _ => MonitorRuntimeKind::Rpc,
     };
     let durability_class = match one_of(
         raw,
         "durabilityClass",
-        &["ephemeral", "restartable-command", "checkpointed-file"],
+        &[
+            "ephemeral",
+            "restartable-command",
+            "checkpointed-file",
+            "checkpointed-rpc",
+        ],
     )? {
         "ephemeral" => MonitorDurabilityClass::Ephemeral,
         "restartable-command" => MonitorDurabilityClass::RestartableCommand,
-        _ => MonitorDurabilityClass::CheckpointedFile,
+        "checkpointed-file" => MonitorDurabilityClass::CheckpointedFile,
+        _ => MonitorDurabilityClass::CheckpointedRpc,
     };
     let event = if raw.contains_key("event") {
         Some(match one_of(raw, "event", &["create", "modify"])? {
@@ -113,6 +192,11 @@ fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
         path: optional(raw, "path")?,
         event,
         filter: optional(raw, "filter")?,
+        human_input: if raw.contains_key("humanInput") {
+            Some(boolean(raw, "humanInput")?)
+        } else {
+            None
+        },
         wakes_per_hour: if raw.contains_key("wakesPerHour") {
             Some(wake_rate(raw, "wakesPerHour")?)
         } else {
@@ -120,6 +204,22 @@ fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
         },
         cwd: optional(raw, "cwd")?,
         approved_parent: optional(raw, "approvedParent")?,
+        target: optional(raw, "target")?,
+        events: match raw.get("events") {
+            None => None,
+            Some(Value::String(all)) if all == "all" => {
+                Some(crate::rpc_monitor_targets::RpcEvents::All)
+            }
+            Some(_) => Some(crate::rpc_monitor_targets::RpcEvents::Kinds(strings(
+                raw, "events",
+            )?)),
+        },
+        exclude: if raw.contains_key("exclude") {
+            Some(strings(raw, "exclude")?)
+        } else {
+            None
+        },
+        rpc_checkpoint: raw.get("rpcCheckpoint").map(rpc_checkpoint).transpose()?,
         created_at: num(raw, "createdAt")?,
         expires_at: if raw.get("expiresAt").is_none_or(Value::is_null) {
             None
@@ -133,6 +233,16 @@ fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
         fire_window: ManifestFireWindow {
             start_ms: num(window, "startMs")?,
             count: num(window, "count")?,
+        },
+        runtime: if raw.contains_key("runtime") {
+            Some(runtime_identity(raw, "runtime")?)
+        } else {
+            None
+        },
+        deadline_ms: if raw.contains_key("deadlineMs") {
+            Some(num(raw, "deadlineMs")?)
+        } else {
+            None
         },
     })
 }
@@ -185,8 +295,45 @@ pub struct RestoreDigest {
     pub lost: usize,
     pub expired: usize,
     pub muted: usize,
+    /// Command watches that exited 0 inside the restore grace window (one-shot gates).
+    pub completed: usize,
     pub attached_elsewhere: usize,
     pub store_error: bool,
+    /// Per-monitor results in manifest order (upstream `RestoreDigest.results`), for the
+    /// `restore_digest` sentence that names every watch. Filled by the manifest writer's restore.
+    pub results: Vec<RestoredMonitor>,
+    /// Background sessions the previous generation left: never respawned (`exited` here).
+    pub background_sessions: Vec<RestoredBackground>,
+}
+/// One manifest monitor and how its restore ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredMonitor {
+    pub monitor_id: String,
+    pub description: String,
+    pub file: bool,
+    /// `restored`, `muted`, `lost`, `completed`, `attachedElsewhere` or `expired`.
+    pub outcome: &'static str,
+    pub command: Option<String>,
+    pub path: Option<String>,
+    /// Why a watch was lost (upstream `MonitorRestoreResult.reason`), e.g. `exited 127 in 12ms: ...`.
+    pub reason: Option<String>,
+    /// Upstream `RestoreHandlerResult.orphan`: the crash-orphaned watcher found before the respawn.
+    pub orphan: Option<crate::restore_digest::Orphan>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredBackground {
+    pub id: String,
+    pub command: String,
+}
+impl RestoreOutcome {
+    pub fn bucket(self) -> &'static str {
+        match self {
+            Self::Restored => "restored",
+            Self::Lost => "lost",
+            Self::Muted => "muted",
+            Self::AttachedElsewhere => "attachedElsewhere",
+        }
+    }
 }
 pub fn reapply_persisted_mute(
     monitor: &ManifestMonitor,

@@ -890,6 +890,7 @@ impl MemorySessionRepo {
             cwd: None,
             parent_session_id,
             legacy_parent_session_path: None,
+            path: None,
         };
         let session = Arc::new(StorageBackedSession::new(
             metadata.clone(),

@@ -13,7 +13,7 @@ pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::Mc
     if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}
     if entry.cache_refreshed_after_connect{return Ok(());}
     entry.cache_refreshed_after_connect=true;
-    let result=crate::catalog_cache::collect_server_catalog_for_cache(&entry.connection,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
+    let result=crate::catalog_cache::collect_server_catalog_for_cache_in(&entry.connection,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash,entry.agent_dir.as_deref()).await;
     if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}
     match result {
         Ok(catalog)=>{
@@ -56,7 +56,7 @@ pub async fn connect_and_refresh_mcp_catalog_unlocked(handle:&std::sync::Arc<tok
         entry.cache_refreshed_after_connect=true;
     }
     let timeout=Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0);
-    let result=crate::catalog_cache::collect_server_catalog_for_cache(&connection,timeout,&config_hash).await;
+    let result=crate::catalog_cache::collect_server_catalog_for_cache_in(&connection,timeout,&config_hash,agent_dir.as_deref()).await;
     if !is_current_startup_attempt(&connection,generation){return Ok(());}
     match result {
         Ok(catalog)=>{

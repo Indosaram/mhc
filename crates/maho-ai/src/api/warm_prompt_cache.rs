@@ -260,6 +260,118 @@ mod tests {
         }
     }
 
+    fn warm_context() -> Context {
+        serde_json::from_value(json!({
+            "systemPrompt": "You are concise.",
+            "messages": [{ "role": "user", "content": "Hello", "timestamp": 1 }],
+            "tools": [{
+                "name": "lookup",
+                "description": "Look something up",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                    "required": ["query"]
+                }
+            }]
+        }))
+        .expect("context")
+    }
+
+    #[tokio::test]
+    async fn sends_a_native_anthropic_max_tokens_0_request_and_parses_usage() {
+        // Given: a local server standing in for api.anthropic.com (the client resolves the
+        // native host to it, so the native-host gate stays real).
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let recorded = bodies.clone();
+        let app = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(move |body: String| {
+                let recorded = recorded.clone();
+                async move {
+                    recorded
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(serde_json::from_str(&body).unwrap_or(Value::Null));
+                    axum::Json(json!({
+                        "id": "msg_warm", "type": "message", "role": "assistant", "content": [],
+                        "model": "claude-sonnet-4-5", "stop_reason": "max_tokens", "stop_sequence": null,
+                        "usage": {
+                            "input_tokens": 120, "output_tokens": 0,
+                            "cache_read_input_tokens": 90, "cache_creation_input_tokens": 30
+                        }
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve("api.anthropic.com", address)
+            .build()
+            .expect("client");
+        let mut model =
+            crate::models_generated::get_builtin_model("anthropic", "claude-sonnet-4-5")
+                .expect("model")
+                .clone();
+        model.base_url = "http://api.anthropic.com".into();
+        let mut options = StreamOptions::default();
+        options.request.api_key = Some("test-key".into());
+        options.request.fetch = Some(client);
+        let builder = |model: &Model, context: &Context, options: &StreamOptions| {
+            Ok(Value::Object(
+                crate::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(
+                    model,
+                    context,
+                    Some(options),
+                ),
+            ))
+        };
+
+        // When
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            warm_prompt_cache(&model, &warm_context(), Some(options), &builder),
+        )
+        .await
+        .expect("bounded wait")
+        .expect("warm result");
+        server.abort();
+
+        // Then
+        let bodies = bodies
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(bodies.len(), 1);
+        let body = &bodies[0];
+        assert_eq!(body["max_tokens"], json!(0));
+        assert_eq!(body["model"], json!("claude-sonnet-4-5"));
+        assert!(body.get("stream").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("tool_choice").is_none());
+        assert!(body.to_string().contains("\"cache_control\""));
+        assert_eq!(
+            result,
+            WarmPromptCacheResult::Supported {
+                usage: WarmPromptCacheUsage {
+                    input: 120,
+                    output: 0,
+                    cache_read: 90,
+                    cache_write: 30,
+                    cost: None,
+                },
+                usage_raw: json!({
+                    "input_tokens": 120, "output_tokens": 0,
+                    "cache_read_input_tokens": 90, "cache_creation_input_tokens": 30
+                }),
+            }
+        );
+    }
+
     #[test]
     fn sanitized_params_drop_streaming_and_thinking_fields() {
         let sanitized = sanitize_warm_prompt_cache_params(&json!({
@@ -304,7 +416,10 @@ mod tests {
     async fn explicit_warmer_options_respect_disabled_model_cache_without_building() {
         // Given
         let mut model = model("openai-responses", "https://api.openai.com/v1");
-        model.compat = Some(crate::model::ModelCompat(serde_json::from_value(json!({"supportsExplicitPromptCacheMode":true})).expect("compat")));
+        model.compat = Some(crate::model::ModelCompat(
+            serde_json::from_value(json!({"supportsExplicitPromptCacheMode":true}))
+                .expect("compat"),
+        ));
         model.cache_retention = Some(crate::types::CacheRetention::None);
         let options = WarmPromptCacheOptions {
             reasoning: Some(crate::types::ThinkingLevel::High),
@@ -313,7 +428,11 @@ mod tests {
         };
 
         // When
-        let result = warm_prompt_cache_simple(&model, &Context::default(), options, &|_, _, _| panic!("disabled cache must not build a request")).await.expect("unsupported cache");
+        let result = warm_prompt_cache_simple(&model, &Context::default(), options, &|_, _, _| {
+            panic!("disabled cache must not build a request")
+        })
+        .await
+        .expect("unsupported cache");
 
         // Then
         assert_eq!(result, WarmPromptCacheResult::Unsupported);

@@ -16,9 +16,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub type BashDataCallback = Arc<dyn Fn(&[u8]) -> Result<(), ToolError> + Send + Sync>;
+/// Which pipe a chunk came from (senpi `onData(data, stream)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BashStream {
+    Stdout,
+    Stderr,
+}
+pub type BashDataCallback = Arc<dyn Fn(&[u8], BashStream) -> Result<(), ToolError> + Send + Sync>;
 pub struct BashExecOptions {
     pub on_data: BashDataCallback,
+    /// Ask the operations to redact credential-shaped output (honoured by the tool, forwarded to child runtimes).
+    pub redact_secrets_in_output: bool,
     pub signal: AbortSignal,
     pub timeout: Option<f64>,
     pub env: BTreeMap<String, String>,
@@ -165,14 +173,14 @@ impl BashOperations for LocalShellOperations {
                         Ok(0) | Err(_) => stdout = None,
                         Ok(count) => {
                             if exit.is_some() { idle = Some(tokio::time::Instant::now() + EXIT_STDIO_GRACE); }
-                            if callback_error.is_none() && let Err(error) = (options.on_data)(&out[..count]) { callback_error = Some(error); abort = true; }
+                            if callback_error.is_none() && let Err(error) = (options.on_data)(&out[..count], BashStream::Stdout) { callback_error = Some(error); abort = true; }
                         },
                     },
                     read = read_pipe(&mut stderr, &mut err), if stderr.is_some() => match read {
                         Ok(0) | Err(_) => stderr = None,
                         Ok(count) => {
                             if exit.is_some() { idle = Some(tokio::time::Instant::now() + EXIT_STDIO_GRACE); }
-                            if callback_error.is_none() && let Err(error) = (options.on_data)(&err[..count]) { callback_error = Some(error); abort = true; }
+                            if callback_error.is_none() && let Err(error) = (options.on_data)(&err[..count], BashStream::Stderr) { callback_error = Some(error); abort = true; }
                         },
                     },
                     () = sleep_until_some(timeout_deadline), if timeout_deadline.is_some() && !killed => { timed_out = true; abort = true; },
@@ -252,6 +260,8 @@ pub type BashSpawnHook =
 pub type ShellEnvProvider = Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>;
 #[derive(Default, Clone)]
 pub struct BashToolOptions {
+    /// Redact credential-shaped output before streaming or spilling. Default: false.
+    pub redact_secrets_in_output: bool,
     pub operations: Option<Arc<dyn BashOperations>>,
     pub command_prefix: Option<String>,
     pub shell_path: Option<String>,
@@ -449,12 +459,15 @@ pub fn create_shell_tool_definition(
                 .filter(|mode| *mode != crate::bash_sandbox::BashSandboxMode::Off)
             {
                 let agent_dir = options.sandbox_agent_dir.clone().ok_or_else(|| {
-                    ToolError::Message("bashSandbox is enabled but no agent directory is configured".into())
+                    ToolError::Message(
+                        "bashSandbox is enabled but no agent directory is configured".into(),
+                    )
                 })?;
                 let session_id = call
                     .context
                     .map_or("default", |context| context.session_manager().session_id());
-                let (private_tmp, writable) = crate::bash_sandbox::prepare_dirs(&agent_dir, session_id)?;
+                let (private_tmp, writable) =
+                    crate::bash_sandbox::prepare_dirs(&agent_dir, session_id)?;
                 let (wrapped, notice) = crate::bash_sandbox::wrap_with_notice(
                     context,
                     mode,
@@ -488,7 +501,12 @@ pub fn create_shell_tool_definition(
             let data_changed = Arc::clone(&changed);
             let accepting_output = Arc::new(AtomicBool::new(true));
             let accepting_data = Arc::clone(&accepting_output);
-            let on_data: BashDataCallback = Arc::new(move |data| {
+            let redact = options.redact_secrets_in_output;
+            let streams: Arc<
+                Mutex<Vec<(BashStream, crate::secret_output_redactor::RedactedStream)>>,
+            > = Arc::new(Mutex::new(Vec::new()));
+            let data_streams = Arc::clone(&streams);
+            let on_data: BashDataCallback = Arc::new(move |data, stream| {
                 if !accepting_data.load(Ordering::Acquire) {
                     return Ok(());
                 }
@@ -498,7 +516,25 @@ pub fn create_shell_tool_definition(
                 if !accepting_data.load(Ordering::Acquire) {
                     return Ok(());
                 }
-                accumulator.append(data)?;
+                if redact {
+                    let mut streams = data_streams
+                        .lock()
+                        .map_err(|_| ToolError::Message("Redactor lock poisoned".into()))?;
+                    let index = match streams.iter().position(|(kind, _)| *kind == stream) {
+                        Some(index) => index,
+                        None => {
+                            streams.push((
+                                stream,
+                                crate::secret_output_redactor::RedactedStream::default(),
+                            ));
+                            streams.len() - 1
+                        }
+                    };
+                    let redacted = streams[index].1.push_bytes(data);
+                    accumulator.append_text(&redacted)?;
+                } else {
+                    accumulator.append(data)?;
+                }
                 data_changed.notify_one();
                 Ok(())
             });
@@ -507,6 +543,7 @@ pub fn create_shell_tool_definition(
                 &context.cwd,
                 BashExecOptions {
                     on_data,
+                    redact_secrets_in_output: redact,
                     signal: call.signal,
                     timeout: input.timeout,
                     env: context.env,
@@ -549,6 +586,18 @@ pub fn create_shell_tool_definition(
             let mut output = output
                 .lock()
                 .map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
+            if redact {
+                // Flush tokens still pending in each stream's redactor before truncation and spill.
+                let mut streams = streams
+                    .lock()
+                    .map_err(|_| ToolError::Message("Redactor lock poisoned".into()))?;
+                for (_, state) in streams.iter_mut() {
+                    let text = state.finish_stream();
+                    if let Err(error) = output.append_text(&text) {
+                        return Err(output.cleanup_error(error));
+                    }
+                }
+            }
             let snapshot = match output.finish_output() {
                 Ok(snapshot) => snapshot,
                 Err(finalization) => {
@@ -768,7 +817,7 @@ mod shell_lifecycle_tests {
             options: BashExecOptions,
         ) -> ToolFuture<'a, BashExit> {
             Box::pin(async move {
-                (options.on_data)(b"initial")?;
+                (options.on_data)(b"initial", BashStream::Stdout)?;
                 *self.callback.lock().expect("callback lock") = Some(options.on_data);
                 Ok(BashExit {
                     exit_code: self.exit_code,
@@ -791,7 +840,7 @@ mod shell_lifecycle_tests {
             },
         );
         // When: the shell definition executes through the agent wrapper.
-        let wrapped = crate::tool_definition_wrapper::wrap_tool_definition(tool, None);
+        let wrapped = crate::tool_definition_wrapper::wrap_tool_definition(tool, None, None);
         let result = tokio::time::timeout(
             Duration::from_secs(1),
             (wrapped.execute)("nonzero".into(), json!({"command":"ignored"}), None, None),
@@ -833,7 +882,7 @@ mod shell_lifecycle_tests {
             .expect("callback lock")
             .take()
             .expect("retained callback");
-        assert!(callback(b"late").is_ok());
+        assert!(callback(b"late", BashStream::Stdout).is_ok());
         assert_eq!(
             result.structured_content.expect("structured")["output"],
             "initial"
@@ -873,7 +922,8 @@ mod shell_lifecycle_tests {
                 "kill -TERM $$",
                 Path::new("."),
                 BashExecOptions {
-                    on_data: Arc::new(|_| Ok(())),
+                    on_data: Arc::new(|_, _| Ok(())),
+                    redact_secrets_in_output: false,
                     signal: AbortSignal::default(),
                     timeout: None,
                     env: std::env::vars().collect(),
@@ -884,5 +934,58 @@ mod shell_lifecycle_tests {
         .expect("bounded command")
         .expect("execute");
         assert_eq!(result.exit_code, Some(143));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    struct TwoStreams;
+    impl BashOperations for TwoStreams {
+        fn exec<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Path,
+            options: BashExecOptions,
+        ) -> ToolFuture<'a, BashExit> {
+            Box::pin(async move {
+                assert!(options.redact_secrets_in_output);
+                // A secret split across chunks on stdout, interleaved with stderr output.
+                (options.on_data)(b"TOKEN=abc", BashStream::Stdout)?;
+                (options.on_data)(b"err line\n", BashStream::Stderr)?;
+                (options.on_data)(b"def\nok\n", BashStream::Stdout)?;
+                Ok(BashExit { exit_code: Some(0) })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn redacts_per_stream_and_flushes_pending_tokens_before_the_result() {
+        let tool = create_bash_tool_definition(
+            ".".into(),
+            BashToolOptions {
+                redact_secrets_in_output: true,
+                operations: Some(Arc::new(TwoStreams)),
+                ..Default::default()
+            },
+        );
+        let result = (tool.execute)(ToolCall {
+            id: "redact",
+            params: json!({"command": "x"}),
+            signal: AbortSignal::default(),
+            on_update: None,
+            context: None,
+        })
+        .await
+        .expect("execute");
+        let text = match &result.content[0] {
+            ToolContent::Text { text, .. } => text.clone(),
+            _ => panic!("text"),
+        };
+        assert!(text.contains("TOKEN=<redacted>"), "{text}");
+        assert!(!text.contains("abcdef"), "{text}");
+        assert!(text.contains("err line"), "{text}");
+        assert!(text.contains("ok"), "{text}");
     }
 }

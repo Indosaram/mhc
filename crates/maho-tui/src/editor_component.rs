@@ -4,10 +4,12 @@
 //! (vim mode, emacs mode, custom keybindings) while keeping the core application's contract.
 //! senpi's optional members are modelled as trait methods with default `None` returns.
 
-use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, ApplyCompletionResult, MentionRange};
+use crate::autocomplete::{
+    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, MentionRange,
+};
 use crate::components::editor::{
-    ChangeCallback, ImageMarkersChangedCallback, RestoreAttachmentCallback, SnapshotAttachmentCallback, StyleFn,
-    SubmitCallback,
+    ChangeCallback, ImageMarkersChangedCallback, RestoreAttachmentCallback,
+    SnapshotAttachmentCallback, StyleFn, SubmitCallback,
 };
 use crate::image_markers::EditorImageState;
 use crate::paste_markers::EditorPasteState;
@@ -45,6 +47,15 @@ pub trait EditorComponent: Component {
     /// Install a paste-marker registry snapshot taken from another editor instance.
     fn set_paste_state(&mut self, _state: &EditorPasteState) {}
 
+    /// senpi's `typeof editor.setPasteState === "function"`: whether [`set_paste_state`] installs
+    /// a registry. Defaults to whether the editor exposes one through [`get_paste_state`].
+    ///
+    /// [`set_paste_state`]: EditorComponent::set_paste_state
+    /// [`get_paste_state`]: EditorComponent::get_paste_state
+    fn can_set_paste_state(&self) -> bool {
+        self.get_paste_state().is_some()
+    }
+
     /// Insert the next atomic `[Image #N]` marker at the cursor and return its id.
     fn insert_image_marker(&mut self) -> Option<u64> {
         None
@@ -57,6 +68,12 @@ pub trait EditorComponent: Component {
 
     /// Install an image-marker registry snapshot taken from another editor instance.
     fn set_image_marker_state(&mut self, _state: &EditorImageState) {}
+
+    /// senpi's `setImageMarkerState && insertImageMarker` presence check: whether this editor can
+    /// own transferred `[Image #N]` markers. Defaults to whether it exposes an image registry.
+    fn can_own_image_markers(&self) -> bool {
+        self.get_image_marker_state().is_some()
+    }
 
     /// Called with the image-marker ids in text reading order whenever markers change.
     fn on_image_markers_changed(&mut self, _order: &[u64]) {}

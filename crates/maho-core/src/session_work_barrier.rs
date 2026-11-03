@@ -7,12 +7,29 @@ use tokio::sync::Notify;
 
 const SETTLE_ROUNDS_BEFORE_YIELD: usize = 16;
 
+/// The barrier's release edge (senpi `onActiveChange`).
+pub type ActiveChange = Arc<dyn Fn() + Send + Sync>;
+
 /// Tracks deferred session work: a begin() guard keeps the barrier active until the last guard is
 /// dropped, and wait_for_settled polls the event queue until both the queue and the work settle.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SessionWorkBarrier {
     active_work_depth: AtomicUsize,
     notify: Arc<Notify>,
+    /// Runs when the last holder releases the barrier: work it held (compaction admission, reload,
+    /// extension binding) is a lifecycle fact, and its end must be an edge. Its start is not signalled
+    /// here: every holder that makes the session busy raises its own start edge, and a start edge would
+    /// recompute during restore.
+    on_active_change: Option<ActiveChange>,
+}
+
+impl std::fmt::Debug for SessionWorkBarrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionWorkBarrier")
+            .field("active_work_depth", &self.active_work_depth)
+            .field("on_active_change", &self.on_active_change.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -26,6 +43,15 @@ impl SessionWorkBarrier {
         Self {
             active_work_depth: AtomicUsize::new(0),
             notify: Arc::new(Notify::new()),
+            on_active_change: None,
+        }
+    }
+
+    /// senpi `new SessionWorkBarrier(onActiveChange)`.
+    pub fn with_on_active_change(on_active_change: ActiveChange) -> Self {
+        Self {
+            on_active_change: Some(on_active_change),
+            ..Self::new()
         }
     }
 
@@ -73,6 +99,9 @@ impl SessionWorkBarrier {
         if previous <= 1 {
             self.active_work_depth.store(0, Ordering::SeqCst);
             self.notify.notify_waiters();
+            if let Some(on_active_change) = &self.on_active_change {
+                on_active_change();
+            }
         }
     }
 }
@@ -115,6 +144,28 @@ mod tests {
         assert!(barrier.has_active_work());
         drop(second);
         assert!(!barrier.has_active_work());
+    }
+
+    #[test]
+    fn releasing_the_last_holder_raises_one_active_change_edge() {
+        let edges = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&edges);
+        let barrier = Arc::new(SessionWorkBarrier::with_on_active_change(Arc::new(
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )));
+        let first = barrier.begin();
+        let second = barrier.begin();
+        assert_eq!(edges.load(Ordering::SeqCst), 0, "begin raises no edge");
+        drop(first);
+        assert_eq!(
+            edges.load(Ordering::SeqCst),
+            0,
+            "an inner release raises no edge"
+        );
+        second.finish();
+        assert_eq!(edges.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -295,11 +346,12 @@ impl ToolBarrier {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.as_ref().is_some_and(|a| a.spec.id == id)
-            && let Some(armed) = guard.take() {
-                armed.timer_handle.abort();
-                armed.notify.notify_waiters();
-                return true;
-            }
+            && let Some(armed) = guard.take()
+        {
+            armed.timer_handle.abort();
+            armed.notify.notify_waiters();
+            return true;
+        }
         false
     }
 

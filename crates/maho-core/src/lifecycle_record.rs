@@ -17,17 +17,8 @@ pub fn read_lifecycle_state(v: &Value) -> Option<&str> {
         .contains(s)
     })
 }
-pub fn read_waits(v: &Value) -> Option<Value> {
-    let children = v.get("children")?.as_number()?;
-    let background=v["background"].as_array().into_iter().flatten().filter_map(|x| {let mut item=json!({"source":x.get("source")?.as_str()?,"activeCount":x.get("activeCount")?.as_number()?}); if x["retryAtMs"].is_number(){item["retryAtMs"]=x["retryAtMs"].clone();} Some(item)}).collect::<Vec<_>>();
-    let human = v["human"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(read_human_wait)
-        .collect::<Vec<_>>();
-    Some(json!({"children":children,"background":background,"human":human}))
-}
+/// The one reader of a durable or reported `waitingOn` lives in `lifecycle_children` (senpi#4106).
+pub use crate::lifecycle_children::read_waits;
 pub fn read_holds(v: &Value) -> Option<Value> {
     Some(json!(
         v.as_array()?
@@ -144,6 +135,9 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         }
         r["failure"] = f;
     }
+    if let Some(stop) = crate::lifecycle_stop::read_last_stop(&v["lastStop"], &v["runId"]) {
+        r["lastStop"] = json!(stop);
+    }
     let t = &v["lastTurnEnd"];
     if [
         "clean",
@@ -165,4 +159,39 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         r["lastTurnEnd"] = end;
     }
     Some(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record() -> Value {
+        json!({
+            "state":"waiting_children","sessionId":"s","since":"2026-10-27T00:00:00.000Z","rootSessionId":"s","seq":3,
+            "epoch":2,"humanInputRevision":0,"selfSettleEligible":true,"runPaused":false,"epochOrigin":"human",
+            "role":"root","runId":"r1",
+            "waitingOn":{"children":1,"background":[],"human":[],
+                "childSources":[{"source":"task","activeCount":1,"items":[{"id":"c1","label":"build"}]}],
+                "childReports":[{"taskId":"t","childSessionId":"c","runEpoch":1,"state":"running"}]},
+            "lastStop":{"cause":"no_wake","runId":"r1","at":"2026-10-27T00:00:01.000Z","epoch":2}
+        })
+    }
+
+    /// senpi#3864 / #4106: a restored record keeps its run's lastStop and its named child waits.
+    #[test]
+    fn restore_reads_last_stop_child_sources_and_child_reports() {
+        let r = read_lifecycle_record(&record()).expect("valid record");
+        assert_eq!(r["lastStop"]["cause"], "no_wake");
+        assert_eq!(r["lastStop"]["runId"], "r1");
+        assert_eq!(r["waitingOn"]["childSources"][0]["items"][0]["id"], "c1");
+        assert_eq!(r["waitingOn"]["childReports"][0]["taskId"], "t");
+    }
+
+    #[test]
+    fn a_last_stop_of_another_run_is_dropped_without_invalidating_the_record() {
+        let mut v = record();
+        v["lastStop"]["runId"] = json!("other");
+        let r = read_lifecycle_record(&v).expect("valid record");
+        assert!(r.get("lastStop").is_none());
+    }
 }

@@ -10,6 +10,70 @@ pub const TASK_ID_ENV: &str = "MHC_TASK_ID";
 /// Environment variable carrying the root session of a delegated run (the top-level session that
 /// started the chain of tasks).
 pub const ROOT_SESSION_ENV: &str = "MHC_TASK_ROOT_SESSION";
+/// Environment variable carrying the session that spawned a delegated run (its parent; task.md
+/// Delta D1).
+pub const PARENT_SESSION_ENV: &str = "MAHO_TASK_PARENT_SESSION";
+
+/// The ancestry a delegated run records in a new session header (`spawnedBy`, task.md Delta D1).
+/// Serializes with the header's field names.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpawnedBy {
+    pub parent_session_id: String,
+    pub root_session_id: String,
+    pub task_id: String,
+}
+
+/// The `spawnedBy` ancestry of this process from `env`: present only when [`TASK_ID_ENV`] and
+/// [`PARENT_SESSION_ENV`] are both non-empty. The root is [`ROOT_SESSION_ENV`], or the parent when
+/// that is empty. Callers use it only when they create a **new** session file.
+pub fn spawned_by_from(env: &dyn Fn(&str) -> Option<String>) -> Option<SpawnedBy> {
+    let read = |key: &str| {
+        env(key)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let task_id = read(TASK_ID_ENV)?;
+    let parent = read(PARENT_SESSION_ENV)?;
+    let root = read(ROOT_SESSION_ENV).unwrap_or_else(|| parent.clone());
+    Some(SpawnedBy {
+        parent_session_id: parent,
+        root_session_id: root,
+        task_id,
+    })
+}
+
+/// [`spawned_by_from`] over the process environment.
+pub fn current_spawned_by() -> Option<SpawnedBy> {
+    spawned_by_from(&|key: &str| std::env::var(key).ok())
+}
+
+/// Where the process that owns a task manager sits in the session tree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Lineage {
+    /// Nesting depth of this process ([`DEPTH_ENV`]).
+    pub depth: u32,
+    /// Root session of this process when it is a delegated run ([`ROOT_SESSION_ENV`]).
+    pub root_session: Option<String>,
+}
+
+impl Lineage {
+    /// The lineage of this process from its environment.
+    pub fn current() -> Self {
+        Self {
+            depth: current_depth(),
+            root_session: std::env::var(ROOT_SESSION_ENV)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
+        }
+    }
+
+    /// The root session of the session `own` running in this process.
+    pub fn root_of(&self, own: &str) -> String {
+        self.root_session.clone().unwrap_or_else(|| own.to_owned())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSettings {
@@ -128,6 +192,52 @@ mod tests {
         assert_eq!(settings.wait_for(Some(Duration::from_secs(9))), Duration::from_millis(30));
         assert_eq!(settings.wait_for(Some(Duration::ZERO)), Duration::from_millis(10));
         assert_eq!(TaskSettings::from_view(None), TaskSettings::default());
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |key: &str| pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    /// task.md Delta D1 tests 1, 3 and 4 (the header values a child derives from its env).
+    #[test]
+    fn spawned_by_from_the_environment() {
+        // Top-level parent P starts T: the root is P.
+        let top = env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "P"), (ROOT_SESSION_ENV, "P")]);
+        assert_eq!(
+            spawned_by_from(&top),
+            Some(SpawnedBy {
+                parent_session_id: "P".into(),
+                root_session_id: "P".into(),
+                task_id: "T".into()
+            })
+        );
+        let json = serde_json::to_value(spawned_by_from(&top).expect("ancestry")).expect("json");
+        assert_eq!(json, json!({"parentSessionId": "P", "rootSessionId": "P", "taskId": "T"}));
+        // Child C (root P) starts T2.
+        let nested = env_of(&[(TASK_ID_ENV, "T2"), (PARENT_SESSION_ENV, "C"), (ROOT_SESSION_ENV, "P")]);
+        let ancestry = spawned_by_from(&nested).expect("ancestry");
+        assert_eq!(
+            (ancestry.parent_session_id.as_str(), ancestry.root_session_id.as_str(), ancestry.task_id.as_str()),
+            ("C", "P", "T2")
+        );
+        // An empty root falls back to the parent.
+        let no_root = env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "P"), (ROOT_SESSION_ENV, " ")]);
+        assert_eq!(spawned_by_from(&no_root).expect("ancestry").root_session_id, "P");
+        // Missing or empty parent: no ancestry.
+        assert_eq!(spawned_by_from(&env_of(&[(TASK_ID_ENV, "T"), (PARENT_SESSION_ENV, "")])), None);
+        assert_eq!(spawned_by_from(&env_of(&[(TASK_ID_ENV, "T")])), None);
+        assert_eq!(spawned_by_from(&env_of(&[(PARENT_SESSION_ENV, "P")])), None);
+    }
+
+    #[test]
+    fn lineage_root() {
+        assert_eq!(Lineage::default().root_of("L"), "L");
+        let nested = Lineage { depth: 1, root_session: Some("R".into()) };
+        assert_eq!(nested.root_of("L"), "R");
     }
 
     #[test]

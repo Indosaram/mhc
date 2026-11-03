@@ -22,9 +22,9 @@ pub use draft::{
 pub use index::{
     FEEDBACK_COMPONENT_NAME, FEEDBACK_PREPARE_RPC_METHOD, FEEDBACK_SUBMIT_RPC_METHOD,
     FEEDBACK_UNAVAILABLE, FeedbackComponent, FeedbackComponentOptions, create_feedback_component,
-    feedback_runtime_load_failure,
+    feedback_runtime_load_failure, reinstall_step,
 };
 pub use submit::{
     FEEDBACK_IDEMPOTENCY_KEY_PATTERN, FEEDBACK_REDACTOR_VERSION, FeedbackSubmitRefusal,
-    ReportTransport, SubmitResult,
+    ReportTransport, ServiceRefusal, SubmitResult,
 };

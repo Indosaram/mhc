@@ -3,17 +3,41 @@ use std::fs;
 
 #[test]
 fn injected_discovery_and_content_drive_static_loading() {
-    use maho_ext_rules::rules::{engine::EngineDeps, finder::{FinderOptions, RuleDiscoveryCache}, types::RuleCandidate};
+    use maho_ext_rules::rules::{
+        engine::EngineDeps,
+        finder::{FinderOptions, RuleDiscoveryCache},
+        types::RuleCandidate,
+    };
     struct Fixture;
     impl EngineDeps for Fixture {
-        fn find_project_root(&self, _: &std::path::Path) -> Option<std::path::PathBuf> { Some("/fixture".into()) }
-        fn find_candidates(&self, _: FinderOptions<'_>, _: &mut RuleDiscoveryCache) -> Vec<RuleCandidate> {
-            vec![RuleCandidate { path: "/fixture/AGENTS.md".into(), real_path: "/fixture/AGENTS.md".into(), source: "AGENTS.md".into(), distance: 0, is_global: false, is_single_file: true, relative_path: "AGENTS.md".into() }]
+        fn find_project_root(&self, _: &std::path::Path) -> Option<std::path::PathBuf> {
+            Some("/fixture".into())
         }
-        fn read_file(&self, _: &std::path::Path) -> Option<String> { Some("---\nalwaysApply: true\n---\nfixture".into()) }
+        fn find_candidates(
+            &self,
+            _: FinderOptions<'_>,
+            _: &mut RuleDiscoveryCache,
+        ) -> Vec<RuleCandidate> {
+            vec![RuleCandidate {
+                path: "/fixture/AGENTS.md".into(),
+                real_path: "/fixture/AGENTS.md".into(),
+                source: "AGENTS.md".into(),
+                distance: 0,
+                is_global: false,
+                is_single_file: true,
+                relative_path: "AGENTS.md".into(),
+            }]
+        }
+        fn read_file(&self, _: &std::path::Path) -> Option<String> {
+            Some("---\nalwaysApply: true\n---\nfixture".into())
+        }
     }
     // Given
-    let mut engine = Engine::with_deps(config_from_environment(|_| None), "/home".into(), Box::new(Fixture));
+    let mut engine = Engine::with_deps(
+        config_from_environment(|_| None),
+        "/home".into(),
+        Box::new(Fixture),
+    );
     // When
     let loaded = engine.load_static_rules(std::path::Path::new("/fixture"));
     // Then
@@ -40,10 +64,21 @@ fn dynamic_targets_deduplicate_shared_rule() {
     let home = tempfile::tempdir().unwrap();
     fs::write(root.path().join("Cargo.toml"), "").unwrap();
     fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
-    fs::write(root.path().join(".omo/rules/r.md"), "---\nglobs: '**/*.rs'\n---\nfixture").unwrap();
-    for name in ["a.rs", "b.rs"] { fs::write(root.path().join(name), "").unwrap(); }
+    fs::write(
+        root.path().join(".omo/rules/r.md"),
+        "---\nglobs: '**/*.rs'\n---\nfixture",
+    )
+    .unwrap();
+    for name in ["a.rs", "b.rs"] {
+        fs::write(root.path().join(name), "").unwrap();
+    }
     let mut engine = Engine::new(config_from_environment(|_| None), home.path().into());
-    let loaded = engine.load_dynamic_rules(root.path(), &[root.path().join("a.rs"), root.path().join("b.rs")]).unwrap();
+    let loaded = engine
+        .load_dynamic_rules(
+            root.path(),
+            &[root.path().join("a.rs"), root.path().join("b.rs")],
+        )
+        .unwrap();
     assert_eq!(loaded.rules.len(), 1);
 }
 #[test]
@@ -53,7 +88,11 @@ fn project_rule_symlink_outside_root_is_rejected() {
     let home = tempfile::tempdir().unwrap();
     fs::write(root.path().join("Cargo.toml"), "").unwrap();
     fs::write(home.path().join("outside.md"), "fixture").unwrap();
-    std::os::unix::fs::symlink(home.path().join("outside.md"), root.path().join("AGENTS.md")).unwrap();
+    std::os::unix::fs::symlink(
+        home.path().join("outside.md"),
+        root.path().join("AGENTS.md"),
+    )
+    .unwrap();
     let mut engine = Engine::new(config_from_environment(|_| None), home.path().into());
     let loaded = engine.load_static_rules(root.path());
     assert!(loaded.rules.is_empty());
@@ -82,11 +121,85 @@ fn fingerprints_invalidate_on_rule_addition_and_reset() {
 }
 #[test]
 fn relative_paths_cross_siblings_and_normalize_dot_segments() {
-    use std::path::Path;
     use maho_ext_rules::rules::engine::relative_path;
-    assert_eq!(relative_path(Path::new("/tmp/project/left"), Path::new("/tmp/project/right/file.rs")), "../right/file.rs");
-    assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project/dir/../file.rs")), "file.rs");
-    assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project")), "");
+    use std::path::Path;
+    assert_eq!(
+        relative_path(
+            Path::new("/tmp/project/left"),
+            Path::new("/tmp/project/right/file.rs")
+        ),
+        "../right/file.rs"
+    );
+    assert_eq!(
+        relative_path(
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/dir/../file.rs")
+        ),
+        "file.rs"
+    );
+    assert_eq!(
+        relative_path(Path::new("/tmp/project"), Path::new("/tmp/project")),
+        ""
+    );
+}
+
+#[test]
+fn dynamic_discovery_reaches_repository_level_instructions_from_a_workspace_member() {
+    let root = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    for (path, content) in [
+        (".git/HEAD", "ref: refs/heads/main\n"),
+        ("Cargo.toml", "[workspace]\n"),
+        (
+            ".github/instructions/rust.instructions.md",
+            "---\napplyTo: \"crates/**/*.rs\"\n---\nREPO-RUST\n",
+        ),
+        ("crates/member/Cargo.toml", "[package]\n"),
+        ("crates/member/src/lib.rs", "pub fn f() {}\n"),
+    ] {
+        let path = repo.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let mut engine = Engine::new(config_from_environment(|_| None), home.path().into());
+    let loaded = engine
+        .load_dynamic_rules(&repo, &[repo.join("crates/member/src/lib.rs")])
+        .unwrap();
+    assert!(
+        loaded
+            .rules
+            .iter()
+            .any(|rule| rule.body.trim() == "REPO-RUST")
+    );
+}
+
+#[test]
+fn dynamic_discovery_selects_only_the_higher_priority_root_single_file() {
+    let root = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let project = root.path().join("proj");
+    for (path, content) in [
+        ("package.json", "{}\n"),
+        ("AGENTS.md", "ROOT-AGENTS\n"),
+        ("CLAUDE.md", "ROOT-CLAUDE\n"),
+        ("src/deep/index.ts", "export {};\n"),
+    ] {
+        let path = project.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let mut engine = Engine::new(config_from_environment(|_| None), home.path().into());
+    let loaded = engine
+        .load_dynamic_rules(&project, &[project.join("src/deep/index.ts")])
+        .unwrap();
+    let single: Vec<_> = loaded
+        .rules
+        .iter()
+        .filter(|rule| rule.candidate.is_single_file)
+        .map(|rule| rule.candidate.source.as_str())
+        .collect();
+    assert_eq!(single, ["AGENTS.md"]);
 }
 #[test]
 fn relative_path_different_drives_returns_target_verbatim() {

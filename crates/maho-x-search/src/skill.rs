@@ -9,16 +9,27 @@ pub const SKILL_NAME: &str = "x-search";
 /// The skill text shipped inside the binary.
 pub const SKILL_TEXT: &str = include_str!("../skill/x-search/SKILL.md");
 
-/// Writes the embedded skill once under the temp dir (a run away from the build tree has no
-/// source copy) and returns its path; `None` when it cannot be written.
-pub fn embedded_skill_path() -> Option<PathBuf> {
-    let path = std::env::temp_dir()
-        .join(format!("maho-x-search-{}", env!("CARGO_PKG_VERSION")))
-        .join(SKILL_NAME)
-        .join("SKILL.md");
+/// The per-user folder the embedded skill is materialized in:
+/// `<agent_dir>/cache/x-search-<version>/skill`. Never a shared temp dir, where another local user
+/// could pre-create the folder (or a symlink) and control the skill text.
+pub fn embedded_skill_dir(agent_dir: &Path) -> PathBuf {
+    agent_dir
+        .join("cache")
+        .join(format!("x-search-{}", env!("CARGO_PKG_VERSION")))
+        .join("skill")
+}
+
+/// Writes the embedded skill once into the owner-only [`embedded_skill_dir`] (a run away from the
+/// build tree has no source copy) and returns its path; `None` when it cannot be written or a
+/// symlink stands in place of either folder.
+pub fn embedded_skill_path(agent_dir: &Path) -> Option<PathBuf> {
+    let dir = embedded_skill_dir(agent_dir);
+    let version_dir = dir.parent()?;
+    let path = dir.join("SKILL.md");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(SKILL_TEXT) {
-        let dir = path.parent()?;
-        std::fs::create_dir_all(dir).ok()?;
+        std::fs::create_dir_all(version_dir.parent()?).ok()?;
+        maho_ext_api::private_dir::create_private_dir(version_dir)?;
+        maho_ext_api::private_dir::create_private_dir(&dir)?;
         // Write beside the target and rename, so a concurrent reader never sees a partial file.
         let staging = dir.join(format!(".SKILL.md.{}.tmp", std::process::id()));
         std::fs::write(&staging, SKILL_TEXT).ok()?;

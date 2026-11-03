@@ -83,3 +83,49 @@ async fn overflow_without_collapsible_history_settles_input_and_writes_notice() 
     assert!(result.changes.entries.iter().any(|e|e.kind=="pi.notice"));
     assert_eq!(storage.input(3,&crate::harness::context::BACKGROUND_CONTEXT).await.expect("input").expect("present").reason,Some(InputReason::Failed));
 }
+
+// Port of test/harness/pico3/thrown-provider-error.test.ts (senpi#4282): a provider error the
+// stream throws never passes the provider stream boundary, so the generation classifies and
+// redacts it itself before anything records it.
+struct ThrowingModels { calls:std::rc::Rc<std::cell::Cell<u32>>, secret:String }
+impl Models for ThrowingModels {
+    fn resolve(&self,r:&ModelRef)->Option<Model> {
+        let mut model=crate::agent::default_model(); model.provider=r.provider.clone(); model.id=r.model_id.clone(); model.context_window=200_000; model.max_tokens=8192; Some(model)
+    }
+    fn stream(&self,_:&Model,_:RequestOptions,_:&Context)->AssistantStream {
+        self.calls.set(self.calls.get()+1);
+        let failure=format!("Error: 404 {{\"code\":\"model_not_found\"}} x-api-key: {}",self.secret);
+        Box::pin(futures::stream::iter([Err(failure)]))
+    }
+    fn fetch_deferred<'a>(&'a self,_:&'a Model,_:&'a DeferredHandle,_:&'a Context)->LocalBoxFuture<'a,Result<DeferredResult>> { Box::pin(async { panic!("unexpected deferred fetch") }) }
+    fn cancel_deferred<'a>(&'a self,_:&'a Model,_:&'a DeferredHandle,_:&'a Context)->LocalBoxFuture<'a,Result<()>> { Box::pin(async { panic!("unexpected deferred cancel") }) }
+}
+#[tokio::test(flavor="current_thread")]
+async fn a_thrown_model_not_found_is_a_configuration_error_no_retry_and_no_sink_records_the_raw_body() {
+    use std::rc::Rc;
+    tokio::task::LocalSet::new().run_until(async {
+        let ctx=crate::harness::context::background_context();
+        let secret=["zzfixture","4282","thrownQ"].join("");
+        let calls=Rc::new(std::cell::Cell::new(0));
+        let storage=Rc::new(super::super::super::memory::MemoryStorage::new());
+        let mut options=super::super::super::harness::HarnessOptions::new(Rc::new(ThrowingModels {calls:calls.clone(),secret:secret.clone()}));
+        options.root=ConversationSpec {
+            rewindable:Some(decode(&json(&serde_json::json!({"model":{"provider":"anthropic","modelId":"fake-1"}})).expect("rewindable")).expect("rewindable")),
+            sticky:Some(decode(&json(&serde_json::json!({"retry":{"enabled":true,"maxRetries":3,"baseDelayMs":1}})).expect("sticky")).expect("sticky")),
+            ..ConversationSpec::default()
+        };
+        let h=super::super::super::harness::Harness::open(storage.clone(),options,&ctx).await.expect("open");
+        h.resume(&ctx).await.expect("resume");
+        let root=h.root(&ctx).await.expect("root");
+        let input=root.send(SendInput {content:maho_ai::types::UserContent::Text("first".into()),request_id:None,when_busy:None},&ctx).await.expect("send");
+        let failed=tokio::time::timeout(std::time::Duration::from_secs(5),input.wait(&ctx)).await.expect("bounded").expect("input");
+        assert_eq!(failed.reason,Some(InputReason::Failed));
+        assert_eq!(calls.get(),1);
+        let entries=h.entries(EntryScan {conversation_id:root.id,kind:None,with_head:None,before:None,limit:usize::MAX},&ctx).await.expect("entries");
+        let tasks=storage.scan_tasks(TaskScan::default(),&ctx).await.expect("tasks");
+        let recorded=serde_json::to_string(&(entries,tasks)).expect("serialize");
+        assert!(!recorded.contains(&secret));
+        assert!(recorded.contains("[REDACTED]"));
+        h.close(&ctx).await.expect("close");
+    }).await;
+}

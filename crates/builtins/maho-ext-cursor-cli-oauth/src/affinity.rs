@@ -8,6 +8,8 @@ pub struct CursorAffinityOptions<'a> {
     pub affinity_key: Option<&'a str>,
     pub session_id: Option<&'a str>,
     pub pinned_account: Option<&'a str>,
+    /// The user's account order (senpi#3591): tried after the pin, before HRW.
+    pub account_order: Option<&'a [String]>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -19,8 +21,13 @@ impl std::fmt::Display for AllCursorAccountsBlockedError {
         match self.soonest_unblock_at {
             None => f.write_str("All Cursor CLI OAuth accounts are blocked until re-login."),
             Some(at) => {
-                let date = chrono::DateTime::from_timestamp_millis(at as i64).ok_or(std::fmt::Error)?;
-                write!(f, "All Cursor CLI OAuth accounts are blocked until {}.", date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                let date =
+                    chrono::DateTime::from_timestamp_millis(at as i64).ok_or(std::fmt::Error)?;
+                write!(
+                    f,
+                    "All Cursor CLI OAuth accounts are blocked until {}.",
+                    date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                )
             }
         }
     }
@@ -28,14 +35,21 @@ impl std::fmt::Display for AllCursorAccountsBlockedError {
 impl std::error::Error for AllCursorAccountsBlockedError {}
 
 pub fn get_affinity_key<'a>(options: &CursorAffinityOptions<'a>) -> &'a str {
-    options.affinity_key.or(options.session_id).unwrap_or(DEFAULT_CURSOR_AFFINITY_KEY)
+    options
+        .affinity_key
+        .or(options.session_id)
+        .unwrap_or(DEFAULT_CURSOR_AFFINITY_KEY)
 }
 
 fn score(key: &str, name: &str) -> u64 {
     let mut hash = Sha256::new();
-    hash.update(key.as_bytes()); hash.update([0]); hash.update(name.as_bytes());
+    hash.update(key.as_bytes());
+    hash.update([0]);
+    hash.update(name.as_bytes());
     let digest = hash.finalize();
-    u64::from_be_bytes([digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]])
+    u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ])
 }
 
 pub fn rendezvous_order(key: &str, accounts: &[CursorCliAccountSlot]) -> Vec<CursorCliAccountSlot> {
@@ -44,31 +58,88 @@ pub fn rendezvous_order(key: &str, accounts: &[CursorCliAccountSlot]) -> Vec<Cur
     ranked.into_iter().map(|(_, a)| a.clone()).collect()
 }
 
-fn is_blocked(account: &CursorCliAccountSlot, now: f64) -> bool {
-    account.block_reason == Some(BlockReason::AuthError) || account.blocked_until.is_some_and(|until| until > now)
-}
-
-pub fn clear_expired_blocks(accounts: &[CursorCliAccountSlot], now: f64) -> Vec<CursorCliAccountSlot> {
-    accounts.iter().map(|a| {
-        let mut account = a.clone();
-        if account.block_reason != Some(BlockReason::AuthError) && account.blocked_until.is_some_and(|until| until <= now) {
-            account.blocked_until = None; account.block_reason = None;
+/// Moves the named accounts, in the user's order, ahead of the HRW ranking; unknown names are skipped.
+pub fn apply_account_order(
+    order: Option<&[String]>,
+    ranked: Vec<CursorCliAccountSlot>,
+) -> Vec<CursorCliAccountSlot> {
+    let Some(order) = order.filter(|order| !order.is_empty()) else {
+        return ranked;
+    };
+    let mut front: Vec<CursorCliAccountSlot> = Vec::new();
+    for name in order {
+        if front.iter().any(|slot| &slot.name == name) {
+            continue;
         }
-        account
-    }).collect()
+        if let Some(slot) = ranked.iter().find(|slot| &slot.name == name) {
+            front.push(slot.clone());
+        }
+    }
+    let rest: Vec<_> = ranked
+        .into_iter()
+        .filter(|slot| !front.iter().any(|f| f.name == slot.name))
+        .collect();
+    front.extend(rest);
+    front
 }
 
-fn select_unblocked(accounts: &[CursorCliAccountSlot], options: &CursorAffinityOptions<'_>, now: f64) -> Option<CursorCliAccountSlot> {
-    if let Some(pinned) = accounts.iter().find(|a| Some(a.name.as_str()) == options.pinned_account)
-        && !is_blocked(pinned, now) { return Some(pinned.clone()); }
-    rendezvous_order(get_affinity_key(options), accounts).into_iter().find(|a| !is_blocked(a, now))
+fn is_blocked(account: &CursorCliAccountSlot, now: f64) -> bool {
+    account.block_reason == Some(BlockReason::AuthError)
+        || account.blocked_until.is_some_and(|until| until > now)
 }
 
-pub fn select_account(accounts: &[CursorCliAccountSlot], options: &CursorAffinityOptions<'_>, now: f64) -> Result<CursorCliAccountSlot, AllCursorAccountsBlockedError> {
+pub fn clear_expired_blocks(
+    accounts: &[CursorCliAccountSlot],
+    now: f64,
+) -> Vec<CursorCliAccountSlot> {
+    accounts
+        .iter()
+        .map(|a| {
+            let mut account = a.clone();
+            if account.block_reason != Some(BlockReason::AuthError)
+                && account.blocked_until.is_some_and(|until| until <= now)
+            {
+                account.blocked_until = None;
+                account.block_reason = None;
+            }
+            account
+        })
+        .collect()
+}
+
+fn select_unblocked(
+    accounts: &[CursorCliAccountSlot],
+    options: &CursorAffinityOptions<'_>,
+    now: f64,
+) -> Option<CursorCliAccountSlot> {
+    if let Some(pinned) = accounts
+        .iter()
+        .find(|a| Some(a.name.as_str()) == options.pinned_account)
+        && !is_blocked(pinned, now)
+    {
+        return Some(pinned.clone());
+    }
+    apply_account_order(
+        options.account_order,
+        rendezvous_order(get_affinity_key(options), accounts),
+    )
+    .into_iter()
+    .find(|a| !is_blocked(a, now))
+}
+
+pub fn select_account(
+    accounts: &[CursorCliAccountSlot],
+    options: &CursorAffinityOptions<'_>,
+    now: f64,
+) -> Result<CursorCliAccountSlot, AllCursorAccountsBlockedError> {
     select_unblocked(accounts, options, now)
         .or_else(|| select_unblocked(&clear_expired_blocks(accounts, now), options, now))
         .ok_or_else(|| AllCursorAccountsBlockedError {
-            soonest_unblock_at: accounts.iter().filter_map(|a| a.blocked_until).filter(|until| *until > now).min_by(f64::total_cmp),
+            soonest_unblock_at: accounts
+                .iter()
+                .filter_map(|a| a.blocked_until)
+                .filter(|until| *until > now)
+                .min_by(f64::total_cmp),
         })
 }
 
@@ -77,74 +148,215 @@ mod tests {
     use super::*;
     #[test]
     fn blocked_error_formats_numeric_timestamp() {
-        let error=AllCursorAccountsBlockedError {soonest_unblock_at:Some(4000.0)};
-        let mut output=String::new();assert!(std::fmt::write(&mut output,format_args!("{error}")).is_ok());
+        let error = AllCursorAccountsBlockedError {
+            soonest_unblock_at: Some(4000.0),
+        };
+        let mut output = String::new();
+        assert!(std::fmt::write(&mut output, format_args!("{error}")).is_ok());
         assert!(output.contains("1970-01-01T00:00:04.000Z"));
     }
     use crate::accounts::AccountSource;
     fn accounts() -> Vec<CursorCliAccountSlot> {
-        ["alpha", "bravo", "charlie"].map(|name| CursorCliAccountSlot { name: name.into(), display_name: None,
-            access: String::new(), refresh: String::new(), expires: 0.0, source: AccountSource::Login,
-            blocked_until: None, block_reason: None }).into()
+        ["alpha", "bravo", "charlie"]
+            .map(|name| CursorCliAccountSlot {
+                name: name.into(),
+                display_name: None,
+                access: String::new(),
+                refresh: String::new(),
+                expires: 0.0,
+                source: AccountSource::Login,
+                blocked_until: None,
+                block_reason: None,
+            })
+            .into()
     }
     #[test]
     fn stable_hrw_order() {
         let ranked = rendezvous_order("session-01", &accounts());
-        assert_eq!(ranked.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["alpha", "charlie", "bravo"]);
+        assert_eq!(
+            ranked.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["alpha", "charlie", "bravo"]
+        );
     }
     #[test]
     fn only_new_winner_moves() {
-        let pool = accounts(); let mut expanded = pool.clone();
-        let mut delta = pool[0].clone(); delta.name = "delta".into(); expanded.push(delta);
-        let changed: Vec<_> = (1..=6).filter(|i| {
-            let key = format!("session-{i:02}"); let options = CursorAffinityOptions { session_id: Some(&key), ..Default::default() };
-            select_account(&pool, &options, 0.0).unwrap().name != select_account(&expanded, &options, 0.0).unwrap().name
-        }).collect(); assert_eq!(changed, [5]);
+        let pool = accounts();
+        let mut expanded = pool.clone();
+        let mut delta = pool[0].clone();
+        delta.name = "delta".into();
+        expanded.push(delta);
+        let changed: Vec<_> = (1..=6)
+            .filter(|i| {
+                let key = format!("session-{i:02}");
+                let options = CursorAffinityOptions {
+                    session_id: Some(&key),
+                    ..Default::default()
+                };
+                select_account(&pool, &options, 0.0).unwrap().name
+                    != select_account(&expanded, &options, 0.0).unwrap().name
+            })
+            .collect();
+        assert_eq!(changed, [5]);
     }
     #[test]
     fn available_pin_wins() {
-        let options = CursorAffinityOptions { session_id: Some("session-01"), pinned_account: Some("charlie"), ..Default::default() };
-        assert_eq!(select_account(&accounts(), &options, 1000.0).unwrap().name, "charlie");
+        let options = CursorAffinityOptions {
+            session_id: Some("session-01"),
+            pinned_account: Some("charlie"),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&accounts(), &options, 1000.0).unwrap().name,
+            "charlie"
+        );
     }
     #[test]
     fn blocked_pin_falls_through() {
-        let mut pool = accounts(); pool[2].blocked_until = Some(10000.0); pool[2].block_reason = Some(BlockReason::RateLimit);
-        let options = CursorAffinityOptions { session_id: Some("session-01"), pinned_account: Some("charlie"), ..Default::default() };
-        assert_eq!(select_account(&pool, &options, 1000.0).unwrap().name, "alpha");
+        let mut pool = accounts();
+        pool[2].blocked_until = Some(10000.0);
+        pool[2].block_reason = Some(BlockReason::RateLimit);
+        let options = CursorAffinityOptions {
+            session_id: Some("session-01"),
+            pinned_account: Some("charlie"),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&pool, &options, 1000.0).unwrap().name,
+            "alpha"
+        );
     }
     #[test]
     fn elapsed_blocks_clear_except_auth() {
-        let mut pool = accounts(); pool[0].blocked_until = Some(999.0); pool[0].block_reason = Some(BlockReason::RateLimit);
-        pool[1].blocked_until = Some(999.0); pool[1].block_reason = Some(BlockReason::AuthError);
+        let mut pool = accounts();
+        pool[0].blocked_until = Some(999.0);
+        pool[0].block_reason = Some(BlockReason::RateLimit);
+        pool[1].blocked_until = Some(999.0);
+        pool[1].block_reason = Some(BlockReason::AuthError);
         let cleared = clear_expired_blocks(&pool, 1000.0);
-        assert_eq!(cleared[0].blocked_until, None); assert_eq!(cleared[0].block_reason, None); assert_eq!(cleared[1], pool[1]);
+        assert_eq!(cleared[0].blocked_until, None);
+        assert_eq!(cleared[0].block_reason, None);
+        assert_eq!(cleared[1], pool[1]);
     }
     #[test]
     fn blocked_pool_has_soonest_time() {
-        let mut pool = accounts(); pool[0].blocked_until = Some(9000.0); pool[1].blocked_until = Some(4000.0);
+        let mut pool = accounts();
+        pool[0].blocked_until = Some(9000.0);
+        pool[1].blocked_until = Some(4000.0);
         pool[2].block_reason = Some(BlockReason::AuthError);
         let error = select_account(&pool, &Default::default(), 1000.0).unwrap_err();
         assert_eq!(error.soonest_unblock_at, Some(4000.0));
     }
     #[test]
     fn empty_and_auth_blocked_have_no_unblock_time() {
-        assert_eq!(select_account(&[], &Default::default(), 1000.0).unwrap_err().soonest_unblock_at, None);
-        let mut pool = accounts(); for a in &mut pool { a.block_reason = Some(BlockReason::AuthError); }
-        assert_eq!(select_account(&pool, &Default::default(), 1000.0).unwrap_err().soonest_unblock_at, None);
+        assert_eq!(
+            select_account(&[], &Default::default(), 1000.0)
+                .unwrap_err()
+                .soonest_unblock_at,
+            None
+        );
+        let mut pool = accounts();
+        for a in &mut pool {
+            a.block_reason = Some(BlockReason::AuthError);
+        }
+        assert_eq!(
+            select_account(&pool, &Default::default(), 1000.0)
+                .unwrap_err()
+                .soonest_unblock_at,
+            None
+        );
     }
     #[test]
     fn affinity_key_precedence() {
-        assert_eq!(get_affinity_key(&Default::default()), DEFAULT_CURSOR_AFFINITY_KEY);
-        let options = CursorAffinityOptions { affinity_key: Some("explicit"), session_id: Some("session"), pinned_account: None };
+        assert_eq!(
+            get_affinity_key(&Default::default()),
+            DEFAULT_CURSOR_AFFINITY_KEY
+        );
+        let options = CursorAffinityOptions {
+            affinity_key: Some("explicit"),
+            session_id: Some("session"),
+            pinned_account: None,
+            account_order: None,
+        };
         assert_eq!(get_affinity_key(&options), "explicit");
     }
     #[test]
     fn winner_matrix_matches_the_shared_hrw_implementation() {
-        let winners: Vec<_> = (1..=6).map(|i| {
-            let key = format!("session-{i:02}");
-            select_account(&accounts(), &CursorAffinityOptions { session_id: Some(&key), ..Default::default() }, 0.0).unwrap().name
-        }).collect();
-        assert_eq!(winners, ["alpha", "alpha", "alpha", "alpha", "bravo", "bravo"]);
-        assert_eq!(rendezvous_order("session-01", &accounts()).iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["alpha", "charlie", "bravo"]);
+        let winners: Vec<_> = (1..=6)
+            .map(|i| {
+                let key = format!("session-{i:02}");
+                select_account(
+                    &accounts(),
+                    &CursorAffinityOptions {
+                        session_id: Some(&key),
+                        ..Default::default()
+                    },
+                    0.0,
+                )
+                .unwrap()
+                .name
+            })
+            .collect();
+        assert_eq!(
+            winners,
+            ["alpha", "alpha", "alpha", "alpha", "bravo", "bravo"]
+        );
+        assert_eq!(
+            rendezvous_order("session-01", &accounts())
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "charlie", "bravo"]
+        );
+    }
+    #[test]
+    fn stored_account_order_is_tried_after_the_pin_and_before_hrw() {
+        let hrw: Vec<String> = rendezvous_order("ordered", &accounts())
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        let order: Vec<String> = hrw
+            .iter()
+            .rev()
+            .cloned()
+            .chain(["missing".to_owned()])
+            .collect();
+        let options = CursorAffinityOptions {
+            session_id: Some("ordered"),
+            account_order: Some(order.as_slice()),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&accounts(), &options, 0.0).unwrap().name,
+            order[0]
+        );
+        let mut pool = accounts();
+        for slot in &mut pool {
+            if slot.name == order[0] {
+                slot.blocked_until = Some(5000.0);
+                slot.block_reason = Some(BlockReason::RateLimit);
+            }
+        }
+        assert_eq!(
+            select_account(&pool, &options, 1000.0).unwrap().name,
+            order[1]
+        );
+        let pinned = CursorAffinityOptions {
+            pinned_account: Some(hrw[0].as_str()),
+            ..options
+        };
+        assert_eq!(
+            select_account(&accounts(), &pinned, 0.0).unwrap().name,
+            hrw[0]
+        );
+        let empty: [String; 0] = [];
+        let unordered = CursorAffinityOptions {
+            session_id: Some("ordered"),
+            account_order: Some(empty.as_slice()),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&accounts(), &unordered, 0.0).unwrap().name,
+            hrw[0]
+        );
     }
 }

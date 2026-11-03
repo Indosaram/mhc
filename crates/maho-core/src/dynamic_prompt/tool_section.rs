@@ -6,8 +6,12 @@ use super::types::{AvailableTool, ToolCategory};
 use crate::system_prompt::get_eval_only_grep_guideline;
 
 /// `CATEGORY_ORDER`.
-pub const CATEGORY_ORDER: [ToolCategory; 4] =
-    [ToolCategory::Search, ToolCategory::Other, ToolCategory::Session, ToolCategory::Command];
+pub const CATEGORY_ORDER: [ToolCategory; 4] = [
+    ToolCategory::Search,
+    ToolCategory::Other,
+    ToolCategory::Session,
+    ToolCategory::Command,
+];
 
 /// `CATEGORY_LABELS`.
 pub fn category_label(category: ToolCategory) -> &'static str {
@@ -28,14 +32,23 @@ pub fn build_tool_section(
     let mut grouped_tools: Vec<(ToolCategory, Vec<(String, String)>)> = Vec::new();
 
     for tool in tools {
-        let Some(snippet) = tool_snippets.get(&tool.name).map(|snippet| snippet.trim()).filter(|snippet| !snippet.is_empty())
+        let Some(snippet) = tool_snippets
+            .get(&tool.name)
+            .map(|snippet| snippet.trim())
+            .filter(|snippet| !snippet.is_empty())
         else {
             continue;
         };
 
-        match grouped_tools.iter_mut().find(|(category, _)| *category == tool.category) {
+        match grouped_tools
+            .iter_mut()
+            .find(|(category, _)| *category == tool.category)
+        {
             Some((_, existing)) => existing.push((tool.name.clone(), snippet.to_string())),
-            None => grouped_tools.push((tool.category, vec![(tool.name.clone(), snippet.to_string())])),
+            None => grouped_tools.push((
+                tool.category,
+                vec![(tool.name.clone(), snippet.to_string())],
+            )),
         }
     }
 
@@ -43,7 +56,10 @@ pub fn build_tool_section(
     let mut has_visible_tools = false;
 
     for category in CATEGORY_ORDER {
-        let Some((_, category_tools)) = grouped_tools.iter().find(|(candidate, _)| *candidate == category) else {
+        let Some((_, category_tools)) = grouped_tools
+            .iter()
+            .find(|(candidate, _)| *candidate == category)
+        else {
             continue;
         };
         if category_tools.is_empty() {
@@ -70,7 +86,9 @@ pub fn build_tool_section(
         .map(str::to_string)
         .collect();
     let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
-    if let Some(eval_only_grep_guideline) = get_eval_only_grep_guideline(&names, Some(tool_snippets)) {
+    if let Some(eval_only_grep_guideline) =
+        get_eval_only_grep_guideline(&names, Some(tool_snippets))
+    {
         guidelines.insert(0, eval_only_grep_guideline);
     }
     if !guidelines.is_empty() {
@@ -91,7 +109,10 @@ mod tests {
     use crate::dynamic_prompt::tool_categorization::categorize_tools;
 
     fn snippets(entries: &[(&str, &str)]) -> HashMap<String, String> {
-        entries.iter().map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string())).collect()
+        entries
+            .iter()
+            .map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string()))
+            .collect()
     }
 
     #[test]
@@ -154,7 +175,76 @@ mod tests {
     #[test]
     fn a_snippet_is_trimmed_before_it_is_rendered() {
         let tools = categorize_tools(&["read".to_string()]);
-        let section = build_tool_section(&tools, &snippets(&[("read", "  Read file contents  ")]), &[]);
+        let section = build_tool_section(
+            &tools,
+            &snippets(&[("read", "  Read file contents  ")]),
+            &[],
+        );
         assert!(section.ends_with("- read: Read file contents"));
+    }
+
+    #[test]
+    fn keeps_withheld_grep_callable_guidance_without_advertising_grep_or_bash() {
+        use crate::dynamic_prompt::build::{
+            BuildDynamicSystemPromptOptions, build_dynamic_system_prompt,
+        };
+        let tool_snippets = snippets(&[
+            ("read", "Read files"),
+            ("eval", "Evaluate code"),
+            ("grep", "Search contents"),
+            ("bash", "Run commands"),
+        ]);
+        let tools = categorize_tools(&["read".to_string(), "eval".to_string()]);
+        let section = build_tool_section(&tools, &tool_snippets, &[]);
+        let advertised: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.strip_prefix("- "))
+            .filter_map(|rest| rest.split_once(':').map(|(name, _)| name))
+            .filter(|name| name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+            .collect();
+        assert_eq!(advertised, vec!["read", "eval"]);
+        let call_start = section.find("tool.grep({").expect("tool.grep call");
+        let call = &section[call_start + "tool.grep({".len()..];
+        let parameters: Vec<&str> = call[..call.find('}').expect("closing brace")]
+            .split(',')
+            .map(str::trim)
+            .collect();
+        assert_eq!(parameters, vec!["pattern", "path"]);
+        let options = BuildDynamicSystemPromptOptions {
+            custom_prompt: None,
+            append_system_prompt: None,
+            on_parts: None,
+            cwd: "/workspace".to_string(),
+            selected_tools: vec!["read".to_string(), "eval".to_string()],
+            tool_snippets,
+            prompt_guidelines: Vec::new(),
+            context_files: Vec::new(),
+            skills: Vec::new(),
+            tuning_section: None,
+            core_prompt: None,
+            workstation_dialect: None,
+            surface: Default::default(),
+        };
+        assert!(build_dynamic_system_prompt(&options).contains(&section));
+    }
+
+    #[test]
+    fn omits_eval_only_grep_calls_when_grep_is_directly_selected() {
+        for selected in [true, false] {
+            let tools = if selected {
+                categorize_tools(&["grep".to_string()])
+            } else {
+                Vec::new()
+            };
+            let tool_snippets = if selected {
+                snippets(&[("grep", "Search contents")])
+            } else {
+                snippets(&[])
+            };
+            assert!(
+                !build_tool_section(&tools, &tool_snippets, &[]).contains("tool.grep("),
+                "selected={selected}"
+            );
+        }
     }
 }

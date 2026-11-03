@@ -14,7 +14,7 @@ pub use ax::{AxNode, AxQuery, AxSnapshot, AxSnapshotOptions};
 pub use capture::{
     CaptureCaps, CaptureMode, CaptureResult, DEFAULT_CAPTURE_MAX_BYTES, DesktopCapture,
 };
-pub use display::{DesktopCapabilities, DesktopDisplay, DisplaySelector};
+pub use display::{DesktopCapabilities, DesktopDisplay, DisplaySelector, InterventionWatch};
 pub use window::{DesktopPoint, DesktopWindow, FrontWindow, PointerOptions, Target};
 
 /// `session.open` parameters supplied by the host.

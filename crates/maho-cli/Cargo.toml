@@ -43,6 +43,7 @@ maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
+maho-server = { path = "../maho-server" }
 maho-tool-child = { path = "../maho-tool-child" }
 maho-ext-api = { path = "../maho-ext-api" }
 maho-codemode = { path = "../maho-codemode" }
@@ -65,11 +66,13 @@ maho-ext-imagegen = { path = "../builtins/maho-ext-imagegen" }
 maho-ext-openai-image-gen = { path = "../builtins/maho-ext-openai-image-gen" }
 maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
 maho-ext-btw = { path = "../builtins/maho-ext-btw" }
-maho-ext-llama = { path = "../builtins/maho-ext-llama" }
 maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
 maho-ext-handoff-hint = { path = "../builtins/maho-ext-handoff-hint" }
 maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
 maho-ext-goal = { path = "../builtins/maho-ext-goal" }
+maho-ext-schedule = { path = "../builtins/maho-ext-schedule" }
+maho-ext-html-render = { path = "../builtins/maho-ext-html-render" }
+maho-ext-vertex-model-garden = { path = "../builtins/maho-ext-vertex-model-garden" }
 maho-ext-rules = { path = "../builtins/maho-ext-rules" }
 maho-ext-compaction = { path = "../builtins/maho-ext-compaction" }
 maho-ext-host = { path = "../maho-ext-host" }
@@ -157,6 +160,8 @@ maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subsc
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
 async-trait = "=0.1.92"
 anyhow = "=1.0.104"
+futures.workspace = true
+tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"] }
 crossterm = "=0.29.0"
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -170,6 +170,7 @@ fn given_team_with_suspended_member() -> Harness {
             state_dir: state_dir_config(&project_dir),
             team_bounds: bounds,
             lead_session_id: LEAD_SESSION_ID.to_string(),
+            root_session_id: None,
             spawn_depth: 1,
             now: None,
             member_extension: Some(member_extension()),

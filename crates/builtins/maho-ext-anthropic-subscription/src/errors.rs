@@ -199,10 +199,62 @@ pub fn classify_sdk_error_through_failover(error: &Value) -> SdkErrorClassificat
     classify_sdk_error(underlying_error(error))
 }
 
+/// `rateLimitModelFamily` (senpi#2555): the model family a rate-limit phrase names ("Opus limit",
+/// "Fable weekly limit"), lowercased; an account-wide window never names one.
+pub fn rate_limit_model_family(text: &str) -> Option<String> {
+    static FAMILY: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)\b(opus|sonnet|haiku|fable|mythos)(?:\s+\d+(?:\.\d+)?)?(?:\s+(?:weekly|daily|monthly|session|\d+-hour))?\s+limit\b")
+            .expect("model family pattern")
+    });
+    FAMILY
+        .captures(text)
+        .map(|captures| captures[1].to_lowercase())
+}
+
+/// `classifySdkError(...).modelFamily`: set only on a rate limit that binds one model family, so only
+/// that family is blocked. Kept beside the `Copy` classification instead of inside it.
+pub fn sdk_error_model_family(error: &Value) -> Option<String> {
+    let error = underlying_error(error);
+    if classify_sdk_error(error).kind != SdkErrorKind::RateLimit {
+        return None;
+    }
+    let text = error
+        .as_str()
+        .or_else(|| error["message"].as_str())
+        .or_else(|| error["error"].as_str())
+        .map(String::from)
+        .unwrap_or_else(|| error.to_string());
+    rate_limit_model_family(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn rate_limits_naming_a_model_family_carry_it() {
+        assert_eq!(
+            sdk_error_model_family(&json!(
+                "You've hit your Fable limit · resets 5pm (rate_limit)"
+            )),
+            Some("fable".into())
+        );
+        assert_eq!(
+            sdk_error_model_family(
+                &json!({"original":{"message":"Opus 4.1 weekly limit reached (rate_limit)"}})
+            ),
+            Some("opus".into())
+        );
+        assert_eq!(
+            sdk_error_model_family(&json!("You've hit your session limit (rate_limit)")),
+            None
+        );
+        assert_eq!(
+            sdk_error_model_family(&json!("Sonnet limit (overloaded)")),
+            None
+        );
+        assert_eq!(rate_limit_model_family("weekly limit"), None);
+    }
     #[test]
     fn long_context_refusal_is_not_a_rate_limit() {
         assert_eq!(

@@ -40,7 +40,26 @@ pub async fn wait_until(not_before: i64, signal: &AbortSignal) -> Result<(), Abo
     }
 }
 
+/// Millisecond clock read by the drive procedures.
+pub type DriveClock = std::sync::Arc<dyn Fn() -> i64 + Send + Sync>;
+
+tokio::task_local! {
+    static DRIVE_CLOCK: DriveClock;
+}
+
+/// Test seam standing in for the pinned suites' faked `Date.now()`: runs `future` with `clock`
+/// replacing the wall clock for every drive `now_ms` read made inside it. Outside such a scope
+/// the wall clock is used.
+#[doc(hidden)]
+pub async fn with_drive_clock<F: std::future::Future>(clock: DriveClock, future: F) -> F::Output {
+    DRIVE_CLOCK.scope(clock, future).await
+}
+
 pub(crate) fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis() as i64)
+    DRIVE_CLOCK.try_with(|clock| clock()).unwrap_or_else(|_| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as i64)
+    })
 }

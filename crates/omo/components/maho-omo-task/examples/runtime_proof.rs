@@ -320,7 +320,7 @@ async fn dispatch(
     }
     Ok(())
 }
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let path = root.path().to_path_buf();
@@ -429,6 +429,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::New,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -493,6 +494,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Resume,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -641,6 +643,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             parent_session_id: "s".into(),
             root_session_id: "s".into(),
+            parent_model: None,
         })?;
     let configured = dag.scheduler(&started.snapshot.run_id, "s")?;
     let (release, released) = mpsc::channel();
@@ -745,6 +748,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::New,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -753,6 +757,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     // The next session_start schedules this core-started run (TS recoverPausedRuns -> ensureScheduled).
     // Hold its child start so the run stays live and its scheduler quiescent across the rebind below;
     // otherwise its checkpoint writes race the rebind attach and arm a debounce beside the refresh.
@@ -788,11 +793,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             parent_session_id: context.session_manager.session_id().into(),
             root_session_id: context.session_manager.session_id().into(),
+            parent_model: None,
         })?;
     dispatch(
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Resume,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -801,6 +808,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     pending_started.recv_timeout(Duration::from_secs(10))?;
     // The run's ring-1 journal subscribers drain on their own threads and durably commit a coalesced
     // StreamOverflow marker; that checkpoint write reaches DagStatusUi::schedule_sync. Await the
@@ -865,6 +873,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Resume,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -873,6 +882,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &context,
     )
     .await?;
+    dag.last_attach().await;
     assert_eq!(
         status_timers.count(),
         1,

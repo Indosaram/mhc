@@ -47,7 +47,7 @@ use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
 use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
+    AssistantMessageEventStream,
 };
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
@@ -1665,7 +1665,7 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();
@@ -1679,6 +1679,7 @@ pub fn stream(
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,

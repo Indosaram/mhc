@@ -21,6 +21,7 @@ utils = { package = "maho-utils", path = "../../utils" }
 maho-model-core.workspace = true
 maho-omo-lsp = { path = "../maho-omo-lsp" }
 maho-omo-git-master = { path = "../maho-omo-git-master" }
+maho-omo-bundled-skills = { path = "../maho-omo-bundled-skills" }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 futures.workspace = true
