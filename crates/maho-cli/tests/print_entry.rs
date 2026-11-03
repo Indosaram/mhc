@@ -48,6 +48,99 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
     assert!(stderr.contains("Warning: No models match pattern \"nomatch-fixture*\""), "{stderr}");
 }
 
+/// A persisted print run holds its session file before the first write, and the holder's boot and
+/// process-start identity is read in process: with no shell on `PATH` the session is still written.
+/// The `powershell` probe it replaces took 47-70 s on a loaded Windows runner before the first request.
+#[tokio::test]
+async fn real_print_entry_persists_its_session_with_no_shell_on_path() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
+    let address = listener.local_addr().expect("print-entry fixture operation");
+    let dir = tempfile::tempdir().expect("print-entry fixture operation");
+    std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    let agent = dir.path().join("agent");
+    std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("print-entry fixture operation");
+    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
+        "api":"openai-completions", "baseUrl":format!("http://{address}/v1"), "apiKey":"offline-fixture",
+        "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
+    }}}).to_string()).expect("print-entry fixture operation");
+    let sessions = dir.path().join("sessions");
+    let empty_path = dir.path().join("empty-path");
+    std::fs::create_dir(&empty_path).expect("print-entry fixture operation");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
+    command
+        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent).env("PATH", &empty_path)
+        .env_remove("__PI_INTERNAL_SPAWN")
+        .args(["-p", "--offline", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--session-dir"])
+        .arg(&sessions)
+        .args(["--model", "offline/offline", "hello"])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if cfg!(windows) {
+        command.env("USERPROFILE", dir.path());
+    }
+    let child = command.spawn().expect("print-entry fixture operation");
+    let output = tokio::time::timeout(SAFETY_BOUND, async {
+        serve_one_completion(&listener).await?;
+        child.wait_with_output().await
+    })
+    .await
+    .expect("print entry finished within the safety bound")
+    .expect("print-entry fixture operation");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "offline acceptance\n", "{stderr}");
+    assert!(!stderr.contains("Failed to persist session entry"), "{stderr}");
+    let entries: Vec<serde_json::Value> = std::fs::read_dir(&sessions)
+        .expect("the session directory exists")
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
+        .flat_map(|entry| {
+            std::fs::read_to_string(entry.path())
+                .expect("print-entry fixture operation")
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("session entry is JSON"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(entries.iter().any(|entry| entry["type"] == "session"), "the session header is persisted: {entries:?}; {stderr}");
+    assert!(
+        entries.iter().any(|entry| entry["type"] == "message"
+            && entry["message"]["role"] == "assistant"
+            && entry["message"].to_string().contains("offline acceptance")),
+        "the assistant reply is persisted: {entries:?}; {stderr}"
+    );
+}
+
+/// Answers ONE chat-completions request with a fixed streamed reply.
+async fn serve_one_completion(listener: &tokio::net::TcpListener) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut connection, _) = listener.accept().await?;
+    let mut request = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        let count = connection.read(&mut chunk).await?;
+        if count == 0 { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "request closed before body")); }
+        request.extend_from_slice(&chunk[..count]);
+        if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&request[..end]);
+            let length = headers.lines().find_map(|line| line.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length")).map(|(_, value)| value.trim()))
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing content length"))?
+                .parse::<usize>().map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            if request.len() >= end + 4 + length { break; }
+        }
+    }
+    let body = concat!(
+        "data: {\"id\":\"offline\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"offline\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"offline acceptance\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"offline\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"offline\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    connection.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+    connection.flush().await
+}
+
 async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");

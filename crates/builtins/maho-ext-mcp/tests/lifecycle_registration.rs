@@ -181,6 +181,16 @@ impl Extension for RecordingMcpExtension {
     }
 }
 
+/// Registers the MCP lifecycle and records every bus a factory run received, so a test can keep the
+/// pre-reload runtime's bus the way the old runtime's background workers do.
+struct CapturingMcpExtension {registry: Arc<HostMcpRegistry>, buses: Arc<std::sync::Mutex<Vec<EventBus>>>}
+impl Extension for CapturingMcpExtension {
+    fn register(&self, api: &mut ExtensionApi) {
+        self.buses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(api.events.clone());
+        maho_ext_mcp::index::register_mcp_lifecycle(api, self.registry.clone(), 1);
+    }
+}
+
 #[tokio::test]
 async fn sizes_only_session_start_skips_the_builtin_mcp_attach() {
     // agent-session.ts emits `sizesOnly: true` for a sizes-only startup; index.ts returns before attach.
@@ -223,4 +233,59 @@ async fn sizes_only_session_start_skips_the_builtin_mcp_attach() {
         session.dispose().await;
         registry.dispose().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn wire_status_published_by_the_pre_reload_runtime_is_dropped_without_panicking() {
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig};
+    use maho_ext_mcp::service_types::{McpWireAuthStatus, McpWireStatusServer, McpWireStatusSnapshot};
+    let temp = tempfile::tempdir().unwrap();
+    let cwd_string = temp.path().to_string_lossy().into_owned();
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
+    let model = provider.get_model(Some("faux-1")).expect("faux-1 model");
+    let streams = faux_streams(provider.core.clone());
+    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)));
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")), auth_path: Some(temp.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    }).expect("valid model runtime");
+    let session = AgentSession::new(AgentSessionConfig {
+        agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+            initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
+            stream_fn: Some(stream_fn), ..Default::default()
+        }),
+        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd_string, None, None),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+        cwd: cwd_string.clone(), agent_dir: Some(cwd_string), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+        model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
+        initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None,
+        allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+        session_start_event: None, auto_title_sessions: Some(false),
+    }).unwrap();
+    let registry = Arc::new(HostMcpRegistry::default());
+    let buses = Arc::new(std::sync::Mutex::new(Vec::new()));
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CapturingMcpExtension {registry: registry.clone(), buses: buses.clone()})], context())).await;
+    // Given a session whose MCP runtime was replaced by a config reload
+    assert!(!session.reload().await.expect("reload").cancelled);
+    let (stale, _live) = {
+        let buses = buses.lock().unwrap();
+        assert_eq!(buses.len(), 2, "the reload must re-run the MCP factory on a fresh runtime");
+        (buses[0].clone(), buses[1].clone())
+    };
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<McpWireStatusSnapshot>();
+    let subscription = session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(move |snapshot| { let _ = send.send(snapshot.clone()); })).await.expect("runner bound");
+    // When an old-runtime worker publishes its wire status after the reload
+    let snapshot = McpWireStatusSnapshot {servers: vec![McpWireStatusServer {name: "stale".into(), server_info: None, tools: Vec::new(), resources: Vec::new(), resource_templates: Vec::new(), auth_status: McpWireAuthStatus::Unsupported, status: None}]};
+    let worker = tokio::spawn(async move { maho_ext_mcp::index::publish_wire_status(&stale, &snapshot) });
+    // Then the worker finishes without panicking, reports the stale runtime as its typed outcome,
+    // and the stale snapshot reaches no live consumer
+    let joined = worker.await;
+    assert!(joined.is_ok(), "publishing on the stale runtime panicked: {joined:?}");
+    assert!(format!("{joined:?}").contains("stale after session replacement or reload"), "expected the stale-runtime failure as the publish outcome, got {joined:?}");
+    assert!(receive.try_recv().is_err(), "a stale-runtime snapshot must not reach the live session");
+    assert!(session.mcp_wire_status_snapshot::<McpWireStatusSnapshot>().is_none_or(|retained| retained.servers.iter().all(|server| server.name != "stale")));
+    drop(subscription);
+    session.dispose().await;
+    registry.dispose().await.unwrap();
 }

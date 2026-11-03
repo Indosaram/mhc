@@ -30,8 +30,10 @@ pub fn normalize_relative_path(filename: &Path) -> Option<PathBuf> {
     (!normalized.as_os_str().is_empty()).then_some(normalized)
 }
 pub struct WatchTarget { pub id: String, pub kind: WatchKind, pub path: PathBuf, pub allow_list: Option<Vec<PathBuf>>, pub filter: Option<WatchFilter> }
+/// `directories` lists the changed paths that are an allowed directory appearing or vanishing,
+/// as opposed to a file whose content was created, edited or removed.
 #[derive(Default)]
-pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf> }
+pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf>, pub directories: Vec<PathBuf> }
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
@@ -47,14 +49,24 @@ impl NativeWatchEngine {
         let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source, close_completion: None, clock: Arc::new(TokioWatchClock) };
-        state.reconcile()?;
+        state.subscribe_wanted()?;
         Ok(state)
     }
     pub fn set_clock(&mut self, clock: Arc<dyn WatchClock>) { self.clock = clock; }
+    /// Re-aligns subscriptions with the scanned directories after a change. A directory first
+    /// subscribed here was scanned before its watch existed, so a file written into it in between
+    /// raised no event: queue a rescan of it so that file is still reported as a change.
     fn reconcile(&mut self) -> Result<(), String> {
+        for path in self.subscribe_wanted()? {
+            if self.sender.send(Some(path)).is_ok() { self.signal.notify_one(); }
+        }
+        Ok(())
+    }
+    fn subscribe_wanted(&mut self) -> Result<Vec<PathBuf>, String> {
         let wanted = self.engine.watched_directories();
         let removed: Vec<_> = self.subscriptions.keys().filter(|path| !wanted.contains(*path)).cloned().collect();
         for path in removed { if let Some(mut subscription) = self.subscriptions.remove(&path) { subscription.close()?; } }
+        let mut added = Vec::new();
         for path in wanted {
             if self.subscriptions.contains_key(&path) { continue; }
             let sender = self.sender.clone();
@@ -76,9 +88,10 @@ impl NativeWatchEngine {
                 if sender.send(affected).is_ok() { signal.notify_one(); }
             }), Arc::clone(&self.on_error))?;
             subscription.ready()?;
-            self.subscriptions.insert(path, subscription);
+            self.subscriptions.insert(path.clone(), subscription);
+            added.push(path);
         }
-        Ok(())
+        Ok(added)
     }
     pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
         let first = self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
@@ -180,6 +193,7 @@ impl ConfigReloadWatchEngine {
     }
     fn evaluate_paths(&mut self, paths: Option<&BTreeSet<PathBuf>>) -> Result<RealChange, std::io::Error> {
         let mut changes = BTreeMap::new();
+        let mut directories = BTreeSet::new();
         if self.closed { return Ok(RealChange::default()); }
         for (target, state) in self.targets.iter().zip(&mut self.states) {
             let next = if let Some(paths) = paths {
@@ -196,14 +210,14 @@ impl ConfigReloadWatchEngine {
             } else { scan(target, self.on_error.as_ref(), &self.hash_file)? };
             for (path, hash) in &next.hashes { if state.hashes.get(path) != Some(hash) { changes.insert(path.clone(), (!state.hashes.contains_key(path), false)); } }
             for path in state.hashes.keys() { if !next.hashes.contains_key(path) { changes.insert(path.clone(), (false, true)); } }
-            for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { changes.insert(path.clone(), (true, false)); } }
-            for path in &state.allowed_directories { if !next.allowed_directories.contains(path) { changes.insert(path.clone(), (false, true)); } }
+            for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (true, false)); } }
+            for path in &state.allowed_directories { if !next.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (false, true)); } }
             *state = next;
         }
         let changed_paths = changes.keys().cloned().collect();
         let created = changes.iter().filter(|(_, flags)| flags.0).map(|(path, _)| path.clone()).collect();
         let deleted = changes.iter().filter(|(_, flags)| flags.1).map(|(path, _)| path.clone()).collect();
-        Ok(RealChange { changed_paths, created, deleted })
+        Ok(RealChange { changed_paths, created, deleted, directories: directories.into_iter().collect() })
     }
 }
 fn matches(target: &WatchTarget, relative: &Path) -> bool {

@@ -41,10 +41,8 @@ pub fn extract_zip_archive(
     let mut archive = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let name = entry.name().replace('\\', "/");
-        if name.starts_with('/')
-            || (name.as_bytes().get(1) == Some(&b':') && name.as_bytes()[0].is_ascii_alphabetic())
-        {
+        let name = entry.name()?.replace('\\', "/");
+        if name.starts_with('/') || (name.as_bytes().get(1) == Some(&b':') && name.as_bytes()[0].is_ascii_alphabetic()) {
             return Err(std::io::Error::other(format!("absolute path: {name}")).into());
         }
         if name.split('/').any(|part| part == "..") {
