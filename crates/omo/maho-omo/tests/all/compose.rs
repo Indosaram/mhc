@@ -119,7 +119,7 @@ fn pycache_prefix_goes_to_the_user_cache_unless_the_user_set_python_bytecode_var
         let logger = Arc::new(RecordingLogger::new());
         let provisioning = maho_omo::ProvisioningOptions {
             env: Some(Arc::new(move |name: &str| match name {
-                "XDG_CACHE_HOME" => Some("/cache".to_owned()),
+                "XDG_CACHE_HOME" | "LOCALAPPDATA" => Some("/cache".to_owned()),
                 n if Some(n) == set => Some(String::new()),
                 _ => None,
             })),

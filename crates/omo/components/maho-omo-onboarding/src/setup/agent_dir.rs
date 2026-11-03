@@ -41,15 +41,25 @@ mod tests {
 
     #[test]
     fn an_explicit_directory_wins_in_order_and_blank_values_are_unset() {
+        // Overrides go through `resolve`, so they are absolute on this platform, as upstream's are.
+        let root = std::env::temp_dir();
+        let home = root.join("h");
+        let home = home.to_str().expect("utf-8 temp dir");
         let mut env = BTreeMap::new();
         assert_eq!(
-            canonical_agent_dir(&env, "/h"),
-            PathBuf::from("/h/.omo/agent")
+            canonical_agent_dir(&env, home),
+            Path::new(home).join(".omo").join("agent")
         );
-        env.insert("PI_CODING_AGENT_DIR".into(), "/pi".into());
+        env.insert(
+            "PI_CODING_AGENT_DIR".into(),
+            root.join("pi").to_string_lossy().into_owned(),
+        );
         env.insert("SENPI_CODING_AGENT_DIR".into(), "  ".into());
-        assert_eq!(canonical_agent_dir(&env, "/h"), PathBuf::from("/pi"));
-        env.insert("OMO_CODING_AGENT_DIR".into(), "/omo".into());
-        assert_eq!(canonical_agent_dir(&env, "/h"), PathBuf::from("/omo"));
+        assert_eq!(canonical_agent_dir(&env, home), root.join("pi"));
+        env.insert(
+            "OMO_CODING_AGENT_DIR".into(),
+            root.join("omo").to_string_lossy().into_owned(),
+        );
+        assert_eq!(canonical_agent_dir(&env, home), root.join("omo"));
     }
 }

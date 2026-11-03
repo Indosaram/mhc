@@ -166,7 +166,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let cache = root.path().join("cache/pi-ast-grep/bin");
+        let cache = root.path().join("cache").join("pi-ast-grep").join("bin");
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("bin dir");
         let path_sg = bin.join(SG);
