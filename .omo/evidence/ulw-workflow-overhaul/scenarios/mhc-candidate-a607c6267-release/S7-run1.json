@@ -1,0 +1,70 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 1,
+  "exitCode": 143,
+  "inputTokens": 461790,
+  "outputTokens": 12204,
+  "toolCallNames": [
+    "read",
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "Both parsers have real bugs, and several doc-comment claims don't match the code. I'll write the report now.",
+  "toolArgs": [
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/ulw-research/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/browser/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/ultimate-browsing/SKILL.md\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Locate the fixture in the working directory\",\"code\":\"const r = await Bun.$`pwd; ls -la; find . -maxdepth 4 -ipath '*fixture*' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -50`.nothrow().text(); print(r)\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`find . -path ./.git -prune -o -type f -print | head -80; echo ---; cat Cargo.toml slow.sh; echo ---; git log --oneline | head; echo ---; wc -l $(find src -type f)`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Inspect project files\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`for f in src/lib.rs src/parser_a.rs src/parser_b.rs src/cli.rs; do echo \\\"=== $f\\\"; cat -n $f; done; echo; grep -rn \\\"parser_\\\" src; ls .omo; git status --short`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Read both parsers and their callers\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"src/parser_a.rs\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"src/parser_b.rs\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"src/lib.rs\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"src/cli.rs\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const dir = \\\"/tmp/pcmp\\\"; await Bun.$`rm -rf ${dir} && mkdir -p ${dir}`;\\nawait Bun.$`cp src/parser_a.rs src/parser_b.rs ${dir}/`;\\nawait Bun.write(dir + \\\"/main.rs\\\", `\\nmod parser_a; mod parser_b;\\nuse parser_a::*; use parser_b::*;\\nfn ev_a(e:&Expr)->i64{match e{Expr::Number(n)=>*n,Expr::Binary(l,o,r)=>{let(a,b)=(ev_a(l),ev_a(r));if *o=='+'{a+b}else{a-b}}}}\\nfn ev_b(e:&AstNode)->i64{match e{AstNode::Val(n)=>*n,AstNode::Op(o,l,r)=>{let(a,b)=(ev_b(l),ev_b(r));if *o=='+'{a+b}else{a-b}}}}\\nfn main(){\\n for s in [\\\"1+2\\\",\\\"1 +2\\\",\\\"1 + 2\\\",\\\"10-2-3\\\",\\\"1 2\\\",\\\"1+\\\",\\\"+1\\\",\\\"\\\",\\\"99999999999999999999\\\",\\\"1+2x\\\"]{\\n  let a=RecursiveDescentParser::new(s).parse();\\n  let toks:Vec<String>=s.split_whitespace().map(String::from).collect();\\n  println!(\\\"A {:?} -> {:?} {}\\\",s,a,a.as_ref().map(|e|ev_a(e).to_string()).unwrap_or_default());\\n }\\n for t in [vec![\\\"1\\\",\\\"+\\\",\\\"2\\\"],vec![\\\"10\\\",\\\"-\\\",\\\"2\\\",\\\"-\\\",\\\"3\\\"],vec![\\\"1\\\",\\\"2\\\",\\\"+\\\"],vec![\\\"1\\\",\\\"+\\\"],vec![],vec![\\\"1\\\",\\\"*\\\",\\\"2\\\"],vec![\\\"+\\\",\\\"1\\\",\\\"2\\\"],vec![\\\"1\\\",\\\"+\\\",\\\"2\\\",\\\"-\\\",\\\"3\\\"],vec![\\\"1\\\",\\\"2\\\",\\\"3\\\"]]{\\n  let t:Vec<String>=t.into_iter().map(String::from).collect();\\n  let b=ShiftReduceParser::parse(&t);\\n  println!(\\\"B {:?} -> {:?} {}\\\",t,b,b.as_ref().map(|e|ev_b(e).to_string()).unwrap_or_default());\\n }\\n}`);\\nconst r = await Bun.$`cd ${dir} && rustc --edition 2021 -A warnings main.rs -o m 2>&1 && ./m; rustc --version`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Run both parsers on probe inputs in /tmp\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}

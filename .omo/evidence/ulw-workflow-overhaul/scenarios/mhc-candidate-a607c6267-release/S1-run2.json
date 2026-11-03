@@ -1,0 +1,34 @@
+{
+  "scenarioId": "S1",
+  "scenarioName": "read-only ask",
+  "runIndex": 2,
+  "exitCode": 0,
+  "inputTokens": 79773,
+  "outputTokens": 750,
+  "toolCallNames": [
+    "ast_grep_search",
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "`fn add` is defined at `src/math.rs:1`:\n\n```rust\npub fn add(a: i32, b: i32) -> i32 {\n```\n\nIt's the only match in the repo. A text search found it. The AST search found nothing, probably because it matches whole function items and this definition didn't fit the pattern.",
+  "toolArgs": [
+    {
+      "name": "ast_grep_search",
+      "args": "{\"pattern\":\"fn add($$$) { $$$ }\",\"lang\":\"rust\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Search the repo for definitions of `add`\",\"code\":\"const r = await tool.grep({ pattern: \\\"\\\\\\\\bfn\\\\\\\\s+add\\\\\\\\b\\\" });\\nprint(r.text);\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "failed"
+}

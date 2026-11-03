@@ -1,0 +1,30 @@
+omo-senpi ast-grep skipped: staged MCP runtime is missing (/home/projects/mhc-wt/bin/ast-grep-mcp)
+Warning: Model "offline-haiku" not found for provider "offline". Using custom model id.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❯ ulw hello                                                                                         
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+~/work                                                                 ctx 0% 0/128K   offline-haiku
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

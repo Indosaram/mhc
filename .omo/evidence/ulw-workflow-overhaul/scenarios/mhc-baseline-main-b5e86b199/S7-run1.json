@@ -1,0 +1,53 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 1,
+  "exitCode": 143,
+  "inputTokens": 430365,
+  "outputTokens": 9660,
+  "toolCallNames": [
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "The doc comments make claims the code may not back up. I'll check them by running both parsers in a scratch copy.",
+  "toolArgs": [
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Read ulw-research skill, find the fixture and check memory/cwd\",\"code\":\"const [skill, pwd, fx, mem] = await parallel([\\n  async()=>read('/home/projects/mhc/assets/omo-latest/skills/ulw-research/SKILL.md'),\\n  async()=>(await Bun.$`pwd && ls -la && git status --short | head -20`.nothrow().text()),\\n  async()=>(await Bun.$`find . -ipath '*fixture*' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -50`.nothrow().text()),\\n  async()=>(await Bun.$`ls ~/.omo 2>/dev/null; ls /home/projects/ulwbench-home 2>/dev/null | head`.nothrow().text()),\\n]);\\nprint(skill.slice(0,6000)); print('---PWD---\\\\n'+pwd); print('---FIXTURE---\\\\n'+fx); print('---MEM---\\\\n'+mem);\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"print(await Bun.$`find src .omo -type f | head -50; echo ---; cat Cargo.toml slow.sh; echo ---; git log --oneline | head; wc -l $(find src -type f)`.nothrow().text())\",\"language\":\"js\",\"summary\":\"List repo files and sizes\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"print(await Bun.$`for f in src/lib.rs src/parser_a.rs src/parser_b.rs src/cli.rs; do echo \\\"=== $f\\\"; cat -n $f; done; ls -R .omo`.nothrow().text())\",\"language\":\"js\",\"summary\":\"Read both parsers and their callers\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const o=[];for (const f of ['src/lib.rs','src/parser_a.rs','src/parser_b.rs','src/cli.rs']) o.push('=== '+f+'\\\\n'+(await Bun.file(f).text()).split('\\\\n').map((l,i)=>`${i+1}: ${l}`).join('\\\\n'));print(o.join('\\\\n'))\",\"language\":\"js\",\"summary\":\"Read parser sources\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const T=(await Bun.$`mktemp -d`.text()).trim();\\nawait Bun.$`cp -r Cargo.toml src ${T}/`;\\nawait write(T+'/src/main.rs',`use ulw_bench_fixture::parser_a::*; use ulw_bench_fixture::parser_b::*;\\nfn toks(s:&str)->Vec<String>{s.split_whitespace().map(String::from).collect()}\\nfn main(){\\n for s in [\\\"1 + 2\\\",\\\"1 - 2 - 3\\\",\\\"10 - 4 + 2\\\",\\\"1 * 2\\\",\\\"1 2\\\",\\\"\\\",\\\"-5\\\",\\\"99999999999999999999\\\"] {\\n  println!(\\\"A {:?} => {:?}\\\", s, RecursiveDescentParser::new(s).parse());\\n  println!(\\\"B {:?} => {:?}\\\", s, ShiftReduceParser::parse(&toks(s)));\\n }\\n println!(\\\"B tokens [1,x,+,2] => {:?}\\\", ShiftReduceParser::parse(&[\\\"1\\\".into(),\\\"x\\\".into(),\\\"+\\\".into(),\\\"2\\\".into()]));\\n println!(\\\"B tokens [1,+] => {:?}\\\", ShiftReduceParser::parse(&[\\\"1\\\".into(),\\\"+\\\".into()]));\\n let deep=vec![\\\"1\\\";1].join(\\\"\\\"); let _=deep;\\n let big=(0..200000).map(|_|\\\"1\\\").collect::<Vec<_>>().join(\\\"+\\\");\\n println!(\\\"A 200k terms ok={}\\\", RecursiveDescentParser::new(&big).parse().is_ok());\\n}`);\\nconst r=await Bun.$`cd ${T} && cargo run -q 2>&1 | tail -30`.env({...process.env,TMPDIR:T,CARGO_TARGET_DIR:T+'/t'}).nothrow().text();\\nprint(r); globalThis.T=T;\",\"language\":\"js\",\"summary\":\"Run both parsers on probe inputs in a scratch copy\",\"timeout\":120}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await write(T+'/src/main.rs',`use ulw_bench_fixture::parser_a::*; use ulw_bench_fixture::parser_b::*;\\nuse std::time::Instant;\\nfn main(){\\n for s in [\\\"1+2\\\",\\\"1+2-3\\\",\\\"10-4+2\\\",\\\"1+2 +3\\\",\\\"1+\\\",\\\"1+2x\\\"] { println!(\\\"A {:?} => {:?}\\\", s, RecursiveDescentParser::new(s).parse()); }\\n let n:usize=std::env::args().nth(2).unwrap().parse().unwrap();\\n match std::env::args().nth(1).unwrap().as_str() {\\n  \\\"a\\\"=>{let big=(0..n).map(|_|\\\"1\\\").collect::<Vec<_>>().join(\\\"+\\\");let t=Instant::now();let r=RecursiveDescentParser::new(&big).parse();println!(\\\"A parse {} terms ok={} {:?}\\\",n,r.is_ok(),t.elapsed());std::mem::forget(r);println!(\\\"A forgot tree, no overflow\\\");}\\n  _=>{let toks:Vec<String>=(0..n).flat_map(|i|if i==0{vec![\\\"1\\\".to_string()]}else{vec![\\\"+\\\".to_string(),\\\"1\\\".to_string()]}).collect();let t=Instant::now();let r=ShiftReduceParser::parse(&toks);println!(\\\"B parse {} terms ok={} {:?}\\\",n,r.is_ok(),t.elapsed());std::mem::forget(r);println!(\\\"B forgot tree, no overflow\\\");}\\n }\\n}`);\\nconst env={...process.env,TMPDIR:T,CARGO_TARGET_DIR:T+'/t'};\\nprint(await Bun.$`cd ${T} && cargo build -q --release 2>&1 | tail -5; for a in \\\"a 200000\\\" \\\"b 200000\\\" \\\"a 1000000\\\" \\\"b 1000000\\\"; do echo \\\"# $a\\\"; ./t/release/ulw-bench-fixture $a 2>&1 | tail -4; done`.env(env).nothrow().text());\",\"language\":\"js\",\"summary\":\"Probe unspaced input and parse-vs-drop stack behavior\",\"timeout\":180}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await write(T+'/src/main.rs',`use ulw_bench_fixture::parser_a::*; use ulw_bench_fixture::parser_b::*;\\nuse std::time::Instant;\\nfn main(){\\n for s in [\\\"1+2\\\",\\\"1+2-3\\\",\\\"10-4+2\\\",\\\"1+2 +3\\\",\\\"1+\\\",\\\"1+2x\\\"] { println!(\\\"A {:?} => {:?}\\\", s, RecursiveDescentParser::new(s).parse()); }\\n let n:usize=std::env::args().nth(2).unwrap().parse().unwrap();\\n match std::env::args().nth(1).unwrap().as_str() {\\n  \\\"a\\\"=>{let big=(0..n).map(|_|\\\"1\\\").collect::<Vec<_>>().join(\\\"+\\\");let t=Instant::now();let r=RecursiveDescentParser::new(&big).parse();println!(\\\"A parse {} terms ok={} {:?}\\\",n,r.is_ok(),t.elapsed());std::mem::forget(r);println!(\\\"A forgot tree, no overflow\\\");}\\n  _=>{let toks:Vec<String>=(0..n).flat_map(|i|if i==0{vec![\\\"1\\\".to_string()]}else{vec![\\\"+\\\".to_string(),\\\"1\\\".to_string()]}).collect();let t=Instant::now();let r=ShiftReduceParser::parse(&toks);println!(\\\"B parse {} terms ok={} {:?}\\\",n,r.is_ok(),t.elapsed());std::mem::forget(r);println!(\\\"B forgot tree, no overflow\\\");}\\n }\\n}`);\\nconst E={...process.env,TMPDIR:T,CARGO_TARGET_DIR:T+'/t'};\\nprint(await Bun.$`cd ${T} && cargo build -q --release 2>&1 | tail -5; for a in \\\"a 200000\\\" \\\"b 200000\\\" \\\"a 1000000\\\" \\\"b 1000000\\\"; do echo \\\"# $a\\\"; ./t/release/ulw-bench-fixture $a 2>&1 | tail -4; done`.env(E).nothrow().text());\",\"language\":\"js\",\"summary\":\"Probe unspaced input and parse-vs-drop stack behavior\",\"timeout\":180}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}
