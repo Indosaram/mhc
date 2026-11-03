@@ -1,7 +1,7 @@
 use maho_ext_api::{ExtensionContext, ExtensionFailure};
 fn keyed_kinds(ctx: &ExtensionContext) -> Vec<(String, String)> {
     let mut holds = std::collections::BTreeMap::new();
-    for entry in ctx.session_manager.get_entries() {
+    for entry in ctx.session_manager.get_entries_of_kinds(&["custom"]) {
         if entry.kind != "custom" || entry.data["customType"] != "session-hold" {
             continue;
         }
