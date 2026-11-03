@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod process_tree_windows;
 mod session;
 mod session_input;
 mod session_threads;

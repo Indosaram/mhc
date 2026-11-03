@@ -117,6 +117,55 @@ fn pty_session_times_out_hung_command() {
     assert!(exit.timed_out);
 }
 
+/// A kill ends the whole tree, not just the direct child: a grandchild still attached to the
+/// pseudoconsole keeps the ConPTY output pipe open, which blocks the reader and the exit wait until
+/// it ends on its own. The session stays open here, so ConPTY's close event cannot end it instead.
+#[cfg(windows)]
+#[test]
+fn windows_pty_session_kill_terminates_the_grandchild() {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_OBJECT_0: u32 = 0;
+    unsafe extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut std::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
+    }
+    let (started_tx, started_rx) = mpsc::channel();
+    let mut transcript = Vec::new();
+    let mut session = PtySession::start(
+        PtySessionOptions::new("cmd.exe")
+            .arg("/d")
+            .arg("/q")
+            .arg("/c")
+            .arg("ping -n 120 127.0.0.1")
+            .timeout(Duration::from_secs(120)),
+        move |chunk| {
+            transcript.extend_from_slice(chunk);
+            if String::from_utf8_lossy(&transcript).contains("127.0.0.1") {
+                let _ = started_tx.send(());
+            }
+        },
+    )
+    .unwrap();
+    // ping printed its banner, so it is running as cmd's child.
+    started_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    let cmd = session.pid().unwrap();
+    let ping = crate::process_tree_windows::process_table()
+        .into_iter()
+        .find_map(|(pid, parent)| (parent == cmd).then_some(pid))
+        .expect("ping runs as a child of cmd.exe");
+    // SAFETY: OpenProcess takes plain integers; the handle is checked before use.
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, ping) };
+    assert!(!handle.is_null());
+    session.kill().unwrap();
+    // SAFETY: `handle` is a live process handle opened with SYNCHRONIZE.
+    let waited = unsafe { WaitForSingleObject(handle, 10_000) };
+    // SAFETY: `handle` came from OpenProcess and is closed exactly once.
+    unsafe { CloseHandle(handle) };
+    assert_eq!(waited, WAIT_OBJECT_0, "ping (pid {ping}) outlived the kill");
+    assert!(session.wait().unwrap().cancelled);
+}
+
 #[cfg(unix)]
 #[test]
 fn pty_session_writes_stdin_round_trip() {
