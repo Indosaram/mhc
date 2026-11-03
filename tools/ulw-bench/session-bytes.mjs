@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 import fs from "node:fs";
-import readline from "node:readline";
 import path from "node:path";
 
 /**
@@ -46,6 +45,27 @@ export function isWakeType(customType) {
 }
 
 /**
+ * Splits one wake message into its per-child completions. One wake batch can carry several
+ * children; each child's report is the text after its `result:` marker.
+ * @param {string} text
+ * @returns {{ id: string|null, status: string|null, reportChars: number }[]}
+ */
+export function parseWakeChildren(text) {
+  return text
+    .split(/(?=task completion name:)/)
+    .filter((part) => part.startsWith("task completion name:"))
+    .map((part) => {
+      const at = part.indexOf("\nresult:");
+      const report = at === -1 ? "" : part.slice(at + "\nresult:".length).replace(/^"|"\s*$/g, "");
+      return {
+        id: /\bid:(\S+)/.exec(part)?.[1] ?? null,
+        status: /\bstatus:(\S+)/.exec(part)?.[1] ?? null,
+        reportChars: report.length,
+      };
+    });
+}
+
+/**
  * Parses lines from a session JSONL file and computes byte aggregations.
  * @param {Iterable<string>} lines
  * @returns {{ directive: number, reminder: number, wake: number, toolResult: number, assistant: number, perTurnInjected: number }}
@@ -57,6 +77,7 @@ export function parseSessionBytesFromLines(lines) {
   let toolResult = 0;
   let assistant = 0;
   let userTurns = 0;
+  const wakeBatches = [];
 
   let lineNumber = 0;
   for (const line of lines) {
@@ -83,6 +104,8 @@ export function parseSessionBytesFromLines(lines) {
         reminder += line.length;
       } else if (isWakeType(customType)) {
         wake += line.length;
+        const text = (Array.isArray(obj.content) ? obj.content : []).map((c) => c?.text ?? "").join("");
+        wakeBatches.push({ bytes: line.length, children: parseWakeChildren(text) });
       }
     } else if (obj.type === "message") {
       const role = obj.message?.role;
@@ -106,74 +129,18 @@ export function parseSessionBytesFromLines(lines) {
     toolResult,
     assistant,
     perTurnInjected,
+    wakeBatches,
+    childReportChars: wakeBatches.flatMap((b) => b.children.map((c) => c.reportChars)),
   };
 }
 
 /**
  * Calculates session bytes from a JSONL file on disk.
  * @param {string} filePath
- * @returns {Promise<{ directive: number, reminder: number, wake: number, toolResult: number, assistant: number, perTurnInjected: number }>}
+ * @returns {Promise<ReturnType<typeof parseSessionBytesFromLines>>}
  */
 export async function calculateSessionBytes(filePath) {
-  const fileStream = fs.createReadStream(filePath, { encoding: "utf8" });
-  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-
-  let directive = 0;
-  let reminder = 0;
-  let wake = 0;
-  let toolResult = 0;
-  let assistant = 0;
-  let userTurns = 0;
-
-  let lineNumber = 0;
-  for await (const line of rl) {
-    lineNumber++;
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch (err) {
-      const error = new Error(`Malformed JSON at line ${lineNumber}: ${err.message}`);
-      error.lineNumber = lineNumber;
-      throw error;
-    }
-
-    if (obj.type === "custom_message") {
-      const customType = obj.customType;
-      if (isDirectiveType(customType)) {
-        directive += line.length;
-      } else if (isReminderType(customType)) {
-        reminder += line.length;
-      } else if (isWakeType(customType)) {
-        wake += line.length;
-      }
-    } else if (obj.type === "message") {
-      const role = obj.message?.role;
-      if (role === "toolResult") {
-        toolResult += line.length;
-      } else if (role === "assistant") {
-        assistant += line.length;
-      } else if (role === "user") {
-        userTurns++;
-      }
-    }
-  }
-
-  const turns = Math.max(1, userTurns);
-  const perTurnInjected = Math.round(directive / turns);
-
-  return {
-    directive,
-    reminder,
-    wake,
-    toolResult,
-    assistant,
-    perTurnInjected,
-  };
+  return parseSessionBytesFromLines(fs.readFileSync(filePath, "utf8").split("\n"));
 }
 
 async function main() {
