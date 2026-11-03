@@ -33,6 +33,14 @@ pub struct Candidate {
     pub binary: bool,
 }
 
+/// Node's `realpath`: on Windows a drive path (`C:\...`), never the verbatim `\\?\C:\...` form that
+/// `std::fs::canonicalize` returns, which rg's anchored globs and relative paths cannot match.
+async fn realpath(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    tokio::fs::canonicalize(path)
+        .await
+        .map(|canonical| dunce::simplified(&canonical).to_path_buf())
+}
+
 fn io_error(error: std::io::Error) -> GrepEngineError {
     GrepEngineError::EngineUnavailable(error.to_string())
 }
@@ -63,7 +71,7 @@ pub async fn resolve_roots(
             continue;
         }
         let (info, canonical) =
-            tokio::join!(tokio::fs::metadata(path), tokio::fs::canonicalize(path));
+            tokio::join!(tokio::fs::metadata(path), realpath(path));
         match (info, canonical) {
             (Ok(info), Ok(canonical)) => {
                 // Anchored rg globs use the OS cwd (canonical even for /var aliases on macOS).
@@ -135,7 +143,7 @@ pub async fn enumerate_candidates(
             let absolute = resolve(&root.cwd, &path);
             // PERF-DIVERGENCE(senpi grep): upstream uses sync fs per file; this port runs canonicalize and metadata concurrently instead of two serial blocking-pool hops. Error precedence and abort checks keep the same order, so results are identical.
             let (canonical, metadata) = tokio::join!(
-                tokio::fs::canonicalize(&absolute),
+                realpath(&absolute),
                 tokio::fs::metadata(&absolute)
             );
             let (canonical, metadata) = match (canonical, metadata) {
@@ -237,7 +245,7 @@ pub async fn enumerate_candidates(
         let output = run(&args, &scan_cwd, None, deadline, signal).await?;
         for path in split_nul(&output) {
             binary_paths.insert(
-                tokio::fs::canonicalize(resolve(&scan_cwd, &path))
+                realpath(resolve(&scan_cwd, &path))
                     .await
                     .map_err(io_error)?,
             );
