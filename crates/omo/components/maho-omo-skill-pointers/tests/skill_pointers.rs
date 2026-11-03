@@ -5,27 +5,6 @@ use maho_omo_skill_pointers::*;
 use support::*;
 
 #[test]
-fn given_the_keyword_table_when_given_mass_ulw_trigger_spellings_then_mass_ulw_matches() {
-    let triggers = [
-        "mass ulw",
-        "massulw",
-        "MASS ULW",
-        "Mass-Ulw",
-        "mass  ulw",
-        "run mass ulw now",
-        "mass-ulw",
-        "ulw mass",
-        "ulwmass",
-        "mulw",
-        "meth",
-    ];
-    for text in triggers {
-        let matched = matched_skill_pointer_names(text);
-        assert_eq!(matched, vec!["mass-ulw"], "trigger '{text}' failed");
-    }
-}
-
-#[test]
 fn given_the_keyword_table_when_given_ulw_plan_trigger_spellings_then_ulw_plan_matches() {
     let triggers = [
         "ulw plan",
@@ -74,15 +53,9 @@ fn given_the_keyword_table_when_given_ulw_research_trigger_spellings_then_ulw_re
 #[test]
 fn given_the_keyword_table_when_keywords_overlap_then_every_mentioned_skill_matches_in_table_order() {
     let cases = [
-        ("mass ulw loop", vec!["mass-ulw", "ulw-loop"]),
-        ("mass ulw-loop", vec!["mass-ulw", "ulw-loop"]),
-        ("mass ulw research", vec!["mass-ulw", "ulw-research"]),
-        ("mulw research", vec!["mass-ulw", "ulw-research"]),
-        ("meth research", vec!["mass-ulw", "ulw-research"]),
-        ("ulw mass research", vec!["mass-ulw", "ulw-research"]),
-        ("ulwmass-research", vec!["mass-ulw", "ulw-research"]),
-        ("MULW RESEARCH", vec!["mass-ulw", "ulw-research"]),
-        ("mass ulw plan it out", vec!["mass-ulw", "ulw-plan"]),
+        ("mass ulw loop", vec!["ulw-loop"]),
+        ("mass ulw research", vec!["ulw-research"]),
+        ("mass ulw plan it out", vec!["ulw-plan"]),
         ("ulw loop then ulw research", vec!["ulw-loop", "ulw-research"]),
         ("ulw research first, ulw loop second", vec!["ulw-loop", "ulw-research"]),
         ("make pr work until gets merged go ulw loop", vec!["ulw-loop"]),
@@ -98,6 +71,10 @@ fn given_the_keyword_table_when_given_near_miss_spellings_then_nothing_matches()
     let misses = [
         "ulw",
         "ultrawork",
+        "mass ulw",
+        "mass-ulw",
+        "mulw",
+        "meth",
         "the mass of ulw",
         "ulw massive",
         "ulwmassive",
@@ -124,54 +101,18 @@ fn given_the_keyword_table_when_given_near_miss_spellings_then_nothing_matches()
 }
 
 #[tokio::test]
-async fn given_a_matching_interactive_prompt_when_the_user_requests_a_skill_then_one_hidden_conditional_pointer_is_injected() {
+async fn given_a_matching_interactive_prompt_when_a_skill_is_requested_then_one_hidden_conditional_pointer_is_injected() {
+    let harness = setup_harness("/skills/");
+    let result = dispatch_input(&harness, "ulw-loop ship the docs refresh", InputSource::Interactive, None, "test-session").await;
+    expect_pointer_injections(&harness, &result, &[ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" }]);
+    assert!(injected_content(&harness, ULW_LOOP_CUSTOM_TYPE).ends_with("</omo-ulw-loop-pointer>"));
+}
+
+#[tokio::test]
+async fn given_mass_ulw_wording_when_it_is_submitted_then_no_pointer_is_injected() {
     let harness = setup_harness("/skills/");
     let result = dispatch_input(&harness, "mass ulw ship the docs refresh", InputSource::Interactive, None, "test-session").await;
-
-    expect_pointer_injections(&harness, &result, &[ExpectedPointer {
-        custom_type: MASS_ULW_CUSTOM_TYPE,
-        skill_name: "mass-ulw",
-    }]);
-
-    let content = injected_content(&harness, MASS_ULW_CUSTOM_TYPE);
-    assert!(content.ends_with("</omo-mass-ulw-pointer>"));
-    assert!(content.contains("If the user of this session is asking to run mass-ulw"));
-}
-
-#[tokio::test]
-async fn given_a_matching_interactive_prompt_when_the_mass_ulw_pointer_is_injected_then_it_points_at_the_packaged_skill() {
-    let harness = setup_harness("/skills/");
-    let _ = dispatch_input(&harness, "mass ulw ship it", InputSource::Interactive, None, "test-session").await;
-
-    let content = injected_content(&harness, MASS_ULW_CUSTOM_TYPE);
-    assert!(content.contains("mass-ulw/SKILL.md"));
-    assert!(content.ends_with("</omo-mass-ulw-pointer>"));
-}
-
-#[tokio::test]
-async fn given_a_matching_interactive_prompt_when_ulw_loop_and_mass_ulw_pointers_are_injected_then_only_ulw_loop_teaches_the_native_cli() {
-    let harness = setup_harness("/skills/");
-    let _ = dispatch_input(&harness, "mass ulw-loop ship the refactor", InputSource::Interactive, None, "test-session").await;
-
-    let mass_content = injected_content(&harness, MASS_ULW_CUSTOM_TYPE);
-    let loop_content = injected_content(&harness, ULW_LOOP_CUSTOM_TYPE);
-
-    assert!(loop_content.contains("`mhc ulw-loop <subcommand> --json`"));
-    assert!(!loop_content.contains("OMO_AGENT_TOOLKIT_SDK_ROOT"));
-    assert!(!loop_content.contains("tool.omo_agent_toolkit"));
-    assert!(!loop_content.contains("runtime/agent-toolkit"));
-    assert!(!mass_content.contains("mhc ulw-loop"));
-}
-
-#[tokio::test]
-async fn given_a_matching_interactive_prompt_when_overlapping_keywords_are_mentioned_then_one_pointer_per_skill_is_injected_in_table_order() {
-    let harness = setup_harness("/skills/");
-    let result = dispatch_input(&harness, "mass ulw-loop ship the refactor", InputSource::Interactive, None, "test-session").await;
-
-    expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: MASS_ULW_CUSTOM_TYPE, skill_name: "mass-ulw" },
-        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
-    ]);
+    expect_no_injection(&harness, &result);
 }
 
 #[tokio::test]
@@ -187,10 +128,9 @@ async fn given_a_matching_interactive_prompt_when_ulw_plan_is_mentioned_then_the
 #[tokio::test]
 async fn given_a_matching_interactive_prompt_when_research_is_mentioned_then_the_research_pointer_and_its_browsing_companion_are_injected() {
     let harness = setup_harness("/skills/");
-    let result = dispatch_input(&harness, "mass ulw research the gateway options", InputSource::Interactive, None, "test-session").await;
+    let result = dispatch_input(&harness, "ulw research the gateway options", InputSource::Interactive, None, "test-session").await;
 
     expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: MASS_ULW_CUSTOM_TYPE, skill_name: "mass-ulw" },
         ExpectedPointer { custom_type: ULW_RESEARCH_CUSTOM_TYPE, skill_name: "ulw-research" },
         ExpectedPointer { custom_type: BROWSER_CUSTOM_TYPE, skill_name: "browser" },
         ExpectedPointer { custom_type: ULTIMATE_BROWSING_CUSTOM_TYPE, skill_name: "ultimate-browsing" },
@@ -207,7 +147,6 @@ fn given_unicode_adjacency_when_non_ascii_chars_border_keyword_then_ascii_word_b
         ("ulw-loop한", vec!["ulw-loop"]),
         ("한ulw-loop한", vec!["ulw-loop"]),
         ("실행ulw-loop시작", vec!["ulw-loop"]),
-        ("한mass-ulw", vec!["mass-ulw"]),
         ("テストulw-plan", vec!["ulw-plan"]),
         ("한ulw-research", vec!["ulw-research"]),
     ];

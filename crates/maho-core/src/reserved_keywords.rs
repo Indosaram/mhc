@@ -94,7 +94,7 @@ static RESERVED_KEYWORD_STEM: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>")
+    fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
 });
 static INLINE_CODE: LazyLock<FancyRegex> =
     LazyLock::new(|| fancy(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));
@@ -296,6 +296,7 @@ mod tests {
         assert!(keywords_of("rename `ulw` to something else").is_empty());
         assert!(keywords_of("```\nulw research\n```\nplain text").is_empty());
         assert!(keywords_of("<ultrawork-mode>ulw</ultrawork-mode> plain").is_empty());
+        assert!(keywords_of("<omo-ultrawork-directive>ulw</omo-ultrawork-directive> plain").is_empty());
         assert_eq!(runs_of("`ulw` then ulw loop"), vec!["ulw loop"]);
     }
 

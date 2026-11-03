@@ -307,11 +307,7 @@ async fn given_the_real_component_order_when_a_bare_skill_is_submitted_then_ultr
     let fixture = support::skills_fixture(&["ulw-execute", "ulw-loop"]);
     let ui = Arc::new(support::RecordingUi::default());
     let actions = Arc::new(support::RecordingActions::default());
-    let ultrawork = maho_omo_ultrawork::UltraworkComponent {
-        arming: Arc::new(std::sync::Mutex::new(
-            maho_omo_ultrawork::SessionArming::default(),
-        )),
-    };
+    let ultrawork = maho_ultrawork::UltraworkExtension::default();
     let mut runner = ExtensionRunner::from_static(
         vec![Box::new(component(&fixture.skills)), Box::new(ultrawork)],
         support::context(&fixture.skills, ui, false),

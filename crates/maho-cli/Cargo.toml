@@ -84,6 +84,8 @@ maho-model-select = { path = "../maho-model-select" }
 maho-lsp = { path = "../maho-lsp", features = ["extension"] }
 # MIT subagent delegation; mounted as `<builtin:task>` in the MIT profile only (the omo build mounts its own).
 maho-task = { path = "../maho-task" }
+# MIT ultrawork engine (`ulw` / `ultrawork` keyword contract); a builtin in the MIT profile, mounted by the omo composition otherwise.
+maho-ultrawork = { path = "../maho-ultrawork" }
 # MIT long-term memory (mnemopi port); mounted as `<builtin:memory>` and served by `mhc memory` in the MIT profile only.
 maho-memory = { path = "../maho-memory" }
 # MIT browser automation + computer use; mounted as `<builtin:browser>` in the MIT profile only.

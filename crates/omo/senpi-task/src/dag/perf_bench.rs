@@ -1,7 +1,7 @@
 //! Perf bench (bench branch only, never part of the suite). Drives the real DagManager +
 //! DagScheduler + DagWaitSurface + TaskManager with a runner that completes every node instantly,
 //! so the numbers are the engine's own CPU, allocation and memory cost with no model in the loop.
-//! Also times the per-message ultrawork / mass-ulw input hooks. Run explicitly:
+//! Also times the per-message ultrawork input hooks. Run explicitly:
 //! `<test-bin> perf_bench --ignored --nocapture --test-threads=1`; each scenario prints one
 //! `BENCH {json}` line with medians over the measured iterations.
 #![allow(clippy::unwrap_used, unsafe_code)]
@@ -275,8 +275,7 @@ fn perf_bench_dag() {
 #[ignore = "perf bench; run explicitly"]
 fn perf_bench_hooks() {
     use maho_ext_api::InputSource;
-    use maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE;
-    use maho_omo_ultrawork::{ArmingSnapshot, classify_ultrawork_input, is_ultrawork_input, select_directive_text};
+    use maho_ultrawork::{ClassifyInput, SessionArming, classify, has_visible_keyword};
 
     const CALLS: u64 = 20_000;
     let en = "Please refactor the scheduler so the journal stops cloning the checkpoint on every append, then run the tests and report the results back to me. ".repeat(12);
@@ -299,17 +298,15 @@ fn perf_bench_hooks() {
     };
     for (label, text) in cases {
         bench(format!("ultrawork_classify_{label}"), &|| {
-            black_box(classify_ultrawork_input(black_box(text), InputSource::Interactive, ArmingSnapshot::default()));
+            black_box(classify(ClassifyInput {
+                text: black_box(text),
+                source: InputSource::Interactive,
+                snapshot: SessionArming::default(),
+                disabled: false,
+            }));
         });
         bench(format!("ultrawork_is_input_{label}"), &|| {
-            black_box(is_ultrawork_input(black_box(text)));
-        });
-        bench(format!("ultrawork_select_directive_{label}"), &|| {
-            black_box(select_directive_text(black_box(text), SENPI_ULTRAWORK_DIRECTIVE));
-        });
-        bench(format!("mass_ulw_detect_{label}"), &|| {
-            black_box(maho_omo_mass_ulw::is_mass_ulw_input(black_box(text)));
-            black_box(maho_omo_mass_ulw::skill_already_invoked(black_box(text)));
+            black_box(has_visible_keyword(black_box(text)));
         });
     }
 }

@@ -38,12 +38,12 @@ const BUILTIN_DIRS = [
 ];
 
 const OMO_COMPONENT_DIR = "packages/omo-senpi/src/components";
-// The 18 omo-senpi components (plan IS-8); each maps to crates/omo/components/maho-omo-<dir>. Roots marked
+// The 15 omo-senpi components (plan IS-8); each maps to crates/omo/components/maho-omo-<dir>. Roots marked
 // `omo` are read from OMO_SRC (oh-my-openagent) instead of SENPI_SRC.
 const OMO_COMPONENTS = [
 	"agent-home", "ast-grep", "comment-checker", "config-resolution", "config-startup", "config-watch", "fallback-architect",
-	"init-deep-advisor", "lsp", "mass-ulw", "memory", "onboarding", "start-work-continuation", "task", "telemetry",
-	"todo-fanout-reminder", "ultrawork", "ulw-loop",
+	"init-deep-advisor", "lsp", "memory", "onboarding", "start-work-continuation", "task", "telemetry",
+	"ulw-loop",
 ];
 
 // Crates whose parity is measured against senpi TypeScript source roots (plan: "Source roots").
