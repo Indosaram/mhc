@@ -503,3 +503,50 @@ fn commits_and_merges_get_the_commit_budget_without_auto_maintenance() {
     let status = calls.iter().find(|(argv, _)| argv.iter().any(|arg| arg == "status")).expect("a status read");
     assert_eq!(status.1, 30_000, "reads keep the git budget");
 }
+
+/// Installs `pre-commit` and `commit-msg` hooks that record their own runs in `.git/hook-runs`.
+fn recording_hooks() -> super::repo_types::GitHookInstaller {
+    Arc::new(|dir: &std::path::Path| {
+        let hooks = dir.join(".git").join("hooks");
+        fs::create_dir_all(&hooks).map_err(GitError::Io)?;
+        for stage in ["pre-commit", "commit-msg"] {
+            let path = hooks.join(stage);
+            fs::write(&path, format!("#!/bin/sh\necho {stage} >> .git/hook-runs\n")).map_err(GitError::Io)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(GitError::Io)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn hook_runs(dir: &std::path::Path) -> String {
+    fs::read_to_string(dir.join(".git").join("hook-runs")).unwrap_or_default()
+}
+
+/// The initial commit (seeded or empty) runs no commit check, so opening a fresh memory repository
+/// starts no checker process; the first write after it runs every check.
+#[test]
+fn the_initial_commit_runs_no_commit_checks_and_later_commits_run_them_all() {
+    for seed_files in [vec![GitSeedFile { relative_path: "system/persona.md".into(), content: "---\ndescription: Persona\n---\nbody\n".into() }], Vec::new()] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+            dir: temp.path().to_path_buf(),
+            agent_id: "agent-one".to_string(),
+            exec: None,
+            install_hooks: Some(recording_hooks()),
+        })
+        .expect("repo");
+        let seeded = !seed_files.is_empty();
+        repo.init(Some(InitializeGitRepoOptions { seed_files, ..Default::default() })).expect("init");
+        assert!(repo.head().expect("head").is_some(), "seeded={seeded}");
+        assert_eq!(hook_runs(temp.path()), "", "seeded={seeded}");
+
+        fs::write(temp.path().join("fact.md"), "fact\n").expect("write");
+        let author = GitCommitAuthor { agent_id: "agent-one".into(), author_name: "Agent One".into(), author_email: None };
+        repo.commit_write(&["fact.md"], "record fact", &author).expect("commit");
+        assert_eq!(hook_runs(temp.path()), "pre-commit\ncommit-msg\n", "seeded={seeded}");
+    }
+}
