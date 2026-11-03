@@ -32,9 +32,12 @@ fn main() {
     println!("cargo:rerun-if-changed=contract");
     println!("cargo:rerun-if-changed=build.rs");
     check(&contract.join("core.md"), CORE_CAP_BYTES);
-    let references = fs::read_dir(contract.join("references")).expect("contract/references");
+    let references = fs::read_dir(contract.join("references"))
+        .unwrap_or_else(|error| panic!("cannot list contract/references: {error}"));
     for entry in references {
-        let path = entry.expect("reference entry").path();
+        let path = entry
+            .unwrap_or_else(|error| panic!("cannot read a references entry: {error}"))
+            .path();
         check(&path, REFERENCE_CAP_BYTES);
     }
 }

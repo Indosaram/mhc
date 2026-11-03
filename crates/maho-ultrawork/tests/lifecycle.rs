@@ -2,8 +2,8 @@
 
 use maho_ext_api::{InputSource, ToolContent};
 use maho_ultrawork::{
-    ArmingSnapshot, CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, Engine, InputRequest,
-    REMINDER_MESSAGE_TYPE, Sessions, Stage, TodoResultView,
+    CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, Engine, InputRequest, REMINDER_MESSAGE_TYPE,
+    SessionArming, Sessions, Stage, TodoResultView,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -109,7 +109,7 @@ fn compaction_disarms_and_rearms_only_on_explicit_mention() {
     engine.on_compaction("s");
     assert_eq!(
         engine.sessions().snapshot("s"),
-        ArmingSnapshot {
+        SessionArming {
             armed: false,
             compaction_pending: true,
             revision: engine.sessions().snapshot("s").revision,
@@ -151,7 +151,7 @@ fn disabled_flag_skips_scanning_and_state_changes() {
         true,
     );
     assert!(!outcome.classification.effective);
-    assert_eq!(engine.sessions().snapshot("s"), ArmingSnapshot::default());
+    assert_eq!(engine.sessions().snapshot("s"), SessionArming::default());
     engine.sessions().mark_armed("s");
     let details = init(4);
     let view = TodoResultView {
@@ -192,7 +192,7 @@ fn mass_mode_attaches_inline_block_without_file_reads() {
     let message = engine.on_turn_start("s", false).expect("directive");
     let parts = texts(&message.content);
     assert_eq!(parts.len(), 2);
-    assert!((800..=1800).contains(&parts[1].len()));
+    assert!((1300..=1700).contains(&parts[1].len()));
     assert!(!parts[1].contains("references/") && !parts[1].contains("SKILL.md"));
 }
 
@@ -234,6 +234,15 @@ fn compaction_resets_the_todo_latch() {
 }
 
 #[test]
+fn compaction_on_a_never_armed_session_leaves_the_todo_reminder_off() {
+    let engine = engine();
+    engine.on_compaction("s");
+    assert_eq!(engine.sessions().snapshot("s"), SessionArming::default());
+    assert!(!todo(&engine, "s", &init(3)));
+    assert_eq!(prompt(&engine, "s", "ulw go"), Stage::Initial);
+}
+
+#[test]
 fn counts_are_computed_before_the_arming_mutation() {
     let engine = engine();
     let request = InputRequest {
@@ -267,7 +276,7 @@ fn counts_are_computed_before_the_arming_mutation() {
 #[test]
 fn global_api_round_trips_arming_and_compaction() {
     let id = "global-api-session";
-    assert_eq!(maho_ultrawork::snapshot(id), ArmingSnapshot::default());
+    assert_eq!(maho_ultrawork::snapshot(id), SessionArming::default());
     maho_ultrawork::mark_armed(id);
     assert!(maho_ultrawork::snapshot(id).armed);
     maho_ultrawork::mark_compact_rearm(id);

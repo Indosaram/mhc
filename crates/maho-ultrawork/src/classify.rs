@@ -2,11 +2,11 @@
 
 use crate::keywords::{Scan, scan};
 use crate::mask::mask;
-use crate::state::ArmingSnapshot;
+use crate::state::SessionArming;
 use crate::texts::DIRECTIVE_OPEN_TAG;
 use maho_ext_api::InputSource;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// First arming, or a re-arm because the contract revision changed.
     Initial,
@@ -17,7 +17,7 @@ pub enum Stage {
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Direct,
     SkillExpansion,
@@ -26,7 +26,7 @@ pub enum Route {
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suppression {
     Disabled,
     ExtensionSource,
@@ -39,16 +39,16 @@ pub enum Suppression {
 }
 
 /// Everything [`classify`] looks at.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ClassifyInput<'a> {
     pub text: &'a str,
     pub source: InputSource,
-    pub snapshot: ArmingSnapshot,
+    pub snapshot: SessionArming,
     pub disabled: bool,
 }
 
 /// Result of classifying one prompt. Counts and flags never depend on the arming mutation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Classification {
     pub short_form_seen: bool,
     pub long_form_seen: bool,
@@ -78,7 +78,7 @@ impl Classification {
     }
 }
 
-fn stage_for(snapshot: ArmingSnapshot) -> Stage {
+fn stage_for(snapshot: SessionArming) -> Stage {
     let current = crate::contract_revision();
     match (snapshot.armed, snapshot.compaction_pending) {
         (true, _) if snapshot.revision != Some(current) => Stage::Initial,

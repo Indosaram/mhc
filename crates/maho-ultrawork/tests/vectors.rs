@@ -2,7 +2,7 @@
 
 use maho_ext_api::InputSource;
 use maho_ultrawork::{
-    ArmingSnapshot, Classification, ClassifyInput, Route, Stage, Suppression, classify,
+    Classification, ClassifyInput, Route, SessionArming, Stage, Suppression, classify,
     has_visible_keyword,
 };
 
@@ -10,7 +10,7 @@ fn run(text: &str, source: InputSource) -> Classification {
     classify(ClassifyInput {
         text,
         source,
-        snapshot: ArmingSnapshot::default(),
+        snapshot: SessionArming::default(),
         disabled: false,
     })
 }
@@ -100,6 +100,19 @@ fn masked_regions_and_negations_never_arm() {
         assert!(!got.effective, "{text}");
         assert_eq!(got.visible_mentions, 0, "{text}");
         assert_eq!(got.suppression, Some(reason), "{text}");
+    }
+}
+
+#[test]
+fn negation_separated_by_punctuation_does_not_mask_a_real_request() {
+    for text in [
+        "This is not working, please use ulw to fix it",
+        "I can't decide; use ulw",
+    ] {
+        let got = run(text, InputSource::Interactive);
+        assert!(got.effective, "{text}");
+        assert_eq!(got.visible_mentions, 1, "{text}");
+        assert_eq!(got.suppression, None, "{text}");
     }
 }
 
@@ -197,7 +210,7 @@ fn counts_are_independent_of_arming_state() {
     let armed = classify(ClassifyInput {
         text,
         source: InputSource::Interactive,
-        snapshot: ArmingSnapshot {
+        snapshot: SessionArming {
             armed: true,
             compaction_pending: false,
             revision: Some(maho_ultrawork::contract_revision()),
@@ -224,7 +237,7 @@ fn disabled_flag_reports_no_effective_action() {
     let got = classify(ClassifyInput {
         text: "ulw go",
         source: InputSource::Interactive,
-        snapshot: ArmingSnapshot::default(),
+        snapshot: SessionArming::default(),
         disabled: true,
     });
     assert!(!got.effective);

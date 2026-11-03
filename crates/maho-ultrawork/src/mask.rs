@@ -40,15 +40,15 @@ fn blank(text: &str, spans: &[Span]) -> String {
     for &(start, end) in spans {
         flags[start..end.min(text.len())].fill(true);
     }
-    let mut out = String::with_capacity(text.len());
+    let mut blanked = String::with_capacity(text.len());
     for (index, ch) in text.char_indices() {
         if flags[index] && ch != '\n' {
-            out.extend(std::iter::repeat_n(' ', ch.len_utf8()));
+            blanked.extend(std::iter::repeat_n(' ', ch.len_utf8()));
         } else {
-            out.push(ch);
+            blanked.push(ch);
         }
     }
-    out
+    blanked
 }
 
 pub(crate) fn lines(text: &str) -> Vec<Span> {

@@ -18,7 +18,7 @@ pub use classify::{
 };
 pub use engine::{Engine, InputOutcome, InputRequest, TodoResultView};
 pub use extension::{DISABLE_FLAG, UltraworkExtension};
-pub use state::{ArmingSnapshot, Sessions};
+pub use state::{SessionArming, Sessions};
 pub use texts::{CORE_CONTRACT, DIRECTIVE_MESSAGE_TYPE, REMINDER_MESSAGE_TYPE, mass_block};
 
 use std::sync::{Arc, LazyLock};
@@ -31,7 +31,7 @@ pub fn global_sessions() -> Arc<Sessions> {
 }
 
 /// Current arming state of `session` in the process-wide table.
-pub fn snapshot(session: &str) -> ArmingSnapshot {
+pub fn snapshot(session: &str) -> SessionArming {
     GLOBAL_SESSIONS.snapshot(session)
 }
 

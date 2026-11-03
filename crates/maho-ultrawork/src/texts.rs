@@ -20,18 +20,25 @@ const MASS_BLOCK: &str = "<omo-ultrawork-mass>\n\
 Mass mode is on for this task. Run it as waves; this block is complete and needs no file reads.\n\
 \n\
 Wave 1, parallel lanes: split the work into lanes that each own a disjoint write scope, and \
-start them together. A lane returns a compact claim summary of at most 3,500 characters, \
-with a concrete file and line behind every claim.\n\
+start them together. Before dispatch, check that no two lanes can touch the same file; if \
+they can, merge those lanes or sequence them. A lane returns a compact claim summary of at \
+most 3,500 characters, with a concrete file and line behind every claim, so that a reader can \
+check each claim without re-running the lane.\n\
 \n\
 Wave 2, falsification: start separate verification lanes whose only job is to disprove the \
-Wave 1 claims. They hunt for contradicting evidence and for edge cases nobody handled.\n\
+Wave 1 claims. They hunt for contradicting evidence and for edge cases nobody handled. A \
+claim that no verifier could break counts as verified; a claim that was broken goes back for \
+repair, and the lane that made it does not grade its own work.\n\
 \n\
 Integration: you reconcile the verified findings yourself and settle anything that crosses lane \
-boundaries.\n\
+boundaries, such as a shared interface that two lanes each changed. Do not leave integration \
+until you hold one agreed list of defects, each with its evidence.\n\
 \n\
-Fix wave: apply the smallest edits that remove the defects that survived verification.\n\
+Fix wave: apply the smallest edits that remove the defects that survived verification. Leave \
+working code alone.\n\
 \n\
-Verification wave: run the final end-to-end check on the combined result before you report.\n\
+Verification wave: run the final end-to-end check on the combined result before you report, \
+and say which checks you ran and which you could not run.\n\
 </omo-ultrawork-mass>";
 
 const TODO_ADVISORY: &str = "<omo-ultrawork-reminder>\n\
