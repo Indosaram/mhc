@@ -2,8 +2,12 @@ name: setup
 description: Free runner disk, install the pinned Rust toolchain, protoc, bun and the pinned senpi checkout (Linux, macOS, Windows).
 inputs:
   cache-key:
-    description: Cargo cache key; each test shard needs its own, since their target dirs differ.
+    description: Cargo cache key shared across a job or shard family.
     required: true
+  save-cache:
+    description: Whether to save the Cargo cache on main (false for non-writer shards sharing a cache-key).
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -25,7 +29,7 @@ runs:
       with:
         shared-key: ${{ inputs.cache-key }}
         cache-on-failure: true
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        save-if: ${{ github.ref == 'refs/heads/main' && inputs.save-cache == 'true' }}
 
     - name: protoc
       shell: bash
