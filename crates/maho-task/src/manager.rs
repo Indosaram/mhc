@@ -551,6 +551,8 @@ impl TaskManager {
                     None => break settled,
                 }
             };
+            // Keep the task live until delivery finishes so waiters still wait on done.
+            manager.deliver(&settled).await;
             lock(&manager.cancelling).remove(&id);
             {
                 let mut live = lock(&manager.live);
@@ -561,8 +563,6 @@ impl TaskManager {
                     live.remove(&id);
                 }
             }
-            // Delivered before waiters wake, so a settled task has always been reported.
-            manager.deliver(&settled).await;
             let _ = done_tx.send(true);
         });
     }
