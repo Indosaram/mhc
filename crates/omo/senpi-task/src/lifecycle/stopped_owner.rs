@@ -12,13 +12,13 @@ pub fn stopped_owner_task(
     session_id: &str,
     own_task_id: Option<&str>,
 ) -> Result<Option<TaskRecord>, LifecycleError> {
-    Ok(context.store.list()?.records.into_iter().find(|record| {
+    Ok(context.store.list_matching(&mut |record| {
         (record.child_session_id.as_deref() == Some(session_id)
             || own_task_id == Some(record.task_id.as_str()))
             && (record.killed == Some(true)
                 || matches!(record.status, TaskStatus::Cancelled | TaskStatus::Lost)
                 || record.cancel_requested.is_some())
-    }))
+    })?.records.into_iter().next())
 }
 
 pub fn stop_owned_children(

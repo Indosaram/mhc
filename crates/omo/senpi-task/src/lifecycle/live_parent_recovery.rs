@@ -23,7 +23,13 @@ fn eligible(context: &LifecycleContext, record: &TaskRecord) -> bool {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(&record.parent_session_id))
-        && record.host_pid.is_none_or(|pid| pid == context.host_pid)
+        && eligible_fields(context, record)
+}
+
+/// The part of [`eligible`] that reads only the record, so it can run inside the store's list
+/// filter without taking any other lock.
+fn eligible_fields(context: &LifecycleContext, record: &TaskRecord) -> bool {
+    record.host_pid.is_none_or(|pid| pid == context.host_pid)
         && matches!(record.status, TaskStatus::Pending | TaskStatus::Running)
         && record.cancel_requested.is_none()
         && (record.killed != Some(true) || super::suspended_expiry::is_suspension_expiry(record))
@@ -35,7 +41,19 @@ fn eligible(context: &LifecycleContext, record: &TaskRecord) -> bool {
 impl LiveParentRecovery {
     pub fn scan(&self, context: &LifecycleContext) -> Result<(), LifecycleError> {
         let mut episodes = self.episodes.lock().unwrap_or_else(PoisonError::into_inner);
-        for record in context.store.list()?.records {
+        // PERF-DIVERGENCE(senpi live-parent-recovery.ts): upstream lists every record each tick and skips the
+        // ineligible ones; this filters inside the store so only eligible records are cloned. Same records.
+        let eligible_records = context
+            .store
+            .list_matching(&mut |record| {
+                let keep = eligible_fields(context, record);
+                if !keep {
+                    episodes.remove(&record.task_id);
+                }
+                keep
+            })?
+            .records;
+        for record in eligible_records {
             if !eligible(context, &record) {
                 episodes.remove(&record.task_id);
                 continue;
@@ -88,14 +106,16 @@ impl LiveParentRecovery {
                 episode.deadline_attempted = true;
             }
             let mut attempt_context = context.clone();
-            for other in context.store.list()?.records {
+            // Only the ids are needed, so no record is cloned.
+            context.store.list_matching(&mut |other| {
                 if other.task_id != record.task_id {
                     attempt_context
                         .reconcile_admission
                         .exclude_task_ids
-                        .insert(other.task_id);
+                        .insert(other.task_id.clone());
                 }
-            }
+                false
+            })?;
             let resolver = |id: &str| super::reconcile::newest_session_path(context, id);
             let outcomes = super::reconcile_revival::reconcile_scoped_revival(
                 &attempt_context,

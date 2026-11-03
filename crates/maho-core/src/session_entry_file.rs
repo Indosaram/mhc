@@ -30,6 +30,10 @@ fn accept_session_entries(entries: Vec<Value>) -> Vec<Value> {
 }
 
 fn read_raw_entries(file: File) -> Vec<Value> {
+    read_raw_entries_prepared(file, &mut |_| {})
+}
+
+fn read_raw_entries_prepared(file: File, prepare: &mut dyn FnMut(&mut Value)) -> Vec<Value> {
     let mut reader = BufReader::with_capacity(SESSION_READ_BUFFER_SIZE, file);
     let mut entries = Vec::new();
     let mut buffer: Vec<u8> = Vec::new();
@@ -39,9 +43,10 @@ fn read_raw_entries(file: File) -> Vec<Value> {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 let line = String::from_utf8_lossy(&buffer);
-                if let Some(entry) = crate::session_manager::parse_session_entry_line(
+                if let Some(mut entry) = crate::session_manager::parse_session_entry_line(
                     line.trim_end_matches(['\n', '\r']),
                 ) {
+                    prepare(&mut entry);
                     entries.push(entry);
                 }
             }
@@ -60,14 +65,22 @@ fn read_raw_entries_from_file(file_path: &str) -> Vec<Value> {
 /// `loadEntriesFromFile(path, true)`: the accepted entries and the identity of the descriptor they were
 /// read from (both from the same descriptor, so a rename in between cannot pair them wrongly).
 pub fn load_entries_from_file_with_identity(file_path: &str) -> (Vec<Value>, Option<FileIdentity>) {
+    load_entries_from_file_with_identity_prepared(file_path, &mut |_| {})
+}
+
+/// `load_entries_from_file_with_identity` with `prepare` applied to each entry as its line is parsed.
+pub(crate) fn load_entries_from_file_with_identity_prepared(
+    file_path: &str,
+    prepare: &mut dyn FnMut(&mut Value),
+) -> (Vec<Value>, Option<FileIdentity>) {
     let resolved = normalize_path(file_path, &PathInputOptions::default());
     let Ok(file) = File::open(&resolved) else {
         return (Vec::new(), None);
     };
     let Ok(identity_handle) = file.try_clone() else {
-        return (accept_session_entries(read_raw_entries(file)), None);
+        return (accept_session_entries(read_raw_entries_prepared(file, prepare)), None);
     };
-    let entries = read_raw_entries(file);
+    let entries = read_raw_entries_prepared(file, prepare);
     let identity = capture_and_close_file_identity(identity_handle, &resolved);
     (accept_session_entries(entries), identity)
 }

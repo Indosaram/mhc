@@ -21838,9 +21838,10 @@ impl AgentSession {
 
     // Per-session model thinking memory (senpi session-thinking-memory.ts)
     pub fn get_session_model_thinking_levels(&self) -> HashMap<String, String> {
+        // Thinking levels derive from thinking_level_change entries alone, so only those are materialized.
         let (branch, leaf_id) = self.with_session_manager(|manager| {
             (
-                manager.current_branch(),
+                manager.current_branch_of_types(&["thinking_level_change"]),
                 manager.leaf_id().map(str::to_owned),
             )
         });
@@ -21853,9 +21854,10 @@ impl AgentSession {
         provider: &str,
         model_id: &str,
     ) -> Option<String> {
+        // Thinking levels derive from thinking_level_change entries alone, so only those are materialized.
         let (branch, leaf_id) = self.with_session_manager(|manager| {
             (
-                manager.current_branch(),
+                manager.current_branch_of_types(&["thinking_level_change"]),
                 manager.leaf_id().map(str::to_owned),
             )
         });

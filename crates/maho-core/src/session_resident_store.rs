@@ -111,6 +111,30 @@ impl ResidentStringStore {
         }
     }
 
+    /// Moves every string held by `other` into this store (oldest first, as if each were externalized
+    /// here in that order), then applies this store's budget once. `other` is left empty.
+    pub fn absorb(&self, other: &ResidentStringStore) {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return;
+        }
+        let drained: Vec<(String, String)> = {
+            let mut source = other.inner.lock().expect("resident store lock");
+            source.bytes = 0;
+            source.strings.drain(..).collect()
+        };
+        let mut inner = self.inner.lock().expect("resident store lock");
+        for (id, text) in drained {
+            if let Some(index) = inner.strings.get_index_of(&id) {
+                let last = inner.strings.len() - 1;
+                inner.strings.move_index(index, last);
+                continue;
+            }
+            inner.bytes += text.len();
+            inner.strings.insert(id, text);
+        }
+        self.enforce_budget(&mut inner);
+    }
+
     pub fn stats(&self) -> ResidentStoreStats {
         let inner = self.inner.lock().expect("resident store lock");
         ResidentStoreStats {
@@ -340,6 +364,20 @@ mod tests {
     use super::*;
 
     const KB: usize = 1024;
+
+    #[test]
+    fn absorb_moves_strings_in_order_and_applies_the_budget() {
+        let staging = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        let first = staging.externalize_string(&"a".repeat(40 * KB));
+        let second = staging.externalize_string(&"b".repeat(40 * KB));
+        let store = ResidentStringStore::new(ResidentStringStoreOptions { max_bytes: Some(usize::MAX), ..Default::default() });
+        store.absorb(&staging);
+        assert_eq!(staging.stats().blob_count, 0);
+        assert_eq!(staging.stats().blob_bytes, 0);
+        assert_eq!(store.stats().blob_bytes, 80 * KB);
+        assert_eq!(store.materialize_string(&first, None), "a".repeat(40 * KB));
+        assert_eq!(store.materialize_string(&second, None), "b".repeat(40 * KB));
+    }
 
     fn blob_files(dir: &str) -> Vec<String> {
         let mut files: Vec<String> = std::fs::read_dir(dir)

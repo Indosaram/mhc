@@ -49,17 +49,44 @@ pub type WriteListener = std::sync::Arc<dyn Fn(&TaskRecord, Option<TaskStatus>) 
 /// A parsed record plus the length and hash of the file text it was parsed from. Reuse is keyed
 /// on content, not metadata: a same-length rewrite inside one mtime tick (or onto a reused inode)
 /// must never serve a stale record, so only the JSON parse is skipped, never the read.
+///
+/// PERF-DIVERGENCE(senpi task-record-store.ts): upstream keeps no parse cache. The port's cache held
+/// every full record, and `spawn_spec` (the child prompt) plus `final_response` are most of a record's
+/// bytes, so the cached record drops both. No list predicate reads them; a record a caller keeps gets
+/// them back from the file text that was just read to validate the entry, so callers see full records.
 #[derive(Clone)]
 struct CachedRecord {
     len: usize,
     hash: u64,
     record: TaskRecord,
+    /// `record` had `spawn_spec` or `final_response` removed; a kept copy re-reads them from the text.
+    slimmed: bool,
     warnings: Vec<String>,
 }
 
 impl CachedRecord {
+    fn new(len: usize, hash: u64, record: &TaskRecord, warnings: Vec<String>) -> Self {
+        let slimmed = record.spawn_spec.is_some() || record.final_response.is_some();
+        let mut record = record.clone();
+        record.spawn_spec = None;
+        record.final_response = None;
+        Self { len, hash, record, slimmed, warnings }
+    }
+
     fn matches(&self, text: &str) -> bool {
         self.len == text.len() && self.hash == text_hash(text)
+    }
+
+    /// The full record, given the exact file text this entry `matches`.
+    fn full_record(&self, text: &str) -> Result<TaskRecord, StoreError> {
+        let mut record = self.record.clone();
+        if self.slimmed {
+            let (spawn_spec, final_response) = super::record_parse::parse_heavy_fields(text)
+                .map_err(StoreError::Parse)?;
+            record.spawn_spec = spawn_spec;
+            record.final_response = final_response;
+        }
+        Ok(record)
     }
 }
 
@@ -316,7 +343,7 @@ impl TaskRecordStore {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     if keep(&cached.record) {
-                        records.push(cached.record.clone());
+                        records.push(cached.full_record(&text)?);
                     }
                     diagnostics.extend(cached.warnings.iter().map(|message| {
                         TaskRecordDiagnostic::ParseWarning {
@@ -397,7 +424,7 @@ impl TaskRecordStore {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     if pred(&cached.record) {
-                        return Ok(Some(cached.record.clone()));
+                        return Ok(Some(cached.full_record(&text)?));
                     }
                     continue;
                 }
@@ -430,12 +457,7 @@ impl TaskRecordStore {
             Ok(Some(record)) => {
                 cache.insert(
                     path.to_path_buf(),
-                    CachedRecord {
-                        len,
-                        hash,
-                        record: record.clone(),
-                        warnings: warnings.clone(),
-                    },
+                    CachedRecord::new(len, hash, record, warnings.clone()),
                 );
             }
             _ => {
@@ -614,12 +636,7 @@ impl TaskRecordStore {
             serde_json::to_string(record)
         }
         .map_err(|error| StoreError::Parse(error.to_string()))?;
-        let cached = CachedRecord {
-            len: payload.len(),
-            hash: text_hash(&payload),
-            record: record.clone(),
-            warnings: Vec::new(),
-        };
+        let cached = CachedRecord::new(payload.len(), text_hash(&payload), record, Vec::new());
         match mode {
             WriteMode::Create => {
                 let mut file = match retry_windows_sharing(|| {
@@ -675,6 +692,48 @@ fn parse_record_text(
     parse_task_record(&value, &path.to_string_lossy(), warnings)
         .map(Some)
         .map_err(StoreError::Parse)
+}
+
+#[cfg(test)]
+mod slim_cache_tests {
+    use super::*;
+    use crate::state::{TaskRecordInput, create_task_record};
+
+    #[test]
+    fn cached_records_drop_heavy_fields_but_listed_records_keep_them() {
+        let root = tempfile::tempdir().expect("state");
+        let store = TaskRecordStore::new(&StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let mut record = create_task_record(
+            TaskRecordInput {
+                execution_mode: "in-process".into(),
+                ..Default::default()
+            },
+            Some(0),
+        )
+        .expect("record");
+        record.final_response = Some("R".repeat(8 * 1024));
+        record.spawn_spec = Some(crate::state::TaskSpawnSpec::LegacyProcess {
+            cwd: "/work".into(),
+            extensions: None,
+            member_env: None,
+        });
+        store.save(&record).expect("save");
+
+        let first = store.list().expect("list").records;
+        let second = store.list().expect("cached list").records;
+        let found = store.find_record(|_| true).expect("find").expect("record");
+
+        assert_eq!(first, vec![record.clone()]);
+        assert_eq!(second, vec![record.clone()]);
+        assert_eq!(found, record);
+        let cache = store.list_cache.lock().expect("cache");
+        let cached = cache.values().next().expect("cached entry");
+        assert!(cached.slimmed);
+        assert!(cached.record.final_response.is_none() && cached.record.spawn_spec.is_none());
+    }
 }
 
 #[cfg(test)]

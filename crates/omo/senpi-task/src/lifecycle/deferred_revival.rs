@@ -187,9 +187,11 @@ pub fn retry_deferred_scoped_child(
             { continue; }
         }
         let mut scoped = context.clone();
-        for record in context.store.list()?.records {
-            if record.task_id != task_id { scoped.reconcile_admission.exclude_task_ids.insert(record.task_id); }
-        }
+        // Only the ids are needed, so no record is cloned.
+        context.store.list_matching(&mut |record| {
+            if record.task_id != task_id { scoped.reconcile_admission.exclude_task_ids.insert(record.task_id.clone()); }
+            false
+        })?;
         let resolver = |id: &str| super::reconcile::newest_session_path(context, id);
         let outcomes = super::reconcile_revival::reconcile_scoped_revival(&scoped, parent, &[fresh], &resolver)?;
         if !active() {
