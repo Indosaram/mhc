@@ -462,6 +462,7 @@ fn result_beyond_transport_capacity_is_spilled_to_a_local_file() {
         BuildDetailsOptions {
             tokens: None,
             state_dir: Some(dir.path()),
+            completion_transport_limit: None,
         },
     );
     let file = details.final_response_file.clone().expect("spill file");
@@ -506,6 +507,7 @@ fn provided_tokens_are_attached() {
         BuildDetailsOptions {
             tokens: Some(1234),
             state_dir: None,
+            completion_transport_limit: None,
         },
     );
     assert_eq!(details.tokens, Some(1234));
@@ -552,6 +554,7 @@ fn spilled_result_body_names_its_local_file() {
         BuildDetailsOptions {
             tokens: None,
             state_dir: Some(dir.path()),
+            completion_transport_limit: None,
         },
     );
     let message = build_completion_message(std::slice::from_ref(&details));
@@ -626,6 +629,7 @@ fn explicit_tokens_win_over_run_stats() {
         BuildDetailsOptions {
             tokens: Some(42),
             state_dir: None,
+            completion_transport_limit: None,
         },
     );
     assert_eq!(details.tokens, Some(42));
