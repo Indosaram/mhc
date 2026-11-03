@@ -21,7 +21,8 @@ mod upstream {
     use std::path::{Path, PathBuf};
 
     fn real(path: &Path) -> String {
-        std::fs::canonicalize(path).expect("real path").to_string_lossy().into_owned()
+        // senpi `realpathSync` never answers in the Windows verbatim (`\\?\`) form.
+        text(&strip_verbatim_prefix(std::fs::canonicalize(path).expect("real path")))
     }
     fn text(path: &Path) -> String {
         path.to_string_lossy().into_owned()
@@ -82,7 +83,7 @@ mod upstream {
     #[test]
     fn relative_paths_resolve_against_a_path_or_file_url_base() {
         let options = PathInputOptions::default();
-        let expected = text(&cwd().join("subdir/file.txt"));
+        let expected = text(&cwd().join("subdir").join("file.txt"));
         assert_eq!(resolve_path("subdir/file.txt", &text(&cwd()), &options).unwrap(), expected);
         assert_eq!(resolve_path("subdir/file.txt", &file_url(&cwd()), &options).unwrap(), expected);
     }

@@ -45,7 +45,8 @@ mod tests {
     #[test]
     fn matches_recorded_or_moved_cwd_and_walks_each_distinct_cwd_once() {
         let walks = Cell::new(0);
-        let mut matcher = session_cwd_matcher_with("/new/project", |cwd| {
+        let here = resolved("/new/project");
+        let mut matcher = session_cwd_matcher_with(&here, |cwd| {
             walks.set(walks.get() + 1);
             cwd.replace("/old/", "/new/")
         });
@@ -70,7 +71,7 @@ mod tests {
         crate::schedule::store::write_atomic(&old.join("omo-desktop-moved.json"), &serde_json::json!({"kind":"omo-desktop-moved","schemaVersion":1,"homeId":"h","movedTo":new,"moved":["worktrees/project"]}).to_string()).expect("breadcrumb");
         crate::schedule::store::write_atomic(&new.join("omo-desktop-home.json"), &serde_json::json!({"kind":"omo-desktop-data-home","schemaVersion":1,"appId":"com.omo.desktop","homeId":"h"}).to_string()).expect("marker");
         let here = new.join("worktrees/project");
-        let here_text = here.to_string_lossy();
+        let here_text = resolved(&here.to_string_lossy());
         let mut matcher = session_cwd_matcher_with(&here_text, |cwd| {
             crate::schedule::moved_paths::resolve_in_home(std::path::Path::new(cwd), home.path())
                 .to_string_lossy()

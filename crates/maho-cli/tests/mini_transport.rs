@@ -61,7 +61,7 @@ async fn child_connection_frames_the_childs_pipes_and_close_signals_it() {
 #[cfg(unix)]
 #[tokio::test]
 async fn child_connection_requires_pipes() {
-    let mut child = tokio::process::Command::new("/bin/true").kill_on_drop(true).spawn().unwrap();
+    let mut child = tokio::process::Command::new("true").kill_on_drop(true).spawn().unwrap();
     assert_eq!(child_connection(&mut child).err().as_deref(), Some("Child process was spawned without pipes"));
     child.wait().await.unwrap();
     assert!(!signal_spawned_child(&mut child));
@@ -72,7 +72,7 @@ async fn failed_spawn_yields_no_child_and_reaped_child_sends_no_signal() {
     let root = tempfile::tempdir().expect("missing executable root");
     let failed = tokio::process::Command::new(root.path().join("missing-executable")).spawn();
     assert!(failed.is_err(), "spawning nonexistent binary yields Err");
-    let mut child = tokio::process::Command::new("/bin/true").kill_on_drop(true).spawn().expect("spawn true");
+    let mut child = tokio::process::Command::new("true").kill_on_drop(true).spawn().expect("spawn true");
     let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await.expect("child exit deadline").expect("wait for child");
     assert!(status.success());
     assert!(!signal_spawned_child(&mut child));
