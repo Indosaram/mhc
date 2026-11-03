@@ -1,12 +1,16 @@
 //! Registration shape and the no-history-transformation guarantee.
 
 use maho_ext_api::{
-    EventBus, EventKind, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile,
-    InputSource, LoadedExtension, SourceInfo,
+    BeforeAgentStartEvent, BuildSystemPromptOptions, EventBus, EventKind, EventResult, Extension,
+    ExtensionApi, ExtensionContext, ExtensionEvent, ExtensionRuntime, ExtensionSessionProfile,
+    InputEvent, InputSource, LoadedExtension, SourceInfo,
 };
-use maho_ultrawork::{DISABLE_FLAG, Engine, InputRequest, Sessions, UltraworkExtension};
+use maho_ultrawork::{DISABLE_FLAG, UltraworkExtension};
+use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
+
+mod stub;
 
 fn registered() -> ExtensionApi {
     let mut api = ExtensionApi::new(
@@ -50,41 +54,52 @@ fn disable_flag_is_registered_as_boolean_defaulting_off() {
     );
 }
 
-/// Message stand-in whose clones are counted.
-struct Counted(Arc<AtomicUsize>);
-
-impl Clone for Counted {
-    fn clone(&self) -> Self {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Self(Arc::clone(&self.0))
+/// Drives a future that never waits on anything external.
+fn run<T>(future: impl Future<Output = T>) -> T {
+    let mut future = std::pin::pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("handler future was not immediately ready"),
     }
 }
 
 #[test]
-fn three_hundred_turns_clone_no_messages_and_run_no_context_handler() {
-    let clones = Arc::new(AtomicUsize::new(0));
-    let history: Vec<Counted> = (0..300).map(|_| Counted(Arc::clone(&clones))).collect();
+fn three_hundred_turns_deliver_one_directive_through_the_registered_handlers() {
     let api = registered();
-    let context_handlers = api
-        .registered
-        .handlers
-        .get(&EventKind::Context)
-        .map_or(0, Vec::len);
-    let engine = Engine::new(Arc::new(Sessions::default()));
-    for (turn, _message) in history.iter().enumerate() {
+    assert!(!api.registered.handlers.contains_key(&EventKind::Context));
+    let ctx: ExtensionContext = stub::context("registration-300");
+    let handlers = &api.registered.handlers;
+    let mut directives = 0_usize;
+    for turn in 0..300 {
         let text = if turn == 0 { "ulw go" } else { "continue" };
-        engine.on_input(
-            InputRequest {
-                session: "s",
-                text,
-                source: InputSource::Interactive,
-                streaming: false,
-            },
-            false,
-        );
-        engine.on_turn_start("s", false);
+        let mut input = ExtensionEvent::Input(InputEvent {
+            input_id: format!("i{turn}"),
+            text: text.into(),
+            images: None,
+            source: InputSource::Interactive,
+            streaming_behavior: None,
+        });
+        for handler in &handlers[&EventKind::Input] {
+            run(handler(&mut input, &ctx)).expect("input handler");
+        }
+        let mut start = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
+            prompt: text.into(),
+            trigger: "prompt".into(),
+            preview: false,
+            images: None,
+            system_prompt: String::new(),
+            system_prompt_options: BuildSystemPromptOptions::default(),
+        });
+        for handler in &handlers[&EventKind::BeforeAgentStart] {
+            if let EventResult::BeforeAgentStart(result) =
+                run(handler(&mut start, &ctx)).expect("start handler")
+                && result.message.is_some()
+            {
+                directives += 1;
+            }
+        }
     }
-    assert_eq!(context_handlers, 0);
-    assert_eq!(clones.load(Ordering::SeqCst), 0);
-    assert!(engine.sessions().snapshot("s").armed);
+    assert_eq!(directives, 1);
+    assert!(maho_ultrawork::snapshot("registration-300").armed);
 }

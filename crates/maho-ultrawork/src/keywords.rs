@@ -1,7 +1,7 @@
 //! Keyword and mass-alias detection on already-masked text.
 
 /// Occurrence counts and flags found in a masked prompt.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scan {
     pub short_form: bool,
     pub long_form: bool,

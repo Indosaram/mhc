@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// Minimum number of items in a freshly created list before the sizing advisory fires.
 const TODO_REMINDER_MIN_ITEMS: usize = 3;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct InputRequest<'a> {
     pub session: &'a str,
     pub text: &'a str,
@@ -19,14 +19,14 @@ pub struct InputRequest<'a> {
     pub streaming: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct InputOutcome {
     pub classification: Classification,
     /// Prompt text with the block appended, for inputs that cannot carry a custom message.
     pub transformed_text: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct TodoResultView<'a> {
     pub session: &'a str,
     pub tool_name: &'a str,
@@ -110,7 +110,10 @@ impl Engine {
     }
 
     pub fn on_compaction(&self, session: &str) {
-        self.sessions.mark_compact_rearm(session);
+        let arming = self.sessions.snapshot(session);
+        if arming.armed || arming.compaction_pending {
+            self.sessions.mark_compact_rearm(session);
+        }
     }
 
     /// The advisory text to append to this tool result, if the todo trigger conditions hold.

@@ -1,11 +1,11 @@
 //! Per-session arming state.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
 /// What the classifier needs to know about a session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ArmingSnapshot {
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionArming {
     pub armed: bool,
     pub compaction_pending: bool,
     /// Contract revision injected into the session, when one was.
@@ -13,7 +13,7 @@ pub struct ArmingSnapshot {
 }
 
 /// A directive waiting for the next agent turn to carry it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingDirective {
     pub full: bool,
     pub mass: bool,
@@ -21,7 +21,7 @@ pub struct PendingDirective {
 
 #[derive(Default)]
 struct Entry {
-    arming: ArmingSnapshot,
+    arming: SessionArming,
     todo_reminded: bool,
     pending: Option<PendingDirective>,
 }
@@ -40,10 +40,13 @@ struct Inner {
 
 impl Sessions {
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
-    pub fn snapshot(&self, session: &str) -> ArmingSnapshot {
+    pub fn snapshot(&self, session: &str) -> SessionArming {
         self.lock()
             .entries
             .get(session)
@@ -60,7 +63,7 @@ impl Sessions {
         let mut inner = self.lock();
         inner.active = Some(session.to_owned());
         let entry = inner.entries.entry(session.to_owned()).or_default();
-        entry.arming = ArmingSnapshot {
+        entry.arming = SessionArming {
             armed: true,
             compaction_pending: false,
             revision: Some(revision),

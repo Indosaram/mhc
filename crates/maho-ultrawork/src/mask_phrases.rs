@@ -2,7 +2,7 @@
 
 use crate::mask::{Span, lines};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Side {
     From,
     To,
@@ -116,7 +116,7 @@ fn clause_end(text: &str, from: usize, tokens: &[(usize, usize, String)]) -> usi
 pub(crate) fn prohibitive_spans(text: &str) -> Vec<Span> {
     let tokens = words(text);
     let mut spans = Vec::new();
-    for (n, (start, _, word)) in tokens.iter().enumerate() {
+    for (n, (start, negation_end, word)) in tokens.iter().enumerate() {
         if !NEGATIONS.contains(&word.as_str()) {
             continue;
         }
@@ -125,7 +125,9 @@ pub(crate) fn prohibitive_spans(text: &str) -> Vec<Span> {
             .skip(n + 1)
             .take(3)
             .find(|(_, _, other)| INVOCATIONS.contains(&other.as_str()));
-        if let Some((_, verb_end, _)) = verb {
+        if let Some((verb_start, verb_end, _)) = verb
+            && !text[*negation_end..*verb_start].contains([',', ';', '.', '!', '?', '\n'])
+        {
             spans.push((*start, clause_end(text, *verb_end, &tokens)));
         }
     }
