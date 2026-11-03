@@ -383,10 +383,11 @@ fn normalize_posix(path: &str) -> String {
 }
 
 fn join_posix(parts: &[&str]) -> String {
+    // Node's `join` on win32 treats `\` as a separator too, so a Windows base path folds `..` per segment.
     let joined = parts
         .iter()
         .filter(|part| !part.is_empty())
-        .copied()
+        .map(|part| if cfg!(windows) { to_display_path(part) } else { (*part).to_string() })
         .collect::<Vec<_>>()
         .join("/");
     if joined.is_empty() {
