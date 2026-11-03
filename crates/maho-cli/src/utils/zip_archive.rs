@@ -80,7 +80,7 @@ mod tests {
             zip::ZipArchive::new(std::fs::File::open(&path).expect("open")).expect("read archive");
         assert_eq!(archive.len(), 2);
         let mut first = archive.by_index(0).expect("first entry");
-        assert_eq!(first.name(), "session.jsonl");
+        assert_eq!(first.name().expect("first entry name"), "session.jsonl");
         assert_eq!(first.compression(), CompressionMethod::Deflated);
         assert!(first.compressed_size() < first.size());
         let mut text = String::new();
@@ -88,7 +88,10 @@ mod tests {
         assert_eq!(text, log);
         drop(first);
         let second = archive.by_index(1).expect("second entry");
-        assert_eq!(second.name(), "notes/\u{e9}t\u{e9}.txt");
+        assert_eq!(
+            second.name().expect("second entry name"),
+            "notes/\u{e9}t\u{e9}.txt"
+        );
     }
 
     #[test]

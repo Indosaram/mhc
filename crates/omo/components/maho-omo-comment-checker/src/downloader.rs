@@ -169,7 +169,10 @@ fn extract_zip_archive(archive: &Path, destination: &Path) -> io::Result<()> {
         let entry = zip_file
             .by_index(index)
             .map_err(|e| io::Error::other(format!("failed to read zip entry: {e}")))?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry
+            .name()
+            .map_err(|e| io::Error::other(format!("failed to read zip entry name: {e}")))?
+            .replace('\\', "/");
         let is_dir = entry.is_dir();
         entries.push(ArchiveEntry {
             path: name,
@@ -189,7 +192,10 @@ fn extract_zip_archive(archive: &Path, destination: &Path) -> io::Result<()> {
         let mut entry = zip_file
             .by_index(index)
             .map_err(|e| io::Error::other(format!("failed to read zip entry: {e}")))?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry
+            .name()
+            .map_err(|e| io::Error::other(format!("failed to read zip entry name: {e}")))?
+            .replace('\\', "/");
         if name.starts_with("__MACOSX/") {
             continue;
         }

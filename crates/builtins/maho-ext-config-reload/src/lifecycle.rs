@@ -515,7 +515,16 @@ async fn start(
                 state.hashes = engine.engine.get_baseline_snapshot();
                 state.contents = contents.clone();
             }
-            for (id, paths) in group_changed_paths(&paths, &targets, &rearmed_containers) {
+            for (id, mut paths) in group_changed_paths(&paths, &targets, &rearmed_containers) {
+                // A registration watches the config files it consumes: a watched directory appearing
+                // or vanishing (the session creating `.omo/senpi-task`, say) changes none of them, and
+                // any config file inside it is reported on its own.
+                if id != "builtin" {
+                    paths.retain(|path| !change.directories.contains(path));
+                    if paths.is_empty() {
+                        continue;
+                    }
+                }
                 let errors = if id == "builtin" {
                     validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd)
                 } else {

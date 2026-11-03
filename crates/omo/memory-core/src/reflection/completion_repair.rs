@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::git::exec::{GitExec, GitExecOptions, GitExecResult};
+use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
 use crate::sync::redact::redact_secret_like_material;
 
 const GIT_TIMEOUT_MS: u64 = 30_000;
@@ -127,13 +128,17 @@ struct Run<'a> {
 
 impl Run<'_> {
     fn call(&self, argv: &[&str]) -> Result<GitExecResult, String> {
+        self.call_with_timeout(argv, GIT_TIMEOUT_MS)
+    }
+
+    fn call_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<GitExecResult, String> {
         let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
         self.exec
             .run(
                 &argv,
                 &GitExecOptions {
                     cwd: self.dir.to_path_buf(),
-                    timeout_ms: GIT_TIMEOUT_MS,
+                    timeout_ms,
                     env: literal_pathspec_env(),
                     stdin: None,
                 },
@@ -142,7 +147,11 @@ impl Run<'_> {
     }
 
     fn must(&self, argv: &[&str]) -> Result<String, String> {
-        let result = self.call(argv)?;
+        self.must_with_timeout(argv, GIT_TIMEOUT_MS)
+    }
+
+    fn must_with_timeout(&self, argv: &[&str], timeout_ms: u64) -> Result<String, String> {
+        let result = self.call_with_timeout(argv, timeout_ms)?;
         if result.code != 0 {
             let stderr = result.stderr.trim();
             return Err(if stderr.is_empty() {
@@ -262,7 +271,11 @@ pub fn squash_without_paths(
         let message = lines.join("\n");
         let name_arg = format!("user.name={name}");
         let email_arg = format!("user.email={email}");
-        run.must(&[
+        // SAFETY-DIVERGENCE(reflection/completion-repair.ts): upstream runs this commit with
+        // neither flag; it runs the memory hooks, so it gets the memory commit budget and must
+        // not end in auto maintenance, like every other memory commit (`repo.ts`).
+        let mut commit_argv: Vec<&str> = NO_AUTO_MAINTENANCE.to_vec();
+        commit_argv.extend([
             "-c",
             name_arg.as_str(),
             "-c",
@@ -272,7 +285,8 @@ pub fn squash_without_paths(
             "--no-verify",
             "-m",
             message.as_str(),
-        ])?;
+        ]);
+        run.must_with_timeout(&commit_argv, COMMIT_TIMEOUT_MS)?;
     }
     Ok(run.must(&["rev-parse", "--verify", "HEAD"])?.trim().to_string())
 }
