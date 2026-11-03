@@ -41,27 +41,12 @@ pub(crate) fn send_signal(
     _signal: i32,
     fallback: &mut dyn ChildKiller,
 ) -> PtyResult<()> {
+    // Terminate the whole tree, not just the direct child: descendants still attached to the
+    // pseudoconsole keep its output pipe open, so the reader and the exit wait would block until
+    // they exit on their own (see process_tree_windows.rs).
     if let Some(pid) = process_group.filter(|&pid| pid > 0) {
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        unsafe extern "system" {
-            fn OpenProcess(
-                desired_access: u32,
-                inherit_handle: i32,
-                process_id: u32,
-            ) -> *mut std::ffi::c_void;
-            fn TerminateProcess(process: *mut std::ffi::c_void, exit_code: u32) -> i32;
-            fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
-        }
-        // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
-        if !handle.is_null() {
-            // SAFETY: `handle` is a live process handle opened with PROCESS_TERMINATE.
-            let res = unsafe { TerminateProcess(handle, 1) };
-            // SAFETY: `handle` came from OpenProcess and is closed exactly once.
-            unsafe { CloseHandle(handle) };
-            if res != 0 {
-                return Ok(());
-            }
+        if crate::process_tree_windows::terminate_process_tree(pid as u32) {
+            return Ok(());
         }
     }
     match fallback.kill() {
