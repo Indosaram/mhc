@@ -187,6 +187,10 @@ impl SessionManager for TestSession {
         self.get_branch()
     }
 
+    fn get_leaf_id(&self) -> Option<String> {
+        None
+    }
+
     fn get_branch(&self) -> Vec<SessionEntry> {
         self.branch.branch_calls.fetch_add(1, Ordering::SeqCst);
         let entries = self
