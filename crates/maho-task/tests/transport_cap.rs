@@ -29,7 +29,7 @@ struct MessageSink {
 
 impl ExtensionActions for MessageSink {
     fn send_message(&self, msg: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> {
-        self.messages.lock().unwrap().push(msg);
+        self.messages.lock().expect("lock").push(msg);
         Ok(())
     }
     fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
@@ -106,13 +106,13 @@ impl TaskRunner for FakeRunner {
                     }
                 }
             }
-            if let Some(out) = self.outputs.lock().unwrap().get(&spec.task_id) {
+            if let Some(out) = self.outputs.lock().expect("lock").get(&spec.task_id) {
                 let _ = std::fs::write(&spec.output_path, out);
             }
-            if let Some(log) = self.logs.lock().unwrap().get(&spec.task_id) {
+            if let Some(log) = self.logs.lock().expect("lock").get(&spec.task_id) {
                 let _ = std::fs::write(&spec.log_path, log);
             }
-            let is_failure = self.failures.lock().unwrap().contains(&spec.task_id);
+            let is_failure = self.failures.lock().expect("lock").contains(&spec.task_id);
             if is_failure {
                 RunOutcome {
                     exit_code: Some(1),
@@ -519,7 +519,7 @@ impl EventSink {
     }
 
     fn emit(&self, event: &str) {
-        self.events.lock().unwrap().send(event.to_owned()).unwrap();
+        self.events.lock().expect("lock").send(event.to_owned()).expect("receiver alive");
     }
 }
 
@@ -528,13 +528,13 @@ impl ExtensionActions for EventSink {
         if self.fail {
             return Err(ExtensionFailure::new("sink refused"));
         }
-        self.messages.lock().unwrap().push(msg);
+        self.messages.lock().expect("lock").push(msg);
         self.emit("message");
         Ok(())
     }
     fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
     fn append_entry(&self, kind: &str, _: Option<serde_json::Value>) -> Result<(), ExtensionFailure> {
-        self.entries.lock().unwrap().push(kind.to_owned());
+        self.entries.lock().expect("lock").push(kind.to_owned());
         self.emit("entry");
         Ok(())
     }
@@ -549,7 +549,7 @@ fn settle_four_together(
 ) -> (Vec<String>, Vec<tokio::task::JoinHandle<()>>) {
     let runner = FakeRunner::new();
     for i in 0..4 {
-        runner.outputs.lock().unwrap().insert(format!("tick-{i}"), format!("same tick out {i}"));
+        runner.outputs.lock().expect("lock").insert(format!("tick-{i}"), format!("same tick out {i}"));
     }
     let runtime = ExtensionRuntime::default();
     runtime.bind(Arc::clone(sink) as Arc<dyn ExtensionActions>);
