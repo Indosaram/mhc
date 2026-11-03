@@ -409,9 +409,14 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     };
     #[cfg(unix)]
     let mut child = {
+        // POSIX stdin is the key pipe, so the presenter channel rides the shell's stdout slot: the target's stdout is
+        // /dev/null either way.
         let mut command = match &presenter {
             Some((_, channel)) => {
-                let mut command = channel.command(std::ffi::OsStr::new(&spawnable.command));
+                let mut command = channel.command(
+                    std::ffi::OsStr::new(&spawnable.command),
+                    crate::mcp_presenter_bootstrap::BootstrapSlot::Stdout,
+                )?;
                 command.args(&spawnable.args);
                 command
             }
@@ -433,8 +438,14 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             })
             .stdout(std::process::Stdio::null())
             .stderr(stderr)
-            .process_group(0)
-            .spawn()?
+            .process_group(0);
+        if let Some((_, channel)) = &presenter {
+            channel.bind(
+                &mut command,
+                crate::mcp_presenter_bootstrap::BootstrapSlot::Stdout,
+            )?;
+        }
+        command.spawn()?
     };
     #[cfg(unix)]
     let _key_pipe = match (internal_key, child.stdin.take()) {
