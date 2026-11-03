@@ -81,7 +81,7 @@ fn bundled_resource_reads_are_auto_approved_but_still_deniable() {
     // A deny on the file still refuses it.
     let (denied, _) = ask(vec![
         rule("*", "*", Action::Ask),
-        rule("read", &format!("{}/*", bundled.display()), Action::Deny),
+        rule("read", &bundled.join("*").to_string_lossy(), Action::Deny),
     ]);
     assert!(matches!(denied, Err(PermissionError::Denied(_))));
 }
