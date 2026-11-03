@@ -65,6 +65,7 @@ impl Drop for ExtensionEventSignalSubscription {
 }
 
 use maho_agent::Agent;
+use maho_agent::heap_future::heap_future;
 use maho_agent::tool_name_alias::resolve_tool_name_alias;
 use maho_agent::types::{AgentMessage, AgentState, AgentTool, AgentToolResult};
 use maho_ai::model::Model;
@@ -6683,7 +6684,7 @@ impl AgentSession {
         let (held_messages, held_ids) = if options.hold_after_preparation {
             (Vec::new(), Vec::new())
         } else {
-            Box::pin(self.take_held_input_messages()).await?
+            heap_future(|| self.take_held_input_messages()).await?
         };
         let _held_reservation = HeldInputReservation {
             session: self.clone(),
@@ -6719,8 +6720,12 @@ impl AgentSession {
         }));
         let admitted = options.prompt_admitted.clone();
         let mut reported = false;
-        let result =
-            Box::pin(self.prompt_with_readiness(text, options, &mut None, &mut reported)).await;
+        let mut readiness = None;
+        let result = {
+            let (readiness, reported) = (&mut readiness, &mut reported);
+            heap_future(move || self.prompt_with_readiness(text, options, readiness, reported))
+        }
+        .await;
         if !reported
             && let Ok(disposition) = &result
             && let Some(admitted) = admitted
@@ -7221,7 +7226,7 @@ impl AgentSession {
             );
             return Ok(PromptDisposition::Handled);
         }
-        if text.starts_with('/') && self.try_execute_extension_command(text).await? {
+        if text.starts_with('/') && heap_future(|| self.try_execute_extension_command(text)).await? {
             return Ok(PromptDisposition::Handled);
         }
         // senpi `prompt()`: manual compaction owns admission; only extension prompts may wait on it.
@@ -7245,7 +7250,7 @@ impl AgentSession {
                 .as_ref()
                 .is_some_and(|images| !images.is_empty()),
         ) {
-            self.send_custom_message_content(
+            heap_future(|| self.send_custom_message_content(
                 crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE.to_owned(),
                 maho_agent::harness::messages::CustomMessageContent::Text(
                     crate::manual_continue::MANUAL_CONTINUE_DIRECTIVE.to_owned(),
@@ -7262,7 +7267,7 @@ impl AgentSession {
                         },
                     ),
                 },
-            )
+            ))
             .await?;
             return Ok(PromptDisposition::Handled);
         }
@@ -7325,7 +7330,7 @@ impl AgentSession {
             }
             let mode = options.streaming_behavior.ok_or_else(||
                 "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.".to_owned())?;
-            self.queue_user_input(
+            heap_future(|| self.queue_user_input(
                 text,
                 options.images,
                 mode,
@@ -7334,7 +7339,7 @@ impl AgentSession {
                     from_prompt: true,
                     ..Default::default()
                 },
-            )
+            ))
             .await?;
             return Ok(PromptDisposition::Queued);
         }
@@ -7362,9 +7367,9 @@ impl AgentSession {
         if !self.is_streaming() {
             self.restore_fallback_primary().await;
         }
-        let Some((text, images, input_id)) = self
-            .run_input_handlers(text, options.images, options.source, None)
-            .await?
+        let Some((text, images, input_id)) =
+            heap_future(|| self.run_input_handlers(text, options.images, options.source, None))
+                .await?
         else {
             return Ok(PromptDisposition::Handled);
         };
@@ -7384,10 +7389,10 @@ impl AgentSession {
                 .streaming_behavior
                 .unwrap_or(StreamingBehavior::Steer);
             self.queue_expanded_input(text, images, mode, None, options.source);
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                 input_id,
                 disposition: maho_ext_api::InputDisposition::Queued,
-            })
+            }))
             .await;
             *disposition_reported = true;
             drop(readiness.take());
@@ -7402,19 +7407,19 @@ impl AgentSession {
             || match self.model_runtime().check_auth(&model.provider, None).await {
                 Ok(check) => check.is_some(),
                 Err(error) => {
-                    self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                    heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                         input_id,
                         disposition: maho_ext_api::InputDisposition::Rejected,
-                    })
+                    }))
                     .await;
                     return Err(error.message);
                 }
             };
         if !has_configured_auth {
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                 input_id,
                 disposition: maho_ext_api::InputDisposition::Rejected,
-            })
+            }))
             .await;
             if self.model_runtime().is_using_oauth(&model.provider) {
                 return Err(format!(
@@ -7428,7 +7433,7 @@ impl AgentSession {
         }
         if !self.is_compaction_delegated()
             && self.pending_model_switch().is_none()
-            && self.check_pre_prompt_overflow().await?
+            && heap_future(|| self.check_pre_prompt_overflow()).await?
         {
             // senpi `_checkCompaction` (inline): the overflow route already settled admission.
         } else if self.auto_compaction_enabled()
@@ -7454,16 +7459,16 @@ impl AgentSession {
                             })
                 })
             {
-                let result = self
-                    .compact_for_model_splitting_turn(&model, "pre-prompt")
-                    .await;
+                let result =
+                    heap_future(|| self.compact_for_model_splitting_turn(&model, "pre-prompt"))
+                        .await;
                 if !self.is_compaction_delegated() {
                     result?;
                 }
             }
         }
         if let Some(pending) = self.pending_model_switch() {
-            self.compact_for_model(None, &pending.model, "pre-prompt")
+            heap_future(|| self.compact_for_model(None, &pending.model, "pre-prompt"))
                 .await?;
             let measured = self
                 .with_session_manager(|manager| manager.current_context())
@@ -7474,12 +7479,12 @@ impl AgentSession {
             let admitted = self.reduce_for_switch_target(&pending.model, measured)?;
             self.state().pending_model_switch = None;
             self.assert_model_usable(&pending.model, admitted)?;
-            self.set_model_internal(
+            heap_future(|| self.set_model_internal(
                 pending.model,
                 pending.persist_default,
                 maho_ext_api::ModelSelectSource::Set,
                 false,
-            )
+            ))
             .await?;
         }
         if let Some(level) = options.thinking_level {
@@ -7519,10 +7524,10 @@ impl AgentSession {
                 self.state()
                     .pending_next_turn_messages
                     .splice(0..0, consumed);
-                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                     input_id,
                     disposition: maho_ext_api::InputDisposition::Rejected,
-                })
+                }))
                 .await;
                 return Err(error);
             }
@@ -7539,14 +7544,14 @@ impl AgentSession {
         messages.push(user_message);
         messages.extend(consumed.clone());
         self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
-        if let Err(error) = self.enforce_final_provider_admission(&messages).await {
+        if let Err(error) = heap_future(|| self.enforce_final_provider_admission(&messages)).await {
             self.state()
                 .pending_next_turn_messages
                 .splice(0..0, consumed);
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                 input_id,
                 disposition: maho_ext_api::InputDisposition::Rejected,
-            })
+            }))
             .await;
             return Err(error);
         }
@@ -7582,17 +7587,17 @@ impl AgentSession {
             if let Some(admitted) = &options.prompt_admitted {
                 admitted(PromptDisposition::Handled);
             }
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
                 input_id,
                 disposition: maho_ext_api::InputDisposition::Handled,
-            })
+            }))
             .await;
             return Ok(PromptDisposition::Handled);
         }
-        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+        heap_future(|| self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
             disposition: maho_ext_api::InputDisposition::Started,
-        })
+        }))
         .await;
         *disposition_reported = true;
         drop(readiness.take());
@@ -7636,14 +7641,15 @@ impl AgentSession {
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.state().required_compaction_admission_error = None;
-        // Boxed: the agent run and its retry/compaction recovery futures are large enough that
-        // holding them inline in this frame overflows a 2 MiB runtime thread stack.
-        Box::pin(
+        // Every large callee future in this function is built on the heap (`heap_future`): built
+        // inline, each one takes its own slot in this frame in unoptimized builds, and the frames of
+        // the prompt -> agent run -> retry recovery chain then overflow a 2 MiB thread stack.
+        heap_future(|| {
             self.agent
-                .prompt(maho_agent::agent::AgentPromptInput::Messages(messages)),
-        )
+                .prompt(maho_agent::agent::AgentPromptInput::Messages(messages))
+        })
         .await;
-        if let Err(error) = Box::pin(self.finish_provider_turn()).await {
+        if let Err(error) = heap_future(|| self.finish_provider_turn()).await {
             // A turn the engine refused never ran, so it releases the barrier it armed (senpi#4106).
             if let Some(spec) = &options.tool_barrier
                 && self.agent.signal().is_none()
@@ -7670,7 +7676,7 @@ impl AgentSession {
         }
         drop(_work);
         drop(_admission);
-        self.emit_agent_settled().await;
+        heap_future(|| self.emit_agent_settled()).await;
         // senpi `_promptAgent`: the stored admission rejection surfaces as the prompt rejecting.
         if let Some(error) = required_compaction_error {
             return Err(error);
@@ -9870,8 +9876,11 @@ impl AgentSession {
     async fn finish_provider_turn(&self) -> Result<(), String> {
         loop {
             let mut retry_owned_deferred_queue = false;
-            let outcome =
-                Box::pin(self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue)).await;
+            let outcome = {
+                let deferred = &mut retry_owned_deferred_queue;
+                heap_future(move || self.finish_provider_turn_retrying(deferred))
+            }
+            .await;
             self.end_unhandled_retry();
             outcome?;
             // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
@@ -9896,7 +9905,7 @@ impl AgentSession {
                 return Ok(());
             }
             if let Err(error) =
-                Box::pin(self.agent.continue_with_queued_messages(Default::default())).await
+                heap_future(|| self.agent.continue_with_queued_messages(Default::default())).await
             {
                 self.settle_refused_continuation(error);
                 return Ok(());
@@ -9972,7 +9981,7 @@ impl AgentSession {
                     let has_deferred = self.flush_post_compaction_deferred_messages();
                     if has_deferred && !self.state().user_aborted {
                         if let Err(error) =
-                            Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                            heap_future(|| self.agent.continue_with_queued_messages(Default::default()))
                                 .await
                         {
                             self.settle_refused_continuation(error);
@@ -10061,9 +10070,10 @@ impl AgentSession {
                 };
                 let execution = {
                     let _auto = self.begin_auto_compaction();
-                    Box::pin(self.compact_for_model_with_retry(
+                    let model = self.model();
+                    heap_future(|| self.compact_for_model_with_retry(
                         None,
-                        &self.model(),
+                        &model,
                         "overflow",
                         will_retry,
                         false,
@@ -10099,7 +10109,7 @@ impl AgentSession {
                     self.agent.set_messages(messages);
                     self.state().message_revision += 1;
                 }
-                if let Err(error) = Box::pin(self.agent.continue_run(
+                if let Err(error) = heap_future(|| self.agent.continue_run(
                     maho_agent::agent::AgentContinuationOptions {
                         defer_queued_messages: Some(true),
                         ..Default::default()
@@ -10118,9 +10128,10 @@ impl AgentSession {
             if !self.state().user_aborted && self.required_compaction_still_needed(&message)? {
                 let compacted = {
                     let _auto = self.begin_auto_compaction();
-                    Box::pin(self.compact_for_model_with_retry(
+                    let model = self.model();
+                    heap_future(|| self.compact_for_model_with_retry(
                         None,
-                        &self.model(),
+                        &model,
                         "threshold",
                         true,
                         false,
@@ -10145,7 +10156,7 @@ impl AgentSession {
                         self.state().message_revision += 1;
                     }
                     if let Err(error) =
-                        Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                        heap_future(|| self.agent.continue_with_queued_messages(Default::default()))
                             .await
                     {
                         self.settle_refused_continuation(error);
@@ -10224,7 +10235,7 @@ impl AgentSession {
                     request_shape_recover = true;
                 }
             }
-            if !request_shape_recover && !Box::pin(self.retry_can_admit_provider(&message)).await {
+            if !request_shape_recover && !heap_future(|| self.retry_can_admit_provider(&message)).await {
                 if crate::retry_fallback::model_config_error::is_model_config_failure(&message) {
                     self.report_model_config_error(&message);
                 }
@@ -10248,7 +10259,7 @@ impl AgentSession {
                 {
                     if self.flush_post_compaction_deferred_messages() {
                         if let Err(error) =
-                            Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                            heap_future(|| self.agent.continue_with_queued_messages(Default::default()))
                                 .await
                         {
                             self.settle_refused_continuation(error);
@@ -10294,7 +10305,7 @@ impl AgentSession {
                     if self.threshold_context_tokens(&message)? > threshold {
                         let result = {
                             let _auto = self.begin_auto_compaction();
-                            Box::pin(self.compact_for_model(None, &model, "threshold")).await
+                            heap_future(|| self.compact_for_model(None, &model, "threshold")).await
                         };
                         if !self.is_compaction_delegated() {
                             result?;
@@ -10334,7 +10345,7 @@ impl AgentSession {
                 {
                     self.retire_failed_retry_assistant(&message)?;
                     if let Err(error) =
-                        Box::pin(self.revalidate_continuation_admission(false)).await
+                        heap_future(|| self.revalidate_continuation_admission(false)).await
                     {
                         let attempt = self.state().retry_attempt;
                         self.state().retry_attempt = 0;
@@ -10629,7 +10640,7 @@ impl AgentSession {
                     self.state().retry_attempt = 0;
                     self.reset_hint_tier_state();
                     // senpi: abort during the retry sleep settles the run before auto_retry_end.
-                    self.emit_agent_settled().await;
+                    heap_future(|| self.emit_agent_settled()).await;
                     self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some("Retry cancelled".to_owned()) });
                     return Ok(());
                 }
@@ -10668,14 +10679,14 @@ impl AgentSession {
                     None
                 } else {
                     Some(
-                        self.compact_for_model_with_retry(
+                        heap_future(|| self.compact_for_model_with_retry(
                             None,
                             &model,
                             "threshold",
                             true,
                             true,
                             None,
-                        )
+                        ))
                         .await,
                     )
                 };
@@ -10695,7 +10706,7 @@ impl AgentSession {
                     return Ok(());
                 }
             }
-            if let Err(error) = self.revalidate_continuation_admission(false).await {
+            if let Err(error) = heap_future(|| self.revalidate_continuation_admission(false)).await {
                 self.state().retry_attempt = 0;
                 self.reset_hint_tier_state();
                 self.emit(AgentSessionEvent::AutoRetryEnd {
@@ -10721,7 +10732,7 @@ impl AgentSession {
             // Match the primary prompt's heap boundary: retry continuations also embed the
             // large agent loop future. Keep ownership here so the watchdog still aborts and
             // awaits this same run rather than dropping it or detaching its completion.
-            let mut continuation = Box::pin(self.agent.continue_run(plan.options));
+            let mut continuation = heap_future(|| self.agent.continue_run(plan.options));
             let started = if let Some(timeout) = plan.watchdog_timeout_ms {
                 tokio::select! {
                     started = &mut continuation => started,

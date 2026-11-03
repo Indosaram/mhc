@@ -159,14 +159,17 @@ pub async fn run_agent_loop(
     }
 
     let stream_function = stream_fn.unwrap_or_else(get_default_stream_fn);
-    run_loop(
-        current_context,
-        &mut new_messages,
-        config,
-        signal,
-        emit,
-        stream_function,
-    )
+    let collected = &mut new_messages;
+    crate::heap_future::heap_future(move || {
+        run_loop(
+            current_context,
+            collected,
+            config,
+            signal,
+            emit,
+            stream_function,
+        )
+    })
     .await;
     new_messages
 }
@@ -192,14 +195,17 @@ pub async fn run_agent_loop_continue(
     send(&emit, AgentEvent::TurnStart).await;
 
     let stream_function = stream_fn.unwrap_or_else(get_default_stream_fn);
-    run_loop(
-        current_context,
-        &mut new_messages,
-        config,
-        signal,
-        emit,
-        stream_function,
-    )
+    let collected = &mut new_messages;
+    crate::heap_future::heap_future(move || {
+        run_loop(
+            current_context,
+            collected,
+            config,
+            signal,
+            emit,
+            stream_function,
+        )
+    })
     .await;
     new_messages
 }
@@ -411,14 +417,23 @@ async fn run_loop(
             } else {
                 request_config.timeout_ms()
             };
-            let streamed = stream_assistant_response(
-                &mut current_context,
-                &request_config,
-                signal.clone(),
-                &emit,
-                with_empty_assistant_recovery(&request_config.model, stream_function.clone()),
-                idle_timeout_ms,
-            )
+            let streamed = {
+                let context = &mut current_context;
+                let (request_config, emit) = (&request_config, &emit);
+                let signal = signal.clone();
+                let stream =
+                    with_empty_assistant_recovery(&request_config.model, stream_function.clone());
+                crate::heap_future::heap_future(move || {
+                    stream_assistant_response(
+                        context,
+                        request_config,
+                        signal,
+                        emit,
+                        stream,
+                        idle_timeout_ms,
+                    )
+                })
+            }
             .await;
             let message = streamed.message;
             let provider_tool_results = streamed.provider_tool_results;

@@ -780,8 +780,10 @@ impl Agent {
             );
         }
         let messages = self.normalize_prompt_input(input);
-        self.run_prompt_messages(messages, PromptRunOptions::default())
-            .await;
+        crate::heap_future::heap_future(|| {
+            self.run_prompt_messages(messages, PromptRunOptions::default())
+        })
+        .await;
     }
 
     /// Continue by delivering queued input first when a compaction leaves custom context at the tail.
@@ -878,7 +880,7 @@ impl Agent {
             return Err(AgentContinueError::AssistantTail);
         }
 
-        self.run_continuation(options).await;
+        crate::heap_future::heap_future(|| self.run_continuation(options)).await;
         Ok(())
     }
 
@@ -903,14 +905,16 @@ impl Agent {
             async move {
                 let context = self.create_context_snapshot();
                 let config = self.create_loop_config(options);
-                run_agent_loop(
-                    messages,
-                    context,
-                    config,
-                    agent_event_sink(self.clone()),
-                    signal,
-                    Some(self.stream_function()),
-                )
+                crate::heap_future::heap_future(|| {
+                    run_agent_loop(
+                        messages,
+                        context,
+                        config,
+                        agent_event_sink(self.clone()),
+                        signal,
+                        Some(self.stream_function()),
+                    )
+                })
                 .await;
             }
         })
@@ -966,13 +970,15 @@ impl Agent {
                 initial_request_timeout_ms: options.timeout_ms,
                 initial_request_stream_start_timeout_ms: options.stream_start_timeout_ms,
             });
-            run_agent_loop_continue(
-                context,
-                config,
-                agent_event_sink(self.clone()),
-                signal,
-                Some(self.stream_function()),
-            )
+            crate::heap_future::heap_future(|| {
+                run_agent_loop_continue(
+                    context,
+                    config,
+                    agent_event_sink(self.clone()),
+                    signal,
+                    Some(self.stream_function()),
+                )
+            })
             .await;
         })
         .await;
@@ -1253,7 +1259,7 @@ impl Agent {
             state.provider_diagnostic = None;
         }
 
-        executor(Some(abort_controller.signal())).await;
+        crate::heap_future::heap_future(|| executor(Some(abort_controller.signal()))).await;
 
         // A provider-returned terminal error/abort has no safe implicit owner for
         // queued work. Park it until an external retry/compaction owner continues,
