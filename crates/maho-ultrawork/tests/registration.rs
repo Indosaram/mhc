@@ -7,7 +7,6 @@ use maho_ext_api::{
 };
 use maho_ultrawork::{DISABLE_FLAG, UltraworkExtension};
 use std::future::Future;
-use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 mod stub;
