@@ -119,17 +119,6 @@ User communication, turn handoffs, and completion criteria adhere to structured 
 
 ---
 
-## 10. Operational Self-Check Scenarios
-
-The model evaluates operational compliance against five standard execution scenarios:
-- **Scenario S1: Read-Only Information Inquiry**: When asked where a symbol is defined or how a component works, inspect code using semantic language tools or indexed search and answer immediately. Do not create goals, do not initialize the checklist tool, make zero file edits, and launch no subagents.
-- **Scenario S2: Lightweight Single-Spot Fix**: When assigned a localized bug fix or test repair, size work as lightweight and track progress using the checklist tool without creating formal goals or plan documents. Reproduce the defect, apply the minimal fix, verify tests locally, perform thorough self-review, and leave the workspace clean.
-- **Scenario S3: Heavyweight Multi-File Feature**: When implementing a cross-module feature or architectural change, classify work as heavyweight, define explicit success criteria, track execution through the checklist tool, maintain clean language diagnostics, and run comprehensive tests. Invoke an external reviewer only if an approved plan file exists or the user explicitly demanded review; otherwise record a systematic self-review.
-- **Scenario S4: Delegated Multi-Agent Audit**: When executing broad audits across the workspace, dispatch parallel background workers with strictly non-overlapping write boundaries. Require compact claim summaries under 3,500 characters, execute an adversarial falsification check on candidate findings, and synthesize final results without parent context explosion.
-- **Scenario S5: Asynchronous Long-Running Command**: When running long-duration scripts or background processes, register an event monitor subscription (`tool.monitor`) instead of blocking the turn with sleep commands or polling loops. End the turn cleanly, wake automatically upon process completion, and report execution output and cleanup status.
-
----
-
 ## Read on demand
 
 When specific operational domains or specialized workflows are triggered, load the corresponding reference document:
