@@ -746,6 +746,12 @@ impl SessionStatsCounts {
 
     fn fold(&mut self, entries: &[Value], totals: &mut crate::usage_totals::UsageTotals) {
         for entry in entries {
+            self.fold_entry(entry, totals);
+        }
+    }
+
+    fn fold_entry(&mut self, entry: &Value, totals: &mut crate::usage_totals::UsageTotals) {
+        {
             let kind = entry
                 .get("type")
                 .and_then(Value::as_str)
@@ -758,11 +764,11 @@ impl SessionStatsCounts {
                 crate::usage_totals::add_usage_to_totals(totals, &usage);
             }
             if kind != "message" {
-                continue;
+                return;
             }
             self.total_messages += 1;
             let Some(message) = entry.get("message") else {
-                continue;
+                return;
             };
             match message.get("role").and_then(Value::as_str) {
                 Some("user") => self.user_messages += 1,
@@ -18790,7 +18796,7 @@ impl AgentSession {
         enum FoldInput {
             Cached(SessionStats),
             Appended(Vec<Value>, SessionStats, crate::usage_totals::UsageTotals),
-            All(Vec<Value>),
+            All(SessionStatsCounts, crate::usage_totals::UsageTotals),
         }
         let previous = self.state().session_stats_cache.clone();
         // Entries are append-only, so (session id, entry count, leaf id) pins the aggregate below.
@@ -18804,6 +18810,16 @@ impl AgentSession {
                     manager.get_entry_count(),
                     manager.leaf_id().map(str::to_owned),
                 );
+                // A full rescan folds the history in place: the counters read only types, roles,
+                // usage and block kinds, so the spilled tool-result strings are never rehydrated.
+                let fold_all = || {
+                    let mut counts = SessionStatsCounts::default();
+                    let mut totals = crate::usage_totals::create_usage_totals();
+                    manager.visit_history_unmaterialized(&mut |entry| {
+                        counts.fold_entry(entry, &mut totals);
+                    });
+                    FoldInput::All(counts, totals)
+                };
                 let input = match previous {
                     Some((cached_key, stats, _)) if cached_key == key => FoldInput::Cached(stats),
                     Some((cached_key, stats, totals))
@@ -18811,10 +18827,10 @@ impl AgentSession {
                     {
                         match manager.entries_after(cached_key.1) {
                             Some(entries) => FoldInput::Appended(entries, stats, totals),
-                            None => FoldInput::All(manager.entries()),
+                            None => fold_all(),
                         }
                     }
-                    _ => FoldInput::All(manager.entries()),
+                    _ => fold_all(),
                 };
                 (key, input)
             });
@@ -18831,12 +18847,7 @@ impl AgentSession {
                 counts.fold(&entries, &mut totals);
                 (counts, totals)
             }
-            FoldInput::All(entries) => {
-                let mut counts = SessionStatsCounts::default();
-                let mut totals = crate::usage_totals::create_usage_totals();
-                counts.fold(&entries, &mut totals);
-                (counts, totals)
-            }
+            FoldInput::All(counts, totals) => (counts, totals),
         };
         let SessionStatsCounts {
             user_messages,
@@ -18918,12 +18929,19 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .collect();
         let messages = crate::messages::filter_context_excluded_messages(messages);
-        // Id-only walk first: only a compacted branch needs the materialized `current_branch()`.
+        // Id-only walk first: only a compacted branch needs entries, and only from its latest
+        // compaction to the leaf; materializing the whole branch rehydrated every spilled tool result.
         let compacted = self
             .latest_current_branch_entry_id("compaction", None)
             .is_some();
         let branch = if compacted {
-            self.with_session_manager(|manager| manager.current_branch())
+            self.with_session_manager(|manager| {
+                manager
+                    .current_branch_tail(0, &mut |entry: &Value| {
+                        entry.get("type").and_then(Value::as_str) == Some("compaction")
+                    })
+                    .1
+            })
         } else {
             Vec::new()
         };
@@ -30059,6 +30077,37 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn footer_reads_on_a_compacted_session_do_not_materialize_the_history() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_session_manager_mut(|manager| {
+            let root = manager
+                .append_message(serde_json::json!({"role":"user","content":"first","timestamp":0}));
+            manager.append_message(
+                serde_json::json!({"role":"user","content":"x".repeat(64 * 1024),"timestamp":1}),
+            );
+            manager.append_compaction(
+                "digest",
+                root["id"].as_str().expect("root"),
+                1000,
+                None,
+                None,
+                None,
+            );
+            manager.append_message(
+                serde_json::json!({"role":"user","content":"after","timestamp":2}),
+            );
+        });
+        session.with_session_manager(|manager| manager.drop_materialized_cache());
+
+        let stats = session.get_session_stats();
+
+        assert_eq!(stats.user_messages, 3);
+        assert!(stats.context_usage.is_some());
+        assert!(!session.with_session_manager(|manager| manager.has_materialized_view()));
     }
 
     #[tokio::test]
