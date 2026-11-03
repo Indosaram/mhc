@@ -455,6 +455,12 @@ impl Extension for UlwLoopComponent {
                         );
                         return Ok(EventResult::None);
                     }
+                    // Taken before the state lock so no guard is held across the await.
+                    let current_fingerprint = if run.status.1 {
+                        compute_worktree_fingerprint(&ctx.cwd).await
+                    } else {
+                        None
+                    };
                     let session_id = ctx.session_manager.session_id().to_string();
                     let mut state = state
                         .lock()
@@ -473,7 +479,6 @@ impl Extension for UlwLoopComponent {
                     }
 
                     // SAFETY-DIVERGENCE(packages/omo-senpi/components/ulw-loop/index.ts): upstream stops after 1 turn with unchanged status; mhc allows progress via file edits or worktree fingerprint changes and requires 2 idle turns before stopping.
-                    let current_fingerprint = compute_worktree_fingerprint(&ctx.cwd).await;
                     let status_changed = session.previous_status.as_ref() != Some(&run.status.0);
                     let edit_succeeded = session.turn_had_successful_edit;
                     let fingerprint_changed = current_fingerprint.is_some()

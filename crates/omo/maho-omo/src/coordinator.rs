@@ -12,6 +12,7 @@
 //!   future on the current tokio runtime and needs a runtime to settle.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
