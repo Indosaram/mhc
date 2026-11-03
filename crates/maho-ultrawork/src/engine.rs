@@ -1,0 +1,148 @@
+//! Lifecycle decisions: what to inject on a prompt, a turn start, a compaction and a todo result.
+
+use crate::classify::{Classification, ClassifyInput, Stage, classify};
+use crate::state::{PendingDirective, Sessions};
+use crate::texts::{directive_message, inline_block, reminder_message, todo_advisory};
+use maho_ext_api::{CustomMessage, InputSource};
+use serde_json::Value;
+use std::sync::Arc;
+
+/// Minimum number of items in a freshly created list before the sizing advisory fires.
+const TODO_REMINDER_MIN_ITEMS: usize = 3;
+
+#[derive(Clone, Copy, Debug)]
+pub struct InputRequest<'a> {
+    pub session: &'a str,
+    pub text: &'a str,
+    pub source: InputSource,
+    /// The input arrives while a turn streams, so it can only carry text.
+    pub streaming: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct InputOutcome {
+    pub classification: Classification,
+    /// Prompt text with the block appended, for inputs that cannot carry a custom message.
+    pub transformed_text: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TodoResultView<'a> {
+    pub session: &'a str,
+    pub tool_name: &'a str,
+    pub is_error: bool,
+    pub details: Option<&'a Value>,
+}
+
+#[derive(Clone)]
+pub struct Engine {
+    sessions: Arc<Sessions>,
+}
+
+impl Default for Engine {
+    /// An engine over the process-wide session table.
+    fn default() -> Self {
+        Self::new(crate::global_sessions())
+    }
+}
+
+impl Engine {
+    pub fn new(sessions: Arc<Sessions>) -> Self {
+        Self { sessions }
+    }
+
+    pub fn sessions(&self) -> &Sessions {
+        &self.sessions
+    }
+
+    pub fn on_input(&self, request: InputRequest<'_>, disabled: bool) -> InputOutcome {
+        let snapshot = self.sessions.snapshot(request.session);
+        let classification = classify(ClassifyInput {
+            text: request.text,
+            source: request.source,
+            snapshot,
+            disabled,
+        });
+        let mut outcome = InputOutcome {
+            classification,
+            transformed_text: None,
+        };
+        if disabled {
+            return outcome;
+        }
+        if classification.already_delivered {
+            self.sessions.mark_armed(request.session);
+            return outcome;
+        }
+        if !classification.effective {
+            return outcome;
+        }
+        let full = matches!(classification.stage, Stage::Initial | Stage::CompactRearm);
+        self.sessions.mark_armed(request.session);
+        if request.streaming {
+            let block = inline_block(full, classification.mass);
+            outcome.transformed_text = Some(format!("{}\n\n{block}", request.text));
+        } else {
+            self.sessions.set_pending(
+                request.session,
+                PendingDirective {
+                    full,
+                    mass: classification.mass,
+                },
+            );
+        }
+        outcome
+    }
+
+    /// The hidden message for the turn that is about to start. A preview leaves the state alone.
+    pub fn on_turn_start(&self, session: &str, preview: bool) -> Option<CustomMessage> {
+        let found = if preview {
+            self.sessions.pending(session)
+        } else {
+            self.sessions.take_pending(session)
+        };
+        let pending = found?;
+        Some(if pending.full {
+            directive_message(crate::contract_revision(), pending.mass)
+        } else {
+            reminder_message(pending.mass)
+        })
+    }
+
+    pub fn on_compaction(&self, session: &str) {
+        self.sessions.mark_compact_rearm(session);
+    }
+
+    /// The advisory text to append to this tool result, if the todo trigger conditions hold.
+    pub fn on_tool_result(&self, view: TodoResultView<'_>, disabled: bool) -> Option<&'static str> {
+        if disabled || view.tool_name != "todo" || view.is_error {
+            return None;
+        }
+        let details = view.details?;
+        let snapshot = self.sessions.snapshot(view.session);
+        // After a compaction the session counts as armed until the next mention re-arms it.
+        let armed = snapshot.armed || snapshot.compaction_pending;
+        if details.get("op").and_then(Value::as_str) != Some("init")
+            || task_count(details) < TODO_REMINDER_MIN_ITEMS
+            || !armed
+        {
+            return None;
+        }
+        self.sessions
+            .latch_todo_reminder(view.session)
+            .then(todo_advisory)
+    }
+}
+
+fn task_count(details: &Value) -> usize {
+    details
+        .get("phases")
+        .and_then(Value::as_array)
+        .map_or(0, |phases| {
+            phases
+                .iter()
+                .filter_map(|phase| phase.get("tasks").and_then(Value::as_array))
+                .map(Vec::len)
+                .sum()
+        })
+}
