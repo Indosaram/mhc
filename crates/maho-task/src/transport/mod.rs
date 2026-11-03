@@ -15,8 +15,13 @@ pub use cap::{
 
 use crate::manager::{SettledCallback, TaskManager};
 use maho_ext_api::ExtensionApi;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Wires settled background task delivery through capping and wake batch limiting.
 pub fn bind_settled_batcher(
@@ -27,15 +32,13 @@ pub fn bind_settled_batcher(
 ) {
     let state_dir = manager.state().root.clone();
     let queue: Arc<Mutex<Vec<ChildCompletion>>> = Arc::default();
-    let is_flushing: Arc<AtomicBool> = Arc::default();
+    let flusher_lock: Arc<Mutex<()>> = Arc::default();
 
-    let callback: SettledCallback = Arc::new(move |record, fallback_text| {
+    let callback: SettledCallback = Arc::new(move |record, _fallback_text| {
         let state = crate::record::StateDir::new(&state_dir);
         let disk_output = state.read_output(&record.id);
         let raw = if !disk_output.trim().is_empty() {
             disk_output
-        } else if !fallback_text.trim().is_empty() {
-            fallback_text.to_owned()
         } else {
             state.read_log_tail(&record.id, 4_000)
         };
@@ -49,32 +52,28 @@ pub fn bind_settled_batcher(
         let completion = ChildCompletion::new(&record.id, record.status.as_str(), envelope)
             .with_details(details);
 
-        let mut q = queue.lock().unwrap();
-        q.push(completion);
-        drop(q);
-
-        if is_flushing
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        // 1. Push completion to queue
         {
-            let queue = Arc::clone(&queue);
-            let is_flushing = Arc::clone(&is_flushing);
-            let sender = Arc::clone(&sender);
-            let state_dir = state_dir.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::task::yield_now().await;
-                    let tasks = {
-                        let mut q = queue.lock().unwrap();
-                        if q.is_empty() {
-                            is_flushing.store(false, Ordering::SeqCst);
-                            break;
-                        }
-                        std::mem::take(&mut *q)
-                    };
-                    let _ = deliver_batch(&sender, &state_dir, batch_limit, &tasks);
-                }
-            });
+            let mut q = lock(&queue);
+            q.push(completion);
+        }
+
+        // 2. Synchronous flush: acquire flusher lock so waiters only wake after delivery completes.
+        let _guard = lock(&flusher_lock);
+        let tasks = {
+            let mut q = lock(&queue);
+            std::mem::take(&mut *q)
+        };
+        if !tasks.is_empty() {
+            if let Err(error) = deliver_batch(&sender, &state_dir, batch_limit, &tasks) {
+                let _ = sender.append_entry(
+                    "task_delivery_error",
+                    Some(serde_json::json!({
+                        "error": error.to_string(),
+                        "task_ids": tasks.iter().map(|t| &t.id).collect::<Vec<_>>(),
+                    })),
+                );
+            }
         }
     });
     manager.set_on_settled(Some(callback));

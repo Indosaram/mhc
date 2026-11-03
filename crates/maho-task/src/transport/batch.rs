@@ -66,14 +66,8 @@ pub struct WakeOverflowManifest {
 
 impl WakeOverflowManifest {
     pub fn new(batch_id: impl Into<String>, overflow_tasks: Vec<ChildCompletion>) -> Self {
-        let batch_id = batch_id.into();
-        let overflow_count = overflow_tasks.len();
-        Self {
-            batch_id,
-            overflow_count,
-            tasks: overflow_tasks.clone(),
-            results: overflow_tasks,
-        }
+        let (batch_id, count) = (batch_id.into(), overflow_tasks.len());
+        Self { batch_id, overflow_count: count, tasks: overflow_tasks.clone(), results: overflow_tasks }
     }
 }
 
@@ -83,16 +77,14 @@ pub fn read_overflow_manifest(path: &Path) -> std::io::Result<WakeOverflowManife
     if let Ok(manifest) = serde_json::from_slice::<WakeOverflowManifest>(&bytes) {
         return Ok(manifest);
     }
-    if let Ok(tasks) = serde_json::from_slice::<Vec<ChildCompletion>>(&bytes) {
-        let count = tasks.len();
-        return Ok(WakeOverflowManifest {
+    serde_json::from_slice::<Vec<ChildCompletion>>(&bytes)
+        .map(|tasks| WakeOverflowManifest {
             batch_id: String::new(),
-            overflow_count: count,
-            tasks: tasks.clone(),
-            results: tasks,
-        });
-    }
-    Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid overflow manifest"))
+            overflow_count: tasks.len(),
+            results: tasks.clone(),
+            tasks,
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// Options for building a batched wake message (§9.2).
@@ -106,25 +98,11 @@ pub struct WakeBatchOptions<'a> {
 
 impl<'a> WakeBatchOptions<'a> {
     pub fn new(state_dir: &'a Path) -> Self {
-        Self {
-            state_dir,
-            batch_id: None,
-            limit: DEFAULT_COMPLETION_BATCH_LIMIT,
-            header: None,
-        }
+        Self { state_dir, batch_id: None, limit: DEFAULT_COMPLETION_BATCH_LIMIT, header: None }
     }
-    pub fn with_batch_id(mut self, batch_id: &'a str) -> Self {
-        self.batch_id = Some(batch_id);
-        self
-    }
-    pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = limit;
-        self
-    }
-    pub fn with_header(mut self, header: &'a str) -> Self {
-        self.header = Some(header);
-        self
-    }
+    pub fn with_batch_id(mut self, batch_id: &'a str) -> Self { self.batch_id = Some(batch_id); self }
+    pub fn with_limit(mut self, limit: usize) -> Self { self.limit = limit; self }
+    pub fn with_header(mut self, header: &'a str) -> Self { self.header = Some(header); self }
 }
 
 /// Outcome of building a batched parent wake message (§9.2).
@@ -136,6 +114,7 @@ pub struct WakeBatchResult {
     pub overflow_tasks: Vec<ChildCompletion>,
     pub overflow_manifest_path: Option<PathBuf>,
     pub overflow_manifest_uri: Option<String>,
+    pub manifest_error: Option<String>,
 }
 
 impl WakeBatchResult {
@@ -148,28 +127,30 @@ impl WakeBatchResult {
             map.insert("manifest_uri".into(), json!(uri));
             map.insert("uri".into(), json!(uri));
         }
+        if let Some(err) = &self.manifest_error {
+            map.insert("manifest_error".into(), json!(err));
+        }
+        let inline_details: Vec<Value> = self.inline_tasks.iter().map(|t| {
+            let mut td = t.details.clone();
+            if let (Some(map), Some(uri)) = (td.as_object_mut(), &t.file_uri) {
+                map.entry("file_uri".to_string()).or_insert_with(|| json!(uri));
+            }
+            td
+        }).collect();
+        map.insert("tasks".into(), json!(inline_details));
         Value::Object(map)
     }
 }
 
-struct CandidateParams<'a> {
-    header: Option<&'a str>,
-    tasks: &'a [ChildCompletion],
-    inline_count: usize,
-    manifest_uri: &'a str,
-}
-
-fn render_batch_candidate(params: CandidateParams<'_>) -> String {
-    let mut msg = params.header.unwrap_or("").to_owned();
-    for task in params.tasks.iter().take(params.inline_count) {
+fn render_batch(header: Option<&str>, inline_tasks: &[ChildCompletion], trailer: Option<&str>) -> String {
+    let mut msg = header.unwrap_or("").to_owned();
+    for task in inline_tasks {
         if !msg.is_empty() { msg.push('\n'); }
         msg.push_str(&task.text);
     }
-    if params.inline_count < params.tasks.len() {
-        let overflow_count = params.tasks.len() - params.inline_count;
-        let trailer = format!("{overflow_count} more task results: {}", params.manifest_uri);
+    if let Some(t) = trailer {
         if !msg.is_empty() { msg.push('\n'); }
-        msg.push_str(&trailer);
+        msg.push_str(t);
     }
     msg
 }
@@ -189,6 +170,7 @@ pub fn build_wake_batch(
             overflow_tasks: Vec::new(),
             overflow_manifest_path: None,
             overflow_manifest_uri: None,
+            manifest_error: None,
         });
     }
     let results_dir = options.state_dir.join("completion-results");
@@ -197,12 +179,8 @@ pub fn build_wake_batch(
 
     let mut selected_inline = 0;
     for k in (0..=tasks.len()).rev() {
-        let candidate = render_batch_candidate(CandidateParams {
-            header: options.header,
-            tasks,
-            inline_count: k,
-            manifest_uri: &manifest_uri,
-        });
+        let trailer = (k < tasks.len()).then(|| format!("{} more task results: {manifest_uri}", tasks.len() - k));
+        let candidate = render_batch(options.header, &tasks[..k], trailer.as_deref());
         if count_utf16_code_units(&candidate) <= limit {
             selected_inline = k;
             break;
@@ -211,22 +189,31 @@ pub fn build_wake_batch(
 
     let inline_tasks = tasks[..selected_inline].to_vec();
     let overflow_tasks = tasks[selected_inline..].to_vec();
-    let message = render_batch_candidate(CandidateParams {
-        header: options.header,
-        tasks,
-        inline_count: selected_inline,
-        manifest_uri: &manifest_uri,
-    });
 
-    let (overflow_manifest_path, overflow_manifest_uri) = if overflow_tasks.is_empty() {
-        (None, None)
+    let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if overflow_tasks.is_empty() {
+        (None, None, None)
     } else {
-        std::fs::create_dir_all(&results_dir)?;
-        let manifest = WakeOverflowManifest::new(&batch_id, overflow_tasks.clone());
-        let json_bytes = serde_json::to_vec_pretty(&manifest)?;
-        std::fs::write(&manifest_path, json_bytes)?;
-        (Some(manifest_path), Some(manifest_uri))
+        let write_res = std::fs::create_dir_all(&results_dir).and_then(|_| {
+            let manifest = WakeOverflowManifest::new(&batch_id, overflow_tasks.clone());
+            let bytes = serde_json::to_vec_pretty(&manifest)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            std::fs::write(&manifest_path, bytes)?;
+            Ok((manifest_path, manifest_uri))
+        });
+        match write_res {
+            Ok((path, uri)) => (Some(path), Some(uri), None),
+            Err(e) => (None, None, Some(e.to_string())),
+        }
     };
+
+    let trailer = if overflow_tasks.is_empty() {
+        None
+    } else if let Some(err) = &manifest_error {
+        Some(format!("{} more task results could not be saved: {err}", overflow_tasks.len()))
+    } else {
+        Some(format!("{} more task results: {}", overflow_tasks.len(), overflow_manifest_uri.as_deref().unwrap_or_default()))
+    };
+    let message = render_batch(options.header, &inline_tasks, trailer.as_deref());
 
     Ok(WakeBatchResult {
         batch_id,
@@ -235,6 +222,7 @@ pub fn build_wake_batch(
         overflow_tasks,
         overflow_manifest_path,
         overflow_manifest_uri,
+        manifest_error,
     })
 }
 
@@ -258,17 +246,19 @@ pub fn deliver_batch(
     } else {
         res.to_details_value()
     };
-    let _ = sender.send_message(
-        CustomMessage {
-            custom_type: crate::extension::RESULT_MESSAGE_TYPE.to_owned(),
-            content: vec![ToolContent::text(&res.message)],
-            display: true,
-            details: Some(details),
-        },
-        SendMessageOptions {
-            trigger_turn: true,
-            deliver_as: Some(DeliverAs::FollowUp),
-        },
-    );
+    sender
+        .send_message(
+            CustomMessage {
+                custom_type: crate::extension::RESULT_MESSAGE_TYPE.to_owned(),
+                content: vec![ToolContent::text(&res.message)],
+                display: true,
+                details: Some(details),
+            },
+            SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(DeliverAs::FollowUp),
+            },
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
     Ok(res)
 }

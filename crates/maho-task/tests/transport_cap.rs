@@ -2,17 +2,24 @@
 //! (`docs/cleanroom/specs/ultrawork.md` §9, GAP-5).
 use maho_ext_api::{
     CustomMessage, ExtensionActions, ExtensionApi, ExtensionFailure, ExtensionRuntime,
-    ExtensionSessionProfile, LoadedExtension, SendMessageOptions, ToolInfo, UserMessageContent,
-    UserMessageOptions,
+    ExtensionSessionProfile, LoadedExtension, SendMessageOptions, SendUserMessageOptions,
+    ToolContent, ToolInfo, UserMessageContent,
 };
+use maho_task::runner::{BoxFuture, CancelToken, RunOutcome, RunSpec, TaskRunner};
 use maho_task::transport::{
     ChildCompletion, CompletionCapOptions, MIN_COMPLETION_BATCH_LIMIT,
-    MIN_COMPLETION_TRANSPORT_LIMIT, SettledDelivery, WakeBatchOptions,
+    MIN_COMPLETION_TRANSPORT_LIMIT, SettledDelivery, WakeBatchOptions, bind_settled_batcher,
     build_capped_result_envelope, build_wake_batch, cap_completion_response,
     count_utf16_code_units, deliver_batch, deliver_settled, read_overflow_manifest,
 };
-use maho_task::TaskRecord;
+use maho_task::{
+    ModelChoice, SpawnRequest, StateDir, TaskManager, TaskManagerOptions, TaskRecord,
+    TaskSettings, TaskStatus, bundled_agents,
+};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tempfile::tempdir;
 
 #[derive(Default)]
@@ -25,7 +32,7 @@ impl ExtensionActions for MessageSink {
         self.messages.lock().unwrap().push(msg);
         Ok(())
     }
-    fn send_user_message(&self, _: UserMessageContent, _: UserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
     fn append_entry(&self, _: &str, _: Option<serde_json::Value>) -> Result<(), ExtensionFailure> { Ok(()) }
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
 }
@@ -34,6 +41,13 @@ fn test_api(sink: Arc<MessageSink>) -> ExtensionApi {
     let runtime = ExtensionRuntime::default();
     runtime.bind(sink);
     ExtensionApi::new(LoadedExtension::new("task", "/tmp".into(), Default::default()), ExtensionSessionProfile::default(), Default::default(), runtime)
+}
+
+fn get_content_text(msg: &CustomMessage) -> &str {
+    match &msg.content[0] {
+        ToolContent::Text { text, .. } => text.as_str(),
+        _ => panic!("expected text content in custom message"),
+    }
 }
 
 fn sample_record(id: &str) -> TaskRecord {
@@ -45,6 +59,99 @@ fn sample_record(id: &str) -> TaskRecord {
         "started_at_ms": 1000, "finished_at_ms": 2500,
     }))
     .expect("record")
+}
+
+struct FakeRunner {
+    release: tokio::sync::Semaphore,
+    outputs: Mutex<HashMap<String, String>>,
+    logs: Mutex<HashMap<String, String>>,
+    failures: Mutex<HashSet<String>>,
+}
+
+impl FakeRunner {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            release: tokio::sync::Semaphore::new(0),
+            outputs: Mutex::default(),
+            logs: Mutex::default(),
+            failures: Mutex::default(),
+        })
+    }
+}
+
+impl TaskRunner for FakeRunner {
+    fn run<'a>(
+        &'a self,
+        spec: &'a RunSpec,
+        cancel: CancelToken,
+        on_start: Box<dyn FnOnce(Option<u32>) + Send + 'a>,
+    ) -> BoxFuture<'a, RunOutcome> {
+        Box::pin(async move {
+            on_start(None);
+            if spec.prompt.contains("hold") {
+                tokio::select! {
+                    permit = self.release.acquire() => {
+                        if let Ok(p) = permit {
+                            p.forget();
+                        }
+                    }
+                    () = cancel.cancelled() => {
+                        return RunOutcome { cancelled: true, ..Default::default() };
+                    }
+                }
+            }
+            if let Some(out) = self.outputs.lock().unwrap().get(&spec.task_id) {
+                let _ = std::fs::write(&spec.output_path, out);
+            }
+            if let Some(log) = self.logs.lock().unwrap().get(&spec.task_id) {
+                let _ = std::fs::write(&spec.log_path, log);
+            }
+            let is_failure = self.failures.lock().unwrap().contains(&spec.task_id);
+            if is_failure {
+                RunOutcome {
+                    exit_code: Some(1),
+                    cancelled: false,
+                    error: Some("process failed".to_owned()),
+                }
+            } else {
+                RunOutcome {
+                    exit_code: Some(0),
+                    cancelled: false,
+                    error: None,
+                }
+            }
+        })
+    }
+}
+
+fn test_manager(dir: &Path, runner: Arc<FakeRunner>) -> Arc<TaskManager> {
+    TaskManager::new(TaskManagerOptions {
+        state: StateDir::new(dir.join("state")),
+        settings: TaskSettings::default(),
+        runner: runner as Arc<dyn TaskRunner>,
+        isolation: None,
+        observers: Vec::new(),
+        hooks: maho_lsp::hooks::HookChain::default(),
+        depth: 0,
+    })
+}
+
+fn spawn_request(dir: &Path, id: &str, task: &str) -> SpawnRequest {
+    SpawnRequest {
+        agent: bundled_agents().remove(0),
+        task: task.to_owned(),
+        context: None,
+        name: Some(id.to_owned()),
+        choice: ModelChoice::default(),
+        cwd: dir.to_path_buf(),
+        background: true,
+        isolated: false,
+        group: None,
+        pane: None,
+        quiet: false,
+        owner_session: Some("test-session".to_owned()),
+        root_session: Some("test-session".to_owned()),
+    }
 }
 
 /// Spec §9.1 and Test Vectors 37 & 38: Per-child completion transport limit with spill.
@@ -185,7 +292,7 @@ fn wired_delivery_caps_body_with_pointer_and_intact_envelope() {
     let msg = &messages[0];
     assert_eq!(msg.custom_type, "task-result");
 
-    let content = msg.content[0].text.as_deref().expect("content text");
+    let content = get_content_text(msg);
 
     // Envelope must remain intact: opening tag, output, resume, closing tag
     assert!(content.starts_with("<task-result id=\"wired-task-1\""), "starts with opening tag");
@@ -239,7 +346,7 @@ fn wired_delivery_failed_spill_still_slices_with_note() {
 
     let messages = sink.messages.lock().unwrap();
     assert_eq!(messages.len(), 1);
-    let content = messages[0].content[0].text.as_deref().expect("text");
+    let content = get_content_text(&messages[0]);
 
     assert!(content.contains("full result could not be saved:"), "must contain failure note");
     assert!(content.ends_with("</task-result>"), "envelope must remain intact");
@@ -268,7 +375,7 @@ fn wired_batch_delivery_caps_and_overflows() {
 
     let messages = sink.messages.lock().unwrap();
     assert_eq!(messages.len(), 1, "batched delivery sends one wake message");
-    let content = messages[0].content[0].text.as_deref().expect("text");
+    let content = get_content_text(&messages[0]);
 
     assert_eq!(res.inline_tasks.len(), 3);
     assert_eq!(res.overflow_tasks.len(), 2);
@@ -289,4 +396,127 @@ fn wired_batch_delivery_caps_and_overflows() {
     assert_eq!(manifest.overflow_count, 2);
     assert_eq!(manifest.tasks[0].id, "batch-task-3");
     assert_eq!(manifest.tasks[1].id, "batch-task-4");
+}
+
+/// Defect B / Fix 5: Failed overflow manifest write still delivers inline tasks with visible note.
+#[test]
+fn wired_batch_delivery_failed_manifest_delivers_inline_with_note() {
+    let dir = tempdir().expect("tempdir");
+    let state_dir = dir.path();
+    let sink = Arc::new(MessageSink::default());
+    let api = test_api(Arc::clone(&sink));
+
+    // Block completion-results directory so manifest write fails
+    let blocked = state_dir.join("completion-results");
+    std::fs::write(&blocked, "blocker").expect("write blocker");
+
+    let tasks: Vec<ChildCompletion> = (0..5)
+        .map(|i| {
+            let record = sample_record(&format!("block-task-{i}"));
+            let raw_body = format!("Task {i} output: {}", "B".repeat(5_970));
+            let (envelope, details) = build_capped_result_envelope(state_dir, &record, &raw_body, 8_000);
+            ChildCompletion::new(format!("block-task-{i}"), "completed", envelope).with_details(details)
+        })
+        .collect();
+
+    let res = deliver_batch(&api, state_dir, 24_000, &tasks).expect("deliver batch succeeds");
+
+    assert_eq!(res.inline_tasks.len(), 3);
+    assert_eq!(res.overflow_tasks.len(), 2);
+    assert!(res.overflow_manifest_path.is_none());
+    assert!(res.manifest_error.is_some());
+
+    let messages = sink.messages.lock().unwrap();
+    assert_eq!(messages.len(), 1, "one wake message delivered despite manifest write error");
+    let content = get_content_text(&messages[0]);
+
+    assert!(content.contains("2 more task results could not be saved:"), "trailer note present");
+    for i in 0..3 {
+        assert!(content.contains(&format!("id=\"block-task-{i}\"")), "inline task {i} present");
+    }
+}
+
+/// Defect C / Fix 6 & 7: Production settle through TaskManager delivers before waiters wake.
+#[tokio::test]
+async fn settled_batcher_delivers_before_waiters_wake() {
+    let dir = tempdir().expect("tempdir");
+    let runner = FakeRunner::new();
+    runner.outputs.lock().unwrap().insert("bg-settle-1".to_owned(), "task completed successfully\n".to_owned());
+
+    let sink = Arc::new(MessageSink::default());
+    let api = test_api(Arc::clone(&sink));
+    let manager = test_manager(dir.path(), Arc::clone(&runner));
+    bind_settled_batcher(&manager, Arc::new(api), 8_000, 24_000);
+
+    let record = manager.start(spawn_request(dir.path(), "bg-settle-1", "work on thing")).expect("start");
+    let settled = manager.wait(&record.id, Some(Duration::from_secs(5))).await.expect("settle");
+    assert_eq!(settled.status, TaskStatus::Completed);
+
+    // Invariant: Final background delivery happens BEFORE waiters wake.
+    let messages = sink.messages.lock().unwrap();
+    assert_eq!(messages.len(), 1, "delivery message sent before wait returned");
+    let content = get_content_text(&messages[0]);
+    assert!(content.starts_with("<task-result id=\"bg-settle-1\""));
+    assert!(content.contains("<output>\ntask completed successfully\n</output>"));
+    assert!(content.ends_with("</task-result>"));
+}
+
+/// Defect A / Fix 4: Failed task with no .md output uses stderr tail without nested envelopes.
+#[tokio::test]
+async fn settled_batcher_failed_task_stderr_not_nested() {
+    let dir = tempdir().expect("tempdir");
+    let runner = FakeRunner::new();
+    runner.failures.lock().unwrap().insert("bg-fail-1".to_owned());
+    runner.logs.lock().unwrap().insert("bg-fail-1".to_owned(), "fatal error: stack overflow\n".to_owned());
+
+    let sink = Arc::new(MessageSink::default());
+    let api = test_api(Arc::clone(&sink));
+    let manager = test_manager(dir.path(), Arc::clone(&runner));
+    bind_settled_batcher(&manager, Arc::new(api), 8_000, 24_000);
+
+    let record = manager.start(spawn_request(dir.path(), "bg-fail-1", "crash task")).expect("start");
+    let settled = manager.wait(&record.id, Some(Duration::from_secs(5))).await.expect("settle");
+    assert_eq!(settled.status, TaskStatus::Failed);
+
+    let messages = sink.messages.lock().unwrap();
+    assert_eq!(messages.len(), 1);
+    let content = get_content_text(&messages[0]);
+
+    assert!(content.contains("fatal error: stack overflow"), "stderr tail present");
+    assert_eq!(content.matches("<task-result").count(), 1, "exactly one opening envelope tag (never nested)");
+    assert_eq!(content.matches("</task-result>").count(), 1, "exactly one closing envelope tag");
+    assert!(content.contains("status=\"failed (exit 1)\""));
+}
+
+/// Fix 7: Concurrent tasks settling through TaskManager are batched and delivered.
+#[tokio::test]
+async fn settled_batcher_coalesces_concurrent_tasks_through_manager() {
+    let dir = tempdir().expect("tempdir");
+    let runner = FakeRunner::new();
+    for i in 0..3 {
+        runner.outputs.lock().unwrap().insert(format!("coalesce-{i}"), format!("concurrent out {i}"));
+    }
+
+    let sink = Arc::new(MessageSink::default());
+    let api = test_api(Arc::clone(&sink));
+    let manager = test_manager(dir.path(), Arc::clone(&runner));
+    bind_settled_batcher(&manager, Arc::new(api), 8_000, 24_000);
+
+    let r0 = manager.start(spawn_request(dir.path(), "coalesce-0", "hold 0")).expect("start");
+    let r1 = manager.start(spawn_request(dir.path(), "coalesce-1", "hold 1")).expect("start");
+    let r2 = manager.start(spawn_request(dir.path(), "coalesce-2", "hold 2")).expect("start");
+
+    // Release all 3 runners concurrently
+    runner.release.add_permits(3);
+
+    manager.wait(&r0.id, Some(Duration::from_secs(5))).await.expect("settle 0");
+    manager.wait(&r1.id, Some(Duration::from_secs(5))).await.expect("settle 1");
+    manager.wait(&r2.id, Some(Duration::from_secs(5))).await.expect("settle 2");
+
+    let messages = sink.messages.lock().unwrap();
+    assert!(!messages.is_empty(), "messages delivered");
+    let combined = messages.iter().map(get_content_text).collect::<Vec<_>>().join("\n");
+    for i in 0..3 {
+        assert!(combined.contains(&format!("id=\"coalesce-{i}\"")), "coalesce-{i} present in delivery");
+    }
 }
