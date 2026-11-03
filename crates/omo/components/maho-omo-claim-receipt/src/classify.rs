@@ -119,7 +119,7 @@ static CLAIM_RULES: &[ClaimRule] = &[
     ClaimRule {
         id: "test.ko-passed",
         kind: ClaimKind::Test,
-        pattern: r"통과(?:했|합니다|해요|함|됐|된다)",
+        pattern: r"통과(?:했|합니다|해요|함|됐|된다|(?:할|될)\s*거)",
     },
     ClaimRule {
         id: "test.ko-count",
