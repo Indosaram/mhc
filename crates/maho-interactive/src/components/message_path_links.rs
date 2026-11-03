@@ -269,7 +269,9 @@ mod tests {
 
     fn repository() -> (tempfile::TempDir, String, String) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = std::fs::canonicalize(dir.path()).expect("realpath");
+        let root = maho_core::paths::strip_verbatim_prefix(
+            std::fs::canonicalize(dir.path()).expect("realpath"),
+        );
         std::fs::create_dir(root.join(".git")).expect("git");
         let cwd = root.join("packages").join("app");
         std::fs::create_dir_all(&cwd).expect("cwd");
