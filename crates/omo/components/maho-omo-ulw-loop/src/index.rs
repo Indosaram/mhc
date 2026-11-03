@@ -253,11 +253,11 @@ impl Extension for UlwLoopComponent {
                     let current_pair = (goals_mtime, revisions_mtime);
                     {
                         let cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some(entry) = cache.get(session_id) {
-                            if entry.mtimes == current_pair {
-                                crate::footer_status::sync_shared(&footer, ctx, entry.active);
-                                return Ok(EventResult::None);
-                            }
+                        if let Some(entry) = cache.get(session_id)
+                            && entry.mtimes == current_pair
+                        {
+                            crate::footer_status::sync_shared(&footer, ctx, entry.active);
+                            return Ok(EventResult::None);
                         }
                     }
 
@@ -386,13 +386,13 @@ impl Extension for UlwLoopComponent {
                 {
                     let guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let session_id = ctx.session_manager.session_id();
-                    if let Some(session) = guard.sessions.get(session_id) {
-                        if session.consecutive >= 8 {
-                            let count = session.consecutive;
-                            drop(guard);
-                            log_info(&ctx.logger, "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"continuation-cap-reached","count":count})));
-                            return Ok(EventResult::None);
-                        }
+                    if let Some(session) = guard.sessions.get(session_id)
+                        && session.consecutive >= 8
+                    {
+                        let count = session.consecutive;
+                        drop(guard);
+                        log_info(&ctx.logger, "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"continuation-cap-reached","count":count})));
+                        return Ok(EventResult::None);
                     }
                 }
                 if !ctx.session_manager.session_id().is_empty()

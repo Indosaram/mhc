@@ -279,7 +279,6 @@ impl IdleInjectionQueue {
                 if remaining == 0 {
                     if new_content_units <= batch_limit {
                         fitting_k = next_k;
-                        current_content_units = new_content_units;
                     }
                     break;
                 }

@@ -447,8 +447,8 @@ pub fn join_soft_newlines(text: &str) -> String {
                 in_fence = !in_fence;
             }
 
-            let is_single_nl = !(i > 0 && bytes[i - 1] == b'\n')
-                && !(i > 1 && bytes[i - 1] == b'\r' && bytes[i - 2] == b'\n');
+            let is_single_nl = !(i > 0 && bytes[i - 1] == b'\n'
+                || i > 1 && bytes[i - 1] == b'\r' && bytes[i - 2] == b'\n');
 
             if is_single_nl
                 && !in_fence
