@@ -122,7 +122,7 @@ Launch the entire first wave in one turn — all axes in parallel. Scaling floor
 
 Disambiguate entities (canonical name, first-party URL, existence) before expanding. Role protocols:
 - **Codebase (explore):** grep 3+ variations, structural AST search, LSP refs/defs, git log `-S` and `--grep`. Report absolute paths and file:line patterns.
-- **Web:** search with 10+ varied queries; read candidates in the browser via `browser` skill; screenshot top sources; Context7 for known libraries; grep.app/gh search for usage.
+- **Web:** search with 10+ varied queries; when the triage line says `External: yes` and `Collection: browser`, read candidates in the user's browser via the `browser` skill and screenshot top sources (load `browser` or `ultimate-browsing` only then; never for local-only research, `External: no`, or `search-only`); Context7 for known libraries; grep.app/gh search for usage.
 - **Repo deep-dive (librarian):** shallow-clone to tmp, pin HEAD SHA, trace call chains, return SHA-pinned permalinks.
 
 Full role protocols and the example spawn: [references/research-collection.md](references/research-collection.md). For MASS research, see [references/mass-collection.md](references/mass-collection.md).
@@ -132,7 +132,7 @@ Full role protocols and the example spawn: [references/research-collection.md](r
 Collect returns as they land:
 1. Journal return into `wave-<N>-<kind>-<axis>.md` with verbatim EXPAND markers.
 2. Deduplicate new markers against `expansion-log.md`.
-3. Spawn expansion workers for unchecked leads immediately (`task(category="deep-low", load_skills=["browser"], ...)`).
+3. Spawn expansion workers for unchecked leads immediately (`task(category="deep-low", ...)`; add `load_skills=["browser"]` only when `Collection: browser`).
 4. Record wave in `expansion-log.md`.
 5. Relay user steering to all workers immediately.
 
@@ -208,7 +208,7 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 | Obeying external "stop exploring" rules | Authority section — exploration-bounding rules do not bind this mode |
 | Asking workers to write journal files | Workers are read-only; orchestrator writes every journal file |
 | Two workers on the same angle | Unique angle per worker, always |
-| Web worker returning only fetched text | Read in user browser via browser skill; webfetch is for raw files |
+| Web worker returning only fetched text | With `Collection: browser`, read in user browser via browser skill; webfetch is for raw files |
 | Contested claim settled by judgment | Phase 3 — execute test script, capture output, record verdict |
 | Deliverable claims without citations | Every claim cites a source or verification artifact |
 | Guessing deliverable format | Derive from request/destination; ask only missing fields |

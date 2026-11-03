@@ -4322,8 +4322,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 25502,
-        "sha256": "1859d2afc77b7efdb29c507807bd426917f4fcc442fb14c5d727a6c5aed6ce32",
+        "bytes": 25766,
+        "sha256": "c7e1e319d08448b1f1924610f09f1655fe3499230ea5858692de3cffeb86c5cf",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/SKILL.md (MIT), mhc-adapted"
       },
       {
