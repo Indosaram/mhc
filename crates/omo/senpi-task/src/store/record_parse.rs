@@ -352,6 +352,33 @@ fn read_optional_run_stats(record: &Object) -> ParseResult<Option<TaskRunStats>>
     }))
 }
 
+/// `spawn_spec` and `final_response` of a record text that `parse_task_record` already accepted,
+/// deserializing only those two fields (every other field is skipped, not built).
+pub(super) fn parse_heavy_fields(
+    text: &str,
+) -> ParseResult<(Option<TaskSpawnSpec>, Option<String>)> {
+    #[derive(serde::Deserialize)]
+    struct Heavy {
+        #[serde(default)]
+        spawn_spec: Option<Value>,
+        #[serde(default)]
+        final_response: Option<Value>,
+    }
+    let heavy: Heavy = serde_json::from_str(text)
+        .map_err(|error| format!("JSON Parse error: {error}"))?;
+    let mut record = Object::new();
+    if let Some(spec) = heavy.spawn_spec {
+        record.insert("spawn_spec".into(), spec);
+    }
+    if let Some(response) = heavy.final_response {
+        record.insert("final_response".into(), response);
+    }
+    Ok((
+        read_optional_spawn_spec(&record)?,
+        read_optional_string(&record, "final_response")?,
+    ))
+}
+
 fn read_optional_spawn_spec(record: &Object) -> ParseResult<Option<TaskSpawnSpec>> {
     let Some(value) = record.get("spawn_spec") else {
         return Ok(None);

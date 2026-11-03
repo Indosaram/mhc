@@ -328,10 +328,7 @@ pub async fn create_agent_session(
             }
         }
     }
-    let has_thinking_entry = manager
-        .current_branch()
-        .iter()
-        .any(|entry| entry["type"] == "thinking_level_change");
+    let has_thinking_entry = manager.has_thinking_level_changes();
     let model_thinking = model
         .as_ref()
         .and_then(|model| {

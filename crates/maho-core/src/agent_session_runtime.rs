@@ -1070,16 +1070,14 @@ impl AgentSessionRuntime {
             .or_else(|| Some(self.session.model()));
         let mut session_thinking = None;
         if let Some(ref m) = effective_model {
-            let levels = crate::session_thinking_memory::derive_session_model_thinking_levels(&manager.current_branch());
+            let levels = crate::session_thinking_memory::derive_session_model_thinking_levels(
+                &manager.current_branch_of_types(&["thinking_level_change"]),
+            );
             if let Some(level_str) = levels.get(&format!("{}/{}", m.provider, m.id)) {
                 session_thinking = maho_ai::types::ModelThinkingLevel::parse(level_str);
             }
         }
-        let thinking_selection = if manager
-            .current_branch()
-            .iter()
-            .any(|entry| entry["type"] == "thinking_level_change")
-        {
+        let thinking_selection = if manager.has_thinking_level_changes() {
             session_thinking.map(|level| maho_ai::types::ThinkingSelection {
                 level,
                 source: maho_ai::types::ThinkingSelectionSource::Explicit,

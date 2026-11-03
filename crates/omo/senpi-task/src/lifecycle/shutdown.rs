@@ -51,13 +51,16 @@ pub fn suspend_on_session_shutdown(
         }
     }
 
-    for record in context.store.list()?.records {
-        if record.status != TaskStatus::Pending || record.killed == Some(true) {
-            continue;
-        }
-        if !is_owned_child(&record, context, &input.parent_session_id)
-            || context.registry.get(&record.task_id).is_some()
-        {
+    let pending = context
+        .store
+        .list_matching(&mut |record| {
+            record.status == TaskStatus::Pending
+                && record.killed != Some(true)
+                && is_owned_child(record, context, &input.parent_session_id)
+        })?
+        .records;
+    for record in pending {
+        if context.registry.get(&record.task_id).is_some() {
             continue;
         }
         match suspend_pending(context, &record.task_id, &input.reason) {

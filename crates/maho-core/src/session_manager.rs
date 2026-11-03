@@ -574,7 +574,19 @@ fn context_entry_refs(path: Vec<&Value>) -> Vec<&Value> {
 
 pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> SessionContext {
     // PERF-DIVERGENCE(senpi session-manager.ts): upstream builds the path once; the previous port built and deep-cloned it twice, this builds it once as references shared by the settings scan and the context-entry selection. Output is identical.
-    let path = session_path_refs(entries, leaf_id);
+    build_session_context_from_path(session_path_refs(entries, leaf_id), |selected| {
+        selected.into_iter().map(std::borrow::Cow::Borrowed).collect()
+    })
+}
+
+/// `build_session_context` over an already-walked path. The settings scan and the entry selection
+/// read only short fields (type, id, parentId, model and thinking fields, firstKeptEntryId, the
+/// retention policy), so they run on the path as given; `materialize` turns just the selected
+/// context entries into full values, in order.
+fn build_session_context_from_path<'a>(
+    path: Vec<&'a Value>,
+    materialize: impl FnOnce(Vec<&'a Value>) -> Vec<std::borrow::Cow<'a, Value>>,
+) -> SessionContext {
     let settings = get_session_context_settings(&path);
     // senpi projectSession: only entries retained by an `omit-unsafe-v1` checkpoint are repaired;
     // later messages keep their normal semantics and the source transcript is never edited.
@@ -594,9 +606,12 @@ pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> Sessio
                 .filter_map(|entry| entry.get("id").and_then(Value::as_str))
                 .collect()
         });
-    let projected: Vec<(&Value, Vec<Value>)> = context_entry_refs(path)
-        .into_iter()
-        .map(|entry| (entry, session_entry_to_context_messages(entry)))
+    let selected = context_entry_refs(path);
+    let projected: Vec<(&Value, Vec<Value>)> = selected
+        .iter()
+        .copied()
+        .zip(materialize(selected.clone()))
+        .map(|(entry, full)| (entry, session_entry_to_context_messages(&full)))
         .collect();
     let mut retained_messages: Vec<Value> = Vec::new();
     if let Some(retained_ids) = &retained_ids {
@@ -675,6 +690,15 @@ pub fn get_default_session_dir_with(cwd: &str, agent_dir: &str) -> String {
 }
 
 pub fn load_entries_from_file(file_path: &str) -> Vec<Value> {
+    load_entries_from_file_prepared(file_path, &mut |_| {})
+}
+
+/// `load_entries_from_file` with `prepare` applied to each entry as soon as its line is parsed, so a
+/// caller that externalizes large strings never holds the whole parsed history at once.
+pub(crate) fn load_entries_from_file_prepared(
+    file_path: &str,
+    prepare: &mut dyn FnMut(&mut Value),
+) -> Vec<Value> {
     let resolved = normalize_path(file_path, &PathInputOptions::default());
     let Ok(file) = std::fs::File::open(&resolved) else {
         return Vec::new();
@@ -688,7 +712,8 @@ pub fn load_entries_from_file(file_path: &str) -> Vec<Value> {
             Ok(0) => break,
             Ok(_) => {
                 let line = String::from_utf8_lossy(&buffer);
-                if let Some(entry) = parse_session_entry_line(line.trim_end_matches(['\n', '\r'])) {
+                if let Some(mut entry) = parse_session_entry_line(line.trim_end_matches(['\n', '\r'])) {
+                    prepare(&mut entry);
                     entries.push(entry);
                 }
             }
@@ -1394,9 +1419,13 @@ impl SessionManager {
             &PathInputOptions::default(),
         ));
         crate::session_write_reservation::reserve_session_write(&resolved_path);
-        let entries = load_entries_from_file(&resolved_path);
-        let header_cwd = entries
-            .first()
+        // PERF-DIVERGENCE(senpi session-manager.ts): like upstream's readSessionHeader, open reads only the
+        // header for its cwd and hold; set_session_file below is the one full load (the port used to parse
+        // the whole file twice). A header past the scan limit falls back to a full read, as upstream does.
+        let header = read_session_header(&resolved_path)
+            .or_else(|| load_entries_from_file(&resolved_path).into_iter().next());
+        let header_cwd = header
+            .as_ref()
             .and_then(|header| header.get("cwd"))
             .and_then(Value::as_str)
             .map(resolve_moved_session_path);
@@ -1404,8 +1433,8 @@ impl SessionManager {
             .map(str::to_owned)
             .or(header_cwd)
             .unwrap_or_else(|| process_cwd.clone());
-        let opening_hold = if let Some(id) = entries
-            .first()
+        let opening_hold = if let Some(id) = header
+            .as_ref()
             .and_then(|header| header.get("id"))
             .and_then(Value::as_str)
         {
@@ -1433,24 +1462,12 @@ impl SessionManager {
         let mut manager = Self::build(&cwd, &dir, true);
         manager.set_session_file(&resolved_path, options)?;
         drop(opening_hold);
-        if !entries.is_empty() {
-            manager.file_entries = entries;
-            manager.session_id = manager
-                .file_entries
-                .first()
-                .and_then(|header| header.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(create_session_id);
-            manager.sync_resident_blobs_dir();
-            if migrate_to_current_version(&mut manager.file_entries) {
-                manager.rewrite_file();
-            }
-            manager.externalize_file_entries();
+        if header.is_some() {
             manager.resident_store.spill_resident();
-            manager.build_index();
-            manager.flushed = true;
         }
+        // The load's transient parse buffers are free now; hand their pages back instead of keeping
+        // them as fragmented heap for the life of the session.
+        maho_tool_child::allocator::reclaim_unused_heap();
         Ok(manager)
     }
 
@@ -1512,8 +1529,10 @@ impl SessionManager {
         if !Path::new(&session_file).exists() {
             return Ok(());
         }
-        let file_entries = load_entries_from_file(&session_file);
-        if file_entries.is_empty() {
+        // Only whether the file holds a valid session matters here; set_session_file does the one full load.
+        if read_session_header(&session_file).is_none()
+            && load_entries_from_file(&session_file).is_empty()
+        {
             return Ok(());
         }
         self.set_session_file(&session_file, None)
@@ -1572,10 +1591,27 @@ impl SessionManager {
             if self.persist {
                 self.settle_final_line(&current, recovery_cause)?;
             }
+            // PERF-DIVERGENCE(senpi session-manager.ts): upstream parses every entry, then externalizes the
+            // list. Here each entry's large strings move into a staging store as its line is parsed and are
+            // handed to the resident store once this session's blob directory is settled, so loading never
+            // holds the whole parsed history and leaves far less fragmented heap. Same entries and strings.
+            let staging = crate::session_resident_store::ResidentStringStore::new(
+                crate::session_resident_store::ResidentStringStoreOptions {
+                    max_bytes: Some(usize::MAX),
+                    blobs_dir: None,
+                },
+            );
+            let mut prepare = |entry: &mut Value| {
+                staging.externalize_in_place(entry);
+                shrink_json_to_fit(entry);
+            };
             let (entries, identity) = if self.captures_transcript_base {
-                crate::session_entry_file::load_entries_from_file_with_identity(&current)
+                crate::session_entry_file::load_entries_from_file_with_identity_prepared(
+                    &current,
+                    &mut prepare,
+                )
             } else {
-                (load_entries_from_file(&current), None)
+                (load_entries_from_file_prepared(&current, &mut prepare), None)
             };
             if self.captures_transcript_base && !entries.is_empty() {
                 self.transcript_file.capture(identity, Some(&entries));
@@ -1614,10 +1650,10 @@ impl SessionManager {
             // Blobs left under this id by a process that is gone are a disposable cache: the JSONL
             // is the authority for every entry, so clearing them bounds the directory to one process lifetime.
             self.release_blobs_dir_unless_shared();
+            self.resident_store.absorb(&staging);
             if migrate_to_current_version(&mut self.file_entries) {
                 self.rewrite_file();
             }
-            self.externalize_file_entries();
             self.build_index();
             self.flushed = true;
         } else {
@@ -3141,6 +3177,59 @@ impl SessionManager {
         build_session_path(&self.compact_entries(), leaf_id)
     }
 
+    /// The entries of `current_branch()` whose `type` is one of `kinds`, in branch order, materializing
+    /// only those: the same result as filtering `current_branch()`, without building the shared
+    /// materialized view of the whole history.
+    pub fn current_branch_of_types(&self, kinds: &[&str]) -> Vec<Value> {
+        if self.leaf_id.is_none() {
+            return Vec::new();
+        }
+        self.materialize_refs(
+            self.resident_path_refs(self.leaf_id.as_deref())
+                .into_iter()
+                .filter(|entry| kinds.contains(&entry_type(entry))),
+        )
+    }
+
+    /// `session_path_refs` over the resident mirror (header excluded), walked through `by_id`.
+    // PERF-DIVERGENCE(senpi session-manager.ts): upstream walks its byId map of entry objects; the port
+    // used to materialize (and cache) every resident entry first. Walking the resident entries by
+    // reference reads only id/parentId, so callers materialize just the entries they return.
+    fn resident_path_refs(&self, leaf_id: Option<&str>) -> Vec<&Value> {
+        let lookup = |id: &str| self.by_id.get(id).and_then(|order| self.file_entries.get(*order));
+        let last = || {
+            self.file_entries
+                .iter()
+                .rev()
+                .find(|entry| entry_type(entry) != "session")
+        };
+        let mut leaf = match leaf_id {
+            None => last(),
+            Some("") => return Vec::new(),
+            Some(id) => lookup(id).or_else(last),
+        };
+        let mut path = Vec::new();
+        while let Some(current) = leaf {
+            path.push(current);
+            leaf = current
+                .get("parentId")
+                .and_then(Value::as_str)
+                .and_then(lookup);
+        }
+        path.reverse();
+        path
+    }
+
+    /// Materializes resident entries, repairing any whose evicted strings are gone from the JSONL.
+    fn materialize_refs<'a>(&self, refs: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
+        crate::session_entry_materializer::materialize_session_entries(
+            refs,
+            &self.resident_store,
+            || self.load_full_history_entries(),
+            |_| {},
+        )
+    }
+
     /// senpi `getBranch()` with no argument: the path to the current leaf. A null leaf (after
     /// `reset_leaf`) is empty rather than the path of the last-appended entry.
     pub fn current_branch(&self) -> Vec<Value> {
@@ -3161,11 +3250,16 @@ impl SessionManager {
     }
 
     pub fn context_entries(&self, leaf_id: Option<&str>) -> Vec<Value> {
-        build_context_entries(&self.compact_entries(), leaf_id)
+        self.materialize_refs(context_entry_refs(self.resident_path_refs(leaf_id)))
     }
 
     pub fn build_context(&self, leaf_id: Option<&str>) -> SessionContext {
-        build_session_context(&self.compact_entries(), leaf_id)
+        build_session_context_from_path(self.resident_path_refs(leaf_id), |selected| {
+            self.materialize_refs(selected)
+                .into_iter()
+                .map(std::borrow::Cow::Owned)
+                .collect()
+        })
     }
 
     /// senpi `branch(branchFromId)` (a `None` target is `resetLeaf()`): move the leaf so the
@@ -5069,6 +5163,39 @@ mod tests {
             Value::from(large)
         );
         assert_eq!(manager.resident_store_stats().blob_count, 1);
+    }
+
+    #[test]
+    fn reopened_context_and_typed_branch_match_the_full_view_without_materializing_the_history() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut writer = SessionManager::create(&dir, Some(&dir), None);
+        let root = writer.append_message(json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }));
+        writer.append_message(json!({ "role": "assistant", "content": [{ "type": "text", "text": "y".repeat(40 * 1024) }], "provider": "p", "model": "m", "timestamp": 2 }));
+        writer.append_thinking_level_change("high", None);
+        writer.append_compaction("digest", root["id"].as_str().expect("root"), 1000, None, None, None);
+        writer.append_message(json!({ "role": "user", "content": "after", "timestamp": 3 }));
+        let path = writer.session_file().expect("session file").to_owned();
+        let expected_context = writer.current_context();
+        let expected_entries = writer.current_context_entries();
+        let expected_thinking: Vec<Value> = writer
+            .current_branch()
+            .into_iter()
+            .filter(|entry| entry["type"] == "thinking_level_change")
+            .collect();
+        drop(writer);
+
+        let manager = SessionManager::open(&path, Some(&dir), None, None).expect("reopen");
+        assert_eq!(manager.resident_store_stats().blob_count, 0, "loaded strings are spilled");
+        let context = manager.current_context();
+        assert_eq!(context.messages, expected_context.messages);
+        assert_eq!(context.entry_ids, expected_context.entry_ids);
+        assert_eq!(context.thinking_level, "high");
+        assert_eq!(context.model, expected_context.model);
+        assert_eq!(manager.current_context_entries(), expected_entries);
+        assert_eq!(manager.current_branch_of_types(&["thinking_level_change"]), expected_thinking);
+        assert!(!manager.has_materialized_view());
+        assert_eq!(manager.entries().len(), 5);
     }
 
     #[test]
