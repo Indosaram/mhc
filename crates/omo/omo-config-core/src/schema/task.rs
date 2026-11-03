@@ -330,13 +330,11 @@ pub fn resolve_omo_task_settings(
         let parallelism = std::cmp::max(8, resolve_parallelism().saturating_mul(2));
         merged.insert("global_concurrency".into(), json!(parallelism));
     }
-    if let Some(limit) = merged.get("completion_transport_limit") {
-        if let Some(val) = limit.as_i64() {
-            merged.insert(
-                "completion_transport_limit".into(),
-                json!(val.clamp(1000, 64000)),
-            );
-        }
+    if let Some(val) = merged.get("completion_transport_limit").and_then(Value::as_i64) {
+        merged.insert(
+            "completion_transport_limit".into(),
+            json!(val.clamp(1000, 64000)),
+        );
     }
     crate::internal::validate::safe_parse(&omo_task_settings_schema(), &Value::Object(merged))
 }
