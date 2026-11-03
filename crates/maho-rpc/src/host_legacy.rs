@@ -246,7 +246,10 @@ mod tests {
                 process_start_time: Some("7".into())
             }
         );
-        assert!(host.socket.ends_with("rpc/rpc.sock"));
+        assert_eq!(
+            host.socket,
+            dir.path().join("rpc").join("rpc.sock").to_string_lossy()
+        );
         std::fs::write(&paths.legacy_pid_file, r#"{"pid":42,"socket":"/s"}"#).expect("write");
         assert_eq!(
             read_legacy_host(&paths)

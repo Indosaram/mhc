@@ -272,7 +272,8 @@ pub async fn answer_warm(command: &Value, host: WarmHost<'_>) -> Value {
         .get("cwd")
         .and_then(Value::as_str)
         .unwrap_or(host.cwd);
-    if !Path::new(cwd).is_absolute() {
+    // node `path.isAbsolute`: a rooted path without a drive ("/work") is absolute on win32 too.
+    if !Path::new(cwd).has_root() {
         return refusal(command, RPC_ERROR_INVALID_PATH);
     }
     match warm(HostWarmProfile {

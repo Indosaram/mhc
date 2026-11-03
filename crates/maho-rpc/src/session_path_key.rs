@@ -37,7 +37,8 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
         missing.insert(0, name.to_owned());
         existing = parent.to_path_buf();
     }
-    match std::fs::canonicalize(&existing) {
+    // node `realpathSync` never spells a Windows path with the `\\?\` verbatim prefix.
+    match std::fs::canonicalize(&existing).map(maho_core::paths::strip_verbatim_prefix) {
         Ok(mut real) => {
             real.extend(missing);
             real
@@ -62,7 +63,9 @@ mod tests {
     #[test]
     fn a_missing_tail_is_kept_under_the_real_ancestor() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let real = std::fs::canonicalize(dir.path()).expect("canonical");
+        let real = maho_core::paths::strip_verbatim_prefix(
+            std::fs::canonicalize(dir.path()).expect("canonical"),
+        );
         let path = dir.path().join("gone").join("s.jsonl");
         assert_eq!(
             canonical_session_path(&path),

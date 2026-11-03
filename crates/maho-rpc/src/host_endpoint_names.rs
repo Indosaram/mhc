@@ -115,7 +115,9 @@ mod tests {
     #[test]
     fn every_spelling_of_one_endpoint_shares_a_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let real = std::fs::canonicalize(dir.path()).expect("canonical");
+        let real = maho_core::paths::strip_verbatim_prefix(
+            std::fs::canonicalize(dir.path()).expect("canonical"),
+        );
         let canonical = real.join("host.sock").to_string_lossy().into_owned();
         let dotted = format!("{}/./host.sock", dir.path().display());
         assert_eq!(canonical_endpoint_path(&dotted, "linux"), canonical);

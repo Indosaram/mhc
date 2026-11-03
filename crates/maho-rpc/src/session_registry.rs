@@ -590,11 +590,13 @@ impl RpcSessionRegistry {
 pub fn validate_profile_paths(
     profile: &RpcSessionLaunchProfile,
 ) -> Result<(), RpcSessionRegistryError> {
-    if !Path::new(&profile.runtime.cwd).is_absolute()
+    // senpi `validateProfile` uses node `path.isAbsolute`, which on win32 also accepts a rooted path without a
+    // drive ("/tmp"); `Path::has_root` is that check on every platform, `Path::is_absolute` is not.
+    if !Path::new(&profile.runtime.cwd).has_root()
         || profile
             .session_path
             .as_ref()
-            .is_some_and(|path| !Path::new(path).is_absolute())
+            .is_some_and(|path| !Path::new(path).has_root())
     {
         return Err(RpcSessionRegistryError::new("invalid_path", None, None));
     }
@@ -655,13 +657,14 @@ pub fn session_identity(profile: &RpcSessionLaunchProfile) -> SessionIdentity {
 pub fn frozen_profile(profile: &RpcSessionLaunchProfile) -> RpcSessionLaunchProfile {
     profile.clone()
 }
+/// node `realpathSync` spelling: on Windows without the `\\?\` verbatim prefix `canonicalize` adds.
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    use maho_core::paths::strip_verbatim_prefix;
     if path.exists() {
-        path.canonicalize()
+        path.canonicalize().map(strip_verbatim_prefix)
     } else {
         let parent = path.parent().unwrap_or(Path::new("."));
-        Ok(parent
-            .canonicalize()?
+        Ok(strip_verbatim_prefix(parent.canonicalize()?)
             .join(path.file_name().unwrap_or_default()))
     }
 }
