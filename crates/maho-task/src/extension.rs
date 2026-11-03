@@ -5,7 +5,7 @@
 use crate::agents::{DEFAULT_AGENT, Discovery, discover};
 use crate::control::{self, Caller, ContextUi, GatewaySteer, SteerChannel};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
-use crate::manager::{SettledCallback, SpawnRequest, TaskManager, TaskManagerOptions};
+use crate::manager::{SpawnRequest, TaskManager, TaskManagerOptions};
 use crate::models::{ModelContext, ModelRequest, category_description, category_names, choose_model};
 use crate::record::{StateDir, default_state_root};
 use crate::runner::{CancelToken, TaskRunner};

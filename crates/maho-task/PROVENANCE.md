@@ -91,5 +91,9 @@
 - Tests (`tests/transport_cap.rs`): `result_capped_and_spilled` and `batch_capped_with_pointers`,
   surrogate pair bounds, within-budget inlining, below-minimum clamping, wired delivery with capped
   body, visible pointer line, and intact XML envelope (`wired_delivery_caps_body_with_pointer_and_intact_envelope`),
-  spill write failure handling (`wired_delivery_failed_spill_still_slices_with_note`), and batched
-  delivery with overflow manifest (`wired_batch_delivery_caps_and_overflows`).
+  spill write failure handling (`wired_delivery_failed_spill_still_slices_with_note`), batched
+  delivery with overflow manifest (`wired_batch_delivery_caps_and_overflows`), batch manifest write
+  failure handling (`wired_batch_delivery_failed_manifest_delivers_inline_with_note`), synchronous
+  delivery before waiters wake (`settled_batcher_delivers_before_waiters_wake`), non-nested fallback
+  envelope on task failure (`settled_batcher_failed_task_stderr_not_nested`), and concurrent batch
+  coalescing through TaskManager (`settled_batcher_coalesces_concurrent_tasks_through_manager`).

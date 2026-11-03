@@ -175,7 +175,13 @@ pub fn deliver_settled(delivery: SettledDelivery<'_>) -> std::io::Result<()> {
     let raw = if !delivery.raw_response.is_empty() {
         delivery.raw_response.to_owned()
     } else {
-        crate::record::StateDir::new(delivery.state_dir).read_output(&delivery.record.id)
+        let state = crate::record::StateDir::new(delivery.state_dir);
+        let disk_out = state.read_output(&delivery.record.id);
+        if !disk_out.trim().is_empty() {
+            disk_out
+        } else {
+            state.read_log_tail(&delivery.record.id, 4_000)
+        }
     };
     let (envelope, details) = build_capped_result_envelope(
         delivery.state_dir,
