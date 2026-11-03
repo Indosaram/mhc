@@ -44,6 +44,30 @@ impl SessionManager for SessionView {
                 .with_session_manager(|manager| manager.entries().into_iter().map(entry).collect())
         })
     }
+    fn get_entries_of_kinds(&self, kinds: &[&str]) -> Vec<SessionEntry> {
+        (self.session)().map_or_else(Vec::new, |session| {
+            session.with_session_manager(|manager| {
+                let mut entries = Vec::new();
+                manager.for_each_entry(
+                    &|value| kinds.contains(&value["type"].as_str().unwrap_or_default()),
+                    &mut |value| entries.push(entry(value)),
+                );
+                entries
+            })
+        })
+    }
+    fn build_context_messages(&self) -> Option<Vec<JsonValue>> {
+        (self.session)().map(|session| {
+            session.with_session_manager(|manager| manager.current_context().messages)
+        })
+    }
+    fn for_each_entry(&self, visit: &mut dyn FnMut(SessionEntry)) {
+        if let Some(session) = (self.session)() {
+            session.with_session_manager(|manager| {
+                manager.for_each_entry(&|_| true, &mut |value| visit(entry(value)));
+            });
+        }
+    }
     fn get_branch(&self) -> Vec<SessionEntry> {
         (self.session)().map_or_else(Vec::new, |session| {
             session.with_session_manager(|manager| {

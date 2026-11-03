@@ -259,6 +259,26 @@ pub fn get_latest_compaction_entry(entries: &[Value]) -> Option<Value> {
         .cloned()
 }
 
+/// Drops the spare capacity a parse leaves in every object and array; values and key order are unchanged.
+fn shrink_json_to_fit(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            items.shrink_to_fit();
+            items.iter_mut().for_each(shrink_json_to_fit);
+        }
+        Value::Object(object) => {
+            let parsed = std::mem::take(object);
+            let mut fitted = serde_json::Map::with_capacity(parsed.len());
+            for (key, mut item) in parsed {
+                shrink_json_to_fit(&mut item);
+                fitted.insert(key, item);
+            }
+            *object = fitted;
+        }
+        _ => {}
+    }
+}
+
 fn build_entry_index(entries: &[Value]) -> HashMap<&str, &Value> {
     let mut index = HashMap::new();
     for entry in entries {
@@ -1210,11 +1230,13 @@ impl SessionManager {
     fn externalize_file_entries(&mut self) {
         self.invalidate_entries_cache();
         let store = self.resident_store.clone();
-        self.file_entries = self
-            .file_entries
-            .iter()
-            .map(|entry| store.externalize(entry))
-            .collect();
+        // PERF-DIVERGENCE(senpi session-manager.ts): upstream maps each entry to an externalized copy;
+        // this rewrites large strings in place, so loading a session never holds two full histories,
+        // and trims the spare capacity parsing leaves in every object and array. Same values.
+        for entry in &mut self.file_entries {
+            store.externalize_in_place(entry);
+            shrink_json_to_fit(entry);
+        }
     }
 
     fn blobs_dir(&self) -> Option<String> {
@@ -2772,6 +2794,34 @@ impl SessionManager {
         Some(appended)
     }
 
+    /// The entries of `entries()` that `keep` accepts, in the same order, each materialized only for
+    /// its own visit, so a scan never holds a copy of the whole history. `keep` sees the resident
+    /// form, where strings of 32 KiB and more are tokens: it must read only short identifying fields
+    /// (`type`, `customType`, `id`, `message.role`).
+    pub fn for_each_entry(&self, keep: &dyn Fn(&Value) -> bool, visit: &mut dyn FnMut(Value)) {
+        if self.mirror_trimmed && self.session_file.is_some() {
+            for entry in self.load_full_history_entries() {
+                if entry_type(&entry) != "session" && keep(&entry) {
+                    visit(self.resident_store.materialize(&entry));
+                }
+            }
+            return;
+        }
+        for entry in &self.file_entries {
+            if entry_type(entry) != "session" && keep(entry) {
+                visit(self.materialize_entry(entry));
+            }
+        }
+    }
+
+    /// The entries of `entries()` whose `type` is one of `kinds`, in order. Bookkeeping readers
+    /// (custom records, delivered notices) get them without materializing the rest of the history.
+    pub fn entries_of_types(&self, kinds: &[&str]) -> Vec<Value> {
+        let mut entries = Vec::new();
+        self.for_each_entry(&|entry| kinds.contains(&entry_type(entry)), &mut |entry| entries.push(entry));
+        entries
+    }
+
     pub fn entries(&self) -> Vec<Value> {
         if self.mirror_trimmed && self.session_file.is_some() {
             return self
@@ -3661,8 +3711,8 @@ impl crate::session_history_reduce::HistorySource for ManagerHistory<'_> {
         self.0.appended_since(count)
     }
 
-    fn read_all(&self) -> Vec<Value> {
-        self.0.entries()
+    fn visit_all(&self, visit: &mut dyn FnMut(Value)) {
+        self.0.for_each_entry(&|_| true, visit);
     }
 }
 
@@ -5019,6 +5069,40 @@ mod tests {
             Value::from(large)
         );
         assert_eq!(manager.resident_store_stats().blob_count, 1);
+    }
+
+    #[test]
+    fn typed_scans_on_a_large_session_match_entries_without_materializing_the_history() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut writer = SessionManager::create(&dir, Some(&dir), None);
+        writer.append_message(json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }));
+        writer.append_custom("work-custody", Some(json!({ "id": "w" })));
+        writer.append_message(json!({ "role": "user", "content": "small", "timestamp": 2 }));
+        let path = writer.session_file().expect("session file").to_owned();
+        drop(writer);
+        let manager = SessionManager::open(&path, Some(&dir), None, None).expect("reopen");
+
+        let custom = manager.entries_of_types(&["custom"]);
+        let mut visited = Vec::new();
+        manager.for_each_entry(&|_| true, &mut |entry| visited.push(entry));
+
+        let all = manager.entries();
+        assert_eq!(custom, all.iter().filter(|entry| entry["type"] == "custom").cloned().collect::<Vec<_>>());
+        assert_eq!(visited, all);
+        manager.drop_materialized_cache();
+        manager.entries_of_types(&["custom"]);
+        manager.for_each_entry(&|_| true, &mut |_| {});
+        assert!(!manager.has_materialized_view());
+    }
+
+    #[test]
+    fn loaded_entries_keep_their_values_after_capacity_is_trimmed() {
+        let mut value = json!({ "b": [1, { "c": "d" }], "a": { "z": null, "y": 2.5 } });
+        let original = value.clone();
+        shrink_json_to_fit(&mut value);
+        assert_eq!(value, original);
+        assert_eq!(serde_json::to_string(&value).expect("json"), serde_json::to_string(&original).expect("json"));
     }
 
     #[test]

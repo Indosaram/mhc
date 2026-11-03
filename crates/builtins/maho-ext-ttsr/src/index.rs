@@ -123,7 +123,16 @@ impl State {
             disabled_rules: disabled.clone(),
             ..Default::default()
         });
-        let entries = ctx.session_manager.get_entries();
+        // PERF-DIVERGENCE(senpi ttsr): upstream scans a copy of every entry; this visits them one at
+        // a time and keeps only custom records and assistant replies, the two kinds read below.
+        let mut entries = Vec::new();
+        ctx.session_manager.for_each_entry(&mut |entry| {
+            if entry.kind == "custom"
+                || (entry.kind == "message" && entry.data["message"]["role"] == "assistant")
+            {
+                entries.push(entry);
+            }
+        });
         for entry in &entries {
             let value = &entry.data;
             if value["type"] != "custom" {

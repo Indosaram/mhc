@@ -69,7 +69,7 @@ impl Extension for PromptUrlWidget{
                 if !ctx.has_ui{return Ok(EventResult::None);}
                 let prompt=match event{
                     ExtensionEvent::BeforeAgentStart(event)=>event.prompt.clone(),
-                    _=>ctx.session_manager.get_entries().into_iter().rev().filter(|entry|entry.data["type"]=="message"&&entry.data["message"]["role"]=="user").map(|entry|user_text(&entry.data["message"]["content"])).find(|text|extract_prompt_match(text).is_some()).unwrap_or_default(),
+                    _=>{let mut found=String::new();ctx.session_manager.for_each_entry(&mut |entry|if entry.data["type"]=="message"&&entry.data["message"]["role"]=="user"{let text=user_text(&entry.data["message"]["content"]);if extract_prompt_match(&text).is_some(){found=text;}});found},
                 };
                 let Some(found)=extract_prompt_match(&prompt)else{if kind==EventKind::SessionStart{ctx.ui.set_widget("prompt-url",None,Default::default());}return Ok(EventResult::None)};
                 let url=found.url.to_owned();let found_kind=found.kind;display(ctx,&sender,found_kind,&url,None)?;
