@@ -284,7 +284,8 @@ mod tests {
     const BASE: &str = "/work/repo";
 
     fn file_candidate(index: usize, name: &str) -> Candidate {
-        let path = PathBuf::from(BASE).join(format!("d{index:04}")).join(name);
+        // Node `join` concatenates; `Path::join` would let a name starting with `\` replace the base on Windows.
+        let path = PathBuf::from(format!("{BASE}/d{index:04}/{name}"));
         let root = Arc::new(Root {
             path: path.clone(),
             alias: path.clone(),
@@ -311,7 +312,7 @@ mod tests {
         });
         (0..count)
             .map(|index| {
-                let absolute = PathBuf::from(BASE).join("src dir").join(name_of(index));
+                let absolute = PathBuf::from(format!("{BASE}/src dir/{}", name_of(index)));
                 Candidate {
                     absolute: absolute.clone(),
                     canonical: absolute.clone(),
@@ -627,7 +628,8 @@ mod tests {
             return;
         }
         let directory = tempfile::tempdir().expect("tempdir");
-        let root = std::fs::canonicalize(directory.path()).expect("canonical");
+        // Node `realpath`: a drive path on Windows, not the verbatim form.
+        let root = dunce::canonicalize(directory.path()).expect("canonical");
         let mut names = vec![
             "has space.ts",
             "quote\"d.ts",
@@ -641,6 +643,9 @@ mod tests {
         ];
         if cfg!(unix) {
             names.extend(["new\nline.ts", "back\\slash\\.ts", "C:\\Windows\\style.ts"]);
+        } else {
+            // `"`, `*` and `?` cannot appear in a Windows file name.
+            names.retain(|name| !name.contains(['"', '*', '?']));
         }
         let mut explicit = Vec::new();
         for (index, name) in names.iter().enumerate() {
