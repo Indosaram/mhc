@@ -349,7 +349,7 @@ fn wake_batch_capped_with_manifest() {
 
     // 5 completions of 8,000 chars each: total 40,000 chars
     for i in 0..5 {
-        let content = format!("task completion id:task_{i} result:{}", "x".repeat(8000 - 32));
+        let content = format!("task completion id:task_{i} result:{}", "x".repeat(8000 - 33));
         assert_eq!(content.encode_utf16().count(), 8000);
         coordinator.enqueue(injection(
             &format!("st_{i}"),

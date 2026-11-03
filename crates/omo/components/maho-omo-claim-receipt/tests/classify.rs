@@ -136,7 +136,7 @@ fn a_hedged_claim_keeps_its_hedge() {
         (ClaimKind::Test, ClaimStrength::Hedged, false)
     );
     assert_eq!(
-        shape("통과할 거예요."),
+        shape("통과했을 거예요."),
         (ClaimKind::Test, ClaimStrength::Hedged, false)
     );
 }
@@ -145,7 +145,7 @@ fn a_hedged_claim_keeps_its_hedge() {
 fn an_explicit_admission_marks_the_claim_admitted_even_from_the_neighbouring_sentence() {
     assert!(only("I did not run the tests; they should pass.").admitted);
     assert!(only("Tests should pass. I have not run them yet.").admitted);
-    assert!(only("테스트는 아직 안 돌렸어요. 통과할 거예요.").admitted);
+    assert!(only("테스트는 아직 안 돌렸어요. 통과했을 거예요.").admitted);
     assert!(only("빌드는 성공할 것 같아요 (미검증).").admitted);
 }
 

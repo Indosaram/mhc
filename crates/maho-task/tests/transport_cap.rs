@@ -179,7 +179,7 @@ fn result_capped_and_spilled() {
     assert_eq!(count_utf16_code_units(sliced), 8_000);
     assert_eq!(details["text"], sliced);
 
-    let spilled_file = state_dir.join("completion-results/task-1.txt");
+    let spilled_file = state_dir.join("completion-results").join("task-1.txt");
     assert!(spilled_file.is_file(), "spill file must exist");
     let stored_text = std::fs::read_to_string(&spilled_file).expect("read spill");
     assert_eq!(stored_text, response_10k);
@@ -197,7 +197,7 @@ fn result_capped_and_spilled() {
     let emoji_sliced = details["response"].as_str().expect("emoji sliced");
     assert_eq!(count_utf16_code_units(emoji_sliced), 7_999);
     assert!(!emoji_sliced.contains('😀'));
-    let emoji_file = state_dir.join("completion-results/task-emoji.txt");
+    let emoji_file = state_dir.join("completion-results").join("task-emoji.txt");
     assert_eq!(std::fs::read_to_string(emoji_file).expect("read"), response_emoji);
 
     // 3. Response within limit is delivered inline without spill.
@@ -207,7 +207,7 @@ fn result_capped_and_spilled() {
     assert_eq!(details["spilled"], false);
     assert_eq!(details["response"], short_resp);
     assert!(details.get("file_uri").is_none());
-    assert!(!state_dir.join("completion-results/task-short.txt").exists());
+    assert!(!state_dir.join("completion-results").join("task-short.txt").exists());
 
     // 4. QA failure scenario: Configured limit below minimum (1,000) clamps to minimum.
     let response_1200 = "x".repeat(1_200);
@@ -308,7 +308,7 @@ fn wired_delivery_caps_body_with_pointer_and_intact_envelope() {
     assert!(content.ends_with("</task-result>"), "ends with closing tag");
 
     // Visible pointer line has BOTH local:// URI AND plain absolute path
-    let expected_spill = state_dir.join("completion-results/wired-task-1.txt");
+    let expected_spill = state_dir.join("completion-results").join("wired-task-1.txt");
     let expected_uri = format!("local://{}", expected_spill.display());
     let expected_abs = expected_spill.display().to_string();
     assert!(content.contains(&expected_uri), "must contain local:// URI");
