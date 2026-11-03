@@ -272,13 +272,18 @@ pub fn register_session_hooks(
             Box::pin(async move {
                 let mut service = service.lock().await;
                 service.begin_session()?;
-                let entries = ctx
-                    .session_manager
-                    .get_entries()
-                    .into_iter()
-                    .map(|entry| entry.data)
-                    .collect::<Vec<_>>();
-                service.maybe_rehydrate_from_history(&entries)?;
+                // PERF-DIVERGENCE(senpi mcp service): upstream copies every session entry and then
+                // keeps the marker candidates; this visits the entries one at a time and keeps only
+                // the candidates. Same candidates, same restored tools.
+                if service.needs_history_scan()? {
+                    let mut candidates = Vec::new();
+                    ctx.session_manager.for_each_entry(&mut |entry| {
+                        if crate::engine::marker_candidates::may_hold_activation_marker(&entry.data) {
+                            candidates.push(entry.data);
+                        }
+                    });
+                    service.maybe_rehydrate_from_history(&candidates)?;
+                }
                 Ok(maho_ext_api::EventResult::None)
             })
         }),

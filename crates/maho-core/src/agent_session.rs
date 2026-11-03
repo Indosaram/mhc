@@ -1620,6 +1620,30 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
             })
         })
     }
+    fn get_entries_of_kinds(&self, kinds: &[&str]) -> Vec<maho_ext_api::SessionEntry> {
+        self.session.upgrade().map_or_else(Vec::new, |inner| {
+            AgentSession { inner }.with_session_manager(|manager| {
+                let mut entries = Vec::new();
+                manager.for_each_entry(
+                    &|entry| kinds.contains(&entry.get("type").and_then(Value::as_str).unwrap_or_default()),
+                    &mut |entry| entries.push(session_entry_from_value(entry)),
+                );
+                entries
+            })
+        })
+    }
+    fn build_context_messages(&self) -> Option<Vec<Value>> {
+        self.session.upgrade().map(|inner| {
+            AgentSession { inner }.with_session_manager(|manager| manager.current_context().messages)
+        })
+    }
+    fn for_each_entry(&self, visit: &mut dyn FnMut(maho_ext_api::SessionEntry)) {
+        if let Some(inner) = self.session.upgrade() {
+            AgentSession { inner }.with_session_manager(|manager| {
+                manager.for_each_entry(&|_| true, &mut |entry| visit(session_entry_from_value(entry)));
+            });
+        }
+    }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session.upgrade().map_or_else(Vec::new, |inner| {
             AgentSession { inner }.with_session_manager(|manager| {
@@ -4551,12 +4575,11 @@ impl AgentSession {
                 .header()
                 .as_ref()
                 .and_then(|h| h.get("spawnedBy")),
-            &config
-                .session_manager
-                .reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY),
+            &config.session_manager.entries_of_types(&["custom"]),
         );
         let restored_run_id = lifecycle.run_id.clone();
-        let held_inputs = crate::held_inputs::HeldInputs::new(&config.session_manager.entries());
+        let held_inputs =
+            crate::held_inputs::HeldInputs::new(&config.session_manager.entries_of_types(&["custom"]));
         let session = Self {
             inner: Arc::new(AgentSessionInner {
                 agent,
@@ -4975,7 +4998,7 @@ impl AgentSession {
 
                 let run_id = lock(&self.lifecycle).run_id.clone();
                 let result = self.with_session_manager_mut(|manager| {
-                    let entries = manager.entries();
+                    let entries = manager.entries_of_types(&["custom"]);
                     let mut latest = indexmap::IndexMap::<String, Value>::new();
                     for entry in &entries {
                         if entry["type"] == "custom" && entry["customType"] == "work-custody"
@@ -5365,7 +5388,7 @@ impl AgentSession {
                                 .and_then(|d| d["ticketId"].as_str())
                                 .is_some_and(|ticket| {
                                     crate::lifecycle_delivery::lifecycle_delivery_entries(
-                                        &manager.entries(),
+                                        &manager.entries_of_types(&["custom_message"]),
                                     )
                                     .contains_key(ticket)
                                 });
@@ -5720,7 +5743,7 @@ impl AgentSession {
     }
 
     pub fn report_child_lifecycle(&self, report: &Value) -> Result<bool, String> {
-        let entries = self.with_session_manager(|manager| manager.entries());
+        let entries = self.with_session_manager(|manager| manager.entries_of_types(&["custom"]));
         let mut children = crate::lifecycle_children::LifecycleChildren::new(&entries);
         let changed = children.report(report, |accepted| {
             self.with_session_manager_mut(|manager| {
@@ -6281,7 +6304,7 @@ impl AgentSession {
         if let Some(effect) = request["effectId"].as_str()
             && let Some(mut answer) = self.with_session_manager(|manager| {
                 manager
-                    .entries()
+                    .entries_of_types(&["custom"])
                     .iter()
                     .rev()
                     .find(|entry| {
@@ -22133,7 +22156,7 @@ impl crate::work_obligations::CustodyStore for SessionCustodyStore {
     fn entries(&self) -> Vec<Value> {
         self.0
             .upgrade()
-            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries())
+            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries_of_types(&["custom"]))
     }
     fn append(
         &mut self,
