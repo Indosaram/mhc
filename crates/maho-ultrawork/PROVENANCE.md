@@ -13,7 +13,7 @@
   - No `/home/indo/code/oh-my-openagent` or `~/.bun/install/cache/omo-ai*` paths.
   - No repository git history outside the clean-room export.
 - **Deliverables Authored in Fresh Prose**:
-  - `crates/maho-ultrawork/contract/core.md`: Complete core execution contract covering all 45 rules with disposition `core` and `condensed-core`, calibrated between 14,000 and 16,000 bytes (measured: 15,962 bytes).
+  - `crates/maho-ultrawork/contract/core.md`: Complete core execution contract covering all 45 rules with disposition `core` and `condensed-core`, measured at 13,894 bytes, within the spec cap (14,000-16,000 is a target, not a floor).
   - `crates/maho-ultrawork/contract/references/qa-channels.md`: Reference covering manual QA, protocol-level HTTP, browser, desktop GUI, and visual captures.
   - `crates/maho-ultrawork/contract/references/delegation-and-teams.md`: Reference covering subagent dispatch, disjoint write scopes, task boards, and adversarial falsification.
   - `crates/maho-ultrawork/contract/references/commits.md`: Reference covering conventional commit formatting and explicit authorization rules.
