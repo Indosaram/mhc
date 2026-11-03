@@ -47,6 +47,7 @@ export const SCENARIOS = [
     name: "delegated audit",
     prompt: "ulw audit this repo for unused functions using parallel subagents",
     kind: "delegated-audit",
+    waitForChildren: true,
     description: "Delegated audit using subagents: compact reports (<=3500 chars), bounded wakes (<=24000 B), falsification wave",
     expectedOutcome: {
       childReportSizeMax: 3500,

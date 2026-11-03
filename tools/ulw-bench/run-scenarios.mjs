@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { SCENARIOS } from "./scenarios/index.mjs";
 import { createFixtureRepo, checkFixtureTest } from "./scenarios/fixture-generator.mjs";
+import { createWaveTracker } from "./wave-tracker.mjs";
 import { parseArgs, printHelp, isSleepOnlyCall } from "./runner-helpers.mjs";
 
 export { parseArgs, printHelp, isSleepOnlyCall };
@@ -30,21 +31,28 @@ export async function executeScenarioRun({
   let outputTokens = 0;
   let sleepOnlyUsed = false;
   let createGoalCalled = false;
-  const childReportSizes = [];
+  const tracker = createWaveTracker();
   const referencesRead = new Set();
   let reportToolsRan = false;
   let overBudget = false;
   let finalText = "";
   const toolArgs = [];
 
-  const childArgs = ["-p", "--mode", "json", "--model", model, scenario.prompt];
+  // `-p` ends the parent turn at its first wait for children; rpc mode stays alive until we close stdin.
+  const headlessWait = scenario.waitForChildren === true;
+  const childArgs = headlessWait
+    ? ["--mode", "rpc", "--model", model]
+    : ["-p", "--mode", "json", "--model", model, scenario.prompt];
 
   return new Promise((resolve) => {
     const child = spawn(bin, childArgs, {
       cwd: fixtureDir,
       env: { ...process.env, RUST_LOG: "warn" },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [headlessWait ? "pipe" : "ignore", "pipe", "pipe"],
     });
+    if (headlessWait) {
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: scenario.prompt })}\n`);
+    }
 
     const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
 
@@ -54,6 +62,10 @@ export async function executeScenarioRun({
 
       try {
         const event = JSON.parse(trimmed);
+        if (headlessWait) {
+          tracker.observe(event, trimmed);
+          if (tracker.isSettled()) child.stdin.end();
+        }
 
         if (event.type === "message_end" && event.message?.role === "assistant" && event.message.usage) {
           const u = event.message.usage;
@@ -104,10 +116,6 @@ export async function executeScenarioRun({
         if (event.type === "message" && event.message?.role === "toolResult") {
           const name = event.message.toolName;
           if (name) toolCallNames.add(name);
-          if (name === "task" || name === "workflow") {
-            const content = JSON.stringify(event.message.content || "");
-            childReportSizes.push(content.length);
-          }
         }
       } catch (e) {
         // Line wasn't json, ignore
@@ -138,7 +146,7 @@ export async function executeScenarioRun({
         toolCallNames: Array.from(toolCallNames),
         createGoalCalled,
         sleepOnlyUsed,
-        childReportSizes,
+        ...tracker.summary(),
         finalText,
         toolArgs,
         referencesRead: Array.from(referencesRead),
