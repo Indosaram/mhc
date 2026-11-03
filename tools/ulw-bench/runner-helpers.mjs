@@ -3,6 +3,7 @@
 export const DEFAULT_MODEL = "mahoquot/claude-sonnet-5-5";
 export const DEFAULT_RUNS = 3;
 export const DEFAULT_MAX_INPUT_TOKENS = 400_000;
+export const DEFAULT_MAX_WALL_MS = 20 * 60 * 1000;
 export const DEFAULT_MAX_TOTAL_INPUT_TOKENS = 12_000_000;
 
 export function printHelp() {
@@ -15,6 +16,7 @@ Options:
   --out <dir>                     Directory to save run results (default: ./scenarios-output)
   --max-input-tokens <n>          Per-run input token ceiling (default: ${DEFAULT_MAX_INPUT_TOKENS})
   --max-total-input-tokens <n>    Total invocation input token ceiling (default: ${DEFAULT_MAX_TOTAL_INPUT_TOKENS})
+  --max-wall-ms <n>               Per-run wall-clock cap in ms (default: ${DEFAULT_MAX_WALL_MS}); exceeded runs are "timed-out"
   --scenarios <ids>               Comma-separated scenario IDs to run (e.g. S1,S2; default: all)
   --dry-run                       Validate arguments and plan execution without spawning runs
   --help, -h                      Print this help text and exit 0
@@ -53,6 +55,7 @@ export function parseArgs(argv) {
     out: "./scenarios-output",
     maxInputTokens: DEFAULT_MAX_INPUT_TOKENS,
     maxTotalInputTokens: DEFAULT_MAX_TOTAL_INPUT_TOKENS,
+    maxWallMs: DEFAULT_MAX_WALL_MS,
     scenarios: null,
     dryRun: false,
     help: false,
@@ -76,6 +79,8 @@ export function parseArgs(argv) {
       args.maxInputTokens = parseInt(argv[++i], 10);
     } else if (arg === "--max-total-input-tokens" && i + 1 < argv.length) {
       args.maxTotalInputTokens = parseInt(argv[++i], 10);
+    } else if (arg === "--max-wall-ms" && i + 1 < argv.length) {
+      args.maxWallMs = parseInt(argv[++i], 10);
     } else if (arg === "--scenarios" && i + 1 < argv.length) {
       args.scenarios = argv[++i].split(",").map((s) => s.trim());
     } else {
