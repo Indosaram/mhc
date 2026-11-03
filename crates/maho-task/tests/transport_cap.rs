@@ -18,7 +18,7 @@ use maho_task::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -220,7 +220,7 @@ fn batch_capped_with_pointers() {
     // 1. Test Vector 39: 5 children, each producing 6,000 UTF-16 units, batch limit 24,000.
     let tasks: Vec<ChildCompletion> = (0..5)
         .map(|i| {
-            let body = format!("Child {} payload: {}", i, "M".repeat(5_980));
+            let body = format!("Child {i} payload: {}", "M".repeat(5_980));
             ChildCompletion::new(format!("task-{i}"), "completed", body)
         })
         .collect();
@@ -307,7 +307,7 @@ fn wired_delivery_caps_body_with_pointer_and_intact_envelope() {
     let expected_abs = expected_spill.display().to_string();
     assert!(content.contains(&expected_uri), "must contain local:// URI");
     assert!(content.contains(&expected_abs), "must contain plain absolute path");
-    let expected_pointer = format!("Full result: {} ({})", expected_uri, expected_abs);
+    let expected_pointer = format!("Full result: {expected_uri} ({expected_abs})");
     assert!(content.contains(&expected_pointer), "must contain pointer line");
 
     // Spill file holds child raw response, not the XML envelope
@@ -431,6 +431,7 @@ fn wired_batch_delivery_failed_manifest_delivers_inline_with_note() {
     let content = get_content_text(&messages[0]);
 
     assert!(content.contains("2 more task results could not be saved:"), "trailer note present");
+    assert!(count_utf16_code_units(content) <= 24_000, "error trailer keeps the batch limit");
     for i in 0..3 {
         assert!(content.contains(&format!("id=\"block-task-{i}\"")), "inline task {i} present");
     }
@@ -488,35 +489,93 @@ async fn settled_batcher_failed_task_stderr_not_nested() {
     assert!(content.contains("status=\"failed (exit 1)\""));
 }
 
-/// Fix 7: Concurrent tasks settling through TaskManager are batched and delivered.
-#[tokio::test]
+/// Sink whose first `send_message` blocks until the test releases it, so later settles queue up
+/// behind a delivery in flight.
+struct GatedSink {
+    messages: Mutex<Vec<CustomMessage>>,
+    gate: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl ExtensionActions for GatedSink {
+    fn send_message(&self, msg: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        self.messages.lock().unwrap().push(msg);
+        Ok(())
+    }
+    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn append_entry(&self, _: &str, _: Option<serde_json::Value>) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
+}
+
+/// Spec §9.2: results that settle while a delivery is in flight coalesce into one bounded wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn settled_batcher_coalesces_concurrent_tasks_through_manager() {
     let dir = tempdir().expect("tempdir");
     let runner = FakeRunner::new();
-    for i in 0..3 {
+    for i in 0..4 {
         runner.outputs.lock().unwrap().insert(format!("coalesce-{i}"), format!("concurrent out {i}"));
     }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let sink = Arc::new(GatedSink {
+        messages: Mutex::default(),
+        gate: Mutex::new(Some((entered_tx, release_rx))),
+    });
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(Arc::clone(&sink) as Arc<dyn ExtensionActions>);
+    let api = ExtensionApi::new(LoadedExtension::new("task", "/tmp".into(), Default::default()), ExtensionSessionProfile::default(), Default::default(), runtime);
+    let manager = test_manager(dir.path(), Arc::clone(&runner));
+    let batcher = bind_settled_batcher(&manager, Arc::new(api), 8_000, 24_000);
 
+    let ids: Vec<String> = (0..4)
+        .map(|i| {
+            let name = format!("coalesce-{i}");
+            manager.start(spawn_request(dir.path(), &name, &format!("hold {i}"))).expect("start").id
+        })
+        .collect();
+
+    // Given: the first settled result is blocked inside its delivery.
+    runner.release.add_permits(1);
+    entered_rx.recv_timeout(Duration::from_secs(5)).expect("first delivery in flight");
+    // When: the other three settle while that delivery is in flight.
+    runner.release.add_permits(3);
+    assert!(batcher.wait_queued(3, Duration::from_secs(5)), "three results queued behind the flush");
+    release_tx.send(()).unwrap();
+    for id in &ids {
+        manager.wait(id, Some(Duration::from_secs(5))).await.expect("settle");
+    }
+
+    // Then: one wake for the first result and one coalesced wake for the other three.
+    let messages = sink.messages.lock().unwrap();
+    assert_eq!(messages.len(), 2, "queued results coalesce into one message");
+    let first = get_content_text(&messages[0]);
+    let second = get_content_text(&messages[1]);
+    assert!(count_utf16_code_units(second) <= 24_000);
+    let in_first = ids.iter().filter(|id| first.contains(&format!("id=\"{id}\""))).count();
+    let in_second = ids.iter().filter(|id| second.contains(&format!("id=\"{id}\""))).count();
+    assert_eq!((in_first, in_second), (1, 3));
+}
+
+/// Spec §9.2: a single overflowed task does not carry its full response in the wake details.
+#[test]
+fn single_overflowed_task_details_stay_bounded() {
+    let dir = tempdir().expect("tempdir");
     let sink = Arc::new(MessageSink::default());
     let api = test_api(Arc::clone(&sink));
-    let manager = test_manager(dir.path(), Arc::clone(&runner));
-    bind_settled_batcher(&manager, Arc::new(api), 8_000, 24_000);
+    let record = sample_record("big-task");
+    let (envelope, details) = build_capped_result_envelope(dir.path(), &record, &"Q".repeat(7_000), 8_000);
+    let task = ChildCompletion::new("big-task", "completed", envelope).with_details(details);
 
-    let r0 = manager.start(spawn_request(dir.path(), "coalesce-0", "hold 0")).expect("start");
-    let r1 = manager.start(spawn_request(dir.path(), "coalesce-1", "hold 1")).expect("start");
-    let r2 = manager.start(spawn_request(dir.path(), "coalesce-2", "hold 2")).expect("start");
+    let res = deliver_batch(&api, dir.path(), MIN_COMPLETION_BATCH_LIMIT, &[task]).expect("deliver");
 
-    // Release all 3 runners concurrently
-    runner.release.add_permits(3);
-
-    manager.wait(&r0.id, Some(Duration::from_secs(5))).await.expect("settle 0");
-    manager.wait(&r1.id, Some(Duration::from_secs(5))).await.expect("settle 1");
-    manager.wait(&r2.id, Some(Duration::from_secs(5))).await.expect("settle 2");
-
+    assert_eq!(res.overflow_tasks.len(), 1);
     let messages = sink.messages.lock().unwrap();
-    assert!(!messages.is_empty(), "messages delivered");
-    let combined = messages.iter().map(get_content_text).collect::<Vec<_>>().join("\n");
-    for i in 0..3 {
-        assert!(combined.contains(&format!("id=\"coalesce-{i}\"")), "coalesce-{i} present in delivery");
-    }
+    let details = messages[0].details.as_ref().expect("details");
+    assert_eq!(details["overflow_count"], 1);
+    assert!(details.get("response").is_none() && details.get("body").is_none());
+    assert!(count_utf16_code_units(get_content_text(&messages[0])) <= MIN_COMPLETION_BATCH_LIMIT);
 }

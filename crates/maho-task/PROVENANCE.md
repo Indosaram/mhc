@@ -77,17 +77,26 @@
 - Allowed inputs: `docs/cleanroom/specs/ultrawork.md`, `crates/maho-task/` MIT code, and
   `crates/maho-config/`. No forbidden source or path was opened or read.
 - New: `src/transport/` (`cap.rs`, `batch.rs`, `mod.rs`) providing `cap_completion_response`,
-  `build_wake_batch`, `deliver_batch`, `deliver_settled`, and `bind_settled_batcher`. UTF-16 code
-  unit bounds without breaking surrogate pairs, raw response spill to
-  `local://<state_dir>/completion-results/<task_id>.txt`, visible pointer line in message content
-  with both `local://` URI and plain absolute path, graceful spill failure handling with visible
-  note, well-formed `<task-result>` XML envelope preservation via `format_result_envelope`, and
-  batch overflow manifest spill to `local://<state_dir>/completion-results/wake-overflow-<batch_id>.json`
-  with the trailer pointer `N more task results: local://<path_to_manifest>`; configurable via
-  `task.completion_transport_limit` (default 8,000, clamped [1,000, 64,000]) and
-  `task.completion_batch_limit` (default 24,000, clamped [2,000, 128,000]) in `src/settings.rs`;
-  wired into `bind_settled_batcher` in `src/extension.rs` to coalesce concurrently settled tasks
-  through `build_wake_batch` on the real production delivery path.
+  `build_wake_batch`, `deliver_batch`, `deliver_settled`, `SettledBatcher` and
+  `bind_settled_batcher`. UTF-16 code unit bounds without breaking surrogate pairs, raw response
+  spill to `local://<state_dir>/completion-results/<task_id>.txt`, visible pointer line in message
+  content with both `local://` URI and plain absolute path, graceful spill failure handling with
+  visible note, well-formed `<task-result>` XML envelope preservation via
+  `format_result_envelope`, and batch overflow manifest spill to
+  `local://<state_dir>/completion-results/wake-overflow-<batch_id>.json` with the trailer pointer
+  `N more task results: local://<path_to_manifest>`; when the manifest cannot be written the
+  inline set is chosen again against the longer error trailer, so the message stays within the
+  batch limit.
+- `bind_settled_batcher` is defined in `src/transport/mod.rs` and called from
+  `src/extension.rs` when the task manager is built. The first settler drains the queue until it
+  is empty; results that settle while a delivery is in flight queue up and go out together as the
+  next bounded message, and each settler returns (so its waiters wake) only after the batch
+  holding its result was delivered. No timer or sleep is involved.
+- `TaskSettings::from_view` in `src/settings.rs` reads `task.completion_transport_limit`
+  (default 8,000, clamped [1,000, 64,000]) and `task.completion_batch_limit` (default 24,000,
+  clamped [2,000, 128,000]). They are not configurable yet: the `maho-config` schema does not
+  declare them, so config loading drops them as unknown keys and the defaults apply. They become
+  loadable once `maho-config` registers them (todo 17).
 - Tests (`tests/transport_cap.rs`): `result_capped_and_spilled` and `batch_capped_with_pointers`,
   surrogate pair bounds, within-budget inlining, below-minimum clamping, wired delivery with capped
   body, visible pointer line, and intact XML envelope (`wired_delivery_caps_body_with_pointer_and_intact_envelope`),
@@ -95,5 +104,7 @@
   delivery with overflow manifest (`wired_batch_delivery_caps_and_overflows`), batch manifest write
   failure handling (`wired_batch_delivery_failed_manifest_delivers_inline_with_note`), synchronous
   delivery before waiters wake (`settled_batcher_delivers_before_waiters_wake`), non-nested fallback
-  envelope on task failure (`settled_batcher_failed_task_stderr_not_nested`), and concurrent batch
-  coalescing through TaskManager (`settled_batcher_coalesces_concurrent_tasks_through_manager`).
+  envelope on task failure (`settled_batcher_failed_task_stderr_not_nested`), coalescing of results
+  that settle during an in-flight delivery into one bounded message
+  (`settled_batcher_coalesces_concurrent_tasks_through_manager`), and bounded details for a single
+  overflowed task (`single_overflowed_task_details_stay_bounded`).
