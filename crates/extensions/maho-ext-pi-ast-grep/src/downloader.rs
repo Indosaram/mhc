@@ -14,12 +14,12 @@ pub const PLATFORM_MAP: &[(&str, &str, &str)] = &[
 pub fn cache_dir(home: &Path, platform: &str, cache_override: Option<&Path>) -> PathBuf {
     let base = cache_override.map(Path::to_owned).unwrap_or_else(|| {
         if platform == "win32" {
-            home.join("AppData/Local")
+            home.join("AppData").join("Local")
         } else {
             home.join(".cache")
         }
     });
-    base.join("pi-ast-grep/bin")
+    base.join("pi-ast-grep").join("bin")
 }
 pub fn binary_name(platform: &str) -> &'static str {
     if platform == "win32" { "sg.exe" } else { "sg" }
