@@ -351,9 +351,22 @@ async fn given_the_real_component_order_when_a_bare_skill_is_submitted_then_ultr
         .await,
         InputEventResult::Continue
     );
-    let messages = actions.0.lock().expect("messages");
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].custom_type, "omo-ultrawork:directive");
+    // The engine stores the directive at input time and delivers it when the turn starts.
+    let started = runner
+        .emit_before_agent_start(BeforeAgentStartEvent {
+            prompt: "ulw make hello.txt".into(),
+            trigger: "prompt".into(),
+            preview: false,
+            images: None,
+            system_prompt: String::new(),
+            system_prompt_options: Default::default(),
+        })
+        .await
+        .expect("before agent start")
+        .expect("ultrawork directive at turn start");
+    assert_eq!(started.messages.len(), 1);
+    assert_eq!(started.messages[0].custom_type, "omo-ultrawork:directive");
+    assert!(actions.0.lock().expect("messages").is_empty());
 }
 
 // `bundled-skills/invalid-override-registration.test.ts` (skill-commands cases, omo v5.1.52):
