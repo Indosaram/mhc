@@ -397,10 +397,12 @@ impl ProcessSignaller for FakeSignaller {
 pub(crate) type ListHook = Box<dyn FnMut(&TaskRecordStore) + Send>;
 
 /// Delegates to a real store but runs `on_list` once, right after the first `list()` scan -
-/// the TS tests' `{ ...store, list: () => ... }` race injection.
+/// the TS tests' `{ ...store, list: () => ... }` race injection. `on_mutate` instead runs once right before
+/// the first `mutate()`, i.e. at the first compare-and-set, after every read-only check of the pass.
 pub(crate) struct RacingStore {
     pub inner: Arc<TaskRecordStore>,
     on_list: Mutex<Option<ListHook>>,
+    on_mutate: Mutex<Option<ListHook>>,
 }
 
 impl RacingStore {
@@ -408,6 +410,14 @@ impl RacingStore {
         Arc::new(Self {
             inner: Arc::clone(inner),
             on_list: Mutex::new(Some(on_list)),
+            on_mutate: Mutex::new(None),
+        })
+    }
+    pub fn before_first_mutate(inner: &Arc<TaskRecordStore>, on_mutate: ListHook) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::clone(inner),
+            on_list: Mutex::new(None),
+            on_mutate: Mutex::new(Some(on_mutate)),
         })
     }
 }
@@ -436,6 +446,14 @@ impl LifecycleStore for RacingStore {
         task_id: &str,
         mutation: &mut RecordMutation<'_>,
     ) -> Result<Option<TaskRecord>, StoreError> {
+        let hook = self
+            .on_mutate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut hook) = hook {
+            hook(&self.inner);
+        }
         LifecycleStore::mutate(self.inner.as_ref(), task_id, mutation)
     }
     fn replace(&self, record: &TaskRecord) -> Result<(), StoreError> {

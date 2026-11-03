@@ -997,8 +997,11 @@ fn revival_race_worker() {
         project_dir: PathBuf::from(&state_dir),
         task_state_dir: Some(PathBuf::from(&state_dir)),
     }));
-    // Direct writes bypass libtest's output capture.
-    let store = RacingStore::new(
+    // Direct writes bypass libtest's output capture. The barrier sits at the first compare-and-set (the
+    // orphan claim), after the pass's read-only ownership checks: both workers have observed the dead owner
+    // before either claims, so exactly one CAS wins and the other is deferred (upstream: "release both CAS
+    // attempts"). A barrier at the scan left the loser free to see the winner's claim at its ownership re-read.
+    let store = RacingStore::before_first_mutate(
         &backing,
         Box::new(|_| {
             let mut stdout = std::io::stdout();
