@@ -5597,11 +5597,16 @@ mod handoff_tests {
                 break record;
             }
         };
+        // senpi session-registry-open.ts keys and records the file by `canonicalSessionPath`: the host's spelling,
+        // not the requested one (macOS /var -> /private/var, Windows 8.3 short names).
+        let canonical = crate::session_path_key::canonical_session_path(std::path::Path::new(&path))
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(answer["data"]["outcome"], "unloaded", "{answer}");
-        assert_eq!(answer["data"]["sessionPath"], path.as_str());
+        assert_eq!(answer["data"]["sessionPath"], canonical.as_str());
         let parked = parked.expect("the park is sealed before the answer");
         assert_eq!(parked["reason"], "unloaded");
-        assert_eq!(parked["sessionPath"], path.as_str());
+        assert_eq!(parked["sessionPath"], canonical.as_str());
         assert!(!core.has_session(&session_id).await);
     }
     #[test]
