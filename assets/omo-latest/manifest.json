@@ -4206,8 +4206,8 @@
     "ultrawork": [
       {
         "path": "SKILL.md",
-        "bytes": 15164,
-        "sha256": "980de5648012dd25f82ad9c990fc2bc0d9ddccfcf145a6576487b3c22d028b11",
+        "bytes": 15183,
+        "sha256": "aa3ca5f10dc7d2ce61c3077ecdaea56e9d272952a3fb4e3ae2fb0fac1971f139",
         "source": "lazycodex@75b01747:plugins/omo/skills/ultrawork/SKILL.md (MIT)"
       },
       {

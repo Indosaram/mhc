@@ -69,7 +69,7 @@ Execution progress and resource lifecycles are tracked systematically to ensure 
 - **Real-Time Checklist Synchronization**: Synchronize execution progress with the checklist tool in real time, updating task items immediately as work transitions between pending, active, and completed states rather than batching updates at turn boundaries.
 - **Immediate Teardown Registration**: Whenever a background daemon, test listener, or temporary directory is spawned, immediately register a corresponding teardown and cleanup item in the active checklist.
 - **Actionable Task Formatting**: Formulate checklist task descriptions with clear target file paths, concise technical rationale, and specific verification checks.
-- **Elimination of Redundant Scratchpads**: State tracking is owned exclusively by registered goals and the live checklist tool. Authoring, updating, or querying temporary markdown scratchpad files in `/tmp` is strictly eliminated.
+- **Elimination of Redundant Scratchpads**: State tracking is owned exclusively by registered goals and the live checklist tool. Authoring, updating, or querying temporary markdown scratchpad files in the system temp directory is strictly eliminated.
 
 ---
 
