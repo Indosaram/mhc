@@ -2,7 +2,7 @@
 
 use super::invoke_stream_helpers::find_function_calls_close_tag;
 use super::invoke_tag_scanner::find_invoke_open_tag;
-use super::stream_boundary::ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH;
+use super::stream_boundary::{ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH, Utf16Buffer};
 use crate::types::Tool;
 
 pub enum RecoveryWrapperAction {
@@ -29,10 +29,10 @@ pub struct RecoveryWrapperState<R>
 where
     R: Fn(&str) -> Option<Tool>,
 {
-    before_known: String,
-    tag: String,
+    before_known: Utf16Buffer,
+    tag: Utf16Buffer,
     recovered: bool,
-    opening: String,
+    opening: Utf16Buffer,
     resolve_tool: R,
 }
 
@@ -41,11 +41,12 @@ where
     R: Fn(&str) -> Option<Tool>,
 {
     pub fn new(opening: impl Into<String>, resolve_tool: R) -> Self {
+        let opening: String = opening.into();
         Self {
-            before_known: String::new(),
-            tag: String::new(),
+            before_known: Utf16Buffer::default(),
+            tag: Utf16Buffer::default(),
             recovered: false,
-            opening: opening.into(),
+            opening: Utf16Buffer::from(opening.as_str()),
             resolve_tool,
         }
     }
@@ -59,9 +60,8 @@ where
             return self.literal(&character.to_string());
         }
         if character == '<' {
-            let tag = std::mem::take(&mut self.tag);
-            self.tag.push('<');
-            return self.literal(&tag);
+            let tag = std::mem::replace(&mut self.tag, Utf16Buffer::from("<"));
+            return self.literal(tag.as_str());
         }
         if let Some(overflow) = self.pre_append_overflow(character) {
             return vec![overflow];
@@ -71,14 +71,14 @@ where
             return self.check_overflow();
         }
 
-        let tag = std::mem::take(&mut self.tag);
+        let tag = std::mem::take(&mut self.tag).into_string();
         let invoke = find_invoke_open_tag(&tag, 0);
         if let Some(invoke) = &invoke
             && invoke.index == 0
             && invoke.length == tag.len()
             && let Some(tool) = (self.resolve_tool)(&invoke.tool_name)
         {
-            let text_before = std::mem::take(&mut self.before_known);
+            let text_before = std::mem::take(&mut self.before_known).into_string();
             self.recovered = true;
             return vec![RecoveryWrapperAction::Known {
                 text_before,
@@ -94,7 +94,12 @@ where
             let text = if self.recovered {
                 String::new()
             } else {
-                format!("{}{}{}", self.opening, self.before_known, tag)
+                format!(
+                    "{}{}{}",
+                    self.opening.as_str(),
+                    self.before_known.as_str(),
+                    tag
+                )
             };
             return vec![RecoveryWrapperAction::Closed { text }];
         }
@@ -103,10 +108,19 @@ where
 
     pub fn finish(&self) -> String {
         if self.recovered {
-            self.tag.clone()
+            self.tag.as_str().to_owned()
         } else {
-            format!("{}{}{}", self.opening, self.before_known, self.tag)
+            self.unrecovered_text()
         }
+    }
+
+    fn unrecovered_text(&self) -> String {
+        format!(
+            "{}{}{}",
+            self.opening.as_str(),
+            self.before_known.as_str(),
+            self.tag.as_str()
+        )
     }
 
     fn literal(&mut self, text: &str) -> Vec<RecoveryWrapperAction> {
@@ -155,19 +169,18 @@ where
     }
 
     fn retained_length(&self) -> usize {
-        use crate::utils::js::utf16_len;
         if self.recovered {
-            utf16_len(&self.tag)
+            self.tag.utf16_len()
         } else {
-            utf16_len(&self.opening) + utf16_len(&self.before_known) + utf16_len(&self.tag)
+            self.opening.utf16_len() + self.before_known.utf16_len() + self.tag.utf16_len()
         }
     }
 
     fn flush_overflow(&mut self, retained_length: usize) -> RecoveryWrapperAction {
         let text = if self.recovered {
-            self.tag.clone()
+            self.tag.as_str().to_owned()
         } else {
-            format!("{}{}{}", self.opening, self.before_known, self.tag)
+            self.unrecovered_text()
         };
         self.tag.clear();
         RecoveryWrapperAction::Overflow {
