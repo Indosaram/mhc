@@ -1426,6 +1426,7 @@ async fn omo_directory_creation_is_not_a_config_change_but_its_config_file_is() 
     ctx.mode = ExtensionMode::Tui;
     ctx.is_idle_fn = Arc::new(|| false);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
