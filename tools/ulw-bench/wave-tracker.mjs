@@ -14,6 +14,7 @@ export function createWaveTracker() {
   let idle = false;
   let waiting = false;
   let peakChildren = 0;
+  const running = new Set();
   let childrenWoken = 0;
   let toolCallsAfterFirstWake = 0;
   const wakeBatches = [];
@@ -36,6 +37,16 @@ export function createWaveTracker() {
           waiting = WAITING_STATES.has(l.state) || children > 0 || (wait.background?.length ?? 0) > 0;
           break;
         }
+        case "tool_execution_end": {
+          // Real rpc runs never emit lifecycle child counts; the task tool result (and task_output) carry the child id and status.
+          const d = event.result?.details;
+          if ((event.toolName === "task" || event.toolName === "task_output") && typeof d?.task_id === "string") {
+            if (d.status === "running") running.add(d.task_id);
+            else running.delete(d.task_id);
+            peakChildren = Math.max(peakChildren, running.size);
+          }
+          break;
+        }
         case "tool_execution_start":
           if (wakeBatches.length > 0 && (event.toolName === "task" || event.toolName === "workflow")) {
             toolCallsAfterFirstWake++;
@@ -48,6 +59,7 @@ export function createWaveTracker() {
             const children = parseWakeChildren(text);
             wakeBatches.push({ bytes: rawLine.length, children: children.length });
             childrenWoken += children.length;
+            for (const c of children) if (c.id) running.delete(c.id);
             childReports.push(...children.map((c) => c.reportChars));
           }
           break;
@@ -55,7 +67,7 @@ export function createWaveTracker() {
           break;
       }
     },
-    isSettled: () => idle && !waiting && childrenWoken >= peakChildren,
+    isSettled: () => idle && !waiting && running.size === 0 && childrenWoken >= peakChildren,
     summary: () => ({
       wakeBatchBytes: wakeBatches.map((b) => b.bytes),
       wakeBatchChildren: wakeBatches.map((b) => b.children),

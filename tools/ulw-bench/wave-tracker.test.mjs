@@ -49,6 +49,28 @@ describe("wave-tracker", () => {
   });
 });
 
+describe("wave-tracker on a captured real rpc stream", () => {
+  const lines = fs.readFileSync(new URL("./fixtures/rpc-background-task-stream.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
+
+  it("counts the background child from task events and settles only after its wake turn", () => {
+    const t = createWaveTracker();
+    let settledBeforeWake = false;
+    let woke = false;
+    for (const line of lines) {
+      const e = JSON.parse(line);
+      t.observe(e, line);
+      if (e.type === "message_end" && e.message?.customType === "omo-senpi:wake") woke = true;
+      if (!woke && t.isSettled()) settledBeforeWake = true;
+    }
+    assert.equal(settledBeforeWake, false);
+    assert.equal(t.isSettled(), true);
+    const s = t.summary();
+    assert.equal(s.peakChildren, 1);
+    assert.equal(s.wakeBatchChildren.length, 1);
+    assert.equal(s.childReportSizes.length, 1);
+  });
+});
+
 describe("session-bytes wake batches", () => {
   it("parses a wake whose content is a plain string", () => {
     const line = JSON.stringify({ type: "custom_message", customType: "omo-senpi:wake", content: `${wakeText("a", "abcd")}\n\n${wakeText("b", "ef")}` });
