@@ -156,7 +156,7 @@ const cancelEnd = (id, previousStatus) => ({
 describe("wave-tracker on task_output and task_cancel results", () => {
   it("reads the child from a task_output status snapshot", () => {
     const t = createWaveTracker();
-    feed(t, [{ type: "agent_start" }, outputStatusEnd("st_o", "running"), { type: "agent_idle" }]);
+    feed(t, [{ type: "agent_start" }, singleEnd("st_o", "running"), outputStatusEnd("st_o", "running"), { type: "agent_idle" }]);
     assert.equal(t.summary().peakChildren, 1);
     assert.equal(t.isSettled(), false);
     feed(t, [outputStatusEnd("st_o", "completed"), { type: "agent_idle" }]);
@@ -256,6 +256,17 @@ const foregroundEnd = (items) => ({
   isError: false,
 });
 
+// SendResultDetails::Revived (control/types.rs): serde tag "kind", task_id/run_epoch at the top level.
+const sendRevivedEnd = (id, runEpoch) => ({
+  type: "tool_execution_end",
+  toolName: "task_send",
+  result: {
+    content: [{ type: "text", text: `Revived ${id} (run epoch ${runEpoch}).` }],
+    details: { kind: "revived", task_id: id, run_epoch: runEpoch },
+  },
+  isError: false,
+});
+
 describe("wave-tracker on foreground task results", () => {
   it("does not owe a wake for a foreground single child that completed, and settles", () => {
     const t = createWaveTracker();
@@ -263,11 +274,12 @@ describe("wave-tracker on foreground task results", () => {
     assert.equal(t.isSettled(), true);
   });
 
-  it("owes a wake only for the running child of a foreground batch with mixed statuses", () => {
+  it("owes a wake only for the promoted running child of a foreground batch with mixed statuses", () => {
     const t = createWaveTracker();
     feed(t, [
       { type: "agent_start" },
-      foregroundEnd([batchItem("st_a", "completed"), batchItem("st_b", "failed"), batchItem("st_c", "running")]),
+      // execute_batch.rs promoted_output: a child past its wait budget is marked run_in_background true.
+      foregroundEnd([batchItem("st_a", "completed"), batchItem("st_b", "failed"), { ...batchItem("st_c", "running"), run_in_background: true }]),
       { type: "agent_idle" },
     ]);
     assert.equal(t.isSettled(), false, "st_c is still owed");
@@ -278,6 +290,39 @@ describe("wave-tracker on foreground task results", () => {
   it("does not create an owed child from a task_output for an unknown id", () => {
     const t = createWaveTracker();
     feed(t, [{ type: "agent_start" }, outputStatusEnd("st_x", "completed"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("settles when a task_output reports running for an unknown id", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, outputStatusEnd("st_u", "running"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("settles when a task_output reports running for a foreground-finished id", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      foregroundEnd([batchItem("st_f", "completed")]),
+      outputStatusEnd("st_f", "running"),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("re-owes a child revived by task_send after its wake until the second wake", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      singleEnd("st_r", "running"),
+      { type: "agent_idle" },
+      wake(wakeText("st_r", "r1")),
+      { type: "agent_start" },
+      sendRevivedEnd("st_r", 2),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), false, "settled before the revived run's wake");
+    feed(t, [wake(wakeText("st_r", "r2")), { type: "agent_start" }, { type: "agent_idle" }]);
     assert.equal(t.isSettled(), true);
   });
 

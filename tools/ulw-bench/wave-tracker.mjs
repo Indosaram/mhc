@@ -6,14 +6,16 @@ import { isWakeType, parseWakeChildren, parseWakeSpill } from "./session-bytes.m
 const WAITING_STATES = new Set(["waiting_children", "waiting_background", "waiting_human"]);
 // A child queued behind the concurrency limit reports "pending"; it is still owed a wake.
 const LIVE_CHILD_STATES = new Set(["running", "pending"]);
-// Only a live child is owed a wake. A terminal status never creates an owed child: a foreground
-// (run_in_background false) task result already carries the finished child, so no wake comes. For a
-// child already owed (seen live), a task_output or background result reporting an externally-caused
-// terminal (completed/error/lost) does not consume the wake; senpi-task completion/routing.rs still
-// delivers it.
-// Parent-initiated terminals never wake the parent; the tool result stands in for the wake.
+// Only a background child is owed a wake: a task result marked run_in_background true (spawned in
+// the background, or a foreground child promoted at its wait budget) whose item is running/pending.
+// A foreground task result already carries the finished child, so no wake comes. task_output and
+// task_cancel never add an owed child; they only update ids already owed. For an owed child, a
+// reported externally-caused terminal (completed/error/lost) does not consume the wake;
+// senpi-task completion/routing.rs still delivers it. Parent-initiated terminals never wake the
+// parent; the tool result stands in for the wake. A task_send that revives a finished child starts
+// a new run whose completion wakes the parent again, so it re-owes that child.
 const SILENT_TERMINAL_STATES = new Set(["cancelled", "interrupted"]);
-const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel"]);
+const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel", "task_send"]);
 
 /**
  * Child entries of a child-tool result: the task tool lists every batch child in details.items[]
@@ -77,23 +79,34 @@ export function createWaveTracker() {
           break;
         }
         case "tool_execution_end": {
-          // Real rpc runs never emit lifecycle child counts; the task, task_output, and task_cancel
-          // results carry the child id and status.
+          // Real rpc runs never emit lifecycle child counts; the task, task_output, task_cancel, and
+          // task_send results carry the child id and status.
           if (CHILD_TOOLS.has(event.toolName)) {
             const details = event.result?.details;
-            // A foreground task result returns after its children finished; it stands in for the wake.
-            const foreground = event.toolName === "task" && details?.run_in_background !== true;
-            for (const item of childEntries(details)) {
-              if (typeof item?.task_id !== "string" || item.task_id === "") continue;
-              // cancel_pending has no status: the child is still live until its host stops it.
-              if (typeof item.status !== "string") continue;
-              const id = item.task_id;
-              if (LIVE_CHILD_STATES.has(item.status)) running.add(id);
-              else running.delete(id);
-              if (LIVE_CHILD_STATES.has(item.status)) {
-                if (!woken.has(id)) owed.add(id);
-              } else if (foreground || SILENT_TERMINAL_STATES.has(item.status)) {
-                owed.delete(id);
+            // SendResultDetails::Revived (control/types.rs): the finished child runs again and wakes again.
+            if (event.toolName === "task_send") {
+              if (details?.kind === "revived" && typeof details.task_id === "string" && details.task_id !== "") {
+                woken.delete(details.task_id);
+                owed.add(details.task_id);
+                running.add(details.task_id);
+              }
+            } else {
+              const isTask = event.toolName === "task";
+              for (const item of childEntries(details)) {
+                if (typeof item?.task_id !== "string" || item.task_id === "") continue;
+                // cancel_pending has no status: the child is still live until its host stops it.
+                if (typeof item.status !== "string") continue;
+                const id = item.task_id;
+                const live = LIVE_CHILD_STATES.has(item.status);
+                // A promoted foreground item carries run_in_background true on the item itself.
+                const background = isTask && (details?.run_in_background === true || item.run_in_background === true);
+                if (live) running.add(id);
+                else running.delete(id);
+                if (live) {
+                  if (background && !woken.has(id)) owed.add(id);
+                } else if ((isTask && !background) || SILENT_TERMINAL_STATES.has(item.status)) {
+                  owed.delete(id);
+                }
               }
             }
             peakChildren = Math.max(peakChildren, running.size);
