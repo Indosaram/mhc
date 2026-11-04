@@ -69,9 +69,9 @@ pub struct TaskOutputInput {
     pub timeout_ms: Option<Value>,
 }
 
-/// Lenient `Option<usize>` for `tail_lines` (schema `"type":"number"`): accepts integers and integral,
-/// finite, non-negative floats (`60.0` -> `60`); rejects fractional, negative, NaN/infinite,
-/// out-of-range values, and strings. `null` -> `None`.
+/// Lenient `Option<usize>` for `tail_lines` (schema `"type":"integer"`, but models still send
+/// integral floats): accepts integers and finite, non-negative integral floats (`60.0` -> `60`);
+/// rejects fractional, negative, NaN/infinite, out-of-range values, and strings. `null` -> `None`.
 fn option_usize_lenient<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<usize>, D::Error> {
