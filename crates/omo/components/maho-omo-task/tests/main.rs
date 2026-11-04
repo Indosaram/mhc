@@ -119,6 +119,8 @@ pub mod team_query_registered;
 pub mod team_service;
 #[path = "team_service_support.rs"]
 pub mod team_service_support;
+#[path = "pause_resume_runtime.rs"]
+pub mod pause_resume_runtime;
 
 // Helpers several test modules share, declared once so each file compiles once.
 // `production_composition` also reaches this file through examples/runtime_proof.rs, which must
