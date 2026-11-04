@@ -88,3 +88,20 @@ fn hidden_diagnostics_are_redacted_and_private() {
         assert_eq!(std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777, 0o600);
     }
 }
+
+#[test]
+fn editor_paints_reserved_keywords_but_not_quoted_negated_or_code_mentions() {
+    let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("theme");
+    let painted = |text: &str| {
+        let mut editor = CustomEditor::new(std::rc::Rc::new(EditorHost), editor_theme(&theme), keybindings(), CustomEditorOptions::default());
+        editor.editor.set_text(text);
+        editor.render(40).join("\n").contains("\x1b[38;2;248;113;113m")
+    };
+    assert!(painted("ulw hello"));
+    assert!(painted("mass ulw hello"));
+    assert!(painted("ultrawork hello"));
+    assert!(painted("mulw hello"));
+    assert!(!painted("please don't use ulw here"));
+    assert!(!painted("`ulw` in code"));
+    assert!(!painted("\"ulw\" quoted"));
+}
