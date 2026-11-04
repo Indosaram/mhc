@@ -884,7 +884,10 @@ impl Extension for Task {
                 };
                 let handlers = {
                     let mut api = registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    {
+                    // A memory reflection/facts child runs one short print turn inside its memory
+                    // worktree; a host it warmed would outlive the run and keep recreating `.omo/`
+                    // there after the orphan sweep removed it.
+                    if !maho_omo_memory::index::is_memory_child_process(&environment) {
                         let role_context=api.profile.session_context.clone();
                         let warm_parent = parent.weak_accessor(); let id_parent = warm_parent.clone(); let cwd_parent = warm_parent.clone();
                         let records = engine.manager.clone(); let admission = host_assembly.clone();

@@ -17,6 +17,7 @@ pub mod migrations;
 pub mod migrations_state;
 pub mod native_update;
 pub mod nearest_parent_config;
+pub mod open_file_limit;
 pub mod package_manager_cli;
 pub mod pi_dir_restore;
 /// Windows std-handle privacy through `omo_utils` (built only with the `omo` feature).

@@ -327,6 +327,10 @@ fn remove_worktree_and_branch(
     branch: &str,
     exec: &dyn GitExec,
 ) -> ReflectionCleanupReceipt {
+    // A `git worktree add` that died keeps its "initializing" lock: `remove --force` refuses a
+    // locked worktree and `prune` skips it, so the leftover would be reported on every sweep.
+    let unlock_path = crate::support::paths::strip_verbatim_prefix(dir);
+    let _ = exec.run_in(&repo.dir, &["worktree", "unlock", &unlock_path.to_string_lossy()]);
     let _ = repo.worktree_remove(dir, true);
     let _ = std::fs::remove_dir_all(dir);
     let _ = exec.run_in(&repo.dir, &["worktree", "prune"]);
