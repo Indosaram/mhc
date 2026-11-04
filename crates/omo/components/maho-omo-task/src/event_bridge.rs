@@ -140,17 +140,32 @@ impl TaskPauseCustody {
                 let custody = custody.clone();
                 let pending = pending.clone();
                 Box::pin(async move {
-                    let propagations = std::mem::take(
-                        &mut *pending.lock().unwrap_or_else(PoisonError::into_inner),
-                    );
-                    for propagation in propagations {
-                        if propagation.join().is_err() {
-                            return Err(maho_ext_api::ExtensionFailure::new(
-                                "run Stop propagation panicked",
-                            ));
+                    // The join and the Resume block, and the Resume waits on child turns the host
+                    // runtime must drive (a native child admits its continue prompt on that same
+                    // runtime). Blocking the handler's own thread would starve that runtime when
+                    // it is current_thread, so the blocking work runs off it and is awaited.
+                    let work = move || {
+                        let propagations = std::mem::take(
+                            &mut *pending.lock().unwrap_or_else(PoisonError::into_inner),
+                        );
+                        for propagation in propagations {
+                            if propagation.join().is_err() {
+                                return Err(maho_ext_api::ExtensionFailure::new(
+                                    "run Stop propagation panicked",
+                                ));
+                            }
                         }
+                        let _ = custody.resume_current();
+                        Ok(())
+                    };
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(runtime) => runtime.spawn_blocking(work).await.map_err(|error| {
+                            maho_ext_api::ExtensionFailure::new(format!(
+                                "run Resume worker failed: {error}"
+                            ))
+                        })??,
+                        Err(_) => work()?,
                     }
-                    let _ = custody.resume_current();
                     Ok(maho_ext_api::EventResult::None)
                 })
             }),
