@@ -222,8 +222,16 @@ mod find_input_tests {
     }
     #[test]
     fn limit_accepts_integral_numbers_and_rejects_others() {
-        assert_eq!(parse(serde_json::json!({"limit": 100.0})).expect("100.0").limit, Some(100));
-        assert_eq!(parse(serde_json::json!({"limit": 7})).expect("7").limit, Some(7));
+        assert_eq!(
+            parse(serde_json::json!({"limit": 100.0}))
+                .expect("100.0")
+                .limit,
+            Some(100)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"limit": 7})).expect("7").limit,
+            Some(7)
+        );
         assert!(parse(serde_json::json!({"limit": 1.5})).is_err());
         assert!(parse(serde_json::json!({"limit": -1})).is_err());
     }

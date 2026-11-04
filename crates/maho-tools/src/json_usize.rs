@@ -11,6 +11,18 @@ pub fn option_usize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option
     deserializer.deserialize_option(OptionUsizeVisitor)
 }
 
+/// `Option<u32>` counterpart of [`option_usize`] with the same rules; values above `u32::MAX` are
+/// rejected. Use with `#[serde(default, deserialize_with = "crate::json_usize::option_u32")]`.
+pub fn option_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    option_usize(deserializer)?
+        .map(|n| {
+            u32::try_from(n).map_err(|_| {
+                D::Error::invalid_value(Unexpected::Unsigned(n as u64), &OptionUsizeVisitor)
+            })
+        })
+        .transpose()
+}
+
 struct OptionUsizeVisitor;
 
 impl<'de> Visitor<'de> for OptionUsizeVisitor {
@@ -89,6 +101,47 @@ mod tests {
                 err.to_string().contains("a non-negative integer"),
                 "{bad}: {err}"
             );
+        }
+    }
+
+    fn parse_grep(
+        value: serde_json::Value,
+    ) -> Result<crate::grep::GrepToolInput, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
+    #[test]
+    fn grep_integer_args_accept_integers_and_integral_floats() {
+        let input = parse_grep(serde_json::json!({
+            "pattern": "x", "context": 3.0, "before": 7, "after": 0.0, "timeoutMs": 5000.0
+        }))
+        .expect("integral values parse");
+        assert_eq!(input.context, Some(3));
+        assert_eq!(input.before, Some(7));
+        assert_eq!(input.after, Some(0));
+        assert_eq!(input.timeout_ms, Some(5000));
+        let absent = parse_grep(serde_json::json!({"pattern": "x"})).expect("absent parses");
+        assert_eq!(absent.context, None);
+        assert_eq!(absent.timeout_ms, None);
+    }
+
+    #[test]
+    fn grep_integer_args_reject_fractional_negative_and_out_of_range() {
+        for field in ["context", "before", "after", "timeoutMs"] {
+            for bad in [
+                serde_json::json!(1.5),
+                serde_json::json!(-1),
+                serde_json::json!(4_294_967_296_u64),
+                serde_json::json!("7"),
+            ] {
+                let err = parse_grep(serde_json::json!({"pattern": "x", field: bad.clone()}))
+                    .err()
+                    .unwrap_or_else(|| panic!("{field}={bad} must reject"));
+                assert!(
+                    err.to_string().contains("a non-negative integer"),
+                    "{field}={bad}: {err}"
+                );
+            }
         }
     }
 }
