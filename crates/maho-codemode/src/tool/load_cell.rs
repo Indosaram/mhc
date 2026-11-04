@@ -101,6 +101,13 @@ fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(0x0004);
     }
+    // FILE_FLAG_BACKUP_SEMANTICS, as libuv sets on every open: without it Windows refuses to open a
+    // directory (access denied) and the handle never reaches the `not a file` check.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0200_0000);
+    }
     options.open(path)
 }
 

@@ -1948,7 +1948,12 @@ mod tui_render_and_overlays {
     }
 
     fn run_streaming_flicker_budget() -> FlickerBudgetMetrics {
-        const FULL_CLEAR: &str = "\x1b[2J\x1b[H\x1b[3J";
+        // fullRender's clear: the product (like senpi tui.ts) never emits `ESC[3J` on win32.
+        const FULL_CLEAR: &str = if cfg!(windows) {
+            "\x1b[2J\x1b[H"
+        } else {
+            "\x1b[2J\x1b[H\x1b[3J"
+        };
         let lines = Rc::new(RefCell::new(Vec::new()));
         let stable_tail = numbered("stable viewport row", 18);
         let frame = |tokens: usize| {

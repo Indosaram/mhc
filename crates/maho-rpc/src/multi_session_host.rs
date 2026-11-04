@@ -5597,11 +5597,16 @@ mod handoff_tests {
                 break record;
             }
         };
+        // senpi session-registry-open.ts keys and records the file by `canonicalSessionPath`: the host's spelling,
+        // not the requested one (macOS /var -> /private/var, Windows 8.3 short names).
+        let canonical = crate::session_path_key::canonical_session_path(std::path::Path::new(&path))
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(answer["data"]["outcome"], "unloaded", "{answer}");
-        assert_eq!(answer["data"]["sessionPath"], path.as_str());
+        assert_eq!(answer["data"]["sessionPath"], canonical.as_str());
         let parked = parked.expect("the park is sealed before the answer");
         assert_eq!(parked["reason"], "unloaded");
-        assert_eq!(parked["sessionPath"], path.as_str());
+        assert_eq!(parked["sessionPath"], canonical.as_str());
         assert!(!core.has_session(&session_id).await);
     }
     #[test]
@@ -6543,8 +6548,14 @@ async fn run_socket_host(
     core.install_endpoint_reservations(Some(&endpoint_socket))
         .await;
     // senpi `runSocketHost`: the runtime this host loaded, computed once at startup. A successor an idle handover
-    // started for another runtime exits before it listens, leaving its predecessor serving.
-    let runtime_build_id = startup_runtime_build_id(&core.options.cwd);
+    // started for another runtime exits before it listens, leaving its predecessor serving. Digesting the
+    // executable is blocking file I/O, so it runs on the blocking pool, never on the runtime serving this host.
+    let runtime_build_id = {
+        let cwd = core.options.cwd.clone();
+        tokio::task::spawn_blocking(move || startup_runtime_build_id(&cwd))
+            .await
+            .map_err(std::io::Error::other)?
+    };
     if let Ok(expected) = std::env::var(crate::host_idle_handover::EXPECTED_RUNTIME_BUILD_ID_ENV)
         && Some(expected.as_str()) != runtime_build_id.as_deref()
     {

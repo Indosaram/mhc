@@ -115,6 +115,9 @@ struct State {
     live: HashMap<String, LiveTask>,
     /// Tasks whose child start is in flight: the child may already run before it reaches `live`.
     launching: HashSet<String>,
+    /// Tasks this process claimed whose start has not returned yet: the record is resident under this
+    /// host's pid with no handle, which a concurrent reconcile must not read as a crashed orphan.
+    claiming: HashSet<String>,
     child_subscribers: HashMap<String, Vec<ChildSubscriber>>,
     released: HashMap<String, i64>,
     waiters: HashMap<String, Vec<(u64, WaitWaker)>>,
@@ -372,6 +375,66 @@ pub fn create_task_manager(options: TaskManagerOptions) -> TaskManager {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Saves a claim draft with its id marked `claiming` BEFORE the record file exists, so a reconcile running
+/// beside this start never sees the new resident record without the mark (omo `#launching` covers the same
+/// window upstream, where nothing else runs between the claim and the tracked launch).
+///
+/// The mark set is shared by every start in this process, and a collision bumps a draft onto the next id - which
+/// can be another start's own draft. So a save only removes a mark it inserted itself, and remembers the id it
+/// saved so a claim failing after that save (see [`claim_marked`]) clears the mark instead of leaking it.
+struct ClaimingSaver<'a> {
+    state: &'a Mutex<State>,
+    saver: &'a (dyn TaskRecordSaver + Send + Sync),
+    saved: Mutex<Option<String>>,
+}
+impl TaskRecordSaver for ClaimingSaver<'_> {
+    fn save(&self, record: &TaskRecord) -> Result<(), StoreError> {
+        let inserted = lock(self.state).claiming.insert(record.task_id.clone());
+        let saved = self.saver.save(record);
+        if inserted {
+            if saved.is_ok() {
+                *lock(&self.saved) = Some(record.task_id.clone());
+            } else {
+                lock(self.state).claiming.remove(&record.task_id);
+            }
+        }
+        saved
+    }
+}
+
+/// `claim_task_record` through a [`ClaimingSaver`]: on success the claimed id stays marked (the caller's
+/// [`ClaimMark`] clears it); on failure no mark this claim set survives.
+fn claim_marked(
+    state: &Mutex<State>,
+    saver: &(dyn TaskRecordSaver + Send + Sync),
+    draft: &TaskRecord,
+    options: &ClaimOptions<'_>,
+) -> Result<TaskRecord, ClaimError> {
+    let marking = ClaimingSaver {
+        state,
+        saver,
+        saved: Mutex::new(None),
+    };
+    let claimed = claim_task_record(&marking, draft, options);
+    if claimed.is_err()
+        && let Some(task_id) = lock(&marking.saved).take()
+    {
+        lock(state).claiming.remove(&task_id);
+    }
+    claimed
+}
+
+/// Clears a claimed task's `claiming` mark when its start returns.
+struct ClaimMark<'a> {
+    inner: &'a Inner,
+    task_id: String,
+}
+impl Drop for ClaimMark<'_> {
+    fn drop(&mut self) {
+        lock(&self.inner.state).claiming.remove(&self.task_id);
+    }
 }
 
 fn resident_record(inner: &Inner, task_id: &str) -> Option<TaskRecord> {
@@ -2220,7 +2283,8 @@ impl TaskManager {
     }
 
     pub fn is_launching(&self, task_id: &str) -> bool {
-        lock(&self.inner.state).launching.contains(task_id)
+        let state = lock(&self.inner.state);
+        state.launching.contains(task_id) || state.claiming.contains(task_id)
     }
 
     pub fn resident_task_ids(&self) -> Vec<String> {
@@ -3014,6 +3078,8 @@ impl Inner {
         let requested_registration = requested_name
             .as_deref()
             .map(|name| lock(&self.names).register(&spec.parent_session_id, Some(name), None));
+        // Marked `claiming` from the save until this start returns: covers the claimed record until `launching`
+        // (or a queue/hold) takes over.
         let claimed = match self.claim(
             spec,
             plan,
@@ -3059,6 +3125,10 @@ impl Inner {
                     error_message: ID_CONTENTION_MESSAGE.to_string(),
                 });
             }
+        };
+        let _claim_mark = ClaimMark {
+            inner: self,
+            task_id: claimed.task_id.clone(),
         };
         if let Some(admission) = &spec.admission {
             admission.bind(&claimed.task_id);
@@ -3284,7 +3354,7 @@ impl Inner {
                 .then_some(&name_available as &dyn Fn(&str) -> bool),
             ..ClaimOptions::default()
         };
-        claim_task_record(self.saver.as_ref(), &claim_draft, &options)
+        claim_marked(&self.state, self.saver.as_ref(), &claim_draft, &options)
     }
 
     fn bookkeeping_failed(
@@ -4958,5 +5028,92 @@ impl OutcomeTrackerPorts for Inner {
 
     fn outcome_processed(&self) {
         lock(&self.state).processed_outcomes += 1;
+    }
+}
+
+#[cfg(test)]
+mod claim_mark_tests {
+    use super::{State, claim_marked, lock};
+    use crate::state::{TaskRecord, parse_task_id};
+    use crate::store::{ClaimError, ClaimOptions, StoreError, TaskRecordSaver};
+    use std::sync::Mutex;
+
+    /// Collides on `taken` ids (another start's claim) and refuses any other save.
+    struct Scripted {
+        taken: Vec<&'static str>,
+        accept: Option<&'static str>,
+    }
+    impl TaskRecordSaver for Scripted {
+        fn save(&self, record: &TaskRecord) -> Result<(), StoreError> {
+            if self.taken.contains(&record.task_id.as_str()) {
+                return Err(StoreError::Collision {
+                    task_id: parse_task_id(&record.task_id).expect("task id"),
+                    path: std::path::PathBuf::from(&record.task_id),
+                });
+            }
+            if self.accept == Some(record.task_id.as_str()) {
+                return Ok(());
+            }
+            Err(StoreError::Parse("refused".into()))
+        }
+    }
+
+    fn draft(task_id: &str) -> TaskRecord {
+        crate::test_support::base_record(task_id, "parent")
+    }
+
+    #[test]
+    fn a_collision_never_removes_another_starts_claim_mark() {
+        let state = Mutex::new(State::default());
+        // Start B already saved st_00000002 and holds its mark; start A's draft st_00000001 collides on
+        // a foreign record, bumps onto B's id, collides again and lands on st_00000003.
+        lock(&state).claiming.insert("st_00000002".into());
+        let saver = Scripted {
+            taken: vec!["st_00000001", "st_00000002"],
+            accept: Some("st_00000003"),
+        };
+        let claimed = claim_marked(&state, &saver, &draft("st_00000001"), &ClaimOptions::default())
+            .expect("claimed");
+        assert_eq!(claimed.task_id, "st_00000003");
+        let marks = lock(&state).claiming.clone();
+        assert!(marks.contains("st_00000002"), "start B lost its mark: {marks:?}");
+        assert!(marks.contains("st_00000003"));
+        assert!(!marks.contains("st_00000001"));
+    }
+
+    #[test]
+    fn a_failed_claim_leaves_no_mark_of_its_own() {
+        let state = Mutex::new(State::default());
+        lock(&state).claiming.insert("st_00000002".into());
+        let saver = Scripted {
+            taken: vec!["st_00000002"],
+            accept: None,
+        };
+        // The first save is refused outright: no mark of A's may survive, and B's stays.
+        let refused = claim_marked(&state, &saver, &draft("st_00000001"), &ClaimOptions::default());
+        assert!(matches!(refused, Err(ClaimError::Store(_))));
+        // A draft starting on B's id collides, then is refused: B's mark still survives.
+        let collided = claim_marked(&state, &saver, &draft("st_00000002"), &ClaimOptions::default());
+        assert!(collided.is_err());
+        let marks = lock(&state).claiming.clone();
+        assert_eq!(marks.into_iter().collect::<Vec<_>>(), vec!["st_00000002".to_string()]);
+    }
+
+    #[test]
+    fn a_claim_failing_after_its_save_clears_its_mark() {
+        let state = Mutex::new(State::default());
+        // The save succeeds, then the claim's id parse fails: the mark the save set must not leak.
+        let saver = Scripted {
+            taken: vec![],
+            accept: Some("not-a-task-id"),
+        };
+        let failed = claim_marked(
+            &state,
+            &saver,
+            &draft("not-a-task-id"),
+            &ClaimOptions::default(),
+        );
+        assert!(matches!(failed, Err(ClaimError::Store(_))));
+        assert!(lock(&state).claiming.is_empty());
     }
 }

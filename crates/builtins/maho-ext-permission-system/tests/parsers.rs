@@ -52,16 +52,16 @@ fn aliases() {
 }
 #[test]
 fn read_permission_alias_scopes_external_always_to_parent() {
-    let requests = parse("read_permission", json!({"path":"/etc/config"}));
+    let requests = parse("read_permission", json!({"path":"/mhc-outside/config"}));
     assert_eq!(requests[0].permission, "read");
     assert_eq!(requests[1].permission, "external_directory");
-    assert_eq!(requests[1].always, vec!["/etc/*"]);
+    assert_eq!(requests[1].always, vec!["/mhc-outside/*"]);
 }
 #[test]
 fn external_file() {
-    let r = parse("write", json!({"path":"/etc/config"}));
+    let r = parse("write", json!({"path":"/mhc-outside/config"}));
     assert_eq!(r[1].permission, "external_directory");
-    assert_eq!(r[1].always, vec!["/etc/*"]);
+    assert_eq!(r[1].always, vec!["/mhc-outside/*"]);
 }
 #[test]
 fn grep_pattern() {
@@ -72,9 +72,9 @@ fn grep_pattern() {
 }
 #[test]
 fn grep_path() {
-    let r = parse("grep", json!({"path":"/etc","pattern":"TODO"}));
-    assert_eq!(r[0].patterns, vec!["/etc"]);
-    assert_eq!(r[1].always, vec!["/etc/*"]);
+    let r = parse("grep", json!({"path":"/mhc-outside","pattern":"TODO"}));
+    assert_eq!(r[0].patterns, vec!["/mhc-outside"]);
+    assert_eq!(r[1].always, vec!["/mhc-outside/*"]);
 }
 #[test]
 fn grep_empty_path_does_not_fall_back_to_pattern() {
@@ -90,12 +90,12 @@ fn grep_empty_path_does_not_fall_back_to_pattern() {
 #[test]
 fn grep_path_array_gates_every_element() {
     // Given a grep over a workspace path and an external one (senpi#4311).
-    let requests = parse("grep", json!({"pattern":"TOKEN","path":["src","/etc"]}));
+    let requests = parse("grep", json!({"pattern":"TOKEN","path":["src","/mhc-outside"]}));
     // Then each element is a grep pattern and only the external one is classified.
-    assert_eq!(requests[0].patterns, vec!["src", "/etc"]);
+    assert_eq!(requests[0].patterns, vec!["src", "/mhc-outside"]);
     assert_eq!(requests[1].permission, "external_directory");
-    assert_eq!(requests[1].patterns, vec!["/etc"]);
-    assert_eq!(requests[1].always, vec!["/etc/*"]);
+    assert_eq!(requests[1].patterns, vec!["/mhc-outside"]);
+    assert_eq!(requests[1].always, vec!["/mhc-outside/*"]);
 }
 #[test]
 fn custom_parser_empty_yields_zero_requests() {

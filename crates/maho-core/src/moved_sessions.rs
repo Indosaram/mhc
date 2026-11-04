@@ -445,8 +445,8 @@ mod tests {
     fn layout(shared: bool) -> Fixture {
         crate::session_summary_cache::clear_session_summary_cache();
         let root = tempfile::tempdir().expect("root");
-        let cwd = root.path().join("new/repo");
-        let live = root.path().join("clone/repo");
+        let cwd = root.path().join("new").join("repo");
+        let live = root.path().join("clone").join("repo");
         std::fs::create_dir_all(&cwd).expect("cwd");
         std::fs::create_dir_all(&live).expect("live");
         let sessions_root = root.path().join("sessions");

@@ -30,8 +30,11 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned())
 }
 #[tokio::test] async fn clipboard_command_reads_and_enforces_maximum_without_desktop_access() {
     use maho_cli::utils::clipboard_command::*;
+    // A shell builtin, not an interpreter: the test is about the output and the buffer cap, and a
+    // cold `node` start alone can outlast the command's 3 s budget on a loaded Windows host. `set /p`
+    // with no input prints its prompt without a newline and fails, so the line ends in `exit 0`.
     let (cmd, args_abc, args_abcd): (&str, &[&str], &[&str]) = if cfg!(windows) {
-        ("node", &["-e", "process.stdout.write(process.argv[1])", "abc"], &["-e", "process.stdout.write(process.argv[1])", "abcd"])
+        ("cmd", &["/d", "/c", "<nul set /p =abc&exit 0"], &["/d", "/c", "<nul set /p =abcd&exit 0"])
     } else {
         ("printf", &["abc"], &["abcd"])
     };

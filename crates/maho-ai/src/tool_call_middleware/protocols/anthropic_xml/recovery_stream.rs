@@ -12,7 +12,7 @@ use super::invoke_tag_scanner::{
 use super::recovery_wrapper_state::{RecoveryWrapperAction, RecoveryWrapperState};
 use super::stream_boundary::{
     ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH, PendingFragmentKind, StreamBoundaryMatcher,
-    create_pending_fragment,
+    Utf16Buffer, create_pending_fragment,
 };
 use super::tool_resolver::ToolResolver;
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
@@ -28,7 +28,7 @@ type WrapperResolver = Box<dyn Fn(&str) -> Option<Tool> + Send>;
 
 enum RecoveryState {
     Idle {
-        tag: String,
+        tag: Utf16Buffer,
     },
     Wrapper {
         scanner: RecoveryWrapperState<WrapperResolver>,
@@ -39,7 +39,7 @@ enum RecoveryState {
         id: String,
         close_matcher: Box<dyn StreamBoundaryMatcher>,
         wrapper: Option<RecoveryWrapperState<WrapperResolver>>,
-        source: String,
+        source: Utf16Buffer,
     },
     Finished,
 }
@@ -106,14 +106,16 @@ impl InvokeRecoveryStreamParser {
             id,
             close_matcher,
             wrapper,
-            source: opening.to_string(),
+            source: Utf16Buffer::from(opening),
         };
     }
 
     fn restore_after_active(&mut self, wrapper: Option<RecoveryWrapperState<WrapperResolver>>) {
         self.state = match wrapper {
             Some(scanner) => RecoveryState::Wrapper { scanner },
-            None => RecoveryState::Idle { tag: String::new() },
+            None => RecoveryState::Idle {
+                tag: Utf16Buffer::default(),
+            },
         };
     }
 
@@ -129,9 +131,10 @@ impl InvokeRecoveryStreamParser {
         else {
             unreachable!()
         };
-        let opening = find_invoke_open_tag(&source, 0)
+        let source = source.as_str();
+        let opening = find_invoke_open_tag(source, 0)
             .expect("active state always starts from a matched invoke open tag");
-        let block = scan_invoke_block(&source, &opening);
+        let block = scan_invoke_block(source, &opening);
         let arguments_record = if block.as_ref().is_some_and(|b| b.end == source.len()) {
             block
                 .and_then(|b| b.parameters)
@@ -190,7 +193,7 @@ impl InvokeRecoveryStreamParser {
         else {
             unreachable!()
         };
-        self.report_overflow(crate::utils::js::utf16_len(&source));
+        self.report_overflow(source.utf16_len());
         events.push(StreamParserEvent::ToolcallDelta {
             index,
             arguments_delta: "{}".to_string(),
@@ -216,7 +219,9 @@ impl InvokeRecoveryStreamParser {
                 self.start_known_invoke(events, &tag, tool, None);
             } else {
                 super::invoke_stream_helpers::emit_text(events, &tag);
-                self.state = RecoveryState::Idle { tag: String::new() };
+                self.state = RecoveryState::Idle {
+                    tag: Utf16Buffer::default(),
+                };
             }
             return;
         }
@@ -232,48 +237,44 @@ impl InvokeRecoveryStreamParser {
             return;
         }
         super::invoke_stream_helpers::emit_text(events, &tag);
-        self.state = RecoveryState::Idle { tag: String::new() };
+        self.state = RecoveryState::Idle {
+            tag: Utf16Buffer::default(),
+        };
     }
 
     fn feed_idle_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char) {
-        let RecoveryState::Idle { tag } = &self.state else {
+        let RecoveryState::Idle { tag } = &mut self.state else {
             unreachable!()
         };
-        let mut tag = tag.clone();
         if tag.is_empty() && character != '<' {
             super::invoke_stream_helpers::emit_text(events, character.encode_utf8(&mut [0u8; 4]));
             return;
         }
         if character == '<' && !tag.is_empty() {
-            super::invoke_stream_helpers::emit_text(events, &tag);
-            self.state = RecoveryState::Idle {
-                tag: "<".to_string(),
-            };
+            let tag = std::mem::replace(tag, Utf16Buffer::from("<"));
+            super::invoke_stream_helpers::emit_text(events, tag.as_str());
             return;
         }
-        if exceeds_retained_limit(crate::utils::js::utf16_len(&tag), character.len_utf16()) {
-            let tag_len = crate::utils::js::utf16_len(&tag);
-            self.report_overflow(tag_len);
-            super::invoke_stream_helpers::emit_text(events, &tag);
-            self.state = RecoveryState::Idle { tag: String::new() };
+        if exceeds_retained_limit(tag.utf16_len(), character.len_utf16()) {
+            let tag = std::mem::take(tag);
+            self.report_overflow(tag.utf16_len());
+            super::invoke_stream_helpers::emit_text(events, tag.as_str());
             self.feed_idle_character(events, character);
             return;
         }
         tag.push(character);
         if character == '>' {
+            let tag = std::mem::take(tag).into_string();
             self.handle_idle_tag(events, tag);
-        } else if crate::utils::js::utf16_len(&tag) == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
-            let tag_len = crate::utils::js::utf16_len(&tag);
-            self.report_overflow(tag_len);
-            super::invoke_stream_helpers::emit_text(events, &tag);
-            self.state = RecoveryState::Idle { tag: String::new() };
-        } else if crate::utils::js::utf16_len(&tag) <= MAX_PARTIAL_TAG_VALIDATION_LENGTH
-            && !is_potential_protocol_start(&tag)
+        } else if tag.utf16_len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
+            let tag = std::mem::take(tag);
+            self.report_overflow(tag.utf16_len());
+            super::invoke_stream_helpers::emit_text(events, tag.as_str());
+        } else if tag.utf16_len() <= MAX_PARTIAL_TAG_VALIDATION_LENGTH
+            && !is_potential_protocol_start(tag.as_str())
         {
-            super::invoke_stream_helpers::emit_text(events, &tag);
-            self.state = RecoveryState::Idle { tag: String::new() };
-        } else {
-            self.state = RecoveryState::Idle { tag };
+            let tag = std::mem::take(tag);
+            super::invoke_stream_helpers::emit_text(events, tag.as_str());
         }
     }
 
@@ -289,7 +290,9 @@ impl InvokeRecoveryStreamParser {
                 }
                 RecoveryWrapperAction::Closed { text } => {
                     super::invoke_stream_helpers::emit_text(events, &text);
-                    self.state = RecoveryState::Idle { tag: String::new() };
+                    self.state = RecoveryState::Idle {
+                        tag: Utf16Buffer::default(),
+                    };
                 }
                 RecoveryWrapperAction::Known {
                     text_before,
@@ -319,7 +322,9 @@ impl InvokeRecoveryStreamParser {
                             self.feed_wrapper_character(events, next_character);
                         }
                     } else {
-                        self.state = RecoveryState::Idle { tag: String::new() };
+                        self.state = RecoveryState::Idle {
+                            tag: Utf16Buffer::default(),
+                        };
                         if let Some(next_character) = next_character {
                             self.feed_idle_character(events, next_character);
                         }
@@ -334,7 +339,7 @@ impl InvokeRecoveryStreamParser {
         let RecoveryState::Active { source, .. } = &self.state else {
             unreachable!()
         };
-        if exceeds_retained_limit(crate::utils::js::utf16_len(source), character.len_utf16()) {
+        if exceeds_retained_limit(source.utf16_len(), character.len_utf16()) {
             self.overflow_active(events);
             match &mut self.state {
                 RecoveryState::Wrapper { .. } => self.feed_wrapper_character(events, character),
@@ -355,8 +360,7 @@ impl InvokeRecoveryStreamParser {
         let matched = close_matcher.feed(character.encode_utf8(&mut [0u8; 4]));
         if matched {
             self.finish_active(events);
-        } else if crate::utils::js::utf16_len(source) == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH
-        {
+        } else if source.utf16_len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
             self.overflow_active(events);
         }
     }
@@ -385,7 +389,7 @@ impl StreamParser for InvokeRecoveryStreamParser {
         let mut events = Vec::new();
         match std::mem::replace(&mut self.state, RecoveryState::Finished) {
             RecoveryState::Idle { tag } => {
-                super::invoke_stream_helpers::emit_text(&mut events, &tag)
+                super::invoke_stream_helpers::emit_text(&mut events, tag.as_str())
             }
             RecoveryState::Wrapper { scanner } => {
                 super::invoke_stream_helpers::emit_text(&mut events, &scanner.finish())
@@ -401,12 +405,16 @@ impl RecoveryStreamParser for InvokeRecoveryStreamParser {
         let mut events = Vec::new();
         match &self.state {
             RecoveryState::Idle { tag } => {
-                super::invoke_stream_helpers::emit_text(&mut events, tag);
-                self.state = RecoveryState::Idle { tag: String::new() };
+                super::invoke_stream_helpers::emit_text(&mut events, tag.as_str());
+                self.state = RecoveryState::Idle {
+                    tag: Utf16Buffer::default(),
+                };
             }
             RecoveryState::Wrapper { scanner } => {
                 super::invoke_stream_helpers::emit_text(&mut events, &scanner.finish());
-                self.state = RecoveryState::Idle { tag: String::new() };
+                self.state = RecoveryState::Idle {
+                    tag: Utf16Buffer::default(),
+                };
             }
             _ => {}
         }
@@ -423,7 +431,9 @@ pub fn create_invoke_recovery_stream_parser(
         tools,
         config,
         options,
-        state: RecoveryState::Idle { tag: String::new() },
+        state: RecoveryState::Idle {
+            tag: Utf16Buffer::default(),
+        },
         next_tool_call_index: 0,
     })
 }

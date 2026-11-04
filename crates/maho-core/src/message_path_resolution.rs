@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::paths::strip_verbatim_prefix;
+
 /// The project markers of the rules extension's `findProjectRoot`, in its order.
 const PROJECT_MARKERS: &[&str] = &[
     ".git",
@@ -62,7 +64,7 @@ pub fn is_local_message_path(path: &str, windows: bool) -> bool {
 }
 
 fn find_project_root(start: &Path, markers: &[&str]) -> Option<PathBuf> {
-    let resolved = start.canonicalize().ok()?;
+    let resolved = strip_verbatim_prefix(start.canonicalize().ok()?);
     let mut current = if resolved.metadata().ok()?.is_dir() {
         resolved
     } else {
@@ -82,12 +84,12 @@ pub fn message_path_project_root(cwd: &str) -> Option<String> {
     let candidate =
         find_project_root(cwd, &[".git"]).or_else(|| find_project_root(cwd, PROJECT_MARKERS))?;
     let home = PathBuf::from(crate::config::home_dir());
-    let home = home.canonicalize().unwrap_or(home);
+    let home = home.canonicalize().map(strip_verbatim_prefix).unwrap_or(home);
     (candidate != home).then(|| candidate.to_string_lossy().into_owned())
 }
 
 fn existing(candidate: &str) -> Option<(String, MessagePathKind)> {
-    let realpath = std::fs::canonicalize(candidate).ok()?;
+    let realpath = strip_verbatim_prefix(std::fs::canonicalize(candidate).ok()?);
     let metadata = std::fs::metadata(&realpath).ok()?;
     let kind = if metadata.is_file() {
         MessagePathKind::File

@@ -25,7 +25,19 @@ fn collapse_redraws(line: &str) -> String {
     cells.into_iter().collect()
 }
 
+/// ConPTY re-renders the child's stream and turns a carriage return into a cursor move to column 1
+/// (`ESC[H`, `ESC[<row>;1H`, `ESC[G`). Folding those back into `\r` lets the redraw collapse see the
+/// same overwrites a Unix PTY passes through verbatim.
+#[cfg(windows)]
+static COLUMN_ONE_MOVE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    #[expect(clippy::expect_used, reason = "constant escape pattern is validated by sanitizer tests")]
+    regex::Regex::new(r"\x1b\[[0-9]*(?:;1?)?[Hf]|\x1b\[1?G").expect("valid cursor move pattern")
+});
+
 pub fn sanitize_terminal_output(raw: &str) -> String {
+    #[cfg(windows)]
+    let mut text = COLUMN_ONE_MOVE.replace_all(raw, "\r").into_owned();
+    #[cfg(not(windows))]
     let mut text = raw.to_owned();
     for pattern in ESCAPE_PATTERNS.iter() { text = pattern.replace_all(&text, "").into_owned(); }
     text.replace("\r\n", "\n").split('\n').map(collapse_redraws).collect::<Vec<_>>().join("\n")
@@ -83,6 +95,8 @@ mod tests {
     #[test] fn strips_osc_hyperlinks_and_titles() { assert_eq!(sanitize_terminal_output("\x1b]8;;https://example.com\x07link\x1b]8;;\x07"),"link");assert_eq!(sanitize_terminal_output("\x1b]11;?\x1b\\done"),"done"); }
     #[test] fn normalizes_crlf() { assert_eq!(sanitize_terminal_output("one\r\ntwo\r\nthree"),"one\ntwo\nthree"); }
     #[test] fn final_spinner_frame_survives() { assert_eq!(sanitize_terminal_output("\r\x1b[K\x1b[36m\u{28fe}\x1b[0m\r\x1b[K\x1b[36m\u{28fd}\x1b[0m\r\x1b[K\x1b[36m\u{28fb}\x1b[0m done"),"\u{28fb} done"); }
+    #[cfg(windows)]
+    #[test] fn conpty_column_one_moves_collapse_like_carriage_returns() { assert_eq!(sanitize_terminal_output("\x1b[36m*\x1b[K\x1b[?25l\x1b[m\x1b[H\x1b[K\x1b[?25h\x1b[36m\x1b[3;1H*\x1b[K\x1b[G\x1b[32mOK \x1b[mfinished\x1b[K\r\n"),"OK finished\n"); }
     #[test] fn shorter_redraw_keeps_tail() { assert_eq!(sanitize_terminal_output("abcdef\rXY"),"XYcdef"); }
     #[test] fn carriage_return_per_line() { assert_eq!(sanitize_terminal_output("first-aaa\rfirst-b\nsecond-ccc\rsecond-d"),"first-baa\nsecond-dcc"); }
     #[test] fn backspace_overwrites() { assert_eq!(sanitize_terminal_output("abc\x08\x08XY"),"aXY"); }
