@@ -10,6 +10,7 @@ use maho_tui::colors::{
     Color, ColorInput, ColorMixSpace, TerminalColorMode, foreground_ansi, mix_colors, parse_color,
 };
 
+use super::theme::{ColorMode, Theme};
 use super::theme_json::ThemeAppearance;
 
 struct SpectrumStop {
@@ -128,6 +129,38 @@ pub fn create_reserved_keyword_highlight(
     Some(ReservedKeywordHighlight {
         source,
         cache: RefCell::new(HashMap::new()),
+    })
+}
+
+/// senpi `getReservedKeywordHighlight()` (theme.ts): the rainbow for the editor, following the
+/// theme's colour mode. The port's `Theme` carries no detected appearance, so a theme without an
+/// explicit one paints with the dark spectrum.
+pub fn get_reserved_keyword_highlight(
+    theme: &Theme,
+) -> Option<maho_tui::components::editor::EditorKeywordHighlight> {
+    let appearance = theme.appearance.unwrap_or(ThemeAppearance::Dark);
+    let mode = match theme.get_color_mode() {
+        ColorMode::Truecolor => TerminalColorMode::Truecolor,
+        ColorMode::Color256 => TerminalColorMode::Color256,
+    };
+    let highlight = std::rc::Rc::new(create_reserved_keyword_highlight(
+        ReservedKeywordHighlightSource {
+            appearance: Box::new(move || appearance),
+            color_mode: Box::new(move || mode),
+            no_color: None,
+        },
+    )?);
+    Some(maho_tui::components::editor::EditorKeywordHighlight {
+        find: std::rc::Rc::new(|text: &str| {
+            maho_core::reserved_keywords::find_reserved_keyword_runs(text)
+                .into_iter()
+                .map(|run| maho_tui::autocomplete::MentionRange {
+                    start: run.start,
+                    end: run.end,
+                })
+                .collect()
+        }),
+        style: std::rc::Rc::new(move |text, index, length| highlight.style(text, index, length)),
     })
 }
 
