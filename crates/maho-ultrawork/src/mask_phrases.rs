@@ -29,7 +29,24 @@ fn arrow_header_end(line: &str) -> Option<usize> {
     (arrowed && plain && prefix.len() <= 100).then_some(colon + 1)
 }
 
+/// A relayed message opening with an all-caps sender tag (`[REPORT] ...`) is someone else's text.
+fn relay_tag(text: &str) -> bool {
+    let Some(rest) = text.trim_start().strip_prefix('[') else {
+        return false;
+    };
+    let name = rest
+        .bytes()
+        .take_while(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        .count();
+    rest.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+        && name >= 3
+        && rest.as_bytes().get(name) == Some(&b']')
+}
+
 pub(crate) fn header_spans(text: &str) -> Vec<Span> {
+    if relay_tag(text) {
+        return vec![(0, text.len())];
+    }
     let all = lines(text);
     let mut spans = Vec::new();
     for (n, &(start, end)) in all.iter().enumerate() {
@@ -56,7 +73,11 @@ const NEGATIONS: [&str; 12] = [
     "never", "not", "dont", "don't", "doesnt", "doesn't", "wont", "won't", "cant", "can't",
     "cannot", "avoid",
 ];
-const INVOCATIONS: [&str; 15] = [
+const INVOCATIONS: [&str; 19] = [
+    "load",
+    "loading",
+    "arm",
+    "arming",
     "use",
     "using",
     "enable",

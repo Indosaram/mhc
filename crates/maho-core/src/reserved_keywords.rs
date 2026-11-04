@@ -296,8 +296,7 @@ mod tests {
     #[test]
     fn needs_a_whole_word() {
         assert!(keywords_of("ulwfoo and ulw_helper and methane").is_empty());
-        // The engine does not arm a keyword glued to a following letter of any script.
-        assert!(keywords_of("ulw\u{d574}\u{c918}").is_empty());
+        assert_eq!(keywords_of("ulw\u{d574}\u{c918}"), vec!["ultrawork"]);
     }
 
     #[test]
@@ -322,6 +321,8 @@ mod tests {
             "bump v1.ulw",
             "he said \"ulw\" twice",
             "> ulw quoted",
+            "Do not load mass-ulw or ulw-research.",
+            "[REPORT] ulw done",
         ] {
             assert!(runs_of(text).is_empty(), "{text}");
         }
@@ -334,13 +335,7 @@ mod tests {
             vec!["ulw"]
         );
         assert_eq!(runs_of("Do not use tmux, but ulw the fix"), vec!["ulw"]);
-        assert_eq!(runs_of("mass ulw-loop the queue"), vec!["ulw-loop"]);
-        // The engine's negation list has no `load` and it reads no `[REPORT]` header, so it arms here.
-        assert_eq!(
-            runs_of("Do not load mass-ulw or ulw-research."),
-            vec!["mass-ulw"]
-        );
-        assert_eq!(runs_of("[REPORT] ulw done"), vec!["ulw"]);
+        assert_eq!(runs_of("mass ulw-loop the queue"), vec!["mass ulw-loop"]);
         assert_eq!(runs_of("Ulw-Research the market"), vec!["Ulw-Research"]);
     }
 

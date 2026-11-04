@@ -12,8 +12,8 @@ pub struct Scan {
 }
 
 const CONNECTORS: &str = "-_./\\";
-const OPENERS: &str = "([{<\"'\u{201C}\u{2018}\u{AB},:;";
-const CLOSERS: &str = ")]}>\"'\u{201D}\u{2019}\u{BB},:;!?";
+/// Skill words a mass alias may run into (`mass ulw-loop`), as upstream allows.
+const CHAIN_WORDS: [&str; 5] = ["loop", "plan", "research", "execute", "mass"];
 
 enum Boundary {
     Ok,
@@ -21,27 +21,26 @@ enum Boundary {
     Other,
 }
 
+// Upstream arms on JS `\b` without the `u` flag: only ASCII letters, digits and `_` are word
+// characters, so `ulw\u{d574}\u{c918}` and `\u{e9}ulw` stand on their own.
 fn before(text: &str, at: usize) -> Boundary {
     match text[..at].chars().next_back() {
-        None => Boundary::Ok,
-        Some(c) if c.is_whitespace() || OPENERS.contains(c) => Boundary::Ok,
         Some(c) if CONNECTORS.contains(c) => Boundary::Compound,
-        Some(_) => Boundary::Other,
+        Some(c) if c.is_ascii_alphanumeric() => Boundary::Other,
+        _ => Boundary::Ok,
     }
 }
 
 fn after(text: &str, at: usize) -> Boundary {
     let mut rest = text[at..].chars();
     match rest.next() {
-        None => Boundary::Ok,
-        Some(c) if c.is_whitespace() || CLOSERS.contains(c) => Boundary::Ok,
         Some('.') => match rest.next() {
-            None => Boundary::Ok,
-            Some(c) if c.is_whitespace() || CLOSERS.contains(c) => Boundary::Ok,
-            Some(_) => Boundary::Compound,
+            Some(c) if c.is_ascii_alphanumeric() || CONNECTORS.contains(c) => Boundary::Compound,
+            _ => Boundary::Ok,
         },
         Some(c) if CONNECTORS.contains(c) => Boundary::Compound,
-        Some(_) => Boundary::Other,
+        Some(c) if c.is_ascii_alphanumeric() => Boundary::Other,
+        _ => Boundary::Ok,
     }
 }
 
@@ -88,6 +87,29 @@ fn boundaries(text: &str, start: usize, end: usize) -> (Boundary, Boundary) {
     (before(text, start), after(text, end))
 }
 
+/// The chained word ends its own segment and opens no path (`mass ulw-loop.md` does not count).
+fn segment_ends(lower: &[u8], at: usize) -> bool {
+    match lower.get(at) {
+        Some(&b) if b.is_ascii_alphanumeric() || b == b'/' || b == b'\\' => false,
+        Some(b'-' | b'_' | b'.') => !lower.get(at + 1).is_some_and(u8::is_ascii_alphanumeric),
+        _ => true,
+    }
+}
+
+fn chained_skill_word(lower: &[u8], at: usize) -> bool {
+    matches!(lower.get(at), Some(b'-' | b'_'))
+        && CHAIN_WORDS
+            .iter()
+            .any(|word| starts(lower, at + 1, word) && segment_ends(lower, at + 1 + word.len()))
+}
+
+fn mass_boundaries(text: &str, lower: &[u8], start: usize, end: usize) -> (Boundary, Boundary) {
+    match boundaries(text, start, end) {
+        (left, Boundary::Compound) if chained_skill_word(lower, end) => (left, Boundary::Ok),
+        found => found,
+    }
+}
+
 /// One keyword the scanner stopped on, with the boundary verdict.
 struct Hit {
     start: usize,
@@ -106,8 +128,12 @@ fn hits(masked: &str) -> Vec<Hit> {
         let plain = plain_end(&lower, index);
         // A mass alias only counts as one when its own boundaries hold; otherwise the plain
         // keyword at the same spot still gets its chance.
-        let mass_ok = mass_end
-            .filter(|&end| matches!(boundaries(masked, index, end), (Boundary::Ok, Boundary::Ok)));
+        let mass_ok = mass_end.filter(|&end| {
+            matches!(
+                mass_boundaries(masked, &lower, index, end),
+                (Boundary::Ok, Boundary::Ok)
+            )
+        });
         let (end, is_mass, is_long) = match (mass_ok, plain) {
             (Some(end), _) => (end, true, false),
             (None, Some(end)) => (end, false, end - index == 9),
@@ -121,7 +147,11 @@ fn hits(masked: &str) -> Vec<Hit> {
             end,
             mass: is_mass,
             long: is_long,
-            boundaries: boundaries(masked, index, end),
+            boundaries: if is_mass {
+                mass_boundaries(masked, &lower, index, end)
+            } else {
+                boundaries(masked, index, end)
+            },
         });
         index = end;
     }
