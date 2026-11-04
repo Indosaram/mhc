@@ -4758,6 +4758,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "vt100",
+ "winsafe",
 ]
 
 [[package]]
@@ -6385,6 +6386,7 @@ name = "maho-tools"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "image 0.25.10",
  "maho-agent",
  "maho-ai",

@@ -242,8 +242,11 @@ fn names_this_directory(paths: &HostDaemonPaths) -> bool {
         .get("socket")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|socket| {
+            // This build names a directory by the socket's own spelling (`daemon_directory_name`), which
+            // `socket_names_directory` does not accept on win32: without it every valid record looks foreign there.
             !socket.is_empty()
-                && crate::host_endpoint_names::socket_names_directory(socket, &name, platform)
+                && (daemon_directory_name(socket) == name
+                    || crate::host_endpoint_names::socket_names_directory(socket, &name, platform))
         })
 }
 pub fn create_generation_directory(

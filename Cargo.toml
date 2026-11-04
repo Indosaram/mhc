@@ -248,6 +248,17 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 
+# The rpc host digests its own executable at startup (runtime_build_id); unoptimized SHA-256 over a debug
+# test binary of several hundred MB takes tens of seconds, so the hash crates are optimized in dev/test too.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
+
 [profile.release]
 # Thin LTO enables cross-crate optimization with low link-time overhead.
 lto = "thin"

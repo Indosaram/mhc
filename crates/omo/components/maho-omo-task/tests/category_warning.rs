@@ -132,6 +132,14 @@ async fn registered_engine_delivers_real_category_failure_without_starting_child
     for handler in &api.registered.handlers[&EventKind::SessionStart] {
         handler(&mut event, &context).await.expect("session start");
     }
+    // Admission no longer waits for recovery: the background chain writes into the state dir, so it must
+    // end before the dir is removed below.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        component.bridge.session_start_recovered(),
+    )
+    .await
+    .expect("registered recovery deadline");
     let spec = senpi_task::manager::types::ManagerStartSpec {
         prompt: "work".into(),
         category: Some("quick".into()),

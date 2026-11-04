@@ -52,7 +52,14 @@ fn workspace_direct_tools_require_external_admission() {
 fn root_level_external_approval_does_not_broaden_to_root() {
     let cwd = Path::new("/Users/me/project");
     let registry = create_builtin_parser_registry();
-    for (tool, path, always) in [("ls","/tmp","/tmp/*"),("read","/tmp/file.txt","/tmp/*"),("read","/secret.txt","/secret.txt"),("read","/secret","/secret")] {
+    // senpi c028c0a4e4: targets are canonical, so start from the real temp directory and its root.
+    let temp = std::fs::canonicalize(std::env::temp_dir()).expect("real temp").to_string_lossy().into_owned();
+    let temp = temp.strip_prefix(r"\\?\").map_or(temp.clone(), str::to_owned);
+    let root = Path::new(&temp).ancestors().last().expect("root").to_string_lossy().into_owned();
+    let join = |parent: &str, child: &str| Path::new(parent).join(child).to_string_lossy().into_owned();
+    let (file, secret_txt, secret) = (join(&temp, "file.txt"), join(&root, "secret.txt"), join(&root, "secret"));
+    let temp_always = format!("{temp}/*");
+    for (tool, path, always) in [("ls",temp.as_str(),temp_always.as_str()),("read",file.as_str(),temp_always.as_str()),("read",secret_txt.as_str(),secret_txt.as_str()),("read",secret.as_str(),secret.as_str())] {
         let requests = registry.parse(tool, &json!({"path":path}), (cwd, cwd));
         let external = requests.iter().find(|request|request.permission=="external_directory").expect("external request");
         assert_eq!(external.always, [always], "{tool} {path}");

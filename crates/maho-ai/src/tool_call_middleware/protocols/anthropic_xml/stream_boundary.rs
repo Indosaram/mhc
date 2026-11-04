@@ -3,6 +3,56 @@
 // Incomplete protocol fragments are limited in UTF-16 code units, as in JS string.length.
 pub const ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH: usize = 64 * 1024;
 
+/// A retained fragment that tracks its UTF-16 length incrementally, so the per-character
+/// retained-limit checks stay O(1) like JS `string.length` instead of rescanning the buffer.
+#[derive(Default, Clone)]
+pub struct Utf16Buffer {
+    text: String,
+    utf16_len: usize,
+}
+
+impl Utf16Buffer {
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    pub fn utf16_len(&self) -> usize {
+        self.utf16_len
+    }
+
+    pub fn push(&mut self, character: char) {
+        self.text.push(character);
+        self.utf16_len += character.len_utf16();
+    }
+
+    pub fn push_str(&mut self, text: &str) {
+        self.text.push_str(text);
+        self.utf16_len += crate::utils::js::utf16_len(text);
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.utf16_len = 0;
+    }
+
+    pub fn into_string(self) -> String {
+        self.text
+    }
+}
+
+impl From<&str> for Utf16Buffer {
+    fn from(text: &str) -> Self {
+        Self {
+            text: text.to_owned(),
+            utf16_len: crate::utils::js::utf16_len(text),
+        }
+    }
+}
+
 pub trait StreamBoundaryMatcher: Send {
     fn feed(&mut self, text: &str) -> bool;
 }
