@@ -117,6 +117,21 @@ fn negation_separated_by_punctuation_does_not_mask_a_real_request() {
 }
 
 #[test]
+fn upstream_ascii_word_boundaries_load_negation_and_relay_headers() {
+    for text in ["ulw\u{d574}\u{c918}", "\u{e9}ulw", "**ulw** go"] {
+        assert!(run(text, InputSource::Interactive).effective, "{text}");
+    }
+    assert!(run("mass ulw\u{d574}\u{c918}", InputSource::Interactive).mass);
+    let negated = run("Do not load ulw for this", InputSource::Interactive);
+    assert!(!negated.effective);
+    assert_eq!(negated.suppression, Some(Suppression::ProhibitivePhrasing));
+    let relayed = run("[REPORT] ulw done", InputSource::Interactive);
+    assert!(!relayed.effective);
+    assert_eq!(relayed.suppression, Some(Suppression::NoVisibleKeyword));
+    assert!(run("[Rep] ulw done", InputSource::Interactive).effective);
+}
+
+#[test]
 fn quoted_ulw_inside_backticks_does_not_arm() {
     let got = run(
         "please read `\"ulw\"` in the docs",

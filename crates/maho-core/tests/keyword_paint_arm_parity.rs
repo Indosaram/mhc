@@ -73,8 +73,10 @@ fn plain_word_boundaries_arm_and_paint() {
     }
 }
 
+/// Upstream's boundary is JS `\b` without the `u` flag: anything but an ASCII letter, digit or `_`
+/// ends the word, and a mass alias may run into a chained skill word.
 #[test]
-fn glued_and_marked_up_mentions_neither_arm_nor_paint() {
+fn non_ascii_and_markup_neighbours_arm_and_paint() {
     for text in [
         "**ulw**",
         "*meth*",
@@ -91,6 +93,23 @@ fn glued_and_marked_up_mentions_neither_arm_nor_paint() {
         "mass-ulw-loop",
         "meth-loop",
         "mulw-mass",
+        "mass ulw-loop the queue",
+    ] {
+        assert!(has_visible_keyword(text), "not armed: {text:?}");
+        assert!(painted(text), "not painted: {text:?}");
+    }
+}
+
+#[test]
+fn glued_ascii_and_relayed_mentions_neither_arm_nor_paint() {
+    for text in [
+        "ulwx",
+        "xulw",
+        "1ulw",
+        "ulw_x",
+        "mass ulw-loop.md",
+        "[REPORT] ulw done",
+        "Do not load mass-ulw or ulw-research.",
     ] {
         assert!(!has_visible_keyword(text), "armed: {text:?}");
         assert!(!painted(text), "painted: {text:?}");
@@ -99,11 +118,7 @@ fn glued_and_marked_up_mentions_neither_arm_nor_paint() {
 
 #[test]
 fn skill_keywords_paint_without_arming_ultrawork() {
-    for text in [
-        "ulw-loop until green",
-        "ulw-research the market",
-        "mass ulw-loop the queue",
-    ] {
+    for text in ["ulw-loop until green", "ulw-research the market"] {
         assert!(!has_visible_keyword(text), "armed: {text:?}");
         assert!(!painted(text), "painted as ultrawork: {text:?}");
         assert!(
