@@ -44,17 +44,6 @@ fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-fn utf16_prefix(value: &str, limit: usize) -> &str {
-    let mut units = 0;
-    for (index, ch) in value.char_indices() {
-        units += ch.len_utf16();
-        if units > limit {
-            return &value[..index];
-        }
-    }
-    value
-}
-
 fn source_rank(source: IdleInjectionSource) -> u8 {
     match source {
         IdleInjectionSource::TaskStatus => 0,
@@ -320,7 +309,7 @@ impl IdleInjectionQueue {
             let final_content = if utf16_len(&final_content) <= batch_limit {
                 final_content
             } else {
-                utf16_prefix(&final_content, batch_limit).to_string()
+                senpi_task::shared::utf16_prefix(&final_content, batch_limit).to_string()
             };
 
             (final_content, fitting_k)

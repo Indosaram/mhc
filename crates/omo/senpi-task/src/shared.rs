@@ -98,7 +98,7 @@ pub fn format_run_duration(duration_ms: i64) -> String {
 }
 
 /// JS `String.prototype.slice(0, limit)` over UTF-16 code units, never splitting a surrogate pair.
-pub(crate) fn utf16_prefix(value: &str, limit: usize) -> &str {
+pub fn utf16_prefix(value: &str, limit: usize) -> &str {
     let mut units = 0;
     for (index, ch) in value.char_indices() {
         units += ch.len_utf16();
