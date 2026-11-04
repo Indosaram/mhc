@@ -188,6 +188,63 @@ describe("wave-tracker on task_output and task_cancel results", () => {
   });
 });
 
+describe("wave-tracker owed children", () => {
+  it("does not settle a second wave whose child task_output reported completed before its wake", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      batchEnd([batchItem("st_a", "running"), batchItem("st_b", "running")]),
+      { type: "agent_idle" },
+      wake(wakeText("st_a", "a"), wakeText("st_b", "b")),
+      { type: "agent_start" },
+      singleEnd("st_c", "running"),
+      outputStatusEnd("st_c", "completed"),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), false, "settled before wave-2's wake");
+    feed(t, [wake(wakeText("st_c", "c")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+    assert.equal(t.summary().peakChildren, 2);
+  });
+
+  it("settles a spilled wake batch whose manifest is not readable by counting the spilled children", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      batchEnd([batchItem("st_a", "running"), batchItem("st_b", "running"), batchItem("st_c", "running")]),
+      { type: "agent_idle" },
+      wake(wakeText("st_a", "a"), "2 more task results: local:///nonexistent/wake-manifest-x.txt"),
+      { type: "agent_start" },
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), true);
+    assert.deepEqual(t.summary().wakeBatchChildren, [3]);
+    assert.deepEqual(t.summary().childReportSizes, [1]);
+  });
+
+  it("reads spilled child ids from a readable manifest", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ulw-spill-"));
+    try {
+      const manifest = path.join(dir, "wake-manifest-y.txt");
+      fs.writeFileSync(manifest, `${wakeText("st_c", "c")}\n\n${wakeText("st_b", "b")}`);
+      const t = createWaveTracker();
+      feed(t, [
+        { type: "agent_start" },
+        batchEnd([batchItem("st_a", "running"), batchItem("st_b", "running"), batchItem("st_c", "running"), batchItem("st_d", "running")]),
+        { type: "agent_idle" },
+        wake(wakeText("st_a", "a"), `2 more task results: local://${manifest}`),
+        { type: "agent_start" },
+        { type: "agent_idle" },
+      ]);
+      assert.equal(t.isSettled(), false, "st_d is still owed");
+      feed(t, [wake(wakeText("st_d", "d")), { type: "agent_start" }, { type: "agent_idle" }]);
+      assert.equal(t.isSettled(), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("wave-tracker on a captured real rpc stream", () => {
   const lines = fs.readFileSync(new URL("./fixtures/rpc-background-task-stream.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
 

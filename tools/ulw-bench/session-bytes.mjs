@@ -44,6 +44,26 @@ export function isWakeType(customType) {
   );
 }
 
+// A wake batch over the size limit ends with one trailing line naming the children that did not fit
+// (maho-omo coordinator.rs): "N more task results: local://<manifest>" when the manifest was
+// written, "N more task results (manifest unavailable: <error>)" when it was not.
+const WAKE_SPILL = /(?:^|\n\n)(\d+) more task results(?:: local:\/\/(\S+)| \(manifest unavailable: [^\n]*\))\s*$/;
+
+/**
+ * Reads the spill line of a wake batch.
+ * @param {string} text
+ * @returns {{ count: number, manifestPath: string|null }|null}
+ */
+export function parseWakeSpill(text) {
+  const m = WAKE_SPILL.exec(text);
+  return m ? { count: Number(m[1]), manifestPath: m[2] ?? null } : null;
+}
+
+function stripWakeSpill(text) {
+  const m = WAKE_SPILL.exec(text);
+  return m ? text.slice(0, m.index) : text;
+}
+
 /**
  * Splits one wake message into its per-child completions. One wake batch can carry several
  * children; each child's report is the text after its `result:` marker.
@@ -51,7 +71,7 @@ export function isWakeType(customType) {
  * @returns {{ id: string|null, status: string|null, reportChars: number }[]}
  */
 export function parseWakeChildren(text) {
-  return text
+  return stripWakeSpill(text)
     .split(/(?=task completion name:)/)
     .filter((part) => part.startsWith("task completion name:"))
     .map((part) => {

@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT
 
-import { isWakeType, parseWakeChildren } from "./session-bytes.mjs";
+import fs from "node:fs";
+import { isWakeType, parseWakeChildren, parseWakeSpill } from "./session-bytes.mjs";
 
 const WAITING_STATES = new Set(["waiting_children", "waiting_background", "waiting_human"]);
 // A child queued behind the concurrency limit reports "pending"; it is still owed a wake.
 const LIVE_CHILD_STATES = new Set(["running", "pending"]);
-// Parent-initiated terminals never wake the parent (senpi-task completion/routing.rs notifies only
-// completed/error/lost), so observing one in a tool result stands in for the child's wake.
+// Statuses after which the parent still gets a wake: live children, and the externally-caused
+// terminals senpi-task completion/routing.rs notifies (completed/error/lost). A task_output that
+// reports "completed" does not consume the wake; the wake still comes.
+const WAKING_STATES = new Set([...LIVE_CHILD_STATES, "completed", "error", "lost"]);
+// Parent-initiated terminals never wake the parent; the tool result stands in for the wake.
 const SILENT_TERMINAL_STATES = new Set(["cancelled", "interrupted"]);
 const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel"]);
 
@@ -32,10 +36,24 @@ export function createWaveTracker() {
   let idle = false;
   let waiting = false;
   let peakChildren = 0;
+  // Live children, only for the peakChildren metric.
   const running = new Set();
-  // Children whose wake obligation is met, by id: woken, or ended by a silent terminal.
-  const satisfied = new Set();
-  let anonymousWakes = 0;
+  // Children still owed a wake, in the order first seen. Settling requires this to be empty.
+  const owed = new Set();
+  // Children already woken, so a late or repeated tool result cannot re-owe them.
+  const woken = new Set();
+  const wakeChild = (id) => {
+    woken.add(id);
+    owed.delete(id);
+    running.delete(id);
+  };
+  // A wake child without a parseable id, or one of N children spilled to an unreadable manifest,
+  // is still one delivered wake: it clears the oldest owed id. Wakes are delivered roughly in
+  // completion order, and only the count matters for settling.
+  const anonymousWake = () => {
+    const oldest = owed.values().next();
+    if (!oldest.done) wakeChild(oldest.value);
+  };
   let toolCallsAfterFirstWake = 0;
   const wakeBatches = [];
   const childReports = [];
@@ -65,9 +83,11 @@ export function createWaveTracker() {
               if (typeof item?.task_id !== "string" || item.task_id === "") continue;
               // cancel_pending has no status: the child is still live until its host stops it.
               if (typeof item.status !== "string") continue;
-              if (LIVE_CHILD_STATES.has(item.status)) running.add(item.task_id);
-              else running.delete(item.task_id);
-              if (SILENT_TERMINAL_STATES.has(item.status)) satisfied.add(item.task_id);
+              const id = item.task_id;
+              if (LIVE_CHILD_STATES.has(item.status)) running.add(id);
+              else running.delete(id);
+              if (WAKING_STATES.has(item.status) && !woken.has(id)) owed.add(id);
+              else if (SILENT_TERMINAL_STATES.has(item.status)) owed.delete(id);
             }
             peakChildren = Math.max(peakChildren, running.size);
           }
@@ -83,14 +103,23 @@ export function createWaveTracker() {
             const content = event.message.content;
             const text = Array.isArray(content) ? content.map((c) => c?.text ?? "").join("") : String(content ?? "");
             const children = parseWakeChildren(text);
-            wakeBatches.push({ bytes: rawLine.length, children: children.length });
-            for (const c of children) {
-              if (!c.id) {
-                anonymousWakes++;
-                continue;
+            // An oversized batch spills its tail children to a manifest file (maho-omo
+            // coordinator.rs); the manifest holds their completions in the same format. Read it
+            // when it is on this machine, else count the spilled children as anonymous wakes.
+            const spill = parseWakeSpill(text);
+            let spilled = [];
+            if (spill) {
+              try {
+                spilled = parseWakeChildren(fs.readFileSync(spill.manifestPath, "utf8"));
+              } catch {
+                spilled = [];
               }
-              running.delete(c.id);
-              satisfied.add(c.id);
+              if (spilled.length !== spill.count) spilled = Array.from({ length: spill.count }, () => ({ id: null }));
+            }
+            wakeBatches.push({ bytes: rawLine.length, children: children.length + spilled.length });
+            for (const c of [...children, ...spilled]) {
+              if (c.id) wakeChild(c.id);
+              else anonymousWake();
             }
             childReports.push(...children.map((c) => c.reportChars));
           }
@@ -99,7 +128,7 @@ export function createWaveTracker() {
           break;
       }
     },
-    isSettled: () => idle && !waiting && running.size === 0 && satisfied.size + anonymousWakes >= peakChildren,
+    isSettled: () => idle && !waiting && owed.size === 0,
     summary: () => ({
       wakeBatchBytes: wakeBatches.map((b) => b.bytes),
       wakeBatchChildren: wakeBatches.map((b) => b.children),
