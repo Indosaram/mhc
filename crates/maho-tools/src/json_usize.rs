@@ -17,7 +17,10 @@ pub fn option_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u
     option_usize(deserializer)?
         .map(|n| {
             u32::try_from(n).map_err(|_| {
-                D::Error::invalid_value(Unexpected::Unsigned(n as u64), &OptionUsizeVisitor)
+                D::Error::invalid_value(
+                    Unexpected::Unsigned(n as u64),
+                    &"a non-negative integer no greater than 4294967295",
+                )
             })
         })
         .transpose()
@@ -123,24 +126,27 @@ mod tests {
         let absent = parse_grep(serde_json::json!({"pattern": "x"})).expect("absent parses");
         assert_eq!(absent.context, None);
         assert_eq!(absent.timeout_ms, None);
+        let max = parse_grep(serde_json::json!({"pattern": "x", "context": 4_294_967_295.0}))
+            .expect("u32::MAX parses");
+        assert_eq!(max.context, Some(u32::MAX));
     }
 
     #[test]
     fn grep_integer_args_reject_fractional_negative_and_out_of_range() {
         for field in ["context", "before", "after", "timeoutMs"] {
-            for bad in [
-                serde_json::json!(1.5),
-                serde_json::json!(-1),
-                serde_json::json!(4_294_967_296_u64),
-                serde_json::json!("7"),
+            for (bad, expected) in [
+                (serde_json::json!(1.5), "a non-negative integer"),
+                (serde_json::json!(-1), "a non-negative integer"),
+                (
+                    serde_json::json!(4_294_967_296_u64),
+                    "no greater than 4294967295",
+                ),
+                (serde_json::json!("7"), "a non-negative integer"),
             ] {
                 let err = parse_grep(serde_json::json!({"pattern": "x", field: bad.clone()}))
                     .err()
                     .unwrap_or_else(|| panic!("{field}={bad} must reject"));
-                assert!(
-                    err.to_string().contains("a non-negative integer"),
-                    "{field}={bad}: {err}"
-                );
+                assert!(err.to_string().contains(expected), "{field}={bad}: {err}");
             }
         }
     }
