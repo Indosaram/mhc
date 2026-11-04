@@ -15,6 +15,7 @@ pub mod filesystem_policy;
 pub mod find;
 pub mod grep;
 pub mod index;
+pub mod json_usize;
 pub mod ls;
 pub mod managed_tools;
 pub mod model_only_text;
