@@ -24,6 +24,7 @@ fn main() {
     }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
+    maho_cli::open_file_limit::raise_open_file_limit();
     // Before anything can spawn: no descendant may keep this process's stdio pipes open behind its
     // back (Windows inherits every inheritable handle; see `private_stdio`). A failure only loses
     // that guarantee, so it is reported and startup continues.

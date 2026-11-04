@@ -180,6 +180,51 @@ fn sweep_reclaims_a_stale_worktree_directory_and_branch() {
 }
 
 #[test]
+fn sweep_reclaims_a_locked_worktree_whose_directory_is_gone() {
+    let dir = tempdir().expect("tempdir");
+    let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
+    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    let worktrees = dir.path().join("worktrees");
+    std::fs::create_dir_all(&worktrees).expect("mkdir");
+    let exec = repo.exec();
+    let worktree = super::super::worktree::create_reflection_worktree(
+        &repo, "run-locked", &worktrees, exec.as_ref(), None,
+    )
+    .expect("create worktree");
+    // What an interrupted `git worktree add` leaves behind: the lock and the registration.
+    let dir_text = worktree.dir.to_string_lossy().into_owned();
+    let lock = exec
+        .run_in(&repo.dir, &["worktree", "lock", "--reason", "initializing", &dir_text])
+        .expect("lock");
+    assert_eq!(lock.code, 0, "{}", lock.stderr);
+    std::fs::remove_dir_all(&worktree.dir).expect("remove checkout");
+
+    let receipts = sweep_reflection_orphans(
+        &repo,
+        &worktrees,
+        &ReflectionOrphanSweepOptions {
+            live_run_ids: BTreeSet::new(),
+            now_ms: crate::support::time::now_millis() as f64,
+            grace_ms: None,
+            exec: Some(exec.as_ref()),
+        },
+    )
+    .expect("sweep");
+
+    let receipt = receipts
+        .iter()
+        .find(|receipt| receipt.kind == OrphanKind::Worktree)
+        .expect("worktree receipt");
+    assert!(receipt.removed, "{receipt:?}");
+    let listed = exec.run_in(&repo.dir, &["worktree", "list", "--porcelain"]).expect("list");
+    assert!(!listed.stdout.contains("run-locked"), "{}", listed.stdout);
+    let branch = exec
+        .run_in(&repo.dir, &["show-ref", "--verify", &format!("refs/heads/{}", worktree.branch)])
+        .expect("show-ref");
+    assert_ne!(branch.code, 0);
+}
+
+#[test]
 fn sweep_leaves_a_live_run_untouched() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
