@@ -326,6 +326,37 @@ describe("wave-tracker on foreground task results", () => {
     assert.equal(t.isSettled(), true);
   });
 
+  it("does not re-owe a foreground child revived by task_send", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      foregroundEnd([batchItem("st_f", "completed")]),
+      sendRevivedEnd("st_f", 2),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("ignores a task_output completed for a background child already woken", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      singleEnd("st_w", "running"),
+      { type: "agent_idle" },
+      wake(wakeText("st_w", "w")),
+      { type: "agent_start" },
+      outputStatusEnd("st_w", "completed"),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("does not re-owe an unknown child revived by task_send", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, sendRevivedEnd("st_u", 2), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
   it("settles a background child that completes later via its wake", () => {
     const t = createWaveTracker();
     feed(t, [{ type: "agent_start" }, singleEnd("st_bg", "running"), { type: "agent_idle" }]);

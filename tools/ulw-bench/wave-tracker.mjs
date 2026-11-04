@@ -12,8 +12,9 @@ const LIVE_CHILD_STATES = new Set(["running", "pending"]);
 // task_cancel never add an owed child; they only update ids already owed. For an owed child, a
 // reported externally-caused terminal (completed/error/lost) does not consume the wake;
 // senpi-task completion/routing.rs still delivers it. Parent-initiated terminals never wake the
-// parent; the tool result stands in for the wake. A task_send that revives a finished child starts
-// a new run whose completion wakes the parent again, so it re-owes that child.
+// parent; the tool result stands in for the wake. A task_send that revives a finished background
+// child starts a new run whose completion wakes the parent again, so it re-owes that child; a
+// revived foreground or unknown child never wakes and is ignored.
 const SILENT_TERMINAL_STATES = new Set(["cancelled", "interrupted"]);
 const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel", "task_send"]);
 
@@ -45,6 +46,10 @@ export function createWaveTracker() {
   const owed = new Set();
   // Children already woken, so a late or repeated tool result cannot re-owe them.
   const woken = new Set();
+  // Children spawned by (or promoted to) a background task result. Only these wake on terminal, so
+  // only these are re-owed when task_send revives them; a revived foreground child never wakes
+  // (notify_on_terminal stays false).
+  const backgroundIds = new Set();
   const wakeChild = (id) => {
     woken.add(id);
     owed.delete(id);
@@ -85,7 +90,7 @@ export function createWaveTracker() {
             const details = event.result?.details;
             // SendResultDetails::Revived (control/types.rs): the finished child runs again and wakes again.
             if (event.toolName === "task_send") {
-              if (details?.kind === "revived" && typeof details.task_id === "string" && details.task_id !== "") {
+              if (details?.kind === "revived" && backgroundIds.has(details.task_id)) {
                 woken.delete(details.task_id);
                 owed.add(details.task_id);
                 running.add(details.task_id);
@@ -100,6 +105,7 @@ export function createWaveTracker() {
                 const live = LIVE_CHILD_STATES.has(item.status);
                 // A promoted foreground item carries run_in_background true on the item itself.
                 const background = isTask && (details?.run_in_background === true || item.run_in_background === true);
+                if (background) backgroundIds.add(id);
                 if (live) running.add(id);
                 else running.delete(id);
                 if (live) {
