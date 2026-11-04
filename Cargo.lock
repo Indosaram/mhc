@@ -3846,6 +3846,7 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-ultrawork",
  "nix 0.28.0",
  "photon-rs",
  "regex",

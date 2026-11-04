@@ -51,6 +51,7 @@ tokio = { workspace = true, features = ["test-util"] }
 flate2 = { workspace = true }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
+maho-ultrawork = { path = "../maho-ultrawork" }
 
 # Mirrors the workspace lints with unsafe_code = "deny": auth_storage.rs calls Win32 security APIs
 # (owner-only DACL on auth.json), each behind a local allow with SAFETY comments.
