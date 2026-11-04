@@ -36,6 +36,17 @@ pub fn is_task_or_team_family_tool(name: &str) -> bool {
     name == "dag" || name == "workflow" || name == "task" || name.starts_with("task_") || name.starts_with("team_") || name == "workpool"
 }
 
+/// Provider tool-name grammar (Gemini and Anthropic): a letter or underscore, then letters, digits,
+/// underscores or dashes, at most 128 characters in total.
+pub fn is_provider_safe_tool_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && name.len() <= 128
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Drops parent tools a provider would reject by name (e.g. Moonshot's `$web_search` echo tool,
+/// which only means something to the parent's own Moonshot route).
 pub fn filter_shared_parent_tools(
     tools: &[ChildToolRef],
     ui_only_tool_names: &[String],
@@ -43,7 +54,8 @@ pub fn filter_shared_parent_tools(
     tools
         .iter()
         .filter(|tool| {
-            !is_task_or_team_family_tool(tool.name())
+            is_provider_safe_tool_name(tool.name())
+                && !is_task_or_team_family_tool(tool.name())
                 && !ui_only_tool_names.iter().any(|name| name == tool.name())
         })
         .cloned()
