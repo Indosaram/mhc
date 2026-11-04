@@ -172,7 +172,9 @@ impl Default for ReadToolOptions {
 #[derive(Deserialize)]
 pub struct ReadToolInput {
     pub path: String,
+    #[serde(default, deserialize_with = "crate::json_usize::option_usize")]
     pub offset: Option<usize>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_usize")]
     pub limit: Option<usize>,
 }
 pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
@@ -758,5 +760,47 @@ mod image_resize_tests {
         )
         .expect("decode image");
         assert_eq!((decoded.width(), decoded.height()), (40, 20));
+    }
+}
+
+#[cfg(test)]
+mod read_input_tests {
+    use super::*;
+    fn parse(extra: serde_json::Value) -> Result<ReadToolInput, serde_json::Error> {
+        let mut params = serde_json::json!({"path": "a"});
+        if let (Some(target), Some(source)) = (params.as_object_mut(), extra.as_object()) {
+            target.extend(source.clone());
+        }
+        serde_json::from_value(params)
+    }
+    #[test]
+    fn offset_accepts_integral_numbers_and_rejects_others() {
+        assert_eq!(
+            parse(serde_json::json!({"offset": 100.0}))
+                .expect("100.0")
+                .offset,
+            Some(100)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"offset": 7})).expect("7").offset,
+            Some(7)
+        );
+        assert!(parse(serde_json::json!({"offset": 1.5})).is_err());
+        assert!(parse(serde_json::json!({"offset": -1})).is_err());
+    }
+    #[test]
+    fn limit_accepts_integral_numbers_and_rejects_others() {
+        assert_eq!(
+            parse(serde_json::json!({"limit": 100.0}))
+                .expect("100.0")
+                .limit,
+            Some(100)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"limit": 7})).expect("7").limit,
+            Some(7)
+        );
+        assert!(parse(serde_json::json!({"limit": 1.5})).is_err());
+        assert!(parse(serde_json::json!({"limit": -1})).is_err());
     }
 }

@@ -57,12 +57,57 @@ pub struct TaskOutputInput {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<TaskOutputMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "option_usize_lenient"
+    )]
     pub tail_lines: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<Value>,
+}
+
+/// Lenient `Option<usize>` for `tail_lines` (schema `"type":"integer"`, but models still send
+/// integral floats): accepts integers and finite, non-negative integral floats (`60.0` -> `60`);
+/// rejects fractional, negative, NaN/infinite, out-of-range values, and strings. `null` -> `None`.
+fn option_usize_lenient<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    use serde::de::{Error, Unexpected};
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    const EXPECTED: &str = "a non-negative integer";
+    let n = match &value {
+        Value::Number(n) => n,
+        Value::String(s) => return Err(D::Error::invalid_type(Unexpected::Str(s), &EXPECTED)),
+        _ => {
+            return Err(D::Error::invalid_type(
+                Unexpected::Other("non-number"),
+                &EXPECTED,
+            ));
+        }
+    };
+    if let Some(u) = n.as_u64() {
+        return usize::try_from(u)
+            .map(Some)
+            .map_err(|_| D::Error::invalid_value(Unexpected::Unsigned(u), &EXPECTED));
+    }
+    if let Some(i) = n.as_i64() {
+        return Err(D::Error::invalid_value(Unexpected::Signed(i), &EXPECTED));
+    }
+    let f = n.as_f64().unwrap_or(f64::NAN);
+    // 2^64 as f64; any finite integral value below it fits in u64.
+    if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f < 18_446_744_073_709_551_616.0 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let u = f as u64;
+        return usize::try_from(u)
+            .map(Some)
+            .map_err(|_| D::Error::invalid_value(Unexpected::Unsigned(u), &EXPECTED));
+    }
+    Err(D::Error::invalid_value(Unexpected::Float(f), &EXPECTED))
 }
 
 /// JSON schema equivalent of the TypeBox `TaskOutputParams` definition.
@@ -387,5 +432,37 @@ pub fn create_task_output_tool(deps: TaskOutputDeps) -> TaskOutputTool {
         parameters: task_output_params_schema(),
         deps,
         resolve_caller,
+    }
+}
+
+#[cfg(test)]
+mod tail_lines_tests {
+    use super::TaskOutputInput;
+    use serde_json::json;
+
+    fn parse(raw: serde_json::Value) -> Result<Option<usize>, serde_json::Error> {
+        serde_json::from_value::<TaskOutputInput>(json!({"task_id": "st_1", "tail_lines": raw}))
+            .map(|input| input.tail_lines)
+    }
+
+    #[test]
+    fn tail_lines_accepts_integers_integral_floats_and_absence() {
+        assert_eq!(parse(json!(60.0)).ok(), Some(Some(60)));
+        assert_eq!(parse(json!(7)).ok(), Some(Some(7)));
+        assert_eq!(parse(json!(null)).ok(), Some(None));
+        let absent = serde_json::from_value::<TaskOutputInput>(json!({"task_id": "st_1"}))
+            .map(|input| input.tail_lines);
+        assert_eq!(absent.ok(), Some(None));
+    }
+
+    #[test]
+    fn tail_lines_rejects_fractional_negative_and_non_numbers() {
+        for bad in [json!(1.5), json!(-1), json!(-1.0), json!(1e30), json!("60")] {
+            let err = parse(bad.clone()).expect_err("must reject");
+            assert!(
+                err.to_string().contains("a non-negative integer"),
+                "{bad}: {err}"
+            );
+        }
     }
 }

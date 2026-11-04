@@ -29,6 +29,10 @@ async fn given_a_ulw_research_invocation_when_research_is_mentioned_then_the_ult
     let companion = injected_content(&harness, ULTIMATE_BROWSING_CUSTOM_TYPE);
     assert!(companion.contains("ulw-research"));
     assert!(companion.contains(r#"load_skills: ["ultimate-browsing"]"#));
+    for content in [companion, injected_content(&harness, BROWSER_CUSTOM_TYPE)] {
+        assert!(content.contains("`External: yes` and `Collection: browser`"), "companion must be gated on triage: {content}");
+        assert!(!content.contains("in the same turn as"), "companion must not be read up front: {content}");
+    }
 }
 
 #[tokio::test]

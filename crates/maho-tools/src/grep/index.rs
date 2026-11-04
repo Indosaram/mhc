@@ -32,12 +32,16 @@ pub struct GrepToolInput {
     pub ignore_case: Option<bool>,
     pub literal: Option<bool>,
     pub multiline: Option<bool>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_u32")]
     pub context: Option<u32>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_u32")]
     pub before: Option<u32>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_u32")]
     pub after: Option<u32>,
     pub mode: Option<String>,
     pub limit: Option<f64>,
     pub skip: Option<f64>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_u32")]
     pub timeout_ms: Option<u32>,
     pub hidden: Option<bool>,
     pub gitignore: Option<bool>,
