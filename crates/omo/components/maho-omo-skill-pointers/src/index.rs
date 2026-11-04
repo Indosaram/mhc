@@ -46,7 +46,7 @@ pub static BROWSER_COMPANION: LazyLock<SkillCompanion> = LazyLock::new(|| SkillC
         Ok(regex) => regex,
         Err(error) => panic!("invalid browser skill block regex: {error}"),
     }),
-    role: "reads its sources in the user's browser through the browser skill's attached engine",
+    role: "can read web sources in the user's browser through the browser skill's attached engine",
     instruction: r#"arm every web lane with load_skills: ["browser"] and name that SKILL.md path in every web member brief, since team members carry no load_skills"#,
 });
 
@@ -57,7 +57,7 @@ pub static ULTIMATE_BROWSING_COMPANION: LazyLock<SkillCompanion> = LazyLock::new
         expanded_block_pattern: LazyLock::new(|| {
             Regex::new(r#"(?i)<skill\s+name="ultimate-browsing""#).expect("valid regex")
         }),
-        role: "sends the hosts the user's browser cannot open to the ultimate-browsing skill",
+        role: "can send web hosts the user's browser cannot open to the ultimate-browsing skill",
         instruction: r#"arm a lane that must reach a blocked host with load_skills: ["ultimate-browsing"]"#,
     }
 });
@@ -271,18 +271,32 @@ pub fn companion_pointer(
     skills_root: &str,
 ) -> String {
     format!(
-        "<omo-{}-pointer>{} {}. If the user of this session is asking to run {}, read the {} skill at {}{}/SKILL.md with the read tool in the same turn as the {} skill and {}. If {} is only being discussed, quoted, or relayed from another session, ignore this pointer.</omo-{}-pointer>",
+        "<omo-{}-pointer>{} {}. If the user of this session is asking to run {}: {} If {} is only being discussed, quoted, or relayed from another session, ignore this pointer.</omo-{}-pointer>",
         companion.skill_name,
         parent.skill_name,
         companion.role,
         parent.skill_name,
+        companion_condition(parent, companion, skills_root),
+        parent.skill_name,
+        companion.skill_name,
+    )
+}
+
+/// The companion is read only after the parent's triage marks the run as external browser
+/// collection; local-only, codebase-only, or search-only runs never load it (ULW-9).
+pub fn companion_condition(
+    parent: &SkillPointerTarget,
+    companion: &SkillCompanion,
+    skills_root: &str,
+) -> String {
+    format!(
+        "Do not read the {} skill up front: read the {} skill first and write its triage line. Only when that triage says `External: yes` and `Collection: browser`, read the {} skill at {}{}/SKILL.md with the read tool and {}. For local-only, codebase-only, or search-only research, never read it.",
+        companion.skill_name,
+        parent.skill_name,
         companion.skill_name,
         skills_root,
         companion.skill_name,
-        parent.skill_name,
         companion.instruction,
-        parent.skill_name,
-        companion.skill_name,
     )
 }
 
@@ -406,7 +420,7 @@ impl Extension for SkillPointersComponent {
                             }
                             pointers.push(SkillPointerMessage {
                                 custom_type: companion.custom_type,
-                                content: if binds(parent, &visible) { format!("<omo-{}-pointer>{} {}. Read the {} skill at {}{}/SKILL.md with the read tool in the same turn as the {} skill and {}.</omo-{}-pointer>", companion.skill_name, parent.skill_name, companion.role, companion.skill_name, skills_root, companion.skill_name, parent.skill_name, companion.instruction, companion.skill_name) } else { companion_pointer(parent, companion, &skills_root) },
+                                content: if binds(parent, &visible) { format!("<omo-{}-pointer>{} {}. {}</omo-{}-pointer>", companion.skill_name, parent.skill_name, companion.role, companion_condition(parent, companion, &skills_root), companion.skill_name) } else { companion_pointer(parent, companion, &skills_root) },
                             });
                         }
                     }
