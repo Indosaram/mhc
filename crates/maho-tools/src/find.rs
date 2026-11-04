@@ -24,6 +24,7 @@ pub struct FindToolOptions {
 pub struct FindToolInput {
     pub pattern: String,
     pub path: Option<String>,
+    #[serde(default, deserialize_with = "crate::json_usize::option_usize")]
     pub limit: Option<usize>,
 }
 pub fn relativize_find_result_path(result: &str, root: &Path) -> String {
@@ -207,4 +208,23 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
         tool.server_pinned = Some(true);
     }
     tool
+}
+
+#[cfg(test)]
+mod find_input_tests {
+    use super::*;
+    fn parse(extra: serde_json::Value) -> Result<FindToolInput, serde_json::Error> {
+        let mut params = serde_json::json!({"pattern": "*"});
+        if let (Some(target), Some(source)) = (params.as_object_mut(), extra.as_object()) {
+            target.extend(source.clone());
+        }
+        serde_json::from_value(params)
+    }
+    #[test]
+    fn limit_accepts_integral_numbers_and_rejects_others() {
+        assert_eq!(parse(serde_json::json!({"limit": 100.0})).expect("100.0").limit, Some(100));
+        assert_eq!(parse(serde_json::json!({"limit": 7})).expect("7").limit, Some(7));
+        assert!(parse(serde_json::json!({"limit": 1.5})).is_err());
+        assert!(parse(serde_json::json!({"limit": -1})).is_err());
+    }
 }
