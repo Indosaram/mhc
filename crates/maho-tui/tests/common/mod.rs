@@ -54,6 +54,7 @@ pub fn plain_select_list_theme() -> SelectListTheme {
 
 pub fn plain_editor_theme() -> EditorTheme {
     EditorTheme {
+        keyword_highlight: None,
         border_color: Rc::new(identity),
         mention: None,
         select_list: plain_select_list_theme(),

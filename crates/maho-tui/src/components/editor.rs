@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSignal, MentionRange, SuggestionRequest};
-use crate::components::editor_line_render::{render_editor_line, EditorLineCursor, EditorLineRenderInput};
+use crate::components::editor_line_render::{render_editor_line, KeywordRange, EditorLineCursor, EditorLineRenderInput};
 use crate::components::select_list::{
     SelectItem, SelectList, SelectListLayoutOptions, SelectListTheme,
 };
@@ -330,6 +330,33 @@ struct LayoutLine {
     start_index: usize,
 }
 
+/// senpi `keywordRangesByLine`: split buffer-wide runs into per-logical-line ranges.
+fn keyword_ranges_by_line(
+    lines: &[String],
+    runs: &[MentionRange],
+) -> BTreeMap<usize, Vec<KeywordRange>> {
+    let mut by_line: BTreeMap<usize, Vec<KeywordRange>> = BTreeMap::new();
+    let mut line_start = 0;
+    for (line, text) in lines.iter().enumerate() {
+        let line_end = line_start + text.len();
+        for run in runs {
+            let start = run.start.max(line_start);
+            let end = run.end.min(line_end);
+            if start >= end {
+                continue;
+            }
+            by_line.entry(line).or_default().push(KeywordRange {
+                start: start - line_start,
+                end: end - line_start,
+                run_start: run.start as isize - line_start as isize,
+                run_length: run.end - run.start,
+            });
+        }
+        line_start = line_end + 1;
+    }
+    by_line
+}
+
 pub type StyleFn = Rc<dyn Fn(&str) -> String>;
 /// senpi's `terminalSocketExists` option.
 pub type TerminalSocketExists = Rc<dyn Fn(&str) -> bool>;
@@ -339,7 +366,20 @@ pub type ImageMarkersChangedCallback = Box<dyn FnMut(&[u64])>;
 pub type SnapshotAttachmentCallback = Box<dyn Fn() -> Option<AttachmentState>>;
 pub type RestoreAttachmentCallback = Box<dyn FnMut(&AttachmentState)>;
 
+pub type KeywordFinder = Rc<dyn Fn(&str) -> Vec<MentionRange>>;
+pub type KeywordCharStyle = Rc<dyn Fn(&str, usize, usize) -> String>;
+
+/// senpi `EditorKeywordHighlight`: `find` returns byte ranges of reserved keyword runs in the
+/// whole buffer; `style` paints one character given its index in, and the length of, its run.
+#[derive(Clone)]
+pub struct EditorKeywordHighlight {
+    pub find: KeywordFinder,
+    pub style: KeywordCharStyle,
+}
+
 pub struct EditorTheme {
+    /// Paints reserved prompt keywords (for example `ulw`); omit to render them plain.
+    pub keyword_highlight: Option<EditorKeywordHighlight>,
     pub border_color: StyleFn,
     /// Style for resolved mention tokens (for example a known `$skill`); omit to render them plain.
     pub mention: Option<StyleFn>,
@@ -982,6 +1022,15 @@ impl Editor {
         let mut mention_ranges_by_line: BTreeMap<usize, Vec<MentionRange>> = BTreeMap::new();
         let mention_style = self.theme.mention.clone();
 
+        let keyword_highlight = self.theme.keyword_highlight.clone();
+        let keyword_ranges_by_line: BTreeMap<usize, Vec<KeywordRange>> = keyword_highlight
+            .as_ref()
+            .map(|highlight| {
+                let text = self.state.lines.join("\n");
+                keyword_ranges_by_line(&self.state.lines, &(highlight.find)(&text))
+            })
+            .unwrap_or_default();
+
         for layout_line in &visible_lines {
             let mut line_visible_width = visible_width(&layout_line.text);
             let mut cursor_in_padding = false;
@@ -1029,7 +1078,25 @@ impl Editor {
             let mention_style_ref: Rc<dyn Fn(&str) -> String> = mention_style
                 .clone()
                 .unwrap_or_else(|| Rc::new(|text: &str| text.to_string()));
+            let keyword_ranges: Vec<KeywordRange> = keyword_ranges_by_line
+                .get(&layout_line.logical_line)
+                .map(|ranges| {
+                    ranges
+                        .iter()
+                        .map(|range| KeywordRange {
+                            start: range.start.saturating_sub(layout_line.start_index),
+                            end: range.end.saturating_sub(layout_line.start_index),
+                            run_start: range.run_start - layout_line.start_index as isize,
+                            run_length: range.run_length,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let rendered = render_editor_line(EditorLineRenderInput {
+                keywords: &keyword_ranges,
+                keyword_style: keyword_highlight
+                    .as_ref()
+                    .map(|highlight| highlight.style.as_ref()),
                 text: &layout_line.text,
                 mentions: &mention_ranges,
                 mention_style: mention_style_ref.as_ref(),

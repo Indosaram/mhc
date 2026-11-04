@@ -143,6 +143,7 @@ impl InteractiveChrome for GrokChrome {
         let tokens4 = get_grok_chrome_tokens(&self.theme);
         let tokens5 = get_grok_chrome_tokens(&self.theme);
         EditorTheme {
+            keyword_highlight: crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(&self.theme),
             border_color: Rc::new(move |text: &str| (tokens.input_border)(text)),
             mention: None,
             select_list: maho_tui::components::select_list::SelectListTheme {
