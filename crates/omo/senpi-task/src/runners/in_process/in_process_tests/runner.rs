@@ -146,11 +146,19 @@ fn given_a_parent_tool_a_provider_rejects_by_name_when_a_child_is_started_then_e
         None,
         move || session.clone(),
     );
-    let handle = runner.start(&base_spec(&dir.path().to_string_lossy())).expect("start");
+    let spec = ChildSpec {
+        agent_type: Some("explore".to_string()),
+        member_scoped_tools: Some(vec![make_tool("task_send"), make_tool("$web_search")]),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let handle = runner.start(&spec).expect("start");
     fake.resolve_prompt();
     handle.wait_for_idle();
     let names = tool_names(&last_options(&captured));
-    assert_eq!(names, strings(&["grep", "mcp_ctx_query-docs"]));
+    assert_eq!(
+        names,
+        strings(&["grep", "mcp_ctx_query-docs", "task_send", "bash"])
+    );
     assert!(names.iter().all(|name| {
         let mut chars = name.chars();
         chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
