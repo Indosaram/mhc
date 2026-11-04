@@ -88,9 +88,18 @@ fn boundaries(text: &str, start: usize, end: usize) -> (Boundary, Boundary) {
     (before(text, start), after(text, end))
 }
 
-pub fn scan(masked: &str) -> Scan {
+/// One keyword the scanner stopped on, with the boundary verdict.
+struct Hit {
+    start: usize,
+    end: usize,
+    mass: bool,
+    long: bool,
+    boundaries: (Boundary, Boundary),
+}
+
+fn hits(masked: &str) -> Vec<Hit> {
     let lower: Vec<u8> = masked.bytes().map(|b| b.to_ascii_lowercase()).collect();
-    let mut out = Scan::default();
+    let mut out = Vec::new();
     let mut index = 0;
     while index < lower.len() {
         let mass_end = mass_alias_end(&lower, index);
@@ -107,17 +116,40 @@ pub fn scan(masked: &str) -> Scan {
                 continue;
             }
         };
-        match boundaries(masked, index, end) {
+        out.push(Hit {
+            start: index,
+            end,
+            mass: is_mass,
+            long: is_long,
+            boundaries: boundaries(masked, index, end),
+        });
+        index = end;
+    }
+    out
+}
+
+pub fn scan(masked: &str) -> Scan {
+    let mut out = Scan::default();
+    for hit in hits(masked) {
+        match hit.boundaries {
             (Boundary::Ok, Boundary::Ok) => {
                 out.mentions += 1;
-                out.long_form |= is_long;
-                out.short_form |= !is_long;
-                out.mass |= is_mass;
+                out.long_form |= hit.long;
+                out.short_form |= !hit.long;
+                out.mass |= hit.mass;
             }
             (Boundary::Compound, _) | (_, Boundary::Compound) => out.compound_rejected = true,
             _ => {}
         }
-        index = end;
     }
     out
+}
+
+/// Byte spans `(start, end, mass)` of the mentions [`scan`] counts, in text order.
+pub fn mention_spans(masked: &str) -> Vec<(usize, usize, bool)> {
+    hits(masked)
+        .into_iter()
+        .filter(|hit| matches!(hit.boundaries, (Boundary::Ok, Boundary::Ok)))
+        .map(|hit| (hit.start, hit.end, hit.mass))
+        .collect()
 }
