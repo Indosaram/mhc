@@ -129,6 +129,65 @@ describe("wave-tracker on task tool results", () => {
   });
 });
 
+// TaskOutputDetails::Status (output/types.rs): serde tag "kind", the child under snapshot.
+const outputStatusEnd = (id, status) => ({
+  type: "tool_execution_end",
+  toolName: "task_output",
+  result: {
+    content: [{ type: "text", text: `${id} ${status}` }],
+    details: {
+      kind: "status",
+      snapshot: { task_id: id, name: id, status, residency_state: "resident", execution_mode: "background", model: "m" },
+    },
+  },
+  isError: false,
+});
+// CancelResultDetails::Cancelled (control/types.rs): serde tag "kind", task_id/status at the top level.
+const cancelEnd = (id, previousStatus) => ({
+  type: "tool_execution_end",
+  toolName: "task_cancel",
+  result: {
+    content: [{ type: "text", text: `Cancelled ${id} (was ${previousStatus}, now cancelled).` }],
+    details: { kind: "cancelled", task_id: id, previous_status: previousStatus, status: "cancelled" },
+  },
+  isError: false,
+});
+
+describe("wave-tracker on task_output and task_cancel results", () => {
+  it("reads the child from a task_output status snapshot", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, outputStatusEnd("st_o", "running"), { type: "agent_idle" }]);
+    assert.equal(t.summary().peakChildren, 1);
+    assert.equal(t.isSettled(), false);
+    feed(t, [outputStatusEnd("st_o", "completed"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), false, "a completed child is still owed its wake");
+    feed(t, [wake(wakeText("st_o", "o")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("settles a cancelled child, which never gets a wake, at the next agent_idle", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      batchEnd([batchItem("st_a", "running"), batchItem("st_b", "running")]),
+      { type: "agent_idle" },
+      wake(wakeText("st_a", "a")),
+      { type: "agent_start" },
+      cancelEnd("st_b", "running"),
+    ]);
+    assert.equal(t.isSettled(), false, "settled while the parent is still streaming");
+    feed(t, [{ type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+    assert.equal(t.summary().peakChildren, 2);
+  });
+
+  it("settles a child whose task_output snapshot reports cancelled", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, singleEnd("st_c", "running"), outputStatusEnd("st_c", "cancelled"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+});
+
 describe("wave-tracker on a captured real rpc stream", () => {
   const lines = fs.readFileSync(new URL("./fixtures/rpc-background-task-stream.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
 

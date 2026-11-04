@@ -5,6 +5,22 @@ import { isWakeType, parseWakeChildren } from "./session-bytes.mjs";
 const WAITING_STATES = new Set(["waiting_children", "waiting_background", "waiting_human"]);
 // A child queued behind the concurrency limit reports "pending"; it is still owed a wake.
 const LIVE_CHILD_STATES = new Set(["running", "pending"]);
+// Parent-initiated terminals never wake the parent (senpi-task completion/routing.rs notifies only
+// completed/error/lost), so observing one in a tool result stands in for the child's wake.
+const SILENT_TERMINAL_STATES = new Set(["cancelled", "interrupted"]);
+const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel"]);
+
+/**
+ * Child entries of a child-tool result: the task tool lists every batch child in details.items[]
+ * (its top-level task_id is only the first child); task_output nests the child under
+ * details.snapshot (TaskOutputDetails); task_cancel carries task_id/status at the top level
+ * (CancelResultDetails).
+ */
+function childEntries(details) {
+  if (Array.isArray(details?.items)) return details.items;
+  if (details?.snapshot) return [details.snapshot];
+  return [details];
+}
 
 /**
  * Tracks the waves of a headless rpc-mode run from its event stream. `mhc -p` ends the turn at the
@@ -17,7 +33,9 @@ export function createWaveTracker() {
   let waiting = false;
   let peakChildren = 0;
   const running = new Set();
-  let childrenWoken = 0;
+  // Children whose wake obligation is met, by id: woken, or ended by a silent terminal.
+  const satisfied = new Set();
+  let anonymousWakes = 0;
   let toolCallsAfterFirstWake = 0;
   const wakeBatches = [];
   const childReports = [];
@@ -40,15 +58,16 @@ export function createWaveTracker() {
           break;
         }
         case "tool_execution_end": {
-          // Real rpc runs never emit lifecycle child counts; the task tool result (and task_output) carry the child id and status.
-          // A batch call lists every child in details.items[]; its top-level task_id is only the first child.
-          const d = event.result?.details;
-          if (event.toolName === "task" || event.toolName === "task_output") {
-            const entries = Array.isArray(d?.items) ? d.items : [d];
-            for (const item of entries) {
+          // Real rpc runs never emit lifecycle child counts; the task, task_output, and task_cancel
+          // results carry the child id and status.
+          if (CHILD_TOOLS.has(event.toolName)) {
+            for (const item of childEntries(event.result?.details)) {
               if (typeof item?.task_id !== "string" || item.task_id === "") continue;
+              // cancel_pending has no status: the child is still live until its host stops it.
+              if (typeof item.status !== "string") continue;
               if (LIVE_CHILD_STATES.has(item.status)) running.add(item.task_id);
               else running.delete(item.task_id);
+              if (SILENT_TERMINAL_STATES.has(item.status)) satisfied.add(item.task_id);
             }
             peakChildren = Math.max(peakChildren, running.size);
           }
@@ -65,8 +84,14 @@ export function createWaveTracker() {
             const text = Array.isArray(content) ? content.map((c) => c?.text ?? "").join("") : String(content ?? "");
             const children = parseWakeChildren(text);
             wakeBatches.push({ bytes: rawLine.length, children: children.length });
-            childrenWoken += children.length;
-            for (const c of children) if (c.id) running.delete(c.id);
+            for (const c of children) {
+              if (!c.id) {
+                anonymousWakes++;
+                continue;
+              }
+              running.delete(c.id);
+              satisfied.add(c.id);
+            }
             childReports.push(...children.map((c) => c.reportChars));
           }
           break;
@@ -74,7 +99,7 @@ export function createWaveTracker() {
           break;
       }
     },
-    isSettled: () => idle && !waiting && running.size === 0 && childrenWoken >= peakChildren,
+    isSettled: () => idle && !waiting && running.size === 0 && satisfied.size + anonymousWakes >= peakChildren,
     summary: () => ({
       wakeBatchBytes: wakeBatches.map((b) => b.bytes),
       wakeBatchChildren: wakeBatches.map((b) => b.children),
