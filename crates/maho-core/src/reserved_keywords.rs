@@ -339,6 +339,7 @@ mod tests {
         assert_eq!(runs_of("Ulw-Research the market"), vec!["Ulw-Research"]);
     }
 
+    // Intended divergence from upstream (no nested ultrawork span): docs/divergences.md ULW-8.
     #[test]
     fn returns_overlapping_spans_over_the_original_text() {
         let text = "go: mass ulw research";
