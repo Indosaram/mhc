@@ -1,6 +1,6 @@
 //! Pure prompt classification: counts, routing, lifecycle stage and suppression reason.
 
-use crate::keywords::{Scan, scan};
+use crate::keywords::{Scan, mention_spans, scan};
 use crate::mask::mask;
 use crate::state::SessionArming;
 use crate::texts::DIRECTIVE_OPEN_TAG;
@@ -97,6 +97,25 @@ fn skill_command(text: &str) -> Option<(&str, &str)> {
 /// Fast path for callers: does any visible keyword exist in `text`?
 pub fn has_visible_keyword(text: &str) -> bool {
     scan(&mask(text, DIRECTIVE_OPEN_TAG).text).mentions > 0
+}
+
+/// A keyword mention the engine arms on, as byte offsets into the original text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeywordSpan {
+    pub start: usize,
+    /// End exclusive.
+    pub end: usize,
+    /// The mention is a mass alias (`mass ulw`, `mulw`, `meth`, ...).
+    pub mass: bool,
+}
+
+/// Every mention [`has_visible_keyword`] counts, in text order. Masking keeps byte offsets, so the
+/// spans index `text`. The editor paints exactly these, so painting and arming share one rule.
+pub fn visible_keyword_spans(text: &str) -> Vec<KeywordSpan> {
+    mention_spans(&mask(text, DIRECTIVE_OPEN_TAG).text)
+        .into_iter()
+        .map(|(start, end, mass)| KeywordSpan { start, end, mass })
+        .collect()
 }
 
 pub fn classify(input: ClassifyInput<'_>) -> Classification {
