@@ -384,6 +384,28 @@ fn wake_batch_capped_with_manifest() {
 }
 
 #[test]
+fn failed_manifest_write_leaves_no_manifest_url_in_the_wake() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let temp = tempfile::tempdir().expect("tempdir");
+    // A regular file as the state dir makes both create_dir_all and the manifest write fail.
+    let blocker = temp.path().join("not-a-dir");
+    std::fs::write(&blocker, "x").expect("blocker");
+    coordinator.set_state_dir(&blocker);
+
+    for i in 0..5 {
+        let content = format!("task completion id:task_{i} result:{}", "x".repeat(8000 - 33));
+        coordinator.enqueue(injection(&format!("st_{i}"), IdleInjectionSource::TaskCompletion, &content));
+    }
+    coordinator.flush_on_idle();
+
+    let calls = log.calls();
+    let content = &calls[0].message.content;
+    assert!(content.contains("3 more task results (manifest unavailable: "));
+    assert!(!content.contains("local://"));
+    assert!(content.encode_utf16().count() <= 24_000);
+}
+
+#[test]
 fn many_children_stay_under_cap() {
     let (coordinator, log, _scheduler) = manual_coordinator();
     let temp = tempfile::tempdir().expect("tempdir");

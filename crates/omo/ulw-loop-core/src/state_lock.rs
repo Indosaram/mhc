@@ -49,50 +49,6 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-#[allow(dead_code)]
-fn is_pid_alive(pid: u32) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        Path::new(&format!("/proc/{pid}")).exists()
-    }
-    // Other unix kernels have no /proc: `kill(pid, 0)` answers liveness without signalling, and
-    // EPERM means the pid exists under another user. A pid that is not a valid positive pid_t is
-    // never probed (`kill(-1, 0)` would ask about every process).
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
-            return false;
-        };
-        match rustix::process::test_kill_process(pid) {
-            Ok(()) => true,
-            Err(error) => error == rustix::io::Errno::PERM,
-        }
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-
-        // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return false;
-        }
-        let mut exit_code = 0u32;
-        // SAFETY: `handle` is a live process handle and `exit_code` outlives the call.
-        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
-        // SAFETY: `handle` came from OpenProcess and is closed exactly once.
-        unsafe { CloseHandle(handle) };
-        queried != 0 && exit_code == STILL_ACTIVE as u32
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        true
-    }
-}
-
 pub fn is_state_lock_timeout(error: &UlwLoopError) -> bool {
     error.code == ULW_LOOP_LOCK_TIMEOUT_CODE
 }
