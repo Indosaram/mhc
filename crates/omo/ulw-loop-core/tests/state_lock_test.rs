@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
 use std::fs::{self, OpenOptions};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 use ulw_loop_core::runtime::UlwLoopError;
@@ -129,33 +128,26 @@ fn leftover_stale_lock_record_with_dead_pid_does_not_block_acquisition() {
 #[test]
 fn two_threads_contend_for_guard_never_exceeds_one_holder() {
     let (_d, path) = lock();
-    let holder_count = Arc::new(AtomicUsize::new(0));
-    let max_holders = Arc::new(AtomicUsize::new(0));
-    let barrier = Arc::new(Barrier::new(2));
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
-    let mut handles = Vec::new();
-    for _ in 0..2 {
-        let p = path.clone();
-        let hc = holder_count.clone();
-        let mh = max_holders.clone();
-        let b = barrier.clone();
-        handles.push(std::thread::spawn(move || {
-            b.wait();
-            with_state_lock(&p, Some(&opts(3_000)), |_| {
-                let current = hc.fetch_add(1, Ordering::SeqCst) + 1;
-                mh.fetch_max(current, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(50));
-                hc.fetch_sub(1, Ordering::SeqCst);
-                Ok::<(), UlwLoopError>(())
-            })
-        }));
-    }
+    let p = path.clone();
+    let holder = std::thread::spawn(move || {
+        with_state_lock(&p, Some(&opts(3_000)), |_| {
+            held_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(30)).expect("main released");
+            Ok::<(), UlwLoopError>(())
+        })
+    });
 
-    for h in handles {
-        h.join().unwrap().unwrap();
-    }
+    held_rx.recv_timeout(Duration::from_secs(30)).expect("holder acquired");
+    let busy = with_state_lock(&path, Some(&opts(0)), |_| Ok::<_, UlwLoopError>(()));
+    assert_eq!(busy.unwrap_err().code, ULW_LOOP_LOCK_TIMEOUT_CODE);
 
-    assert_eq!(max_holders.load(Ordering::SeqCst), 1);
+    release_tx.send(()).unwrap();
+    holder.join().unwrap().unwrap();
+    let after = with_state_lock(&path, Some(&opts(0)), |_| Ok::<_, UlwLoopError>("acquired"));
+    assert_eq!(after.unwrap(), "acquired");
 }
 
 #[test]

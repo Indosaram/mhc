@@ -95,13 +95,11 @@ setInterval(() => {}, 1000);
 process.stdin.on("data", () => {
   ${out(lifecycle("running", 1))}
   ${out({ type: "agent_idle" })}
-  setTimeout(() => {
-    ${out({ type: "agent_start" })}
-    ${out(wake(wakeText("a", "z".repeat(7))))}
-    ${out({ type: "tool_execution_start", toolName: "task", args: {} })}
-    ${out(lifecycle("running", 0))}
-    ${out({ type: "agent_idle" })}
-  }, 50);
+  ${out({ type: "agent_start" })}
+  ${out(wake(wakeText("a", "z".repeat(7))))}
+  ${out({ type: "tool_execution_start", toolName: "task", args: {} })}
+  ${out(lifecycle("running", 0))}
+  ${out({ type: "agent_idle" })}
 });
 process.stdin.on("end", () => process.exit(0));
 `, { mode: 0o755 });

@@ -300,17 +300,15 @@ impl IdleInjectionQueue {
                 .collect::<Vec<_>>()
                 .join(DETAIL_SEPARATOR);
 
-            if let Err(error) = std::fs::write(&manifest_path, &remaining_content) {
-                eprintln!("failed to write completion manifest {}: {error}", manifest_path.display());
-            }
-
-            let trailing_line = format!("{remaining_count} more task results: {manifest_url}");
-            let final_content = if fitting_k == 0 {
-                if utf16_len(&trailing_line) <= batch_limit {
-                    trailing_line
-                } else {
-                    utf16_prefix(&trailing_line, batch_limit).to_string()
+            let trailing_line = match std::fs::write(&manifest_path, &remaining_content) {
+                Ok(()) => format!("{remaining_count} more task results: {manifest_url}"),
+                Err(error) => {
+                    eprintln!("failed to write completion manifest {}: {error}", manifest_path.display());
+                    format!("{remaining_count} more task results (manifest unavailable: {error})")
                 }
+            };
+            let final_content = if fitting_k == 0 {
+                trailing_line
             } else {
                 let prefix = ordered[..fitting_k]
                     .iter()
@@ -318,6 +316,11 @@ impl IdleInjectionQueue {
                     .collect::<Vec<_>>()
                     .join(DETAIL_SEPARATOR);
                 format!("{prefix}{DETAIL_SEPARATOR}{trailing_line}")
+            };
+            let final_content = if utf16_len(&final_content) <= batch_limit {
+                final_content
+            } else {
+                utf16_prefix(&final_content, batch_limit).to_string()
             };
 
             (final_content, fitting_k)
