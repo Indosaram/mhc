@@ -1,11 +1,13 @@
 //! Port of senpi `packages/coding-agent/src/core/reserved-keywords.ts`.
 //!
-//! OmO's reserved prompt keywords (`ulw`, `mass ulw`, `ulw plan`, `ulw loop`, `ulw research`). Mirrors
-//! the omo-senpi engine's arming rules so the editor paints a keyword only where the engine would arm
-//! it: case-insensitive, spaces or hyphens between words, the mass aliases (`mulw`, `meth`, `ulw mass`),
-//! and each name only as a word of its own. Overlapping mentions all match. Injected blocks,
-//! fenced/inline code, relay headers, block quotes, double quotes, URLs and negated invocations are
-//! quoted material, never a request.
+//! OmO's reserved prompt keywords (`ulw`, `mass ulw`, `ulw plan`, `ulw loop`, `ulw research`).
+//! `ulw`/`ultrawork` and the mass aliases are painted exactly where the ultrawork engine arms: their
+//! spans come from [`maho_ultrawork::visible_keyword_spans`], so painting and arming share one
+//! masking pass and one word-boundary rule. The skill keywords (`ulw plan`, `ulw loop`,
+//! `ulw research`) keep the patterns below: case-insensitive, spaces or hyphens between words, each
+//! name only as a word of its own. Overlapping mentions all match. For the skill keywords, injected
+//! blocks, fenced/inline code, relay headers, block quotes, double quotes, URLs and negated
+//! invocations are quoted material, never a request.
 //!
 //! Offsets are UTF-8 byte offsets into the searched text (TS reports UTF-16 code units); masking keeps
 //! every byte offset, so spans index the original text.
@@ -74,11 +76,6 @@ fn keyword_pattern(body: &str) -> FancyRegex {
 static RESERVED_KEYWORD_PATTERNS: LazyLock<Vec<(ReservedKeyword, FancyRegex)>> =
     LazyLock::new(|| {
         vec![
-            (
-                ReservedKeyword::Ultrawork,
-                keyword_pattern("(?:ultrawork|ulw)"),
-            ),
-            (ReservedKeyword::MassUlw, keyword_pattern(MASS_ULW_ALIAS)),
             (ReservedKeyword::UlwPlan, keyword_pattern(r"ulw[\s-]*plan")),
             (ReservedKeyword::UlwLoop, keyword_pattern(r"ulw[\s-]*loop")),
             (
@@ -211,8 +208,19 @@ pub fn find_reserved_keyword_spans(text: &str) -> Vec<ReservedKeywordSpan> {
     if !RESERVED_KEYWORD_STEM.is_match(text) {
         return Vec::new();
     }
+    let mut spans: Vec<ReservedKeywordSpan> = maho_ultrawork::visible_keyword_spans(text)
+        .into_iter()
+        .map(|span| ReservedKeywordSpan {
+            keyword: if span.mass {
+                ReservedKeyword::MassUlw
+            } else {
+                ReservedKeyword::Ultrawork
+            },
+            start: span.start,
+            end: span.end,
+        })
+        .collect();
     let visible = mask_quoted_regions(text);
-    let mut spans = Vec::new();
     for (keyword, pattern) in RESERVED_KEYWORD_PATTERNS.iter() {
         for found in pattern.find_iter(&visible).filter_map(Result::ok) {
             spans.push(ReservedKeywordSpan {
@@ -288,7 +296,8 @@ mod tests {
     #[test]
     fn needs_a_whole_word() {
         assert!(keywords_of("ulwfoo and ulw_helper and methane").is_empty());
-        assert_eq!(keywords_of("ulw\u{d574}\u{c918}"), vec!["ultrawork"]);
+        // The engine does not arm a keyword glued to a following letter of any script.
+        assert!(keywords_of("ulw\u{d574}\u{c918}").is_empty());
     }
 
     #[test]
@@ -313,8 +322,6 @@ mod tests {
             "bump v1.ulw",
             "he said \"ulw\" twice",
             "> ulw quoted",
-            "Do not load mass-ulw or ulw-research.",
-            "[REPORT] ulw done",
         ] {
             assert!(runs_of(text).is_empty(), "{text}");
         }
@@ -327,7 +334,13 @@ mod tests {
             vec!["ulw"]
         );
         assert_eq!(runs_of("Do not use tmux, but ulw the fix"), vec!["ulw"]);
-        assert_eq!(runs_of("mass ulw-loop the queue"), vec!["mass ulw-loop"]);
+        assert_eq!(runs_of("mass ulw-loop the queue"), vec!["ulw-loop"]);
+        // The engine's negation list has no `load` and it reads no `[REPORT]` header, so it arms here.
+        assert_eq!(
+            runs_of("Do not load mass-ulw or ulw-research."),
+            vec!["mass-ulw"]
+        );
+        assert_eq!(runs_of("[REPORT] ulw done"), vec!["ulw"]);
         assert_eq!(runs_of("Ulw-Research the market"), vec!["Ulw-Research"]);
     }
 
@@ -342,8 +355,7 @@ mod tests {
             spans,
             vec![
                 ("ulw-research", "mass ulw research"),
-                ("mass-ulw", "mass ulw"),
-                ("ultrawork", "ulw")
+                ("mass-ulw", "mass ulw")
             ]
         );
         assert!(find_reserved_keyword_spans("nothing reserved here").is_empty());
