@@ -245,6 +245,51 @@ describe("wave-tracker owed children", () => {
   });
 });
 
+// A synchronous (run_in_background false) task result: execute returns after the children finished.
+const foregroundEnd = (items) => ({
+  type: "tool_execution_end",
+  toolName: "task",
+  result: {
+    content: [{ type: "text", text: "Tasks finished" }],
+    details: { task_id: items[0].task_id, status: items[0].status, mode: "spawn", run_in_background: false, ...(items.length > 1 ? { items } : {}) },
+  },
+  isError: false,
+});
+
+describe("wave-tracker on foreground task results", () => {
+  it("does not owe a wake for a foreground single child that completed, and settles", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, foregroundEnd([batchItem("st_f", "completed")]), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("owes a wake only for the running child of a foreground batch with mixed statuses", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      foregroundEnd([batchItem("st_a", "completed"), batchItem("st_b", "failed"), batchItem("st_c", "running")]),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), false, "st_c is still owed");
+    feed(t, [wake(wakeText("st_c", "c")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("does not create an owed child from a task_output for an unknown id", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, outputStatusEnd("st_x", "completed"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("settles a background child that completes later via its wake", () => {
+    const t = createWaveTracker();
+    feed(t, [{ type: "agent_start" }, singleEnd("st_bg", "running"), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), false);
+    feed(t, [wake(wakeText("st_bg", "bg")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+});
+
 describe("wave-tracker on a captured real rpc stream", () => {
   const lines = fs.readFileSync(new URL("./fixtures/rpc-background-task-stream.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
 

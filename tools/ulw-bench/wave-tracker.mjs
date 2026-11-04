@@ -6,10 +6,11 @@ import { isWakeType, parseWakeChildren, parseWakeSpill } from "./session-bytes.m
 const WAITING_STATES = new Set(["waiting_children", "waiting_background", "waiting_human"]);
 // A child queued behind the concurrency limit reports "pending"; it is still owed a wake.
 const LIVE_CHILD_STATES = new Set(["running", "pending"]);
-// Statuses after which the parent still gets a wake: live children, and the externally-caused
-// terminals senpi-task completion/routing.rs notifies (completed/error/lost). A task_output that
-// reports "completed" does not consume the wake; the wake still comes.
-const WAKING_STATES = new Set([...LIVE_CHILD_STATES, "completed", "error", "lost"]);
+// Only a live child is owed a wake. A terminal status never creates an owed child: a foreground
+// (run_in_background false) task result already carries the finished child, so no wake comes. For a
+// child already owed (seen live), a task_output or background result reporting an externally-caused
+// terminal (completed/error/lost) does not consume the wake; senpi-task completion/routing.rs still
+// delivers it.
 // Parent-initiated terminals never wake the parent; the tool result stands in for the wake.
 const SILENT_TERMINAL_STATES = new Set(["cancelled", "interrupted"]);
 const CHILD_TOOLS = new Set(["task", "task_output", "task_cancel"]);
@@ -79,15 +80,21 @@ export function createWaveTracker() {
           // Real rpc runs never emit lifecycle child counts; the task, task_output, and task_cancel
           // results carry the child id and status.
           if (CHILD_TOOLS.has(event.toolName)) {
-            for (const item of childEntries(event.result?.details)) {
+            const details = event.result?.details;
+            // A foreground task result returns after its children finished; it stands in for the wake.
+            const foreground = event.toolName === "task" && details?.run_in_background !== true;
+            for (const item of childEntries(details)) {
               if (typeof item?.task_id !== "string" || item.task_id === "") continue;
               // cancel_pending has no status: the child is still live until its host stops it.
               if (typeof item.status !== "string") continue;
               const id = item.task_id;
               if (LIVE_CHILD_STATES.has(item.status)) running.add(id);
               else running.delete(id);
-              if (WAKING_STATES.has(item.status) && !woken.has(id)) owed.add(id);
-              else if (SILENT_TERMINAL_STATES.has(item.status)) owed.delete(id);
+              if (LIVE_CHILD_STATES.has(item.status)) {
+                if (!woken.has(id)) owed.add(id);
+              } else if (foreground || SILENT_TERMINAL_STATES.has(item.status)) {
+                owed.delete(id);
+              }
             }
             peakChildren = Math.max(peakChildren, running.size);
           }
