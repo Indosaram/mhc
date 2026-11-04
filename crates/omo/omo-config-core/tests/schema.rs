@@ -358,6 +358,8 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
     assert_eq!(value["task"]["default_execution_mode"], json!("auto"));
     assert_eq!(value["task"]["default_concurrency"], json!(5));
     assert_eq!(value["task"]["residency_max_children"], json!("unlimited"));
+    assert_eq!(value["task"]["completion_transport_limit"], json!(8000));
+    assert_eq!(value["task"]["completion_batch_limit"], json!(24000));
     assert_eq!(value["categories"]["deep"]["max_tokens"], json!(12000));
     assert_eq!(value["categories"]["deep"]["reasoning"], json!("high"));
     assert_eq!(

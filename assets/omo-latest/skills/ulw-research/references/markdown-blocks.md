@@ -1,3 +1,5 @@
+Read this when formatting CommonMark blocks, link closers, and structured Markdown output.
+
 # Markdown block boundaries
 
 The light Markdown model preserves the documented CommonMark paragraph interruption rule:

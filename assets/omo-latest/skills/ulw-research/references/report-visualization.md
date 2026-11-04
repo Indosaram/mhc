@@ -1,6 +1,8 @@
+Read this when the asset lanes start in the final-materials phase, or when plotting quantitative data charts, rendering Mermaid diagrams, or conducting reference comparisons.
+
 # ulw-research - report visualization playbook
 
-Read this before the asset lanes start in the final-materials phase. A report the reader has to dig through as plain text has failed even when every claim is right: people understand structure from a diagram and a trend from a chart faster than from prose. Every final report therefore carries visuals, and this file says which visual fits which finding, how to make each one, and how the gates check them.
+A report the reader has to dig through as plain text has failed even when every claim is right: people understand structure from a diagram and a trend from a chart faster than from prose. Every final report therefore carries visuals, and this file says which visual fits which finding, how to make each one, and how the gates check them.
 
 ## 1. The binding minimum
 
@@ -35,7 +37,7 @@ Save every asset under `$SESSION_DIR/assets/` and confirm the file exists and is
 
 ### Charts from data
 
-Put the numbers in a table first (`$SESSION_DIR/data/<name>.csv`), then plot from the table, never from prose. Follow the data-scientist doctrine in SKILL.md (numpy, Polars, DuckDB, no pandas).
+Put the numbers in a table first (`$SESSION_DIR/data/<name>.csv`), then plot from the table, never from prose. Follow the data-scientist doctrine of Phase 5 in [deliverable-phase.md](deliverable-phase.md), which is already loaded whenever asset lanes run (numpy, Polars, DuckDB, no pandas); do not re-read it from here.
 
 ```bash
 uv run --with numpy --with polars --with matplotlib python plot_<name>.py
@@ -51,7 +53,7 @@ uv run --with numpy --with polars --with matplotlib python plot_<name>.py
 
 ### Mermaid diagrams
 
-Write the source to `assets/<name>.mmd` and render it to SVG with the design spec's font and palette:
+Write the source to `"$SESSION_DIR/assets/<name>.mmd"` and render it to SVG with the design spec's font and palette:
 
 ```bash
 cat > "$SESSION_DIR/assets/mermaid-config.json" <<'EOF'
@@ -125,7 +127,7 @@ A post by Andrej Karpathy on 2026-10-02 ranks the formats that make model output
 
 ## 5. Quality bar
 
-- Every figure follows the figure standard in SKILL.md: fixed container, contain-fit, aspect ratio preserved, spec fonts and palette.
+- Every figure follows the Phase 5 figure standard of [deliverable-phase.md](deliverable-phase.md) (already loaded on this path): fixed container, contain-fit, aspect ratio preserved, spec fonts and palette.
 - The caption alone tells the reader what the visual shows and what to conclude: "Median build time fell from 9.4 to 3.1 minutes after the cache change [S4]" beats "Build times".
 - Alt text states the content, not the file: the key values or the shape of the trend for a chart, the main nodes and flow for a diagram. A purely decorative image takes `alt=""` plus `role="presentation"` and does not count as a visual; an empty alt without that marker is reported as missing.
 - Every number in a visual comes from the data table and carries its source or lineage tag in the caption.

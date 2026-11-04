@@ -48,6 +48,7 @@ maho-omo-fallback-architect = { path = "../components/maho-omo-fallback-architec
 maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor" }
 maho-omo-side-panel = { path = "../components/maho-omo-side-panel" }
 maho-omo-lsp = { path = "../components/maho-omo-lsp" }
+maho-omo-config-core = { workspace = true }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
 maho-omo-question-gates = { path = "../components/maho-omo-question-gates" }
 maho-omo-claim-receipt = { path = "../components/maho-omo-claim-receipt" }
@@ -56,8 +57,7 @@ maho-memory-core = { path = "../memory-core" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
 maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-continuation" }
 maho-omo-telemetry = { path = "../components/maho-omo-telemetry" }
-maho-omo-todo-fanout-reminder = { path = "../components/maho-omo-todo-fanout-reminder" }
-maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
+maho-ultrawork = { path = "../../maho-ultrawork" }
 maho-omo-ulw-loop = { path = "../components/maho-omo-ulw-loop" }
 indexmap = "=2.14.0"
 serde_json = "=1.0.149"

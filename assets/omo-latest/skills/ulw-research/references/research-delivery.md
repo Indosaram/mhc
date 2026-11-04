@@ -1,3 +1,9 @@
+Read this when a document deliverable is requested, or the run needs more than the Phase 3-4 summary in SKILL.md: Phase 3 verification by code, Phase 3b claim graph locking, Phase 4 synthesis.
+
+# ulw-research - delivery and verification contract
+
+The instrumentation artifacts those phases write are defined in [epistemic.md](epistemic.md).
+
 ## Phase 3 — Verify contested claims by running code
 
 Settle with executed code, not judgment, whenever sources disagree, a behavior is undocumented, a claim is performance- or compatibility-shaped, or the honest answer is "it should work". Spawn one verification worker per claim:
@@ -32,7 +38,7 @@ Anything that fails goes to an `Unresolved` (insufficient evidence) or `Refuted`
 - CLAIM: <non-code assertion> — RISK: high|normal — SOURCES: <domain1, domain2> — COUNTER: <refutation search result> — PRIMARY: <primary source or none>
 ```
 
-**The claim table is machine-read.** Keep the nodes of `claim-graph.md` in one Markdown table whose header names `claim_id | statement | risk tier | status` (plus `fact_ids`, the ledger rows the node rests on, and any other node fields as further columns), one row per node: ids `C<n>`, risk `high` or `normal`, status `supported`, `partial`, `refuted`, or `unresolved`. List the nodes that clear the Phase 3b gate under a `## verified-claims` heading as `- C<n>: <statement>`. `node "$SKILL_DIR/scripts/report-tools.mjs" claims index "$SESSION_DIR/claim-graph.md" --out "$SESSION_DIR/claims.json"` indexes it, and the fidelity gate reads `claims.json` to check every `data-claim` binding in the report.
+**The claim table is machine-read (document deliverables).** Keep the nodes of `claim-graph.md` in one Markdown table whose header names `claim_id | statement | risk tier | status` (plus `fact_ids`, the ledger rows the node rests on, and any other node fields as further columns), one row per node: ids `C<n>`, risk `high` or `normal`, status `supported`, `partial`, `refuted`, or `unresolved`. List the nodes that clear the Phase 3b gate under a `## verified-claims` heading as `- C<n>: <statement>`. `node "$SKILL_DIR/scripts/report-tools.mjs" claims index "$SESSION_DIR/claim-graph.md" --out "$SESSION_DIR/claims.json"` indexes it, and the fidelity gate reads `claims.json` to check every `data-claim` binding in the report.
 
 ## Phase 4 — Synthesize
 
@@ -53,11 +59,13 @@ Workers: <total> · Waves: <count> · Excursions: <count> · Sources: <count> (<
 ## Expansion trace          — per wave: workers → markers; convergence reason
 ```
 
+**Light tier: show the answer inline.** A chat answer with no promised document still ends with an inline page when the harness has an inline HTML tool (`show_html_page`, `html_render`): the answer, its figures, the reference-compare pairs, and the sources, self-contained with no network; a built app or 3D scene never stands in for it. Without the tool, answer in chat. The full rule is [deliverable-phase.md](deliverable-phase.md), Showing the report inline.
+
 `SYNTHESIS.md` is the citation source of truth for final materials: every claim carries inline `[Source N]` citations, and every high-risk non-code claim you assert must be a verified-claims row from Phase 3b. Assert nothing the gate left in the unresolved/refuted annex.
 
-**Write numbers and quotes by reference.** `SYNTHESIS.md` and every report source carry placeholders, never typed values: `{{F12:span_len}}` renders the row's value and unit, `{{F12:span_len:value}}` or `:unit` one part, `:q` the value with its source qualifier (up to, at least, about); `{{Q7:completion}}` renders the whole quotation, `{{Q7:completion:lead=8}}` its first words, `{{Q7:completion:from="no earlier":to="2027"}}` one span of it. A derived number is computed by the script, never by hand: `fact derive --op sum|diff|growth|ratio|share|convert|expr ...` checks the operands' units, periods, and populations, refuses an incompatible operation, and prints the new row id the placeholder uses. A value nobody measured is registered with `fact add --assumed <value> --unit <unit> --rationale <why> --label <label>` and renders as ASSUMED. Every findings sentence binds to a fact, a quote, a `[S<n>]` citation, or a claim node (`data-claim="C3"`). Reviewers and the refinement team read the rendered text through `node "$SKILL_DIR/scripts/report-tools.mjs" fact fill "$SESSION_DIR/SYNTHESIS.md" --view --session-dir "$SESSION_DIR"`, never the raw placeholders.
+**Write numbers and quotes by reference (document deliverables).** `SYNTHESIS.md` and every report source carry placeholders, never typed values: `{{F12:span_len}}` renders the row's value and unit, `{{F12:span_len:value}}` or `:unit` one part, `:q` the value with its source qualifier (up to, at least, about); `{{Q7:completion}}` renders the whole quotation, `{{Q7:completion:lead=8}}` its first words, `{{Q7:completion:from="no earlier":to="2027"}}` one span of it. A derived number is computed by the script, never by hand: `fact derive --op sum|diff|growth|ratio|share|convert|expr ...` checks the operands' units, periods, and populations, refuses an incompatible operation, and prints the new row id the placeholder uses. A value nobody measured is registered with `fact add --assumed <value> --unit <unit> --rationale <why> --label <label>` and renders as ASSUMED. Every findings sentence binds to a fact, a quote, a `[S<n>]` citation, or a claim node (`data-claim="C3"`). Reviewers and the refinement team read the rendered text through `node "$SKILL_DIR/scripts/report-tools.mjs" fact fill "$SESSION_DIR/SYNTHESIS.md" --view --session-dir "$SESSION_DIR"`, never the raw placeholders.
 
-**Write the skeleton early and fill it as claims lock.** The moment the brief records the deliverable, create the deliverable file with its section headings and a `STATUS: draft — <n> sections open` line as line 2 (an HTML comment in HTML); that line is the partial-state marker `outcome state` reads, removed only when the deliverable is complete. An interrupted run must leave a partial report on disk, never an empty directory and a lost conversation.
+**Write the skeleton early and fill it as claims lock (document deliverables).** The moment the brief records the deliverable, create the deliverable file with its section headings and a `STATUS: draft — <n> sections open` line as line 2 (an HTML comment in HTML); that line is the partial-state marker `outcome state` reads, removed only when the deliverable is complete. An interrupted run must leave a partial report on disk, never an empty directory and a lost conversation.
 
 **Keep sourced numbers, assumptions, and derived results visibly apart.** Every quantitative claim carries its lineage: `MEASURED` (a number a source states, cited), `ASSUMED` (a coefficient, distribution, or scope you chose — say why), `DERIVED` (computed from those, showing the formula), plus a sensitivity line whenever the assumption moves the answer. Presenting a derived estimate with the confidence of a measured one is the most damaging thing this mode can ship.
 
@@ -105,12 +113,12 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 | Batching findings into an end-of-run journal dump | Journal each return as it lands; the journal is what survives a compaction |
 | Ending the run because every worker finished | Reserve the final fifth of the run for synthesis and materials |
 | A derived estimate presented as a measured number | MEASURED / ASSUMED / DERIVED lineage on every quantitative claim, plus a sensitivity line |
-| A number typed into the report or `SYNTHESIS.md` | Register it (`fact add`) and write `{{F<n>:label}}`; `fact verify` reports a typed number as `untraceable_number`, and `outcome verify` refuses delivery until it is a ledger row, an `assumed` row with its rationale, or gone |
-| A filled value edited by hand | Never edit a filled value: fix the ledger row or the placeholder and re-run `fact fill`, then `fact verify` (`value_mismatch`, `unit_mismatch`) |
-| A findings sentence bound to nothing | Bind it to a fact, a quote, a `[S<n>]` citation, or a claim node with `data-claim`; an `unbound_sentence` blocks delivery like an untraceable number |
-| Delivering before the delivery gates pass | Static and layout gates, visual QA on rendered pages, plus the harness's proofread gate — a typo the user finds means a gate did not run |
-| Skipping the static gates | `report-tools check` runs before any pixel review; its defects are cheaper than a visual pass |
-| Delivering with a pending manifest row | `outcome verify` must pass; every promised format ends `delivered`, `blocked_capability`, `skipped`, or `failed` with a reason |
+| Document deliverables: a number typed into the report or `SYNTHESIS.md` | Register it (`fact add`) and write `{{F<n>:label}}`; `fact verify` reports a typed number as `untraceable_number`, and `outcome verify` refuses delivery until it is a ledger row, an `assumed` row with its rationale, or gone |
+| Document deliverables: a filled value edited by hand | Never edit a filled value: fix the ledger row or the placeholder and re-run `fact fill`, then `fact verify` (`value_mismatch`, `unit_mismatch`) |
+| Document deliverables: a findings sentence bound to nothing | Bind it to a fact, a quote, a `[S<n>]` citation, or a claim node with `data-claim`; an `unbound_sentence` blocks delivery like an untraceable number |
+| Document deliverables: delivering before the delivery gates pass | Static and layout gates, visual QA on rendered pages, plus the harness's proofread gate — a typo the user finds means a gate did not run |
+| Document deliverables: skipping the static gates | `report-tools check` runs before any pixel review; its defects are cheaper than a visual pass |
+| Document deliverables: delivering with a pending manifest row | `outcome verify` must pass; every promised format ends `delivered`, `blocked_capability`, `skipped`, or `failed` with a reason |
 | Repairing past the tracker's stop decision | `repair decide` owns the budget; `deliver` ships with the residual list, `block` stops delivery |
 | Guessing a design-spec value the extractor marked `TODO: ask` | Fill it from the interview answers or the reference's defaults, never by guessing |
 | Referencing an asset that is not on disk | Verify the asset manifest before rendering; re-render whatever is missing |
@@ -120,4 +128,4 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 | An excursion whose result was never folded back | Every EXIT writes what it changed in the top-level answer, `none` included, and mirrors into the loop ledger |
 | Ending with file paths while an inline HTML page tool is available | Show the report inline first (the gated `report.html` or its inline edition), then the paths and the summary |
 | A visual reproduction checked only against itself | Reference compare: real source frames next to renders at the same moments, a critique per pair, fixes, and the pairs in the report |
-| Delivering without the closing briefing | Paste the block `outcome briefing` prints; never compute or recall its numbers by hand |
+| Document deliverables: delivering without the closing briefing | Paste the block `outcome briefing` prints; never compute or recall its numbers by hand |

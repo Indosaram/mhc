@@ -21,6 +21,7 @@ pub fn editor_theme(theme: &Theme) -> EditorTheme {
     let border = theme.clone();
     let mention = theme.clone();
     EditorTheme {
+        keyword_highlight: crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(theme),
         border_color: Rc::new(move |text: &str| border.fg(ThemeColor::BorderMuted, text)),
         mention: Some(Rc::new(move |text: &str| {
             mention.fg(ThemeColor::SkillMention, &format!("\u{1b}[1m{text}\u{1b}[22m"))

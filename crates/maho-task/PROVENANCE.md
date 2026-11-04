@@ -69,3 +69,48 @@
   mentions `/login`; "model/models" is matched as a whole word; the final background delivery
   happens before waiters are woken. Tests `d2_test_10_*`, `d2_test_11_*` in
   `src/credentials.rs` and the D4 test 7 assertions in `tests/delta_5152.rs` follow the spec.
+
+## Delegated task completion transport and wake batch limiting (clean-room, GAP-5 / ultrawork.md §9)
+
+- Method: **C** (clean room). Built from `docs/cleanroom/specs/ultrawork.md` section 9 (Delegated
+  Task Completion Transport and Wake Batch Limiting) and test vectors 37-39 (§10 Group H); todo 16.
+- Allowed inputs: `docs/cleanroom/specs/ultrawork.md`, `crates/maho-task/` MIT code, and
+  `crates/maho-config/`. No forbidden source or path was opened or read.
+- New: `src/transport/` (`cap.rs`, `batch.rs`, `mod.rs`) providing `cap_completion_response`,
+  `build_wake_batch`, `deliver_batch`, `deliver_settled`, `SettledBatcher` and
+  `bind_settled_batcher`. UTF-16 code unit bounds without breaking surrogate pairs, raw response
+  spill to `local://<state_dir>/completion-results/<task_id>.txt`, visible pointer line in message
+  content with both `local://` URI and plain absolute path, graceful spill failure handling with
+  visible note, well-formed `<task-result>` XML envelope preservation via
+  `format_result_envelope`, and batch overflow manifest spill to
+  `local://<state_dir>/completion-results/wake-overflow-<batch_id>.json` with the trailer pointer
+  `N more task results: local://<path_to_manifest>`; when the manifest cannot be written the
+  inline set is chosen again against the longer error trailer, so the message stays within the
+  batch limit.
+- `bind_settled_batcher` is defined in `src/transport/mod.rs` and called from
+  `src/extension.rs` when the task manager is built. A settle only enqueues its result; the first
+  settle with no flush pending spawns one flush task that yields once, so every settle already
+  runnable on the same thread (also on the current-thread runtime mhc ships with) enqueues first,
+  and then drains the queue into one bounded wake. The flush task signals each settle's oneshot
+  only after the batch holding its result was sent (or its failure was appended as a
+  `task_delivery_error` entry), and `TaskManager` awaits that signal before waking waiters. No
+  timer, sleep, or blocking wait is involved.
+- A wake bounds content plus serialized details by the batch limit. Details carry only
+  `{task_id, status, file_uri, truncated}` per inline task; task text appears once, in the content.
+- `TaskSettings::from_view` in `src/settings.rs` reads `task.completion_transport_limit`
+  (default 8,000, clamped [1,000, 64,000]) and `task.completion_batch_limit` (default 24,000,
+  clamped [2,000, 128,000]). `maho-config` declares both keys (`task.completion_transport_limit`,
+  integer >= 1000; `task.completion_batch_limit`, integer >= 2000), so config loading keeps them;
+  `tests/config_limits.rs` loads a config file and checks they reach `TaskSettings`.
+- Tests (`tests/transport_cap.rs`): `result_capped_and_spilled` and `batch_capped_with_pointers`,
+  surrogate pair bounds, within-budget inlining, below-minimum clamping, wired delivery with capped
+  body, visible pointer line, and intact XML envelope (`wired_delivery_caps_body_with_pointer_and_intact_envelope`),
+  spill write failure handling (`wired_delivery_failed_spill_still_slices_with_note`), batched
+  delivery with overflow manifest (`wired_batch_delivery_caps_and_overflows`), batch manifest write
+  failure handling (`wired_batch_delivery_failed_manifest_delivers_inline_with_note`), synchronous
+  delivery before waiters wake (`settled_batcher_delivers_before_waiters_wake`), non-nested fallback
+  envelope on task failure (`settled_batcher_failed_task_stderr_not_nested`), coalescing of results
+  that settle in the same tick into one bounded message on the current-thread runtime
+  (`settled_batcher_coalesces_same_tick_settles_on_current_thread`), error entry plus waiter release
+  on a refused delivery (`settled_batcher_failed_delivery_records_entry_and_releases_waiters`), and bounded details for a single
+  overflowed task (`single_overflowed_task_details_stay_bounded`).

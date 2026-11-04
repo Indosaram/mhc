@@ -233,7 +233,7 @@ async fn active_run_continues_once_per_status() -> Result<(), Box<dyn std::error
     maho_omo_ulw_loop::index::UlwLoopComponent::default().register(&mut api);
     let mut ctx = support::context();
     ctx.cwd = root.path().into();
-    for _ in 0..2 {
+    for _ in 0..3 {
         let mut event = ExtensionEvent::AgentEnd {
             messages: support::finished_turn(),
             aborted: Some(false),
@@ -248,7 +248,7 @@ async fn active_run_continues_once_per_status() -> Result<(), Box<dyn std::error
         .await?;
     }
     let messages = actions.0.lock().expect("messages");
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert!(!messages[0].0.display);
     assert!(messages[0].1.trigger_turn);
     assert_eq!(messages[0].1.deliver_as, Some(DeliverAs::FollowUp));
@@ -282,13 +282,33 @@ fn register_status() -> (
     Arc<Actions>,
     Arc<std::sync::atomic::AtomicUsize>,
 ) {
+    register_status_in(std::path::Path::new("/tmp"))
+}
+
+/// Gives the loop a plan directory so tool results see state to refresh, like a real session.
+fn loop_dir_root() -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join(".omo/ulw-loop/session");
+    std::fs::create_dir_all(&dir).expect("loop dir");
+    std::fs::write(dir.join("goals.json"), "{}").expect("goals");
+    root
+}
+
+fn register_status_in(
+    root: &std::path::Path,
+) -> (
+    ExtensionApi,
+    Arc<Actions>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let expected_cwd = root.to_path_buf();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let captured = calls.clone();
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
     runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(
-        LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
+        LoadedExtension::new("loop", root.into(), SourceInfo::default()),
         ExtensionSessionProfile::default(),
         EventBus::default(),
         runtime,
@@ -296,7 +316,7 @@ fn register_status() -> (
     maho_omo_ulw_loop::index::UlwLoopComponent {
         logger: None,
         read_status: Some(Arc::new(move |cwd| {
-            assert_eq!(cwd, std::path::PathBuf::from("/tmp"));
+            assert_eq!(cwd, expected_cwd);
             captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async {
                 maho_omo_ulw_loop::omo_command::CommandResult {
@@ -377,7 +397,8 @@ async fn idle_user_input_resets_stale_status_without_querying() {
     let (api, actions, calls) = register_status();
     end(&api).await;
     end(&api).await;
-    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
     let mut event = ExtensionEvent::Input(InputEvent {
         input_id: "id".into(),
         text: "literal prompt".into(),
@@ -391,14 +412,16 @@ async fn idle_user_input_resets_stale_status_without_querying() {
             .expect("dispatch"),
         EventResult::Input(InputEventResult::Continue)
     ));
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     end(&api).await;
-    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+    assert_eq!(actions.0.lock().expect("messages").len(), 3);
 }
 
 #[tokio::test]
 async fn extension_input_preserves_stale_status_guard() {
     let (api, actions, _) = register_status();
+    end(&api).await;
+    end(&api).await;
     end(&api).await;
     let mut event = ExtensionEvent::Input(InputEvent {
         input_id: "id".into(),
@@ -414,7 +437,7 @@ async fn extension_input_preserves_stale_status_guard() {
         EventResult::Input(InputEventResult::Continue)
     ));
     end(&api).await;
-    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
 }
 
 #[tokio::test]
@@ -496,8 +519,22 @@ async fn completed_status_never_delivers_continuation() {
 
 #[tokio::test]
 async fn relevant_tool_results_refresh_status_at_session_cwd() {
-    let (api, _, calls) = register_status();
-    for name in ["create_goal", "update_goal", "bash", "interactive_bash"] {
+    let root = loop_dir_root();
+    let (api, _, calls) = register_status_in(root.path());
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    let goals = std::fs::File::options()
+        .write(true)
+        .open(root.path().join(".omo/ulw-loop/session/goals.json"))
+        .expect("goals file");
+    for (index, name) in ["create_goal", "update_goal", "bash", "interactive_bash"]
+        .into_iter()
+        .enumerate()
+    {
+        // A changed plan mtime is what makes the status stale; set it explicitly instead of sleeping.
+        goals
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 + index as u64))
+            .expect("set mtime");
         let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
             tool_name: name.into(),
             tool_call_id: "id".into(),
@@ -507,7 +544,7 @@ async fn relevant_tool_results_refresh_status_at_session_cwd() {
             is_error: false,
             usage: None,
         });
-        api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+        api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
             .await
             .expect("dispatch");
     }
@@ -865,7 +902,7 @@ async fn stale_status_logs_skipped_through_the_context_logger() {
     }
     .register(&mut api);
     let ctx = support::context_with_logger(Arc::clone(&recorder));
-    for _ in 0..2 {
+    for _ in 0..3 {
         let mut event = ExtensionEvent::AgentEnd {
             messages: support::finished_turn(),
             aborted: Some(false),
@@ -952,6 +989,9 @@ async fn shell_tool_result_activates_the_footer_immediately()
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&calls);
     let ui = Arc::new(support::TestUi::default());
+    let plan_dir = root.path().join(".omo/ulw-loop/session");
+    std::fs::create_dir_all(&plan_dir)?;
+    std::fs::write(plan_dir.join("goals.json"), "{}")?;
     let mut api = ExtensionApi::new(
         LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
         ExtensionSessionProfile::default(),
@@ -989,6 +1029,11 @@ async fn shell_tool_result_activates_the_footer_immediately()
     };
     let mut read = tool("read");
     api.registered.handlers[&EventKind::ToolResult][0](&mut read, &ctx).await?;
+    // The shell command changed the plan; an explicit mtime stands in for that write.
+    std::fs::File::options()
+        .write(true)
+        .open(root.path().join(".omo/ulw-loop/session/goals.json"))?
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5))?;
     let mut shell = tool("bash");
     api.registered.handlers[&EventKind::ToolResult][0](&mut shell, &ctx).await?;
     assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -1000,4 +1045,123 @@ async fn shell_tool_result_activates_the_footer_immediately()
         ))
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn code_only_turn_continues() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "edit".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+        .await
+        .expect("dispatch");
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn read_only_turns_stop_after_two() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    end(&api).await;
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn two_idle_turns_stop() {
+    let (api, actions, _) = register_status();
+    for _ in 0..4 {
+        end(&api).await;
+    }
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn bash_without_loop_dir_skips_status() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = calls.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("loop", "/tmp/nonexistent".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    maho_omo_ulw_loop::index::UlwLoopComponent {
+        logger: None,
+        read_status: Some(Arc::new(move |_| {
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                maho_omo_ulw_loop::omo_command::CommandResult {
+                    code: 0,
+                    stdout: r#"{"ok":true,"plan":{"goals":[]}}"#.into(),
+                }
+            })
+        })),
+    }
+    .register(&mut api);
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "bash".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+        .await
+        .expect("dispatch");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn status_calls_constant_over_300_unchanged_results() {
+    let root = loop_dir_root();
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = calls.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    maho_omo_ulw_loop::index::UlwLoopComponent {
+        logger: None,
+        read_status: Some(Arc::new(move |_| {
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                maho_omo_ulw_loop::omo_command::CommandResult {
+                    code: 0,
+                    stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into(),
+                }
+            })
+        })),
+    }
+    .register(&mut api);
+    for _ in 0..300 {
+        let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+            tool_name: "create_goal".into(),
+            tool_call_id: "id".into(),
+            input: serde_json::json!({}),
+            content: Vec::new(),
+            details: None,
+            is_error: false,
+            usage: None,
+        });
+        api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx)
+            .await
+            .expect("dispatch");
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

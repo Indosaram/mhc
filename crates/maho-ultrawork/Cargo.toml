@@ -1,0 +1,15 @@
+[package]
+name = "maho-ultrawork"
+description = "Ultrawork orchestration engine: keyword classifier with context masking, once-per-session contract injection, re-mention reminder, compaction and revision re-arm, mass mode block and the todo sizing reminder."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -3,6 +3,12 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use crate::transport::{
+    DEFAULT_COMPLETION_BATCH_LIMIT, DEFAULT_COMPLETION_TRANSPORT_LIMIT,
+    MAX_COMPLETION_BATCH_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT,
+    MIN_COMPLETION_BATCH_LIMIT, MIN_COMPLETION_TRANSPORT_LIMIT,
+};
+
 /// Environment variable carrying a child's nesting depth (0 = the main session).
 pub const DEPTH_ENV: &str = "MHC_TASK_DEPTH";
 /// Environment variable carrying a child's task id.
@@ -87,6 +93,10 @@ pub struct TaskSettings {
     pub wait_min: Duration,
     pub wait_default: Duration,
     pub wait_max: Duration,
+    /// Per-child completion response limit in UTF-16 code units (§9.1).
+    pub completion_transport_limit: usize,
+    /// Parent wake batch limit in UTF-16 code units (§9.2).
+    pub completion_batch_limit: usize,
 }
 
 impl Default for TaskSettings {
@@ -99,6 +109,8 @@ impl Default for TaskSettings {
             wait_min: Duration::from_millis(5_000),
             wait_default: Duration::from_millis(60_000),
             wait_max: Duration::from_millis(600_000),
+            completion_transport_limit: DEFAULT_COMPLETION_TRANSPORT_LIMIT,
+            completion_batch_limit: DEFAULT_COMPLETION_BATCH_LIMIT,
         }
     }
 }
@@ -140,6 +152,24 @@ impl TaskSettings {
             if let Some(ms) = u64_at(task, &["wait", key]).filter(|ms| *ms > 0) {
                 *slot = Duration::from_millis(ms);
             }
+        }
+        if let Some(n) = u64_at(task, &["completion_transport_limit"])
+            .or_else(|| u64_at(task, &["completionTransportLimit"]))
+        {
+            let val = usize::try_from(n).unwrap_or(usize::MAX);
+            settings.completion_transport_limit = val.clamp(
+                MIN_COMPLETION_TRANSPORT_LIMIT,
+                MAX_COMPLETION_TRANSPORT_LIMIT,
+            );
+        }
+        if let Some(n) = u64_at(task, &["completion_batch_limit"])
+            .or_else(|| u64_at(task, &["completionBatchLimit"]))
+        {
+            let val = usize::try_from(n).unwrap_or(usize::MAX);
+            settings.completion_batch_limit = val.clamp(
+                MIN_COMPLETION_BATCH_LIMIT,
+                MAX_COMPLETION_BATCH_LIMIT,
+            );
         }
         settings
     }
@@ -192,6 +222,24 @@ mod tests {
         assert_eq!(settings.wait_for(Some(Duration::from_secs(9))), Duration::from_millis(30));
         assert_eq!(settings.wait_for(Some(Duration::ZERO)), Duration::from_millis(10));
         assert_eq!(TaskSettings::from_view(None), TaskSettings::default());
+    }
+
+    #[test]
+    fn reads_and_clamps_transport_limits() {
+        let custom = json!({"task": {"completion_transport_limit": 5000, "completion_batch_limit": 30000}});
+        let s = TaskSettings::from_view(Some(&custom));
+        assert_eq!(s.completion_transport_limit, 5000);
+        assert_eq!(s.completion_batch_limit, 30000);
+
+        let low = json!({"task": {"completion_transport_limit": 500, "completion_batch_limit": 100}});
+        let s = TaskSettings::from_view(Some(&low));
+        assert_eq!(s.completion_transport_limit, MIN_COMPLETION_TRANSPORT_LIMIT);
+        assert_eq!(s.completion_batch_limit, MIN_COMPLETION_BATCH_LIMIT);
+
+        let high = json!({"task": {"completion_transport_limit": 100_000, "completion_batch_limit": 200_000}});
+        let s = TaskSettings::from_view(Some(&high));
+        assert_eq!(s.completion_transport_limit, MAX_COMPLETION_TRANSPORT_LIMIT);
+        assert_eq!(s.completion_batch_limit, MAX_COMPLETION_BATCH_LIMIT);
     }
 
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

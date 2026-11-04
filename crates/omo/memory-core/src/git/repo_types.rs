@@ -76,6 +76,8 @@ pub type GitHookInstaller = Arc<dyn Fn(&Path) -> Result<(), GitError> + Send + S
 #[derive(Default, Clone)]
 pub struct InitializeGitRepoOptions {
     pub author_name: Option<String>,
+    /// Engine-authored content only: the initial commit that carries these runs no pre-commit or
+    /// commit-msg checks.
     pub seed_files: Vec<GitSeedFile>,
     pub install_hooks: Option<GitHookInstaller>,
 }

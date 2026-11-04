@@ -711,7 +711,7 @@ mod tests {
             }));
         runtime.plugin_root = Some(dir.path().join("no-plugin"));
         Fixture {
-            agent_dir: home.join(".omo/agent"),
+            agent_dir: super::super::agent_dir::default_agent_dir(&home),
             runtime,
             catalog_calls: calls,
             _dir: dir,
@@ -881,7 +881,7 @@ mod tests {
     fn a_skill_directory_created_after_planning_counts_as_changed() {
         let f = fixture();
         let (_, plans) = scan_setup(&f.runtime, &f.agent_dir, true, &mut |_| {});
-        let skill_dir = f.agent_dir.join("skills/my-skill");
+        let skill_dir = f.agent_dir.join("skills").join("my-skill");
         let shown = skill_dir.to_string_lossy().into_owned();
         assert!(
             !plans

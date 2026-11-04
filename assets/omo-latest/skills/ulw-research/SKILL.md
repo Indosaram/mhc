@@ -16,9 +16,9 @@ You are the research orchestrator. The user has explicitly ordered exhaustive re
 
 Run this skill only when the user explicitly demands it: the word "ulw-research" (also `/ulw-research`, `/skill:ulw-research`), any "ulw" research wording, or an explicit request for research, deep research, or an ultra-precise investigation — in any language. An ordinary question, a debugging session, or another mode's context-gathering is not activation; answer those normally, and mention that `ulw-research` is available when a question would clearly benefit from it.
 
-Open your reply with the line `ULW-RESEARCH MODE ENABLED!`. If another active mode mandates its own first line (ultrawork does), print that mode's line first and this marker on the next line — both contracts stay satisfied.
+Default QA tier: chat-shaped questions with no document deliverable run the light tier and never call `report-tools.mjs`. Static gate checks, fidelity locks, and visual QA gates apply only when a document deliverable (PDF, DOCX, slides, or standalone designed HTML) was explicitly requested.
 
-**What a shortened run still owes.** If you judge the topic settled and shorten the research, say so, but two things survive any shortening: when the harness can show an HTML page inline, the final report is shown that way (the answer, its figures, its sources), and a visual reproduction is compared against real frames of its source with the side-by-side pairs inside that report (the final-materials phase). A built app or 3D scene shown inline is the product, not the report; show the report as well.
+**What a shortened run still owes.** If you judge the topic settled and shorten the research, say so, but two things survive any shortening: when the harness can show an HTML page inline (conditional on availability, e.g. `show_html_page` or `html_render`), the final report is shown that way (the answer, its figures, its sources), and a visual reproduction is compared against real frames of its source with the side-by-side pairs inside that report (the final-materials phase). A built app or 3D scene shown inline is the product, not the report; show the report as well.
 
 ## Authority while active
 
@@ -34,26 +34,14 @@ The research is done when all of these hold:
 - Every EXPAND lead was investigated or explicitly closed as a duplicate or dead end, and convergence was reached under the Phase 2 rules.
 - Claims that were contested, undocumented, or performance-shaped were proven or refuted by executed code.
 - Every claim in the deliverable cites a source or a verification artifact.
-- Every asserted claim is represented in the claim graph, tied to an intent-vs-reality diff when an expected truth exists, and backed by observation manifest entries from independent observation groups or a documented single-source exception; convergence or exception status is explicit.
+- For document deliverables: every asserted claim is represented in the claim graph, tied to an intent-vs-reality diff when an expected truth exists, and backed by observation manifest entries from independent observation groups or a documented single-source exception; convergence or exception status is explicit.
 - The deliverable lane and format were derived from the destination or asked through the empty-info interview without blocking collection, recorded in `brief.md` with `answered_by`, and the final materials match that record.
-- The delivered artifact passed the delivery gates in order (static gates, layout gates, fidelity gate, visual QA, and the proofread pass where the harness provides one), each status is in `outcome.json`, and `outcome verify` passed.
+- For document deliverables: the delivered artifact passed the delivery gates in order (static gates, layout gates, fidelity gate, visual QA, and the proofread pass where the harness provides one), each status is in `outcome.json`, and `outcome verify` passed.
 - Every excursion opened during the run was closed by an EXIT rule, folded back into the claim or axis that triggered it, and recorded in both `excursion-log.md` and the ulw-loop ledger.
-- When the harness can show an HTML page inline, the report was shown inline before the artifact paths.
+- When the harness can show an HTML page inline (conditional on availability), the report was shown inline before the artifact paths.
 - When the ask reproduces a visual source, the report carries side-by-side pairs of real source frames and the output rendered at the same moments, each with its critique, and the differences they surfaced were fixed or listed as gaps. A simple or well-understood topic shortens the research, never this comparison.
-- The delivery message carries the closing briefing printed by `outcome briefing`: sources (total + unique domains), elapsed minutes, every promised deliverable with its status, and any residual defects.
+- For document deliverables: the delivery message carries the closing briefing printed by `outcome briefing`: sources (total + unique domains), elapsed minutes, every promised deliverable with its status, and any residual defects.
 - The session journal reconstructs what was searched, found, and expanded, wave by wave, and it was written in real time rather than reconstructed at the end.
-
-## Epistemic instrumentation
-
-Saturation is not just more searching; it is a knowledge-production protocol. The session journal must make the path from observation to claim to verdict auditable. The orchestrator owns these artifacts:
-
-- `intent-diff.md` — one row per expected truth derived from the user intent, design/spec text, branch history, or authoritative docs. Required fields: `intent_id`, expected truth, observed reality, diff, violated invariant, intent source, supporting observations, status (`true`, `violated`, or `unknown`), and linked claim ids.
-- `claim-graph.md` — the single claim store; one node per claim. Required fields: `claim_id`, statement, claim type, risk tier, scope, intent ids, supporting observations, contradicting observations, independent observation groups, convergence status, counter-search result, primary source backing, dependencies, status (`supported`, `partial`, `refuted`, or `unresolved`), `fact_ids` (the ledger rows the claim rests on), and final synthesis location. High-risk non-code nodes that clear the Phase 3b gate are mirrored into a `verified-claims` digest section at the top of the file — the sole allowlist the synthesis draws non-code claims from.
-- `observation-manifest.md` — one row per observation. Required fields: `observation_id`, source path or URL, evidence layer, observer group, independence basis, observer, `observed_at`, `valid_at` or `claim_valid_at`, artifact path, quote or line anchor, and contamination notes.
-- `verification-economics.md` — one row per proof decision. Required fields: claim, risk, error cost, verification cost/time, chosen verification path, defer/verify decision, outcome, and residual risk.
-- `cause-disappearance.md` — one row per causal finding. Required fields: cause id, expected truth, previous observation, `last_seen`, disconfirming observation, replacement cause if any, current status, and whether the violation is no longer observed.
-
-Observation candidates and claim candidates travel back from workers as message text. The orchestrator writes the instrumentation artifacts, links candidates into the intent diff and claim graph, and records where each observation entered the synthesis. A conclusion is not ready for final materials until its expected truth/reality diff is closed or marked unknown, its claim node exists, and its independent-observation convergence status is supported or explicitly excepted.
 
 ## Run the swarm as a cooperating team
 
@@ -96,83 +84,165 @@ Every research spawn message contains, in order:
 
 A worker with nothing to expand writes `## EXPAND` followed by `none — <one-line reason>`. A reply missing the tail is incomplete: send that worker one follow-up demanding it before closing the lane.
 
-## Execution references
+## EXPAND
 
-Read [research-collection.md](references/research-collection.md) before scoping or collecting sources, then [research-delivery.md](references/research-delivery.md) before verification, synthesis, and delivery. These references continue this skill in phase order; their requirements remain binding.
+Leads surfaced in worker replies are the engine of convergence. Triage every lead immediately: queue for expansion, mark as duplicate, or close as dead end.
 
-`source snapshot --html` and `--url` probe their own conversion and print the numbers it altered (a footnote digit glued onto a value, a merged table cell); `fact add` then refuses those numbers with `conversion_altered_number`, so write a verified text of that source and replace the snapshot with `source snapshot --id S<n> --text <verified.txt> --replace` (refused while an active row cites the id: retract those rows first or use a new id), then add the fact from it. When you convert a document yourself, run `node "$SKILL_DIR/scripts/report-tools.mjs" source probe-conversion <raw-file> <converted-file>` and snapshot a verified `--text` instead before adding any number it lists as `altered`; `lost` is a warning only.
+## Phase 0 — Decompose and open the journal
 
-## Phase 5 — Final materials
+Decompose the query before spawning workers. Seed `intent-diff.md` with expected truths:
 
-The promised formats recorded in `brief.md` and `outcome.json` are binding; `pdf` + `docx` is the default pair only when a document was asked for with no format word and no destination:
-
-| Target | How |
-|---|---|
-| PDF (default) | Author the report as one self-contained HTML file, then print it headless: `chrome --headless --disable-gpu --no-pdf-header-footer --print-to-pdf=<out.pdf> file://<report.html>`. Embed the `design-spec.md` fonts as real webfonts (CJK included) instead of trusting system fallbacks. `uv run --with weasyprint python` is the fallback renderer. |
-| DOCX (default) | `pandoc <report.md> -o <out.docx>`, adding `--reference-doc=<template.docx>` when the user has a house style; `uv run --with python-docx python` when pandoc is unavailable. Charts and Mermaid renders go in as images. |
-| Slides / deck | `uv run --with python-pptx python` — one claim per slide, a chart or diagram per claim. |
-| Standalone HTML / Markdown | The authored source itself. |
-
-**Every reader-facing edition is filled and verified.** The main report, the inline edition, LaTeX sections, and slide sources are all filled by `fact fill` from the same placeholder source, and each is verified on its own by `fact verify`; PDF and DOCX are renders of a verified source (`pandoc <report.html> -o <out.docx>` when the DOCX comes from the filled HTML). Fill and verify HTML or Markdown sources (`fact verify --format html|md`, with a fill map for Markdown); verify LaTeX through its Markdown source, since direct `--format tex` verification exits 2. Record a delivered edition with `outcome set <format> delivered --path <file> --verified-by <record>`, where `<record>` is the `fact verify` output whose `artifact_sha256` equals the sha256 of the delivered source; a PDF or DOCX adds `--rendered-from <source>` and is matched against that source. `outcome verify` refuses a delivered row without a matching record (`edition_unverified`).
-
-**Write `design-spec.md` the moment the deliverable is recorded — before any asset worker spawns.** When a document was pointed at, extract it instead of retyping its stylesheet: `node "$SKILL_DIR/scripts/report-tools.mjs" format-extract <reference> --out "$SESSION_DIR/design-spec.md"` (`--from-url` for a URL), then fill every `TODO: ask` from the interview answers, never by guessing. It is the one design contract every asset and assembly worker receives: template family (absent a reference, the clean analyst-report register — one accent over neutral tones, generous margins, styled section headings, no emoji, no clipart), palette tokens, body/heading fonts (a real gothic CJK webfont — Pretendard, Noto Sans KR — when the report language needs one, with `word-break: keep-all` for Korean), responsive breakpoints and HTML/CSS charts for web deliverables, the figure standard below, and the lineage mode on its own line: `Lineage: inline` (analyst default: every unit-bearing number tagged MEASURED / ASSUMED / DERIVED or cited in the same element) or `Lineage: section` (web and blog register: every section cited, lineage in the figure captions). The reference's section 6 lists the full defaults. One font family and one palette govern prose, charts, Mermaid, and generated images alike; a diagram rendering in a random default font inside a styled report is a defect, not a style choice.
-
-**The figure standard — binding for every image, chart, and diagram.** Each figure sits in a fixed-size container styled from the spec (border, background, caption); the image scales to fit entirely inside it with its original aspect ratio preserved — object-fit: contain semantics — never stretched, never cropped, never spilling out. Every chart carries a title, axis labels, units, and value labels in the report's language; a bare number the reader cannot name is a defect.
-
-Asset workers (background, parallel, each fed `design-spec.md`) — visuals are the DEFAULT deliverable of this phase, not garnish the user must ask for; a delivered report without figures is an incomplete run:
-
-- **Charts for every quantitative finding, computed from real data.** Pull the numbers into an actual table first (CSV/JSON under `$SESSION_DIR`), then plot from that table, never from prose. Follow the data-scientist tool doctrine — numpy always, Polars for filtering/sorting/transforms, DuckDB for joins/aggregations/window functions, never pandas — and load the `data-scientist` skill when this session has it: `uv run --with numpy --with polars --with duckdb --with pyarrow --with matplotlib python`. Keep `pyarrow` in that set — the DuckDB-to-Polars handoff (`.pl()`) fails without it, and `.df()` fails without pandas, so hand data across through `.pl()`, never `.df()`. Save to `$SESSION_DIR/assets/`. Plot ONLY from the ledger: export the rows with `node "$SKILL_DIR/scripts/report-tools.mjs" fact export --csv --out "$SESSION_DIR/assets/<chart>.csv" --session-dir "$SESSION_DIR"` and draw from that CSV; every chart figure carries `data-chart-source="assets/<chart>.csv"`, and its axis tick labels sit inside a `<g class="ticks" data-tick-step=".." data-tick-min=".." data-tick-max="..">` group, so the fidelity gate can check every plotted value and tick (the deliverable reference's section 6 tick rule).
-- **Mermaid graphs** for process, architecture, argument, timeline, and evidence-flow structure, themed to the spec's fonts and palette. Render each to SVG and confirm the file exists before the document references it.
-- **Generated visuals through the imagegen skill whenever the session has it:** a cover plus a concept illustration per major theme, prompted from the spec's style, palette, and mood — document-styled illustration, never generic stock art dropped into a designed page.
-- **Full-page screenshots** of the top 5-10 sources, saved by the web workers while reading, as provenance you can show.
-
-**Every final report is visual — binding.** It carries at least one data visualization of the run's own findings (a chart drawn from the data table, next to the claim it supports), a diagram wherever structure matters, and the topic's own screenshots and video, embedded or linked with attribution; every figure is captioned, sourced, and given alt text. Mermaid for flows, timelines, and relations; generated charts for numbers; image generation only where an illustration genuinely helps; PlotNeuralNet for paper-format reports that describe model architectures. Every asset lane reads [references/report-visualization.md](references/report-visualization.md) first: which tool fits which finding, the render commands, the quality bar, and the checklist the gates apply. A light-tier post still carries one visual when it reports numbers or structure.
-
-**Visual reproductions are compared against the source — binding.** When the ask is to recreate, reproduce, or rebuild something visual (a clip in 3D, an interface from a screenshot, a figure), real frames or captures from the source are the reference: extract them at the moments that define the source, render the output at the same moments and viewpoints, compose side-by-side pairs, critique every pair by looking at it, fix the largest differences, and compare again within the repair bound. The final pairs, and the first-round pairs in the correction log, go into the report. Procedure: [references/report-visualization.md](references/report-visualization.md), section 3, Reference compare. A reproduction checked only against itself is unverified.
-
-**Verify the asset manifest before rendering.** List every asset the document references, assert each file exists and is non-empty on disk, and re-render whatever is missing. A document that renders with three broken diagrams is a document you will publish twice.
-
-Assembly worker — `task(category="deep-low", load_skills=["frontend", "visual-qa", "visualize", "data-scientist", "ulw-loop"], run_in_background=true, ...)`: before writing, read every available design and visualization skill and apply it — the report is a designed artifact, not a text dump; the worker's prompt carries `design-spec.md`. Use the template the user approved; absent a stronger house style the default skeleton is executive summary → key findings by theme → detailed analysis (quotes under 20 words with attribution, charts, Mermaid graphs, generated visuals, SHA-pinned permalinks, verification results) → comparative analysis when options compete → numbered sources with access dates → methodology appendix (workers, waves, searches, verifications, debate rounds) → correction log naming what verification overturned. Write it long and specific: every claim cites `[Source N]`, and the sources section lists every source the run actually used rather than a curated few. The assembly worker writes `report.src.html` with placeholders, never typed values; the orchestrator runs `node "$SKILL_DIR/scripts/report-tools.mjs" fact fill "$SESSION_DIR/report.src.html" --out "$SESSION_DIR/report.html" --session-dir "$SESSION_DIR"` and gates the filled file. The inline edition for a PDF, DOCX, or oversized HTML deliverable comes from the same source (`fact fill "$SESSION_DIR/report.src.html" --inline --out "$SESSION_DIR/report.inline.html"`, which inlines local stylesheets and makes image paths absolute on the filled output), never from a hand copy.
-
-### The delivery gates — every gate for the QA tier must PASS, in order
-
-Nothing reaches the user until the gates pass. Record each result with `node "$SKILL_DIR/scripts/report-tools.mjs" outcome gate <static|fidelity|layout|visual|proofread> <pass|fail|not_run> --session-dir "$SESSION_DIR"`; a gate this harness does not provide is recorded `not_run --reason "<why>"` (`fidelity not_run` refuses without the reason). A chat or post answer (light tier) runs the static gates and one render; every paginated or web deliverable runs them all (the reference's sections 3 and 7).
-
-1. **Static gates (always, before anyone looks at pixels).** `node "$SKILL_DIR/scripts/report-tools.mjs" check "$SESSION_DIR/report.html" --design-spec "$SESSION_DIR/design-spec.md" > "$SESSION_DIR/defects.json"`: keep-all, palette tokens, emoji, em dashes, heading length, unsourced numbers, figure containers, chart text, a report with no visual, images without alt text, gothic-only fonts, citations, the closing and sources sections, broken assets. Codes and fixes: [references/report-gates.md](references/report-gates.md).
-2. **Fidelity gate.** `node "$SKILL_DIR/scripts/report-tools.mjs" fact verify "$SESSION_DIR/report.html" --session-dir "$SESSION_DIR"` checks every number, quote, chart value, and sentence binding against the ledger, the snapshots, `claims.json`, and the locked `## Fidelity` block of `brief.md`, and writes `$SESSION_DIR/fidelity-defects.json` with the verified file's `artifact_sha256`. Exit `1` on any blocker or major defect: record `outcome gate fidelity fail` and repair; minors alone exit `0` and are listed. Verify every other edition the same way into its own record (`--out "$SESSION_DIR/fidelity-inline.json"`). Codes and fixes: [references/report-gates.md](references/report-gates.md); grammar: [references/deliverable-phase.md](references/deliverable-phase.md), Fidelity gate.
-
-**Meaning verifier (a separate session reads every sentence against its source).** When the brief's `meaning check` is `on`, run it after the fidelity gate passes; when it is `off`, `fact pairs` writes `{"skipped": true}` and the step ends there. `node "$SKILL_DIR/scripts/report-tools.mjs" fact pairs "$SESSION_DIR/report.html" --session-dir "$SESSION_DIR"` writes `$SESSION_DIR/pairs.json`: one pair per distinct source quote a findings sentence cites, per sentence bound only by `data-claim` (against the claim's statement), and per `data-translates` span, with `force_strong` set where the lexicon or the hedge position says a strong reader must look. Then spawn one reader worker on the cheapest category, `task(category="quick", ...)`, whose prompt carries ONLY the path of `pairs.json` and the verdict schema, in exactly this text:
-
-```text
-TASK: meaning reader, <cheap|strong> tier. Read ONLY the pair file <SESSION_DIR>/<pairs.json or pairs-strong.json> and the verdict schema in this prompt. Do not open, search, or fetch any other file, page, or tool output: not the report, the ledger, the sources, or the claim graph.
-For each pair, compare `sentence` with `quote` (with `statement` for a claim pair) and decide whether the sentence says something its source does not.
-Write <SESSION_DIR>/meaning-<cheap|strong>.json as {"model_tier": "<cheap|strong>", "verdicts": [...]} with one verdict per pair_id: {"pair_id": "P<n>", "verdict": "ok" or "drift", "drift_kind": ..., "fragment": ..., "source_fragment": ..., "explanation": "<one sentence>"}.
-drift_kind is exactly one of: subject_changed, scope_widened, hedge_dropped, certainty_added, causality_added, direction_flipped, population_changed, evidence_grade_raised, other.
-fragment is copied verbatim from the sentence and source_fragment verbatim from the quote or statement: the shortest exact substrings that show the drift, never paraphrased, never empty. A verdict whose fragments are not found word for word is discarded.
-A sentence that shortens, summarizes, or translates its source without changing subject, scope, certainty, causality, direction, population, or evidence grade is ok. Do not rewrite anything; return verdicts only.
+```
+<analysis>
+Core question: <the actual information need>
+Axes (3+ orthogonal): <axis — what to search, where, why> ...
+Codebase relevant: <yes/no> · External: <yes/no> · Collection: <search-only | browser> · Verification likely: <yes/no>
+Scale: <axis count, source territories, target document length> · Precision demand: <cost of error> → lifecycle: <single team | research team then refinement team>
+</analysis>
 ```
 
-Next, write `$SESSION_DIR/pairs-strong.json` (the same file, keeping only the pairs the cheap reader flagged plus every `force_strong` pair) and spawn one reader on the strong category, `task(category="ultrabrain", ...)`, with the same prompt for the strong tier. Then `node "$SKILL_DIR/scripts/report-tools.mjs" fact meaning-check --pairs "$SESSION_DIR/pairs.json" --verdicts "$SESSION_DIR/meaning-cheap.json" --verdicts "$SESSION_DIR/meaning-strong.json" --edition html --session-dir "$SESSION_DIR"` writes `$SESSION_DIR/fidelity-meaning-defects.html.json`, the meaning record of that edition (repeat `fact pairs` and the readers with `--edition <format>` for every other delivered edition whose source bytes differ): both tiers naming the same `drift_kind` (never `other`) is `meaning_drift_confirmed` (major, exit `1`); one tier alone is `meaning_drift_warn` (minor); a verdict whose fragments are not in the pair is dropped and counted. Repair every confirmed drift by rewriting the sentence from its quote, re-fill, re-verify, and re-read only the changed sentences (`fact pairs ... --changed-since <the new fill map>`); or, when the sentence is right, dispute it with `--dispute P<n> --reason "<why>"`, which keeps the defect for this run and logs the dispute. Pass the record to `repair decide` as one more `--defects` file and list the warnings in the closing briefing. Each flagged pair adds one line to `$SESSION_DIR/fidelity-calibration.jsonl`, whose header records the promotion criterion: `meaning_drift_confirmed` moves from major to an integrity code only after at least 20 runs with disputed-to-confirmed below 10 percent and no more than 2 report-level false blocks in the last 20 runs. These are starting values, changed only with evidence; the scripts never call a model.
+Create the session directory:
+```bash
+mkdir -p .omo/ulw-research/$(date +%Y%m%d-%H%M%S)
+```
+Journal files: `brief.md` (analysis, axes, deliverable record), `sources-ledger.md` (`[S<n>] <url> — <desc>`), `wave-<N>-<kind>-<axis>.md`, `expansion-log.md`, `excursion-log.md`. For document deliverables, see [references/deliverable-phase.md](references/deliverable-phase.md); the instrumentation artifacts are defined in [references/epistemic.md](references/epistemic.md).
 
-3. **Layout gates.** Print the probe with `node "$SKILL_DIR/scripts/report-tools.mjs" layout-probe --json`, evaluate its `source` in the rendered page through the `browser` skill's owned headless engine, save the result as `$SESSION_DIR/boxes.json`, and re-run `check` with `--layout "$SESSION_DIR/boxes.json"` (overflow, clipped text, distorted images, overlapping siblings).
-4. **Visual QA.** Render the produced artifact back to images — PDF pages to PNG, the HTML through the browser skill at desktop and phone widths — and look at them: missing or broken figures, images stretched or spilling their containers, diagram or chart text rendered off the spec's font or palette, clipped tables, overflowing CJK text, blank pages, unlabeled chart values, wrong page breaks. Reading the source markup is not visual QA; inspect the pixels.
+### Run it as a loop, and journal in real time
 
-**Repair is bounded.** After every gate run that found defects, ask `node "$SKILL_DIR/scripts/report-tools.mjs" repair decide --state "$SESSION_DIR/repair-state.json" --defects "$SESSION_DIR/defects.json" --defects "$SESSION_DIR/fidelity-defects.json" --artifact-bytes <bytes> --renders <pages> --session-dir "$SESSION_DIR"` and obey it: `repair` means fix and re-run; `deliver` means stop and ship with the residual defects the manifest now lists; `block` means a content-integrity defect remains (or there is no usable artifact), so do not deliver: tell the user what blocks it and record the row as `failed` with the reason. Never repair past a stop decision (3 attempts, a 2-attempt plateau, an oscillation, or 15 minutes; the reference's section 8). Fidelity defects ride the same loop (`--defects "$SESSION_DIR/defects.json" --defects "$SESSION_DIR/fidelity-defects.json"`), but a `deliver` decision does not release them: while `fidelity-defects.json` lists `untraceable_number`, `value_mismatch`, `unit_mismatch`, `quote_not_verbatim`, `quote_unbound`, `unbound_sentence`, or `chart_value_untraceable`, `outcome verify` fails with `fidelity_unresolved` and `outcome finish` refuses, even with the repair budget spent. The only ways out are a ledger row, an `assumed` row with its rationale, or removing the sentence.
+Register research axes as ulw-loop goals when `ulw-loop` is available. Write findings, sources, quotes, and leads into `$SESSION_DIR` as they land.
 
-Then resolve every manifest row (`outcome set <format> delivered --path <file> --verified-by <record>` (plus `--rendered-from <source>` for a PDF or DOCX) or `blocked_capability` / `skipped` / `failed` with `--reason`) and deliver. **Show the report inline first when the harness can.** When this session has a tool that shows an HTML page inline in the conversation (`show_html_page`, `html_render`), the requester's first view of the result is the report itself: the gated `report.html` when it fits the tool, otherwise an inline edition built from the same synthesis and assets, with the reference-compare pairs when the run has them ([references/deliverable-phase.md](references/deliverable-phase.md), section 9, Showing the report inline). Then give the artifact paths and a compact chat-readable summary of what the report says — the answer in a few sentences, the numbers that matter, and what to look at first. This holds on every tier, a chat answer included, and when the thing built is itself a page (an app, a 3D scene), showing it does not replace the report page. Without an inline page tool, deliver the artifact paths plus that summary. The document is the deliverable; the summary is what gets it read.
+## Phase 1 — Saturation wave
 
-### The closing briefing — every run ends with it
+Launch the entire first wave in one turn — all axes in parallel. Scaling floor:
+- Single topic, codebase only: 3 explore
+- Single topic, web only: 5 web, 1 repo-dive
+- Single topic, both: 2 explore, 4 web, 1 repo-dive
+- Multi-faceted: 4 explore, 8 web, 2 repo-dive
+- Full due diligence: 4 explore, 9 web, 2 repo-dive
 
-The last thing the user reads states, in one compact block, what the answer is made of:
+Disambiguate entities (canonical name, first-party URL, existence) before expanding. Role protocols:
+- **Codebase (explore):** grep 3+ variations, structural AST search, LSP refs/defs, git log `-S` and `--grep`. Report absolute paths and file:line patterns.
+- **Web:** search with 10+ varied queries; when the triage line says `External: yes` and `Collection: browser`, read candidates in the user's browser via the `browser` skill and screenshot top sources (load `browser` or `ultimate-browsing` only then; never for local-only research, `External: no`, or `search-only`); Context7 for known libraries; grep.app/gh search for usage.
+- **Repo deep-dive (librarian):** shallow-clone to tmp, pin HEAD SHA, trace call chains, return SHA-pinned permalinks.
 
-- **The printed block.** `node "$SKILL_DIR/scripts/report-tools.mjs" outcome verify --session-dir "$SESSION_DIR" && node "$SKILL_DIR/scripts/report-tools.mjs" outcome finish --session-dir "$SESSION_DIR" && node "$SKILL_DIR/scripts/report-tools.mjs" outcome briefing --session-dir "$SESSION_DIR"`: sources and distinct domains counted from `sources-ledger.md`, elapsed minutes from the session directory's own timestamp, every promised deliverable with its status, the gate results, the residual defects, and the repair summary. A failing `verify` means the run is not done.
-- **Effort.** Workers, waves, excursions, and verifications — the same counters as the `SYNTHESIS.md` header — plus how many sources were primary and how many claims went to the unresolved/refuted annex. `fact export` also prints a coverage line (`N of M sources snapshotted, by extractor: ...`); paste it into the briefing's effort line.
+Full role protocols and the example spawn: [references/research-collection.md](references/research-collection.md). For MASS research, see [references/mass-collection.md](references/mass-collection.md).
 
-Never ship the artifact without this block, and never fill it from memory — paste the printed block and read the rest off the journal.
+## Phase 2 — Expand until convergence
 
-**Record the format choice.** After delivery, when the harness exposes a memory tool and the run qualifies (the user declared a preference, or made the same unsolicited choice on 2+ runs), append one episode line to `reference/human-report-style.md` in the grammar of the reference's section 5, and update the `system/human/report-style.md` pointer when a generalization changed.
- If you stood up a team, disband it and confirm every worker is terminal before the final answer.
+Collect returns as they land:
+1. Journal return into `wave-<N>-<kind>-<axis>.md` with verbatim EXPAND markers.
+2. Deduplicate new markers against `expansion-log.md`.
+3. Spawn expansion workers for unchecked leads immediately (`task(category="deep-low", ...)`; add `load_skills=["browser"]` only when `Collection: browser`).
+4. Record wave in `expansion-log.md`.
+5. Relay user steering to all workers immediately.
 
-## Snapshot and locator contract
+### Excursions — dive deep on a new find, then surface back out
 
-- `sources/` and `fact-ledger.json` — one directory per source snapshot and the ledger built from them. The snapshot and locator contract (raw bytes, converted-only sources, byte locators, `source refresh`) is defined once, in [fact-ledger.md](references/fact-ledger.md#snapshot-and-locator-contract); every number and quotation reaches the report through a ledger placeholder.
+An excursion is a bounded detour (max depth 2) off the wave plan.
+- **ENTER triggers:** contradiction with locked claim; changes final answer/recommendation; unowned source territory; explicit user steering.
+- **EXIT rules:** trigger resolved; 2 consecutive probes changed nothing; diminishing returns; budget spent. Fold back findings into the parent answer and mirror to ulw-loop ledger (`none` is valid and required if nothing changed).
+- **Convergence:** stop only when (1) zero unchecked leads remain, (2) 3 consecutive waves produce no new actionable leads, or (3) expansion depth reaches 5 waves (pause and ask user).
+
+## Phase 3 — Verify contested claims by running code
+
+Settle with executed code whenever sources disagree, behavior is undocumented, or claims are performance/compatibility-shaped:
+- Spawn verification worker: minimal self-contained test script, executed under real runtimes (`uv run python`, `bun`, direct compile).
+- Capture stdout+stderr, pin runtime versions, journal verdict (`CONFIRMED` / `REFUTED` / `PARTIAL`) to `verify-<slug>.md`.
+
+## Phase 3b — Lock non-code claims through the claim graph
+
+High-risk non-code claims (numeric, legal, financial, dated, causal) must pass the Phase 3b gate to enter `verified-claims`:
+- >= 2 independent source domains corroborate it.
+- >= 2 independent observation groups converge on it.
+- One counter-search actively sought refutation.
+- Backed by primary source (standard, filing, dataset, official doc).
+- Explicit temporal evidence (`observed_at`, `valid_at`).
+Unverified claims move to Unresolved or Refuted annex. For document deliverables, the machine-readable claim table is indexed via `report-tools claims index`. Details in [references/research-delivery.md](references/research-delivery.md).
+
+## Phase 4 — Synthesize
+
+After convergence and verification, write `SYNTHESIS.md`:
+
+```markdown
+# ULW-Research Synthesis: <query>
+Workers: <total> · Waves: <count> · Excursions: <count> · Sources: <count> (<unique domains> domains) · Verifications: <count> · Elapsed: <minutes> min
+
+## Executive summary        — 2-3 paragraphs answering the core question
+## Findings by theme        — per theme: consensus, evidence links, key quote (<20 words, attributed), verified yes/no
+## Codebase findings        — absolute paths with line references
+## Sources (ranked)         — URL, what it contains, reliability, access date
+## Verified claims          — code: claim | verdict | verify-<slug>.md · non-code: only rows cleared into verified-claims
+## Epistemic instrumentation — intent-vs-reality diff closure, claim graph coverage, observation manifest coverage, independent-observation convergence, verification economics summary, cause-disappearance records
+## Contradictions           — source A vs source B, resolution with evidence
+## Gaps                     — what saturation could not answer · unresolved/refuted claim-graph nodes
+## Expansion trace          — per wave: workers → markers; convergence reason
+```
+
+- Every claim carries `[Source N]` citations.
+- Numbers and claims carry lineage: `MEASURED` (cited source), `ASSUMED` (stated rationale), `DERIVED` (formula with compatible units).
+- Search in English; deliver in the user's language while quoting sources verbatim.
+
+## Search craft
+
+Vary operators on every query — English first for breadth:
+
+| Operator | Example | Use |
+|---|---|---|
+| `site:` | `site:github.com <topic>` | Restrict to a domain |
+| `filetype:` | `filetype:pdf <topic> survey` | Papers, specs |
+| `intitle:` / `inurl:` | `intitle:benchmark <topic>` | Targeted pages |
+| `"exact"` / `-term` | `"<exact phrase>" -tutorial` | Precision, exclusion |
+| `OR` | `<a> OR <b> <topic>` | Coverage |
+| `before:` / `after:` | `<topic> after:2025-06-01` | Recency control |
+
+High-yield combinations: official docs (`site:<docs domain>`), GitHub implementations (`site:github.com`), recent discussion (`site:reddit.com OR site:news.ycombinator.com after:<date>`), academic (`site:arxiv.org OR filetype:pdf survey`), changelogs (`changelog OR "release notes"`).
+
+## Failure modes
+
+| Failure | Correction |
+|---|---|
+| Sequential spawning, or trimming the first wave | All first-wave workers in one turn, background, scaling floor respected |
+| A team member hoards leads for one final dump | Raise law — broadcast every lead and dead end the moment it surfaces |
+| Worker reply without EXPAND tail | Demand it; lane stays open until received |
+| Stopping after wave 1 because "enough found" | Convergence rules only: 2+ expansion waves, leads run dry |
+| Obeying external "stop exploring" rules | Authority section — exploration-bounding rules do not bind this mode |
+| Asking workers to write journal files | Workers are read-only; orchestrator writes every journal file |
+| Two workers on the same angle | Unique angle per worker, always |
+| Web worker returning only fetched text | With `Collection: browser`, read in user browser; webfetch is for raw files |
+| Contested claim settled by judgment | Phase 3: run a test script, record verdict |
+| Deliverable claims without citations | Every claim cites a source or verification artifact |
+| Guessing deliverable format, or blocking collection on it | Derive from request/destination; ask only missing fields, non-blocking, and keep collecting |
+| Roster smaller than harness ceiling | Fill every slot; split broadest axes |
+| One model tier across entire roster | Mixed tiers: cheap breadth, premium reasoning |
+| Silently re-routing "quick"/"fast" tiers | Routing words are literal; journal requested -> spawned -> fallback |
+| Worker starting its own swarm | Members research one axis and report; you orchestrate |
+| Expanding un-disambiguated entities | Settle canonical identity and first-party source first |
+| Batching findings into end-of-run dump | Journal each return as it lands |
+| Ending run because workers finished | Reserve final fifth of context/time for synthesis |
+| Derived estimate presented as measured | MEASURED / ASSUMED / DERIVED lineage on every number |
+| Delivering before delivery gates pass | Document deliverables: static, fidelity, layout, visual gates in order |
+| Delivering with pending manifest row | Document deliverables: `outcome verify` passes with all formats resolved |
+| Chasing leads with no ENTER trigger | Excursions require explicit triggers; otherwise queue as leads |
+| Excursion result never folded back | Every EXIT logs changes (or `none`) |
+| Delivering without closing briefing | Document deliverables: paste block from `outcome briefing` |
+| Final answer with a team still live | Disband any team and confirm every worker is terminal before the final answer |
+
+## Execution references
+
+These references continue this skill; their requirements remain binding. Read each one only when its condition holds; a chat-shaped answer with no document deliverable needs none of them unless a row fires:
+
+| Reference | Read when |
+|---|---|
+| [research-collection.md](references/research-collection.md) | Read when a document deliverable is requested, or the run needs more than the Phase 0-2 summary in SKILL.md: Phase 0 journal files, full role protocols and the example spawn, Phase 2 expansion steps, excursions, convergence. |
+| [mass-collection.md](references/mass-collection.md) | Read when the user asked for MASS research ("mass ulw research", "mulw research", "ulw mass research", in any language) or collection runs through the `workflow` tool. |
+| [epistemic.md](references/epistemic.md) | Read when a document deliverable is requested and you open the journal or write `intent-diff.md`, `claim-graph.md`, `observation-manifest.md`, `verification-economics.md`, `cause-disappearance.md`, or the `## Epistemic instrumentation` section of `SYNTHESIS.md`. |
+| [research-delivery.md](references/research-delivery.md) | Read when a document deliverable is requested, or the run needs more than the Phase 3-4 summary in SKILL.md: Phase 3 verification by code, Phase 3b claim graph locking, Phase 4 synthesis. |
+| [deliverable-phase.md](references/deliverable-phase.md) | Read when a document deliverable (PDF, DOCX, slides, or standalone HTML) is requested, before the brief is written and again before Phase 5: lane and format interview, Phase 5 final materials, asset and assembly workers, delivery gates, meaning verifier, bounded repair, closing briefing. |
+| [fidelity.md](references/fidelity.md) | Read when writing or re-entering the `## Fidelity` block of `brief.md`, asking the fidelity questions, or when a `fact` command refuses with `fidelity_interview_incomplete`, `brief_changed`, `derived_not_allowed`, or `source_outside_floor`. |
+| [fact-ledger.md](references/fact-ledger.md) | Read when a document deliverable is requested and you are snapshotting sources (including conversion probes) or registering, quoting, deriving, filling, or verifying numbers and claims in the verbatim fact ledger. |
+| [fact-ledger-grammar.md](references/fact-ledger-grammar.md) | Read when validating ledger row schemas, kind rules, transition errors, or grammar rules. |
+| [fidelity-claim-kinds.md](references/fidelity-claim-kinds.md) | Read when classifying claims into typed kinds, checking accepted row types, or auditing defect codes. |
+| [markdown-blocks.md](references/markdown-blocks.md) | Read when formatting CommonMark blocks, link closers, and structured Markdown output. |
+| [report-gates.md](references/report-gates.md) | Read when diagnosing static, fidelity, layout, or visual gate defects and defect code fixes. |
+| [report-visualization.md](references/report-visualization.md) | Read when the asset lanes start in the final-materials phase, or when plotting quantitative data charts, rendering Mermaid diagrams, or conducting reference comparisons. |
+| [unit-rules.md](references/unit-rules.md) | Read when computing or verifying derived unit algebra, compatible conversions, and composite units. |

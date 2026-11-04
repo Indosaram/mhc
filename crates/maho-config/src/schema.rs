@@ -347,6 +347,8 @@ fn task() -> Rule {
             json!("unlimited"),
         ),
         d("ttl_ms", pos_int(), json!(86_400_000)),
+        f("completion_transport_limit", int_min(1000.0)),
+        f("completion_batch_limit", int_min(2000.0)),
         d(
             "resident_idle_timeout_ms",
             int_range(1.0, MAX_SAFE_INTEGER),

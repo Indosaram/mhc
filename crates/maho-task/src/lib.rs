@@ -23,6 +23,7 @@ pub mod runner;
 pub mod settings;
 pub mod steering;
 pub mod summary;
+pub mod transport;
 
 pub use agents::{AgentDefinition, AgentSource, Discovery, bundled_agents, discover};
 pub use control::{Caller, GatewaySteer, Outcome, SteerChannel};
@@ -37,3 +38,13 @@ pub use isolation::{IsolatedWorkspace, TaskObserver, WorkspaceIsolation};
 pub use record::{PendingMessage, StateDir, TaskRecord, TaskStatus};
 pub use runner::{CancelToken, ProcessRunner, RunOutcome, RunSpec, TaskRunner};
 pub use settings::{Lineage, PARENT_SESSION_ENV, SpawnedBy, TaskSettings, current_spawned_by};
+pub use summary::{format_duration, format_result, format_result_envelope, status_line};
+pub use transport::{
+    ChildCompletion, CompletionCapOptions, DEFAULT_COMPLETION_BATCH_LIMIT,
+    DEFAULT_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_BATCH_LIMIT,
+    MAX_COMPLETION_TRANSPORT_LIMIT, MIN_COMPLETION_BATCH_LIMIT,
+    MIN_COMPLETION_TRANSPORT_LIMIT, SettledDelivery, WakeBatchOptions, WakeBatchResult,
+    WakeOverflowManifest, bind_settled_batcher, build_capped_result_envelope, build_wake_batch,
+    cap_completion_response, count_utf16_code_units, deliver_batch, deliver_settled,
+    read_overflow_manifest, slice_utf16_bounded,
+};

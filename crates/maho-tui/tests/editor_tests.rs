@@ -1424,6 +1424,7 @@ fn styled(text: &str) -> String {
 
 fn mention_theme() -> EditorTheme {
     EditorTheme {
+        keyword_highlight: None,
         border_color: Rc::new(|text: &str| text.to_string()),
         mention: Some(Rc::new(|text: &str| format!("{BLUE_BOLD}{text}{RESET}"))),
         select_list: common::plain_select_list_theme(),
@@ -1559,6 +1560,7 @@ fn slash_provider() -> Rc<RefCell<dyn AutocompleteProvider>> {
 #[test]
 fn routes_the_editor_themes_select_list_render_row_into_the_slash_autocomplete_list() {
     let theme = EditorTheme {
+        keyword_highlight: None,
         border_color: Rc::new(|text: &str| text.to_string()),
         mention: None,
         select_list: SelectListTheme {

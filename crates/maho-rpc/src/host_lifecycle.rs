@@ -21,7 +21,7 @@ pub struct HostActivity {
 }
 #[derive(Default)]
 pub struct ObservedHostTurns {
-    busy: HashMap<String, u64>,
+    runs: crate::host_run_activity::SessionRunActivity,
 }
 impl ObservedHostTurns {
     pub async fn read_events(
@@ -53,27 +53,12 @@ impl ObservedHostTurns {
         }
     }
     pub fn busy_turns(&self) -> u64 {
-        self.busy.values().filter(|count| **count > 0).count() as u64
+        self.runs.busy_sessions() as u64
     }
     pub fn observe(&mut self, line: &str) -> bool {
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
-        let Some(session) = event["sessionId"].as_str() else {
-            return false;
-        };
-        match event["type"].as_str() {
-            Some("agent_start") => {
-                *self.busy.entry(session.into()).or_default() += 1;
-                true
-            }
-            Some("agent_settled") => {
-                let count = self.busy.entry(session.into()).or_insert(1);
-                *count = count.saturating_sub(1);
-                true
-            }
-            _ => false,
-        }
+        // agent_start repeats for each loop iteration, but agent_settled ends the whole run.
+        // Share the owner's run semantics so idle shutdown cannot retain phantom turns.
+        self.runs.observe(line)
     }
     pub fn activity(
         &self,
@@ -90,7 +75,7 @@ impl ObservedHostTurns {
                     unhealthy_since: observer.unhealthy_since(),
                     now,
                     unknown_grace_ms,
-                    observed_busy: self.busy.values().filter(|count| **count > 0).count() as u64,
+                    observed_busy: self.busy_turns(),
                 },
             ),
         }
@@ -409,9 +394,14 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     };
     #[cfg(unix)]
     let mut child = {
+        // POSIX stdin is the key pipe, so the presenter channel rides the shell's stdout slot: the target's stdout is
+        // /dev/null either way.
         let mut command = match &presenter {
             Some((_, channel)) => {
-                let mut command = channel.command(std::ffi::OsStr::new(&spawnable.command));
+                let mut command = channel.command(
+                    std::ffi::OsStr::new(&spawnable.command),
+                    crate::mcp_presenter_bootstrap::BootstrapSlot::Stdout,
+                )?;
                 command.args(&spawnable.args);
                 command
             }
@@ -433,8 +423,14 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             })
             .stdout(std::process::Stdio::null())
             .stderr(stderr)
-            .process_group(0)
-            .spawn()?
+            .process_group(0);
+        if let Some((_, channel)) = &presenter {
+            channel.bind(
+                &mut command,
+                crate::mcp_presenter_bootstrap::BootstrapSlot::Stdout,
+            )?;
+        }
+        command.spawn()?
     };
     #[cfg(unix)]
     let _key_pipe = match (internal_key, child.stdin.take()) {

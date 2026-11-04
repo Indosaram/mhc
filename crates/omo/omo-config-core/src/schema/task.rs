@@ -89,6 +89,14 @@ fn default_dag_retention_days() -> Value {
     json!(7)
 }
 
+fn default_completion_transport_limit() -> Value {
+    json!(8000)
+}
+
+fn default_completion_batch_limit() -> Value {
+    json!(24000)
+}
+
 fn default_dag_max_prompt_bytes() -> Value {
     json!(262144)
 }
@@ -229,6 +237,16 @@ pub fn omo_task_settings_schema() -> Node {
         defaulted("wait", omo_task_wait_schema(), default_wait),
         defaulted("team", omo_task_team_settings_schema(), default_team),
         optional("dag", omo_task_dag_settings_schema()),
+        defaulted(
+            "completion_transport_limit",
+            integer_between(1000, 64000),
+            default_completion_transport_limit,
+        ),
+        defaulted(
+            "completion_batch_limit",
+            positive_integer(),
+            default_completion_batch_limit,
+        ),
     ])
 }
 
@@ -291,6 +309,8 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("wait", omo_task_wait_layer_schema()),
         optional("team", omo_task_team_settings_layer_schema()),
         optional("dag", omo_task_dag_settings_layer_schema()),
+        optional("completion_transport_limit", integer_between(1000, 64000)),
+        optional("completion_batch_limit", positive_integer()),
     ])
 }
 
@@ -309,6 +329,12 @@ pub fn resolve_omo_task_settings(
     if merged.get("global_concurrency").is_none_or(Value::is_null) {
         let parallelism = std::cmp::max(8, resolve_parallelism().saturating_mul(2));
         merged.insert("global_concurrency".into(), json!(parallelism));
+    }
+    if let Some(val) = merged.get("completion_transport_limit").and_then(Value::as_i64) {
+        merged.insert(
+            "completion_transport_limit".into(),
+            json!(val.clamp(1000, 64000)),
+        );
     }
     crate::internal::validate::safe_parse(&omo_task_settings_schema(), &Value::Object(merged))
 }

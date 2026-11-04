@@ -112,35 +112,60 @@ pub fn adopt_presenter_bootstrap_fd(_fd: i32) -> Option<AdoptedPresenterBootstra
 pub struct ChildBootstrap {
     /// This process's end; the relay reads and writes it.
     pub parent: tokio::net::UnixStream,
-    /// Kept open until the child is spawned, then dropped so only the child holds it.
+    /// Kept open until the child is spawned, then dropped so only the child holds it. Close-on-exec: the child
+    /// receives it only through the standard slot [`ChildBootstrap::bind`] fills.
     pub child: std::os::fd::OwnedFd,
+}
+/// The standard slot that carries the channel into the `/bin/sh` wrapper. The target always gets `/dev/null` in
+/// that slot, so a launch names a slot whose target stream is `/dev/null` anyway.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapSlot {
+    Stdin,
+    Stdout,
 }
 #[cfg(unix)]
 impl ChildBootstrap {
     pub fn new() -> std::io::Result<Self> {
         let (parent, child) = std::os::unix::net::UnixStream::pair()?;
         parent.set_nonblocking(true)?;
-        let child = std::os::fd::OwnedFd::from(child);
-        // Inherited by the shell wrapper below, which moves it to fd 4 and closes the original number.
-        rustix::io::fcntl_setfd(&child, rustix::io::FdFlags::empty())
-            .map_err(std::io::Error::from)?;
         Ok(Self {
             parent: tokio::net::UnixStream::from_std(parent)?,
-            child,
+            child: child.into(),
         })
     }
     /// SAFETY-DIVERGENCE(senpi spawn stdio slot 4): Rust's `Command` exposes only the three standard slots and this
-    /// crate denies the `unsafe` a `pre_exec` `dup2` needs, so `/bin/sh` performs it: `exec "$0" "$@" 4<&N N<&-`
-    /// replaces the shell with the target (same pid) holding the channel at fd 4 and nothing else.
-    pub fn command(&self, program: &std::ffi::OsStr) -> tokio::process::Command {
-        use std::os::fd::AsRawFd;
-        let fd = self.child.as_raw_fd();
+    /// crate denies the `unsafe` a `pre_exec` `dup2` needs, so `/bin/sh` performs it. The channel reaches the shell
+    /// in `slot` and `exec "$0" "$@" 4<&K K<>/dev/null` replaces the shell with the target (same pid) holding the
+    /// channel at fd 4 and `/dev/null` in slot K. Only single-digit descriptors appear in the script: POSIX shells
+    /// such as dash reject `N<&M` for any number above 9, and the channel's own number can be anything.
+    pub fn command(
+        &self,
+        program: &std::ffi::OsStr,
+        slot: BootstrapSlot,
+    ) -> std::io::Result<tokio::process::Command> {
+        let script = match slot {
+            BootstrapSlot::Stdin => "exec \"$0\" \"$@\" 4<&0 0</dev/null",
+            BootstrapSlot::Stdout => "exec \"$0\" \"$@\" 4<&1 1>/dev/null",
+        };
         let mut command = tokio::process::Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(format!("exec \"$0\" \"$@\" 4<&{fd} {fd}<&-"))
-            .arg(program);
-        command
+        command.arg("-c").arg(script).arg(program);
+        self.bind(&mut command, slot)?;
+        Ok(command)
+    }
+    /// (Re)binds `slot` of the shell to the channel; a caller that configures stdio after [`Self::command`] calls
+    /// this last.
+    pub fn bind(
+        &self,
+        command: &mut tokio::process::Command,
+        slot: BootstrapSlot,
+    ) -> std::io::Result<()> {
+        let channel = std::process::Stdio::from(self.child.try_clone()?);
+        match slot {
+            BootstrapSlot::Stdin => command.stdin(channel),
+            BootstrapSlot::Stdout => command.stdout(channel),
+        };
+        Ok(())
     }
 }
 
@@ -207,10 +232,14 @@ pub fn spawn_with_presenter_bootstrap(
         return Ok((command.spawn()?, None));
     };
     let channel = ChildBootstrap::new()?;
-    let mut command = channel.command(program);
+    // Every caller launches the host with stdin and stdout on /dev/null.
+    let mut command = channel.command(program, BootstrapSlot::Stdin)?;
     command.args(args);
     configure(&mut command);
+    channel.bind(&mut command, BootstrapSlot::Stdin)?;
     let child = command.spawn()?;
+    // The command's copy of the channel goes with it, so the child holds the only one.
+    drop(command);
     let ChildBootstrap {
         parent,
         child: inherited,
@@ -429,7 +458,9 @@ mod tests {
         }
         let channel = ChildBootstrap::new().unwrap();
         let exe = std::env::current_exe().unwrap();
-        let mut command = channel.command(exe.as_os_str());
+        let mut command = channel
+            .command(exe.as_os_str(), BootstrapSlot::Stdin)
+            .unwrap();
         command
             .args([
                 "--exact",

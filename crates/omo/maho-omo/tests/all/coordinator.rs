@@ -342,6 +342,121 @@ fn retire_hands_a_still_passive_queue_back_and_refuses_later_enqueues() {
 }
 
 #[test]
+fn wake_batch_capped_with_manifest() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let temp = tempfile::tempdir().expect("tempdir");
+    coordinator.set_state_dir(temp.path());
+
+    // 5 completions of 8,000 chars each: total 40,000 chars
+    for i in 0..5 {
+        let content = format!("task completion id:task_{i} result:{}", "x".repeat(8000 - 33));
+        assert_eq!(content.encode_utf16().count(), 8000);
+        coordinator.enqueue(injection(
+            &format!("st_{i}"),
+            IdleInjectionSource::TaskCompletion,
+            &content,
+        ));
+    }
+
+    let collapsed = coordinator.flush_on_idle();
+    assert_eq!(collapsed, 5);
+
+    let calls = log.calls();
+    assert_eq!(calls.len(), 1);
+    let wake = &calls[0].message;
+    assert_eq!(wake.custom_type, WAKE_CUSTOM_TYPE);
+
+    let wake_utf16_len = wake.content.encode_utf16().count();
+    assert!(wake_utf16_len <= 24_000, "wake must be <= 24000 UTF-16 units, got {wake_utf16_len}");
+
+    // Must contain manifest pointer
+    assert!(wake.content.contains("more task results: local://"));
+    // Exactly 2 results fit (8000 + 2 + 8000 = 16002), remaining 3 results spill
+    assert!(wake.content.contains("3 more task results: local://"));
+
+    // Verify manifest file on disk
+    let manifest_url = wake.content.lines().find(|l| l.contains("more task results: local://")).expect("manifest line");
+    let manifest_path = manifest_url.split("local://").nth(1).expect("manifest path");
+    let manifest_body = std::fs::read_to_string(manifest_path).expect("read manifest");
+    assert!(manifest_body.contains("task_2"));
+    assert!(manifest_body.contains("task_3"));
+    assert!(manifest_body.contains("task_4"));
+}
+
+#[test]
+fn failed_manifest_write_leaves_no_manifest_url_in_the_wake() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let temp = tempfile::tempdir().expect("tempdir");
+    // A regular file as the state dir makes both create_dir_all and the manifest write fail.
+    let blocker = temp.path().join("not-a-dir");
+    std::fs::write(&blocker, "x").expect("blocker");
+    coordinator.set_state_dir(&blocker);
+
+    for i in 0..5 {
+        let content = format!("task completion id:task_{i} result:{}", "x".repeat(8000 - 33));
+        coordinator.enqueue(injection(&format!("st_{i}"), IdleInjectionSource::TaskCompletion, &content));
+    }
+    coordinator.flush_on_idle();
+
+    let calls = log.calls();
+    let content = &calls[0].message.content;
+    assert!(content.contains("3 more task results (manifest unavailable: "));
+    assert!(!content.contains("local://"));
+    assert!(content.encode_utf16().count() <= 24_000);
+}
+
+#[test]
+fn many_children_stay_under_cap() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let temp = tempfile::tempdir().expect("tempdir");
+    coordinator.set_state_dir(temp.path());
+
+    // 200 tiny results with long ids
+    for i in 0..200 {
+        let long_id = format!("task-subagent-worker-node-id-very-long-prefix-{i:04}-abcdef0123456789-abcdef0123456789");
+        let content = format!("task completion id:{long_id} status:completed result:ok");
+        coordinator.enqueue(injection(
+            &format!("st_{i}"),
+            IdleInjectionSource::TaskCompletion,
+            &content,
+        ));
+    }
+
+    let collapsed = coordinator.flush_on_idle();
+    assert_eq!(collapsed, 200);
+
+    let calls = log.calls();
+    assert_eq!(calls.len(), 1);
+    let wake = &calls[0].message;
+    assert_eq!(wake.custom_type, WAKE_CUSTOM_TYPE);
+
+    let wake_utf16_len = wake.content.encode_utf16().count();
+    assert!(wake_utf16_len <= 24_000, "wake must be <= 24000 UTF-16 units, got {wake_utf16_len}");
+    assert!(wake.content.contains("more task results: local://"));
+}
+
+#[test]
+fn utf16_boundary_cut() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let temp = tempfile::tempdir().expect("tempdir");
+    coordinator.set_state_dir(temp.path());
+    coordinator.set_batch_limit(100);
+
+    // Place an emoji right at the cut boundary when content is cut
+    let mut content = "a".repeat(30);
+    content.push('🦀');
+    content.push_str(&"b".repeat(200));
+
+    coordinator.enqueue(injection("st_1", IdleInjectionSource::TaskCompletion, &content));
+    coordinator.flush_on_idle();
+
+    let calls = log.calls();
+    assert_eq!(calls.len(), 1);
+    let wake = &calls[0].message;
+    assert!(wake.content.encode_utf16().count() <= 100);
+}
+
+#[test]
 fn receipt_delivery_waits_for_append_or_drop_before_settling_callbacks() {
     let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let pending = Arc::new(Mutex::new(Vec::<maho_ext_api::MessageDeliveryReceipt>::new()));

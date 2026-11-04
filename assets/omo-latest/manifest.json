@@ -4206,16 +4206,46 @@
     "ultrawork": [
       {
         "path": "SKILL.md",
-        "bytes": 26906,
-        "sha256": "38bc89a6c559403c2b6f292f612973cb852b58f4166e6f3a19dbd9810297d001",
+        "bytes": 15183,
+        "sha256": "aa3ca5f10dc7d2ce61c3077ecdaea56e9d272952a3fb4e3ae2fb0fac1971f139",
         "source": "lazycodex@75b01747:plugins/omo/skills/ultrawork/SKILL.md (MIT)"
+      },
+      {
+        "path": "references/commits.md",
+        "bytes": 2910,
+        "sha256": "ee9db35f309a5ee3216503017373d05118dfb4f0a852b5e32a556fd5bc76bd89",
+        "source": null
+      },
+      {
+        "path": "references/delegation-and-teams.md",
+        "bytes": 3915,
+        "sha256": "44f139f7482cb6ffd236785038938f1dc666cda0114015952bcf10fab0e34b19",
+        "source": null
+      },
+      {
+        "path": "references/qa-channels.md",
+        "bytes": 4910,
+        "sha256": "2d50225989f61193e76d44ba179656027167dc60b7fb2b6c82a32963b055d7df",
+        "source": null
+      },
+      {
+        "path": "references/review-gate.md",
+        "bytes": 3221,
+        "sha256": "4c8f29343f9f606543003f73461f6cfd964d5d511f73d8f221dbfdb4b764684d",
+        "source": null
+      },
+      {
+        "path": "references/tui-visual-qa.md",
+        "bytes": 3745,
+        "sha256": "0a72e11e56e6b10a9af6d330a3266a3c09ebc18470a3152c320d042327d91d29",
+        "source": null
       }
     ],
     "ulw-execute": [
       {
         "path": "SKILL.md",
-        "bytes": 27108,
-        "sha256": "89f242a51bb0db4eca4c1f26cd5988e136a34531616288a9e230489b786d40c7",
+        "bytes": 27110,
+        "sha256": "4e0664736de2834240ee0970d28bb4c4c809a379d034a896cb42cde61f7b67fd",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-execute/SKILL.md (MIT)"
       }
     ],
@@ -4266,8 +4296,8 @@
       },
       {
         "path": "scripts/plan-templates.mjs",
-        "bytes": 7191,
-        "sha256": "22b84faa8a4ce76d497f13c1460e920732b0527ae8e7ba136c7b5f2e936ac5dd",
+        "bytes": 7177,
+        "sha256": "d5a5685c6e7409d60ae08722665a89e6eeb48396769841c477d9e23259a31a85",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-plan/scripts/plan-templates.mjs (MIT)"
       },
       {
@@ -4280,8 +4310,8 @@
     "ulw-research": [
       {
         "path": "AGENTS.md",
-        "bytes": 8436,
-        "sha256": "647f12dd471757b1c92d2ab8b436cd0fe355164e8e4ed93b4996fcff9c6866a1",
+        "bytes": 10076,
+        "sha256": "9dcb51f6ee1cea432a5794f3fb250443c6ce29f9c5f071e3ef2c10134cc0ebf2",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/AGENTS.md (MIT), mhc-adapted"
       },
       {
@@ -4292,68 +4322,86 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 36346,
-        "sha256": "df748a5925ecf4437f70b08d4e03556a85c8c46510c7c2a255f22cc288075f84",
+        "bytes": 25529,
+        "sha256": "164cbee09dd99eed81249a36273f4dcc4ac604c0a16a8b5e766e4667137d13ae",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/SKILL.md (MIT), mhc-adapted"
       },
       {
         "path": "references/deliverable-phase.md",
-        "bytes": 50199,
-        "sha256": "32107955c08027e573632639e8803d9eeb4daba3f7f87138ff26c082d944a78e",
+        "bytes": 70849,
+        "sha256": "5439fc6b6c34ff7334734de9f7b1c933a334d869e695fda9b51a3f719f0d99b1",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
       },
       {
+        "path": "references/epistemic.md",
+        "bytes": 2752,
+        "sha256": "7fb55ed7eb0434dbf9043f51d885db45ff43e35f9af5eaf59ca4e31b7631d4f9",
+        "source": null
+      },
+      {
         "path": "references/fact-ledger-grammar.md",
-        "bytes": 6934,
-        "sha256": "070518c70abe5d585ac66afac3026dc37218c0e1e0001743df320527147b2764",
+        "bytes": 7030,
+        "sha256": "66529e0117710dee2e22ab0988348129a4359e151c9a64c5c8961ad5d0aeb0cc",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger-grammar.md (MIT)"
       },
       {
         "path": "references/fact-ledger.md",
-        "bytes": 24940,
-        "sha256": "f4d164ea3201ca25114829a60af43a3a13a229893e77f856dc03f072edc9419b",
+        "bytes": 25873,
+        "sha256": "64a7c4d5b8b5c9ae4b34b90ed7b3c94616726a497fa24397fb7548fda03d9818",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
       },
       {
         "path": "references/fidelity-claim-kinds.md",
-        "bytes": 5305,
-        "sha256": "b6d9d123f57cbcca13dae60dbd8bcd83803acd29f7cf09125065d6ae94f7ea2e",
+        "bytes": 5413,
+        "sha256": "576d1dcb7c6a8143d7b4bd97091a62fc1a130d759f79abcb9c80ce5401df0ae1",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
       },
       {
+        "path": "references/fidelity.md",
+        "bytes": 10924,
+        "sha256": "c5ee57d93c7f88bbaf18e61d68c75ed0085ccac1a09887c6c5fb2c56aa55f7ff",
+        "source": null
+      },
+      {
         "path": "references/markdown-blocks.md",
-        "bytes": 721,
-        "sha256": "b5fdbc9a147730739249d655f3ca57b33e256c72a518f6fc98707899d23bdafc",
+        "bytes": 813,
+        "sha256": "9c05def28572bbdfe50296f4d335cad3f00fd00cc66ca81ce3546dd1369e168c",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/markdown-blocks.md (MIT)"
       },
       {
+        "path": "references/mass-collection.md",
+        "bytes": 1864,
+        "sha256": "ff1a340132890edd906f6a1eb55ee88f0082db25426843806f5a4aa09a8d013d",
+        "source": null
+      },
+      {
         "path": "references/report-gates.md",
-        "bytes": 32819,
-        "sha256": "57511c785cbe23da8a5baf109b9a9b5966fe769d07355b46cea2ca5e42b84006",
+        "bytes": 32918,
+        "sha256": "e116be267aa4fec547cd424513b44264e2d5d346b219ba16b2011d91c876cf5b",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/report-gates.md (MIT)"
       },
       {
         "path": "references/report-visualization.md",
-        "bytes": 15603,
-        "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c",
+        "bytes": 15925,
+        "sha256": "b0bb3a306739356baecd74b3b7f6733f92003884a955f6e00df9aed529691945",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-visualization.md (MIT)"
       },
       {
         "path": "references/research-collection.md",
-        "bytes": 27167,
-        "sha256": "8a261881b375432189d87123934a71609b9d448fbdfd93bfb016aeddc6599be6",
+        "bytes": 15233,
+        "sha256": "521ea7792d26ceb3e4e63ec1d8904aed2a8fd8dc65b990e609cb85882896bca0",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-collection.md (MIT), mhc-adapted"
       },
       {
         "path": "references/research-delivery.md",
-        "bytes": 14622,
-        "sha256": "028c67a83b68aa994cfbf62651e82c8fa23e2a49ee2a9dc38a299986f8ebf6d2",
+        "bytes": 15660,
+        "sha256": "90205b52853262e9e1aa810f05b859a5185f3295132644cc7969e7a154a5dbba",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-delivery.md (MIT), mhc-adapted"
       },
       {
         "path": "references/unit-rules.md",
-        "bytes": 16592,
-        "sha256": "deff2524bd8e9f0d4d5ee1ceb114a8104bafa2c43a7294b01cbb93f913d63f24",
+        "bytes": 16497,
+        "sha256": "346e1f213820079619d6151990ac8b7fcabcd8cd101ba16205deecc01d21322e",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/unit-rules.md (MIT)"
       },
       {
@@ -4882,14 +4930,14 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 3442,
-        "sha256": "9f3c1e921669a5b3a2ad63aae8e4e67cfab37c3f120b1222a4f6f66b9e34c2a1",
+        "bytes": 3669,
+        "sha256": "d562655ff45c3ff62714d6085d348c22edae46151b85429a79e81fe3b4340ee4",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 49837,
-        "sha256": "a691fce99b7713ab2015bb6ddf613aa4130a59aca52db9815e36a5f9e6485845",
+        "bytes": 50712,
+        "sha256": "8e73b44e9263f920f38823315a7d4f8840e65fda7af824bf4385bc641171e92f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
@@ -4939,6 +4987,12 @@
         "bytes": 1670,
         "sha256": "b05a453c673f6bd17a3a4a407e8694283effd2905d3b40025c41d27c77c79839",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/scripts/png-synth.ts"
+      },
+      {
+        "path": "scripts/tui-capture.mjs",
+        "bytes": 15289,
+        "sha256": "4bb2fa70f5cc38f6dd470d8ea46962c985a04d4586ea1abe356550245c4edb99",
+        "source": null
       },
       {
         "path": "scripts/tui-grid.ts",

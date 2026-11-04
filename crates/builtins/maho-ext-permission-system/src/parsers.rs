@@ -90,8 +90,10 @@ enum TargetResolver {
     /// grep: an existing literal name wins; only a missing name with a file prefix is a selector.
     Grep,
 }
+/// `resolveToCwd(raw, cwd)`: the tool's path expansion, then a lexical resolve that keeps the root
+/// as written (a drive-less `/etc` stays `/etc` on Windows, a `\\?\C:\` root keeps its prefix).
 fn to_cwd(raw: &str, cwd: &Path) -> String {
-    maho_tools::path_utils::resolve_to_cwd(raw, cwd)
+    lexical_resolve(cwd, &maho_tools::path_utils::expand_path(raw))
         .to_string_lossy()
         .into_owned()
 }

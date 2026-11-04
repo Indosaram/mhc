@@ -135,6 +135,39 @@ fn given_shared_and_member_scoped_tools_when_a_child_is_started_then_only_member
 }
 
 #[test]
+fn given_a_parent_tool_a_provider_rejects_by_name_when_a_child_is_started_then_every_child_tool_name_is_provider_safe()
+ {
+    let dir = tmp();
+    let fake = FakeSession::new("child-session-1");
+    let session = Arc::clone(&fake);
+    let (runner, captured) = capturing_runner(
+        vec![make_tool("grep"), make_tool("$web_search"), make_tool("mcp_ctx_query-docs")],
+        &[],
+        None,
+        move || session.clone(),
+    );
+    let spec = ChildSpec {
+        agent_type: Some("explore".to_string()),
+        member_scoped_tools: Some(vec![make_tool("task_send"), make_tool("$web_search")]),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let handle = runner.start(&spec).expect("start");
+    fake.resolve_prompt();
+    handle.wait_for_idle();
+    let names = tool_names(&last_options(&captured));
+    assert_eq!(
+        names,
+        strings(&["grep", "mcp_ctx_query-docs", "task_send", "bash"])
+    );
+    assert!(names.iter().all(|name| {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.len() <= 128
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }));
+}
+
+#[test]
 fn given_a_tool_allowlist_and_shared_lsp_tools_when_a_child_is_started_then_options_tools_equals_the_allowlist_while_custom_tools_still_carries_the_lsp_tool()
  {
     let dir = tmp();
