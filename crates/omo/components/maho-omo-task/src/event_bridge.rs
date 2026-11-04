@@ -155,7 +155,13 @@ impl TaskPauseCustody {
                                 ));
                             }
                         }
-                        let _ = custody.resume_current();
+                        if let crate::run_pause_bridge::BridgeOutcome::Failed(error) =
+                            custody.resume_current()
+                        {
+                            maho_ext_api::diagnostic(&format!(
+                                "run Resume propagation failed: {error}"
+                            ));
+                        }
                         Ok(())
                     };
                     match tokio::runtime::Handle::try_current() {
