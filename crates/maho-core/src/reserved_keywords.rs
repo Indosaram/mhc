@@ -50,7 +50,7 @@ pub struct ReservedKeywordRun {
     pub end: usize,
 }
 
-const MASS_ULW_ALIAS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw|meth)";
+const MASS_ULW_ALIAS: &str = r"(?:mass[\s_-]*ulw|ulw[\s_-]*mass|mulw|meth)";
 
 // A keyword glued to a preceding identifier segment names something else; so does one that opens a path.
 const NOT_AFTER_IDENTIFIER: &str = r"(?<![A-Za-z0-9][-_.]|[/\\])";
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(keywords_of("ulw fix the login bug"), vec!["ultrawork"]);
         assert_eq!(keywords_of("please ULTRAWORK this"), vec!["ultrawork"]);
         for alias in [
-            "mass ulw", "mass-ulw", "massulw", "ulw mass", "mulw", "meth",
+            "mass ulw", "mass-ulw", "mass_ulw", "massulw", "ulw mass", "mulw", "meth",
         ] {
             assert!(
                 keywords_of(&format!("{alias} the migration")).contains(&"mass-ulw"),

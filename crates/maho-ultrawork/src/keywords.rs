@@ -52,7 +52,7 @@ fn starts(lower: &[u8], at: usize, word: &str) -> bool {
 fn skip_separators(lower: &[u8], mut at: usize) -> usize {
     while lower
         .get(at)
-        .is_some_and(|&b| matches!(b, b' ' | b'\t' | b'-' | b'_'))
+        .is_some_and(|&b| b.is_ascii_whitespace() || matches!(b, b'-' | b'_'))
     {
         at += 1;
     }
@@ -60,7 +60,7 @@ fn skip_separators(lower: &[u8], mut at: usize) -> usize {
 }
 
 fn mass_alias_end(lower: &[u8], at: usize) -> Option<usize> {
-    if starts(lower, at, "mulw") {
+    if starts(lower, at, "mulw") || starts(lower, at, "meth") {
         return Some(at + 4);
     }
     let (first, second) = if starts(lower, at, "mass") {
@@ -71,7 +71,7 @@ fn mass_alias_end(lower: &[u8], at: usize) -> Option<usize> {
         return None;
     };
     let next = skip_separators(lower, at + first);
-    (next > at + first && starts(lower, next, second)).then_some(next + second.len())
+    starts(lower, next, second).then_some(next + second.len())
 }
 
 fn plain_end(lower: &[u8], at: usize) -> Option<usize> {

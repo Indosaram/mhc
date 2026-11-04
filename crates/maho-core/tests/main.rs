@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "keyword_paint_arm_parity.rs"]
+mod keyword_paint_arm_parity;
 #[path = "compaction_estimate.rs"]
 mod compaction_estimate;
 #[path = "context_selection.rs"]
