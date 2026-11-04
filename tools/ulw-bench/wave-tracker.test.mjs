@@ -49,6 +49,86 @@ describe("wave-tracker", () => {
   });
 });
 
+// Synthetic task results in the exact serde shape of TaskToolDetails / TaskToolItemDetail (types.rs).
+const batchItem = (id, status, queuePosition) => ({
+  task_id: id,
+  task_summary: `child ${id}`,
+  name: id,
+  category: "quick",
+  status,
+  ...(queuePosition === undefined ? {} : { queue_position: queuePosition }),
+});
+// execute_batch.rs background_result: top-level task_id is the first live child; every child is in items[].
+const batchEnd = (items) => ({
+  type: "tool_execution_end",
+  toolName: "task",
+  result: {
+    content: [{ type: "text", text: "Started tasks" }],
+    details: { task_id: items[0].task_id, status: "running", mode: "spawn", run_in_background: true, items },
+  },
+  isError: false,
+});
+const singleEnd = (id, status, queuePosition) => ({
+  type: "tool_execution_end",
+  toolName: "task",
+  result: {
+    content: [{ type: "text", text: `Started task ${id}` }],
+    details: { task_id: id, status, mode: "spawn", run_in_background: true, ...(queuePosition === undefined ? {} : { queue_position: queuePosition }) },
+  },
+  isError: false,
+});
+
+describe("wave-tracker on task tool results", () => {
+  it("counts every child of a background batch and settles only after the last staggered wake", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      { type: "tool_execution_start", toolName: "task" },
+      batchEnd([batchItem("st_a", "running"), batchItem("st_b", "running"), batchItem("st_c", "pending", 1)]),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.summary().peakChildren, 3);
+    assert.equal(t.isSettled(), false);
+
+    feed(t, [wake(wakeText("st_a", "a")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), false, "settled after 1st wake");
+
+    feed(t, [wake(wakeText("st_b", "bb")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), false, "settled after 2nd wake");
+
+    feed(t, [wake(wakeText("st_c", "ccc")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true, "not settled after 3rd wake");
+    const s = t.summary();
+    assert.equal(s.peakChildren, 3);
+    assert.deepEqual(s.childReportSizes, [1, 2, 3]);
+  });
+
+  it("keeps a single child queued behind the concurrency limit (pending) live until its wake", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      singleEnd("st_q", "pending", 2),
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.summary().peakChildren, 1);
+    assert.equal(t.isSettled(), false);
+    feed(t, [wake(wakeText("st_q", "q")), { type: "agent_start" }, { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+
+  it("drops a batch child whose item reports a terminal status", () => {
+    const t = createWaveTracker();
+    feed(t, [
+      { type: "agent_start" },
+      batchEnd([batchItem("st_a", "running"), batchItem("st_b", "pending", 1)]),
+      batchEnd([batchItem("st_a", "completed"), batchItem("st_b", "running")]),
+    ]);
+    assert.equal(t.summary().peakChildren, 2);
+    feed(t, [wake(wakeText("st_a", "a")), wake(wakeText("st_b", "b")), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true);
+  });
+});
+
 describe("wave-tracker on a captured real rpc stream", () => {
   const lines = fs.readFileSync(new URL("./fixtures/rpc-background-task-stream.jsonl", import.meta.url), "utf8").split("\n").filter(Boolean);
 

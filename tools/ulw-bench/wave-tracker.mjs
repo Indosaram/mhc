@@ -3,6 +3,8 @@
 import { isWakeType, parseWakeChildren } from "./session-bytes.mjs";
 
 const WAITING_STATES = new Set(["waiting_children", "waiting_background", "waiting_human"]);
+// A child queued behind the concurrency limit reports "pending"; it is still owed a wake.
+const LIVE_CHILD_STATES = new Set(["running", "pending"]);
 
 /**
  * Tracks the waves of a headless rpc-mode run from its event stream. `mhc -p` ends the turn at the
@@ -39,10 +41,15 @@ export function createWaveTracker() {
         }
         case "tool_execution_end": {
           // Real rpc runs never emit lifecycle child counts; the task tool result (and task_output) carry the child id and status.
+          // A batch call lists every child in details.items[]; its top-level task_id is only the first child.
           const d = event.result?.details;
-          if ((event.toolName === "task" || event.toolName === "task_output") && typeof d?.task_id === "string") {
-            if (d.status === "running") running.add(d.task_id);
-            else running.delete(d.task_id);
+          if (event.toolName === "task" || event.toolName === "task_output") {
+            const entries = Array.isArray(d?.items) ? d.items : [d];
+            for (const item of entries) {
+              if (typeof item?.task_id !== "string" || item.task_id === "") continue;
+              if (LIVE_CHILD_STATES.has(item.status)) running.add(item.task_id);
+              else running.delete(item.task_id);
+            }
             peakChildren = Math.max(peakChildren, running.size);
           }
           break;
