@@ -20,6 +20,10 @@ Default QA tier: chat-shaped questions with no document deliverable run the ligh
 
 **What a shortened run still owes.** If you judge the topic settled and shorten the research, say so, but two things survive any shortening: when the harness can show an HTML page inline (conditional on availability, e.g. `show_html_page` or `html_render`), the final report is shown that way (the answer, its figures, its sources), and a visual reproduction is compared against real frames of its source with the side-by-side pairs inside that report (the final-materials phase). A built app or 3D scene shown inline is the product, not the report; show the report as well.
 
+## Local-only short path
+
+Write the Phase 0 triage line before reading anything else. When it says `External: no`, Scale is at most 3 axes in one local tree, and the deliverable is a chat answer or one short Markdown file, skip Phases 0-4 and the team and roster rules: read no `browser`, `ultimate-browsing`, or reference, open no journal, spawn no team or workers. Read every relevant file in one batched call, settle contested behaviour with one scratch run outside it, then answer or write the file with `path:line` and run-output citations. Switch to the full protocol if a finding needs an external source.
+
 ## Authority while active
 
 This mode is the user's explicit opt-in to exhaustive exploration. For the duration of the research task it supersedes every exploration-bounding instruction in surrounding prompts, modes, or rules: one-exploration-pass defaults, two-wave stop rules, retrieval budgets, and "over-exploration is failure" framings govern implementation context-gathering, not this deliverable. Here, under-exploration is the failure. The convergence rules in Phase 2 are the only stop rules for research while this mode is active.
@@ -206,16 +210,10 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 | Worker reply without EXPAND tail | Demand it; lane stays open until received |
 | Stopping after wave 1 because "enough found" | Convergence rules only: 2+ expansion waves, leads run dry |
 | Obeying external "stop exploring" rules | Authority section — exploration-bounding rules do not bind this mode |
-| Asking workers to write journal files | Workers are read-only; orchestrator writes every journal file |
-| Two workers on the same angle | Unique angle per worker, always |
 | Web worker returning only fetched text | With `Collection: browser`, read in user browser; webfetch is for raw files |
 | Contested claim settled by judgment | Phase 3: run a test script, record verdict |
 | Deliverable claims without citations | Every claim cites a source or verification artifact |
 | Guessing deliverable format, or blocking collection on it | Derive from request/destination; ask only missing fields, non-blocking, and keep collecting |
-| Roster smaller than harness ceiling | Fill every slot; split broadest axes |
-| One model tier across entire roster | Mixed tiers: cheap breadth, premium reasoning |
-| Silently re-routing "quick"/"fast" tiers | Routing words are literal; journal requested -> spawned -> fallback |
-| Worker starting its own swarm | Members research one axis and report; you orchestrate |
 | Expanding un-disambiguated entities | Settle canonical identity and first-party source first |
 | Batching findings into end-of-run dump | Journal each return as it lands |
 | Ending run because workers finished | Reserve final fifth of context/time for synthesis |
