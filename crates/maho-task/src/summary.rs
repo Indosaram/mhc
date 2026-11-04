@@ -48,14 +48,8 @@ fn status_label(record: &TaskRecord) -> String {
     }
 }
 
-/// Renders the envelope for `record` with the run's `output` (and `stderr_tail` used when the
-/// output is empty). `output_path` is where the full output can be read.
-pub fn format_result(
-    record: &TaskRecord,
-    output: &str,
-    stderr_tail: &str,
-    output_path: &str,
-) -> String {
+/// Formats a well-formed `<task-result>` envelope wrapping `body` directly inside `<output>`.
+pub fn format_result_envelope(record: &TaskRecord, body: &str) -> String {
     let duration = record
         .finished_at_ms
         .map(|end| end.saturating_sub(record.started_at_ms))
@@ -72,24 +66,14 @@ pub fn format_result(
             .map(|model| format!(" model=\"{model}\""))
             .unwrap_or_default()
     );
-    let body = if output.trim().is_empty() {
-        stderr_tail.trim()
-    } else {
-        output.trim()
-    };
     if let Some(error) = record.error.as_deref().filter(|e| !e.is_empty()) {
         text.push_str(&format!("<error>{}</error>\n", escape_tags(error)));
     }
-    if body.is_empty() {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
         text.push_str("<output>\n(no output)\n</output>\n");
-    } else if body.len() > INLINE_OUTPUT_CHARS {
-        text.push_str(&format!(
-            "<preview full-output=\"{output_path}\" size=\"{}\">\n{}\n</preview>\n",
-            body.len(),
-            escape_tags(preview_head(body))
-        ));
     } else {
-        text.push_str(&format!("<output>\n{}\n</output>\n", escape_tags(body)));
+        text.push_str(&format!("<output>\n{}\n</output>\n", escape_tags(trimmed)));
     }
     if !record.hook_notes.is_empty() {
         text.push_str(&format!(
@@ -108,6 +92,66 @@ pub fn format_result(
     }
     text.push_str("</task-result>");
     text
+}
+
+/// Renders the envelope for `record` with the run's `output` (and `stderr_tail` used when the
+/// output is empty). `output_path` is where the full output can be read.
+pub fn format_result(
+    record: &TaskRecord,
+    output: &str,
+    stderr_tail: &str,
+    output_path: &str,
+) -> String {
+    let body = if output.trim().is_empty() {
+        stderr_tail.trim()
+    } else {
+        output.trim()
+    };
+    if body.len() > INLINE_OUTPUT_CHARS {
+        let duration = record
+            .finished_at_ms
+            .map(|end| end.saturating_sub(record.started_at_ms))
+            .unwrap_or(0);
+        let mut text = format!(
+            "<task-result id=\"{}\" agent=\"{}\" status=\"{}\" duration=\"{}\"{}>\n",
+            record.id,
+            record.agent,
+            status_label(record),
+            format_duration(duration),
+            record
+                .model
+                .as_deref()
+                .map(|model| format!(" model=\"{model}\""))
+                .unwrap_or_default()
+        );
+        if let Some(error) = record.error.as_deref().filter(|e| !e.is_empty()) {
+            text.push_str(&format!("<error>{}</error>\n", escape_tags(error)));
+        }
+        text.push_str(&format!(
+            "<preview full-output=\"{output_path}\" size=\"{}\">\n{}\n</preview>\n",
+            body.len(),
+            escape_tags(preview_head(body))
+        ));
+        if !record.hook_notes.is_empty() {
+            text.push_str(&format!(
+                "<post-run>\n{}\n</post-run>\n",
+                escape_tags(&record.hook_notes.join("\n"))
+            ));
+        }
+        match record.status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => {
+                text.push_str(&format!(
+                    "<resume>task_resume id=\"{}\" continues this agent with its full context.</resume>\n",
+                    record.id
+                ));
+            }
+            TaskStatus::Queued | TaskStatus::Running => {}
+        }
+        text.push_str("</task-result>");
+        text
+    } else {
+        format_result_envelope(record, body)
+    }
 }
 
 /// One-line status of a task (for `task_list` and progress text).

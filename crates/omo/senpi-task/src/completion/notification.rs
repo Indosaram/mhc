@@ -14,12 +14,27 @@ use crate::shared::{format_run_duration, utf16_prefix};
 use crate::state::{Messageability, TaskRecord, messageability};
 use crate::status_line::{StatusTargetInput, format_target_with_model, js_number_text};
 
-pub const FINAL_RESPONSE_TRANSPORT_LIMIT: usize = 32_000;
+pub const DEFAULT_COMPLETION_TRANSPORT_LIMIT: usize = 8_000;
+pub const MIN_COMPLETION_TRANSPORT_LIMIT: usize = 1_000;
+pub const MAX_COMPLETION_TRANSPORT_LIMIT: usize = 64_000;
+
+pub fn read_configured_completion_transport_limit() -> usize {
+    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
+    loaded
+        .config
+        .get("task")
+        .and_then(|task| task.get("completion_transport_limit"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|limit| usize::try_from(limit).unwrap_or(DEFAULT_COMPLETION_TRANSPORT_LIMIT))
+        .map(|limit| limit.clamp(MIN_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT))
+        .unwrap_or(DEFAULT_COMPLETION_TRANSPORT_LIMIT)
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildDetailsOptions<'a> {
     pub tokens: Option<u64>,
     pub state_dir: Option<&'a Path>,
+    pub completion_transport_limit: Option<usize>,
 }
 
 pub fn build_completion_details(
@@ -27,7 +42,7 @@ pub fn build_completion_details(
     options: BuildDetailsOptions<'_>,
 ) -> CompletionDetails {
     let (final_response, final_response_file) =
-        final_response_for_notification(record, options.state_dir);
+        final_response_for_notification(record, options.state_dir, options.completion_transport_limit);
     let run_stats = record.run_stats.clone();
     let tokens = options
         .tokens
@@ -84,16 +99,20 @@ pub fn completion_message_lines(
 fn final_response_for_notification(
     record: &TaskRecord,
     state_dir: Option<&Path>,
+    transport_limit: Option<usize>,
 ) -> (String, Option<String>) {
+    let limit = transport_limit
+        .unwrap_or_else(read_configured_completion_transport_limit)
+        .clamp(MIN_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT);
     let source = record
         .final_response
         .as_deref()
         .or(record.error_message.as_deref())
         .unwrap_or("");
-    if source.encode_utf16().count() <= FINAL_RESPONSE_TRANSPORT_LIMIT {
+    if source.encode_utf16().count() <= limit {
         return (source.to_string(), None);
     }
-    let text = utf16_prefix(source, FINAL_RESPONSE_TRANSPORT_LIMIT).to_string();
+    let text = utf16_prefix(source, limit).to_string();
     let Some(state_dir) = state_dir else {
         return (text, None);
     };

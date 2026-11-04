@@ -1,0 +1,29 @@
+{
+  "scenarioId": "S1",
+  "scenarioName": "read-only ask",
+  "runIndex": 3,
+  "exitCode": 0,
+  "inputTokens": 79620,
+  "outputTokens": 508,
+  "toolCallNames": [
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "`fn add` is defined at `src/math.rs:1`:\n\n```rust\npub fn add(a: i32, b: i32) -> i32 {\n```\n\nIt's the only match for `fn add` in the repo.",
+  "toolArgs": [
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Search for fn add definitions\",\"code\":\"const r = await tool.grep({ pattern: \\\"\\\\\\\\bfn\\\\\\\\s+add\\\\\\\\b\\\", path: \\\".\\\" });\\nprint(r.text);\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "failed"
+}

@@ -1,3 +1,5 @@
+Read this when diagnosing static, fidelity, layout, or visual gate defects and defect code fixes.
+
 # Report-Gates Defect Glossary
 
 This reference catalogs every defect code the report gates (`static`, `fidelity`, `layout`, `visual`, `proofread`) can raise, their severity and impact, and how to repair them.

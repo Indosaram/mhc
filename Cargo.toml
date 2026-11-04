@@ -32,6 +32,7 @@ members = [
     "crates/maho-comment-checker",
     "crates/maho-lsp",
     "crates/maho-task",
+    "crates/maho-ultrawork",
     "crates/maho-memory",
     "crates/maho-browser",
     "crates/maho-telemetry",
@@ -144,9 +145,6 @@ members = [
     "crates/omo/components/maho-omo-agent-home",
     "crates/omo/components/maho-omo-onboarding",
     "crates/omo/components/maho-omo-feedback",
-    "crates/omo/components/maho-omo-mass-ulw",
-    "crates/omo/components/maho-omo-todo-fanout-reminder",
-    "crates/omo/components/maho-omo-ultrawork",
     "crates/omo/components/maho-omo-ulw-loop",
     "crates/omo/ulw-loop-core",
     "crates/omo/components/maho-omo-start-work-continuation",
@@ -249,6 +247,17 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
+
+# The rpc host digests its own executable at startup (runtime_build_id); unoptimized SHA-256 over a debug
+# test binary of several hundred MB takes tens of seconds, so the hash crates are optimized in dev/test too.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
 
 [profile.release]
 # Thin LTO enables cross-crate optimization with low link-time overhead.

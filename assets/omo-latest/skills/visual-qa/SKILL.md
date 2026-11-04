@@ -88,23 +88,34 @@ await page.evaluate(() => [...document.querySelectorAll("*")]
 
 ### TUI
 
-1. Render the TUI through the REAL xterm.js web terminal and screenshot it -
-   NEVER `tmux capture-pane`, which degrades truecolor and misaligns wide (CJK)
-   glyphs. Run the command in a real pty and capture the browser render from the
-   repository root:
+1. Render the TUI from a REAL pty and screenshot it - NEVER `tmux capture-pane`,
+   which degrades truecolor and misaligns wide (CJK) glyphs. Run with bun from
+   the repository root:
 
 ```
-node script/qa/web-terminal-visual-qa.mjs --title "TUI Visual QA" \
-  --command "<tui-command>" \
+bun "$SKILL_DIR/scripts/tui-capture.mjs" --title "TUI Visual QA" \
+  --command "<tui-command>" --wait-for "<startup-regex>" \
   --input "{ArrowDown}" --input "{Enter}" \
   --evidence-dir .omo/evidence/<slug>/tui-web-terminal
 ```
 
-   Replay a saved raw stream with `--from-file <capture.ansi>` instead of
-   `--command`. This produces `terminal.png` (the true-color artifact),
-   `terminal.txt`, `terminal-ansi.txt`, and `metadata.json`. Treat this as the
-   standard TUI visual artifact pattern. Outside this repo, copy the pattern:
-   real pty -> xterm.js in a browser -> PNG + metadata with cleanup receipt.
+   The command runs in a `Bun.Terminal` pty at `--cols`/`--rows` (default
+   100x30) and is parsed by `@xterm/headless`. Every wait (`--wait-for`, default
+   the editor marker; `--then-wait` after the inputs; typed text echoing back) is
+   a screen predicate with a `--timeout` deadline, never a fixed sleep. Inputs
+   are typed in order; `{Enter}`, `{ArrowDown}`, `{ArrowUp}`, `{Esc}`, `{Tab}` and
+   `{Backspace}` are keys. `--offline-model` gives the command a disposable HOME
+   and agent dir with an `offline` provider (model `offline/offline-model`)
+   served by a local SSE stub, so no credentials or network are used. Replay a
+   saved raw stream with `--from-file <capture.ansi>` instead of `--command`.
+   Output: `terminal.txt` (viewport text), `terminal.ansi` (raw stream),
+   `cells.json` (char, fg, bg per viewport cell), `metadata.json` (command,
+   size, binary sha256, waits, teardown receipt) and `terminal.png` (the cells
+   rendered in `Bun.WebView`; `--no-png` skips it). `@xterm/headless` is
+   resolved from the skill's `node_modules`, then `tools/golden/node_modules`
+   above the cwd, then the bun install cache (`$BUN_INSTALL/install/cache`,
+   else `~/.bun/install/cache`, highest `@xterm/headless@*`), then
+   `node_modules`/`NODE_PATH`; if none has it the script exits 2.
 
 2. Run the width check on the produced text and keep the JSON:
 

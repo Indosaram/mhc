@@ -1,0 +1,58 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 2,
+  "exitCode": 143,
+  "inputTokens": 413498,
+  "outputTokens": 7798,
+  "toolCallNames": [
+    "read",
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "Shortened run: the fixture is two files (97 lines), so a team swarm adds nothing. I'll check the docstring claims by running both parsers from a scratch crate outside the repo.",
+  "toolArgs": [
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/ulw-research/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/browser/SKILL.md\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Locate the parser fixture in the working directory\",\"code\":\"const r = await Bun.$`pwd; ls -la; find . -maxdepth 4 -ipath '*fixture*' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -50`.nothrow().text(); print(r)\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`find . -path ./.git -prune -o -type f -print | head -50; echo ---; cat Cargo.toml slow.sh; echo ---; git log --oneline | head; echo ---; wc -l src/* `.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Inspect the project files\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`cat -n src/parser_a.rs; echo ------; cat -n src/parser_b.rs; echo ------; cat src/lib.rs src/cli.rs; ls .omo; git status --short`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Read both parser sources and lib/cli usage\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await Bun.$`mkdir -p /tmp/pcmp/src`;\\nawait Bun.write('/tmp/pcmp/Cargo.toml', `[package]\\nname=\\\"pcmp\\\"\\nversion=\\\"0.1.0\\\"\\nedition=\\\"2021\\\"\\n[dependencies]\\nulw-bench-fixture={path=\\\"${process.cwd()}\\\"}\\n`);\\nawait Bun.write('/tmp/pcmp/src/main.rs', `use ulw_bench_fixture::parser_a::*;\\nuse ulw_bench_fixture::parser_b::*;\\nfn toks(s:&str)->Vec<String>{s.split_whitespace().map(String::from).collect()}\\nfn main(){\\n for s in [\\\"1+2\\\",\\\"1 + 2\\\",\\\"1-2-3\\\",\\\"1+\\\",\\\"\\\",\\\"1 2\\\",\\\"a\\\",\\\"2*3\\\",\\\"99999999999999999999\\\"]{\\n  println!(\\\"A {:?} => {:?}\\\", s, RecursiveDescentParser::new(s).parse());\\n }\\n for s in [\\\"1 + 2\\\",\\\"1 - 2 - 3\\\",\\\"1 +\\\",\\\"\\\",\\\"1 2\\\",\\\"a\\\",\\\"2 * 3\\\",\\\"1 2 +\\\",\\\"+ 1 2\\\",\\\"1 + + 2\\\"]{\\n  println!(\\\"B {:?} => {:?}\\\", s, ShiftReduceParser::parse(&toks(s)));\\n }\\n // depth/size: B on 1e6 tokens\\n let n=1_000_000; let mut t=vec![\\\"1\\\".to_string()]; for _ in 0..n {t.push(\\\"+\\\".into()); t.push(\\\"1\\\".into());}\\n let st=std::time::Instant::now(); let r=ShiftReduceParser::parse(&t); println!(\\\"B 1e6 ops ok={} {:?}\\\", r.is_ok(), st.elapsed());\\n std::mem::forget(r);\\n let s:String=std::iter::repeat(\\\"1+\\\").take(n).collect::<String>()+\\\"1\\\";\\n let st=std::time::Instant::now(); let r=RecursiveDescentParser::new(&s).parse(); println!(\\\"A 1e6 ops ok={} {:?}\\\", r.is_ok(), st.elapsed());\\n std::mem::forget(r);\\n}\\n`);\\nconst r = await Bun.$`cd /tmp/pcmp && rustc --version && cargo run --release 2>&1 | tail -40`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Run both parsers on edge cases in a scratch crate\",\"timeout\":240}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await Bun.write('/tmp/pcmp/src/main.rs', `use ulw_bench_fixture::parser_a::*;\\nuse ulw_bench_fixture::parser_b::*;\\nfn main(){\\n let which=std::env::args().nth(1).unwrap();\\n let n=1_000_000;\\n if which==\\\"a\\\" { let s:String=std::iter::repeat(\\\"1+\\\").take(n).collect::<String>()+\\\"1\\\"; let r=RecursiveDescentParser::new(&s).parse(); println!(\\\"A parsed ok={}\\\",r.is_ok()); drop(r); println!(\\\"A dropped\\\"); }\\n else { let mut t=vec![\\\"1\\\".to_string()]; for _ in 0..n {t.push(\\\"+\\\".into()); t.push(\\\"1\\\".into());} let r=ShiftReduceParser::parse(&t); println!(\\\"B parsed ok={}\\\",r.is_ok()); drop(r); println!(\\\"B dropped\\\"); }\\n}\\n`);\\nconst r = await Bun.$`cd /tmp/pcmp && cargo build --release 2>&1 | tail -2; ./target/release/pcmp a 2>&1 | tail -3; echo \\\"exit=$?\\\"; ./target/release/pcmp b 2>&1 | tail -3`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Check stack behavior when dropping deep ASTs\",\"timeout\":120}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`cd /tmp/pcmp && ./target/release/pcmp a 2>&1; echo ---; ./target/release/pcmp b 2>&1`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Show full output of the stack overflow runs\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}

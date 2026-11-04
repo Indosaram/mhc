@@ -1,0 +1,37 @@
+{
+  "title": "TUI capture",
+  "command": "/home/projects/mhc-wt/bin/mhc-candidate-a607c6267-release --offline --model offline/offline-haiku",
+  "fromFile": null,
+  "cols": 100,
+  "rows": 30,
+  "binary": {
+    "path": "/home/projects/mhc-wt/bin/mhc-candidate-a607c6267-release",
+    "sha256": "dd96e4566f21ea1b97a8dd564b526c07bd56d6dba9ceda64d24a3a52419f0e32"
+  },
+  "offlineModel": true,
+  "waits": [
+    {
+      "label": "startup",
+      "pattern": "❯",
+      "ms": 124
+    },
+    {
+      "label": "echo of input \"mass ulw hello\"",
+      "pattern": "mass ulw hello",
+      "ms": 19
+    }
+  ],
+  "teardown": {
+    "signal": "SIGTERM",
+    "exitCode": 0,
+    "errors": [],
+    "scratchRemoved": true
+  },
+  "startedAt": "2026-11-03T20:07:45.818Z",
+  "png": {
+    "width": 856,
+    "height": 541
+  },
+  "finishedAt": "2026-11-03T20:07:47.575Z",
+  "status": "pass"
+}

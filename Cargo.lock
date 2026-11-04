@@ -3694,6 +3694,7 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-ultrawork",
  "maho-utils",
  "maho-workflow",
  "maho-workpool",
@@ -3845,6 +3846,7 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-ultrawork",
  "nix 0.28.0",
  "photon-rs",
  "regex",
@@ -4756,6 +4758,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "vt100",
+ "winsafe",
 ]
 
 [[package]]
@@ -5236,6 +5239,7 @@ dependencies = [
  "maho-omo-bundled-skills",
  "maho-omo-claim-receipt",
  "maho-omo-comment-checker",
+ "maho-omo-config-core",
  "maho-omo-config-startup",
  "maho-omo-config-watch",
  "maho-omo-desktop-toolkit",
@@ -5256,11 +5260,10 @@ dependencies = [
  "maho-omo-start-work-continuation",
  "maho-omo-task",
  "maho-omo-telemetry",
- "maho-omo-todo-fanout-reminder",
- "maho-omo-ultrawork",
  "maho-omo-ulw-loop",
  "maho-omo-x-search",
  "maho-senpi-task",
+ "maho-ultrawork",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -5590,17 +5593,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maho-omo-mass-ulw"
-version = "0.0.0"
-dependencies = [
- "maho-ext-api",
- "maho-ext-host",
- "maho-test-support",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "maho-omo-memory"
 version = "0.0.0"
 dependencies = [
@@ -5727,9 +5719,9 @@ dependencies = [
  "maho-omo-bundled-skills",
  "maho-omo-memory",
  "maho-omo-task",
- "maho-omo-ultrawork",
  "maho-senpi-task",
  "maho-tui",
+ "maho-ultrawork",
  "regex",
  "serde_json",
  "tempfile",
@@ -5806,41 +5798,15 @@ dependencies = [
  "maho-omo-config-core",
  "maho-omo-config-resolution",
  "maho-omo-task",
- "maho-omo-ultrawork",
  "maho-senpi-task",
  "maho-telemetry-core",
  "maho-test-support",
+ "maho-ultrawork",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "maho-omo-todo-fanout-reminder"
-version = "0.0.0"
-dependencies = [
- "maho-ai",
- "maho-ext-api",
- "maho-ext-host",
- "maho-omo-ultrawork",
- "maho-test-support",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "maho-omo-ultrawork"
-version = "0.0.0"
-dependencies = [
- "fancy-regex",
- "maho-ai",
- "maho-ext-api",
- "maho-ext-host",
- "maho-test-support",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -6202,9 +6168,8 @@ dependencies = [
  "maho-isolation-core",
  "maho-model-core",
  "maho-omo-config-core",
- "maho-omo-mass-ulw",
- "maho-omo-ultrawork",
  "maho-team-core",
+ "maho-ultrawork",
  "maho-utils",
  "pretty_assertions",
  "regex",
@@ -6421,6 +6386,7 @@ name = "maho-tools"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "image 0.25.10",
  "maho-agent",
  "maho-ai",
@@ -6464,6 +6430,14 @@ dependencies = [
  "unicode-width",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "maho-ultrawork"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
 ]
 
 [[package]]
@@ -9797,13 +9771,11 @@ dependencies = [
  "filetime",
  "indexmap",
  "regex",
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

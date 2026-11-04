@@ -1,0 +1,43 @@
+{
+  "skills": {
+    "assets/omo-latest/skills/ultrawork/SKILL.md": 15183,
+    "assets/omo-latest/skills/ultrawork/references/commits.md": 2910,
+    "assets/omo-latest/skills/ultrawork/references/delegation-and-teams.md": 3915,
+    "assets/omo-latest/skills/ultrawork/references/qa-channels.md": 4910,
+    "assets/omo-latest/skills/ultrawork/references/review-gate.md": 3221,
+    "assets/omo-latest/skills/ultrawork/references/tui-visual-qa.md": 3745,
+    "assets/omo-latest/skills/ulw-loop/SKILL.md": 8850,
+    "assets/omo-latest/skills/ulw-loop/references/define-goal.md": 9096,
+    "assets/omo-latest/skills/ulw-loop/references/full-workflow.md": 34736,
+    "assets/omo-latest/skills/ulw-execute/SKILL.md": 27110,
+    "assets/omo-latest/skills/ulw-plan/SKILL.md": 15596,
+    "assets/omo-latest/skills/ulw-plan/references/full-workflow.md": 31167,
+    "assets/omo-latest/skills/ulw-plan/references/intent-clear.md": 5267,
+    "assets/omo-latest/skills/ulw-plan/references/intent-unclear.md": 6529,
+    "assets/omo-latest/skills/ulw-research/SKILL.md": 25502,
+    "assets/omo-latest/skills/ulw-research/references/deliverable-phase.md": 70849,
+    "assets/omo-latest/skills/ulw-research/references/epistemic.md": 2752,
+    "assets/omo-latest/skills/ulw-research/references/fact-ledger-grammar.md": 7030,
+    "assets/omo-latest/skills/ulw-research/references/fact-ledger.md": 25873,
+    "assets/omo-latest/skills/ulw-research/references/fidelity-claim-kinds.md": 5413,
+    "assets/omo-latest/skills/ulw-research/references/fidelity.md": 10924,
+    "assets/omo-latest/skills/ulw-research/references/markdown-blocks.md": 813,
+    "assets/omo-latest/skills/ulw-research/references/mass-collection.md": 1864,
+    "assets/omo-latest/skills/ulw-research/references/report-gates.md": 32918,
+    "assets/omo-latest/skills/ulw-research/references/report-visualization.md": 15925,
+    "assets/omo-latest/skills/ulw-research/references/research-collection.md": 15233,
+    "assets/omo-latest/skills/ulw-research/references/research-delivery.md": 15660,
+    "assets/omo-latest/skills/ulw-research/references/unit-rules.md": 16497
+  },
+  "contracts": {
+    "crates/maho-ultrawork/contract/core.md": 13913,
+    "crates/maho-ultrawork/contract/references/commits.md": 2910,
+    "crates/maho-ultrawork/contract/references/delegation-and-teams.md": 3915,
+    "crates/maho-ultrawork/contract/references/qa-channels.md": 4910,
+    "crates/maho-ultrawork/contract/references/review-gate.md": 3221,
+    "crates/maho-ultrawork/contract/references/tui-visual-qa.md": 3745
+  },
+  "totalSkillBytes": 419488,
+  "totalContractBytes": 32614,
+  "totalBytes": 452102
+}

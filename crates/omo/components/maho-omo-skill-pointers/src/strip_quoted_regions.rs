@@ -3,7 +3,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    FancyRegex::new(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>")
+    FancyRegex::new(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
         .expect("valid injected block regex")
 });
 

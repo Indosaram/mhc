@@ -1,0 +1,63 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 3,
+  "exitCode": 143,
+  "inputTokens": 458974,
+  "outputTokens": 9500,
+  "toolCallNames": [
+    "read",
+    "eval",
+    "write"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "Which \"fixture\" is meant isn't clear yet, so I'll look for it in the working directory.",
+  "toolArgs": [
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/ulw-research/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/browser/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc-wt/ulw-overhaul/assets/omo-latest/skills/ultimate-browsing/SKILL.md\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Locate the fixture containing two parsers\",\"code\":\"const r = await Bun.$`pwd; ls -la; find . -maxdepth 4 -ipath '*fixture*' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path './target/*' | head -50`.nothrow().text(); print(r)\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`cat Cargo.toml slow.sh; find src .omo -type f | head; for f in $(find src -type f); do echo \\\"=== $f\\\"; cat -n $f; done; git log --oneline | head`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Read the fixture sources\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"for (const f of [\\\"src/parser_a.rs\\\",\\\"src/parser_b.rs\\\",\\\"src/lib.rs\\\",\\\"src/cli.rs\\\"]) print(\\\"=== \\\"+f+\\\"\\\\n\\\"+await Bun.file(f).text())\",\"language\":\"js\",\"summary\":\"Read parser files\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const d = \\\"/tmp/ulw-parsers-verify\\\";\\nawait Bun.$`rm -rf ${d} && mkdir -p ${d}/src && cp src/parser_a.rs src/parser_b.rs ${d}/src/`;\\nawait Bun.write(d+\\\"/Cargo.toml\\\", `[package]\\\\nname=\\\"v\\\"\\\\nversion=\\\"0.1.0\\\"\\\\nedition=\\\"2021\\\"\\\\n[dependencies]\\\\n`);\\nawait Bun.write(d+\\\"/src/main.rs\\\", `mod parser_a; mod parser_b;\\nuse parser_a::*; use parser_b::*;\\nfn toks(s:&str)->Vec<String>{ s.split_whitespace().map(String::from).collect() }\\nfn ev_a(e:&Expr)->i64{ match e { Expr::Number(n)=>*n, Expr::Binary(l,o,r)=>{let (a,b)=(ev_a(l),ev_a(r)); if *o=='+'{a+b}else{a-b}}}}\\nfn ev_b(e:&AstNode)->i64{ match e { AstNode::Val(n)=>*n, AstNode::Op(o,l,r)=>{let (a,b)=(ev_b(l),ev_b(r)); if *o=='+'{a+b}else{a-b}}}}\\nfn main(){\\n for s in [\\\"1+2\\\",\\\"1 + 2\\\",\\\"1+2-3\\\",\\\"10-2-3\\\",\\\"1+2x\\\",\\\"\\\",\\\"1+\\\"] {\\n  let mut p=RecursiveDescentParser::new(s);\\n  let a=p.parse();\\n  let av=a.as_ref().map(|e|ev_a(e));\\n  let b=ShiftReduceParser::parse(&toks(&s.replace(\\\"+\\\",\\\" + \\\").replace(\\\"-\\\",\\\" - \\\")));\\n  let bv=b.as_ref().map(|e|ev_b(e));\\n  println!(\\\"{:?}\\\\\\\\n  A: {:?} => {:?}\\\\\\\\n  B: {:?} => {:?}\\\", s, a, av, b, bv);\\n }\\n println!(\\\"B unknown token: {:?}\\\", ShiftReduceParser::parse(&[\\\"1\\\".into(),\\\"*\\\".into(),\\\"2\\\".into()]));\\n println!(\\\"B 1 + : {:?}\\\", ShiftReduceParser::parse(&[\\\"1\\\".into(),\\\"+\\\".into()]));\\n}`);\\nconst r = await Bun.$`cd ${d} && cargo --version && rustc --version && cargo run -q 2>&1`.nothrow().text(); print(r)\",\"language\":\"js\",\"summary\":\"Run both parsers on probe inputs in a scratch crate\"}"
+    },
+    {
+      "name": "write",
+      "args": "{\"path\":\"/home/projects/ulwbench-home/tmp-new/ulw-bench-S7-r3-HaaIRH/parsers-comparison.md\",\"content\":\"# Parser comparison: `parser_a.rs` vs `parser_b.rs`\\n\\nBoth parse `+`/`-` integer expressions into an AST. Neither is called from anywhere else in the crate (`lib.rs` only declares the modules) and neither has tests.\\n\\n| | A: `RecursiveDescentParser` | B: `ShiftReduceParser` |\\n|---|---|---|\\n| Input | raw `&str`, tokenizes inline | pre-tokenized `&[String]` |\\n| AST | `Expr::{Number, Binary}` | `AstNode::{Val, Op}` |\\n| Approach | loop over `parse_add_sub` / `parse_number` | `values` and `ops` stacks, reduced after the scan |\\n| Errors | `Err(\\\"Expected digit at position N\\\")`, with position | `Err(\\\"Malformed token sequence\\\")` / `Err(\\\"Empty tokens\\\")`, no position |\\n| Associativity of `-` | left (correct) | right (wrong) |\\n| Whitespace | skipped before numbers only | n/a (caller tokenizes) |\\n\\n## Findings\\n\\nFindings come from running both parsers on probe inputs in a scratch crate (rustc 1.98.0), with a small evaluator over each AST. The tokenizer for B was `split_whitespace` after padding `+` and `-` with spaces.\\n\\n1. **B is wrong on chained subtraction.** `10-2-3` gives `Op('-', 10, Op('-', 2, 3))`, which evaluates to 11. A gives `((10-2)-3)`, which is 5. B reduces all operators only after the scan, popping from the end, so every chain is right-associative. `1+2-3` happens to evaluate the same either way.\\n2. **B is not a real shift-reduce parser.** It never reduces during the scan, and the \\\"table-driven\\\" claim has no table behind it. It has no precedence handling either, which would matter as soon as `*` is added.\\n3. **B silently drops unknown tokens.** `[\\\"1\\\",\\\"*\\\",\\\"2\\\"]` returns `Ok(Val(2))`, and `1+2x` becomes a \\\"Malformed\\\" error only by accident of token count.\\n4. **B's \\\"bounded constant stack memory\\\" doc claim is false.** Both `Vec`s grow with input length. Its linear-time claim is fine.\\n5. **A mishandles spaces and trailing input.** `\\"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await Bun.$`rm -rf /tmp/ulw-parsers-verify`; print(await Bun.$`git status --short`.text())\",\"language\":\"js\",\"summary\":\"Clean scratch crate and confirm repo state\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}

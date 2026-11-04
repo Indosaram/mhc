@@ -26,7 +26,7 @@
 ## Left as-is (flag)
 
 - `.omo/evidence/<slug>/...` paths in the TUI step: base text, and mhc itself uses this path today. Rename if mhc changes its evidence directory.
-- `omowright` (browser library, MIT) and `script/qa/web-terminal-visual-qa.mjs` references kept from base.
+- `omowright` (browser library, MIT) reference kept from base. The base TUI step pointed at a repo QA script that does not exist; it now runs the bundled `scripts/tui-capture.mjs` (MIT, added in mhc). Its `terminal.png` is rendered from the captured cells as HTML in `Bun.WebView`, not by replaying the stream through `@xterm/xterm`.
 
 ## 2026-10-30 delta (omo v5.1.52 behaviour, rewritten in mhc words)
 - Checklist: A3 measure 65-75 characters on desktop / at least 45 on a phone; new A13 (heading and group spacing ratios), B8 (type-scale floor), E7 (hued secondary text, no zero-offset glow), F8 (themed browser surfaces), F9 (no generated scaffolding), credited to Impeccable (Apache-2.0) via the `frontend` skill's ATTRIBUTION section 6.

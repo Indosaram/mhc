@@ -15,7 +15,21 @@ pub struct EditorLineCursor {
     pub draw_fake_cursor: bool,
 }
 
+/// senpi `KeywordRange`: the painted slice of one row plus the whole run it belongs to, so the
+/// per-character spectrum stays continuous across wrapped rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeywordRange {
+    pub start: usize,
+    pub end: usize,
+    pub run_start: isize,
+    pub run_length: usize,
+}
+
+pub type KeywordStyle<'a> = &'a dyn Fn(&str, usize, usize) -> String;
+
 pub struct EditorLineRenderInput<'a> {
+    pub keywords: &'a [KeywordRange],
+    pub keyword_style: Option<KeywordStyle<'a>>,
     pub text: &'a str,
     pub mentions: &'a [MentionRange],
     pub mention_style: &'a dyn Fn(&str) -> String,
@@ -63,6 +77,21 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
     let text = input.text;
     let cursor = input.cursor.as_ref();
     let mentions = clamp_mentions(input.mentions, text.len());
+    let keywords: Vec<KeywordRange> = match input.keyword_style {
+        Some(_) => input
+            .keywords
+            .iter()
+            .copied()
+            .filter(|range| {
+                range.start < text.len()
+                    && range.start < range.end
+                    && !mentions
+                        .iter()
+                        .any(|mention| range.start < mention.end && mention.start < range.end)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     let cursor_in_text = cursor.is_some_and(|cursor| cursor.pos < text.len());
     let cursor_glyph = if cursor_in_text && cursor.is_some_and(|cursor| cursor.draw_fake_cursor) {
         let pos = cursor.expect("cursor present").pos;
@@ -74,7 +103,15 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
     } else {
         None
     };
-    let points = cut_points(text.len(), &mentions, cursor_glyph);
+    let mut cut_ranges = mentions.clone();
+    cut_ranges.extend(clamp_mentions(
+        &keywords
+            .iter()
+            .map(|range| MentionRange { start: range.start, end: range.end })
+            .collect::<Vec<_>>(),
+        text.len(),
+    ));
+    let points = cut_points(text.len(), &cut_ranges, cursor_glyph);
 
     let mut out = String::new();
     for index in 0..points.len().saturating_sub(1) {
@@ -97,6 +134,22 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
             out.push_str("\x1b[0m");
         } else if in_mention {
             out.push_str(&(input.mention_style)(segment));
+        } else if let (Some(style), Some(range)) = (
+            input.keyword_style,
+            keywords
+                .iter()
+                .find(|range| from >= range.start && to <= range.end),
+        ) {
+            let mut offset = from;
+            for ch in segment.chars() {
+                let mut buf = [0u8; 4];
+                out.push_str(&style(
+                    ch.encode_utf8(&mut buf),
+                    usize::try_from(offset as isize - range.run_start).unwrap_or(0),
+                    range.run_length,
+                ));
+                offset += ch.len_utf8();
+            }
         } else {
             out.push_str(segment);
         }

@@ -1,11 +1,13 @@
 //! Port of senpi `packages/coding-agent/src/core/reserved-keywords.ts`.
 //!
-//! OmO's reserved prompt keywords (`ulw`, `mass ulw`, `ulw plan`, `ulw loop`, `ulw research`). Mirrors
-//! the omo-senpi engine's arming rules so the editor paints a keyword only where the engine would arm
-//! it: case-insensitive, spaces or hyphens between words, the mass aliases (`mulw`, `meth`, `ulw mass`),
-//! and each name only as a word of its own. Overlapping mentions all match. Injected blocks,
-//! fenced/inline code, relay headers, block quotes, double quotes, URLs and negated invocations are
-//! quoted material, never a request.
+//! OmO's reserved prompt keywords (`ulw`, `mass ulw`, `ulw plan`, `ulw loop`, `ulw research`).
+//! `ulw`/`ultrawork` and the mass aliases are painted exactly where the ultrawork engine arms: their
+//! spans come from [`maho_ultrawork::visible_keyword_spans`], so painting and arming share one
+//! masking pass and one word-boundary rule. The skill keywords (`ulw plan`, `ulw loop`,
+//! `ulw research`) keep the patterns below: case-insensitive, spaces or hyphens between words, each
+//! name only as a word of its own. Overlapping mentions all match. For the skill keywords, injected
+//! blocks, fenced/inline code, relay headers, block quotes, double quotes, URLs and negated
+//! invocations are quoted material, never a request.
 //!
 //! Offsets are UTF-8 byte offsets into the searched text (TS reports UTF-16 code units); masking keeps
 //! every byte offset, so spans index the original text.
@@ -50,7 +52,7 @@ pub struct ReservedKeywordRun {
     pub end: usize,
 }
 
-const MASS_ULW_ALIAS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw|meth)";
+const MASS_ULW_ALIAS: &str = r"(?:mass[\s_-]*ulw|ulw[\s_-]*mass|mulw|meth)";
 
 // A keyword glued to a preceding identifier segment names something else; so does one that opens a path.
 const NOT_AFTER_IDENTIFIER: &str = r"(?<![A-Za-z0-9][-_.]|[/\\])";
@@ -74,11 +76,6 @@ fn keyword_pattern(body: &str) -> FancyRegex {
 static RESERVED_KEYWORD_PATTERNS: LazyLock<Vec<(ReservedKeyword, FancyRegex)>> =
     LazyLock::new(|| {
         vec![
-            (
-                ReservedKeyword::Ultrawork,
-                keyword_pattern("(?:ultrawork|ulw)"),
-            ),
-            (ReservedKeyword::MassUlw, keyword_pattern(MASS_ULW_ALIAS)),
             (ReservedKeyword::UlwPlan, keyword_pattern(r"ulw[\s-]*plan")),
             (ReservedKeyword::UlwLoop, keyword_pattern(r"ulw[\s-]*loop")),
             (
@@ -94,7 +91,7 @@ static RESERVED_KEYWORD_STEM: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>")
+    fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
 });
 static INLINE_CODE: LazyLock<FancyRegex> =
     LazyLock::new(|| fancy(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));
@@ -211,8 +208,19 @@ pub fn find_reserved_keyword_spans(text: &str) -> Vec<ReservedKeywordSpan> {
     if !RESERVED_KEYWORD_STEM.is_match(text) {
         return Vec::new();
     }
+    let mut spans: Vec<ReservedKeywordSpan> = maho_ultrawork::visible_keyword_spans(text)
+        .into_iter()
+        .map(|span| ReservedKeywordSpan {
+            keyword: if span.mass {
+                ReservedKeyword::MassUlw
+            } else {
+                ReservedKeyword::Ultrawork
+            },
+            start: span.start,
+            end: span.end,
+        })
+        .collect();
     let visible = mask_quoted_regions(text);
-    let mut spans = Vec::new();
     for (keyword, pattern) in RESERVED_KEYWORD_PATTERNS.iter() {
         for found in pattern.find_iter(&visible).filter_map(Result::ok) {
             spans.push(ReservedKeywordSpan {
@@ -269,7 +277,7 @@ mod tests {
         assert_eq!(keywords_of("ulw fix the login bug"), vec!["ultrawork"]);
         assert_eq!(keywords_of("please ULTRAWORK this"), vec!["ultrawork"]);
         for alias in [
-            "mass ulw", "mass-ulw", "massulw", "ulw mass", "mulw", "meth",
+            "mass ulw", "mass-ulw", "mass_ulw", "massulw", "ulw mass", "mulw", "meth",
         ] {
             assert!(
                 keywords_of(&format!("{alias} the migration")).contains(&"mass-ulw"),
@@ -296,6 +304,7 @@ mod tests {
         assert!(keywords_of("rename `ulw` to something else").is_empty());
         assert!(keywords_of("```\nulw research\n```\nplain text").is_empty());
         assert!(keywords_of("<ultrawork-mode>ulw</ultrawork-mode> plain").is_empty());
+        assert!(keywords_of("<omo-ultrawork-directive>ulw</omo-ultrawork-directive> plain").is_empty());
         assert_eq!(runs_of("`ulw` then ulw loop"), vec!["ulw loop"]);
     }
 
@@ -330,6 +339,7 @@ mod tests {
         assert_eq!(runs_of("Ulw-Research the market"), vec!["Ulw-Research"]);
     }
 
+    // Intended divergence from upstream (no nested ultrawork span): docs/divergences.md ULW-8.
     #[test]
     fn returns_overlapping_spans_over_the_original_text() {
         let text = "go: mass ulw research";
@@ -341,8 +351,7 @@ mod tests {
             spans,
             vec![
                 ("ulw-research", "mass ulw research"),
-                ("mass-ulw", "mass ulw"),
-                ("ultrawork", "ulw")
+                ("mass-ulw", "mass ulw")
             ]
         );
         assert!(find_reserved_keyword_spans("nothing reserved here").is_empty());

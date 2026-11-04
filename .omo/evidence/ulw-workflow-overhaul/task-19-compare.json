@@ -1,0 +1,126 @@
+{
+  "pass": false,
+  "totalInputTokens": {
+    "new": 4917959,
+    "baseline": 6529841,
+    "sum": 11447800,
+    "cap": 12000000
+  },
+  "runs": {
+    "new": 21,
+    "baseline": 21
+  },
+  "extra": {
+    "S6_median_new_vs_baseline": [
+      165918,
+      143785
+    ],
+    "S7_median": [
+      458974,
+      448950
+    ],
+    "harness_note": "outcomeMet/status in run records is the buggy fixture-test check; scored from raw fields. run-scenarios.mjs fixed in this commit; records were produced before the fix. Token metric counts input+cacheRead+cacheWrite per assistant turn."
+  },
+  "criteria": [
+    {
+      "name": "S1 no create_goal/todo calls, correct src/math.rs:1 (3/3)",
+      "new": "3/3",
+      "baseline": "3/3 (baseline also never called create_goal in S1)",
+      "pass": true,
+      "note": "final text names src/math.rs:1 in all 6 runs. Baseline does NOT fail this criterion, so it does not discriminate on S1 (see task-19-baseline-s1.json)"
+    },
+    {
+      "name": "S2 fixture test passes >= baseline count",
+      "new": "3/3",
+      "baseline": "3/3",
+      "pass": true
+    },
+    {
+      "name": "S3 multi-file change + tests pass >= baseline",
+      "new": "3/3 runs completed with flag+new tests passing (self-reported in finalText; fixtures deleted, not re-run)",
+      "baseline": "1/3 completed (run2); runs 1,3 over-budget",
+      "pass": true,
+      "note": "math.rs test_add fails by design in S3; only the new tests are counted"
+    },
+    {
+      "name": "S4 every child report <= 3500 chars",
+      "new": "run2 child st_01a1a30a result section 4564 chars; runs 1,3 no child finished before -p turn ended",
+      "baseline": "no child finished in any run",
+      "pass": false,
+      "note": "transcripts/new-S4-r2.jsonl; harness childReportSizes was empty (toolResult.toolName not captured)"
+    },
+    {
+      "name": "S4 parent wake bytes <= 24000 per batch",
+      "new": "0 wake bytes in session (-p turn ends before children complete)",
+      "baseline": "0",
+      "pass": null,
+      "note": "unmeasured: session-bytes wake=0; task-19-session-bytes-S4-{new,base}.json"
+    },
+    {
+      "name": "S4 falsification wave observed in transcript",
+      "new": "not observed (0 'falsif' hits, 1 task batch per run)",
+      "baseline": "not observed",
+      "pass": false,
+      "note": "transcripts/new-S4-r*.jsonl; headless -p ends turn at first wake wait so wave 2 never starts"
+    },
+    {
+      "name": "S5 no sleep-only polling call",
+      "new": "0/3 sleep-only, monitor used",
+      "baseline": "0/3 sleep-only (but 3/3 over-budget with bash_output polling + create_goal)",
+      "pass": true
+    },
+    {
+      "name": "S6 no deliverable-phase/report-gates/fidelity reads, no report-tools.mjs, answer correct 3/3",
+      "new": "3/3 (quicksort, O(n^2); refs none)",
+      "baseline": "3/3",
+      "pass": true
+    },
+    {
+      "name": "S7 produces the markdown report",
+      "new": "0/3 confirmed: 3/3 hit 400k cap (exit 143); run3 emitted a write of parsers-comparison.md (3234 chars) as its last call but no toolResult, fixture deleted -> unconfirmed",
+      "baseline": "0/3 (3/3 over-budget)",
+      "pass": false,
+      "note": "transcripts/new-S7-r3.jsonl. Profile: ~6 turns, ~78-88k ctx per turn counted cumulatively (cacheRead included); reads of ulw-research/SKILL.md, browser/SKILL.md, ultimate-browsing/SKILL.md = 96-127KB tool output; no reference files, no tool loop. Cap is hit by cumulative per-turn context, not by looping"
+    },
+    {
+      "name": "median input tokens S1: new < baseline",
+      "new": 79695,
+      "baseline": 94141,
+      "pass": true
+    },
+    {
+      "name": "median input tokens S2: new < baseline",
+      "new": 327572,
+      "baseline": 335911,
+      "pass": true
+    },
+    {
+      "name": "median input tokens S3: new <=110% of baseline",
+      "new": 252856,
+      "baseline": 407074,
+      "pass": true,
+      "note": "baseline over-budget in 2/3 runs, median is lower bound"
+    },
+    {
+      "name": "median input tokens S4: new < baseline",
+      "new": 208224,
+      "baseline": 426740,
+      "pass": true,
+      "note": "baseline over-budget in 2/3 runs, median is lower bound"
+    },
+    {
+      "name": "median input tokens S5: new <=110% of baseline",
+      "new": 120043,
+      "baseline": 441084,
+      "pass": true,
+      "note": "baseline over-budget in 3/3 runs, median is lower bound"
+    },
+    {
+      "name": "per-turn injected contract bytes <= core cap 15283 (S4 r1)",
+      "new": 14329,
+      "baseline": 32184,
+      "pass": true,
+      "note": "directive bytes via session-bytes.mjs; core.md 13913 B"
+    }
+  ]
+}

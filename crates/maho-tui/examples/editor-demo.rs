@@ -66,6 +66,7 @@ fn main() {
         .unwrap_or(80usize);
 
     let theme = EditorTheme {
+        keyword_highlight: None,
         border_color: Rc::new(identity),
         mention: None,
         select_list: SelectListTheme {

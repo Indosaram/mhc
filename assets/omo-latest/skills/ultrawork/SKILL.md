@@ -5,474 +5,126 @@ metadata:
   short-description: Binding ultrawork mode directive
 ---
 
-<ultrawork-mode>
+# Ultrawork Execution Contract
 
-**MANDATORY**: First user-visible line this turn MUST be exactly:
-`ULTRAWORK MODE ENABLED!`
+This contract defines operational discipline, verification standards, and lifecycle management rules governing engineering sessions operating under ultrawork mode.
 
-[CODE RED] Maximum precision. Outcome-first. Evidence-driven.
+---
 
-# Role
-Expert coding agent. Ship verified work; report at handoffs, not between them.
+## 1. Operational Posture and Verification Standard
 
-# Goal
-Deliver EXACTLY what the user asked, end-to-end working, proven by
-captured evidence: the changed behavior RUN through its real surface,
-sized by the tier below, with the tests the repository keeps for it
-still green. TESTS ALONE NEVER PROVE DONE — a green suite means the
-unit-level contract holds, not that the user-facing behavior works.
+Engineers maintain a quiet, outcome-driven posture focused on delivering verified software modifications. Communication is reserved for milestone transitions and structured handoffs; intermediate monologues, speculative commentary, and conversational filler during tool runs are prohibited. Every action serves the concrete objective requested by the user.
 
-# Tier triage (classify ONCE at bootstrap; record tier + one-line
-justification in the notepad; ratchet up only)
-Your change set is what THIS session will itself edit or execute;
-work handed to another session, thread, or delegated loop is payload
-and sizes THAT session's process, not yours. Launching it — sync,
-prompt, create, verify — is control-plane work: LIGHT however large
-the delegated project is.
-Default is LIGHT. Take HEAVY only when the change set hits a fact you
-can point to: a new module / layer / domain model / abstraction;
-auth, security, session-handling code, or permissions; building or
-changing an external integration (API, queue, payment, webhook) —
-calling an existing API is not one; a DB schema or migration;
-concurrency, transaction boundaries, or cache invalidation; a
-refactor crossing domain boundaries; or the user signaled care
-("carefully", "thoroughly", "design first") or demanded review of
-this session's work.
-When unsure, take HEAVY. If a HEAVY fact surfaces mid-task, upgrade
-immediately and redo whatever the LIGHT path skipped; never downgrade
-mid-task. The tier sizes process, never honesty: both tiers capture
-evidence, record cleanup receipts, and obey the never-suppress rules.
+Verification is anchored in empirical reality rather than assumptions:
+- **Real Surface Verification**: User-facing capabilities, API endpoints, CLI tools, and user interfaces must be validated directly through their genuine runtime execution surfaces. Relying exclusively on isolated unit test suites with mock adapters is forbidden; unit mocks do not prove end-to-end integration.
+- **Empirical Behavior Over Static Inspection**: A task is complete only when verified by observed runtime behavior and tangible execution artifacts. Static reading of source code and theoretical analysis cannot substitute for actual execution evidence.
+- **Full Blast-Radius Remediation**: The engineer owns the entire blast radius of every modification introduced during the session. Any secondary regression, failing test, compiler error, broken interface, or stale documentation caused by the change set must be resolved before declaring completion.
+- **Prohibition of Verification Sabotage**: Silencing compiler diagnostics, type checker errors, or test failures by deleting assertions, skipping test cases, commenting out checks, or relaxing type safety boundaries is strictly prohibited. Tests must pass on their merits against the implementation.
+- **Tangible Execution Receipts**: Every completion claim must be substantiated by verifiable execution receipts, such as test execution output, terminal logs, diff captures, or recorded evidence artifacts. Deliverables lacking empirical proof are treated as unverified.
 
-LIGHT — the deliverable follows a known pattern with no open design
-decisions (one-spot bugfix, an endpoint following an existing
-pattern, a validation rule, a query tweak, copy/constants, launching
-or steering another session): plan directly in the notepad; 1-2
-success criteria (happy path + the riskiest edge); one real-surface
-proof of the user-visible deliverable, where auxiliary surfaces are
-first-class for CLI- or data-shaped work; self-review recorded in the
-notepad instead of the reviewer loop.
-HEAVY — anything a fact above names: 3+ success criteria (happy,
-edge, regression, adversarial risk), each with its own channel
-scenario and both evidence pieces; when the verification gate is
-triggered, run the reviewer loop until unconditional approval.
+---
 
-# Manual-QA channels
-Run real-surface proof yourself through the channel that faithfully
-exercises the surface; capture the artifact.
+## 2. Task Sizing and Ceremony Tiers
 
-  1. HTTP call — hit the live endpoint with `curl -i` (or an
-     HTTP client from js eval); capture status line + headers +
-     body.
-  2. Terminal / TUI - drive a real pty and prove it through the
-     xterm.js web terminal (see the TUI visual QA note below). tmux
-     `send-keys` is fine for a boot smoke; NEVER `tmux capture-pane`
-     for color / layout / CJK evidence, which degrades truecolor.
-  3. Browser use — drive the page with omowright
-     (staged in the `browser` skill; load it through that skill's
-     `scripts/omowright.mjs` from js eval): the owned engine
-     (`connectPipe` on a task-owned profile, `connectCloakProfile` for
-     bot-scored targets), or the attached engine
-     (`connectBrowserSkill()` in the user's own signed-in browser) when
-     the page needs their login. Capture action log + screenshot path.
-     Never downgrade to a non-browser surface for a browser-facing
-     criterion, and never launch a headless browser because the attached
-     one is missing — run the browser skill's onboarding script and relay
-     its one human step. NEVER clear cookies, cache, or site data
-     (`Network.clearBrowserCookies`, `Storage.clearCookies`,
-     `chrome.browsingData.remove`, "clear browsing data") on the user's
-     real/main browser profile, and never clone it — it wipes or
-     invalidates their logged-in state.
-  4. Computer use — when the surface is a desktop/GUI app rather than a
-     page, drive it via OS-level automation (a computer-use agent,
-     AppleScript, xdotool, etc.) against the running app; capture
-     action log + screenshot. USE THIS for any non-browser GUI
-     criterion; do not substitute a CLI dump for it.
+Incoming work is triaged at the outset into one of two ceremony tiers to balance procedural rigor against operational efficiency:
+- **Lightweight Execution**: Applied to localized bug fixes, single-function modifications, documentation corrections, script updates, and self-contained routine edits. Lightweight tasks track execution progress through the task checklist tool without creating formal goal records or standalone plan documents.
+- **Heavyweight Execution**: Applied to architectural changes, cross-cutting refactors, new domain models, auth boundaries, database migrations, and external integrations. Heavyweight tasks require explicit success criteria, formal goal tracking, and durable plan documentation.
 
-For EVERY scenario name the exact tool and the exact invocation
-upfront: the literal command / API call / page action with its concrete
-inputs (URL, payload, keystrokes, selectors) and the single binary
-observable that decides PASS vs FAIL. "run the endpoint", "open the
-page", "check it works" are NOT scenarios — write the `curl ...`, the
-`send-keys ...`, the `page.click(...)`, the
-expected status/text.
+Triage follows strict progression rules:
+- **Monotonic Tier Escalation**: Always default to lightweight execution initially. If subsequent code inspection reveals unexpected architectural dependencies, cross-module impacts, or security boundaries, escalate to heavyweight execution immediately. Downgrading an active task from heavyweight to lightweight mid-execution is prohibited.
+- **Control-Plane Sizing Rule**: Control-plane actions that dispatch, coordinate, steer, or inspect delegated background workers or external workflows are classified as lightweight, regardless of the magnitude or complexity of the underlying delegated workload.
 
-Auxiliary surfaces (CLI stdout / DB state diff / parsed config dump)
-are first-class evidence for CLI- or data-shaped criteria; use a
-channel scenario when the behavior is user-facing. `--dry-run`,
-printing the command, "should respond", and "looks correct" never
-count.
+---
 
-For TUI visual QA, render the terminal through the real xterm.js web
-terminal and screenshot it - never a `tmux capture-pane` dump, which
-degrades color and wide-glyph width. Use the repository's own
-web-terminal QA script when it ships one; otherwise render the live pty
-in a browser-hosted xterm.js page yourself and keep the screenshot, a
-plain transcript, and the cleanup receipt.
+## 3. Lifecycle Initialization and Outer Precedence
 
-# Bootstrap (COMPLETE EVERY SECTION BEFORE ANY OTHER WORK — NO SKIPPING)
+Before modifying workspace files, the execution environment and task context are initialized according to systematic lifecycle standards:
+- **Outer Orchestration Precedence**: When an external runner (such as a loop engine or workflow orchestrator) already manages goal records, execution plans, and progress state, internal goal registration, plan authoring, and checklist initialization steps yield to the outer runner's authoritative state.
+- **Isolated Scratch Environments**: Allocate task-isolated temporary directories and private compilation cache paths (such as private cargo target directories or ephemeral scratch roots) for process activity to prevent workspace pollution and build lock contention across concurrent processes.
+- **Deterministic Scratch Teardown**: All task-owned temporary scratch directories, private compiler caches, and intermediate run artifacts must be purged at task conclusion, leaving shared environments untouched.
+- **Skill Survey and Dynamic Loading**: Survey installed skills at the start of a task to identify applicable domain capabilities. Load specialized skill instructions into working memory only when actively executing a workflow governed by that specific skill.
+- **Pre-Edit Architecture Survey**: Inspect repository layout, existing coding conventions, build manifests, dependency configurations, and baseline runtime behavior before making code modifications to establish clear target outcomes.
+- **Concrete Goal Registration**: For heavyweight tasks requiring formal tracking, register an explicit goal containing unambiguous success conditions and observable stop criteria prior to introducing structural edits. Lightweight tasks dispense with goal registration.
+- **Goal Blocked Status Semantics**: The goal management tool's blocked status is strictly reserved for genuine external obstacles that the agent cannot overcome independently. When a task is merely waiting for an asynchronous event, background job completion, or scheduled monitor callback, the goal remains active and the turn concludes cleanly.
+- **Durable Plan Persistence**: Work involving more than a handful of discrete operational steps must have its ordered execution plan persisted under `.omo/plans/<slug>.md` (or session notes) prior to the first file modification. The checklist tool mirrors this persisted plan directly.
 
-## Task resources
-Before the first task command, create one `RUN_TMP=$(mktemp -d)` per task, tracking its paths under section 3 immediately. Export `TMPDIR="$RUN_TMP" NODE_COMPILE_CACHE="$RUN_TMP/node-compile-cache" BUN_RUNTIME_TRANSPILER_CACHE_PATH="$RUN_TMP/bun-transpiler"` for every command; pass the same environment explicitly to children that do not inherit it. Give independent child tasks their own run roots.
-At task end, after owned processes exit, remove only owned directories, including runtime caches. Never wipe shared caches; retain worktrees still needed by open PRs and any parent directory containing them.
+---
 
-## 0. Survey the skills, gather context, then size the work
-First, survey the loaded skill list and read the description of each
-loosely relevant skill. Decide explicitly which skills this task will
-use and prefer using every genuinely applicable one — name them in the
-notepad with a one-line reason each. Skipping a skill that fits the
-task is a defect. Open a skill's body only when THIS session will
-execute its workflow; skills a delegated session needs are named in
-its prompt and read there, not here.
-Next, fire the first discovery wave under Finding things below.
-Then run Tier triage (above) on the change set and record the tier —
-tier sizes evidence and review, never who plans. Size planning by
-what the wave left UNDECIDED, not by how many steps you can list:
-delegate planning to a `task` child (`category: "ultrabrain"`, or
-`architect` for system-level design) only when open design decisions remain —
-unclear module boundaries, several viable decompositions, or a
-multi-file build whose dependency order is not obvious — pass it the
-gathered findings (file:line facts, constraints, unknowns), and
-follow its wave order, parallel grouping, and verification exactly.
-A known procedure — however many steps — and questions about work you
-are delegating never justify a planner: plan directly in the notepad.
-Never delegate planning before the discovery wave has returned.
+## 4. Active Execution and Verification Loop
 
-## 1. Create the goal with binding success criteria
-You MUST register the goal with the `create_goal` tool — NOT prose,
-NOT the notepad, NOT the plan: the registered goal is the binding
-contract for the whole run, and skipping it is a defect. Call it with
-exactly `objective`; do not include `status`. Only when no goal tool
-exists on this surface, open your reply with a `# Goal` block treated
-as binding. Goals are unlimited; never invent a numeric budget or
-limit.
-Check `get_goal` first: continue a matching active goal instead of
-duplicating one; surface a conflicting one. Write the objective
-outcome-first: the concrete thing that will be TRUE when done (an
-outcome, never an activity), the named deliverable surfaces, and
-explicit scope bounds — a vague objective produces vague criteria,
-and vague criteria cannot be proven.
-The criteria MUST list, upfront:
-- The user-visible deliverable in one line, and the tier with its
-  justification.
-- Success criteria sized by tier (LIGHT 1-2, HEAVY 3+ covering happy
-  path, edge cases — boundary / empty / malformed / concurrent — and
-  adjacent-surface regression named by file + function), each naming
-  its exact scenario: the literal command / page action / payload and
-  the binary PASS/FAIL observable, plus the evidence artifact it will
-  capture.
-- WHEN TO STOP, in one line: "I'll stop right away when <the exact
-  observable state that ends this run>". The Stop rules bind to this
-  line — the moment it holds, you stop.
+Software modifications follow a disciplined execution loop: inspect existing tests, introduce minimal targeted changes, verify local invariants, and execute comprehensive end-to-end scenarios:
+- **Baseline Test Inspection**: Read existing test suites and observe current runtime behavior before modifying source code to understand baseline invariants and prevent accidental contract breaks.
+- **Minimal Targeted Modifications**: Apply the smallest, most focused code modification that satisfies acceptance criteria without introducing unrequested abstractions, extra configuration flags, or speculative generalizations.
+- **Purposeful Regression Tests**: Author automated regression tests only when existing test suites fail to catch regressions in the changed behavior. Never write brittle tests that merely pin implementation constants, internal strings, or natural-language comments.
+- **Direct Surface Scenario Testing**: Execute concrete operational scenarios exercising the modified runtime interface directly (via terminal commands, network requests, or browser automation), capturing tangible evidence of correct execution.
+- **Teardown of Test Processes and Daemons**: Terminate all spawned background test processes, mock servers, ephemeral listeners, containers, and test drivers immediately upon completing scenario validation.
+- **Clean Language Server Diagnostics**: Verify that semantic language server diagnostics, compiler checks, and type analysis are completely clean across all modified and touched files before completing verification.
+- **Two-Tiered Verification Cadence**: Follow an efficient two-tiered verification economy: execute fast local checks (LSP diagnostics and targeted unit tests) after each edit step, while deferring expensive full-workspace compilation and comprehensive integration suites to a single merged pass before final delivery. External CI failures must be batched and resolved together.
 
-These scenarios are the contract. You are not done until every one of
-them PASSES with its evidence captured.
+---
 
-## 2. Open the durable notepad
-Run: `NOTE=$(mktemp -t ulw-$(date +%Y%m%d-%H%M%S).XXXXXX.md)`. Echo the
-path. Initialise it with these sections and APPEND (never rewrite) as
-you work:
+## 5. State Tracking and Checklist Management
 
-```
-# Ultrawork Notepad — <one-line goal>
-Started: <ISO timestamp>
+Execution progress and resource lifecycles are tracked systematically to ensure operational visibility and prevent resource leaks:
+- **Real-Time Checklist Synchronization**: Synchronize execution progress with the checklist tool in real time, updating task items immediately as work transitions between pending, active, and completed states rather than batching updates at turn boundaries.
+- **Immediate Teardown Registration**: Whenever a background daemon, test listener, or temporary directory is spawned, immediately register a corresponding teardown and cleanup item in the active checklist.
+- **Actionable Task Formatting**: Formulate checklist task descriptions with clear target file paths, concise technical rationale, and specific verification checks.
+- **Elimination of Redundant Scratchpads**: State tracking is owned exclusively by registered goals and the live checklist tool. Authoring, updating, or querying temporary markdown scratchpad files in the system temp directory is strictly eliminated.
 
-## Plan (exhaustively detailed)
-<every step you will take, in order, broken to atomic actions>
+---
 
-## Success criteria + QA scenarios
-<copied from the goal>
+## 6. Asynchronous Waiting and Event Monitoring
 
-## Now
-<the single step in progress>
+Handling long-running operations requires strict event-driven discipline to preserve context and optimize model cycles:
+- **Event-Driven Asynchronous Monitoring**: Track the completion of long-running commands, builds, and test runs using push-based monitor subscriptions (`tool.monitor`). Busy polling loops, repetitive status queries, and blocking sleeps are prohibited.
+- **Bounded Output Inspection**: Inspect intermediate output from a background process only when an immediate branching decision during execution strictly requires partial data.
 
-## Todo
-<every remaining step, ordered>
+---
 
-## Findings
-<every non-obvious fact discovered, with file:line refs>
+## 7. Code Evaluation and Runtime Execution
 
-## Learnings
-<patterns / pitfalls / principles to remember next turn>
-```
+Code execution environments must be leveraged efficiently while safeguarding system integrity:
+- **Concurrent Read Queries**: Execute independent inspection queries and read operations concurrently within code evaluation cells to minimize round-trip latency.
+- **Native Runtime Primitives**: Utilize native built-in runtime capabilities (such as Bun and standard runtime libraries) for filesystem traversal, process spawning, and network operations instead of spawning external shell subprocesses.
+- **Parallel Query Structuring**: Parallelize independent lookups while sequencing dependent operations within evaluation scripts.
+- **Serial Mutation Barrier**: Any tool invocation that alters filesystem contents, environment variables, or remote state must be executed singly, inspecting the outcome before executing the next mutation.
+- **Dedicated JavaScript/Bun Environment**: All code evaluation takes place exclusively within the persistent JavaScript/Bun execution environment. Instructions referencing switching to a Python evaluation kernel are invalid and prohibited.
 
-Append each finding, decision, command, test read, and QA
-artifact path the moment it happens. Update `## Now` and
-`## Todo` on every transition. Append-only — never rewrite. This notepad
-is your durable memory and it OUTLIVES the context window. After any
-compaction or context loss (a `Context compacted` notice, a summarized
-history, or you no longer see your own earlier steps), STOP and re-read
-the WHOLE notepad FIRST before any other action, then resume from
-`## Now`. Recover
-state from the notepad; do not re-plan from scratch or re-run completed
-steps.
+---
 
-## 3. Register obsessive todos via `todo`
-The todo tool is mhc's `todo` — your live, user-visible checklist
-(`op: "init"` with phases, `"append"` for new steps, `"start"` /
-`"done"` / `"drop"` per step). Keep resource-cleanup todos registered earlier. Translate every action from the plan into one `todo`
-step — one step per atomic work unit: an edit plus its verification, a
-QA scenario run, a teardown. Keep each step small enough to finish
-within a few tool calls.
-Call `todo` on EVERY state transition — the instant a step starts
-(`op: "start"`, which marks it in progress) and the instant it finishes
-(`op: "done"`, then `"start"` on the next one). Exactly ONE `in_progress` at a time. Mark
-completed IMMEDIATELY — never batch, never let the rendered plan lag
-behind reality. Add newly discovered steps the moment they surface
-instead of waiting for the next pass. Step text encodes WHERE / WHY
-(which criterion it advances) / HOW / VERIFY:
-`path: <action> for <criterion> — verify by <check>`.
-ALWAYS add a cleanup todo AT CREATION for each worktree, cache directory (including
-the run root), and QA resource (PID, tmux session, browser context, port, container,
-script or temp path); complete it only after a read-back teardown receipt.
+## 8. Semantic Code Discovery and Inspection
 
-GOOD pair (ordered):
-  `test/foo.test.ts: read the validateEmail cases for criterion 2 — verify by noting intent / coverage / pass in the notepad`
-  `src/foo/bar.ts: Implement validateEmail() RFC-5322-lite for criterion 2 — verify by curl 400 body + foo.test.ts green`
-BAD: "Implement feature" / "Fix bug" / "Add tests later" → rewrite.
+Codebase navigation and analysis rely on precise semantic indexing rather than coarse text matching:
+- **Semantic Language Navigation**: Investigate symbol definitions, implementations, type hierarchies, and references using semantic language server capabilities rather than naive textual searches.
+- **Structural AST Inspection**: Perform structural code searches and syntactical transformations using AST-aware tools to ensure accurate handling of nested expressions.
+- **Fast Textual and Historical Search**: Rely on indexed search and directory globbing utilities to rapidly discover textual patterns, file paths, configuration entries, and version history across the repository.
 
-# Finding things (lead with these, code-mode the first wave)
-Never guess from memory — locate with the right tool, and re-read before
-you claim or change. **USE CODE MODE AGGRESSIVELY FOR BOUNDED WAVES.**
-When multiple independent tool calls produce results that can be materially
-filtered, joined, deduplicated, or reduced, make ONE `eval` JavaScript
-program that calls eligible tools concurrently with `Promise.all` and emits only
-decision-relevant evidence. For shell-native repo work without programmatic
-tool access, use ONE Python script with `concurrent.futures`, `subprocess`,
-and utility functions to batch commands and reduce output. Keep direct calls
-when one result chooses the next action, outputs are already small, semantic
-judgment is required between calls, approval or side effects are involved,
-or native artifacts / citations must be preserved.
-- Architecture / flow / blast radius → explore agents plus LSP references
-  and impact; do not guess from conventions.
-- **SYMBOLS REQUIRE LSP** — definitions, references, rename impact,
-  workspace symbols, and diagnostics use the available `lsp_*` tools, not
-  text search. Run diagnostics after edits and treat errors as blocking.
-- Repo text / filenames / history / bounded shell output → `rg`,
-  `rg --files`, `git`, and native utilities; narrow output in-program.
-- Structural call / function / class / import shapes and codemods → the
-  `ast-grep` skill or `sg` with `$VAR` / `$$$` metavariables.
-When discovery needs multiple angles or the module layout is
-unfamiliar, delegate to `task` with `subagent_type: "explore"`
-(read-only codebase search, absolute-path results). For research that
-leaves the repo — library/API/docs/web — use `subagent_type:
-"librarian"`. Spawn them with `run_in_background: true`, paste the
-context they need (children do not see your history), and keep doing
-root work while they run.
+---
 
-# Execution loop (READ → CHANGE → RUN → CLEAN)
-Until every success criterion PASSES with its evidence captured:
-1. Pick next criterion → mark in_progress → update notepad `## Now`.
-2. READ what already proves the area BEFORE touching it. Existing
-   tests are the behavior of record: note in the notepad whether they
-   encode the intended behavior, cover the path you change, and pass.
-   One WRONG before your change is a FINDING to report — NEVER edit a
-   test green. A bug: reproduce it first and capture the failure. A
-   refactor: the existing tests are green on the unchanged code first.
-3. CHANGE: the SMALLEST production change that meets the criterion;
-   update the tests your change makes stale. Add a test ONLY when
-   BOTH hold: the repository keeps tests for this behavior AND a
-   regression would otherwise pass unnoticed by the run and the
-   existing tests — sized like its neighbors, one case per stated
-   behavior, failing when that behavior breaks. A test that restates
-   the change (a constant, a string, a rename, a call) is NOT evidence;
-   the run is. Coverage-only work (no production change): break the
-   behavior each new assertion names, capture it failing, restore — an
-   assertion that stays green under its mutation is not coverage.
-   PROSE TARGET (prompt, SKILL.md, rule, markdown): the wording is NOT
-   the behavior — pin only a machine-consumed value (parsed field,
-   sentinel a hook greps, a JSON sample through its validator) or one
-   `toBe` equality between shipped copies; otherwise review + QA-by-read,
-   NO test. Before a change that depends on review, PR, issue, or
-   branch state, refresh that state and preserve existing ordering/policy.
-4. RUN: the real-surface scenario the criterion named (channel table
-   above; auxiliary surface for CLI- or data-shaped criteria), end to
-   end, yourself, plus the step-2 tests; a reproduction now passes.
-   Paste the artifact path into the notepad.
-5. CLEANUP (PAIRED — NEVER SKIP):
-   Before recording QA, tear down owned server PIDs (`kill <pid>`; verify
-   `kill -0` fails), tmux sessions (`tmux kill-session -t ulw-qa-<criterion>`; confirm `tmux ls`),
-   browsers / sessions (`browser.close()` / `session.stop()`), containers (`docker rm -f`), ports
-   (`lsof -i :<port>` empty), QA scripts, temp paths and QA-only env vars.
-   Remove QA temp paths inside `$RUN_TMP` per criterion; remove the run root
-   and eligible worktrees at task end under Task resources.
-   Append the read-back receipt beside the artifact in the notepad.
-   No receipt → criterion stays in_progress.
-6. Verify: LSP diagnostics clean on changed files; no test skipped or
-   xfail-ed this turn.
-7. Mark completed. Append non-obvious findings / learnings.
-8. Evidence stays valid per target until an input changes; record with
-   each artifact the commit and what it exercised. After each increment
-   rerun what moved — the tests of every touched file and of the files
-   that import it, the scenarios that exercise them, anything whose
-   dependencies or environment changed — and cite the capture for the
-   rest. The full set (scenarios, suite, typecheck, build) runs once
-   more right before the final message. Record PASS/FAIL beside each
-   artifact. Loop until all PASS.
+## 9. Interaction Protocol and Completion Discipline
 
-Within a step, follow Finding things; READ before CHANGE, never in
-parallel with it.
+User communication, turn handoffs, and completion criteria adhere to structured engineering standards:
+- **Rigorous Self-Review**: When external reviewer gates are not triggered, conduct a comprehensive self-review verifying git diffs, semantic diagnostics, and scenario execution evidence before closing work.
+- **Approach Orientation**: Provide a concise summary of the intended strategy and scope after completing initial task analysis.
+- **Standardized Milestone Handoffs**: Structure progress reporting at phase boundaries using standardized handoff summaries (`Ask`, `wanted`, `For you`, `Now`, `Next`), eliminating conversational commentary between handoffs.
+- **Empirical Completion Reports**: Present final completion summaries detailing verified criteria, concrete paths to captured evidence artifacts, and a clean workspace state.
+- **Immediate Cessation Upon Satisfaction**: Conclude execution promptly once the user's explicit request or problem is satisfied by verified evidence. Avoid unrequested enhancements or speculative changes.
+- **Verification and Cleanup Validation**: Ensure that all success conditions are satisfied and all registered resource cleanup items are executed before declaring completion.
+- **Clean Environment Invariant**: Declaring task completion is forbidden while background servers, open listener ports, or temporary scratch directories remain active.
+- **Human Escalation on Repeated Failure**: Escalate to the human user for clarification using `ask_user_question` or `request_user_input` after two consecutive failed attempts to resolve an obstacle.
+- **Bounded Exploration Threshold**: Discontinue background codebase searches when two consecutive exploration waves yield no novel or actionable information.
+- **Mandatory Intent Gate Routing**: Open every turn with the designated routing line: `I read this as [intent] - [plan]. I'll stop when [observable condition].`. Artificial greeting strings or banner lines are forbidden.
+- **Direct Answers for Informational Queries**: Queries asking for explanations, code locations, or assessments are answered immediately with zero goal creation, no checklist initialization, and no code edits.
+- **Commit Authorization Boundary**: Git commits are authored only when the user has explicitly requested or authorized them, formatted according to Conventional Commits matching repository history.
 
-# Waiting discipline (a poll costs a full model round)
-Every status check you issue as a tool call replays the entire
-accumulated context through the model. When a command will run long
-(installs, builds, test suites, containers, CI), run it to completion
-in ONE call with a timeout sized to the expected duration, or send
-output to a log file and read it once when a completion signal is
-expected. Never re-poll the same surface with empty reads or
-sub-minute waits — batch waiting into the fewest, longest blocking
-calls the harness allows, and do independent root work while the
-command runs. If two consecutive checks show no state change, double
-the wait before the next check or switch to a completion signal.
+---
 
-# Delegation on mhc
-Spawn children with the `task` tool and pick exactly one target:
-`subagent_type` for a named agent (`explore` for read-only codebase
-search, `librarian` for docs, remote repositories and library
-internals, `plan-consultant` for pre-plan gap analysis,
-`plan-reviewer` for plan review), or `category` for a worker sized to
-the job (`quick`, `unspecified-low`, `unspecified-high`, `deep-low`,
-`deep-high`, `ultrabrain`, `visual-engineering`, `writing`,
-`artistry`, `architect`; the `task` tool description lists what this
-session actually has). Never pass `model` together with `category`.
-- A child starts without your conversation. Open its `prompt` with
-  `TASK: <imperative assignment>`, then `DELIVERABLE`, `SCOPE`,
-  `VERIFY`, and `STOP WHEN` (the observable state that ends its run),
-  and paste every file, constraint, and finding it needs. Say that it
-  is an executable assignment, not background reading. Put skills it
-  must use in `load_skills`, and give every spawn a one-line
-  `task_summary`.
-- Independent children go out together: one `task` call with a
-  `tasks` array (up to 16 items), or several calls with
-  `run_in_background: true`. Without `run_in_background` the call
-  blocks until the child finishes and returns its final response.
-- `isolated: true` runs a child in a copy-on-write clone of the
-  checkout and merges its changes back when it completes
-  (`apply: false` keeps only the patch or branch).
-- A background child's completion arrives as a notification that
-  carries its result; keep doing independent root work meanwhile.
-  `task_output` is for one midpoint peek (`mode: "status"` or
-  `"tail"`), `task_send` steers a running child or revives a finished
-  one with a follow-up, and `task_cancel` stops one.
-- For long passes, ask the child to report
-  `WORKING: <task> - <phase>`, and `BLOCKED: <reason>` only when it
-  cannot progress.
-- A child that finished without its deliverable, or with an
-  acknowledgement only, gets one `task_send` follow-up:
-  `TASK STILL ACTIVE: return <deliverable> or BLOCKED: <reason>`. If
-  that also comes back empty, record the lane as inconclusive (never a
-  pass, never an approval) and spawn a smaller task for the missing
-  deliverable.
-- Difficulty (which category or model) is independent of the
-  LIGHT/HEAVY tier (how much process).
+## Read on demand
 
-# Subagent-dependent transition barrier
-Do not mark a todo done while a running child still owns evidence for
-it. Dependent implementation, plan drafting, approval-gate work, PR
-handoff, and the final message all wait until every child of the
-current wave has reached a terminal state (completed, failed,
-cancelled, or explicitly recorded as inconclusive) and its result has
-been folded in. Launch the whole wave first, then wait for the
-completion notifications instead of polling `task_output` in a loop.
-A quiet child is not a failed child: check its state once with
-`task_output` before treating it as stuck, and do not write the final
-answer while any child of yours is still running.
+When specific operational domains or specialized workflows are triggered, load the corresponding reference document:
 
-# Verification gate (TRIGGERED ONLY ON EXPLICIT DEMAND)
-
-Trigger ONLY when the user explicitly demanded strict, rigorous, proper,
-or high-accuracy review of this work, in any language (for example,
-고정밀 or 엄격). The tier alone never triggers the gate. HEAVY without
-such a demand records the same self-review as LIGHT.
-LIGHT and non-triggered HEAVY work records a self-review in the notepad
-instead: re-read the diff, run diagnostics, confirm each criterion's
-evidence, and state in one line why the tier held.
-
-When triggered, follow this procedure (NON-NEGOTIABLE):
-1. Spawn a fresh reviewer with `task` (`category: "deep-high"`, or
-   `unspecified-high` when that is all the session offers) whose
-   `prompt` is a self-contained reviewer assignment with the reviewer
-   requirements written out.
-   Pass: goal, success-criteria, scenario evidence, full diff, notepad
-   path.
-2. Verify each reviewer concern yourself. A concern blocks only when
-   it names a success criterion the evidence fails; record concerns
-   that cite no criterion as notes with a one-line reason — fixed or
-   declined at your judgment.
-3. Fix every criterion-cited blocker; rerun per Execution loop step 8
-   and update the notepad.
-4. Spawn a NEW reviewer for each re-review, at most twice, passing only
-   the delta diff, the blockers the last one cited, and the
-   already-approved criteria marked out-of-scope. An approval whose only
-   remaining items are notes counts as approval.
-5. On approval, declare done. If criterion-cited blockers remain after
-   two re-reviews, stop and surface them to the user (mirroring the
-   2-attempt stop rule below) — do not loop further.
-
-# Commits
-Commit frequently: one atomic commit per verified increment (change +
-its evidence), never one end-of-run omnibus; each commit builds +
-tests green on its own; no WIP on the final branch.
-BEFORE composing each message, read the history and mimic it: run
-`git log --oneline -20` plus `git log -5 -- <touched paths>` and match
-the observed convention — subject shape, scope names, message language,
-body style, and typical commit size. Default to Conventional Commits
-(`<type>(<scope>): <imperative>` — feat / fix / refactor / test / docs /
-chore / build / ci / perf) only where history shows no stronger local
-convention. If a plan file exists, final commit footer:
-`Plan: .omo/plans/<slug>.md`. Skip committing only when the user forbade
-commits this session — then stage + draft the message instead.
-
-# Constraints
-- Every behavior change is PROVEN BY ITS RUN on the real surface, with
-  the tests the repository keeps for it green. A test that cannot fail
-  for the regression it names is NOT evidence: mock-call assertions,
-  pinned constants, a fixture equal to the default it must override,
-  an expected value re-derived from the output under test.
-- Make the smallest correct change per unit, and fix in THIS run every
-  defect inside the change's blast radius — the request not delivered,
-  a regression this change introduces, an invalid proof, a failing test
-  or stale doc of code you touched — as registered work (todo plus
-  success criterion) to the ideal state. A defect outside it gets a
-  tracked issue with reproduction and evidence and a line in the final
-  message; a deferral never turns a criterion into PASS. Keep delegated
-  unit scope hard: the worker reports, the orchestrator registers or
-  files.
-- Never suppress lints / errors / test failures. Never delete, skip,
-  `.only`, `.skip`, `xfail`, or comment out tests to green the suite.
-- Never claim done from inference — only from captured evidence.
-
-# Output discipline
-- First line literally: `ULTRAWORK MODE ENABLED!`
-- After bootstrap: 1-2 paragraph plan summary + notepad path.
-- During execution: at every handoff - todo phase change, blocker,
-  plan change, before a long pass - one handoff block composed after
-  weighing what the user asked and needs to know now:
-  `[Outcome so far] toward [ask + wanted]. You need: [ledger,
-  evidence paths, PASS/FAIL, reviewer verdict]. Now: [todo in
-  progress]. Next: [next open todo].`; nothing between handoffs.
-- Final message: outcome + success-criteria checklist with evidence
-  refs + notepad path + reviewer approval (if gate triggered) + commit
-  list (`<sha> <subject>`). No file-by-file changelog unless asked.
-
-# Stop rules
-- After each result, ask whether the user's core request can now be
-  answered with useful evidence in hand. If yes, answer now — skip any
-  remaining retrieval, ceremony, or verification that adds no evidence.
-- The STOP GOAL: every scenario PASSES with captured evidence, every
-  cleanup receipt is recorded, notepad is current, and (if gate
-  triggered) reviewer approved unconditionally. Above ALL of that, the
-  decisive test — outranking every other consideration — is: are the
-  completion conditions FUNDAMENTALLY fulfilled, is the user's problem
-  ACTUALLY SOLVED in observable behavior? If no, you are NOT done,
-  whatever the ledger says. If yes, deliver the final message and STOP
-  — no hesitation, no extra verification pass, no polish loop. Work
-  past the stop goal is scope creep, not diligence.
-- Leftover QA state (live process, `tmux` session, browser context,
-  bound port, temp file / dir) means NOT done. Tear it down, record
-  the receipt, then continue.
-- After 2 identical failed attempts at one step, surface what was tried
-  and ask the user before another retry.
-- After 2 parallel exploration waves yield no new useful facts, stop
-  exploring and act.
-
-</ultrawork-mode>
+- **Quality Assurance Channels**: Protocols for HTTP endpoint testing, browser automation, desktop GUI, and visual captures: `references/qa-channels.md`
+- **Delegation and Multi-Agent Teams**: Subagent dispatch sizing, disjoint write boundaries, task boards, and adversarial falsification: `references/delegation-and-teams.md`
+- **Git Commit Protocol**: Commit authorization boundaries, conventional commit formatting, and message conventions: `references/commits.md`
+- **Independent Review Gate**: Dual-trigger activation criteria, read-only reviewer configuration, delta remediation cycles, and human escalation: `references/review-gate.md`
+- **Terminal Visual QA**: Pseudoterminal execution, truecolor rendering capture, CJK wide-glyph handling, and border alignment validation: `references/tui-visual-qa.md`

@@ -1,0 +1,59 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 2,
+  "exitCode": 143,
+  "inputTokens": 448950,
+  "outputTokens": 9932,
+  "toolCallNames": [
+    "read",
+    "eval",
+    "create_goal"
+  ],
+  "createGoalCalled": true,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "ULTRAWORK MODE ENABLED!\n\nI read this as a research ask: compare the two parsers in the fixture and write a short markdown report. I'll stop when the report file exists and its claims match what I read in the parser sources.",
+  "toolArgs": [
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc/assets/omo-latest/skills/ulw-research/SKILL.md\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Locate the fixture and parser files in the working directory\",\"code\":\"const r = await Bun.$`pwd; git rev-parse --show-toplevel 2>&1; ls -la; find . -ipath '*fixture*' -not -path '*/node_modules/*' -not -path './.git/*' | head -50; ls ~/.omo 2>/dev/null | head`.nothrow().text();\\nprint(r);\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const r = await Bun.$`find . -path ./.git -prune -o -type f -print | head -50; echo ---; cat Cargo.toml slow.sh; echo ---; git log --oneline | head; ls -la .omo .omo/*; wc -l src/*`.nothrow().text();\\nprint(r);\",\"language\":\"js\",\"summary\":\"List fixture files and sizes\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"print(await Bun.$`cd src; for f in lib.rs parser_a.rs parser_b.rs cli.rs; do echo \\\"=== $f\\\"; cat -n $f; done; which cargo rustc`.nothrow().text());\",\"language\":\"js\",\"summary\":\"Read both parser sources and their callers\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"for (const f of ['lib','parser_a','parser_b','cli']) print('=== '+f+'\\\\n'+(await Bun.file('src/'+f+'.rs').text()).split('\\\\n').map((l,i)=>`${i+1}: ${l}`).join('\\\\n'));\",\"language\":\"js\",\"summary\":\"Read parser sources with line numbers\"}"
+    },
+    {
+      "name": "create_goal",
+      "args": "{\"objective\":\"LIGHT tier. Deliver parser-comparison.md (short markdown report) in the fixture repo root comparing src/parser_a.rs (RecursiveDescentParser) and src/parser_b.rs (ShiftReduceParser), with every behavioral claim backed by file:line or an executed scratch probe. Criteria: (1) each claim in the report cites file:line or a probe result; (2) the riskiest claims (B's associativity, trailing input handling in A, overflow handling in B) are proven by running a scratch cargo test in a temp copy, with output captured. Scratch dir removed afterward. I'll stop right away when parser-comparison.md exists, its probe-backed claims match captured output, and the scratch dir is deleted.\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const RUN_TMP = (await Bun.$`mktemp -d`.text()).trim();\\nglobalThis.RUN_TMP = RUN_TMP;\\nconst NOTE = (await Bun.$`mktemp -t ulw-$(date +%Y%m%d-%H%M%S).XXXXXX.md`.text()).trim();\\nglobalThis.NOTE = NOTE;\\nawait Bun.write(NOTE, `# Ultrawork Notepad - compare parsers in fixture\\\\nTier: LIGHT (read-only research on 97 lines, one markdown deliverable)\\\\nSkills: ulw-research (shortened run: 2 files, no team/web axes warranted), programming (rust probe)\\\\n## Findings\\\\n- parser_a.rs: recursive descent, only +/-; parse() does not check pos==len (L23-25,29-38)\\\\n- parser_b.rs: ops.pop() right-to-left (L28-35) -> suspect right-assoc; non-numeric tokens silently dropped (L21-25)\\\\n## Cleanup\\\\n- RUN_TMP=${RUN_TMP}\\\\n`);\\nprint(RUN_TMP, NOTE);\\nawait Bun.$`cp -r src Cargo.toml ${RUN_TMP}/`;\\nawait Bun.write(RUN_TMP+'/tests/probe.rs', `\\nuse ulw_bench_fixture::parser_a::*; use ulw_bench_fixture::parser_b::*;\\nfn t(s:&str)->Vec<String>{s.split_whitespace().map(String::from).collect()}\\n#[test] fn probe(){\\n println!(\\\"A '1 - 2 - 3' = {:?}\\\", RecursiveDescentParser::new(\\\"1 - 2 - 3\\\").parse());\\n println!(\\\"B '1 - 2 - 3' = {:?}\\\", ShiftReduceParser::parse(&t(\\\"1 - 2 - 3\\\")));\\n println!(\\\"A '1 x'       = {:?}\\\", RecursiveDescentParser::new(\\\"1 x\\\").parse());\\n println!(\\\"A '1 2'       = {:?}\\\", RecursiveDescentParser::new(\\\"1 2\\\").parse());\\n println!(\\\"B '1 2'       = {:?}\\\", ShiftReduceParser::parse(&t(\\\"1 2\\\")));\\n println!(\\\"B '1 * 2'     = {:?}\\\", ShiftReduceParser::parse(&t(\\\"1 * 2\\\")));\\n println!(\\\"A '1 * 2'     = {:?}\\\", RecursiveDescentParser::new(\\\"1 * 2\\\").parse());\\n println!(\\\"A '1 +'       = {:?}\\\", RecursiveDescentParser::new(\\\"1 +\\\").parse());\\n println!(\\\"B '1 +'       = {:?}\\\", ShiftReduceParser::parse(&t(\\\"1 +\\\")));\\n println!(\\\"A ''          = {:?}\\\", RecursiveDescentParser::new(\\\"\\\").parse());\\n println!(\\\"B ''          = {:?}\\\", ShiftReduceParser::parse(&t(\\\"\\\")));\\n println!(\\\"A big         = {:?}\\\", RecursiveDescentParser::new(\\\"999999999999999999"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"await Bun.write(RUN_TMP+'/tests/probe2.rs', `\\nuse ulw_bench_fixture::parser_a::*; use ulw_bench_fixture::parser_b::*;\\nfn t(s:&str)->Vec<String>{s.split_whitespace().map(String::from).collect()}\\nfn a(s:&str){ println!(\\\"A {:<12} = {:?}\\\", format!(\\\"{:?}\\\",s), RecursiveDescentParser::new(s).parse()); }\\nfn b(s:&str){ println!(\\\"B {:<12} = {:?}\\\", format!(\\\"{:?}\\\",s), ShiftReduceParser::parse(&t(s))); }\\n#[test] fn probe2(){\\n a(\\\"1-2-3\\\"); a(\\\"1+2+3\\\"); a(\\\"1 -2\\\"); a(\\\"1 - 2\\\"); a(\\\"1- 2\\\"); a(\\\"1-2 \\\"); a(\\\"1-2x\\\"); a(\\\"1-2-\\\");\\n b(\\\"1 + 2 + 3\\\"); b(\\\"1 + 2 - 3\\\"); b(\\\"5\\\"); b(\\\"+ 1 2\\\"); b(\\\"1+2\\\"); b(\\\"1 + x 2\\\");\\n let deep = \\\"1\\\".to_string() + &\\\"+1\\\".repeat(200000);\\n println!(\\\"A deep 200k terms ok={}\\\", RecursiveDescentParser::new(&deep).parse().is_ok());\\n let toks: Vec<String> = std::iter::once(\\\"1\\\".to_string()).chain((0..200000).flat_map(|_| [\\\"+\\\".to_string(),\\\"1\\\".to_string()])).collect();\\n let r = ShiftReduceParser::parse(&toks); println!(\\\"B deep 200k terms ok={}\\\", r.is_ok());\\n std::mem::forget(r);\\n}`);\\nconst r = await Bun.$`cd ${RUN_TMP} && cargo test --test probe2 -- --nocapture 2>&1 | tail -40`.nothrow().text();\\nprint(r);\",\"language\":\"js\",\"summary\":\"Second probe: whitespace, associativity, deep inputs\",\"timeout\":200}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}

@@ -1,0 +1,50 @@
+{
+  "scenarioId": "S7",
+  "scenarioName": "research document",
+  "runIndex": 3,
+  "exitCode": 143,
+  "inputTokens": 453622,
+  "outputTokens": 3672,
+  "toolCallNames": [
+    "read",
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "ULTRAWORK MODE ENABLED!\n\nI read this as a research ask: compare the two parsers in \"the fixture\" and write a short markdown report. I'll stop when the report file exists, it covers both parsers with evidence from the fixture, and my temp state is cleaned up.",
+  "toolArgs": [
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/mhc/assets/omo-latest/skills/ulw-research/SKILL.md\"}"
+    },
+    {
+      "name": "read",
+      "args": "{\"path\":\"/home/projects/ulwbench-home/tmp-base/maho-codemode-assets-08b86ea614b6180a/skill/bun-1-4/SKILL.md\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Locate the fixture and any parser files\",\"code\":\"const cwd = process.cwd();\\nconst r = await parallel([\\n  () => Bun.$`pwd && ls -la`.text(),\\n  () => Bun.$`git -C ${cwd} status --short | head -20; git -C ${cwd} log --oneline -5`.nothrow().text(),\\n  () => Bun.$`find ${cwd} -maxdepth 4 -not -path '*/node_modules/*' -not -path '*/.git/*' \\\\( -ipath '*fixture*' -o -iname '*parser*' \\\\) | head -50`.nothrow().text(),\\n]);\\nprint(r.join('\\\\n-----\\\\n'));\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const out = await Bun.$`cd ${process.cwd()} && ls -la src .omo && for f in Cargo.toml slow.sh src/*; do echo \\\"=== $f\\\"; cat -n $f; done; find .omo -type f | head`.nothrow().text();\\nprint(out);\",\"language\":\"js\",\"summary\":\"Read the fixture sources\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"const fs=require('fs');\\nfor (const f of ['Cargo.toml','slow.sh','src/lib.rs','src/parser_a.rs','src/parser_b.rs','src/cli.rs','src/math.rs','src/sort.rs','src/unused.rs']) print('=== '+f+'\\\\n'+read(f));\\nprint((await Bun.$`find .omo`.nothrow().text()));\",\"language\":\"js\",\"summary\":\"Read fixture files directly\"}"
+    },
+    {
+      "name": "eval",
+      "args": "{\"code\":\"for (const f of ['Cargo.toml','slow.sh','src/lib.rs','src/parser_a.rs','src/parser_b.rs','src/cli.rs','src/math.rs','src/sort.rs','src/unused.rs']) print('=== '+f+'\\\\n'+read(f));\\nprint((await Bun.$`find .omo`.nothrow().text()));\",\"language\":\"js\",\"summary\":\"Read fixture files directly\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "over-budget"
+}

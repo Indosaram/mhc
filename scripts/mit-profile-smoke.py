@@ -1067,6 +1067,47 @@ def context_files_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent:
     return None
 
 
+ULTRAWORK_TAG = "<omo-ultrawork-directive>"
+
+
+class UltraworkModel(http.server.BaseHTTPRequestHandler):
+    """Answers a fixed marker and records every request, to inspect the injected ultrawork message."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        UltraworkModel.requests.append(json.loads(self.rfile.read(length) or b"{}"))
+        body = sse([chunk({"role": "assistant", "content": MARKER}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def ultrawork_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), UltraworkModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (agent / "models.json").write_text(models_json(model.server_port))
+    try:
+        run = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "ulw hello"],
+            cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+        )
+    finally:
+        model.shutdown()
+    if run.returncode != 0 or MARKER not in run.stdout:
+        return f"ultrawork run failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}"
+    if not UltraworkModel.requests or ULTRAWORK_TAG not in all_text(UltraworkModel.requests[0]):
+        return "`ulw hello` did not produce the ultrawork directive custom message"
+    print("ok   ultrawork: `ulw hello` armed the MIT engine and the directive message reached the model")
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write(__doc__ or "")
@@ -1382,6 +1423,10 @@ def main() -> int:
             return fail(failure)
 
         failure = context_files_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
+
+        failure = ultrawork_smoke(mhc, home, work, agent, env)
         if failure:
             return fail(failure)
 

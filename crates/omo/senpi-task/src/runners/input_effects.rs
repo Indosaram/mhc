@@ -4,7 +4,7 @@
 //! (`uncertain_inputs`) and resolved once in the background: the child's admission read settles it,
 //! or the SAME id and payload are sent again. A retry never changes the semantic input or its id.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
@@ -541,6 +541,15 @@ impl InputEffects {
 
     pub fn reconcile(&self) {
         let inner = &self.0;
+        // An id whose retry is already in flight is settled by that retry, so the log never records
+        // it both ways. The in-flight retries are captured BEFORE the record is read: a retry that settles
+        // in between has already forgotten its input, so the read never lists it; one that was in flight
+        // stays joined through its captured latch even after it leaves `retries`, so it is never sent again.
+        let in_flight: HashMap<String, Arc<Latch>> = inner
+            .retries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let record = inner
             .options
             .store
@@ -555,18 +564,9 @@ impl InputEffects {
                 .clone(),
         };
         let current_epoch = record.as_ref().map(|record| record.notification.run_epoch);
-        // An id whose retry is already in flight is settled by that retry, so the log never records
-        // it both ways.
-        let in_flight: HashSet<String> = inner
-            .retries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect();
         let (stale, live): (Vec<_>, Vec<_>) = commands.into_iter().partition(|command| {
             current_epoch.is_some_and(|epoch| epoch_of(command) != Some(epoch))
-                && !in_flight.contains(&command.client_message_id)
+                && !in_flight.contains_key(&command.client_message_id)
         });
         // An earlier run's input is never sent into a later run. Where the child can answer, its read
         // decides: admitted is settled, not_admitted fails as superseded, unreadable stays uncertain.
@@ -601,7 +601,11 @@ impl InputEffects {
             .into_iter()
             .map(|command| {
                 let inner = Arc::clone(inner);
-                std::thread::spawn(move || inner.retry(&command))
+                let joined = in_flight.get(&command.client_message_id).cloned();
+                std::thread::spawn(move || match joined {
+                    Some(latch) => latch.wait(),
+                    None => inner.retry(&command),
+                })
             })
             .collect();
         for worker in workers {

@@ -2,7 +2,9 @@ use crate::omo_command::run_omo_status;
 use idle_injection::{IdleInjection, IdleInjectionSource};
 use maho_ext_api::*;
 use maho_omo_start_work_continuation::agent_end_eligibility::read_agent_end_outcome;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 pub const STEERING_REMINDER: &str = "<omo-senpi-ulw-loop>\nAn active ulw-loop run is present in this working directory.\nBefore continuing, inspect `mhc ulw-loop status --json` and use the existing .omo/ulw-loop ledger as the source of truth.\nContinue the current ulw-loop story with evidence-bound execution; do not start unrelated work until the active run is complete or checkpointed.\n</omo-senpi-ulw-loop>";
 pub const CONTINUATION_PROMPT: &str = "Continue the active ulw-loop run.\nRun `mhc ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.";
@@ -10,9 +12,49 @@ pub const ULW_CONTINUATION_INJECTION_KEY: &str = "omo-senpi-ulw-loop-continuatio
 pub const ULW_CONTINUATION_CUSTOM_TYPE: &str = "omo-senpi:ulw-continuation";
 
 #[derive(Default)]
-struct State {
+struct SessionState {
     consecutive: usize,
-    previous: Option<String>,
+    idle_turns: usize,
+    previous_status: Option<String>,
+    previous_fingerprint: Option<u64>,
+    turn_had_successful_edit: bool,
+}
+
+#[derive(Default)]
+struct State {
+    sessions: HashMap<String, SessionState>,
+}
+
+#[derive(Clone, Default)]
+struct MtimeCacheEntry {
+    mtimes: (Option<SystemTime>, Option<SystemTime>),
+    active: bool,
+}
+
+async fn compute_worktree_fingerprint(cwd: &std::path::Path) -> Option<u64> {
+    use std::hash::Hasher;
+    let status_out = tokio::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "-z"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()?;
+    if !status_out.status.success() {
+        return None;
+    }
+    let diff_out = tokio::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()?;
+    if !diff_out.status.success() {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(&status_out.stdout);
+    hasher.write(&diff_out.stdout);
+    Some(hasher.finish())
 }
 
 pub type StatusResult = crate::omo_command::CommandResult;
@@ -108,50 +150,141 @@ impl Extension for UlwLoopComponent {
         ));
         let lifecycle = Arc::new(api.lifecycle());
         let state = Arc::new(Mutex::new(State::default()));
+        let mtime_cache = Arc::new(Mutex::new(HashMap::<String, MtimeCacheEntry>::new()));
         let footer = Arc::new(Mutex::new(crate::footer_status::FooterStatus::default()));
         let reader = self.read_status.clone();
         let logger = self.logger.clone();
         let pending_run = Arc::new(Mutex::new(None::<PendingRun>));
 
-        for kind in [EventKind::SessionStart, EventKind::ToolResult] {
-            let footer = Arc::clone(&footer);
-            let reader = reader.clone();
-            let logger = logger.clone();
-            let completion = Arc::clone(&completion);
-            let lifecycle = lifecycle.clone();
-            api.on(
-                kind,
-                Arc::new(move |event, ctx| {
-                    let footer = Arc::clone(&footer);
-                    let reader = reader.clone();
-                    let logger = logger.clone();
-                    let completion = Arc::clone(&completion);
-                    let lifecycle = lifecycle.clone();
-                    Box::pin(async move {
-                        if let ExtensionEvent::ToolResult(e) = event
-                            && !matches!(
-                                e.tool_name.as_str(),
-                                "create_goal" | "update_goal" | "bash" | "interactive_bash"
-                            )
+        let start_footer = Arc::clone(&footer);
+        let start_reader = reader.clone();
+        let start_logger = logger.clone();
+        let start_completion = Arc::clone(&completion);
+        let start_lifecycle = lifecycle.clone();
+        let start_mtime_cache = Arc::clone(&mtime_cache);
+
+        api.on(
+            EventKind::SessionStart,
+            Arc::new(move |_, ctx| {
+                let footer = Arc::clone(&start_footer);
+                let reader = start_reader.clone();
+                let logger = start_logger.clone();
+                let completion = Arc::clone(&start_completion);
+                let lifecycle = start_lifecycle.clone();
+                let mtime_cache = Arc::clone(&start_mtime_cache);
+                Box::pin(async move {
+                    let active = status(
+                        &ctx.cwd,
+                        ctx.session_manager.session_id(),
+                        reader.as_ref(),
+                        &ctx.logger.clone().or(logger),
+                        &completion,
+                        lifecycle.as_ref(),
+                    )
+                    .await
+                    .is_some_and(|(_, active)| active);
+
+                    let session_id = ctx.session_manager.session_id();
+                    let loop_dir = ctx.cwd.join(".omo/ulw-loop").join(session_id);
+                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json")).and_then(|m| m.modified()).ok();
+                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions")).and_then(|m| m.modified()).ok();
+                    {
+                        let mut cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        cache.insert(session_id.to_string(), MtimeCacheEntry {
+                            mtimes: (goals_mtime, revisions_mtime),
+                            active,
+                        });
+                    }
+
+                    crate::footer_status::sync_shared(&footer, ctx, active);
+                    Ok(EventResult::None)
+                })
+            }),
+        );
+
+        let tool_footer = Arc::clone(&footer);
+        let tool_reader = reader.clone();
+        let tool_logger = logger.clone();
+        let tool_completion = Arc::clone(&completion);
+        let tool_lifecycle = lifecycle.clone();
+        let tool_mtime_cache = Arc::clone(&mtime_cache);
+        let tool_state = Arc::clone(&state);
+
+        api.on(
+            EventKind::ToolResult,
+            Arc::new(move |event, ctx| {
+                let footer = Arc::clone(&tool_footer);
+                let reader = tool_reader.clone();
+                let logger = tool_logger.clone();
+                let completion = Arc::clone(&tool_completion);
+                let lifecycle = tool_lifecycle.clone();
+                let mtime_cache = Arc::clone(&tool_mtime_cache);
+                let state = Arc::clone(&tool_state);
+                Box::pin(async move {
+                    let ExtensionEvent::ToolResult(e) = event else {
+                        return Ok(EventResult::None);
+                    };
+
+                    // Track successful edit|write|apply_patch result for progress
+                    if matches!(e.tool_name.as_str(), "edit" | "write" | "apply_patch") && !e.is_error {
+                        let mut guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.sessions.entry(ctx.session_manager.session_id().to_string()).or_default().turn_had_successful_edit = true;
+                    }
+
+                    if !matches!(
+                        e.tool_name.as_str(),
+                        "create_goal" | "update_goal" | "bash" | "interactive_bash"
+                    ) {
+                        return Ok(EventResult::None);
+                    }
+
+                    // (b) stat .omo/ulw-loop/<session>/goals.json and revisions/ dir mtime;
+                    // if neither exists return early;
+                    // if both mtimes equal the last observed pair reuse the cached status.
+                    let session_id = ctx.session_manager.session_id();
+                    let loop_dir = ctx.cwd.join(".omo/ulw-loop").join(session_id);
+                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json")).and_then(|m| m.modified()).ok();
+                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions")).and_then(|m| m.modified()).ok();
+
+                    if goals_mtime.is_none() && revisions_mtime.is_none() {
+                        return Ok(EventResult::None);
+                    }
+
+                    let current_pair = (goals_mtime, revisions_mtime);
+                    {
+                        let cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(entry) = cache.get(session_id)
+                            && entry.mtimes == current_pair
                         {
+                            crate::footer_status::sync_shared(&footer, ctx, entry.active);
                             return Ok(EventResult::None);
                         }
-                        let active = status(
-                            &ctx.cwd,
-                            ctx.session_manager.session_id(),
-                            reader.as_ref(),
-                            &ctx.logger.clone().or(logger),
-                            &completion,
-                            lifecycle.as_ref(),
-                        )
-                        .await
-                        .is_some_and(|(_, active)| active);
-                        crate::footer_status::sync_shared(&footer, ctx, active);
-                        Ok(EventResult::None)
-                    })
-                }),
-            );
-        }
+                    }
+
+                    let active = status(
+                        &ctx.cwd,
+                        session_id,
+                        reader.as_ref(),
+                        &ctx.logger.clone().or(logger),
+                        &completion,
+                        lifecycle.as_ref(),
+                    )
+                    .await
+                    .is_some_and(|(_, active)| active);
+
+                    {
+                        let mut cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        cache.insert(session_id.to_string(), MtimeCacheEntry {
+                            mtimes: current_pair,
+                            active,
+                        });
+                    }
+
+                    crate::footer_status::sync_shared(&footer, ctx, active);
+                    Ok(EventResult::None)
+                })
+            }),
+        );
 
         for kind in [EventKind::SessionBeforeSwitch, EventKind::SessionShutdown] {
             let footer = Arc::clone(&footer);
@@ -174,6 +307,7 @@ impl Extension for UlwLoopComponent {
         let input_footer = Arc::clone(&footer);
         let input_reader = reader.clone();
         let input_logger = logger.clone();
+        let input_mtime_cache = Arc::clone(&mtime_cache);
 
         let input_completion = Arc::clone(&completion);
         let input_lifecycle = lifecycle.clone();
@@ -186,6 +320,7 @@ impl Extension for UlwLoopComponent {
                 let logger = input_logger.clone();
                 let completion = Arc::clone(&input_completion);
                 let lifecycle = input_lifecycle.clone();
+                let mtime_cache = Arc::clone(&input_mtime_cache);
                 Box::pin(async move {
                     let ExtensionEvent::Input(input) = event else {
                         return Ok(EventResult::None);
@@ -196,6 +331,10 @@ impl Extension for UlwLoopComponent {
                     *state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = State::default();
+                    mtime_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clear();
                     if input.streaming_behavior.is_some() {
                         let active = status(
                             &ctx.cwd,
@@ -224,19 +363,33 @@ impl Extension for UlwLoopComponent {
         let settled_pending = Arc::clone(&pending_run);
         let settled_runtime = api.runtime.clone();
 
+        let agent_end_completion = Arc::clone(&completion);
+        let agent_end_lifecycle = lifecycle.clone();
+        let agent_end_state = Arc::clone(&state);
+        let agent_end_footer = Arc::clone(&footer);
+        let agent_end_reader = reader.clone();
+        let agent_end_logger = logger.clone();
+        let agent_end_pending = Arc::clone(&pending_run);
+        let agent_end_mtime_cache = Arc::clone(&mtime_cache);
+
         api.on(EventKind::AgentEnd, Arc::new(move |event, ctx| {
-            let completion = Arc::clone(&completion); let lifecycle = lifecycle.clone();
-            let state = Arc::clone(&state);
-            let footer = Arc::clone(&footer);
-            let reader = reader.clone();
-            let logger = ctx.logger.clone().or(logger.clone());
-            let pending_run = Arc::clone(&pending_run);
+            let completion = Arc::clone(&agent_end_completion);
+            let lifecycle = agent_end_lifecycle.clone();
+            let state = Arc::clone(&agent_end_state);
+            let footer = Arc::clone(&agent_end_footer);
+            let reader = agent_end_reader.clone();
+            let logger = ctx.logger.clone().or(agent_end_logger.clone());
+            let pending_run = Arc::clone(&agent_end_pending);
+            let mtime_cache = Arc::clone(&agent_end_mtime_cache);
             Box::pin(async move {
                 *pending_run.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 {
                     let guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if guard.consecutive >= 8 {
-                        let count = guard.consecutive;
+                    let session_id = ctx.session_manager.session_id();
+                    if let Some(session) = guard.sessions.get(session_id)
+                        && session.consecutive >= 8
+                    {
+                        let count = session.consecutive;
                         drop(guard);
                         log_info(&ctx.logger, "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"continuation-cap-reached","count":count})));
                         return Ok(EventResult::None);
@@ -256,6 +409,19 @@ impl Extension for UlwLoopComponent {
                     return Ok(EventResult::None);
                 };
                 crate::footer_status::sync_shared(&footer, ctx, active);
+
+                let session_id = ctx.session_manager.session_id();
+                let loop_dir = ctx.cwd.join(".omo/ulw-loop").join(session_id);
+                let goals_mtime = std::fs::metadata(loop_dir.join("goals.json")).and_then(|m| m.modified()).ok();
+                let revisions_mtime = std::fs::metadata(loop_dir.join("revisions")).and_then(|m| m.modified()).ok();
+                {
+                    let mut cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    cache.insert(session_id.to_string(), MtimeCacheEntry {
+                        mtimes: (goals_mtime, revisions_mtime),
+                        active,
+                    });
+                }
+
                 let payload = if let ExtensionEvent::AgentEnd { messages, aborted, will_retry, .. } = event {
                     // `read_agent_end_outcome` only reads the last assistant message and what follows it.
                     let tail = messages.iter().rposition(|message| message.role() == "assistant").map_or(&[][..], |index| &messages[index..]);
@@ -289,11 +455,20 @@ impl Extension for UlwLoopComponent {
                         );
                         return Ok(EventResult::None);
                     }
+                    // Taken before the state lock so no guard is held across the await.
+                    let current_fingerprint = if run.status.1 {
+                        compute_worktree_fingerprint(&ctx.cwd).await
+                    } else {
+                        None
+                    };
+                    let session_id = ctx.session_manager.session_id().to_string();
                     let mut state = state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let session = state.sessions.entry(session_id).or_default();
                     if !run.status.1 {
-                        state.previous = None;
+                        session.previous_status = None;
+                        session.idle_turns = 0;
                         drop(state);
                         log_info(
                             &ctx.logger,
@@ -302,7 +477,29 @@ impl Extension for UlwLoopComponent {
                         );
                         return Ok(EventResult::None);
                     }
-                    if state.previous.as_ref() == Some(&run.status.0) {
+
+                    // SAFETY-DIVERGENCE(packages/omo-senpi/components/ulw-loop/index.ts): upstream stops after 1 turn with unchanged status; mhc allows progress via file edits or worktree fingerprint changes and requires 2 idle turns before stopping.
+                    let status_changed = session.previous_status.as_ref() != Some(&run.status.0);
+                    let edit_succeeded = session.turn_had_successful_edit;
+                    let fingerprint_changed = current_fingerprint.is_some()
+                        && session.previous_fingerprint.is_some()
+                        && current_fingerprint != session.previous_fingerprint;
+
+                    let progress = status_changed || edit_succeeded || fingerprint_changed;
+
+                    session.turn_had_successful_edit = false;
+                    session.previous_status = Some(run.status.0);
+                    if current_fingerprint.is_some() {
+                        session.previous_fingerprint = current_fingerprint;
+                    }
+
+                    if progress {
+                        session.idle_turns = 0;
+                    } else {
+                        session.idle_turns += 1;
+                    }
+
+                    if session.idle_turns >= 2 {
                         drop(state);
                         log_info(
                             &ctx.logger,
@@ -311,8 +508,8 @@ impl Extension for UlwLoopComponent {
                         );
                         return Ok(EventResult::None);
                     }
-                    state.previous = Some(run.status.0);
-                    state.consecutive += 1;
+
+                    session.consecutive += 1;
                     drop(state);
 
                     if let Some(coordinator) = idle_injection::from_slot(&ctx.idle_coordinator) {

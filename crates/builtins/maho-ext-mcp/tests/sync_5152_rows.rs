@@ -768,7 +768,12 @@ async fn project_skill_server_rekeys_when_only_its_env_changes() {
     let script = format!(
         "import {{writeFileSync}} from \"node:fs\";writeFileSync({},JSON.stringify({{ref:process.env.REF}}));await import({});",
         json!(receipt),
-        json!(fixture),
+        // Node's ESM loader takes an absolute Windows path only as a file:// URL.
+        json!(
+            url::Url::from_file_path(&fixture)
+                .expect("absolute fixture path")
+                .as_str()
+        ),
     );
     let declare = |reference: &str| {
         std::fs::write(

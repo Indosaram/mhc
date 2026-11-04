@@ -1,0 +1,29 @@
+{
+  "scenarioId": "S1",
+  "scenarioName": "read-only ask",
+  "runIndex": 2,
+  "exitCode": 0,
+  "inputTokens": 94141,
+  "outputTokens": 1446,
+  "toolCallNames": [
+    "eval"
+  ],
+  "createGoalCalled": false,
+  "sleepOnlyUsed": false,
+  "childReportSizes": [],
+  "finalText": "`add` is defined at `src/math.rs:1`:\n\n```rust\npub fn add(a: i32, b: i32) -> i32 {\n```\n\nI searched all 9 files in the project for Rust, JS/TS, Python, Go and `const add =` style definitions. This is the only one. I made no edits and ran no tests, since this was a lookup.",
+  "toolArgs": [
+    {
+      "name": "eval",
+      "args": "{\"language\":\"js\",\"summary\":\"Search the working directory for definitions of a function named add\",\"code\":\"const pats = [\\n  String.raw`\\\\bfn\\\\s+add\\\\b`,\\n  String.raw`\\\\bfunction\\\\s+add\\\\b`,\\n  String.raw`\\\\bdef\\\\s+add\\\\b`,\\n  String.raw`\\\\bfunc\\\\s+(\\\\([^)]*\\\\)\\\\s*)?add\\\\b`,\\n  String.raw`\\\\b(const|let|var)\\\\s+add\\\\s*=`,\\n];\\nconst res = await parallel([\\n  ...pats.map(p => () => tool.grep({ pattern: p, path: \\\".\\\" }).catch(e => ({ text: \\\"ERR \\\" + e.message }))),\\n  () => Bun.$`pwd`.text(),\\n]);\\nprint(res.map(r => typeof r === \\\"string\\\" ? r : r.text).join(\\\"\\\\n---\\\\n\\\"));\"}"
+    }
+  ],
+  "referencesRead": [],
+  "reportToolsRan": false,
+  "fixtureTestResult": {
+    "pass": false,
+    "reason": "assert_eq!(add(2, 2), 5) still present"
+  },
+  "outcomeMet": false,
+  "status": "failed"
+}

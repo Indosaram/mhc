@@ -173,7 +173,7 @@ fn tree_digest(root: &Path) -> std::io::Result<String> {
     }
     let mut digests = files
         .into_iter()
-        .map(|(path, file)| Ok((path, sha256(&std::fs::read(file)?))))
+        .map(|(path, file)| Ok((path, file_sha256(&file)?)))
         .collect::<std::io::Result<Vec<(String, String)>>>()?;
     digests.sort_by(|(left, _), (right, _)| left.cmp(right));
     let text = serde_json::to_string(&digests).map_err(std::io::Error::other)?;
@@ -226,6 +226,21 @@ fn collect(
 
 fn sha256(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
+}
+
+/// A file's digest, streamed: a compiled runtime is its own (large) executable, never held in memory whole.
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut chunk = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(hex::encode(hasher.finalize()));
+        }
+        hasher.update(&chunk[..read]);
+    }
 }
 
 #[cfg(test)]

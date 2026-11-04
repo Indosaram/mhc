@@ -1,0 +1,45 @@
+{
+  "purpose": "plan expected baseline to fail S1 no-goal criterion; it does not",
+  "baseline_binary": "mhc-baseline-main-b5e86b199",
+  "runs": [
+    {
+      "run": 1,
+      "createGoalCalled": false,
+      "toolCallNames": [
+        "eval"
+      ],
+      "inputTokens": 94219,
+      "answer": "Ask: where is `fn add` defined - wanted: its location. For you: `add` is defined at `src/math.rs:1` as `pub fn add(a: i32, b: i32) -> i32 {`. Nothing else in the repo defines `add`. I searched for Rus"
+    },
+    {
+      "run": 2,
+      "createGoalCalled": false,
+      "toolCallNames": [
+        "eval"
+      ],
+      "inputTokens": 94141,
+      "answer": "`add` is defined at `src/math.rs:1`:\n\n```rust\npub fn add(a: i32, b: i32) -> i32 {\n```\n\nI searched all 9 files in the project for Rust, JS/TS, Python, Go and `const add =` style definitions. This is th"
+    },
+    {
+      "run": 3,
+      "createGoalCalled": false,
+      "toolCallNames": [
+        "eval"
+      ],
+      "inputTokens": 93883,
+      "answer": "`fn add` is defined at `src/math.rs:1`, as `pub fn add(a: i32, b: i32) -> i32`. It's the only match in the workspace, which is `/home/projects/ulwbench-home/tmp-base/ulw-bench-S1-r3-VIrCdl`. I also se"
+    }
+  ],
+  "no_goal_criterion_discriminates": false,
+  "discriminating_metrics": {
+    "median_input_tokens": {
+      "new": 79695,
+      "baseline": 94141
+    },
+    "S4_injected_directive_bytes": {
+      "new": 14329,
+      "baseline": 32184
+    },
+    "S3_S5_baseline_create_goal": "baseline called create_goal in S3 (2/3), S4 (2/3), S5 (3/3), S7 (1/3); new 0 in all"
+  }
+}
