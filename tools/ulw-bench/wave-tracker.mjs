@@ -103,8 +103,12 @@ export function createWaveTracker() {
                 if (typeof item.status !== "string") continue;
                 const id = item.task_id;
                 const live = LIVE_CHILD_STATES.has(item.status);
-                // A promoted foreground item carries run_in_background true on the item itself.
-                const background = isTask && (details?.run_in_background === true || item.run_in_background === true);
+                // A promoted foreground item carries run_in_background true on the item itself, and
+                // senpi-task then also sets the batch flag (execute_batch.rs), so the batch flag
+                // marks every item background only when no item carries its own flag.
+                const promotedBatch = (details?.items ?? []).some((i) => i?.run_in_background === true);
+                const background =
+                  isTask && (item.run_in_background === true || (details?.run_in_background === true && !promotedBatch));
                 if (background) backgroundIds.add(id);
                 if (live) running.add(id);
                 else running.delete(id);

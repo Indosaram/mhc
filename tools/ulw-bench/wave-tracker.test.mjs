@@ -287,6 +287,28 @@ describe("wave-tracker on foreground task results", () => {
     assert.equal(t.isSettled(), true);
   });
 
+  it("r7b: does not re-owe a completed sibling of a promoted child when task_send revives it", () => {
+    const t = createWaveTracker();
+    const items = [batchItem("st_a", "completed"), { ...batchItem("st_p", "running"), run_in_background: true }];
+    feed(t, [
+      { type: "agent_start" },
+      // execute_batch.rs: the batch-level flag is true whenever any item was promoted.
+      {
+        type: "tool_execution_end",
+        toolName: "task",
+        result: {
+          content: [{ type: "text", text: "Tasks finished" }],
+          details: { task_id: "st_a", status: "completed", mode: "spawn", run_in_background: true, items },
+        },
+        isError: false,
+      },
+      { type: "agent_idle" },
+    ]);
+    assert.equal(t.isSettled(), false, "st_p is still owed");
+    feed(t, [wake(wakeText("st_p", "p")), { type: "agent_start" }, sendRevivedEnd("st_a", 2), { type: "agent_idle" }]);
+    assert.equal(t.isSettled(), true, "foreground st_a revived must not be owed");
+  });
+
   it("does not create an owed child from a task_output for an unknown id", () => {
     const t = createWaveTracker();
     feed(t, [{ type: "agent_start" }, outputStatusEnd("st_x", "completed"), { type: "agent_idle" }]);
