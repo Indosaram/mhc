@@ -12,7 +12,9 @@ use crate::runners::in_process::runtime_fallback_settings::{
     RetryFallbackSettings, create_runtime_fallback_settings,
 };
 use crate::runners::in_process::session_manager::ChildSessionManager;
-use crate::runners::in_process::shared_tool_filter::{ChildToolRef, merge_child_custom_tools};
+use crate::runners::in_process::shared_tool_filter::{
+    ChildToolRef, is_provider_safe_tool_name, merge_child_custom_tools,
+};
 
 /// An opaque host object (auth storage, model registry, model runtime, model) passed through
 /// to the host untouched; identity is preserved.
@@ -138,16 +140,14 @@ pub fn build_child_session_options(
         .agent_type
         .as_deref()
         .is_some_and(|agent| curated_readonly_agent_names().contains(agent));
-    let custom_tools = if curated {
-        let mut tools: Vec<ChildToolRef> = merged
-            .into_iter()
-            .filter(|tool| tool.name() != CuratedReadonlyBashTool::NAME)
-            .collect();
-        tools.push(Arc::new(CuratedReadonlyBashTool::new(&spec.cwd, None)));
-        tools
-    } else {
-        merged
-    };
+    let mut custom_tools: Vec<ChildToolRef> = merged
+        .into_iter()
+        .filter(|tool| is_provider_safe_tool_name(tool.name()))
+        .filter(|tool| !curated || tool.name() != CuratedReadonlyBashTool::NAME)
+        .collect();
+    if curated {
+        custom_tools.push(Arc::new(CuratedReadonlyBashTool::new(&spec.cwd, None)));
+    }
     ChildSessionOptions {
         cwd: spec.cwd.clone(),
         session_manager: Arc::new(session_manager),
