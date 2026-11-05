@@ -27,8 +27,13 @@ describe("run-scenarios", () => {
     assert.equal(SCENARIOS[1].prompt, "ulw fix the failing test in math.rs");
     assert.equal(SCENARIOS[2].prompt, "ulw add a --verbose flag across cli.rs and lib.rs with tests");
     // S4's prompt is the run's input, not documentation: it must ask for background children,
-    // because only a background child wakes the parent and that wake is what S4 measures.
-    assert.match(SCENARIOS[3].prompt, /run_in_background true/);
+    // because only a background child wakes the parent and that wake is what S4 measures. Match a
+    // phrasing that cannot be read as its own negation ("do not use run_in_background true"), and
+    // require every child to be covered: the fixture has more source files than children, so the
+    // prompt must not promise one file per child.
+    assert.match(SCENARIOS[3].prompt, /3 parallel subagents with run_in_background true/);
+    assert.doesNotMatch(SCENARIOS[3].prompt, /one per source file/);
+    assert.match(SCENARIOS[3].prompt, /falsify their findings/);
     assert.equal(SCENARIOS[3].waitForChildren, true);
     assert.equal(SCENARIOS[4].prompt, "ulw run ./slow.sh (sleeps 90s) and report its output");
     assert.equal(
