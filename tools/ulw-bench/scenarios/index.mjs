@@ -49,12 +49,14 @@ export const SCENARIOS = [
     // and the wake batch and per-child report sizes are what this scenario measures. A foreground
     // batch returns inside the tool result, so it records no wake and cannot be measured. The
     // second wave must also be delegated: "cross-check yourself" makes the parent do the work
-    // in its own turn, which measures no falsification wave at all.
+    // in its own turn, which measures no falsification wave at all. The children split the crate
+    // between them rather than taking "one file each": the fixture has more source files than
+    // children, and a prompt that promised one file per child could not be followed.
     prompt:
       "ulw audit this repo for unused functions: start 3 parallel subagents with run_in_background true, " +
-      "one per source file, then wait for their completion wakes instead of polling; after their reports, " +
-      "start one more background subagent to falsify their findings (try to prove each claimed unused " +
-      "function is actually reachable), then name every unused function",
+      "splitting the source files between them, then wait for their completion wakes instead of polling; " +
+      "after their reports, start one more background subagent to falsify their findings (try to prove " +
+      "each claimed unused function is actually reachable), then name every unused function",
     kind: "delegated-audit",
     waitForChildren: true,
     description: "Delegated audit using subagents: compact reports (<=3500 chars), bounded wakes (<=24000 B), falsification wave",
