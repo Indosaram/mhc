@@ -464,9 +464,8 @@ fn package_join(package: &Path, rel: &str) -> PathBuf {
 fn copy_executable(package: &Path, name: &str, source: &str) -> Value {
     let rel = exe_name(name);
     let destination = package_join(package, &rel);
-    if let Err(error) = std::fs::copy(source, &destination) {
-        panic!("copy {source} to {rel}: {error}");
-    }
+    copy_file_cheap(Path::new(source), &destination)
+        .unwrap_or_else(|error| panic!("copy {source} to {rel}: {error}"));
     set_mode(&destination, 0o755);
     file_record(&rel, &destination, "755")
 }
@@ -482,6 +481,22 @@ fn write_data(package: &Path, rel: &str, bytes: &[u8]) -> Value {
     }
     set_mode(&destination, 0o644);
     file_record(rel, &destination, "644")
+}
+
+/// Stages a package file at a second path without duplicating its bytes.
+///
+/// A package holds the ~650 MB debug binary, and a single test stages it several times: once to
+/// build the package, again to publish a version directory, and (in the installer tests) again as a
+/// flat layout. Copying those bytes saturated writeback under a parallel run: one copy_tree spent
+/// 29.8 s of a 35 s test, and fifteen tests together ran past nextest's 300 s kill. A hard link costs
+/// microseconds and gives the staged path its own directory entry: it can be unlinked, renamed and
+/// executed independently, and every fixture only reads it, so sharing the inode is invisible to them.
+/// Filesystems without hard links fall back to a real copy.
+pub fn copy_file_cheap(source: &Path, destination: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) => std::fs::copy(source, destination).map(|_| ()),
+    }
 }
 
 fn file_record(rel: &str, path: &Path, mode: &str) -> Value {
@@ -534,7 +549,7 @@ fn copy_tree(src: &Path, dst: &Path) {
         if kind.is_dir() {
             copy_tree(&entry.path(), &target);
         } else if kind.is_file() {
-            if let Err(error) = std::fs::copy(entry.path(), &target) {
+            if let Err(error) = copy_file_cheap(&entry.path(), &target) {
                 panic!("copy {}: {error}", target.display());
             }
         } else {
