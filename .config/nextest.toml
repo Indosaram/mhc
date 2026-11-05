@@ -17,3 +17,12 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.default.overrides]]
 filter = "package(maho-cli) & (test(/^memory_recall_entry::real_mount_/) | test(/^session_runtime_worker::supervisor_stdio_concurrent_/))"
 threads-required = "num-test-threads"
+
+# These stage a real packaged release: a ~650 MB `mhc`, its manifest, a gzipped asset and a signed
+# update served over HTTP. Each one writes and hashes hundreds of megabytes, so fifteen in parallel
+# saturated writeback: most were killed at the 300 s mark and the survivors took minutes. Alone they
+# are bounded, and running them one at a time finishes the set in four to six minutes while still
+# driving the real end-to-end update path instead of a stand-in.
+[[profile.default.overrides]]
+filter = "package(maho-cli) & test(/^native_update_/)"
+threads-required = "num-test-threads"
