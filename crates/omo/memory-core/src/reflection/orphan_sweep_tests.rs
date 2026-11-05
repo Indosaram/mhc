@@ -180,6 +180,131 @@ fn sweep_reclaims_a_stale_worktree_directory_and_branch() {
 }
 
 #[test]
+fn sweep_reclaims_a_locked_worktree_whose_directory_is_still_there() {
+    let dir = tempdir().expect("tempdir");
+    let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
+    let worktrees = dir.path().join("worktrees");
+    std::fs::create_dir_all(&worktrees).expect("mkdir");
+    let exec = repo.exec();
+    let worktree = super::super::worktree::create_reflection_worktree(
+        &repo,
+        "run-locked-alive",
+        &worktrees,
+        exec.as_ref(),
+        None,
+    )
+    .expect("create worktree");
+    // The lock an interrupted run leaves behind, with its checkout still on disk: `git worktree
+    // remove --force` refuses a locked worktree, so only the sweep's unlock gets rid of it.
+    let dir_text = worktree.dir.to_string_lossy().into_owned();
+    let lock = exec
+        .run_in(
+            &repo.dir,
+            &["worktree", "lock", "--reason", "initializing", &dir_text],
+        )
+        .expect("lock");
+    assert_eq!(lock.code, 0, "{}", lock.stderr);
+    assert!(worktree.dir.exists());
+
+    let receipts = sweep_reflection_orphans(
+        &repo,
+        &worktrees,
+        &ReflectionOrphanSweepOptions {
+            live_run_ids: BTreeSet::new(),
+            now_ms: crate::support::time::now_millis() as f64 + REFLECTION_ORPHAN_GRACE_MS + 1.0,
+            grace_ms: None,
+            exec: Some(exec.as_ref()),
+        },
+    )
+    .expect("sweep");
+
+    let receipt = receipts
+        .iter()
+        .find(|receipt| receipt.kind == OrphanKind::Worktree)
+        .expect("worktree receipt");
+    assert!(receipt.removed, "{receipt:?}");
+    assert!(
+        !worktree.dir.exists(),
+        "the locked checkout survived the sweep"
+    );
+    let listed = exec
+        .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
+        .expect("list");
+    assert!(
+        !listed.stdout.contains("run-locked-alive"),
+        "{}",
+        listed.stdout
+    );
+    let branch = exec
+        .run_in(
+            &repo.dir,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", worktree.branch),
+            ],
+        )
+        .expect("show-ref");
+    assert_ne!(branch.code, 0);
+}
+
+#[test]
+fn sweep_leaves_a_locked_worktree_inside_the_grace_window_alone() {
+    let dir = tempdir().expect("tempdir");
+    let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
+    let worktrees = dir.path().join("worktrees");
+    std::fs::create_dir_all(&worktrees).expect("mkdir");
+    let exec = repo.exec();
+    let worktree = super::super::worktree::create_reflection_worktree(
+        &repo,
+        "run-locked-young",
+        &worktrees,
+        exec.as_ref(),
+        None,
+    )
+    .expect("create worktree");
+    let dir_text = worktree.dir.to_string_lossy().into_owned();
+    let lock = exec
+        .run_in(
+            &repo.dir,
+            &["worktree", "lock", "--reason", "initializing", &dir_text],
+        )
+        .expect("lock");
+    assert_eq!(lock.code, 0, "{}", lock.stderr);
+
+    // Still inside the grace window: the sweep must not unlock or remove it, even though the
+    // lock looks like the one an interrupted `git worktree add` leaves behind.
+    let receipts = sweep_reflection_orphans(
+        &repo,
+        &worktrees,
+        &ReflectionOrphanSweepOptions {
+            live_run_ids: BTreeSet::new(),
+            now_ms: crate::support::time::now_millis() as f64,
+            grace_ms: None,
+            exec: Some(exec.as_ref()),
+        },
+    )
+    .expect("sweep");
+
+    assert!(receipts.is_empty(), "{receipts:?}");
+    assert!(worktree.dir.exists());
+    let locked = exec
+        .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
+        .expect("list");
+    assert!(locked.stdout.contains("locked"), "{}", locked.stdout);
+    let _ = super::super::worktree::discard_reflection_worktree(
+        &repo,
+        &worktree.dir,
+        &worktree.branch,
+        exec.as_ref(),
+    );
+}
+
+#[test]
 fn sweep_reclaims_a_locked_worktree_whose_directory_is_gone() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
