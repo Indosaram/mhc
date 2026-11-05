@@ -155,12 +155,24 @@ impl TaskPauseCustody {
                                 ));
                             }
                         }
-                        if let crate::run_pause_bridge::BridgeOutcome::Failed(error) =
-                            custody.resume_current()
-                        {
-                            maho_ext_api::diagnostic(&format!(
-                                "run Resume propagation failed: {error}"
-                            ));
+                        match custody.resume_current() {
+                            crate::run_pause_bridge::BridgeOutcome::Failed(error) => {
+                                maho_ext_api::diagnostic(&format!(
+                                    "run Resume propagation failed: {error}"
+                                ));
+                            }
+                            // A Resume can install and still leave participants behind, or fail to
+                            // release admission at all; both are partial failures the caller never
+                            // sees otherwise, because the outcome is a success variant.
+                            crate::run_pause_bridge::BridgeOutcome::Resumed {
+                                installed,
+                                failures,
+                            } if !installed || failures > 0 => {
+                                maho_ext_api::diagnostic(&format!(
+                                    "run Resume propagated with {failures} failed participant(s), admission released: {installed}"
+                                ));
+                            }
+                            _ => {}
                         }
                         Ok(())
                     };
