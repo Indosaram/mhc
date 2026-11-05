@@ -295,7 +295,16 @@ fn sweep_leaves_a_locked_worktree_inside_the_grace_window_alone() {
     let locked = exec
         .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
         .expect("list");
-    assert!(locked.stdout.contains("locked"), "{}", locked.stdout);
+    // Read the porcelain `locked` field, not the whole output: the fixture's own name contains
+    // "locked", so a substring check stayed true even when the sweep had unlocked the worktree.
+    assert!(
+        locked
+            .stdout
+            .lines()
+            .any(|line| line == "locked" || line.starts_with("locked ")),
+        "{}",
+        locked.stdout
+    );
     let _ = super::super::worktree::discard_reflection_worktree(
         &repo,
         &worktree.dir,
