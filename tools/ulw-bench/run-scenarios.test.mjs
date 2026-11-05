@@ -26,7 +26,10 @@ describe("run-scenarios", () => {
     assert.equal(SCENARIOS[0].prompt, "ulw where is fn add defined?");
     assert.equal(SCENARIOS[1].prompt, "ulw fix the failing test in math.rs");
     assert.equal(SCENARIOS[2].prompt, "ulw add a --verbose flag across cli.rs and lib.rs with tests");
-    assert.equal(SCENARIOS[3].prompt, "ulw audit this repo for unused functions using parallel subagents");
+    // S4's prompt is the run's input, not documentation: it must ask for background children,
+    // because only a background child wakes the parent and that wake is what S4 measures.
+    assert.match(SCENARIOS[3].prompt, /run_in_background true/);
+    assert.equal(SCENARIOS[3].waitForChildren, true);
     assert.equal(SCENARIOS[4].prompt, "ulw run ./slow.sh (sleeps 90s) and report its output");
     assert.equal(
       SCENARIOS[5].prompt,
