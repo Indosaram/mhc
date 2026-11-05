@@ -128,7 +128,12 @@ possible at all.
 
 ## Sleeping and waking
 
-When the Manus task goes idle the sandbox suspends and `ssh` times out. Memory and disk survive;
-processes do not, so a suspend kills a running build. Wake it by sending any message to the task in
-the Manus web app, then reconnect once the node is back online. Run long builds under `nohup` with
-a log file so a suspend costs the run but not the evidence.
+When the Manus task goes idle the sandbox suspends and `ssh` times out. Memory and disk survive
+**only while the task still exists**; a suspend kills running processes, and deleting the task
+removes the VM for good. Wake it by sending any message to the task in the Manus web app, then
+reconnect once the node is back online. Run long builds under `nohup` with a log file so a suspend
+costs the run but not the evidence.
+
+If that message never brings the node back, the task is gone rather than asleep: the Tailscale peer
+stays registered with a valid key (it is not deregistered on delete), so `tailscale status` showing
+the node with a live `KeyExpiry` proves nothing. Only a passing `ssh` proves the box is alive.
