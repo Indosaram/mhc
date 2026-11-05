@@ -134,6 +134,8 @@ removes the VM for good. Wake it by sending any message to the task in the Manus
 reconnect once the node is back online. Run long builds under `nohup` with a log file so a suspend
 costs the run but not the evidence.
 
-If that message never brings the node back, the task is gone rather than asleep: the Tailscale peer
-stays registered with a valid key (it is not deregistered on delete), so `tailscale status` showing
-the node with a live `KeyExpiry` proves nothing. Only a passing `ssh` proves the box is alive.
+A suspended task and a deleted task look identical from the tailnet, so reachability alone cannot tell
+them apart. What is certain: deleting the Manus task removes the VM, and the Tailscale peer stays
+registered with a valid key (`KeyExpiry` is not cleared), so `tailscale status` showing the node with
+a live key proves nothing. Only a passing `ssh` proves the box is alive. To decide which case it is,
+look at the task in the Manus web app.
