@@ -57,7 +57,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         if src.is_dir() {
             copy_tree(&src, &dest)?;
         } else {
-            std::fs::copy(&src, &dest)?;
+            copy_file_cheap(&src, &dest)?;
         }
     }
     Ok(())
