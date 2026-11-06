@@ -19,6 +19,7 @@ maho-tools = { path = "../../maho-tools" }
 unicode-normalization = "=0.1.25"
 regex.workspace = true
 url.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
