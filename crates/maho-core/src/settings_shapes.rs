@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::context_files::ContextFileLimits;
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PromptCacheKeepAliveSettings {
@@ -199,6 +201,20 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<AskUserSettings>("{}").expect("ask"),
             AskUserSettings::default()
+        );
+    }
+
+    #[test]
+    fn context_file_limits_deserialize_camel_case() {
+        let limits: ContextFileLimits = serde_json::from_str(
+            r#"{"maxBytesPerFile":2048,"maxTotalBytes":4096}"#,
+        )
+        .expect("limits");
+        assert_eq!(limits.max_bytes_per_file, Some(2048.0));
+        assert_eq!(limits.max_total_bytes, Some(4096.0));
+        assert_eq!(
+            serde_json::from_str::<ContextFileLimits>("{}").expect("empty"),
+            ContextFileLimits::default()
         );
     }
 }

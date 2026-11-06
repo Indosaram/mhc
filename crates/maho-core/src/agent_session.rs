@@ -14923,7 +14923,9 @@ impl AgentSession {
             return files;
         }
         let agent_dir = self.agent_dir();
-        let mut files = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir);
+        let limits = self.with_settings_manager(|manager| manager.get_context_files_limits());
+        let loaded = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir, limits);
+        let mut files = loaded.files;
         // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
         // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
         // lane owns, so the scope is applied here until it produces it itself.
