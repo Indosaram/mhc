@@ -240,8 +240,15 @@ pub fn session_context_error(context: Option<&Value>) -> Option<String> {
         }
     }
     let total = context.to_string().len();
-    if total > SESSION_CONTEXT_TOTAL_BYTES { return Some(format!("context is {total} bytes of JSON, at most {SESSION_CONTEXT_TOTAL_BYTES} bytes are accepted.")); }
-    let strings: std::collections::BTreeMap<String,String> = entries.iter().filter_map(|(key,value)| value.as_str().map(|value| (key.clone(),value.to_owned()))).collect();
+    if total > SESSION_CONTEXT_TOTAL_BYTES {
+        return Some(format!(
+            "context is {total} bytes of JSON, at most {SESSION_CONTEXT_TOTAL_BYTES} bytes are accepted."
+        ));
+    }
+    let strings: std::collections::BTreeMap<String, String> = entries
+        .iter()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
+        .collect();
     session_policy_error(Some(&strings))
 }
 /// Tool names of a `tools_exclude` value: comma-separated, trimmed, deduplicated in order.
@@ -249,29 +256,65 @@ pub fn parse_tools_exclude(value: &str) -> Result<Vec<String>, String> {
     let mut names = Vec::<String>::new();
     for raw in value.split(',') {
         let name = raw.trim();
-        if name.is_empty() { return Err(format!("{TOOLS_EXCLUDE_CONTEXT_KEY} must be a comma-separated list of tool names without empty items.")); }
-        if name.chars().count() > TOOL_NAME_MAX_CHARS || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c,'_'|'-'|'.')) {
-            return Err(format!("{TOOLS_EXCLUDE_CONTEXT_KEY} item \"{name}\" is not a tool name (^[A-Za-z0-9_.-]{{1,{TOOL_NAME_MAX_CHARS}}}$)."));
+        if name.is_empty() {
+            return Err(format!(
+                "{TOOLS_EXCLUDE_CONTEXT_KEY} must be a comma-separated list of tool names without empty items."
+            ));
         }
-        if !names.iter().any(|existing| existing == name) { names.push(name.to_owned()); }
+        if name.chars().count() > TOOL_NAME_MAX_CHARS
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Err(format!(
+                "{TOOLS_EXCLUDE_CONTEXT_KEY} item \"{name}\" is not a tool name (^[A-Za-z0-9_.-]{{1,{TOOL_NAME_MAX_CHARS}}}$)."
+            ));
+        }
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
     }
-    if names.len() > TOOLS_EXCLUDE_MAX_NAMES { return Err(format!("{TOOLS_EXCLUDE_CONTEXT_KEY} names {} tools, at most {TOOLS_EXCLUDE_MAX_NAMES} are accepted.",names.len())); }
+    if names.len() > TOOLS_EXCLUDE_MAX_NAMES {
+        return Err(format!(
+            "{TOOLS_EXCLUDE_CONTEXT_KEY} names {} tools, at most {TOOLS_EXCLUDE_MAX_NAMES} are accepted.",
+            names.len()
+        ));
+    }
     Ok(names)
 }
 /// Shape errors of the session-role policy keys (`invalid_session_context`). Unknown tool names
 /// need the mounted runtime, so the host checks them when it builds the session.
-pub fn session_policy_error(context: Option<&std::collections::BTreeMap<String,String>>) -> Option<String> {
+pub fn session_policy_error(
+    context: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<String> {
     let context = context?;
-    if let Some(value) = context.get(MEMORY_WRITE_CONTEXT_KEY).filter(|value| value.as_str() != MEMORY_WRITE_DENY) {
-        return Some(format!("context {MEMORY_WRITE_CONTEXT_KEY} must be \"{MEMORY_WRITE_DENY}\", got \"{value}\"."));
+    if let Some(value) = context
+        .get(MEMORY_WRITE_CONTEXT_KEY)
+        .filter(|value| value.as_str() != MEMORY_WRITE_DENY)
+    {
+        return Some(format!(
+            "context {MEMORY_WRITE_CONTEXT_KEY} must be \"{MEMORY_WRITE_DENY}\", got \"{value}\"."
+        ));
     }
-    if let Some(value) = context.get(EFFECT_TOOLS_CONTEXT_KEY).filter(|value| value.as_str() != EFFECT_TOOLS_DENY) {
-        return Some(format!("context {EFFECT_TOOLS_CONTEXT_KEY} must be \"{EFFECT_TOOLS_DENY}\", got \"{value}\"."));
+    if let Some(value) = context
+        .get(EFFECT_TOOLS_CONTEXT_KEY)
+        .filter(|value| value.as_str() != EFFECT_TOOLS_DENY)
+    {
+        return Some(format!(
+            "context {EFFECT_TOOLS_CONTEXT_KEY} must be \"{EFFECT_TOOLS_DENY}\", got \"{value}\"."
+        ));
     }
-    if let Some(value) = context.get(SUPERVISOR_TOOLS_CONTEXT_KEY).filter(|value| value.as_str() != SUPERVISOR_TOOLS_WORK) {
-        return Some(format!("context {SUPERVISOR_TOOLS_CONTEXT_KEY} must be \"{SUPERVISOR_TOOLS_WORK}\", got \"{value}\"."));
+    if let Some(value) = context
+        .get(SUPERVISOR_TOOLS_CONTEXT_KEY)
+        .filter(|value| value.as_str() != SUPERVISOR_TOOLS_WORK)
+    {
+        return Some(format!(
+            "context {SUPERVISOR_TOOLS_CONTEXT_KEY} must be \"{SUPERVISOR_TOOLS_WORK}\", got \"{value}\"."
+        ));
     }
-    context.get(TOOLS_EXCLUDE_CONTEXT_KEY).and_then(|value| parse_tools_exclude(value).err())
+    context
+        .get(TOOLS_EXCLUDE_CONTEXT_KEY)
+        .and_then(|value| parse_tools_exclude(value).err())
 }
 pub fn session_kind_error(kind: Option<&Value>) -> Option<&'static str> {
     kind.filter(|v| !matches!(v.as_str(), Some("interactive" | "worker")))
@@ -282,7 +325,9 @@ pub fn session_kind_error(kind: Option<&Value>) -> Option<&'static str> {
 /// that leading reason code is read, never free text further in.
 pub fn open_session_error_code(message: &str) -> Option<&'static str> {
     let reason = message.strip_prefix("open_failed: ").unwrap_or(message);
-    reason.strip_prefix(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT).is_some_and(|rest| rest.starts_with(':'))
+    reason
+        .strip_prefix(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT)
+        .is_some_and(|rest| rest.starts_with(':'))
         .then_some(crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT)
 }
 pub fn session_auto_title_error(value: Option<&Value>) -> Option<&'static str> {
@@ -621,7 +666,10 @@ mod tests {
     #[test]
     fn effect_tools_accepts_only_deny() {
         assert_eq!(
-            policy(&[("effect_tools", "deny"), ("tools_exclude", "bash,edit,write")]),
+            policy(&[
+                ("effect_tools", "deny"),
+                ("tools_exclude", "bash,edit,write")
+            ]),
             None
         );
         for value in ["allow", "Deny", "", " deny", "true"] {
@@ -634,7 +682,9 @@ mod tests {
     #[test]
     fn open_failures_carry_the_typed_policy_code() {
         assert_eq!(
-            open_session_error_code("invalid_session_context: context memory_write must be \"deny\""),
+            open_session_error_code(
+                "invalid_session_context: context memory_write must be \"deny\""
+            ),
             Some("invalid_session_context")
         );
         assert_eq!(

@@ -37,80 +37,160 @@ fn bridge_and_task_family_names_are_reserved() {
 #[test]
 fn live_parent_descriptors_are_granted() {
     let result = resolve_kernel_tool_grant(&request(&["lookup"]), Some(&described(&["lookup"])));
-    assert!(matches!(result, KernelToolGrantResolution::Granted(grant) if grant.descriptors.len() == 1));
+    assert!(
+        matches!(result, KernelToolGrantResolution::Granted(grant) if grant.descriptors.len() == 1)
+    );
 }
 
 #[test]
 fn empty_requests_do_not_describe() {
-    assert!(matches!(resolve_kernel_tool_grant(&request(&[]), None), KernelToolGrantResolution::None));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&request(&[]), None),
+        KernelToolGrantResolution::None
+    ));
 }
 
 #[test]
 fn curated_agents_are_denied() {
     let mut r = request(&["lookup"]);
     r.agent_type = Some("explore".into());
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::CuratedPolicyDenied, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&r, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::CuratedPolicyDenied,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn process_team_and_missing_parent_are_unavailable() {
     let mut process = request(&["lookup"]);
     process.execution_mode = ExecutionMode::Process;
-    assert!(matches!(resolve_kernel_tool_grant(&process, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&process, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolsUnavailable,
+            ..
+        }
+    ));
     let mut team = request(&["lookup"]);
     team.team_role_member = true;
-    assert!(matches!(resolve_kernel_tool_grant(&team, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&team, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolsUnavailable,
+            ..
+        }
+    ));
     let mut missing = request(&["lookup"]);
     missing.capability = None;
-    assert!(matches!(resolve_kernel_tool_grant(&missing, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&missing, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolsUnavailable,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn duplicate_names_are_rejected() {
-    assert!(matches!(resolve_kernel_tool_grant(&request(&["lookup", "lookup"]), None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolNameCollision, .. }));
-    assert!(matches!(resolve_kernel_tool_grant(&request(&["look_up", "look-up"]), None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolNameCollision, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&request(&["lookup", "lookup"]), None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolNameCollision,
+            ..
+        }
+    ));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&request(&["look_up", "look-up"]), None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolNameCollision,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn existing_child_name_collision_is_rejected() {
     let mut r = request(&["grep"]);
     r.existing_tool_names = vec!["grep".into(), "read".into()];
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolNameCollision, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&r, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolNameCollision,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn reserved_alias_is_rejected_before_describe() {
-    assert!(matches!(resolve_kernel_tool_grant(&request(&["task_send"]), None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ReservedToolName, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&request(&["task_send"]), None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ReservedToolName,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn missing_descriptor_is_typed() {
-    let result = resolve_kernel_tool_grant(&request(&["missing"]), Some(&json!({"results":[{"name":"missing","ok":false,"error":{"code":"kernel_tool_missing","message":"missing"}}]})));
-    assert!(matches!(result, KernelToolGrantResolution::Denied { code: KernelToolErrorCode::KernelToolMissing, .. }));
+    let result = resolve_kernel_tool_grant(
+        &request(&["missing"]),
+        Some(
+            &json!({"results":[{"name":"missing","ok":false,"error":{"code":"kernel_tool_missing","message":"missing"}}]}),
+        ),
+    );
+    assert!(matches!(
+        result,
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::KernelToolMissing,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn narrowed_write_policy_fails_closed() {
     let mut r = request(&["lookup"]);
-    r.existing_tool_names = ["read", "grep", "write", "edit", "bash", "web_search"].into_iter().map(String::from).collect();
+    r.existing_tool_names = ["read", "grep", "write", "edit", "bash", "web_search"]
+        .into_iter()
+        .map(String::from)
+        .collect();
     r.tool_denylist = Some(vec!["write".into()]);
-    assert!(matches!(resolve_kernel_tool_grant(&r, Some(&described(&["lookup"]))), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&r, Some(&described(&["lookup"]))),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolsUnavailable,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn dead_parent_is_unavailable() {
     let mut r = request(&["lookup"]);
     r.capability = None;
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&r, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::ToolsUnavailable,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn granted_descriptor_preserves_requested_name() {
     let result = resolve_kernel_tool_grant(&request(&["lookup"]), Some(&described(&["lookup"])));
-    let KernelToolGrantResolution::Granted(grant) = result else { panic!("expected grant") };
+    let KernelToolGrantResolution::Granted(grant) = result else {
+        panic!("expected grant")
+    };
     assert_eq!(grant.requested_names, ["lookup"]);
 }
-
 
 #[test]
 fn invalid_descriptor_language_is_not_accepted() {
@@ -120,7 +200,11 @@ fn invalid_descriptor_language_is_not_accepted() {
 
 #[test]
 fn failed_wrapper_result_is_typed_for_child_channel() {
-    let result = kernel_tool_error_result("lookup", KernelToolErrorCode::KernelToolFailed, "closure exploded");
+    let result = kernel_tool_error_result(
+        "lookup",
+        KernelToolErrorCode::KernelToolFailed,
+        "closure exploded",
+    );
     assert_eq!(result["isError"], true);
     assert_eq!(result["details"]["error"]["code"], "kernel_tool_failed");
 }

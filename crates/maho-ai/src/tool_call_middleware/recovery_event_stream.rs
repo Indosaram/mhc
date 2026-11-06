@@ -20,7 +20,11 @@ pub struct RecoveryCancellation {
 
 impl Default for RecoveryCancellation {
     fn default() -> Self {
-        Self { handler: Mutex::new(None), cancellation: OnceLock::new(), source_closed: Mutex::new(false) }
+        Self {
+            handler: Mutex::new(None),
+            cancellation: OnceLock::new(),
+            source_closed: Mutex::new(false),
+        }
     }
 }
 
@@ -30,11 +34,17 @@ impl RecoveryCancellation {
     }
 
     pub fn set_cancellation_handler(&self, handler: CancellationHandler) {
-        *self.handler.lock().unwrap_or_else(|error| error.into_inner()) = Some(handler);
+        *self
+            .handler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handler);
     }
 
     pub fn mark_source_closed(&self) -> bool {
-        let mut closed = self.source_closed.lock().unwrap_or_else(|error| error.into_inner());
+        let mut closed = self
+            .source_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if self.cancellation.get().is_some() {
             return false;
         }
@@ -44,29 +54,46 @@ impl RecoveryCancellation {
 
     pub async fn cancel(&self) {
         let mut completion = {
-            let closed = self.source_closed.lock().unwrap_or_else(|error| error.into_inner());
-            if *closed { return; }
-            self.cancellation.get_or_init(|| {
-                let handler = self.handler.lock().unwrap_or_else(|error| error.into_inner()).take();
-                let (completed, completion) = watch::channel(false);
-                tokio::spawn(async move {
-                    if let Some(handler) = handler { handler().await; }
-                    completed.send_replace(true);
-                });
-                completion
-            }).clone()
+            let closed = self
+                .source_closed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if *closed {
+                return;
+            }
+            self.cancellation
+                .get_or_init(|| {
+                    let handler = self
+                        .handler
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                    let (completed, completion) = watch::channel(false);
+                    tokio::spawn(async move {
+                        if let Some(handler) = handler {
+                            handler().await;
+                        }
+                        completed.send_replace(true);
+                    });
+                    completion
+                })
+                .clone()
         };
         loop {
-            if *completion.borrow() { return; }
-            if completion.changed().await.is_err() { return; }
+            if *completion.borrow() {
+                return;
+            }
+            if completion.changed().await.is_err() {
+                return;
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
 
@@ -75,20 +102,27 @@ mod tests {
         let cancellation = RecoveryCancellation::new();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        cancellation.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("entered subscriber");
-            release_rx.await.expect("release");
-        })));
+        cancellation.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("entered subscriber");
+                release_rx.await.expect("release");
+            })
+        }));
         let bound = std::time::Duration::from_secs(5);
         let mut first = Box::pin(cancellation.cancel());
         assert!(futures::poll!(first.as_mut()).is_pending());
-        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("entered deadline")
+            .expect("entered");
         assert!(!cancellation.mark_source_closed());
         drop(first);
         let mut second = Box::pin(cancellation.cancel());
         assert!(futures::poll!(second.as_mut()).is_pending());
         release_tx.send(()).expect("release subscriber");
-        tokio::time::timeout(bound, second).await.expect("cancel deadline");
+        tokio::time::timeout(bound, second)
+            .await
+            .expect("cancel deadline");
     }
 
     #[tokio::test]

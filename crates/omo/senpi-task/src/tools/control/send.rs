@@ -6,21 +6,22 @@ use serde_json::Value;
 
 use crate::tools::control::caller_session::default_resolve_caller_session_id;
 use crate::tools::control::renderers::{
-    ControlCallComponent, ControlLinesComponent, ToolRenderResultOptions, render_member_scoped_task_send_call,
-    render_task_send_call, render_task_send_result,
+    ControlCallComponent, ControlLinesComponent, ToolRenderResultOptions,
+    render_member_scoped_task_send_call, render_task_send_call, render_task_send_result,
 };
 use crate::tools::control::send_results::{invalid_arguments, map_send_outcome, not_found};
 use crate::tools::control::send_schema::{
-    MemberScopedTaskSendInput, StructuredMessageInput, TaskSendInput, TaskSendMessage, as_structured_message,
-    member_scoped_task_send_params_schema, task_send_params_schema,
+    MemberScopedTaskSendInput, StructuredMessageInput, TaskSendInput, TaskSendMessage,
+    as_structured_message, member_scoped_task_send_params_schema, task_send_params_schema,
 };
 use crate::tools::control::send_shutdown::{
-    SendTeamRunIdResolution, TaskSendError, TaskSendTeamRouting, resolve_send_team_run_id, route_structured_message,
+    SendTeamRunIdResolution, TaskSendError, TaskSendTeamRouting, resolve_send_team_run_id,
+    route_structured_message,
 };
 use crate::tools::control::tool_result::{AgentToolResult, ToolResultContent, tool_result};
 use crate::tools::control::types::{
-    CallerSessionResolver, ControlSendInput, SendManager, SendOutcome, SendResultDetails, SendToolResult,
-    SessionIdCarrier,
+    CallerSessionResolver, ControlSendInput, SendManager, SendOutcome, SendResultDetails,
+    SendToolResult, SessionIdCarrier,
 };
 use crate::tools::render::RendererTheme;
 use crate::tools::team::messaging::{TeamSendDetails, TeamSendInput, run_team_send};
@@ -91,9 +92,13 @@ pub fn run_task_send(
             };
 
             let team_run_id = match resolve_send_team_run_id(params, team_routing) {
-                SendTeamRunIdResolution::None => return Ok(not_found(manager, &reason, caller_session_id)),
+                SendTeamRunIdResolution::None => {
+                    return Ok(not_found(manager, &reason, caller_session_id));
+                }
                 SendTeamRunIdResolution::Error { reason } => return Ok(invalid_arguments(&reason)),
-                SendTeamRunIdResolution::Failed { reason } => return Err(TaskSendError::Routing(reason)),
+                SendTeamRunIdResolution::Failed { reason } => {
+                    return Err(TaskSendError::Routing(reason));
+                }
                 SendTeamRunIdResolution::Resolved { team_run_id } => team_run_id,
             };
 
@@ -128,7 +133,9 @@ fn validate_params(params: &TaskSendInput) -> Option<SendToolResult> {
         return Some(invalid_arguments("message is required"));
     }
     if is_shutdown_reject_without_reason(message) {
-        return Some(invalid_arguments("reason is required when rejecting a shutdown"));
+        return Some(invalid_arguments(
+            "reason is required when rejecting a shutdown",
+        ));
     }
     None
 }
@@ -179,7 +186,11 @@ impl TaskSendTool {
         )
     }
 
-    pub fn render_call<'a>(&self, args: &TaskSendInput, theme: &'a dyn RendererTheme) -> ControlCallComponent<'a> {
+    pub fn render_call<'a>(
+        &self,
+        args: &TaskSendInput,
+        theme: &'a dyn RendererTheme,
+    ) -> ControlCallComponent<'a> {
         render_task_send_call(args, theme)
     }
 
@@ -268,7 +279,9 @@ impl MemberScopedTaskSendTool {
     }
 }
 
-pub fn create_member_scoped_task_send_tool(deps: MemberScopedTaskSendDeps) -> MemberScopedTaskSendTool {
+pub fn create_member_scoped_task_send_tool(
+    deps: MemberScopedTaskSendDeps,
+) -> MemberScopedTaskSendTool {
     let resolve_caller = deps
         .resolve_caller_session_id
         .unwrap_or_else(default_caller_resolver);

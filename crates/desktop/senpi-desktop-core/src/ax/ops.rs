@@ -1,6 +1,6 @@
 //! `ax.query` / `ax.elementAt` / ref registration and the press action.
 
-use super::walk::{WalkState, label, walk_raw};
+use super::walk::{label, walk_raw, WalkState};
 use super::{AxBackend, AxHandle, AxProps, AxRegistry};
 use crate::error::CoreResult;
 use crate::types::{AxNode, AxQuery, DesktopWindow};

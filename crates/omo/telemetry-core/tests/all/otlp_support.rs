@@ -66,8 +66,9 @@ pub fn test_wire_projection() -> OtlpWireProjection {
     Arc::new(|_event: &str, properties: &Map<String, Value>| {
         let mut attributes = WireAttributes::new();
         if let Some(Value::String(session)) = properties.get("$session_id")
-            && !session.is_empty() {
-                attributes.insert("session.id".to_string(), Value::String(session.clone()));
+            && !session.is_empty()
+        {
+            attributes.insert("session.id".to_string(), Value::String(session.clone()));
         }
         for (key, value) in properties {
             if !is_wire_attribute_key(key) {
@@ -211,7 +212,10 @@ pub struct TransportOverrides {
 }
 
 pub fn make_transport(dir: &Path, overrides: TransportOverrides) -> OtlpTelemetryTransport {
-    let spool_root = dir.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.to_path_buf());
+    let spool_root = dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.to_path_buf());
     create_otlp_sender(CreateOtlpTelemetryTransportInput {
         product_env_prefix: "OMO_TEST".to_string(),
         ingest_key: "test-ingest-key".to_string(),

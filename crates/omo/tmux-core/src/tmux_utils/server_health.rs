@@ -68,22 +68,27 @@ fn is_ok_status(status: u16) -> bool {
 fn http_get_status(target: &str, timeout: Duration) -> Result<u16, String> {
     // A blocking client must be created and dropped outside any caller's Tokio runtime.
     std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(timeout)
-                .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() > 20 {
-                        attempt.error("too many redirects")
-                    } else {
-                        attempt.follow()
-                    }
-                }))
-                .build()
-                .map_err(|error| error.to_string())?;
-            client.get(target).send()
-                .map(|response| response.status().as_u16())
-                .map_err(|error| error.to_string())
-        }).join().map_err(|_| "health fetch thread panicked".to_owned())?
+        scope
+            .spawn(|| {
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(timeout)
+                    .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                        if attempt.previous().len() > 20 {
+                            attempt.error("too many redirects")
+                        } else {
+                            attempt.follow()
+                        }
+                    }))
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                client
+                    .get(target)
+                    .send()
+                    .map(|response| response.status().as_u16())
+                    .map_err(|error| error.to_string())
+            })
+            .join()
+            .map_err(|_| "health fetch thread panicked".to_owned())?
     })
 }
 

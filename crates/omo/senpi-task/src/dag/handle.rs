@@ -3,8 +3,8 @@
 // allow: SIZE_OK - wait/attach ownership, terminal projection, and waiter bookkeeping share one
 // contract so no caller can observe a half-applied terminal state.
 
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
@@ -12,8 +12,8 @@ use crate::dag::journal::{DagJournalListener, DagJournalUnsubscribe, subscribe_d
 use crate::dag::manager::DagRunRecordV1;
 use crate::dag::store::{DagEventReadOptions, DagFileStore, DagStoreError};
 use crate::dag::types::{
-    DagNode, DagNodeCounts, DagNodeError, DagNodeErrorCode, DagNodeId, DagNodeState, DagRunEventPayload,
-    DagRunEventType, DagRunId, DagRunSnapshot, DagRunStatus,
+    DagNode, DagNodeCounts, DagNodeError, DagNodeErrorCode, DagNodeId, DagNodeState,
+    DagRunEventPayload, DagRunEventType, DagRunId, DagRunSnapshot, DagRunStatus,
 };
 use crate::state::TaskRunStats;
 
@@ -159,7 +159,12 @@ pub struct DagWaitCancellation {
 impl DagWaitCancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        let slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade);
+        let slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
         if let Some(slot) = slot {
             let _state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
             slot.1.notify_all();
@@ -169,11 +174,16 @@ impl DagWaitCancellation {
 thread_local! {
     static WAIT_CANCELLATION: RefCell<Option<Arc<DagWaitCancellation>>> = const { RefCell::new(None) };
 }
-pub fn with_dag_wait_cancellation<T>(cancel: Arc<DagWaitCancellation>, work: impl FnOnce() -> T) -> T {
+pub fn with_dag_wait_cancellation<T>(
+    cancel: Arc<DagWaitCancellation>,
+    work: impl FnOnce() -> T,
+) -> T {
     struct Restore(Option<Arc<DagWaitCancellation>>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            WAIT_CANCELLATION.with(|slot| { slot.replace(self.0.take()); });
+            WAIT_CANCELLATION.with(|slot| {
+                slot.replace(self.0.take());
+            });
         }
     }
     let _restore = Restore(WAIT_CANCELLATION.with(|slot| slot.replace(Some(cancel))));
@@ -245,7 +255,10 @@ impl Inner {
                 Condvar::new(),
             ))
         }));
-        slot.0.lock().unwrap_or_else(PoisonError::into_inner).waiter_count += 1;
+        slot.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .waiter_count += 1;
         slot
     }
 
@@ -267,16 +280,25 @@ impl Inner {
         condvar.notify_all();
     }
 
-    fn wait(self_arc: &Arc<Self>, run_id: &DagRunId, parent_session_id: &str) -> Result<DagRunResult, DagWaitError> {
+    fn wait(
+        self_arc: &Arc<Self>,
+        run_id: &DagRunId,
+        parent_session_id: &str,
+    ) -> Result<DagRunResult, DagWaitError> {
         let cancel = WAIT_CANCELLATION.with(|slot| slot.borrow().clone());
         let record = self_arc.owned_record(run_id, parent_session_id)?;
-        if is_terminal_run_status(record.status) || cancel.as_ref().is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+        if is_terminal_run_status(record.status)
+            || cancel
+                .as_ref()
+                .is_some_and(|c| c.cancelled.load(Ordering::SeqCst))
+        {
             return Ok(self_arc.project_result(record));
         }
         let slot = self_arc.slot(run_id);
         Inner::register(self_arc, run_id, &slot);
         if let Some(cancel) = &cancel {
-            *cancel.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&slot));
+            *cancel.slot.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(Arc::downgrade(&slot));
         }
         let (state, condvar) = &*slot;
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -284,23 +306,37 @@ impl Inner {
             if let Some(result) = &state.resolved {
                 return Ok(result.clone());
             }
-            if cancel.as_ref().is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+            if cancel
+                .as_ref()
+                .is_some_and(|c| c.cancelled.load(Ordering::SeqCst))
+            {
                 drop(state);
                 let unsubscribers = {
-                    let mut waiters = self_arc.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut waiters = self_arc
+                        .waiters
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
                     let mut state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
                     state.waiter_count -= 1;
-                    if state.waiter_count == 0 && waiters.get(run_id).is_some_and(|current| Arc::ptr_eq(current, &slot)) {
+                    if state.waiter_count == 0
+                        && waiters
+                            .get(run_id)
+                            .is_some_and(|current| Arc::ptr_eq(current, &slot))
+                    {
                         waiters.remove(run_id);
                         std::mem::take(&mut state.unsubscribers)
-                    } else { Vec::new() }
+                    } else {
+                        Vec::new()
+                    }
                 };
-                for unsubscribe in unsubscribers { unsubscribe(); }
-                return Ok(self_arc.project_result(self_arc.owned_record(run_id, parent_session_id)?));
+                for unsubscribe in unsubscribers {
+                    unsubscribe();
+                }
+                return Ok(
+                    self_arc.project_result(self_arc.owned_record(run_id, parent_session_id)?)
+                );
             }
-            state = condvar
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+            state = condvar.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
@@ -329,17 +365,19 @@ impl Inner {
         };
         // A terminal status only enters the record through a terminal run event, so both the
         // commit and the live listener skip the checkpoint read for every other event.
-        let listener: DagJournalListener = Arc::new(move |event: &crate::dag::types::DagRunEvent| {
-            if matches!(
-                event.payload,
-                DagRunEventPayload::RunCompleted { .. }
-                    | DagRunEventPayload::RunFailed { .. }
-                    | DagRunEventPayload::RunCancelled { .. }
-            ) {
-                on_journal_event();
-            }
-        });
-        let commit_unsubscribe = subscribe_dag_journal(&self_arc.store, run_id, Arc::clone(&listener));
+        let listener: DagJournalListener =
+            Arc::new(move |event: &crate::dag::types::DagRunEvent| {
+                if matches!(
+                    event.payload,
+                    DagRunEventPayload::RunCompleted { .. }
+                        | DagRunEventPayload::RunFailed { .. }
+                        | DagRunEventPayload::RunCancelled { .. }
+                ) {
+                    on_journal_event();
+                }
+            });
+        let commit_unsubscribe =
+            subscribe_dag_journal(&self_arc.store, run_id, Arc::clone(&listener));
         let live_unsubscribe = (self_arc.subscribe)(run_id, listener);
         {
             let mut state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -361,7 +399,10 @@ impl Inner {
     }
 
     fn has_slot(&self, run_id: &DagRunId) -> bool {
-        self.waiters.lock().unwrap_or_else(PoisonError::into_inner).contains_key(run_id)
+        self.waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(run_id)
     }
 
     fn waiter_count(&self, run_id: &DagRunId) -> usize {
@@ -385,7 +426,9 @@ impl Inner {
         };
         let mut nodes = HashMap::new();
         for node in &record.nodes {
-            if let Some(terminal) = project_node(node, &record.run_id, &cancel_reason, &self.read_output) {
+            if let Some(terminal) =
+                project_node(node, &record.run_id, &cancel_reason, &self.read_output)
+            {
                 nodes.insert(node.id.clone(), terminal);
             }
         }
@@ -456,7 +499,11 @@ pub fn create_dag_wait_surface(options: DagWaitSurfaceOptions) -> DagWaitSurface
 }
 
 impl DagWaitSurface {
-    pub fn wait(&self, run_id: &DagRunId, parent_session_id: &str) -> Result<DagRunResult, DagWaitError> {
+    pub fn wait(
+        &self,
+        run_id: &DagRunId,
+        parent_session_id: &str,
+    ) -> Result<DagRunResult, DagWaitError> {
         Inner::wait(&self.inner, run_id, parent_session_id)
     }
 

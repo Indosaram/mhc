@@ -9,8 +9,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Native port of the pinned `ProviderAccountEvent` union.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderAccountEvent {
-    AccountsChanged { provider: String },
-    Failover { provider: String, from: String, to: String, reason: String },
+    AccountsChanged {
+        provider: String,
+    },
+    Failover {
+        provider: String,
+        from: String,
+        to: String,
+        reason: String,
+    },
 }
 
 type Listener = Arc<dyn Fn(ProviderAccountEvent) + Send + Sync>;
@@ -26,8 +33,14 @@ impl ProviderAccountEvents {
     /// listener identity is a no-op, matching the pinned `Set.add`.
     pub fn subscribe(self: &Arc<Self>, listener: Listener) -> Box<dyn FnOnce() + Send + Sync> {
         {
-            let mut listeners = self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !listeners.iter().any(|existing| Arc::ptr_eq(existing, &listener)) {
+            let mut listeners = self
+                .listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !listeners
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &listener))
+            {
                 listeners.push(listener.clone());
             }
         }
@@ -44,7 +57,11 @@ impl ProviderAccountEvents {
     /// Deliver `event` to every listener still registered; a listener removed mid-dispatch by an
     /// earlier listener does not receive it, matching the pinned `Set` iteration.
     pub fn emit(&self, event: ProviderAccountEvent) {
-        let listeners = self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for listener in listeners {
             let still_registered = self
                 .listeners
@@ -72,7 +89,9 @@ pub fn subscribe_provider_account_events(listener: Listener) -> Box<dyn FnOnce()
 
 /// `emitProviderAccountsChanged(provider)`.
 pub fn emit_provider_accounts_changed(provider: &str) {
-    provider_account_events().emit(ProviderAccountEvent::AccountsChanged { provider: provider.to_owned() });
+    provider_account_events().emit(ProviderAccountEvent::AccountsChanged {
+        provider: provider.to_owned(),
+    });
 }
 
 /// `emitProviderAccountFailover(provider, from, to, reason)`.
@@ -92,7 +111,10 @@ mod tests {
     fn capture() -> (Arc<Mutex<Vec<ProviderAccountEvent>>>, Listener) {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let sink = observed.clone();
-        (observed, Arc::new(move |event| sink.lock().expect("observed").push(event)))
+        (
+            observed,
+            Arc::new(move |event| sink.lock().expect("observed").push(event)),
+        )
     }
 
     #[test]
@@ -101,9 +123,14 @@ mod tests {
         let (observed, listener) = capture();
         let unsubscribe = events.subscribe(listener.clone());
         let duplicate = events.subscribe(listener);
-        let changed = ProviderAccountEvent::AccountsChanged { provider: "provider".to_owned() };
+        let changed = ProviderAccountEvent::AccountsChanged {
+            provider: "provider".to_owned(),
+        };
         events.emit(changed.clone());
-        assert_eq!(observed.lock().expect("observed").as_slice(), std::slice::from_ref(&changed));
+        assert_eq!(
+            observed.lock().expect("observed").as_slice(),
+            std::slice::from_ref(&changed)
+        );
         unsubscribe();
         events.emit(changed);
         duplicate();
@@ -128,11 +155,15 @@ mod tests {
         let remove_first = events.subscribe(first);
         let second = {
             let calls = calls.clone();
-            Arc::new(move |_: ProviderAccountEvent| calls.lock().expect("calls").push(2)) as Listener
+            Arc::new(move |_: ProviderAccountEvent| calls.lock().expect("calls").push(2))
+                as Listener
         };
         *later.lock().expect("later") = Some(events.subscribe(second));
         events.emit(ProviderAccountEvent::Failover {
-            provider: "p".to_owned(), from: "a".to_owned(), to: "b".to_owned(), reason: "rate-limit".to_owned(),
+            provider: "p".to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+            reason: "rate-limit".to_owned(),
         });
         assert_eq!(*calls.lock().expect("calls"), [1]);
         remove_first();
@@ -143,7 +174,8 @@ mod tests {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let sink = observed.clone();
         let unsubscribe = subscribe_provider_account_events(Arc::new(move |event| {
-            if matches!(&event, ProviderAccountEvent::AccountsChanged { provider } if provider == "global-registry-fixture") {
+            if matches!(&event, ProviderAccountEvent::AccountsChanged { provider } if provider == "global-registry-fixture")
+            {
                 sink.lock().expect("observed").push(event);
             }
         }));
@@ -151,6 +183,11 @@ mod tests {
         unsubscribe();
         emit_provider_accounts_changed("global-registry-fixture");
         let observed = observed.lock().expect("observed");
-        assert_eq!(observed.as_slice(), [ProviderAccountEvent::AccountsChanged { provider: "global-registry-fixture".to_owned() }]);
+        assert_eq!(
+            observed.as_slice(),
+            [ProviderAccountEvent::AccountsChanged {
+                provider: "global-registry-fixture".to_owned()
+            }]
+        );
     }
 }

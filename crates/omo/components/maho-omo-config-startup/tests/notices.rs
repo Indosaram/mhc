@@ -88,14 +88,14 @@ fn notification_messages_report_an_error_before_every_other_clause() {
         ..quiet_migration()
     };
 
-    let notices = notification_messages(
-        &migration,
-        &empty_config(),
-        &DevinSwe2Policy::unavailable(),
-    );
+    let notices =
+        notification_messages(&migration, &empty_config(), &DevinSwe2Policy::unavailable());
 
     assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].message, "OmO Native: configuration migration: failure");
+    assert_eq!(
+        notices[0].message,
+        "OmO Native: configuration migration: failure"
+    );
     assert_eq!(notices[0].kind, StartupNoticeKind::Warning);
 }
 
@@ -106,11 +106,8 @@ fn notification_messages_report_a_resumed_journal_when_nothing_migrated() {
         ..quiet_migration()
     };
 
-    let notices = notification_messages(
-        &migration,
-        &empty_config(),
-        &DevinSwe2Policy::unavailable(),
-    );
+    let notices =
+        notification_messages(&migration, &empty_config(), &DevinSwe2Policy::unavailable());
 
     assert_eq!(
         notices,
@@ -143,11 +140,8 @@ fn notification_messages_join_every_migration_diagnostic_once() {
         ..quiet_migration()
     };
 
-    let notices = notification_messages(
-        &migration,
-        &empty_config(),
-        &DevinSwe2Policy::unavailable(),
-    );
+    let notices =
+        notification_messages(&migration, &empty_config(), &DevinSwe2Policy::unavailable());
 
     assert_eq!(
         notices[0].message,
@@ -187,7 +181,8 @@ fn notification_messages_stay_silent_without_a_devin_policy() {
         &[],
     );
 
-    let notices = notification_messages(&quiet_migration(), &config, &DevinSwe2Policy::unavailable());
+    let notices =
+        notification_messages(&quiet_migration(), &config, &DevinSwe2Policy::unavailable());
 
     assert!(notices.is_empty());
 }
@@ -213,7 +208,9 @@ fn notification_messages_use_the_real_devin_producer_for_selector_boundaries() {
         json!({ "categories": { "quick": { "model": "devin/swe-2-medium" } } }),
         &[],
     );
-    assert!(notification_messages(&quiet_migration(), &served, &DevinSwe2Policy::native()).is_empty());
+    assert!(
+        notification_messages(&quiet_migration(), &served, &DevinSwe2Policy::native()).is_empty()
+    );
 
     let unserved = config_with_diagnostics(
         json!({

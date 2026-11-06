@@ -75,8 +75,9 @@ fn regex(pattern: &str) -> Regex {
 }
 
 fn matches_openai_fast(model_id: &str) -> bool {
-    static PATTERN: LazyLock<Regex> =
-        LazyLock::new(|| regex(r"^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-6-(?:astra|sol|luna)|gpt-6\.1-sol)-fast$"));
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        regex(r"^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-6-(?:astra|sol|luna)|gpt-6\.1-sol)-fast$")
+    });
     PATTERN.is_match(model_id)
 }
 
@@ -232,20 +233,46 @@ mod tests {
 
     #[test]
     fn all_openai_fast_families_resolve_only_on_allowed_providers() {
-        for alias in ["gpt-5.6-sol-fast", "gpt-5.6-terra-fast", "gpt-5.6-luna-fast", "gpt-6-astra-fast", "gpt-6-sol-fast", "gpt-6.1-sol-fast", "gpt-6-luna-fast"] {
-            let canonical = alias.strip_suffix("-fast").expect("fixture has fast suffix");
-            for (model, provider) in [(alias.to_string(), "openai"), (format!("openai/{alias}"), "vercel")] {
+        for alias in [
+            "gpt-5.6-sol-fast",
+            "gpt-5.6-terra-fast",
+            "gpt-5.6-luna-fast",
+            "gpt-6-astra-fast",
+            "gpt-6-sol-fast",
+            "gpt-6.1-sol-fast",
+            "gpt-6-luna-fast",
+        ] {
+            let canonical = alias
+                .strip_suffix("-fast")
+                .expect("fixture has fast suffix");
+            for (model, provider) in [
+                (alias.to_string(), "openai"),
+                (format!("openai/{alias}"), "vercel"),
+            ] {
                 let result = resolve_model_id_alias(&model, Some(provider));
                 assert_eq!(result.canonical_model_id, canonical);
                 assert_eq!(result.source, AliasSource::PatternAlias);
-                assert_eq!(result.rule_id.as_deref(), Some("openai-gpt-fast-service-tier-alias"));
+                assert_eq!(
+                    result.rule_id.as_deref(),
+                    Some("openai-gpt-fast-service-tier-alias")
+                );
             }
             for provider in [None, Some("github-copilot"), Some("anthropic")] {
-                assert_eq!(resolve_model_id_alias(alias, provider).source, AliasSource::Canonical);
+                assert_eq!(
+                    resolve_model_id_alias(alias, provider).source,
+                    AliasSource::Canonical
+                );
             }
         }
-        for model in ["gpt-6.1-sol-fast-preview", "gpt-6-terra-fast", "gpt-6.1-luna-fast"] {
-            assert_eq!(resolve_model_id_alias(model, Some("openai")).source, AliasSource::Canonical);
+        for model in [
+            "gpt-6.1-sol-fast-preview",
+            "gpt-6-terra-fast",
+            "gpt-6.1-luna-fast",
+        ] {
+            assert_eq!(
+                resolve_model_id_alias(model, Some("openai")).source,
+                AliasSource::Canonical
+            );
         }
     }
 }

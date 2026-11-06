@@ -110,9 +110,11 @@ fn evdev_keycode(key: KeyName) -> CoreResult<u32> {
         KeyName::F22 => 192,
         KeyName::F23 => 193,
         KeyName::F24 => 194,
-        KeyName::Char(character) => evdev_char(character)
-            .map(|(code, _)| code)
-            .ok_or_else(|| DesktopError::input_failed(format!("no evdev keycode for {character:?}")))?,
+        KeyName::Char(character) => {
+            evdev_char(character).map(|(code, _)| code).ok_or_else(|| {
+                DesktopError::input_failed(format!("no evdev keycode for {character:?}"))
+            })?
+        }
     };
     Ok(code)
 }
@@ -120,8 +122,8 @@ fn evdev_keycode(key: KeyName) -> CoreResult<u32> {
 /// US-layout evdev keycode and whether Shift is needed.
 fn evdev_char(character: char) -> Option<(u32, bool)> {
     const LETTERS: [u32; 26] = [
-        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21,
-        44,
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17,
+        45, 21, 44,
     ];
     let lower = character.to_ascii_lowercase();
     let code = match lower {
@@ -168,7 +170,10 @@ mod tests {
     fn without_a_keymap_ascii_uses_the_us_table_and_other_chars_are_refused() {
         assert_eq!(char_stroke(None, 'A').ok(), Some(ascii_stroke((30, true))));
         let refused = char_stroke(None, 'é').err().map(|error| error.code);
-        assert_eq!(refused, Some(senpi_desktop_core::error::ErrorCode::InputFailed));
+        assert_eq!(
+            refused,
+            Some(senpi_desktop_core::error::ErrorCode::InputFailed)
+        );
     }
 
     #[test]

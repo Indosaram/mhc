@@ -47,10 +47,20 @@ pub fn resume_migration_journal(
                 &journal.target_path,
             )?
         };
-        let backup_path = backup_path_for_resume(journal.target_backup_path.as_deref(), &journal.target_path, input.file_system)?;
+        let backup_path = backup_path_for_resume(
+            journal.target_backup_path.as_deref(),
+            &journal.target_path,
+            input.file_system,
+        )?;
         if backup_path != journal.target_backup_path && backup_path.is_some() {
             journal.target_backup_path = backup_path;
-            write_migration_journal(&journal, input.file_system, input.env, input.pid, input.clock)?;
+            write_migration_journal(
+                &journal,
+                input.file_system,
+                input.env,
+                input.pid,
+                input.clock,
+            )?;
         }
         written_backup_path = write_prepared_target(
             input.env,
@@ -103,9 +113,14 @@ pub fn resume_migration_journal(
 
     remove_migration_journal(input.file_system, input.env)?;
     let target_backup_path = written_backup_path.or_else(|| {
-        target_recorded.target_backup_path.filter(|path| input.file_system.exists(path))
+        target_recorded
+            .target_backup_path
+            .filter(|path| input.file_system.exists(path))
     });
-    Ok(ResumeMigrationJournalResult { resumed: true, target_backup_path })
+    Ok(ResumeMigrationJournalResult {
+        resumed: true,
+        target_backup_path,
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,8 +134,11 @@ fn backup_path_for_resume(
     target_path: &str,
     file_system: &dyn MigrationFileSystem,
 ) -> Result<Option<String>, MigrationError> {
-    let Some(planned) = planned else { return Ok(None); };
-    if !file_system.exists(planned) || !file_system.exists(target_path)
+    let Some(planned) = planned else {
+        return Ok(None);
+    };
+    if !file_system.exists(planned)
+        || !file_system.exists(target_path)
         || file_system.read(planned)? == file_system.read(target_path)?
     {
         return Ok(Some(planned.to_string()));

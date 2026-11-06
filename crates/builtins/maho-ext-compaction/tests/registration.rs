@@ -2741,13 +2741,21 @@ async fn context_summary_request_carries_the_session_cwd() {
 /// compaction with the account advice and makes no summary request. The extension's own summarizer reads
 /// `getCompactionModel`, which raises the same advice to the extension as an `ExtensionFailure`.
 #[tokio::test]
-async fn builtin_spent_account_without_usable_model_reports_the_account_limit_without_a_summary_request() {
+async fn builtin_spent_account_without_usable_model_reports_the_account_limit_without_a_summary_request()
+ {
+    use maho_ai::providers::faux::{
+        FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message,
+    };
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message};
     const ADVICE: &str = "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model, or configure another provider in retry.fallbackChains.";
     let temp = tempfile::tempdir().expect("spent account temp dir");
     let cwd = temp.path().to_string_lossy().into_owned();
-    let provider = maho_ai::compat::register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-spent-account-faux".into()), tokens_per_second: Some(0.), ..Default::default() }).expect("register faux API provider");
+    let provider = maho_ai::compat::register_faux_provider(RegisterFauxProviderOptions {
+        api: Some("compaction-spent-account-faux".into()),
+        tokens_per_second: Some(0.),
+        ..Default::default()
+    })
+    .expect("register faux API provider");
     let model = provider.get_model(None).expect("faux model");
     // A relative reset keeps the account cooldown deterministic on the session's fixed fallback clock.
     provider.set_responses(vec![faux_assistant_message(Vec::<maho_ai::types::ContentBlock>::new(), FauxAssistantMessageOptions {
@@ -2756,52 +2764,148 @@ async fn builtin_spent_account_without_usable_model_reports_the_account_limit_wi
         ..Default::default()
     }).into()]);
     let credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
-    credentials.set(&model.provider, Some(serde_json::json!({"type":"api_key","key":"faux"}))).expect("faux credentials");
-    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(Vec::new()), ..Default::default()
-    }).expect("valid model runtime");
-    runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
-        config: maho_core::model_config_schema::ModelsJsonProvider {
-            base_url: Some(model.base_url.clone()), api_key: Some("faux".into()), api: Some(model.api.clone()),
-            models: Some(vec![maho_core::model_config_schema::ModelsJsonModel {
-                id: model.id.clone(), api: Some(model.api.clone()), base_url: Some(model.base_url.clone()), reasoning: Some(model.reasoning),
-                input: Some(model.input.clone()), cost: Some(model.cost.clone()), context_window: Some(model.context_window as f64),
-                max_tokens: Some(model.max_tokens as f64), ..Default::default()
-            }]),
+    credentials
+        .set(
+            &model.provider,
+            Some(serde_json::json!({"type":"api_key","key":"faux"})),
+        )
+        .expect("faux credentials");
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions {
+            models_path: Some(temp.path().join("models.json")),
+            credentials: Some(Arc::new(credentials)),
+            providers: Some(Vec::new()),
             ..Default::default()
-        }, ..Default::default()
-    }).expect("configured faux provider");
+        },
+    )
+    .expect("valid model runtime");
+    runtime
+        .register_provider(
+            &model.provider,
+            maho_core::provider_composer::ProviderConfigInput {
+                config: maho_core::model_config_schema::ModelsJsonProvider {
+                    base_url: Some(model.base_url.clone()),
+                    api_key: Some("faux".into()),
+                    api: Some(model.api.clone()),
+                    models: Some(vec![maho_core::model_config_schema::ModelsJsonModel {
+                        id: model.id.clone(),
+                        api: Some(model.api.clone()),
+                        base_url: Some(model.base_url.clone()),
+                        reasoning: Some(model.reasoning),
+                        input: Some(model.input.clone()),
+                        cost: Some(model.cost.clone()),
+                        context_window: Some(model.context_window as f64),
+                        max_tokens: Some(model.max_tokens as f64),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .expect("configured faux provider");
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
-    maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
-        &mut |_| Some(serde_json::json!({"compaction":{"keepRecentTokens":1},"retry":{"enabled":false}}).to_string())).expect("spent account settings");
+    maho_core::settings_manager::SettingsStorage::with_lock(
+        &storage,
+        maho_core::settings_manager::SettingsScope::Global,
+        &mut |_| {
+            Some(
+                serde_json::json!({"compaction":{"keepRecentTokens":1},"retry":{"enabled":false}})
+                    .to_string(),
+            )
+        },
+    )
+    .expect("spent account settings");
     let session = AgentSession::new(AgentSessionConfig {
-        agent: maho_agent_for_test(model.clone()), session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
-        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(storage), false),
-        cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(|| 0.)), retry_random: Some(Arc::new(|| 0.5)),
-        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(), model_runtime: Some(runtime), model_registry: None,
-        uses_default_stream_function: Some(false), initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None, session_start_event: None, auto_title_sessions: Some(false),
-    }).expect("spent account session");
-    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(maho_ext_compaction::CompactionExtension)], context())).await;
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), session.prompt("use the account", Default::default())).await.expect("bounded account-limited turn");
+        agent: maho_agent_for_test(model.clone()),
+        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+            Box::new(storage),
+            false,
+        ),
+        cwd: cwd.clone(),
+        agent_dir: Some(cwd),
+        fallback_now: Some(Arc::new(|| 0.)),
+        retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(),
+        favorite_models: Vec::new(),
+        flag_values: Default::default(),
+        custom_tools: Vec::new(),
+        model_runtime: Some(runtime),
+        model_registry: None,
+        uses_default_stream_function: Some(false),
+        initial_active_tool_names: None,
+        default_tool_names: None,
+        eval_only_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        base_tools_override: None,
+        session_start_event: None,
+        auto_title_sessions: Some(false),
+    })
+    .expect("spent account session");
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            vec![Box::new(maho_ext_compaction::CompactionExtension)],
+            context(),
+        ))
+        .await;
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        session.prompt("use the account", Default::default()),
+    )
+    .await
+    .expect("bounded account-limited turn");
     for text in ["older turn", "recent turn"] {
-        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text.repeat(100),"timestamp":1})));
-        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(faux_assistant_message("earlier response".repeat(100), Default::default())).expect("assistant")));
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(
+                serde_json::json!({"role":"user","content":text.repeat(100),"timestamp":1}),
+            )
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(
+                serde_json::to_value(faux_assistant_message(
+                    "earlier response".repeat(100),
+                    Default::default(),
+                ))
+                .expect("assistant"),
+            )
+        });
     }
-    session.agent().set_messages(session.with_session_manager(|manager| manager.current_context()).messages.into_iter().map(|value| serde_json::from_value(value).expect("seeded message")).collect());
+    session.agent().set_messages(
+        session
+            .with_session_manager(|manager| manager.current_context())
+            .messages
+            .into_iter()
+            .map(|value| serde_json::from_value(value).expect("seeded message"))
+            .collect(),
+    );
     let ends = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed = Arc::clone(&ends);
     let _subscription = session.subscribe(Arc::new(move |event| {
         if let AgentSessionEvent::CompactionEnd { error_message, .. } = event {
-            observed.lock().expect("compaction_end events").push(error_message.clone());
+            observed
+                .lock()
+                .expect("compaction_end events")
+                .push(error_message.clone());
         }
     }));
     let calls_before = provider.get_call_log().len();
 
-    let error = tokio::time::timeout(std::time::Duration::from_secs(10), session.compact(None)).await.expect("bounded compaction").expect_err("spent account");
+    let error = tokio::time::timeout(std::time::Duration::from_secs(10), session.compact(None))
+        .await
+        .expect("bounded compaction")
+        .expect_err("spent account");
 
     assert_eq!(error, ADVICE);
     assert_eq!(provider.get_call_log().len(), calls_before);
-    let last_end = ends.lock().expect("compaction_end events").last().cloned().flatten().expect("compaction_end errorMessage");
+    let last_end = ends
+        .lock()
+        .expect("compaction_end events")
+        .last()
+        .cloned()
+        .flatten()
+        .expect("compaction_end errorMessage");
     assert!(last_end.contains("The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model"), "compaction_end errorMessage: {last_end}");
     // The extension summarizer's model read: the getter raises the advice as an ExtensionFailure, which the
     // runner surfaces as that handler's error, before any summary request.
@@ -2809,16 +2913,44 @@ async fn builtin_spent_account_without_usable_model_reports_the_account_limit_wi
     let entries = session.with_session_manager(|manager| manager.current_branch());
     let mut settings = maho_core::compaction::settings::default_compaction_settings();
     settings.keep_recent_tokens = 1;
-    let preparation = maho_core::compaction::compaction::prepare_compaction(&entries, &settings, false, false).expect("spent account preparation");
-    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {generation:1,expected_revision:session.message_revision(),model:model.clone(),context_window:model.context_window,preparation,branch_entries:entries,prompt_variant:maho_ext_compaction::prompts::PromptVariant::Default,custom_instructions:None,system_prompt:None,tools:Vec::new(),origin:None};
-    let mut summary = Box::pin(maho_ext_compaction::speculative::run_extension_compaction_for_context(&extension_context, &snapshot, None, &|_| {}));
-    let outcome = std::future::poll_fn(|cx| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| summary.as_mut().poll(cx))) {
-        Ok(std::task::Poll::Ready(result)) => std::task::Poll::Ready(Ok(result.map(|_| ()).map_err(|error| format!("{error:?}")))),
-        Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
-        Err(payload) => std::task::Poll::Ready(Err(payload)),
-    }).await;
+    let preparation =
+        maho_core::compaction::compaction::prepare_compaction(&entries, &settings, false, false)
+            .expect("spent account preparation");
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: session.message_revision(),
+        model: model.clone(),
+        context_window: model.context_window,
+        preparation,
+        branch_entries: entries,
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: None,
+    };
+    let mut summary = Box::pin(
+        maho_ext_compaction::speculative::run_extension_compaction_for_context(
+            &extension_context,
+            &snapshot,
+            None,
+            &|_| {},
+        ),
+    );
+    let outcome = std::future::poll_fn(|cx| {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| summary.as_mut().poll(cx))) {
+            Ok(std::task::Poll::Ready(result)) => {
+                std::task::Poll::Ready(Ok(result.map(|_| ()).map_err(|error| format!("{error:?}"))))
+            }
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Err(payload) => std::task::Poll::Ready(Err(payload)),
+        }
+    })
+    .await;
     let failure = match outcome {
-        Err(payload) => payload.downcast::<ExtensionFailure>().expect("getter raises an ExtensionFailure"),
+        Err(payload) => payload
+            .downcast::<ExtensionFailure>()
+            .expect("getter raises an ExtensionFailure"),
         Ok(result) => panic!("summarizer must not proceed on a spent account: {result:?}"),
     };
     assert_eq!(failure.message, ADVICE);

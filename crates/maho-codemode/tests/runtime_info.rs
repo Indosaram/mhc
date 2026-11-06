@@ -2,9 +2,18 @@ use maho_codemode::extension::runtime_info::*;
 
 #[test]
 fn bun_marker_selects_runtime_identity() {
-    assert_eq!(js_runtime_info("24.1.0", Some("1.4.0"), "/bin/bun").name, "bun");
-    assert_eq!(js_runtime_info("24.1.0", Some(""), "/bin/node").name, "node");
-    assert_eq!(js_runtime_info("24.1.0", None, "/bin/node").version, "24.1.0");
+    assert_eq!(
+        js_runtime_info("24.1.0", Some("1.4.0"), "/bin/bun").name,
+        "bun"
+    );
+    assert_eq!(
+        js_runtime_info("24.1.0", Some(""), "/bin/node").name,
+        "node"
+    );
+    assert_eq!(
+        js_runtime_info("24.1.0", None, "/bin/node").version,
+        "24.1.0"
+    );
 }
 
 #[test]
@@ -26,7 +35,10 @@ fn node_runtime_label_uses_node_version() {
 
 #[test]
 fn probe_without_runtime_on_path_falls_back_to_node_identity() {
-    let runtime = probe_js_runtime_info(&std::collections::HashMap::from([("PATH".to_owned(), String::new())]));
+    let runtime = probe_js_runtime_info(&std::collections::HashMap::from([(
+        "PATH".to_owned(),
+        String::new(),
+    )]));
     assert_eq!(runtime.name, "node");
     assert_eq!(runtime.version, "");
 }

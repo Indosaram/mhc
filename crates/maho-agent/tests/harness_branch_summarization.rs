@@ -7,10 +7,13 @@ use maho_agent::harness::compaction::branch_summarization::collect_entries_for_b
 use maho_agent::harness::context::{BACKGROUND_CONTEXT, Context};
 use maho_agent::harness::session::session::SessionError;
 use maho_agent::harness::session::types::{
-    Branch, BranchScan, Entry, EntryQuery, IdGenerator, JsonValue, NewEntry, Session, SessionMetadata,
-    SessionMutation, SessionMutationCallback, SessionReader, SessionStats, StorageBranchScan,
+    Branch, BranchScan, Entry, EntryQuery, IdGenerator, JsonValue, NewEntry, Session,
+    SessionMetadata, SessionMutation, SessionMutationCallback, SessionReader, SessionStats,
+    StorageBranchScan,
 };
-use maho_agent::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
+use maho_agent::harness::session::values::{
+    ListElement, ListReadOptions, StoredValue, Value, ValueList,
+};
 use maho_agent::types::AgentMessage;
 use maho_ai::types::{BoxFuture, ContentBlock, Message, UserContent, UserMessage};
 
@@ -40,7 +43,10 @@ struct EntryIndex {
 impl EntryIndex {
     fn new(entries: Vec<Entry>) -> Arc<Self> {
         Arc::new(Self {
-            by_id: entries.into_iter().map(|entry| (entry.id.clone(), entry)).collect(),
+            by_id: entries
+                .into_iter()
+                .map(|entry| (entry.id.clone(), entry))
+                .collect(),
         })
     }
 
@@ -70,7 +76,10 @@ impl Branch for FakeBranch {
         "main"
     }
 
-    fn get_tip_id<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
+    fn get_tip_id<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
         Box::pin(async move { Ok(None) })
     }
 
@@ -134,7 +143,10 @@ impl SessionReader for FakeSession {
         })
     }
 
-    fn get_stats<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         Box::pin(async move {
             Ok(SessionStats {
                 message_count: 0,
@@ -194,7 +206,10 @@ impl Session for FakeSession {
         Box::pin(async move { Ok(self.index.by_id.get(id).cloned()) })
     }
 
-    fn get_name<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
+    fn get_name<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<String>, SessionError>> {
         Box::pin(async move { Ok(None) })
     }
 
@@ -273,7 +288,11 @@ impl Session for FakeSession {
         Box::pin(async move { Ok(()) })
     }
 
-    fn delete_value<'a>(&'a self, _address: &'a Value, _context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn delete_value<'a>(
+        &'a self,
+        _address: &'a Value,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move { Ok(()) })
     }
 
@@ -286,11 +305,19 @@ impl Session for FakeSession {
         Box::pin(async move { Ok(()) })
     }
 
-    fn delete_list<'a>(&'a self, _address: &'a ValueList, _context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn delete_list<'a>(
+        &'a self,
+        _address: &'a ValueList,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move { Ok(()) })
     }
 
-    fn set_name<'a>(&'a self, _name: Option<String>, _context: &'a Context) -> BoxFuture<'a, Result<(), SessionError>> {
+    fn set_name<'a>(
+        &'a self,
+        _name: Option<String>,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), SessionError>> {
         Box::pin(async move { Ok(()) })
     }
 
@@ -340,12 +367,22 @@ async fn collects_the_abandoned_side_of_a_branch_in_chronological_order() {
     let target = message_entry("target", Some("common"), "target", 5);
     let (branch, session) = reader(vec![root, common, abandoned1, abandoned2, target]);
 
-    let result = collect_entries_for_branch_summary(&branch, &session, Some("abandoned-2"), "target", &context)
-        .await
-        .expect("collect");
+    let result = collect_entries_for_branch_summary(
+        &branch,
+        &session,
+        Some("abandoned-2"),
+        "target",
+        &context,
+    )
+    .await
+    .expect("collect");
     assert_eq!(result.common_ancestor_id.as_deref(), Some("common"));
     assert_eq!(
-        result.entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<&str>>(),
+        result
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<&str>>(),
         vec!["abandoned-1", "abandoned-2"]
     );
     assert!(!result.entries.iter().any(|entry| entry.id == "root"));

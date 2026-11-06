@@ -134,10 +134,7 @@ mod tests {
         .unwrap();
         assert_eq!(entry["pid"], 1234);
         assert_eq!(entry["bootId"], "boot-1");
-        assert_eq!(
-            entry["startTime"],
-            format!("proc:{}*9", std::process::id())
-        );
+        assert_eq!(entry["startTime"], format!("proc:{}*9", std::process::id()));
         assert_eq!(entry["heartbeatAt"], 5000.0);
     }
 

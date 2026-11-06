@@ -255,7 +255,9 @@ async fn set_tools_and_messages_round_trip() {
 async fn continue_run_without_messages_is_refused() {
     let agent = agent_with(unused_stream_fn());
     assert_eq!(
-        agent.continue_run(AgentContinuationOptions::default()).await,
+        agent
+            .continue_run(AgentContinuationOptions::default())
+            .await,
         Err(maho_agent::AgentContinueError::NoMessages)
     );
 }
@@ -265,13 +267,14 @@ async fn continue_run_from_assistant_tail_without_queue_is_refused() {
     let agent = agent_with(unused_stream_fn());
     agent.set_messages(vec![
         user_message("hi"),
-        AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(
-            vec![text_block("done")],
-            StopReason::Stop,
-        )))),
+        AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
+            assistant(vec![text_block("done")], StopReason::Stop),
+        ))),
     ]);
     assert_eq!(
-        agent.continue_run(AgentContinuationOptions::default()).await,
+        agent
+            .continue_run(AgentContinuationOptions::default())
+            .await,
         Err(maho_agent::AgentContinueError::AssistantTail)
     );
     assert_eq!(

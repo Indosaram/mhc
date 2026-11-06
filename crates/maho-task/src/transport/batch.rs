@@ -30,7 +30,14 @@ impl ChildCompletion {
     pub fn new(id: impl Into<String>, status: impl Into<String>, text: impl Into<String>) -> Self {
         let (id, status, text) = (id.into(), status.into(), text.into());
         let details = json!({"id": &id, "status": &status});
-        Self { id, status, response: text.clone(), text, details, file_uri: None }
+        Self {
+            id,
+            status,
+            response: text.clone(),
+            text,
+            details,
+            file_uri: None,
+        }
     }
     pub fn with_response(mut self, response: impl Into<String>) -> Self {
         self.response = response.into();
@@ -64,7 +71,12 @@ pub struct WakeOverflowManifest {
 impl WakeOverflowManifest {
     pub fn new(batch_id: impl Into<String>, overflow_tasks: Vec<ChildCompletion>) -> Self {
         let (batch_id, count) = (batch_id.into(), overflow_tasks.len());
-        Self { batch_id, overflow_count: count, tasks: overflow_tasks.clone(), results: overflow_tasks }
+        Self {
+            batch_id,
+            overflow_count: count,
+            tasks: overflow_tasks.clone(),
+            results: overflow_tasks,
+        }
     }
 }
 
@@ -95,11 +107,25 @@ pub struct WakeBatchOptions<'a> {
 
 impl<'a> WakeBatchOptions<'a> {
     pub fn new(state_dir: &'a Path) -> Self {
-        Self { state_dir, batch_id: None, limit: DEFAULT_COMPLETION_BATCH_LIMIT, header: None }
+        Self {
+            state_dir,
+            batch_id: None,
+            limit: DEFAULT_COMPLETION_BATCH_LIMIT,
+            header: None,
+        }
     }
-    pub fn with_batch_id(mut self, batch_id: &'a str) -> Self { self.batch_id = Some(batch_id); self }
-    pub fn with_limit(mut self, limit: usize) -> Self { self.limit = limit; self }
-    pub fn with_header(mut self, header: &'a str) -> Self { self.header = Some(header); self }
+    pub fn with_batch_id(mut self, batch_id: &'a str) -> Self {
+        self.batch_id = Some(batch_id);
+        self
+    }
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+    pub fn with_header(mut self, header: &'a str) -> Self {
+        self.header = Some(header);
+        self
+    }
 }
 
 /// Outcome of building a batched parent wake message (§9.2).
@@ -158,18 +184,29 @@ fn wake_details(inline: &[ChildCompletion], facts: WakeFacts<'_>) -> Value {
     if let Some(err) = facts.manifest_error {
         map.insert("manifest_error".into(), json!(err));
     }
-    map.insert("tasks".into(), Value::Array(inline.iter().map(task_entry).collect()));
+    map.insert(
+        "tasks".into(),
+        Value::Array(inline.iter().map(task_entry).collect()),
+    );
     Value::Object(map)
 }
 
-fn render_batch(header: Option<&str>, inline_tasks: &[ChildCompletion], trailer: Option<&str>) -> String {
+fn render_batch(
+    header: Option<&str>,
+    inline_tasks: &[ChildCompletion],
+    trailer: Option<&str>,
+) -> String {
     let mut msg = header.unwrap_or("").to_owned();
     for task in inline_tasks {
-        if !msg.is_empty() { msg.push('\n'); }
+        if !msg.is_empty() {
+            msg.push('\n');
+        }
         msg.push_str(&task.text);
     }
     if let Some(t) = trailer {
-        if !msg.is_empty() { msg.push('\n'); }
+        if !msg.is_empty() {
+            msg.push('\n');
+        }
         msg.push_str(t);
     }
     msg
@@ -222,8 +259,13 @@ pub fn build_wake_batch(
     options: WakeBatchOptions<'_>,
     tasks: &[ChildCompletion],
 ) -> std::io::Result<WakeBatchResult> {
-    let limit = options.limit.clamp(MIN_COMPLETION_BATCH_LIMIT, MAX_COMPLETION_BATCH_LIMIT);
-    let batch_id = options.batch_id.map(str::to_owned).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let limit = options
+        .limit
+        .clamp(MIN_COMPLETION_BATCH_LIMIT, MAX_COMPLETION_BATCH_LIMIT);
+    let batch_id = options
+        .batch_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if tasks.is_empty() {
         return Ok(WakeBatchResult {
             batch_id,
@@ -240,7 +282,12 @@ pub fn build_wake_batch(
     let manifest_uri = format!("local://{}", manifest_path.display());
 
     let total = tasks.len();
-    let budget = Budget { header: options.header, batch_id: &batch_id, limit, total };
+    let budget = Budget {
+        header: options.header,
+        batch_id: &batch_id,
+        limit,
+        total,
+    };
     let uri_plan = |k: usize| {
         let pointing = k < total;
         Plan {
@@ -251,7 +298,9 @@ pub fn build_wake_batch(
     };
     let mut selected_inline = select_inline(tasks, &budget, &uri_plan);
 
-    let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if selected_inline == total {
+    let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if selected_inline
+        == total
+    {
         (None, None, None)
     } else {
         let write_res = std::fs::create_dir_all(&results_dir).and_then(|()| {
@@ -271,7 +320,10 @@ pub fn build_wake_batch(
         // again so the message stays within the limit.
         Some(err) => {
             let error_plan = |k: usize| Plan {
-                trailer: Some(format!("{} more task results could not be saved: {err}", total - k)),
+                trailer: Some(format!(
+                    "{} more task results could not be saved: {err}",
+                    total - k
+                )),
                 manifest_uri: None,
                 manifest_error: Some(err.clone()),
             };

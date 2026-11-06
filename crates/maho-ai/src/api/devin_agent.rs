@@ -43,9 +43,7 @@ use crate::types::{
     ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, Usage,
 };
 use crate::utils::abort::{AbortSignal, race_with_abort_signal};
-use crate::utils::event_stream::{
-    AssistantMessageEventStream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::headers::headers_to_record;
 
 /// `stream`.
@@ -191,7 +189,11 @@ async fn drive(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     // PERF-DIVERGENCE(senpi devin-agent.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let client = options
+        .request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let session = mint_user_jwt(
         &client,
         &base_url,

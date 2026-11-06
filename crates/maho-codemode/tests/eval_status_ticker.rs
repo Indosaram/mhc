@@ -1,15 +1,37 @@
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use maho_codemode::{extension::eval_status_ticker::*, tool::{detached_cell_contract::EvalDetachedCellStatusEntry, types::EvalLanguage}};
+use maho_codemode::{
+    extension::eval_status_ticker::*,
+    tool::{detached_cell_contract::EvalDetachedCellStatusEntry, types::EvalLanguage},
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 fn entry(started: f64) -> EvalDetachedCellStatusEntry {
-    EvalDetachedCellStatusEntry { cell_id: "cell-1".into(), language: EvalLanguage::Js, summary: Some("long running cell".into()), started_at_ms: started, queued_behind: None }
+    EvalDetachedCellStatusEntry {
+        cell_id: "cell-1".into(),
+        language: EvalLanguage::Js,
+        summary: Some("long running cell".into()),
+        started_at_ms: started,
+        queued_behind: None,
+    }
 }
 
-fn fixture() -> (EvalStatusTicker, tokio::sync::mpsc::UnboundedReceiver<Option<String>>, Arc<AtomicU64>) {
+fn fixture() -> (
+    EvalStatusTicker,
+    tokio::sync::mpsc::UnboundedReceiver<Option<String>>,
+    Arc<AtomicU64>,
+) {
     let (send, receive) = tokio::sync::mpsc::unbounded_channel();
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let now = Arc::clone(&clock);
-    let ticker = EvalStatusTicker::new(Arc::new(move |value| { send.send(value).expect("receiver alive"); Ok(()) }), Arc::new(move || now.load(Ordering::SeqCst) as f64));
+    let ticker = EvalStatusTicker::new(
+        Arc::new(move |value| {
+            send.send(value).expect("receiver alive");
+            Ok(())
+        }),
+        Arc::new(move || now.load(Ordering::SeqCst) as f64),
+    );
     (ticker, receive, clock)
 }
 
@@ -29,11 +51,17 @@ async fn interval_lifetime_owned_by_ticker() {
 async fn immediate_render_and_one_second_refresh() {
     let (mut ticker, mut receive, clock) = fixture();
     ticker.sync(vec![entry(1_000_000.0)]);
-    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ js · long running cell (0s)");
+    assert_eq!(
+        receive.recv().await.unwrap().unwrap(),
+        "↗ js · long running cell (0s)"
+    );
     tokio::task::yield_now().await;
     clock.store(1_001_000, Ordering::SeqCst);
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
-    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ js · long running cell (1s)");
+    assert_eq!(
+        receive.recv().await.unwrap().unwrap(),
+        "↗ js · long running cell (1s)"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -76,7 +104,11 @@ async fn explicit_stop_drops_entries_without_rendering() {
 
 #[test]
 fn stale_extension_context_signatures_match_upstream() {
-    assert!(is_stale_extension_context_error("This extension ctx is stale after session replacement or reload. details"));
-    assert!(is_stale_extension_context_error("stale extension generation after reload"));
+    assert!(is_stale_extension_context_error(
+        "This extension ctx is stale after session replacement or reload. details"
+    ));
+    assert!(is_stale_extension_context_error(
+        "stale extension generation after reload"
+    ));
     assert!(!is_stale_extension_context_error("renderer failed"));
 }

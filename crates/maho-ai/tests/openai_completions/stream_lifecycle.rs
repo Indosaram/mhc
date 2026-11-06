@@ -63,7 +63,13 @@ async fn keeps_an_actively_streaming_response_alive_beyond_the_request_establish
     let mut options: SimpleStreamOptions = simple_options("test");
     options.stream.request.max_retries = Some(0);
     options.stream.request.timeout_ms = Some(250);
-    let response = finish(&run_simple(&lifecycle_model(&server.base_url), &lifecycle_context(), options, None)).await;
+    let response = finish(&run_simple(
+        &lifecycle_model(&server.base_url),
+        &lifecycle_context(),
+        options,
+        None,
+    ))
+    .await;
 
     assert_eq!(response.stop_reason, StopReason::Stop);
     assert_eq!(response.error_message, None);
@@ -71,7 +77,10 @@ async fn keeps_an_actively_streaming_response_alive_beyond_the_request_establish
     match &response.content[0] {
         ContentBlock::Thinking(thinking) => {
             assert_eq!(thinking.thinking, "123456789101112");
-            assert_eq!(thinking.thinking_signature.as_deref(), Some("reasoning_content"));
+            assert_eq!(
+                thinking.thinking_signature.as_deref(),
+                Some("reasoning_content")
+            );
         }
         other => panic!("expected a thinking block, got {other:?}"),
     }
@@ -98,7 +107,10 @@ async fn still_times_out_when_response_headers_never_arrive() {
 
     assert_eq!(response.stop_reason, StopReason::Error);
     let message = response.error_message.unwrap_or_default().to_lowercase();
-    assert!(message.contains("timed out") || message.contains("aborted"), "{message}");
+    assert!(
+        message.contains("timed out") || message.contains("aborted"),
+        "{message}"
+    );
     server.shutdown();
 }
 
@@ -129,12 +141,18 @@ async fn rejects_a_real_sse_transport_eof_without_finish_reason() {
     .await;
 
     assert_eq!(response.stop_reason, StopReason::Error);
-    assert_eq!(response.error_message.as_deref(), Some("Stream ended without finish_reason"));
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Stream ended without finish_reason")
+    );
     assert_eq!(response.content.len(), 1);
     match &response.content[0] {
         ContentBlock::Thinking(thinking) => {
             assert_eq!(thinking.thinking, "partial");
-            assert_eq!(thinking.thinking_signature.as_deref(), Some("reasoning_content"));
+            assert_eq!(
+                thinking.thinking_signature.as_deref(),
+                Some("reasoning_content")
+            );
         }
         other => panic!("expected a thinking block, got {other:?}"),
     }
@@ -167,7 +185,10 @@ async fn surfaces_an_sse_error_frame_instead_of_a_missing_finish_reason() {
     .await;
 
     assert_eq!(response.stop_reason, StopReason::Error);
-    assert_eq!(response.error_message.as_deref(), Some("This model does not support assistant message prefill."));
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("This model does not support assistant message prefill.")
+    );
     server.shutdown();
 }
 
@@ -191,12 +212,18 @@ async fn ends_each_content_block_before_starting_the_next_block_type() {
     }))
     .await;
 
-    let echo = tool("echo", json!({ "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }));
+    let echo = tool(
+        "echo",
+        json!({ "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }),
+    );
     let mut options: SimpleStreamOptions = simple_options("test");
     options.stream.request.max_retries = Some(0);
     let response = run_simple(
         &lifecycle_model(&server.base_url),
-        &context(vec![user_message("Think, answer, then call echo")], Some(vec![echo])),
+        &context(
+            vec![user_message("Think, answer, then call echo")],
+            Some(vec![echo]),
+        ),
         options,
         None,
     );
@@ -252,7 +279,12 @@ async fn an_abort_mid_body_ends_the_turn_and_closes_the_provider_connection() {
     let mut options: SimpleStreamOptions = simple_options("test");
     options.stream.request.max_retries = Some(0);
     options.stream.request.signal = Some(controller.signal());
-    let stream = run_simple(&lifecycle_model(&server.base_url), &lifecycle_context(), options, None);
+    let stream = run_simple(
+        &lifecycle_model(&server.base_url),
+        &lifecycle_context(),
+        options,
+        None,
+    );
     // The body phase is reached once the first content delta is relayed.
     tokio::time::timeout(BOUND, async {
         while let Some(event) = stream.next().await.expect("stream event") {
@@ -266,8 +298,18 @@ async fn an_abort_mid_body_ends_the_turn_and_closes_the_provider_connection() {
     .expect("the held chunk was relayed in time");
 
     controller.abort(None);
-    let response = tokio::time::timeout(BOUND, finish(&stream)).await.expect("the aborted turn ended in time");
-    assert_eq!(response.stop_reason, StopReason::Aborted, "{:?}", response.error_message);
-    tokio::time::timeout(BOUND, closed.recv()).await.expect("the provider saw the client hang up in time").expect("the held handler ran");
+    let response = tokio::time::timeout(BOUND, finish(&stream))
+        .await
+        .expect("the aborted turn ended in time");
+    assert_eq!(
+        response.stop_reason,
+        StopReason::Aborted,
+        "{:?}",
+        response.error_message
+    );
+    tokio::time::timeout(BOUND, closed.recv())
+        .await
+        .expect("the provider saw the client hang up in time")
+        .expect("the held handler ran");
     server.shutdown();
 }

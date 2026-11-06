@@ -5,22 +5,27 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use maho_agent::AgentMessage;
 use maho_agent::harness::context::{
-    BACKGROUND_CONTEXT, Context, create_context_key, get_telemetry_context, with_abort_signal, with_context_value,
-    with_telemetry_context,
+    BACKGROUND_CONTEXT, Context, create_context_key, get_telemetry_context, with_abort_signal,
+    with_context_value, with_telemetry_context,
 };
 use maho_agent::harness::events::{HarnessEvent, HarnessEventBus, LaneQueuedItem};
-use maho_agent::harness::execution::effect_gate::{AbortRequested, Cancellation, GateRefusal, create_gate};
+use maho_agent::harness::execution::effect_gate::{
+    AbortRequested, Cancellation, GateRefusal, create_gate,
+};
 use maho_agent::harness::hooks::{HookInvocation, HookName, HookRegistry, HookResult};
 use maho_agent::harness::session::types::OperationKind;
 use maho_agent::harness::telemetry::InMemoryTelemetryContext;
 use maho_agent::harness::types::AgentHarnessStreamOptions;
-use maho_agent::AgentMessage;
 use maho_ai::types::{BoxFuture, Message, UserContent, UserMessage};
 use serde_json::{Value, json};
 
 fn user(content: &str, timestamp: i64) -> AgentMessage {
-    AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text(content.to_owned()), timestamp }))
+    AgentMessage::Llm(Message::User(UserMessage {
+        content: UserContent::Text(content.to_owned()),
+        timestamp,
+    }))
 }
 
 fn run_event(run_id: &str) -> HarnessEvent {
@@ -50,7 +55,10 @@ fn reporting(
 }
 
 fn handler(
-    f: impl Fn(HookInvocation, Context) -> BoxFuture<'static, Result<HookResult, String>> + Send + Sync + 'static,
+    f: impl Fn(HookInvocation, Context) -> BoxFuture<'static, Result<HookResult, String>>
+    + Send
+    + Sync
+    + 'static,
 ) -> maho_agent::harness::hooks::HookHandler {
     Arc::new(f)
 }
@@ -94,14 +102,19 @@ async fn permanently_closes_and_signals_admitted_work() {
 }
 
 #[tokio::test]
-async fn aggregates_before_run_messages_in_registration_order_with_each_handler_seeing_prior_output() {
+async fn aggregates_before_run_messages_in_registration_order_with_each_handler_seeing_prior_output()
+ {
     let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
     let hooks = HookRegistry::new(reporting(errors.clone()));
     let seen = Arc::new(std::sync::Mutex::new(0usize));
     hooks.on(
         HookName::BeforeRun,
         handler(|_event, _context| {
-            Box::pin(async { Ok(HookResult::BeforeRun { messages: vec![user("first", 2)] }) })
+            Box::pin(async {
+                Ok(HookResult::BeforeRun {
+                    messages: vec![user("first", 2)],
+                })
+            })
         }),
         None,
     );
@@ -112,7 +125,9 @@ async fn aggregates_before_run_messages_in_registration_order_with_each_handler_
             let second_seen = second_seen.clone();
             Box::pin(async move {
                 *second_seen.lock().unwrap() = event.prompt.len();
-                Ok(HookResult::BeforeRun { messages: vec![user("second", 3)] })
+                Ok(HookResult::BeforeRun {
+                    messages: vec![user("second", 3)],
+                })
             })
         }),
         None,
@@ -120,7 +135,15 @@ async fn aggregates_before_run_messages_in_registration_order_with_each_handler_
 
     let mut event = HookInvocation::new("main", "run");
     event.prompt = vec![user("prompt", 1)];
-    let result = hooks.run_with_gate(HookName::BeforeRun, event, &create_gate().0, &BACKGROUND_CONTEXT).await.unwrap();
+    let result = hooks
+        .run_with_gate(
+            HookName::BeforeRun,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap();
     let HookResult::BeforeRun { messages } = result else {
         panic!("expected before_run messages");
     };
@@ -131,7 +154,9 @@ async fn aggregates_before_run_messages_in_registration_order_with_each_handler_
 
 #[tokio::test]
 async fn checks_the_effect_gate_immediately_before_the_complete_before_run_pipeline() {
-    let hooks = Arc::new(HookRegistry::new(Arc::new(|_e, _h, _l, _c| Box::pin(async {}))));
+    let hooks = Arc::new(HookRegistry::new(Arc::new(|_e, _h, _l, _c| {
+        Box::pin(async {})
+    })));
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let release = Cancellation::new();
     let first = calls.clone();
@@ -167,7 +192,12 @@ async fn checks_the_effect_gate_immediately_before_the_complete_before_run_pipel
     let closed_gate = create_gate();
     closed_gate.1.close("closed".to_owned());
     let refusal = hooks
-        .run_with_gate(HookName::BeforeRun, event.clone(), &closed_gate.0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeRun,
+            event.clone(),
+            &closed_gate.0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap_err();
     assert_eq!(refusal.to_string(), "closed");
@@ -178,7 +208,11 @@ async fn checks_the_effect_gate_immediately_before_the_complete_before_run_pipel
         let hooks = hooks.clone();
         let event = event.clone();
         let gate = running_gate.0.clone();
-        async move { hooks.run_with_gate(HookName::BeforeRun, event, &gate, &BACKGROUND_CONTEXT).await }
+        async move {
+            hooks
+                .run_with_gate(HookName::BeforeRun, event, &gate, &BACKGROUND_CONTEXT)
+                .await
+        }
     };
     let joined = tokio::spawn(running);
     settle().await;
@@ -186,11 +220,19 @@ async fn checks_the_effect_gate_immediately_before_the_complete_before_run_pipel
     hooks.close("closed".to_owned());
     release.resolve();
     joined.await.unwrap().unwrap();
-    assert_eq!(&*calls.lock().unwrap(), &["first:start".to_owned(), "first:end".to_owned(), "second".to_owned()]);
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[
+            "first:start".to_owned(),
+            "first:end".to_owned(),
+            "second".to_owned()
+        ]
+    );
 }
 
 #[tokio::test]
-async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation_with_the_effect_gate() {
+async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation_with_the_effect_gate()
+ {
     let pre_aborted_hooks = HookRegistry::new(Arc::new(|_e, _h, _l, _c| Box::pin(async {})));
     let called = Arc::new(AtomicUsize::new(0));
     let called_clone = called.clone();
@@ -209,11 +251,19 @@ async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation
     event.operation = Some(OperationKind::Run);
     let pre_aborted_gate = create_gate();
     let controller = maho_ai::utils::abort::AbortController::new();
-    controller.abort(Some(maho_ai::utils::abort::AbortReason::new("Error", "invocation aborted")));
+    controller.abort(Some(maho_ai::utils::abort::AbortReason::new(
+        "Error",
+        "invocation aborted",
+    )));
     let context = with_abort_signal(controller.signal(), &BACKGROUND_CONTEXT);
 
     let refusal = pre_aborted_hooks
-        .run_with_gate(HookName::BeforeDrive, event.clone(), &pre_aborted_gate.0, &context)
+        .run_with_gate(
+            HookName::BeforeDrive,
+            event.clone(),
+            &pre_aborted_gate.0,
+            &context,
+        )
         .await
         .unwrap_err();
     assert_eq!(refusal.to_string(), "invocation aborted");
@@ -236,7 +286,12 @@ async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation
         None,
     );
     admitted_hooks
-        .run_with_gate(HookName::BeforeDrive, event, &admitted_gate.0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeDrive,
+            event,
+            &admitted_gate.0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap();
     assert!(!admitted_signal.lock().unwrap().as_ref().unwrap().aborted());
@@ -250,7 +305,8 @@ async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation
 #[tokio::test]
 async fn passes_tool_handlers_a_child_context_of_the_active_hook_span() {
     let telemetry = InMemoryTelemetryContext::new();
-    static VALUE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("hook.test.value"));
+    static VALUE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> =
+        std::sync::LazyLock::new(|| create_context_key("hook.test.value"));
     let hooks = HookRegistry::new(Arc::new(|_e, _h, _l, _c| Box::pin(async {})));
     let received = Arc::new(std::sync::Mutex::new(None));
     let sink = received.clone();
@@ -291,8 +347,14 @@ async fn passes_tool_handlers_a_child_context_of_the_active_hook_span() {
 
     assert_eq!(received.lock().unwrap().as_deref(), Some("preserved"));
     let spans = telemetry.get_spans();
-    let handler_span = spans.iter().find(|span| span.name == "handler.child").expect("handler span");
-    let hook_span = spans.iter().find(|span| span.name == "pi.harness.hook").expect("hook span");
+    let handler_span = spans
+        .iter()
+        .find(|span| span.name == "handler.child")
+        .expect("handler span");
+    let hook_span = spans
+        .iter()
+        .find(|span| span.name == "pi.harness.hook")
+        .expect("hook span");
     assert!(handler_span.parent_id == Some(hook_span.id));
 }
 
@@ -322,12 +384,20 @@ async fn treats_registration_ids_as_optional_metadata_and_fails_before_drive_clo
     let mut event = HookInvocation::new("main", "run");
     event.operation = Some(OperationKind::Run);
     let refusal = hooks
-        .run_with_gate(HookName::BeforeDrive, event, &create_gate().0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeDrive,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap_err();
     assert_eq!(refusal.to_string(), "prerequisite failed");
     assert_eq!(later.load(Ordering::SeqCst), 0);
-    assert_eq!(&*errors.lock().unwrap(), &["prerequisite failed".to_owned()]);
+    assert_eq!(
+        &*errors.lock().unwrap(),
+        &["prerequisite failed".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -341,7 +411,10 @@ async fn chains_transform_context_output_and_isolates_handler_failures() {
         handler(move |_event, _context| {
             let first = first.clone();
             Box::pin(async move {
-                Ok(HookResult::TransformContext { messages: Some(first), system_prompt: Some("first".to_owned()) })
+                Ok(HookResult::TransformContext {
+                    messages: Some(first),
+                    system_prompt: Some("first".to_owned()),
+                })
             })
         }),
         None,
@@ -361,7 +434,10 @@ async fn chains_transform_context_output_and_isolates_handler_failures() {
         handler(|event, _context| {
             Box::pin(async move {
                 assert_eq!(event.system_prompt, "first");
-                Ok(HookResult::TransformContext { messages: None, system_prompt: Some("final".to_owned()) })
+                Ok(HookResult::TransformContext {
+                    messages: None,
+                    system_prompt: Some("final".to_owned()),
+                })
             })
         }),
         None,
@@ -371,15 +447,27 @@ async fn chains_transform_context_output_and_isolates_handler_failures() {
     event.messages = vec![user("original", 1)];
     event.system_prompt = "base".to_owned();
     let result = hooks
-        .run_with_gate(HookName::TransformContext, event, &create_gate().0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::TransformContext,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap();
-    let HookResult::TransformContext { messages: out, system_prompt } = result else {
+    let HookResult::TransformContext {
+        messages: out,
+        system_prompt,
+    } = result
+    else {
         panic!("expected transform_context");
     };
     assert_eq!(out.unwrap().len(), 1);
     assert_eq!(system_prompt.as_deref(), Some("final"));
-    assert_eq!(&*errors.lock().unwrap(), &["ignored transform failure".to_owned()]);
+    assert_eq!(
+        &*errors.lock().unwrap(),
+        &["ignored transform failure".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -407,7 +495,8 @@ async fn preserves_clear_all_before_request_patches_across_later_handlers() {
         handler(move |event, _context| {
             let sink = sink.clone();
             Box::pin(async move {
-                if event.stream_options.headers.is_none() && event.stream_options.metadata.is_none() {
+                if event.stream_options.headers.is_none() && event.stream_options.metadata.is_none()
+                {
                     sink.fetch_add(1, Ordering::SeqCst);
                 }
                 let mut headers = serde_json::Map::new();
@@ -417,9 +506,17 @@ async fn preserves_clear_all_before_request_patches_across_later_handlers() {
                 Ok(HookResult::BeforeRequest {
                     stream_options: maho_agent::harness::types::AgentHarnessStreamOptionsPatch {
                         headers: Some(Some(
-                            headers.into_iter().map(|(key, value)| (key, Some(value.as_str().unwrap().to_owned()))).collect(),
+                            headers
+                                .into_iter()
+                                .map(|(key, value)| (key, Some(value.as_str().unwrap().to_owned())))
+                                .collect(),
                         )),
-                        metadata: Some(Some(metadata.into_iter().map(|(key, value)| (key, Some(value))).collect())),
+                        metadata: Some(Some(
+                            metadata
+                                .into_iter()
+                                .map(|(key, value)| (key, Some(value)))
+                                .collect(),
+                        )),
                         ..Default::default()
                     },
                 })
@@ -440,7 +537,12 @@ async fn preserves_clear_all_before_request_patches_across_later_handlers() {
         ..Default::default()
     };
     let result = hooks
-        .run_with_gate(HookName::BeforeRequest, event, &create_gate().0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeRequest,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap();
     assert_eq!(saw_cleared.load(Ordering::SeqCst), 1);
@@ -463,10 +565,12 @@ async fn preserves_earlier_after_tool_fields_when_a_later_patch_returns_undefine
         HookName::AfterTool,
         handler(|_event, _context| {
             Box::pin(async {
-                Ok(HookResult::AfterTool(maho_agent::harness::hooks::AfterToolPatch {
-                    content: Some(vec![maho_ai::types::ContentBlock::text("patched")]),
-                    ..Default::default()
-                }))
+                Ok(HookResult::AfterTool(
+                    maho_agent::harness::hooks::AfterToolPatch {
+                        content: Some(vec![maho_ai::types::ContentBlock::text("patched")]),
+                        ..Default::default()
+                    },
+                ))
             })
         }),
         None,
@@ -475,11 +579,13 @@ async fn preserves_earlier_after_tool_fields_when_a_later_patch_returns_undefine
         HookName::AfterTool,
         handler(|_event, _context| {
             Box::pin(async {
-                Ok(HookResult::AfterTool(maho_agent::harness::hooks::AfterToolPatch {
-                    content: None,
-                    is_error: Some(false),
-                    ..Default::default()
-                }))
+                Ok(HookResult::AfterTool(
+                    maho_agent::harness::hooks::AfterToolPatch {
+                        content: None,
+                        is_error: Some(false),
+                        ..Default::default()
+                    },
+                ))
             })
         }),
         None,
@@ -489,7 +595,12 @@ async fn preserves_earlier_after_tool_fields_when_a_later_patch_returns_undefine
     event.content = vec![maho_ai::types::ContentBlock::text("raw")];
     event.is_error = true;
     let result = hooks
-        .run_tool_with_gate(HookName::AfterTool, event, &create_gate().0, &BACKGROUND_CONTEXT)
+        .run_tool_with_gate(
+            HookName::AfterTool,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap();
     let HookResult::AfterTool(patch) = result else {
@@ -507,7 +618,10 @@ async fn accepts_explicit_false_structural_declines_and_rejects_true_conflicts()
         HookName::BeforeNavigation,
         handler(|_event, _context| {
             Box::pin(async {
-                Ok(HookResult::Structural { decline: Some(true), value: Some(json!({ "summary": "ignored" })) })
+                Ok(HookResult::Structural {
+                    decline: Some(true),
+                    value: Some(json!({ "summary": "ignored" })),
+                })
             })
         }),
         None,
@@ -516,7 +630,10 @@ async fn accepts_explicit_false_structural_declines_and_rejects_true_conflicts()
         HookName::BeforeNavigation,
         handler(|_event, _context| {
             Box::pin(async {
-                Ok(HookResult::Structural { decline: Some(false), value: Some(json!({ "summary": "selected" })) })
+                Ok(HookResult::Structural {
+                    decline: Some(false),
+                    value: Some(json!({ "summary": "selected" })),
+                })
             })
         }),
         None,
@@ -525,7 +642,12 @@ async fn accepts_explicit_false_structural_declines_and_rejects_true_conflicts()
     let mut event = HookInvocation::new("main", "run");
     event.target_id = Some("target".to_owned());
     let result = hooks
-        .run_with_gate(HookName::BeforeNavigation, event, &create_gate().0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeNavigation,
+            event,
+            &create_gate().0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap();
     let HookResult::Structural { decline, value } = result else {
@@ -540,7 +662,9 @@ async fn accepts_explicit_false_structural_declines_and_rejects_true_conflicts()
 
 #[tokio::test]
 async fn admits_the_complete_before_drive_pipeline_as_one_gated_effect() {
-    let hooks = Arc::new(HookRegistry::new(Arc::new(|_e, _h, _l, _c| Box::pin(async {}))));
+    let hooks = Arc::new(HookRegistry::new(Arc::new(|_e, _h, _l, _c| {
+        Box::pin(async {})
+    })));
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let release = Cancellation::new();
     let first = calls.clone();
@@ -578,10 +702,18 @@ async fn admits_the_complete_before_drive_pipeline_as_one_gated_effect() {
     let abort_first_gate = create_gate();
     abort_first_gate.1.begin_abort(Cancellation::new());
     let refusal = hooks
-        .run_with_gate(HookName::BeforeDrive, event.clone(), &abort_first_gate.0, &BACKGROUND_CONTEXT)
+        .run_with_gate(
+            HookName::BeforeDrive,
+            event.clone(),
+            &abort_first_gate.0,
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .unwrap_err();
-    assert!(matches!(refusal, maho_agent::harness::hooks::HookRunError::Gate(GateRefusal::Abort(_))));
+    assert!(matches!(
+        refusal,
+        maho_agent::harness::hooks::HookRunError::Gate(GateRefusal::Abort(_))
+    ));
     assert!(calls.lock().unwrap().is_empty());
 
     let start_first_gate = create_gate();
@@ -589,7 +721,11 @@ async fn admits_the_complete_before_drive_pipeline_as_one_gated_effect() {
         let hooks = hooks.clone();
         let event = event.clone();
         let gate = start_first_gate.0.clone();
-        async move { hooks.run_with_gate(HookName::BeforeDrive, event, &gate, &BACKGROUND_CONTEXT).await }
+        async move {
+            hooks
+                .run_with_gate(HookName::BeforeDrive, event, &gate, &BACKGROUND_CONTEXT)
+                .await
+        }
     };
     let joined = tokio::spawn(running);
     settle().await;
@@ -598,7 +734,14 @@ async fn admits_the_complete_before_drive_pipeline_as_one_gated_effect() {
     start_first_gate.1.signal_abort();
     release.resolve();
     joined.await.unwrap().unwrap();
-    assert_eq!(&*calls.lock().unwrap(), &["first:start".to_owned(), "first:end".to_owned(), "second".to_owned()]);
+    assert_eq!(
+        &*calls.lock().unwrap(),
+        &[
+            "first:start".to_owned(),
+            "first:end".to_owned(),
+            "second".to_owned()
+        ]
+    );
 }
 
 #[tokio::test]
@@ -616,16 +759,24 @@ async fn buffers_between_snapshot_and_start_then_delivers_each_event_once_in_ord
         .start(Arc::new(move |event, _context| {
             let sink = sink.clone();
             Box::pin(async move {
-                sink.lock().unwrap().push(format!("{}:{}", event.event_type(), event.run_id().unwrap_or("")));
+                sink.lock().unwrap().push(format!(
+                    "{}:{}",
+                    event.event_type(),
+                    event.run_id().unwrap_or("")
+                ));
             })
         }))
         .await;
     bus.emit(run_event("two"), BACKGROUND_CONTEXT.clone()).await;
     settle().await;
     assert_eq!(watcher.snapshot(), json!({ "tipId": Value::Null }));
-    assert_eq!(&*seen.lock().unwrap(), &["run_start:one".to_owned(), "run_start:two".to_owned()]);
+    assert_eq!(
+        &*seen.lock().unwrap(),
+        &["run_start:one".to_owned(), "run_start:two".to_owned()]
+    );
     watcher.unsubscribe();
-    bus.emit(run_event("three"), BACKGROUND_CONTEXT.clone()).await;
+    bus.emit(run_event("three"), BACKGROUND_CONTEXT.clone())
+        .await;
     settle().await;
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
@@ -638,7 +789,8 @@ async fn isolates_each_listener_from_payload_mutation() {
         "config_update",
         Arc::new(|event, _context| {
             if let HarnessEvent {
-                payload: maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { value, .. },
+                payload:
+                    maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { value, .. },
                 ..
             } = &event
             {
@@ -653,16 +805,27 @@ async fn isolates_each_listener_from_payload_mutation() {
         Arc::new(move |event, _context| {
             let sink = sink.clone();
             Box::pin(async move {
-                if let maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { value, .. } = &event.payload
+                if let maho_agent::harness::events::HarnessEventPayload::ConfigUpdate {
+                    value, ..
+                } = &event.payload
                     && let Some(values) = value.as_array()
                 {
-                    sink.lock().unwrap().extend(values.iter().filter_map(|v| v.as_str().map(ToOwned::to_owned)));
+                    sink.lock().unwrap().extend(
+                        values
+                            .iter()
+                            .filter_map(|v| v.as_str().map(ToOwned::to_owned)),
+                    );
                 }
             })
         }),
     );
     bus.emit(
-        HarnessEvent::config_update("activeTools", json!(["read"]), json!([]), Some("main".to_owned())),
+        HarnessEvent::config_update(
+            "activeTools",
+            json!(["read"]),
+            json!([]),
+            Some("main".to_owned()),
+        ),
         BACKGROUND_CONTEXT.clone(),
     )
     .await;
@@ -721,7 +884,9 @@ async fn does_not_recurse_when_a_handler_error_listener_fails() {
     let handler_errors = Arc::new(AtomicUsize::new(0));
     bus.on(
         "run_start",
-        Arc::new(|_event, _context| Box::pin(async { std::panic::panic_any("listener failed".to_owned()) })),
+        Arc::new(|_event, _context| {
+            Box::pin(async { std::panic::panic_any("listener failed".to_owned()) })
+        }),
     );
     let counter = handler_errors.clone();
     bus.on(
@@ -741,7 +906,8 @@ async fn does_not_recurse_when_a_handler_error_listener_fails() {
 #[tokio::test]
 async fn keeps_concurrent_batches_contiguous_with_their_emitting_contexts() {
     let bus = HarnessEventBus::new();
-    static SOURCE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("event.batch.source"));
+    static SOURCE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> =
+        std::sync::LazyLock::new(|| create_context_key("event.batch.source"));
     let first_context = with_context_value(&SOURCE_KEY, "first".to_owned(), &BACKGROUND_CONTEXT);
     let second_context = with_context_value(&SOURCE_KEY, "second".to_owned(), &BACKGROUND_CONTEXT);
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -752,7 +918,9 @@ async fn keeps_concurrent_batches_contiguous_with_their_emitting_contexts() {
             let sink = sink.clone();
             Box::pin(async move {
                 let source = context.value(&SOURCE_KEY).unwrap_or_default();
-                sink.lock().unwrap().push((event.run_id().unwrap_or_default().to_owned(), source));
+                sink.lock()
+                    .unwrap()
+                    .push((event.run_id().unwrap_or_default().to_owned(), source));
                 tokio::task::yield_now().await;
             })
         }),
@@ -761,18 +929,26 @@ async fn keeps_concurrent_batches_contiguous_with_their_emitting_contexts() {
     let first = {
         let bus = bus.clone();
         let context = first_context.clone();
-        async move { bus.emit_batch(vec![run_event("a1"), run_event("a2")], context).await }
+        async move {
+            bus.emit_batch(vec![run_event("a1"), run_event("a2")], context)
+                .await
+        }
     };
     let second = {
         let bus = bus.clone();
         let context = second_context.clone();
-        async move { bus.emit_batch(vec![run_event("b1"), run_event("b2")], context).await }
+        async move {
+            bus.emit_batch(vec![run_event("b1"), run_event("b2")], context)
+                .await
+        }
     };
     let (first, second) = tokio::join!(first, second);
     let _ = (first, second);
     let seen = seen.lock().unwrap().clone();
     assert_eq!(
-        seen.iter().map(|(run_id, _)| run_id.clone()).collect::<Vec<_>>(),
+        seen.iter()
+            .map(|(run_id, _)| run_id.clone())
+            .collect::<Vec<_>>(),
         vec!["a1", "a2", "b1", "b2"]
     );
     assert!(seen[0].1 == "first" && seen[1].1 == "first");
@@ -795,7 +971,11 @@ async fn continues_watcher_delivery_after_listener_failure_and_reports_it() {
             })
         }),
     );
-    let watcher = bus.watch(json!({}), Arc::new(|event| event.event_type() == "run_start"), None);
+    let watcher = bus.watch(
+        json!({}),
+        Arc::new(|event| event.event_type() == "run_start"),
+        None,
+    );
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = seen.clone();
     watcher
@@ -862,7 +1042,12 @@ async fn serializes_concurrent_publications_in_process_order() {
     two.await.unwrap();
     assert_eq!(
         &*seen.lock().unwrap(),
-        &["one:start".to_owned(), "one:end".to_owned(), "two:start".to_owned(), "two:end".to_owned()]
+        &[
+            "one:start".to_owned(),
+            "one:end".to_owned(),
+            "two:start".to_owned(),
+            "two:end".to_owned()
+        ]
     );
 }
 
@@ -889,7 +1074,10 @@ async fn binds_listeners_and_watchers_when_a_batch_is_emitted() {
     );
     let blocking = {
         let bus = bus.clone();
-        async move { bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone()).await }
+        async move {
+            bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone())
+                .await
+        }
     };
     let blocking = tokio::spawn(blocking);
     started.wait().await;
@@ -908,18 +1096,26 @@ async fn binds_listeners_and_watchers_when_a_batch_is_emitted() {
         Arc::new(move |event, _context| {
             let sink = sink.clone();
             Box::pin(async move {
-                sink.lock().unwrap().push(event.run_id().unwrap_or_default().to_owned());
+                sink.lock()
+                    .unwrap()
+                    .push(event.run_id().unwrap_or_default().to_owned());
             })
         }),
     );
     let late_watcher_events = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let watcher = bus.watch(json!({}), Arc::new(|event| event.event_type() == "run_start"), None);
+    let watcher = bus.watch(
+        json!({}),
+        Arc::new(|event| event.event_type() == "run_start"),
+        None,
+    );
     let sink = late_watcher_events.clone();
     watcher
         .start(Arc::new(move |event, _context| {
             let sink = sink.clone();
             Box::pin(async move {
-                sink.lock().unwrap().push(event.run_id().unwrap_or_default().to_owned());
+                sink.lock()
+                    .unwrap()
+                    .push(event.run_id().unwrap_or_default().to_owned());
             })
         }))
         .await;
@@ -930,9 +1126,13 @@ async fn binds_listeners_and_watchers_when_a_batch_is_emitted() {
     assert!(late_listener_events.lock().unwrap().is_empty());
     assert!(late_watcher_events.lock().unwrap().is_empty());
 
-    bus.emit(run_event("later"), BACKGROUND_CONTEXT.clone()).await;
+    bus.emit(run_event("later"), BACKGROUND_CONTEXT.clone())
+        .await;
     settle().await;
-    assert_eq!(&*late_listener_events.lock().unwrap(), &["later".to_owned()]);
+    assert_eq!(
+        &*late_listener_events.lock().unwrap(),
+        &["later".to_owned()]
+    );
     assert_eq!(&*late_watcher_events.lock().unwrap(), &["later".to_owned()]);
 }
 
@@ -963,13 +1163,22 @@ async fn drains_already_emitted_contiguous_batches_during_close_and_ignores_late
     );
     let blocking = {
         let bus = bus.clone();
-        async move { bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone()).await }
+        async move {
+            bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone())
+                .await
+        }
     };
     let blocking = tokio::spawn(blocking);
     started.wait().await;
     let batch = {
         let bus = bus.clone();
-        async move { bus.emit_batch(vec![run_event("one"), run_event("two")], BACKGROUND_CONTEXT.clone()).await }
+        async move {
+            bus.emit_batch(
+                vec![run_event("one"), run_event("two")],
+                BACKGROUND_CONTEXT.clone(),
+            )
+            .await
+        }
     };
     let batch = tokio::spawn(batch);
     settle().await;
@@ -977,17 +1186,24 @@ async fn drains_already_emitted_contiguous_batches_during_close_and_ignores_late
     bus.close("closed");
     {
         let bus = bus.clone();
-        async move { bus.emit(run_event("late"), BACKGROUND_CONTEXT.clone()).await }
+        async move {
+            bus.emit(run_event("late"), BACKGROUND_CONTEXT.clone())
+                .await
+        }
     }
     .await;
     release.resolve();
     blocking.await.unwrap();
     batch.await.unwrap();
-    assert_eq!(&*seen.lock().unwrap(), &["blocking".to_owned(), "one".to_owned(), "two".to_owned()]);
+    assert_eq!(
+        &*seen.lock().unwrap(),
+        &["blocking".to_owned(), "one".to_owned(), "two".to_owned()]
+    );
 }
 
 #[tokio::test]
-async fn drops_pre_snapshot_delivery_and_holds_later_events_when_resnapshotting_inside_a_listener() {
+async fn drops_pre_snapshot_delivery_and_holds_later_events_when_resnapshotting_inside_a_listener()
+{
     let bus = HarnessEventBus::new();
     let listener_started = Cancellation::new();
     let release_listener = Cancellation::new();
@@ -1028,7 +1244,9 @@ async fn drops_pre_snapshot_delivery_and_holds_later_events_when_resnapshotting_
                     }
                     "queue_update" => {
                         let ids = event.queued_entry_ids();
-                        sink.lock().unwrap().push(ids.first().cloned().unwrap_or_else(|| "empty".to_owned()));
+                        sink.lock()
+                            .unwrap()
+                            .push(ids.first().cloned().unwrap_or_else(|| "empty".to_owned()));
                     }
                     _ => {}
                 }
@@ -1036,7 +1254,8 @@ async fn drops_pre_snapshot_delivery_and_holds_later_events_when_resnapshotting_
         }))
         .await;
 
-    bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone()).await;
+    bus.emit(run_event("blocking"), BACKGROUND_CONTEXT.clone())
+        .await;
     listener_started.wait().await;
     let queued = {
         let bus = bus.clone();

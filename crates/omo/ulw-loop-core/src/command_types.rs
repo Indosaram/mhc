@@ -43,8 +43,6 @@ pub struct CheckpointOptions {
     pub allow_active_final_codex_goal: Option<bool>,
 }
 
-
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordFinalReviewBlockersOptions {
     pub goal_id: String,
@@ -65,7 +63,11 @@ pub struct AddGoalOptions {
     pub objective: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
-    #[serde(rename = "successCriteria", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "successCriteria",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub success_criteria: Option<Vec<crate::success_criteria_input::SuccessCriterionInput>>,
 }
 

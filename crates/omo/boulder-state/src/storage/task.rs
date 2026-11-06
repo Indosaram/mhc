@@ -72,7 +72,9 @@ pub fn upsert_task_session_state(
     sessions.set(&input.task_key, Js::Object(session));
     doc.set("task_sessions", Js::Object(sessions));
     let state = BoulderState::from_doc(doc);
-    Ok(write_boulder_state(directory, &state).is_ok().then_some(state))
+    Ok(write_boulder_state(directory, &state)
+        .is_ok()
+        .then_some(state))
 }
 
 /// Record the session working on a task of `work_id`, keeping the task's existing timer
@@ -122,7 +124,9 @@ pub fn upsert_task_session_state_for_work(
         project_work_to_mirror(&mut next_state, &next_work);
     }
     let next_state = BoulderState::from_doc(next_state);
-    Ok(write_boulder_state(directory, &next_state).is_ok().then_some(next_state))
+    Ok(write_boulder_state(directory, &next_state)
+        .is_ok()
+        .then_some(next_state))
 }
 
 /// Upsert the task session and mark it running, keeping an earlier `started_at`.
@@ -163,7 +167,9 @@ pub fn start_task_timer(
         mirror_aliased_session(&mut doc, task_key, &session);
     }
     let state = BoulderState::from_doc(doc);
-    Ok(write_boulder_state(directory, &state).is_ok().then_some(state))
+    Ok(write_boulder_state(directory, &state)
+        .is_ok()
+        .then_some(state))
 }
 
 /// Mark a task session completed with its elapsed time and persist. `Ok(None)` when
@@ -223,5 +229,7 @@ pub fn end_task_timer(
         project_work_to_mirror(&mut doc, &work);
     }
     let state = BoulderState::from_doc(doc);
-    Ok(write_boulder_state(directory, &state).is_ok().then_some(state))
+    Ok(write_boulder_state(directory, &state)
+        .is_ok()
+        .then_some(state))
 }

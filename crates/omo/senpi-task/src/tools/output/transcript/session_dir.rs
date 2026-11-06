@@ -4,7 +4,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::tools::output::transcript::read_bounded::{MAX_TRANSCRIPT_SOURCE_BYTES, read_bounded_file_text};
+use crate::tools::output::transcript::read_bounded::{
+    MAX_TRANSCRIPT_SOURCE_BYTES, read_bounded_file_text,
+};
 use crate::tools::output::transcript::session_jsonl::parse_session_transcript;
 use crate::tools::output::types::{TranscriptEntry, TranscriptReadResult, TranscriptSource};
 
@@ -24,11 +26,17 @@ pub fn child_session_dir(state_dir: &str, task_id: &str) -> String {
 
 /// Reconstruct a child's transcript from its persisted senpi session file(s). Multiple files (one per
 /// session turn) are read in name order and concatenated. A missing dir is an empty transcript.
-pub fn read_session_dir_transcript(state_dir: &str, task_id: &str) -> io::Result<Vec<TranscriptEntry>> {
+pub fn read_session_dir_transcript(
+    state_dir: &str,
+    task_id: &str,
+) -> io::Result<Vec<TranscriptEntry>> {
     Ok(read_session_dir_transcript_result(state_dir, task_id)?.entries)
 }
 
-pub fn read_session_dir_transcript_result(state_dir: &str, task_id: &str) -> io::Result<TranscriptReadResult> {
+pub fn read_session_dir_transcript_result(
+    state_dir: &str,
+    task_id: &str,
+) -> io::Result<TranscriptReadResult> {
     let dir = child_session_dir(state_dir, task_id);
     let files = list_jsonl(Path::new(&dir))?;
     if files.is_empty() {

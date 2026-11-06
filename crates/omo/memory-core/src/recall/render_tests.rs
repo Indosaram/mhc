@@ -22,7 +22,7 @@ fn project_nudge(path: &str, hint: &str, source: &str) -> RecallNudge {
 
 #[test]
 fn given_a_judged_nudge_when_the_block_is_rendered_then_the_hint_replaces_the_description_and_excerpt()
-{
+ {
     let block = render_nudge_block(&nudge(
         "reference/a.md",
         "The deploy gate requires a green smoke run.",
@@ -106,7 +106,8 @@ fn readable_source_uses_the_same_markup_escaping_as_the_ledger_path() {
 }
 
 #[test]
-fn given_the_personas_recalled_memory_sample_when_compared_with_the_renderer_then_they_are_identical() {
+fn given_the_personas_recalled_memory_sample_when_compared_with_the_renderer_then_they_are_identical()
+ {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("recall");

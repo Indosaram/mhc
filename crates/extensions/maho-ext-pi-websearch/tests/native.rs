@@ -600,15 +600,24 @@ mod upstream_route_edges {
     #[tokio::test]
     async fn unavailable_discovered_aliases_resolve_auth_once() {
         let registry = aliases(
-            (0..8).map(|index| model(
-                &format!("gpt-5.5-alias-{index}"),
-                "https://gateway.example.com/v1",
-            )).collect(),
+            (0..8)
+                .map(|index| {
+                    model(
+                        &format!("gpt-5.5-alias-{index}"),
+                        "https://gateway.example.com/v1",
+                    )
+                })
+                .collect(),
             Some("gpt-5.5-alias-0"),
         );
-        let entries = build_native_entries(None, Some(&registry)).await.expect("discovery");
+        let entries = build_native_entries(None, Some(&registry))
+            .await
+            .expect("discovery");
         assert!(entries.is_empty());
-        assert_eq!(*registry.auth.lock().expect("auth calls"), ["gpt-5.5-alias-0"]);
+        assert_eq!(
+            *registry.auth.lock().expect("auth calls"),
+            ["gpt-5.5-alias-0"]
+        );
     }
 
     #[tokio::test]

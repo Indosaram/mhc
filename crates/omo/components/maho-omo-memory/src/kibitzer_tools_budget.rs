@@ -3,8 +3,8 @@
 //! Every closure of one wake shares ONE instance. `charge` admits with a compare-exchange, so
 //! concurrent native calls can never exceed the limit (upstream JS `charge` was synchronous).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::kibitzer_contract::KibitzerToolBudget;
 
@@ -15,7 +15,10 @@ pub struct WakeToolBudget {
 
 impl WakeToolBudget {
     pub fn new(limit: usize) -> Arc<Self> {
-        Arc::new(Self { limit, used: AtomicUsize::new(0) })
+        Arc::new(Self {
+            limit,
+            used: AtomicUsize::new(0),
+        })
     }
 }
 
@@ -48,7 +51,10 @@ mod tests {
     /// Builds a budget whose counter already sits at `limit`, so every charge must refuse.
     /// The struct fields are private, but this inline module is a child of the owning module.
     fn exhausted(limit: usize) -> WakeToolBudget {
-        WakeToolBudget { limit, used: AtomicUsize::new(limit) }
+        WakeToolBudget {
+            limit,
+            used: AtomicUsize::new(limit),
+        }
     }
 
     #[test]
@@ -58,7 +64,11 @@ mod tests {
         assert_eq!(budget.used(), 0);
         assert!(!budget.charge());
         assert!(!budget.charge());
-        assert_eq!(budget.used(), 0, "a refused call must not increment the counter");
+        assert_eq!(
+            budget.used(),
+            0,
+            "a refused call must not increment the counter"
+        );
     }
 
     #[test]
@@ -68,7 +78,11 @@ mod tests {
         assert_eq!(budget.used(), usize::MAX);
         assert!(!budget.charge(), "used == limit refuses the call");
         assert!(!budget.charge());
-        assert_eq!(budget.used(), usize::MAX, "a refused charge must not wrap the counter");
+        assert_eq!(
+            budget.used(),
+            usize::MAX,
+            "a refused charge must not wrap the counter"
+        );
     }
 
     #[test]
@@ -99,8 +113,19 @@ mod tests {
             handle.join().expect("a charging thread must not panic");
         }
 
-        assert_eq!(admitted.load(Ordering::SeqCst), LIMIT, "exactly the limit is admitted");
-        assert_eq!(budget.used(), LIMIT, "the counter settles exactly at the limit");
-        assert!(!budget.charge(), "the budget is exhausted once the limit is reached");
+        assert_eq!(
+            admitted.load(Ordering::SeqCst),
+            LIMIT,
+            "exactly the limit is admitted"
+        );
+        assert_eq!(
+            budget.used(),
+            LIMIT,
+            "the counter settles exactly at the limit"
+        );
+        assert!(
+            !budget.charge(),
+            "the budget is exhausted once the limit is reached"
+        );
     }
 }

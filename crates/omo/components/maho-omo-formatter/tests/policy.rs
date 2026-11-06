@@ -21,10 +21,18 @@ fn test_marker_precedence_and_never_enables_prettier_beside_biome() {
     assert_eq!(res.unwrap().tool, FormatterTool::Gofmt);
 
     let markers_py = vec!["pyproject.toml".to_string()];
-    let res = detect_formatter(&markers_py, Path::new("src/a.py"), "[tool.ruff]\nline-length=88");
+    let res = detect_formatter(
+        &markers_py,
+        Path::new("src/a.py"),
+        "[tool.ruff]\nline-length=88",
+    );
     assert_eq!(res.unwrap().tool, FormatterTool::Ruff);
 
-    let res_none = detect_formatter(&markers_py, Path::new("src/a.py"), "[tool.black]\nline-length=88");
+    let res_none = detect_formatter(
+        &markers_py,
+        Path::new("src/a.py"),
+        "[tool.black]\nline-length=88",
+    );
     assert!(res_none.is_none());
 }
 
@@ -47,7 +55,10 @@ fn test_format_on_mutation_defaults_and_language_overrides() {
     assert_eq!(resolve_format_mode(&config, "python"), FormatMode::Required);
 
     let empty = FormatOnMutationConfig::default();
-    assert_eq!(resolve_format_mode(&empty, "python"), FormatMode::BestEffort);
+    assert_eq!(
+        resolve_format_mode(&empty, "python"),
+        FormatMode::BestEffort
+    );
 }
 
 #[test]

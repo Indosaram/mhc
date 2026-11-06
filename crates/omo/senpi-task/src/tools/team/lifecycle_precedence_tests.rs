@@ -4,7 +4,9 @@ use pretty_assertions::assert_eq;
 use serde_json::{Map, Value, json};
 
 use crate::tools::team::lifecycle::{TeamCreateInput, run_team_create};
-use crate::tools::team::team_tool_fakes::{FakeTeamServiceOverrides, create_fake_team_service, fake_create_result};
+use crate::tools::team::team_tool_fakes::{
+    FakeTeamServiceOverrides, create_fake_team_service, fake_create_result,
+};
 
 /// Drops `null` entries so optional fields that serialize as `null` compare like absent TS keys.
 fn strip_nulls(value: &Value) -> Value {
@@ -47,5 +49,8 @@ fn given_both_team_name_and_inline_spec_when_team_create_runs_then_inline_spec_i
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].method, "createTeam");
     assert_eq!(calls[0].args.len(), 1);
-    assert_eq!(strip_nulls(&calls[0].args[0]), json!({ "inlineSpec": inline_spec }));
+    assert_eq!(
+        strip_nulls(&calls[0].args[0]),
+        json!({ "inlineSpec": inline_spec })
+    );
 }

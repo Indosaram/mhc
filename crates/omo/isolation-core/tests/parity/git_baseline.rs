@@ -2,12 +2,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use isolation_core::backends::git_fixture::{git, repo};
-use isolation_core::{
-    capture_baseline, capture_delta_patch, capture_repo_baseline, parse_diff_git_line_paths,
-    run_git, str_args, BaselineCaptureOptions, BaselineReadRetryDetails, GitOptions,
-    IsolationError, RepoBaseline, ISOLATION_BASELINE_MAX_CONTENT_BYTES,
-};
 use isolation_core::git::baseline::BaselineRunGit;
+use isolation_core::{
+    BaselineCaptureOptions, BaselineReadRetryDetails, GitOptions,
+    ISOLATION_BASELINE_MAX_CONTENT_BYTES, IsolationError, RepoBaseline, capture_baseline,
+    capture_delta_patch, capture_repo_baseline, parse_diff_git_line_paths, run_git, str_args,
+};
 
 fn setup() -> isolation_core::test_support::Fixture {
     let f = repo();
@@ -51,7 +51,8 @@ fn paths(patch: &str) -> Vec<String> {
 #[test]
 fn clean_baseline_delta_includes_tracked_additions_modifications_deletions_and_untracked_files() {
     let f = setup();
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolated = child(&f.repo_root, &f.root);
     std::fs::write(isolated.join("modify"), "after\n").expect("modify");
     std::fs::remove_file(isolated.join("delete")).expect("delete");
@@ -59,9 +60,15 @@ fn clean_baseline_delta_includes_tracked_additions_modifications_deletions_and_u
     git(&isolated, &["add", "added"]).expect("add");
     std::fs::write(isolated.join("untracked"), "new\n").expect("untracked");
     let result = capture_delta_patch(&isolated, &baseline).expect("delta");
-    assert_eq!(paths(&result.root_patch), vec!["added", "delete", "modify", "untracked"]);
+    assert_eq!(
+        paths(&result.root_patch),
+        vec!["added", "delete", "modify", "untracked"]
+    );
     assert!(result.nested_patches.is_empty());
-    assert_eq!(git(&f.repo_root, &["status", "--porcelain"]).expect("status"), "");
+    assert_eq!(
+        git(&f.repo_root, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
 }
 
 #[test]
@@ -71,7 +78,8 @@ fn parent_staged_unstaged_and_untracked_wip_is_excluded() {
     git(&f.repo_root, &["add", "modify"]).expect("add");
     std::fs::write(f.repo_root.join("modify"), "unstaged\n").expect("unstaged");
     std::fs::write(f.repo_root.join("parent-wip"), "parent\n").expect("parent-wip");
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     assert_eq!(baseline.root.untracked_files, vec!["parent-wip"]);
     let isolated = child(&f.repo_root, &f.root);
     std::fs::write(isolated.join("child-only"), "child\n").expect("child-only");
@@ -82,7 +90,8 @@ fn parent_staged_unstaged_and_untracked_wip_is_excluded() {
 #[test]
 fn two_child_commits_and_remaining_wip_are_represented_without_child_objects_in_parent() {
     let f = setup();
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolated = child(&f.repo_root, &f.root);
     for name in ["first", "second"] {
         std::fs::write(isolated.join(name), format!("{name}\n")).expect("commit file");
@@ -97,7 +106,8 @@ fn two_child_commits_and_remaining_wip_are_represented_without_child_objects_in_
 #[test]
 fn binary_untracked_patch_applies_byte_for_byte() {
     let f = setup();
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolated = child(&f.repo_root, &f.root);
     let bytes: Vec<u8> = vec![0, 255, 1, 0, 128, 42];
     std::fs::write(isolated.join("binary"), &bytes).expect("binary");
@@ -112,13 +122,17 @@ fn binary_untracked_patch_applies_byte_for_byte() {
         },
     )
     .expect("apply");
-    assert_eq!(std::fs::read(f.repo_root.join("binary")).expect("binary"), bytes);
+    assert_eq!(
+        std::fs::read(f.repo_root.join("binary")).expect("binary"),
+        bytes
+    );
 }
 
 #[test]
 fn spaces_quotes_and_unicode_paths_round_trip_through_patches_and_parsing() {
     let f = setup();
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolated = child(&f.repo_root, &f.root);
     let posix_only = !cfg!(windows);
     let mut names = vec!["space name".to_string()];
@@ -160,7 +174,8 @@ fn nested_repository_delta_is_separate_and_node_modules_is_excluded() {
     std::fs::create_dir_all(f.repo_root.join("node_modules")).expect("node_modules");
     copy_dir_all(&nested.repo_root, &f.repo_root.join("node_modules/ignored"))
         .expect("ignored copy");
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let nested_paths: Vec<String> = baseline
         .nested
         .iter()
@@ -303,7 +318,8 @@ fn ignored_child_files_never_enter_the_delta() {
     std::fs::write(f.repo_root.join(".gitignore"), "ignored\n").expect("gitignore");
     git(&f.repo_root, &["add", ".gitignore"]).expect("add");
     git(&f.repo_root, &["commit", "-m", "ignore"]).expect("commit");
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let isolated = child(&f.repo_root, &f.root);
     std::fs::write(isolated.join("ignored"), "secret\n").expect("ignored");
     let result = capture_delta_patch(&isolated, &baseline).expect("delta");
@@ -327,7 +343,8 @@ fn submodules_are_excluded_from_nested_discovery() {
     )
     .expect("submodule add");
     git(&f.repo_root, &["commit", "-am", "submodule"]).expect("commit");
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     assert!(baseline.nested.is_empty());
 }
 

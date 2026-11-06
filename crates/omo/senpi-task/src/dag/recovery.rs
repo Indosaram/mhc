@@ -113,7 +113,8 @@ pub struct DagRecoveryOptions {
     pub reattach: Option<Reattach>,
     pub ancestry: Option<DagSchedulerAncestry>,
     pub node_spawn_policy: Option<DagNodeSpawnPolicy>,
-    pub paused_children: Option<Arc<dyn crate::dag::paused_child_recovery::PausedChildRecoveryPort>>,
+    pub paused_children:
+        Option<Arc<dyn crate::dag::paused_child_recovery::PausedChildRecoveryPort>>,
     pub resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
@@ -211,18 +212,22 @@ impl DagRecovery {
             .read_checkpoint::<RecoverableRecord>(run_id)
             .map_err(|e| e.to_string())?;
         let Some(rec) = record else {
-            return Ok(InstallResumedRunResult::Skipped(DagRecoveryOutcome::Skipped {
-                run_id: run_id.clone(),
-                reason: DagRecoverySkipReason::NotPaused,
-                holder_pid: None,
-            }));
+            return Ok(InstallResumedRunResult::Skipped(
+                DagRecoveryOutcome::Skipped {
+                    run_id: run_id.clone(),
+                    reason: DagRecoverySkipReason::NotPaused,
+                    holder_pid: None,
+                },
+            ));
         };
         if rec.record.pause.as_ref().map(|p| p.pause_seq) != Some(pause_seq) {
-            return Ok(InstallResumedRunResult::Skipped(DagRecoveryOutcome::Skipped {
-                run_id: run_id.clone(),
-                reason: DagRecoverySkipReason::NotPaused,
-                holder_pid: None,
-            }));
+            return Ok(InstallResumedRunResult::Skipped(
+                DagRecoveryOutcome::Skipped {
+                    run_id: run_id.clone(),
+                    reason: DagRecoverySkipReason::NotPaused,
+                    holder_pid: None,
+                },
+            ));
         }
         let claim = claim_paused_run(&self.context, run_id, parent_session_id);
         match claim {
@@ -263,7 +268,11 @@ fn pause_runs_for_shutdown(
 ) -> Result<Vec<DagRunId>, crate::dag::store::DagStoreError> {
     let mut paused = Vec::new();
     for observed in list_run_records(&context.store) {
-        if observed.record.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
+        if observed
+            .record
+            .pause
+            .as_ref()
+            .is_some_and(|p| p.reason == "user_stop")
             || observed.record.parent_session_id != parent_session_id
             || !is_live_run_status(observed.record.status)
         {
@@ -311,7 +320,12 @@ fn resume_paused_runs(
 ) -> Vec<DagRecoveryOutcome> {
     let mut outcomes = Vec::new();
     for observed in list_run_records(&context.store) {
-        if observed.record.pause.as_ref().is_some_and(|p| p.reason == "user_stop") {
+        if observed
+            .record
+            .pause
+            .as_ref()
+            .is_some_and(|p| p.reason == "user_stop")
+        {
             continue;
         }
         let foreign = observed.record.parent_session_id != parent_session_id;
@@ -465,7 +479,9 @@ impl std::fmt::Debug for InstalledDagRun {
 
 impl InstalledDagRun {
     pub fn wait(self) -> DagRecoveryOutcome {
-        self.settled.join().expect("validated recovery state is present")
+        self.settled
+            .join()
+            .expect("validated recovery state is present")
     }
 }
 

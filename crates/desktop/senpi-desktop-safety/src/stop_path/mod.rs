@@ -50,7 +50,9 @@ impl fmt::Display for Chord {
 /// Why a stop path could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StopPathError {
-    #[error("invalid stop chord '{0}': expected key names joined by '+', e.g. ctrl+alt+shift+escape")]
+    #[error(
+        "invalid stop chord '{0}': expected key names joined by '+', e.g. ctrl+alt+shift+escape"
+    )]
     InvalidChord(String),
     /// The OS refused the listener (e.g. macOS Accessibility is not granted).
     #[error("{0}")]

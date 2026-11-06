@@ -12,10 +12,7 @@
 //! prompt: "Extract durable facts from this payload and record each accepted fact with record_fact.\n\n<payload>"
 
 use std::{
-    sync::{
-        atomic::Ordering,
-        Arc, OnceLock,
-    },
+    sync::{Arc, OnceLock, atomic::Ordering},
     time::Duration,
 };
 
@@ -101,9 +98,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                         model: last_model,
                     });
                 }
-                if signal.is_aborted()
-                    || cancel_state.load(Ordering::Acquire)
-                {
+                if signal.is_aborted() || cancel_state.load(Ordering::Acquire) {
                     signal.abort();
                     cancel_state.store(true, Ordering::Release);
                     return Ok(FactsChildSessionResult {
@@ -176,14 +171,15 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                 let created = match factory.create(options).await {
                     Ok(created) => created,
                     Err(err) => {
-                        let miss = maho_omo_memory::worker::model_miss::classify_retryable_model_miss(
-                            &maho_omo_memory::worker::model_miss::ModelMissResult {
-                                code: Some(1),
-                                stdout: "",
-                                stderr: &err,
-                                timed_out: false,
-                            },
-                        );
+                        let miss =
+                            maho_omo_memory::worker::model_miss::classify_retryable_model_miss(
+                                &maho_omo_memory::worker::model_miss::ModelMissResult {
+                                    code: Some(1),
+                                    stdout: "",
+                                    stderr: &err,
+                                    timed_out: false,
+                                },
+                            );
                         if matches!(
                             miss,
                             Some(maho_omo_memory::worker::model_miss::RetryableModelMiss::AuthMissing { .. })
@@ -268,9 +264,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     TurnExit::PromptDone(prompt_res) => {
                         let messages = session.messages();
                         session.dispose().await;
-                        if signal.is_aborted()
-                            || cancel_state.load(Ordering::Acquire)
-                        {
+                        if signal.is_aborted() || cancel_state.load(Ordering::Acquire) {
                             signal.abort();
                             cancel_state.store(true, Ordering::Release);
                             return Ok(FactsChildSessionResult {
@@ -361,8 +355,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                 completed: false,
                 timed_out: false,
                 cancelled: false,
-                error_message: last_error
-                    .or_else(|| Some("all candidate models exhausted".into())),
+                error_message: last_error.or_else(|| Some("all candidate models exhausted".into())),
                 attempt: attempt_number,
                 model: last_model,
             })

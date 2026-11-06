@@ -1,10 +1,19 @@
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PluginScope { #[default] User, Project, Local, Managed }
+pub enum PluginScope {
+    #[default]
+    User,
+    Project,
+    Local,
+    Managed,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -80,11 +89,18 @@ pub struct LoadedPlugin {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct PluginLoadResult { pub plugins: Vec<LoadedPlugin>, pub errors: Vec<PluginLoadError> }
+pub struct PluginLoadResult {
+    pub plugins: Vec<LoadedPlugin>,
+    pub errors: Vec<PluginLoadError>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct PluginLoadError { pub plugin_key: String, pub install_path: PathBuf, pub error: String }
+pub struct PluginLoadError {
+    pub plugin_key: String,
+    pub install_path: PathBuf,
+    pub error: String,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

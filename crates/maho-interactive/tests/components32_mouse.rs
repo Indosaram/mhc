@@ -21,7 +21,10 @@ fn fixtures() -> Value {
 }
 
 fn trim(lines: Vec<String>) -> Vec<String> {
-    lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 fn mouse_event(step: &Value) -> TuiMouseEvent {
@@ -34,7 +37,11 @@ fn mouse_event(step: &Value) -> TuiMouseEvent {
         "wheel" => TuiMouseEventType::Wheel,
         _ => TuiMouseEventType::Click,
     };
-    let button = match event.get("button").and_then(Value::as_str).unwrap_or("left") {
+    let button = match event
+        .get("button")
+        .and_then(Value::as_str)
+        .unwrap_or("left")
+    {
         "right" => TuiMouseButton::Right,
         "middle" => TuiMouseButton::Middle,
         "none" => TuiMouseButton::None,
@@ -62,7 +69,10 @@ fn card(theme: &Theme, file_path: &str, id: &str) -> Rc<RefCell<ToolExecutionCom
         "read",
         id,
         serde_json::json!({ "file_path": file_path }),
-        ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+        ToolExecutionOptions {
+            show_images: Some(false),
+            image_width_cells: None,
+        },
         None,
         "/tmp/project",
         ToolExecutionPresentation::Classic,
@@ -70,7 +80,11 @@ fn card(theme: &Theme, file_path: &str, id: &str) -> Rc<RefCell<ToolExecutionCom
         theme.clone(),
     )));
     component.borrow_mut().update_result(
-        ToolExecutionResult { content: vec![ToolContent::text("body\n")], details: None, is_error: false },
+        ToolExecutionResult {
+            content: vec![ToolContent::text("body\n")],
+            details: None,
+            is_error: false,
+        },
         false,
     );
     component.borrow_mut().stop_animation();
@@ -82,7 +96,10 @@ fn exploration_group_mouse_handling_matches_pinned_senpi() {
     let theme = theme();
     for case in fixtures()["cases"].as_array().expect("cases") {
         let name = case["name"].as_str().expect("name");
-        let cards = [card(&theme, "a.rs", "call-1"), card(&theme, "b.rs", "call-2")];
+        let cards = [
+            card(&theme, "a.rs", "call-1"),
+            card(&theme, "b.rs", "call-2"),
+        ];
         let calls: Vec<(Rc<RefCell<ToolExecutionComponent>>, ExplorationCall)> = cards
             .iter()
             .map(|component| {
@@ -99,7 +116,10 @@ fn exploration_group_mouse_handling_matches_pinned_senpi() {
             .collect();
         let mut group = ExplorationGroup::new(theme.clone());
         group.set_members(
-            cards.iter().map(|component| Rc::clone(component) as Rc<RefCell<dyn Component>>).collect(),
+            cards
+                .iter()
+                .map(|component| Rc::clone(component) as Rc<RefCell<dyn Component>>)
+                .collect(),
             calls,
             Vec::new(),
         );
@@ -112,9 +132,17 @@ fn exploration_group_mouse_handling_matches_pinned_senpi() {
                 step["handled"].as_bool().expect("handled"),
                 "{name} step {index}: handled"
             );
-            let wanted: Vec<String> =
-                step["lines"].as_array().expect("lines").iter().map(|line| line.as_str().expect("line").to_owned()).collect();
-            assert_eq!(trim(group.render(80)), wanted, "{name} step {index}: render");
+            let wanted: Vec<String> = step["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .map(|line| line.as_str().expect("line").to_owned())
+                .collect();
+            assert_eq!(
+                trim(group.render(80)),
+                wanted,
+                "{name} step {index}: render"
+            );
         }
     }
 }

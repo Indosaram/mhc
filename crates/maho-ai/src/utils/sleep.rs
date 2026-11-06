@@ -27,6 +27,9 @@ mod tests {
     async fn rejects_with_reason_on_abort() {
         let controller = AbortController::new();
         controller.abort(Some(AbortReason::new("Error", "x")));
-        assert_eq!(sleep(50, &controller.signal()).await, Err(AbortReason::new("Error", "x")));
+        assert_eq!(
+            sleep(50, &controller.signal()).await,
+            Err(AbortReason::new("Error", "x"))
+        );
     }
 }

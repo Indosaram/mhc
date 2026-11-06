@@ -1,5 +1,11 @@
-use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, verification::build_test_discipline_section, workstation::WorkstationDialect};
 use crate::test_decision::TEST_DECISION;
+use maho_core::dynamic_prompt::{
+    build::{
+        BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
+    },
+    verification::build_test_discipline_section,
+    workstation::WorkstationDialect,
+};
 
 const EVAL_FIRST_ROUTING: &str = "When a code-execution tool is available, batch the independent reads, searches, symbol lookups, and commands of a step in one cell: enumerate them first, dispatch them together with the runtime's parallel helper, and inspect every result; an extra read-only call in that wave costs almost nothing, while acting on a stale assumption costs the whole turn. Edits, side-effecting commands, approvals, waits, and any call whose input is another call's result stay sequential, one action observed before the next.";
 const EVIDENCE_COMPARISON: &str = "Before running a cell, name the state it should produce; when it returns, compare the returned evidence with that state and check that a mutating cell changed nothing beyond it. A result that hides a failed item or a truncated tail is not evidence.";
@@ -10,17 +16,57 @@ const TODO_GRANULARITY: &str = "Split the work to the finest actionable grain - 
 const ATOMIC_COMMITS: &str = "When commits are authorized, commit atomically per verified increment, in the repository's existing message convention, each commit green on its own - never one omnibus commit at the end.";
 const LSP_SYMBOL_ROUTING: &str = "Route symbol work through the language server when LSP tools are available - definitions, references, rename impact, and diagnostics on the files you changed - and keep text search for text, filenames, and history.";
 
-pub struct ExecutionRule { pub id: &'static str, pub concern: &'static str, pub directive: &'static str }
+pub struct ExecutionRule {
+    pub id: &'static str,
+    pub concern: &'static str,
+    pub directive: &'static str,
+}
 pub const GPT56_EXECUTION_RULES: &[ExecutionRule] = &[
-    ExecutionRule { id: "eval-first-routing", concern: "tool-orchestration", directive: EVAL_FIRST_ROUTING },
-    ExecutionRule { id: "evidence-comparison", concern: "tool-orchestration", directive: EVIDENCE_COMPARISON },
-    ExecutionRule { id: "perceived-state-loop", concern: "tool-orchestration", directive: PERCEIVED_STATE_LOOP },
-    ExecutionRule { id: "stay-direct-exceptions", concern: "tool-orchestration", directive: STAY_DIRECT_EXCEPTIONS },
-    ExecutionRule { id: "delegation", concern: "delegation", directive: DELEGATION },
-    ExecutionRule { id: "todo-granularity", concern: "todo-discipline", directive: TODO_GRANULARITY },
-    ExecutionRule { id: "test-decision", concern: "tests", directive: TEST_DECISION },
-    ExecutionRule { id: "atomic-commits", concern: "commit-discipline", directive: ATOMIC_COMMITS },
-    ExecutionRule { id: "lsp-symbol-routing", concern: "symbol-routing", directive: LSP_SYMBOL_ROUTING },
+    ExecutionRule {
+        id: "eval-first-routing",
+        concern: "tool-orchestration",
+        directive: EVAL_FIRST_ROUTING,
+    },
+    ExecutionRule {
+        id: "evidence-comparison",
+        concern: "tool-orchestration",
+        directive: EVIDENCE_COMPARISON,
+    },
+    ExecutionRule {
+        id: "perceived-state-loop",
+        concern: "tool-orchestration",
+        directive: PERCEIVED_STATE_LOOP,
+    },
+    ExecutionRule {
+        id: "stay-direct-exceptions",
+        concern: "tool-orchestration",
+        directive: STAY_DIRECT_EXCEPTIONS,
+    },
+    ExecutionRule {
+        id: "delegation",
+        concern: "delegation",
+        directive: DELEGATION,
+    },
+    ExecutionRule {
+        id: "todo-granularity",
+        concern: "todo-discipline",
+        directive: TODO_GRANULARITY,
+    },
+    ExecutionRule {
+        id: "test-decision",
+        concern: "tests",
+        directive: TEST_DECISION,
+    },
+    ExecutionRule {
+        id: "atomic-commits",
+        concern: "commit-discipline",
+        directive: ATOMIC_COMMITS,
+    },
+    ExecutionRule {
+        id: "lsp-symbol-routing",
+        concern: "symbol-routing",
+        directive: LSP_SYMBOL_ROUTING,
+    },
 ];
 
 fn build_gpt56_core(context: &DynamicPromptCoreContext) -> String {

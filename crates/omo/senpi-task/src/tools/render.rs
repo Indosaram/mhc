@@ -120,9 +120,18 @@ impl LinesComponent for LinesView {
         match &self.lines {
             Lines::Static(lines) => lines
                 .iter()
-                .map(|line| if width == 0 { String::new() } else { truncate_to_width(line, width, crate::renderer_text::ELLIPSIS) })
+                .map(|line| {
+                    if width == 0 {
+                        String::new()
+                    } else {
+                        truncate_to_width(line, width, crate::renderer_text::ELLIPSIS)
+                    }
+                })
                 .collect(),
-            Lines::WidthAware(lines) => lines(width).into_iter().map(|line| if width == 0 { String::new() } else { line }).collect(),
+            Lines::WidthAware(lines) => lines(width)
+                .into_iter()
+                .map(|line| if width == 0 { String::new() } else { line })
+                .collect(),
         }
     }
 }
@@ -196,7 +205,11 @@ fn extract_ansi_code(chars: &[char], pos: usize) -> Option<usize> {
 }
 
 fn char_width(ch: char) -> usize {
-    if ch == '\t' { 3 } else { unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) }
+    if ch == '\t' {
+        3
+    } else {
+        unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
 }
 
 fn active_osc8_close(prefix: &str) -> &'static str {
@@ -211,9 +224,17 @@ fn active_osc8_close(prefix: &str) -> &'static str {
             let code: String = chars[i..i + len].iter().collect();
             if let Some(body) = code.strip_prefix("\x1b]8;") {
                 let bel = code.ends_with('\x07');
-                let body = if bel { &body[..body.len() - 1] } else { body.strip_suffix("\x1b\\").unwrap_or(body) };
+                let body = if bel {
+                    &body[..body.len() - 1]
+                } else {
+                    body.strip_suffix("\x1b\\").unwrap_or(body)
+                };
                 if let Some(separator) = body.find(';') {
-                    active = if body[separator + 1..].is_empty() { None } else { Some(bel) };
+                    active = if body[separator + 1..].is_empty() {
+                        None
+                    } else {
+                        Some(bel)
+                    };
                 }
             }
             i += len;
@@ -230,7 +251,11 @@ fn active_osc8_close(prefix: &str) -> &'static str {
 
 fn finalize_truncated(prefix: &str, ellipsis: &str) -> String {
     let close = active_osc8_close(prefix);
-    if ellipsis.is_empty() { format!("{prefix}{close}{RESET}") } else { format!("{prefix}{close}{RESET}{ellipsis}{RESET}") }
+    if ellipsis.is_empty() {
+        format!("{prefix}{close}{RESET}")
+    } else {
+        format!("{prefix}{close}{RESET}{ellipsis}{RESET}")
+    }
 }
 
 fn visible_width(text: &str) -> usize {

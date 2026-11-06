@@ -268,7 +268,15 @@ fn linux_start_ms(base: &Path) -> Option<u64> {
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn process_info(pid: u32) -> Option<ProcessInfo> {
     let output = std::process::Command::new("ps")
-        .args(["-ww", "-p", &pid.to_string(), "-o", "etime=", "-o", "command="])
+        .args([
+            "-ww",
+            "-p",
+            &pid.to_string(),
+            "-o",
+            "etime=",
+            "-o",
+            "command=",
+        ])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
@@ -336,7 +344,9 @@ pub fn matches_task_child(record: &TaskRecord, info: &ProcessInfo) -> bool {
     let session = record.session_id.trim();
     let tokens: Vec<&str> = info.command_line.split_whitespace().collect();
     let carries_session = !session.is_empty()
-        && tokens.windows(2).any(|pair| pair[0] == "--session-id" && pair[1] == session);
+        && tokens
+            .windows(2)
+            .any(|pair| pair[0] == "--session-id" && pair[1] == session);
     if !carries_session {
         return false;
     }
@@ -347,9 +357,10 @@ pub fn matches_task_child(record: &TaskRecord, info: &ProcessInfo) -> bool {
         return false;
     }
     if cfg!(windows) {
-        let own = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().to_lowercase()));
+        let own = std::env::current_exe().ok().and_then(|exe| {
+            exe.file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+        });
         let image = info.image.as_deref().map(|image| {
             Path::new(image)
                 .file_name()
@@ -390,9 +401,19 @@ pub fn reconcile(record: &mut TaskRecord, owned_here: bool) -> bool {
 pub fn default_state_root(agent_dir: &Path, session_id: &str) -> PathBuf {
     let session: String = session_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let session = if session.is_empty() { "default".to_owned() } else { session };
+    let session = if session.is_empty() {
+        "default".to_owned()
+    } else {
+        session
+    };
     agent_dir.join("tasks").join(session)
 }
 
@@ -462,13 +483,25 @@ mod tests {
             image: None,
         };
         if cfg!(unix) {
-            assert!(matches_task_child(&record, &info("mhc -p --session-id sid-1 --name A", Some(9_000))));
+            assert!(matches_task_child(
+                &record,
+                &info("mhc -p --session-id sid-1 --name A", Some(9_000))
+            ));
             assert!(!matches_task_child(&record, &info("sleep 30", Some(9_000))));
-            assert!(!matches_task_child(&record, &info("mhc --session-id sid-10", Some(9_000))));
+            assert!(!matches_task_child(
+                &record,
+                &info("mhc --session-id sid-10", Some(9_000))
+            ));
             // A process started well after the spawn reuses the pid.
-            assert!(!matches_task_child(&record, &info("mhc -p --session-id sid-1", Some(60_000))));
+            assert!(!matches_task_child(
+                &record,
+                &info("mhc -p --session-id sid-1", Some(60_000))
+            ));
             record.pid_started_at_ms = None;
-            assert!(matches_task_child(&record, &info("mhc -p --session-id sid-1", Some(60_000))));
+            assert!(matches_task_child(
+                &record,
+                &info("mhc -p --session-id sid-1", Some(60_000))
+            ));
         }
     }
 

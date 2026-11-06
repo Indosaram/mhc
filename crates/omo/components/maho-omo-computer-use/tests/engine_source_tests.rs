@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-use maho_omo_computer_use::engine_source::{
-    describe_engine_source, omo_release_version,
-};
+use maho_omo_computer_use::engine_source::{describe_engine_source, omo_release_version};
 use maho_omo_computer_use::installed_engine::{
-    explicit_path_diagnostic,
-    resolve_installed_engine, DesktopEngineLocatorOptions, InstalledEngine,
+    DesktopEngineLocatorOptions, InstalledEngine, explicit_path_diagnostic,
+    resolve_installed_engine,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn test_given_sidecar_when_described_then_status_names_source_without_starting() {
@@ -23,7 +21,10 @@ fn test_given_sidecar_when_described_then_status_names_source_without_starting()
 fn test_given_verified_cache_and_no_candidate_when_described_then_names_release_cache() {
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), "/tmp/test-home-cache".to_string());
-    env.insert("USERPROFILE".to_string(), "/tmp/test-home-cache".to_string());
+    env.insert(
+        "USERPROFILE".to_string(),
+        "/tmp/test-home-cache".to_string(),
+    );
     let options = DesktopEngineLocatorOptions {
         platform: Some("linux".to_string()),
         arch: Some("x64".to_string()),
@@ -36,7 +37,10 @@ fn test_given_verified_cache_and_no_candidate_when_described_then_names_release_
 #[test]
 fn test_given_empty_installation_when_described_then_names_what_first_use_would_download() {
     let mut env = BTreeMap::new();
-    env.insert("OMO_PACKAGE_DIR".to_string(), "/nonexistent/payload".to_string());
+    env.insert(
+        "OMO_PACKAGE_DIR".to_string(),
+        "/nonexistent/payload".to_string(),
+    );
     let options = DesktopEngineLocatorOptions {
         platform: Some("linux".to_string()),
         arch: Some("x64".to_string()),
@@ -158,7 +162,10 @@ fn test_installed_source_parity_runtime_dir() {
         ..Default::default()
     };
     let res = resolve_installed_engine(None, &BTreeMap::new(), None, &options);
-    assert!(matches!(res, InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)));
+    assert!(matches!(
+        res,
+        InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)
+    ));
 }
 
 #[test]
@@ -170,7 +177,10 @@ fn test_installed_source_parity_sidecar() {
         ..Default::default()
     };
     let res = resolve_installed_engine(None, &BTreeMap::new(), None, &options);
-    assert!(matches!(res, InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)));
+    assert!(matches!(
+        res,
+        InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)
+    ));
 }
 
 #[test]
@@ -182,7 +192,10 @@ fn test_installed_source_parity_package_prebuild() {
         ..Default::default()
     };
     let res = resolve_installed_engine(None, &BTreeMap::new(), None, &options);
-    assert!(matches!(res, InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)));
+    assert!(matches!(
+        res,
+        InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)
+    ));
 }
 
 #[test]
@@ -194,19 +207,28 @@ fn test_installed_source_parity_dev_build() {
         ..Default::default()
     };
     let res = resolve_installed_engine(None, &BTreeMap::new(), None, &options);
-    assert!(matches!(res, InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)));
+    assert!(matches!(
+        res,
+        InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)
+    ));
 }
 
 #[test]
 fn test_installed_source_parity_cache() {
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), "/tmp/test-home-empty".to_string());
-    env.insert("USERPROFILE".to_string(), "/tmp/test-home-empty".to_string());
+    env.insert(
+        "USERPROFILE".to_string(),
+        "/tmp/test-home-empty".to_string(),
+    );
     let options = DesktopEngineLocatorOptions {
         platform: Some("linux".to_string()),
         arch: Some("x64".to_string()),
         ..Default::default()
     };
     let res = resolve_installed_engine(None, &env, Some("1.0.0"), &options);
-    assert!(matches!(res, InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)));
+    assert!(matches!(
+        res,
+        InstalledEngine::NotInstalled(_) | InstalledEngine::Diagnostic(_)
+    ));
 }

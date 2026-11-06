@@ -1,14 +1,14 @@
 //! Quality gate template generation for checkpointing.
 
-use std::collections::BTreeMap;
-use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::Path;
 
-use crate::paths::{ulw_loop_attempt_evidence_dir, UlwLoopScope};
+use crate::paths::{UlwLoopScope, ulw_loop_attempt_evidence_dir};
 use crate::plan_io::read_ulw_loop_plan;
 use crate::runtime::UlwLoopError;
-use crate::surface::{resolve_toolkit_surface, UlwLoopToolkitSurface};
+use crate::surface::{UlwLoopToolkitSurface, resolve_toolkit_surface};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckpointTemplate {
@@ -16,7 +16,11 @@ pub struct CheckpointTemplate {
     pub quality_gate_template: Value,
     #[serde(rename = "codexGoalTemplate")]
     pub codex_goal_template: Value,
-    #[serde(rename = "attemptDir", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "attemptDir",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub attempt_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,

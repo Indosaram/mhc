@@ -7,36 +7,34 @@
 //! and releases its fences.
 
 pub type PauseTaskCallback = Arc<
-        dyn Fn(
-                &str,
-                &RunPauseOwner,
-            )
-                -> Result<Option<senpi_task::manager::run_pause::EngineInheritReceipt>, String>
-            + Send
-            + Sync,
-    >;
+    dyn Fn(
+            &str,
+            &RunPauseOwner,
+        ) -> Result<Option<senpi_task::manager::run_pause::EngineInheritReceipt>, String>
+        + Send
+        + Sync,
+>;
 pub type ResumeTaskCallback = Arc<
-        dyn Fn(
-                &str,
-                &RunPauseOwner,
-                &str,
-                Option<u64>,
-                Option<&ResumeCredential>,
-            ) -> Result<ResumeParticipantResult, String>
-            + Send
-            + Sync,
-    >;
-pub type ObserveTaskHoldCallback = Arc<
-        dyn Fn(&str, &str) -> Option<senpi_task::manager::run_pause::ObservedHold> + Send + Sync,
-    >;
+    dyn Fn(
+            &str,
+            &RunPauseOwner,
+            &str,
+            Option<u64>,
+            Option<&ResumeCredential>,
+        ) -> Result<ResumeParticipantResult, String>
+        + Send
+        + Sync,
+>;
+pub type ObserveTaskHoldCallback =
+    Arc<dyn Fn(&str, &str) -> Option<senpi_task::manager::run_pause::ObservedHold> + Send + Sync>;
 pub type HoldTaskInputCallback = Arc<
-        dyn Fn(
-                &str,
-                &senpi_task::manager::run_pause::HeldTaskInput,
-            ) -> Result<senpi_task::manager::run_pause::EngineHoldInputResult, String>
-            + Send
-            + Sync,
-    >;
+    dyn Fn(
+            &str,
+            &senpi_task::manager::run_pause::HeldTaskInput,
+        ) -> Result<senpi_task::manager::run_pause::EngineHoldInputResult, String>
+        + Send
+        + Sync,
+>;
 pub type FenceRunCallback = Arc<dyn Fn(&RunRef) -> Result<(), String> + Send + Sync>;
 pub type CancelTaskCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 use senpi_task::pause::registry::PauseError;
@@ -114,9 +112,10 @@ impl RunPauseEffects for EngineRunPauseEffects {
             for record in &records {
                 if sessions.contains(&record.parent_session_id)
                     && let Some(child) = &record.child_session_id
-                        && !sessions.contains(child) {
-                            sessions.push(child.clone());
-                        }
+                    && !sessions.contains(child)
+                {
+                    sessions.push(child.clone());
+                }
             }
             if before == sessions.len() {
                 break;
@@ -500,8 +499,7 @@ impl EngineRunPause {
         parent_session_id: &str,
         pause_seq: u64,
     ) -> Vec<senpi_task::pause::run_controller::ResumeFailure> {
-        match block_on_nested(self.controller.retry_lost(parent_session_id, pause_seq))
-        {
+        match block_on_nested(self.controller.retry_lost(parent_session_id, pause_seq)) {
             Ok(failures) => failures,
             Err(error) => {
                 maho_ext_api::diagnostic(&format!("pause retry failed: {error}"));
@@ -1009,6 +1007,7 @@ mod parity_tests {
                 engine.clone(),
             )),
             session_id: Arc::new(|| Some("parent".into())),
+            fail_resume: None,
         };
         let mut api = maho_ext_api::ExtensionApi::new(
             maho_ext_api::LoadedExtension::new("task", "/tmp".into(), Default::default()),
@@ -1069,9 +1068,7 @@ mod parity_tests {
         let dir = tempfile::tempdir().expect("dir");
         let effects = Arc::new(effects());
         let engine = EngineRunPause::new(dir.path(), effects);
-        let result = futures::executor::block_on(async {
-            engine.pause("parent", 1)
-        });
+        let result = futures::executor::block_on(async { engine.pause("parent", 1) });
         assert!(result.is_ok());
     }
 }

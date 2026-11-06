@@ -9,13 +9,18 @@ use crate::harness::context::Context;
 use crate::harness::session::in_memory_storage_state::InMemoryStorageState;
 use crate::harness::session::session::{SessionError, SessionErrorKind};
 use crate::harness::session::types::{
-    CommitResult, Entry, EntryScan, EntryStructure, NewUsageRow, SessionStats, Storage, StorageBranchScan, UsageRow,
-    UsageScan, Write,
+    CommitResult, Entry, EntryScan, EntryStructure, NewUsageRow, SessionStats, Storage,
+    StorageBranchScan, UsageRow, UsageScan, Write,
 };
-use crate::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
+use crate::harness::session::values::{
+    ListElement, ListReadOptions, StoredValue, Value, ValueList,
+};
 use crate::harness::types::FileSystem;
 
-use super::io::{file_value, parse_jsonl_transaction, publish_file_atomically, publish_jsonl, read_jsonl_header, serialize_jsonl_transaction};
+use super::io::{
+    file_value, parse_jsonl_transaction, publish_file_atomically, publish_jsonl, read_jsonl_header,
+    serialize_jsonl_transaction,
+};
 use super::legacy_v3::LegacyV3Source;
 use super::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader, JsonlStorageOptions};
 
@@ -73,7 +78,10 @@ impl JsonlStorage {
     }
 
     pub fn is_legacy_v3(&self) -> bool {
-        matches!(*self.backing.lock().expect("jsonl backing"), JsonlBacking::V3(_))
+        matches!(
+            *self.backing.lock().expect("jsonl backing"),
+            JsonlBacking::V3(_)
+        )
     }
 
     pub async fn create(
@@ -122,7 +130,10 @@ impl JsonlStorage {
         Ok(storage)
     }
 
-    pub async fn open(options: JsonlStorageOptions, context: &Context) -> Result<JsonlStorage, SessionError> {
+    pub async fn open(
+        options: JsonlStorageOptions,
+        context: &Context,
+    ) -> Result<JsonlStorage, SessionError> {
         let reader = file_value(
             options
                 .file_system
@@ -134,13 +145,21 @@ impl JsonlStorage {
         reader.close(context).await;
         let parsed = parsed?;
         match parsed {
-            super::codec::JsonlParsedSessionHeader::V4(header) => Self::open_v4(options, header, context).await,
-            super::codec::JsonlParsedSessionHeader::V3Legacy(_) => Self::open_legacy_v3(options, context).await,
+            super::codec::JsonlParsedSessionHeader::V4(header) => {
+                Self::open_v4(options, header, context).await
+            }
+            super::codec::JsonlParsedSessionHeader::V3Legacy(_) => {
+                Self::open_legacy_v3(options, context).await
+            }
         }
     }
 
-    async fn open_legacy_v3(options: JsonlStorageOptions, context: &Context) -> Result<JsonlStorage, SessionError> {
-        let source = LegacyV3Source::read(options.file_system.clone(), &options.path, context).await?;
+    async fn open_legacy_v3(
+        options: JsonlStorageOptions,
+        context: &Context,
+    ) -> Result<JsonlStorage, SessionError> {
+        let source =
+            LegacyV3Source::read(options.file_system.clone(), &options.path, context).await?;
         let mut header = source.header.clone();
         header.next_seq = Some(source.next_seq);
         let storage = JsonlStorage {
@@ -165,7 +184,10 @@ impl JsonlStorage {
         context: &Context,
     ) -> Result<JsonlStorage, SessionError> {
         let content = file_value(
-            options.file_system.read_text_file(&options.path, context).await,
+            options
+                .file_system
+                .read_text_file(&options.path, context)
+                .await,
             &format!("Failed to read JSONL storage {}", options.path),
         )?;
         let (lines, torn) = split_complete_lines(&content);
@@ -222,14 +244,21 @@ impl JsonlStorage {
         Ok(storage)
     }
 
-    fn replay_committed(&self, writes: &[crate::harness::session::commit::CommittedWrite]) -> Result<(), SessionError> {
+    fn replay_committed(
+        &self,
+        writes: &[crate::harness::session::commit::CommittedWrite],
+    ) -> Result<(), SessionError> {
         let mut state = self.state.lock().expect("jsonl state");
         state.validate_committed(writes)?;
         state.apply_validated(writes);
         Ok(())
     }
 
-    async fn apply_commit(&self, writes: Vec<Write>, context: &Context) -> Result<CommitResult, SessionError> {
+    async fn apply_commit(
+        &self,
+        writes: Vec<Write>,
+        context: &Context,
+    ) -> Result<CommitResult, SessionError> {
         if !writes.is_empty() {
             let source = {
                 let backing = self.backing.lock().expect("jsonl backing");
@@ -249,7 +278,9 @@ impl JsonlStorage {
         if !prepared.writes.is_empty() {
             let line = format!("{}\n", serialize_jsonl_transaction(&prepared.writes));
             file_value(
-                self.file_system.append_file(&self.path, line.as_bytes(), context).await,
+                self.file_system
+                    .append_file(&self.path, line.as_bytes(), context)
+                    .await,
                 &format!("Failed to append JSONL storage {}", self.path),
             )?;
         }
@@ -283,7 +314,10 @@ impl JsonlStorage {
         });
         let prepared = {
             let state = self.state.lock().expect("jsonl state");
-            state.prepare_commit(std::iter::once(adjustment).chain(caller_writes).collect(), timestamp)?
+            state.prepare_commit(
+                std::iter::once(adjustment).chain(caller_writes).collect(),
+                timestamp,
+            )?
         };
         let next_seq = prepared.result.first_seq + prepared.writes.len() as i64;
         let mut upgraded_header = self.header.clone();
@@ -342,7 +376,11 @@ fn default_now() -> Arc<dyn Fn() -> i64 + Send + Sync> {
 }
 
 impl Storage for JsonlStorage {
-    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, Result<CommitResult, SessionError>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<CommitResult, SessionError>> {
         Box::pin(async move {
             if !self.is_open() {
                 return Err(Self::closed_error());
@@ -400,7 +438,10 @@ impl Storage for JsonlStorage {
             if !self.is_open() {
                 return Err(Self::closed_error());
             }
-            self.state.lock().expect("jsonl state").read_list(address, options)
+            self.state
+                .lock()
+                .expect("jsonl state")
+                .read_list(address, options)
         })
     }
 
@@ -426,7 +467,10 @@ impl Storage for JsonlStorage {
             if !self.is_open() {
                 return Err(Self::closed_error());
             }
-            self.state.lock().expect("jsonl state").scan_branch_structure(&query)
+            self.state
+                .lock()
+                .expect("jsonl state")
+                .scan_branch_structure(&query)
         })
     }
 
@@ -456,7 +500,10 @@ impl Storage for JsonlStorage {
         })
     }
 
-    fn get_stats<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         Box::pin(async move {
             if !self.is_open() {
                 return Err(Self::closed_error());
@@ -482,4 +529,3 @@ pub type JsonlStorageHandle = Arc<JsonlStorage>;
 pub type JsonlUsageRow = UsageRow;
 
 pub type JsonlNewUsageRow = NewUsageRow;
-

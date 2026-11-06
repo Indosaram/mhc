@@ -8,7 +8,7 @@ use flate2::read::GzDecoder;
 use prost::Message;
 
 use crate::api::devin_agent::paths::DEVIN_UNARY_HEADERS;
-use crate::utils::abort::{race_with_abort_signal, AbortSignal};
+use crate::utils::abort::{AbortSignal, race_with_abort_signal};
 
 const MAX_UNARY_ERROR_BODY_CHARS: usize = 500;
 
@@ -22,7 +22,11 @@ pub struct DevinUnaryError {
 
 impl std::fmt::Display for DevinUnaryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Devin {} failed (HTTP {})", self.rpc, self.status)?;
+        write!(
+            formatter,
+            "Devin {} failed (HTTP {})",
+            self.rpc, self.status
+        )?;
         if !self.detail.is_empty() {
             write!(formatter, ": {}", self.detail)?;
         }
@@ -40,27 +44,37 @@ pub struct DevinUnaryInput<'a, Req: Message> {
 }
 
 /// `postDevinUnary`.
-pub async fn post_devin_unary<Req, Res>(input: DevinUnaryInput<'_, Req>) -> Result<Res, DevinUnaryError>
+pub async fn post_devin_unary<Req, Res>(
+    input: DevinUnaryInput<'_, Req>,
+) -> Result<Res, DevinUnaryError>
 where
     Req: Message,
     Res: Message + Default,
 {
-    let mut request = input.client.post(format!("{}{}", input.base_url, input.path));
+    let mut request = input
+        .client
+        .post(format!("{}{}", input.base_url, input.path));
     for (name, value) in DEVIN_UNARY_HEADERS {
         request = request.header(name, value);
     }
     let send = request.body(input.request.encode_to_vec()).send();
     let response = match input.signal {
-        Some(signal) => race_with_abort_signal(send, signal)
-            .await
-            .map_err(|_| DevinUnaryError {
-                rpc: rpc_name(input.path),
-                status: 0,
-                detail: String::from("Request was aborted"),
-            })?,
+        Some(signal) => {
+            race_with_abort_signal(send, signal)
+                .await
+                .map_err(|_| DevinUnaryError {
+                    rpc: rpc_name(input.path),
+                    status: 0,
+                    detail: String::from("Request was aborted"),
+                })?
+        }
         None => send.await,
     }
-    .map_err(|error| DevinUnaryError { rpc: rpc_name(input.path), status: 0, detail: error.to_string() })?;
+    .map_err(|error| DevinUnaryError {
+        rpc: rpc_name(input.path),
+        status: 0,
+        detail: error.to_string(),
+    })?;
     let status = response.status().as_u16();
     let payload = response.bytes().await.map_err(|error| DevinUnaryError {
         rpc: rpc_name(input.path),
@@ -71,7 +85,10 @@ where
         return Err(DevinUnaryError {
             rpc: rpc_name(input.path),
             status,
-            detail: slice_utf16(&String::from_utf8_lossy(&payload), MAX_UNARY_ERROR_BODY_CHARS),
+            detail: slice_utf16(
+                &String::from_utf8_lossy(&payload),
+                MAX_UNARY_ERROR_BODY_CHARS,
+            ),
         });
     }
     match decode_devin_unary::<Res>(&payload) {

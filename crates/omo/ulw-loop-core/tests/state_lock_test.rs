@@ -5,8 +5,8 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 use ulw_loop_core::runtime::UlwLoopError;
 use ulw_loop_core::state_lock::{
-    guard_path_for, with_state_lock, with_state_lock_sync, StateLockOptions,
-    ULW_LOOP_LOCK_TIMEOUT_CODE,
+    StateLockOptions, ULW_LOOP_LOCK_TIMEOUT_CODE, guard_path_for, with_state_lock,
+    with_state_lock_sync,
 };
 
 fn opts(timeout_ms: u64) -> StateLockOptions {
@@ -135,12 +135,16 @@ fn two_threads_contend_for_guard_never_exceeds_one_holder() {
     let holder = std::thread::spawn(move || {
         with_state_lock(&p, Some(&opts(3_000)), |_| {
             held_tx.send(()).unwrap();
-            release_rx.recv_timeout(Duration::from_secs(30)).expect("main released");
+            release_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("main released");
             Ok::<(), UlwLoopError>(())
         })
     });
 
-    held_rx.recv_timeout(Duration::from_secs(30)).expect("holder acquired");
+    held_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("holder acquired");
     let busy = with_state_lock(&path, Some(&opts(0)), |_| Ok::<_, UlwLoopError>(()));
     assert_eq!(busy.unwrap_err().code, ULW_LOOP_LOCK_TIMEOUT_CODE);
 
@@ -165,7 +169,9 @@ fn stale_lock_reclaim_admits_one_holder() {
     let handle_a = std::thread::spawn(move || {
         with_state_lock(&p1, Some(&opts(2_000)), |_| {
             barrier_holder.wait();
-            a_may_release.recv_timeout(Duration::from_secs(30)).expect("B finished");
+            a_may_release
+                .recv_timeout(Duration::from_secs(30))
+                .expect("B finished");
             Ok::<_, UlwLoopError>("holder_a")
         })
     });
@@ -174,9 +180,7 @@ fn stale_lock_reclaim_admits_one_holder() {
 
     let p2 = path.clone();
     let handle_b = std::thread::spawn(move || {
-        with_state_lock(&p2, Some(&opts(50)), |_| {
-            Ok::<_, UlwLoopError>("holder_b")
-        })
+        with_state_lock(&p2, Some(&opts(50)), |_| Ok::<_, UlwLoopError>("holder_b"))
     });
 
     let res_b = handle_b.join().unwrap();

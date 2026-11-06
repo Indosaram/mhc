@@ -145,7 +145,11 @@ fn resolved_model(provider: &str, model_id: &str, display: &str) -> ResolvedMode
 }
 
 fn first_row(component: &dyn LinesComponent, width: usize) -> String {
-    component.render(width).into_iter().next().unwrap_or_default()
+    component
+        .render(width)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 #[test]

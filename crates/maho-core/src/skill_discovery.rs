@@ -61,7 +61,9 @@ impl IgnoreMatcher {
             Some(stripped) => (stripped, true),
             None => (path, false),
         };
-        self.matcher.matched_path_or_any_parents(path, is_dir).is_ignore()
+        self.matcher
+            .matched_path_or_any_parents(path, is_dir)
+            .is_ignore()
     }
 }
 
@@ -99,15 +101,28 @@ pub fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
     }
 
     let prefixed = format!("{prefix}{pattern}");
-    Some(if negated { format!("!{prefixed}") } else { prefixed })
+    Some(if negated {
+        format!("!{prefixed}")
+    } else {
+        prefixed
+    })
 }
 
 /// `addIgnoreRules`: applies the ignore files present in `entries`, the listing of `dir` the walk already
 /// read, so no directory pays a probe per ignore-file name (omo#11437). Names compare case-insensitively,
 /// as the former existence probe did on case-insensitive volumes; a name that does not open is skipped.
-pub fn add_ignore_rules_from_entries(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str, entries: &[PathBuf]) {
+pub fn add_ignore_rules_from_entries(
+    ig: &mut IgnoreMatcher,
+    dir: &str,
+    root_dir: &str,
+    entries: &[PathBuf],
+) {
     let relative_dir = relative_path(root_dir, dir);
-    let prefix = if relative_dir.is_empty() { String::new() } else { format!("{}/", to_posix_path(&relative_dir)) };
+    let prefix = if relative_dir.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", to_posix_path(&relative_dir))
+    };
     let names: std::collections::HashSet<String> = entries
         .iter()
         .filter_map(|entry| entry.file_name())
@@ -141,14 +156,19 @@ pub fn add_ignore_rules(ig: &mut IgnoreMatcher, dir: &str, root_dir: &str) {
 }
 
 fn relative_path(root: &str, dir: &str) -> String {
-    Path::new(dir).strip_prefix(Path::new(root)).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default()
+    Path::new(dir)
+        .strip_prefix(Path::new(root))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// `frontmatterPrefixEnd`: `None` when the closing fence is not inside the buffer.
@@ -157,7 +177,11 @@ fn frontmatter_prefix_end(buf: &[u8]) -> Option<usize> {
     if buf.len() >= 3 && buf[0] == 0xef && buf[1] == 0xbb && buf[2] == 0xbf {
         offset = 3;
     }
-    if buf.len() - offset < 3 || buf[offset] != 0x2d || buf[offset + 1] != 0x2d || buf[offset + 2] != 0x2d {
+    if buf.len() - offset < 3
+        || buf[offset] != 0x2d
+        || buf[offset + 1] != 0x2d
+        || buf[offset + 2] != 0x2d
+    {
         return Some(buf.len());
     }
     let rest = &buf[offset + 3..];
@@ -202,7 +226,13 @@ pub fn collect_skill_entries(
     ignore_matcher: Option<&IgnoreMatcher>,
     root_dir: Option<&str>,
 ) -> Vec<String> {
-    collect_skill_entries_with_options(dir, mode, ignore_matcher, root_dir, &SkillWalkOptions::default())
+    collect_skill_entries_with_options(
+        dir,
+        mode,
+        ignore_matcher,
+        root_dir,
+        &SkillWalkOptions::default(),
+    )
 }
 
 pub fn collect_skill_entries_with_options(
@@ -219,7 +249,9 @@ pub fn collect_skill_entries_with_options(
 
     if let Some(ref prov) = options.provenance {
         let allowed = options.allowed_set.as_ref().cloned().unwrap_or_default();
-        if let Err(e) = crate::skill_access::authorize_skill_path(Path::new(dir), Some(prov), &allowed, true) {
+        if let Err(e) =
+            crate::skill_access::authorize_skill_path(Path::new(dir), Some(prov), &allowed, true)
+        {
             let _ = e;
             return vec![dir.to_string()];
         }
@@ -231,9 +263,10 @@ pub fn collect_skill_entries_with_options(
     }
     .unwrap_or_else(|_| dir.to_string());
     if let Some(ref ancestry) = options.ancestry
-        && ancestry.contains(&canonical) {
-            return entries;
-        }
+        && ancestry.contains(&canonical)
+    {
+        return entries;
+    }
     let mut descendants = options.ancestry.clone().unwrap_or_default();
     descendants.insert(canonical);
 
@@ -247,7 +280,10 @@ pub fn collect_skill_entries_with_options(
     add_ignore_rules_from_entries(&mut matcher, dir, &root, &dir_entries);
 
     for full_path in &dir_entries {
-        let Some(name) = full_path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+        let Some(name) = full_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
             continue;
         };
         if name != "SKILL.md" {
@@ -265,7 +301,10 @@ pub fn collect_skill_entries_with_options(
     }
 
     for full_path in &dir_entries {
-        let Some(name) = full_path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+        let Some(name) = full_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
             continue;
         };
         if should_skip_skill_walk_directory_name(&name) {
@@ -280,7 +319,8 @@ pub fn collect_skill_entries_with_options(
         let should_include_markdown_file = is_file
             && name.ends_with(".md")
             && !matcher.ignores(&rel_path)
-            && ((mode == SkillDiscoveryMode::Pi && dir == root) || (mode == SkillDiscoveryMode::Agents && dir != root));
+            && ((mode == SkillDiscoveryMode::Pi && dir == root)
+                || (mode == SkillDiscoveryMode::Agents && dir != root));
         if should_include_markdown_file {
             entries.push(full_path.to_string_lossy().into_owned());
             continue;
@@ -361,9 +401,18 @@ mod tests {
 
     #[test]
     fn ignore_patterns_are_prefixed_and_negations_kept() {
-        assert_eq!(prefix_ignore_pattern("build/", "sub/"), Some("sub/build/".to_string()));
-        assert_eq!(prefix_ignore_pattern("!keep.md", "sub/"), Some("!sub/keep.md".to_string()));
-        assert_eq!(prefix_ignore_pattern("/root-only", ""), Some("root-only".to_string()));
+        assert_eq!(
+            prefix_ignore_pattern("build/", "sub/"),
+            Some("sub/build/".to_string())
+        );
+        assert_eq!(
+            prefix_ignore_pattern("!keep.md", "sub/"),
+            Some("!sub/keep.md".to_string())
+        );
+        assert_eq!(
+            prefix_ignore_pattern("/root-only", ""),
+            Some("root-only".to_string())
+        );
         assert_eq!(prefix_ignore_pattern("# comment", ""), None);
         assert_eq!(prefix_ignore_pattern("   ", ""), None);
     }
@@ -385,12 +434,34 @@ mod tests {
         write_file(&root.join("root.md"), "root");
         write_file(&root.join("nested").join("deep.md"), "deep");
 
-        let pi_entries = collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
-        let pi_names: Vec<String> = pi_entries.iter().map(|path| Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let pi_entries =
+            collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
+        let pi_names: Vec<String> = pi_entries
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
         assert_eq!(pi_names, vec!["root.md".to_string()]);
 
-        let agents_entries = collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Agents, None, None);
-        let agents_names: Vec<String> = agents_entries.iter().map(|path| Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let agents_entries = collect_skill_entries(
+            &root.to_string_lossy(),
+            SkillDiscoveryMode::Agents,
+            None,
+            None,
+        );
+        let agents_names: Vec<String> = agents_entries
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
         assert_eq!(agents_names, vec!["deep.md".to_string()]);
     }
 
@@ -398,10 +469,17 @@ mod tests {
     fn a_skill_directory_stops_the_walk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        write_file(&root.join("pack").join("SKILL.md"), "---\nname: pack\n---\nbody");
-        write_file(&root.join("pack").join("extra").join("SKILL.md"), "---\nname: extra\n---\nbody");
+        write_file(
+            &root.join("pack").join("SKILL.md"),
+            "---\nname: pack\n---\nbody",
+        );
+        write_file(
+            &root.join("pack").join("extra").join("SKILL.md"),
+            "---\nname: extra\n---\nbody",
+        );
 
-        let entries = collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
+        let entries =
+            collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].replace('\\', "/").ends_with("pack/SKILL.md"));
     }
@@ -414,8 +492,17 @@ mod tests {
         write_file(&root.join("ignored.md"), "x");
         write_file(&root.join("kept.md"), "x");
 
-        let entries = collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
-        let names: Vec<String> = entries.iter().map(|path| Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let entries =
+            collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
+        let names: Vec<String> = entries
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
         assert_eq!(names, vec!["kept.md".to_string()]);
     }
 
@@ -424,7 +511,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("SKILL.md");
         write_file(&path, "---\nname: demo\n---\nbody\n");
-        assert_eq!(read_skill_markdown_source(&path.to_string_lossy()).expect("read"), "---\nname: demo\n---");
+        assert_eq!(
+            read_skill_markdown_source(&path.to_string_lossy()).expect("read"),
+            "---\nname: demo\n---"
+        );
     }
 
     #[test]
@@ -432,16 +522,26 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("SKILL.md");
         write_file(&path, "plain body");
-        assert_eq!(read_skill_markdown_source(&path.to_string_lossy()).expect("read"), "plain body");
+        assert_eq!(
+            read_skill_markdown_source(&path.to_string_lossy()).expect("read"),
+            "plain body"
+        );
     }
 
     #[test]
     fn a_long_file_without_a_closing_fence_falls_back_to_the_whole_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("SKILL.md");
-        let body = format!("---\nname: {}\n{}", "x".repeat(SKILL_FRONTMATTER_PREFIX_BYTES), "tail");
+        let body = format!(
+            "---\nname: {}\n{}",
+            "x".repeat(SKILL_FRONTMATTER_PREFIX_BYTES),
+            "tail"
+        );
         write_file(&path, &body);
-        assert_eq!(read_skill_markdown_source(&path.to_string_lossy()).expect("read"), body);
+        assert_eq!(
+            read_skill_markdown_source(&path.to_string_lossy()).expect("read"),
+            body
+        );
     }
 
     #[test]

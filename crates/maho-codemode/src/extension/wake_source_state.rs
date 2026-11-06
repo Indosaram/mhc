@@ -20,8 +20,12 @@ pub struct WakeSourceState {
     pub items: Option<Vec<WakeSourceStateItem>>,
 }
 
-pub fn emit_wake_source_state(api: &ExtensionApi, state: &WakeSourceState) -> Result<(), ExtensionFailure> {
-    let value = serde_json::to_value(state).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+pub fn emit_wake_source_state(
+    api: &ExtensionApi,
+    state: &WakeSourceState,
+) -> Result<(), ExtensionFailure> {
+    let value =
+        serde_json::to_value(state).map_err(|error| ExtensionFailure::new(error.to_string()))?;
     api.rpc_emit(WAKE_SOURCE_STATE_EVENT, &value)?;
     api.events.emit(WAKE_SOURCE_STATE_EVENT, &value);
     Ok(())

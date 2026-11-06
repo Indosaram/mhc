@@ -1,13 +1,13 @@
 //! Computer session context and options matching upstream `src/session.ts`.
 
-use std::path::PathBuf;
-use std::sync::Arc;
 use maho_tools::ToolContext;
 use senpi_desktop_protocol::ComputerSessionSnapshot;
 use senpi_desktop_service::service::{
     CaptureCapsParams, DesktopSessionOpenParams, ScreenshotGcParams,
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::settings::ComputerSettings;
 

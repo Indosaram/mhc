@@ -2,15 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::backend::{
-    platform_name, resolve_candidates, BackendKind, IsolationContext, IsolationError, Result,
-    StartDetail, BACKEND_FILE,
+    BACKEND_FILE, BackendKind, IsolationContext, IsolationError, Result, StartDetail,
+    platform_name, resolve_candidates,
 };
 use crate::backend_marker::mark_started;
 use crate::backends::btrfs::remove_dir_all_force;
-use crate::base_dir::{choose_base_dir, FilesystemBaseDirIo};
+use crate::base_dir::{FilesystemBaseDirIo, choose_base_dir};
 use crate::git::command::{exists, git, git_result, str_args};
-use crate::git::detach_git_dir::{detach_git_dir, scan_nested_git_dirs, DetachOutcome, NestedGitResult};
-use crate::owner::{write_owner_marker, IsolationOwner};
+use crate::git::detach_git_dir::{
+    DetachOutcome, NestedGitResult, detach_git_dir, scan_nested_git_dirs,
+};
+use crate::owner::{IsolationOwner, write_owner_marker};
 use crate::process_identity::get_process_start_identity;
 use crate::sweep::BackendRef;
 use crate::util::{dirname, home_dir, now_ms, random_hex};
@@ -52,7 +54,11 @@ pub struct EnsureIsolationOptions {
     pub max_copy_bytes: Option<u64>,
 }
 
-pub fn relocate_sandbox(backend: &dyn crate::backend::IsolationBackend, from: &Path, to: &Path) -> Result<()> {
+pub fn relocate_sandbox(
+    backend: &dyn crate::backend::IsolationBackend,
+    from: &Path,
+    to: &Path,
+) -> Result<()> {
     backend.relocate(from, to)
 }
 
@@ -89,7 +95,11 @@ pub fn ensure_isolation(options: EnsureIsolationOptions) -> Result<IsolationHand
     }
     let mut fallback_reason: Option<String> = None;
     for (index, kind) in candidates.iter().enumerate() {
-        let Some(backend) = options.backends.iter().find(|backend| backend.kind() == *kind) else {
+        let Some(backend) = options
+            .backends
+            .iter()
+            .find(|backend| backend.kind() == *kind)
+        else {
             if fallback_reason.is_none() {
                 fallback_reason = Some(format!("No implementation for {}", kind.as_str()));
             }
@@ -147,11 +157,7 @@ pub fn ensure_isolation(options: EnsureIsolationOptions) -> Result<IsolationHand
             let common = if exists(&repo_root.join(".git"))? {
                 String::from_utf8_lossy(&git(
                     &repo_root,
-                    &str_args(&[
-                        "rev-parse",
-                        "--path-format=absolute",
-                        "--git-common-dir",
-                    ]),
+                    &str_args(&["rev-parse", "--path-format=absolute", "--git-common-dir"]),
                     None,
                 )?)
                 .trim()
@@ -204,9 +210,7 @@ pub fn ensure_isolation(options: EnsureIsolationOptions) -> Result<IsolationHand
                 });
             }
             Err(error) => {
-                if start_attempted
-                    && let Err(stop_error) = backend.stop(&merged)
-                {
+                if start_attempted && let Err(stop_error) = backend.stop(&merged) {
                     return Err(IsolationError::other(format!(
                         "Isolation teardown failed: {}: {error}; {stop_error}",
                         creating.display()
@@ -222,9 +226,9 @@ pub fn ensure_isolation(options: EnsureIsolationOptions) -> Result<IsolationHand
             }
         }
     }
-    Err(IsolationError::unavailable(
-        fallback_reason.unwrap_or_else(|| "No isolation backend is available".to_string()),
-    ))
+    Err(IsolationError::unavailable(fallback_reason.unwrap_or_else(
+        || "No isolation backend is available".to_string(),
+    )))
 }
 
 pub fn cleanup_isolation(handle: &IsolationHandle) -> Result<()> {

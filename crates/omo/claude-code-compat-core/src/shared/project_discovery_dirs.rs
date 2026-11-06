@@ -89,8 +89,10 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                std::fs::canonicalize(child.join(".opencode/command")).expect("canonical child alias"),
-                std::fs::canonicalize(project.join(".opencode/commands")).expect("canonical project alias")
+                std::fs::canonicalize(child.join(".opencode/command"))
+                    .expect("canonical child alias"),
+                std::fs::canonicalize(project.join(".opencode/commands"))
+                    .expect("canonical project alias")
             ]
         );
     }

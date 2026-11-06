@@ -48,11 +48,12 @@ where
 
     let raw_path = res.stdout.trim();
     let joined = dir.join(raw_path);
-    let index_path = crate::support::paths::strip_verbatim_prefix(if Path::new(raw_path).is_absolute() {
-        Path::new(raw_path)
-    } else {
-        &joined
-    });
+    let index_path =
+        crate::support::paths::strip_verbatim_prefix(if Path::new(raw_path).is_absolute() {
+            Path::new(raw_path)
+        } else {
+            &joined
+        });
 
     let lock_path = PathBuf::from(format!("{}.lock", index_path.display()));
     let temp_name = format!(

@@ -3,8 +3,8 @@
 use std::rc::Rc;
 
 use crate::terminal_image::{
-    allocate_image_id, get_capabilities, get_cell_dimensions, get_image_dimensions, image_fallback,
-    render_image, ImageRenderOptions,
+    ImageRenderOptions, allocate_image_id, get_capabilities, get_cell_dimensions,
+    get_image_dimensions, image_fallback, render_image,
 };
 use crate::terminal_text::ImageDimensions;
 use crate::tui::Component;

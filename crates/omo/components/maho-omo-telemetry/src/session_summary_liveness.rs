@@ -42,9 +42,9 @@ pub fn create_owner_liveness(
         let path = owner_entry_path(&dir, owner.pid);
         let text = std::fs::read_to_string(&path).ok();
         let entry = text.as_deref().and_then(parse_entry);
-        let matches = entry
-            .as_ref()
-            .is_some_and(|entry| entry.get("bootId").and_then(Value::as_str) == Some(&owner.boot_id));
+        let matches = entry.as_ref().is_some_and(|entry| {
+            entry.get("bootId").and_then(Value::as_str) == Some(&owner.boot_id)
+        });
         // Only an entry this call judges may be forgotten, and never this process's own.
         let judged = matches
             .then(|| text.clone().unwrap_or_default())
@@ -265,7 +265,8 @@ mod tests {
         };
         OwnerRegistry::new(input.clone()).register();
         let flag = Arc::clone(&live);
-        let alive = create_owner_liveness(&input, Some(Arc::new(move |_| flag.load(Ordering::SeqCst))));
+        let alive =
+            create_owner_liveness(&input, Some(Arc::new(move |_| flag.load(Ordering::SeqCst))));
         assert!(alive(&owner(std::process::id(), "boot-self")));
         live.store(false, Ordering::SeqCst);
         assert!(alive(&owner(std::process::id(), "boot-self")));

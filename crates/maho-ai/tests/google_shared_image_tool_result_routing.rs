@@ -2,10 +2,13 @@
 
 use crate::google_fixtures;
 
-use google_fixtures::{assistant, context, image, image_model, text, tool_call, tool_call_with_signature, tool_result, user_text};
-use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};
+use google_fixtures::{
+    assistant, context, image, image_model, text, tool_call, tool_call_with_signature, tool_result,
+    user_text,
+};
+use maho_ai::api::google_shared::{ConvertMessagesOptions, convert_messages};
 use maho_ai::types::{Context, Model, StopReason};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn make_context(model: &Model) -> Context {
     context(vec![
@@ -14,7 +17,12 @@ fn make_context(model: &Model) -> Context {
             model,
             vec![
                 if model.id.starts_with("gemini-3") {
-                    tool_call_with_signature("call_a", "read", json!({ "path": "a.txt" }), "AAAAAAAAAAAAAAAAAAAAAA==")
+                    tool_call_with_signature(
+                        "call_a",
+                        "read",
+                        json!({ "path": "a.txt" }),
+                        "AAAAAAAAAAAAAAAAAAAAAA==",
+                    )
                 } else {
                     tool_call("call_a", "read", json!({ "path": "a.txt" }))
                 },
@@ -30,8 +38,12 @@ fn make_context(model: &Model) -> Context {
 }
 
 fn convert(model: &Model) -> Value {
-    serde_json::to_value(convert_messages(model, &make_context(model), ConvertMessagesOptions::default()))
-        .expect("contents serialize")
+    serde_json::to_value(convert_messages(
+        model,
+        &make_context(model),
+        ConvertMessagesOptions::default(),
+    ))
+    .expect("contents serialize")
 }
 
 #[test]
@@ -58,9 +70,18 @@ fn nests_image_tool_results_for_gemini_3_google_api_models() {
     let items = contents.as_array().expect("contents is an array");
     assert_eq!(items.len(), 3);
     let tool_result_turn = &items[2];
-    assert_eq!(tool_result_turn["parts"].as_array().expect("parts").len(), 3);
+    assert_eq!(
+        tool_result_turn["parts"].as_array().expect("parts").len(),
+        3
+    );
     let image_response = &tool_result_turn["parts"][1]["functionResponse"];
     assert!(image_response.is_object());
-    assert_eq!(image_response["parts"].as_array().expect("nested parts").len(), 1);
+    assert_eq!(
+        image_response["parts"]
+            .as_array()
+            .expect("nested parts")
+            .len(),
+        1
+    );
     assert!(image_response["parts"][0].get("inlineData").is_some());
 }

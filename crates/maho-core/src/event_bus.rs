@@ -6,7 +6,9 @@ use std::collections::HashMap;
 type HandlerMap = HashMap<String, Vec<(u64, EventHandler, Option<ProviderScope>)>>;
 use std::sync::{Arc, Mutex};
 
-use maho_ai::node::provider_scope::{active_provider_scope, run_with_provider_scope, ProviderScope};
+use maho_ai::node::provider_scope::{
+    ProviderScope, active_provider_scope, run_with_provider_scope,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,7 +42,8 @@ impl EventBus {
             // `bindHandler`: a handler registered inside a provider scope runs in that scope; a
             // closed scope fails the call, which the safe wrapper logs like a handler error.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &scope {
-                Some(scope) => run_with_provider_scope(scope, || handler(data)).map_err(|error| error.to_string()),
+                Some(scope) => run_with_provider_scope(scope, || handler(data))
+                    .map_err(|error| error.to_string()),
                 None => {
                     handler(data);
                     Ok(())
@@ -48,8 +51,16 @@ impl EventBus {
             }));
             match outcome {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => { crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error}\n")); }
-                Err(error) => { crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n")); }
+                Ok(Err(error)) => {
+                    crate::output_guard::maho_write_stderr(&format!(
+                        "Event handler error ({channel}): {error}\n"
+                    ));
+                }
+                Err(error) => {
+                    crate::output_guard::maho_write_stderr(&format!(
+                        "Event handler error ({channel}): {error:?}\n"
+                    ));
+                }
             }
         }
     }
@@ -62,9 +73,17 @@ impl EventBus {
         };
         {
             let mut guard = self.handlers.lock().expect("event bus lock");
-            guard.entry(channel.to_owned()).or_default().push((id, handler, active_provider_scope()));
+            guard.entry(channel.to_owned()).or_default().push((
+                id,
+                handler,
+                active_provider_scope(),
+            ));
         }
-        EventSubscription { bus: self.clone(), channel: channel.to_owned(), id }
+        EventSubscription {
+            bus: self.clone(),
+            channel: channel.to_owned(),
+            id,
+        }
     }
 
     pub fn clear(&self) {
@@ -166,9 +185,12 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let _subscription = run_with_provider_scope(&scope, || {
             let seen = Arc::clone(&seen);
-            bus.on("c", Arc::new(move |_| {
-                seen.lock().expect("lock").push(active_provider_scope());
-            }))
+            bus.on(
+                "c",
+                Arc::new(move |_| {
+                    seen.lock().expect("lock").push(active_provider_scope());
+                }),
+            )
         })
         .expect("scope");
         bus.emit("c", &Value::Null);
@@ -184,9 +206,12 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let _subscription = run_with_provider_scope(&scope, || {
             let count = Arc::clone(&count);
-            bus.on("c", Arc::new(move |_| {
-                count.fetch_add(1, Ordering::SeqCst);
-            }))
+            bus.on(
+                "c",
+                Arc::new(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }),
+            )
         })
         .expect("scope");
         scope.close();
@@ -197,7 +222,10 @@ mod tests {
     #[test]
     fn the_rpc_channel_name_is_pinned() {
         assert_eq!(EXTENSION_RPC_EVENT_CHANNEL, "senpi:extension-rpc-event");
-        let event = ExtensionRpcEvent { name: "x".to_owned(), data: Value::from(1) };
+        let event = ExtensionRpcEvent {
+            name: "x".to_owned(),
+            data: Value::from(1),
+        };
         assert_eq!(serde_json::to_value(&event).expect("json")["name"], "x");
     }
 }

@@ -1,10 +1,10 @@
 //! Tests matching upstream `test/command.test.ts`.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use senpi_desktop_tool::command::{run_computer_command, COMPUTER_COMMAND_USAGE};
+use senpi_desktop_tool::command::{COMPUTER_COMMAND_USAGE, run_computer_command};
 use senpi_desktop_tool::settings::ComputerSettingsInput;
 
 use crate::fixtures;
@@ -43,7 +43,10 @@ async fn sends_stop_path_resume_exactly_once_for_computer_resume() {
     assert!(text.contains("suspended=false"));
 
     let methods = methods_of(&fixture.log).await;
-    let resumes = methods.iter().filter(|m| m.as_str() == "stopPath.resume").count();
+    let resumes = methods
+        .iter()
+        .filter(|m| m.as_str() == "stopPath.resume")
+        .count();
     assert_eq!(resumes, 1);
 }
 
@@ -79,9 +82,12 @@ async fn arms_stop_chord_when_computer_on_activates_tool() {
 
     let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ch_clone = changes.clone();
-    fixture.handle.on_activation_change(Arc::new(move |active| {
-        ch_clone.lock().unwrap().push(active);
-    })).await;
+    fixture
+        .handle
+        .on_activation_change(Arc::new(move |active| {
+            ch_clone.lock().unwrap().push(active);
+        }))
+        .await;
 
     run_computer_command("on", &fixture.handle, &ctx).await;
 
@@ -89,10 +95,16 @@ async fn arms_stop_chord_when_computer_on_activates_tool() {
     assert_eq!(ch, vec![true]);
 
     let reqs = fixture.log.requests.lock().await.clone();
-    let starts: Vec<_> = reqs.iter().filter(|r| r.method == "stopPath.start").collect();
+    let starts: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.method == "stopPath.start")
+        .collect();
     assert_eq!(starts.len(), 1);
     let params = starts[0].params.as_ref().unwrap();
-    assert_eq!(params.get("chord").and_then(|v| v.as_str()), Some("ctrl+alt+shift+f12"));
+    assert_eq!(
+        params.get("chord").and_then(|v| v.as_str()),
+        Some("ctrl+alt+shift+f12")
+    );
 }
 
 #[tokio::test]

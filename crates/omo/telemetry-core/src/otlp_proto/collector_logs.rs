@@ -65,7 +65,9 @@ pub fn decode_export_logs_service_response(
                 while !nested.is_empty() {
                     let (nested_field, nested_wire) = nested.read_tag()?;
                     match (nested_field, nested_wire) {
-                        (1, WIRE_VARINT) => partial.rejected_log_records = nested.read_varint()? as i64,
+                        (1, WIRE_VARINT) => {
+                            partial.rejected_log_records = nested.read_varint()? as i64
+                        }
                         (2, WIRE_LEN) => partial.error_message = nested.read_string()?,
                         (_, nested_wire) => nested.skip(nested_wire)?,
                     }

@@ -6,12 +6,12 @@ use senpi_desktop_core::backend::DeliveryMode;
 use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::types::Target;
 
-use super::dispatch::{Via, Win32Input, enigo_error};
+use super::dispatch::{enigo_error, Via, Win32Input};
 use super::keys::VK_RETURN;
 use super::native::Window;
 use super::typing_progress::run_text_steps;
 use super::{background, system};
-use crate::delivery::{TextUnit, text_units};
+use crate::delivery::{text_units, TextUnit};
 
 impl Win32Input {
     pub(crate) fn type_text(

@@ -844,7 +844,11 @@ async fn drive(
     }
 
     // PERF-DIVERGENCE(senpi pi-messages.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let client = options
+        .request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,

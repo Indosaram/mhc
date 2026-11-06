@@ -12,7 +12,8 @@ use common::{
 };
 use lsp_core::abort::AbortController;
 use lsp_daemon::daemon_client::{
-    CallToolOptions, EnsureFn, call_format_via_daemon, call_tool_via_daemon, current_request_context,
+    CallToolOptions, EnsureFn, call_format_via_daemon, call_tool_via_daemon,
+    current_request_context,
 };
 use lsp_daemon::daemon_request_error::DaemonCallError;
 use lsp_daemon::paths::DaemonPaths;
@@ -48,7 +49,9 @@ async fn format_sends_only_file_path_and_context_without_initial_backoff() {
     );
     let mut call = options(&paths, &root, 2_000);
     call.sleep = Some(Arc::new(|_, _| panic!("first attempt must not sleep")));
-    let result = within(call_format_via_daemon("/a.ts", call)).await.expect("format result");
+    let result = within(call_format_via_daemon("/a.ts", call))
+        .await
+        .expect("format result");
     assert_eq!(result.text(), "formatted");
     assert_eq!(fake.tool_calls(), 1);
     let received = fake.received();
@@ -56,7 +59,13 @@ async fn format_sends_only_file_path_and_context_without_initial_backoff() {
     assert_eq!(params["name"], "format");
     assert_eq!(params["arguments"]["filePath"], "/a.ts");
     assert!(params["arguments"]["_context"].is_object());
-    assert_eq!(params["arguments"].as_object().expect("tool arguments").len(), 2);
+    assert_eq!(
+        params["arguments"]
+            .as_object()
+            .expect("tool arguments")
+            .len(),
+        2
+    );
 }
 
 fn token_of(message: &Value) -> Option<&str> {
@@ -282,13 +291,9 @@ async fn auth_rejection_refreshes_the_token_once_and_retries() {
     let mut call = options(&paths, &root, 2_000);
     call.probe = Some(Arc::new(|_, _| Box::pin(async { true })));
     call.sleep = Some(Arc::new(|_, _| Box::pin(async {})));
-    let result = within(call_tool_via_daemon(
-        "status",
-        Map::new(),
-        call,
-    ))
-    .await
-    .unwrap();
+    let result = within(call_tool_via_daemon("status", Map::new(), call))
+        .await
+        .unwrap();
     assert_eq!(result.text(), "ok");
     assert_eq!(fake.tool_calls(), 2);
     let tokens: Vec<String> = fake

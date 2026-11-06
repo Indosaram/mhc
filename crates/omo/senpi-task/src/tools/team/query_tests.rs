@@ -75,7 +75,10 @@ fn team_status_returns_aggregated_team_status() {
         .expect("execute");
 
     // then
-    assert_eq!(result["details"], serde_json::to_value(&expected).expect("status json"));
+    assert_eq!(
+        result["details"],
+        serde_json::to_value(&expected).expect("status json")
+    );
 }
 
 #[test]

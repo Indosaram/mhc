@@ -2,7 +2,10 @@
 
 use serde_json::{Map, Value};
 
-use super::markers::{XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE, XTML_CALL_OPEN, XTML_SEP, XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN};
+use super::markers::{
+    XTML_ARGUMENT_CLOSE, XTML_ARGUMENT_OPEN, XTML_CALL_CLOSE, XTML_CALL_OPEN, XTML_SEP,
+    XTML_TOOLS_CLOSE, XTML_TOOLS_OPEN,
+};
 use crate::tool_call_middleware::types::ToolResultContent;
 use crate::types::Tool;
 
@@ -35,11 +38,22 @@ pub fn kimi_xtml_format_tool_call(name: &str, args: &Map<String, Value>) -> Stri
             format!("{XTML_ARGUMENT_OPEN}key=\"{key}\" type=\"{value_type}\"{XTML_SEP}{}{XTML_ARGUMENT_CLOSE}", serialize_xtml_value(value, value_type))
         })
         .collect();
-    format!("{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"{name}\" index=\"1\"{XTML_SEP}{rendered_args}{XTML_CALL_CLOSE}{XTML_TOOLS_CLOSE}")
+    format!(
+        "{XTML_TOOLS_OPEN}{XTML_CALL_OPEN}tool=\"{name}\" index=\"1\"{XTML_SEP}{rendered_args}{XTML_CALL_CLOSE}{XTML_TOOLS_CLOSE}"
+    )
 }
 
-pub fn kimi_xtml_format_tool_response(tool_name: &str, _tool_call_id: &str, content: &[ToolResultContent]) -> String {
-    let text = content.iter().filter_map(ToolResultContent::as_text).map(|item| item.text.as_str()).collect::<Vec<_>>().join("\n");
+pub fn kimi_xtml_format_tool_response(
+    tool_name: &str,
+    _tool_call_id: &str,
+    content: &[ToolResultContent],
+) -> String {
+    let text = content
+        .iter()
+        .filter_map(ToolResultContent::as_text)
+        .map(|item| item.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     format!("## Return of {tool_name}\n{text}")
 }
 
@@ -50,7 +64,14 @@ pub fn kimi_xtml_format_tools_system_prompt(tools: &[Tool]) -> String {
 
     let tool_descriptions = tools
         .iter()
-        .map(|tool| format!("Name: {}\nDescription: {}\nParameters Schema:\n{}", tool.name, tool.description, json_stringify_indent_3(&tool.parameters)))
+        .map(|tool| {
+            format!(
+                "Name: {}\nDescription: {}\nParameters Schema:\n{}",
+                tool.name,
+                tool.description,
+                json_stringify_indent_3(&tool.parameters)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
 
@@ -64,7 +85,8 @@ fn json_stringify_indent_3(value: &Value) -> String {
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b"   ");
     let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
-    serde::Serialize::serialize(value, &mut serializer).expect("json_stringify_indent_3: Value serialization cannot fail");
+    serde::Serialize::serialize(value, &mut serializer)
+        .expect("json_stringify_indent_3: Value serialization cannot fail");
     String::from_utf8(buf).expect("json_stringify_indent_3: serde_json emits valid UTF-8")
 }
 
@@ -76,7 +98,14 @@ mod tests {
     use crate::types::TextContent;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
@@ -105,7 +134,11 @@ mod tests {
 
     #[test]
     fn format_tool_response_prefixes_return_header() {
-        let content = vec![ToolResultContent::Text(TextContent { text: "sunny".into(), audience: None, text_signature: None })];
+        let content = vec![ToolResultContent::Text(TextContent {
+            text: "sunny".into(),
+            audience: None,
+            text_signature: None,
+        })];
         let formatted = kimi_xtml_format_tool_response("get_weather", "id-1", &content);
         assert_eq!(formatted, "## Return of get_weather\nsunny");
     }
@@ -153,7 +186,10 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].name, "get_weather");
         assert_eq!(parsed[0].arguments.get("city"), Some(&json!("Seoul")));
-        assert_eq!(parsed[0].arguments.get("count").and_then(Value::as_f64), Some(3.0));
+        assert_eq!(
+            parsed[0].arguments.get("count").and_then(Value::as_f64),
+            Some(3.0)
+        );
         assert_eq!(parsed[0].arguments.get("flag"), Some(&json!(true)));
         assert_eq!(parsed[0].arguments.get("filters"), Some(&json!({"a": 1})));
         assert_eq!(parsed[0].arguments.get("tags"), Some(&json!(["x"])));
@@ -161,8 +197,15 @@ mod tests {
 
     #[test]
     fn renders_results_with_the_kimi_family_return_convention() {
-        let content = vec![ToolResultContent::Text(crate::types::TextContent { text: "sunny, 31C".into(), audience: None, text_signature: None })];
-        assert_eq!(kimi_xtml_format_tool_response("get_weather", "kimi-xtml-tool-0", &content), "## Return of get_weather\nsunny, 31C");
+        let content = vec![ToolResultContent::Text(crate::types::TextContent {
+            text: "sunny, 31C".into(),
+            audience: None,
+            text_signature: None,
+        })];
+        assert_eq!(
+            kimi_xtml_format_tool_response("get_weather", "kimi-xtml-tool-0", &content),
+            "## Return of get_weather\nsunny, 31C"
+        );
     }
 
     #[test]
@@ -175,5 +218,4 @@ mod tests {
         assert!(prompt.contains("<|close|>call<|sep|>"));
         assert!(prompt.contains("<|close|>tools<|sep|>"));
     }
-
 }

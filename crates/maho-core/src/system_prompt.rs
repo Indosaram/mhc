@@ -34,7 +34,9 @@ pub fn get_eval_only_grep_guideline(
     selected_tools: &[String],
     tool_snippets: Option<&HashMap<String, String>>,
 ) -> Option<String> {
-    let has_grep_snippet = tool_snippets.and_then(|snippets| snippets.get("grep")).is_some_and(|snippet| !snippet.is_empty());
+    let has_grep_snippet = tool_snippets
+        .and_then(|snippets| snippets.get("grep"))
+        .is_some_and(|snippet| !snippet.is_empty());
     if has_grep_snippet && !selected_tools.iter().any(|tool| tool == "grep") {
         Some("Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell".to_string())
     } else {
@@ -58,9 +60,16 @@ fn append_context_files(prompt: &mut String, context_files: &[ContextFile]) {
 }
 
 fn skill_file_read_tool(tools: &[String]) -> Option<FileReadTool> {
-    ["read", "bash"].iter().find(|tool| tools.iter().any(|selected| selected == *tool)).map(|tool| {
-        if *tool == "read" { FileReadTool::Read } else { FileReadTool::Bash }
-    })
+    ["read", "bash"]
+        .iter()
+        .find(|tool| tools.iter().any(|selected| selected == *tool))
+        .map(|tool| {
+            if *tool == "read" {
+                FileReadTool::Read
+            } else {
+                FileReadTool::Bash
+            }
+        })
 }
 
 /// `buildSystemPrompt`.
@@ -75,10 +84,14 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     let empty_skills: Vec<Skill> = Vec::new();
     let context_files = options.context_files.as_ref().unwrap_or(&empty_context);
     let skills = options.skills.as_ref().unwrap_or(&empty_skills);
-    let tools: Vec<String> = options
-        .selected_tools
-        .clone()
-        .unwrap_or_else(|| vec!["read".to_string(), "bash".to_string(), "edit".to_string(), "write".to_string()]);
+    let tools: Vec<String> = options.selected_tools.clone().unwrap_or_else(|| {
+        vec![
+            "read".to_string(),
+            "bash".to_string(),
+            "edit".to_string(),
+            "write".to_string(),
+        ]
+    });
     let read_tool = skill_file_read_tool(&tools);
 
     if let Some(custom_prompt) = options.custom_prompt.as_deref() {
@@ -101,7 +114,11 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     let tool_snippets = options.tool_snippets.as_ref();
     let visible_tools: Vec<&String> = tools
         .iter()
-        .filter(|name| tool_snippets.and_then(|snippets| snippets.get(*name)).is_some_and(|snippet| !snippet.is_empty()))
+        .filter(|name| {
+            tool_snippets
+                .and_then(|snippets| snippets.get(*name))
+                .is_some_and(|snippet| !snippet.is_empty())
+        })
         .collect();
     let tools_list = if visible_tools.is_empty() {
         "(none)".to_string()
@@ -109,7 +126,10 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
         visible_tools
             .iter()
             .map(|name| {
-                let snippet = tool_snippets.and_then(|snippets| snippets.get(*name)).map(String::as_str).unwrap_or_default();
+                let snippet = tool_snippets
+                    .and_then(|snippets| snippets.get(*name))
+                    .map(String::as_str)
+                    .unwrap_or_default();
                 format!("- {name}: {snippet}")
             })
             .collect::<Vec<_>>()
@@ -155,7 +175,11 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     add_guideline("Be concise in your responses".to_string());
     add_guideline("Show file paths clearly when working with files".to_string());
 
-    let guidelines = guidelines_list.iter().map(|guideline| format!("- {guideline}")).collect::<Vec<_>>().join("\n");
+    let guidelines = guidelines_list
+        .iter()
+        .map(|guideline| format!("- {guideline}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut prompt = format!(
         "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n{tools_list}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n{guidelines}\n\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: {readme_path}\n- Additional docs: {docs_path}\n- Examples: {examples_path} (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
@@ -178,11 +202,14 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_info::{SyntheticSourceInfoOptions, create_synthetic_source_info};
     use crate::skills::Skill;
+    use crate::source_info::{SyntheticSourceInfoOptions, create_synthetic_source_info};
 
     fn snippets(entries: &[(&str, &str)]) -> HashMap<String, String> {
-        entries.iter().map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string())).collect()
+        entries
+            .iter()
+            .map(|(name, snippet)| ((*name).to_string(), (*snippet).to_string()))
+            .collect()
     }
 
     fn skill(name: &str) -> Skill {
@@ -191,7 +218,13 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             base_dir: format!("/skills/{name}"),
-            source_info: create_synthetic_source_info(&file_path, SyntheticSourceInfoOptions { source: "local".to_string(), ..Default::default() }),
+            source_info: create_synthetic_source_info(
+                &file_path,
+                SyntheticSourceInfoOptions {
+                    source: "local".to_string(),
+                    ..Default::default()
+                },
+            ),
             file_path,
             disable_model_invocation: false,
             provenance: None,
@@ -202,9 +235,19 @@ mod tests {
     #[test]
     fn the_eval_only_grep_guideline_needs_a_snippet_without_a_tool() {
         let grep_snippets = snippets(&[("grep", "Search file contents")]);
-        assert!(get_eval_only_grep_guideline(&["read".to_string()], Some(&grep_snippets)).is_some());
-        assert!(get_eval_only_grep_guideline(&["read".to_string(), "grep".to_string()], Some(&grep_snippets)).is_none());
-        assert!(get_eval_only_grep_guideline(&["read".to_string()], Some(&snippets(&[]))).is_none());
+        assert!(
+            get_eval_only_grep_guideline(&["read".to_string()], Some(&grep_snippets)).is_some()
+        );
+        assert!(
+            get_eval_only_grep_guideline(
+                &["read".to_string(), "grep".to_string()],
+                Some(&grep_snippets)
+            )
+            .is_none()
+        );
+        assert!(
+            get_eval_only_grep_guideline(&["read".to_string()], Some(&snippets(&[]))).is_none()
+        );
         assert!(get_eval_only_grep_guideline(&["read".to_string()], None).is_none());
     }
 
@@ -212,10 +255,15 @@ mod tests {
     fn the_default_prompt_lists_only_tools_with_a_snippet() {
         let prompt = build_system_prompt(&BuildSystemPromptOptions {
             cwd: "/work".to_string(),
-            tool_snippets: Some(snippets(&[("read", "Read file contents"), ("bash", "Run commands")])),
+            tool_snippets: Some(snippets(&[
+                ("read", "Read file contents"),
+                ("bash", "Run commands"),
+            ])),
             ..Default::default()
         });
-        assert!(prompt.contains("Available tools:\n- read: Read file contents\n- bash: Run commands"));
+        assert!(
+            prompt.contains("Available tools:\n- read: Read file contents\n- bash: Run commands")
+        );
         assert!(!prompt.contains("- edit:"));
         assert!(prompt.contains("Guidelines:\n- Use bash for file operations like ls, rg, find"));
         assert!(prompt.contains("- Be concise in your responses"));
@@ -237,7 +285,11 @@ mod tests {
     fn guidelines_are_deduplicated_and_trimmed() {
         let prompt = build_system_prompt(&BuildSystemPromptOptions {
             cwd: "/work".to_string(),
-            prompt_guidelines: Some(vec!["  custom rule  ".to_string(), "custom rule".to_string(), "   ".to_string()]),
+            prompt_guidelines: Some(vec![
+                "  custom rule  ".to_string(),
+                "custom rule".to_string(),
+                "   ".to_string(),
+            ]),
             ..Default::default()
         });
         assert_eq!(prompt.matches("- custom rule").count(), 1);
@@ -248,7 +300,10 @@ mod tests {
         let prompt = build_system_prompt(&BuildSystemPromptOptions {
             cwd: "/work".to_string(),
             selected_tools: Some(vec!["bash".to_string()]),
-            tool_snippets: Some(snippets(&[("bash", "Run commands"), ("grep", "Search file contents")])),
+            tool_snippets: Some(snippets(&[
+                ("bash", "Run commands"),
+                ("grep", "Search file contents"),
+            ])),
             ..Default::default()
         });
         assert!(prompt.contains("- Search file contents with tool.grep({ pattern, path }) inside eval; prefer it over rg/grep in shell"));
@@ -269,7 +324,11 @@ mod tests {
 
     #[test]
     fn context_files_and_appends_land_in_both_branches() {
-        let context = vec![ContextFile { path: "/work/AGENTS.md".to_string(), content: "rules".to_string(), scope: None }];
+        let context = vec![ContextFile {
+            path: "/work/AGENTS.md".to_string(),
+            content: "rules".to_string(),
+            scope: None,
+        }];
         let prompt = build_system_prompt(&BuildSystemPromptOptions {
             cwd: "/work".to_string(),
             context_files: Some(context.clone()),
@@ -277,7 +336,9 @@ mod tests {
             ..Default::default()
         });
         assert!(prompt.contains("\n\nEXTRA\n\n<project_context>\n\n"));
-        assert!(prompt.contains("<project_instructions path=\"/work/AGENTS.md\">\nrules\n</project_instructions>"));
+        assert!(prompt.contains(
+            "<project_instructions path=\"/work/AGENTS.md\">\nrules\n</project_instructions>"
+        ));
 
         let custom = build_system_prompt(&BuildSystemPromptOptions {
             custom_prompt: Some("custom".to_string()),

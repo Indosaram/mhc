@@ -14,9 +14,9 @@ use senpi_desktop_safety::{
 };
 
 use super::hotkey::CHORD_TAKEN;
-use super::{DEFAULT_STOP_CHORD, HotkeyListener};
-use crate::Win32Backend;
+use super::{HotkeyListener, DEFAULT_STOP_CHORD};
 use crate::input::live_tests::LIVE_INPUT;
+use crate::Win32Backend;
 
 /// Hang guard only; the latency is printed for the evidence, not asserted.
 const HANG_GUARD: Duration = Duration::from_secs(30);

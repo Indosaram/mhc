@@ -223,28 +223,33 @@ mod tests {
     #[test]
     fn unknown_capabilities_omit_unset_values_and_wrap_diagnostic_sources() {
         let result = crate::get_model_capabilities(GetModelCapabilitiesInput {
-            provider_id: "custom", model_id: "unknown", ..Default::default()
+            provider_id: "custom",
+            model_id: "unknown",
+            ..Default::default()
         });
         let serialized = serde_json::to_value(result).expect("capabilities serialize");
-        assert_eq!(serialized, json!({
-            "requestedModelID": "unknown",
-            "canonicalModelID": "unknown",
-            "diagnostics": {
-                "resolutionMode": "unknown",
-                "canonicalization": {"source": "canonical"},
-                "snapshot": {"source": "none"},
-                "family": {"source": "none"},
-                "variants": {"source": "none"},
-                "reasoningEfforts": {"source": "none"},
-                "reasoning": {"source": "none"},
-                "supportsThinking": {"source": "none"},
-                "supportsTemperature": {"source": "none"},
-                "supportsTopP": {"source": "none"},
-                "maxOutputTokens": {"source": "none"},
-                "toolCall": {"source": "none"},
-                "modalities": {"source": "none"}
-            }
-        }));
+        assert_eq!(
+            serialized,
+            json!({
+                "requestedModelID": "unknown",
+                "canonicalModelID": "unknown",
+                "diagnostics": {
+                    "resolutionMode": "unknown",
+                    "canonicalization": {"source": "canonical"},
+                    "snapshot": {"source": "none"},
+                    "family": {"source": "none"},
+                    "variants": {"source": "none"},
+                    "reasoningEfforts": {"source": "none"},
+                    "reasoning": {"source": "none"},
+                    "supportsThinking": {"source": "none"},
+                    "supportsTemperature": {"source": "none"},
+                    "supportsTopP": {"source": "none"},
+                    "maxOutputTokens": {"source": "none"},
+                    "toolCall": {"source": "none"},
+                    "modalities": {"source": "none"}
+                }
+            })
+        );
     }
 
     #[test]
@@ -252,7 +257,10 @@ mod tests {
         let runtime = json!({"reasoning": false, "temperature": false, "topP": false,
             "toolCall": false});
         let mut result = crate::get_model_capabilities(GetModelCapabilitiesInput {
-            provider_id: "custom", model_id: "unknown", runtime_model: Some(&runtime), ..Default::default()
+            provider_id: "custom",
+            model_id: "unknown",
+            runtime_model: Some(&runtime),
+            ..Default::default()
         });
         result.max_output_tokens = Some(0);
         result.variants = Some(Vec::new());
@@ -264,6 +272,9 @@ mod tests {
         assert_eq!(serialized["toolCall"], false);
         assert_eq!(serialized["maxOutputTokens"], 0);
         assert_eq!(serialized["variants"], json!([]));
-        assert_eq!(serialized["diagnostics"]["reasoning"], json!({"source": "runtime"}));
+        assert_eq!(
+            serialized["diagnostics"]["reasoning"],
+            json!({"source": "runtime"})
+        );
     }
 }

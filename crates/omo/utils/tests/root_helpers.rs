@@ -421,17 +421,19 @@ fn classify_path_environment_cases() {
 
 #[test]
 fn frontmatter_default_mode_strips_leading_bom() {
-    let parsed = parse_frontmatter("\u{feff}---\ntitle: demo\n---\nbody", FrontmatterMode::Default);
+    let parsed = parse_frontmatter(
+        "\u{feff}---\ntitle: demo\n---\nbody",
+        FrontmatterMode::Default,
+    );
     assert_eq!(parsed.data["title"], json!("demo"));
     assert_eq!(parsed.body, "body");
 }
 
 #[test]
 fn tar_listing_preserves_entry_path_whitespace() {
-    let parsed = parse_tar_listing_output(
-        "-rw-r--r-- 1 user group 123 Jan 01 12:34 trailing-space.txt \n",
-    )
-    .expect("valid tar line");
+    let parsed =
+        parse_tar_listing_output("-rw-r--r-- 1 user group 123 Jan 01 12:34 trailing-space.txt \n")
+            .expect("valid tar line");
     assert_eq!(parsed[0].path, "trailing-space.txt ");
 }
 

@@ -49,7 +49,11 @@ pub trait AtSpiBus {
 
     fn extents(&mut self, node: &Self::Node) -> BusResult<Extents>;
     fn contains(&mut self, node: &Self::Node, point: ScreenPoint) -> BusResult<bool>;
-    fn accessible_at_point(&mut self, node: &Self::Node, point: ScreenPoint) -> BusResult<Self::Node>;
+    fn accessible_at_point(
+        &mut self,
+        node: &Self::Node,
+        point: ScreenPoint,
+    ) -> BusResult<Self::Node>;
     fn grab_focus(&mut self, node: &Self::Node) -> BusResult<bool>;
 
     fn actions(&mut self, node: &Self::Node) -> BusResult<Vec<String>>;

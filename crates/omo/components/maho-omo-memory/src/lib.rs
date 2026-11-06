@@ -101,6 +101,7 @@ pub mod memory_tool_renderers;
 pub mod model_registry_resolver;
 pub mod native_badge;
 pub mod nudge_wiring;
+pub mod owner_memory;
 pub mod policy_guard;
 pub mod project_memory_grants;
 pub mod project_memory_nudge;
@@ -146,9 +147,9 @@ pub mod status_live;
 pub mod status_live_wiring;
 pub mod supervisor;
 pub mod sync_config_error;
-pub mod sync_session_deferred;
 pub mod sync_runner;
 pub mod sync_runtime;
+pub mod sync_session_deferred;
 pub mod sync_status_surface;
 pub mod tool_metadata;
 pub mod tool_receipts;
@@ -161,12 +162,11 @@ pub mod wiring_context;
 pub mod wiring_memory_write;
 pub mod wiring_notice_inputs;
 pub mod wiring_reflection_live;
-pub mod write_policy;
-pub mod owner_memory;
 pub mod wiring_runtime;
 pub mod wiring_static;
 pub mod wiring_types;
 pub mod worker;
+pub mod write_policy;
 
 // Todo 45 owns the commands, palace and bindings module bodies. Declaring the
 // namespaces here keeps lib.rs ownership with todo 43.

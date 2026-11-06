@@ -249,14 +249,25 @@ fn candidate_paths(
         },
         None => repo.ls_tree(Some(head), None)?,
     };
-    Ok(paths.into_iter().filter(|p| is_memory_content_path(p)).collect())
+    Ok(paths
+        .into_iter()
+        .filter(|p| is_memory_content_path(p))
+        .collect())
 }
 
 fn changed_since(repo: &GitMemoryRepo, from: &str, to: &str) -> Option<Vec<String>> {
     let mut cmd = std::process::Command::new("git");
-    cmd.args(["diff", "--name-only", "-z", "--diff-filter=ACMR", from, to, "--"])
-        .current_dir(&repo.dir)
-        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args([
+        "diff",
+        "--name-only",
+        "-z",
+        "--diff-filter=ACMR",
+        from,
+        to,
+        "--",
+    ])
+    .current_dir(&repo.dir)
+    .env("GIT_TERMINAL_PROMPT", "0");
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;

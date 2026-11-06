@@ -4,7 +4,7 @@
 //! (#9084). The query is IPC to launchservicesd, so it stays live in the engine, which has no AppKit run loop
 //! to refresh `NSWorkspace`.
 
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::sync::LazyLock;
 
 use objc2_core_foundation::{CFArray, CFNumber, CFRetained, CFString, CFType};

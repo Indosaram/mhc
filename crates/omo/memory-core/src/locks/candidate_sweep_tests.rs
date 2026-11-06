@@ -11,7 +11,9 @@ fn candidate_name_shape_requires_the_uuid_suffix() {
         "writer.lock.candidate-{UUID}"
     )));
     assert!(!is_leaked_candidate_name("writer.lock"));
-    assert!(!is_leaked_candidate_name("writer.lock.candidate-not-a-uuid"));
+    assert!(!is_leaked_candidate_name(
+        "writer.lock.candidate-not-a-uuid"
+    ));
     assert!(!is_leaked_candidate_name("domain.candidate-run-7"));
 }
 
@@ -83,8 +85,7 @@ fn a_sharing_error_retries_then_reports_failure() {
         on_failure: Some(&on_failure),
     };
 
-    let swept =
-        sweep_stale_lock_candidates(dir.path(), || u64::MAX, &options).expect("sweep held");
+    let swept = sweep_stale_lock_candidates(dir.path(), || u64::MAX, &options).expect("sweep held");
 
     assert_eq!(swept, 0);
     assert_eq!(attempts.get(), CANDIDATE_UNLINK_ATTEMPTS);

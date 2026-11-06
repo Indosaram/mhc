@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use isolation_core::{
-    checked, create_windows_clone_api, duplicate_extents, BtrfsBackend, IsolationBackend,
-    IsolationContext, IsolationError, OverlayfsBackend, ReflinkBackend, WindowsCloneApi,
-    WindowsSymbols, ZfsBackend, LoadReflink, BlockCloneBackend,
+    BlockCloneBackend, BtrfsBackend, IsolationBackend, IsolationContext, IsolationError,
+    LoadReflink, OverlayfsBackend, ReflinkBackend, WindowsCloneApi, WindowsSymbols, ZfsBackend,
+    checked, create_windows_clone_api, duplicate_extents,
 };
 
-use crate::fake::{calls, ok, record, recorded, result, Calls, FakeRuntime};
+use crate::fake::{Calls, FakeRuntime, calls, ok, record, recorded, result};
 
 struct Paths {
     root: PathBuf,
@@ -52,10 +52,7 @@ fn context(paths: &Paths) -> IsolationContext {
     }
 }
 
-fn fake(
-    calls: &Calls,
-    overrides: impl FnOnce(&mut FakeRuntime),
-) -> FakeRuntime {
+fn fake(calls: &Calls, overrides: impl FnOnce(&mut FakeRuntime)) -> FakeRuntime {
     let sink = Arc::clone(calls);
     let mut runtime = FakeRuntime {
         platform: "linux".to_string(),
@@ -129,21 +126,25 @@ fn btrfs_checks_binary_and_subvolume_then_snapshots_and_deletes_with_argv() {
                 runtime.run = Arc::new(|_| Ok(result(1, "", "not a subvolume")));
             }
         });
-        assert!(!BtrfsBackend::new(Arc::new(runtime))
-            .probe(&p.repo_root, None)
-            .expect("probe")
-            .available);
+        assert!(
+            !BtrfsBackend::new(Arc::new(runtime))
+                .probe(&p.repo_root, None)
+                .expect("probe")
+                .available
+        );
     }
-    assert!(backend
-        .start(
-            &p.repo_root,
-            &p.merged,
-            &IsolationContext {
-                cross_device: true,
-                ..context(&p)
-            }
-        )
-        .is_err());
+    assert!(
+        backend
+            .start(
+                &p.repo_root,
+                &p.merged,
+                &IsolationContext {
+                    cross_device: true,
+                    ..context(&p)
+                }
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -188,10 +189,12 @@ fn zfs_dataset_root_probe_snapshot_clone_relocation_and_restart_safe_stop() {
             }
         });
     });
-    assert!(!ZfsBackend::new(Arc::new(runtime.clone()))
-        .probe(&p.repo_root.join("subdir"), None)
-        .expect("probe")
-        .available);
+    assert!(
+        !ZfsBackend::new(Arc::new(runtime.clone()))
+            .probe(&p.repo_root.join("subdir"), None)
+            .expect("probe")
+            .available
+    );
     let backend = ZfsBackend::new(Arc::new(runtime.clone()));
     backend
         .start(&p.repo_root, &p.merged, &context(&p))
@@ -304,10 +307,12 @@ fn overlay_relocates_by_unmount_parent_rename_and_remount_with_new_upper_and_wor
             1 => runtime.accessible = Arc::new(|_| Ok(false)),
             _ => runtime.platform = "darwin".to_string(),
         });
-        assert!(!OverlayfsBackend::new(Arc::new(runtime))
-            .probe(&p.repo_root, None)
-            .expect("probe")
-            .available);
+        assert!(
+            !OverlayfsBackend::new(Arc::new(runtime))
+                .probe(&p.repo_root, None)
+                .expect("probe")
+                .available
+        );
     }
 }
 
@@ -363,10 +368,12 @@ fn reflink_ffi_unavailable_selects_cp_argv_and_classifies_only_unsupported_failu
     let runtime = fake(&sink, |_| {});
     let load: LoadReflink = Arc::new(|| None);
     let backend = ReflinkBackend::new(Arc::new(runtime), load.clone());
-    assert!(backend
-        .probe(&p.repo_root, Some(&context(&p)))
-        .expect("probe")
-        .available);
+    assert!(
+        backend
+            .probe(&p.repo_root, Some(&context(&p)))
+            .expect("probe")
+            .available
+    );
     backend
         .start(&p.repo_root, &p.merged, &context(&p))
         .expect("start");
@@ -411,14 +418,18 @@ fn reflink_probe_rejects_eopnotsupp_and_disables_start() {
         }) as Arc<dyn isolation_core::ReflinkIoctl>)
     });
     let unsupported = ReflinkBackend::new(Arc::new(runtime), load);
-    assert!(!unsupported
-        .probe(&p.repo_root, Some(&context(&p)))
-        .expect("probe")
-        .available);
+    assert!(
+        !unsupported
+            .probe(&p.repo_root, Some(&context(&p)))
+            .expect("probe")
+            .available
+    );
     std::fs::write(p.repo_root.join("data"), "source").expect("data");
-    assert!(unsupported
-        .start(&p.repo_root, &p.merged, &context(&p))
-        .is_err());
+    assert!(
+        unsupported
+            .start(&p.repo_root, &p.merged, &context(&p))
+            .is_err()
+    );
     assert!(!p.merged.exists());
 }
 
@@ -450,15 +461,20 @@ fn refs_probe_rejects_non_windows_missing_binary_and_wrong_filesystem() {
             }
             _ => runtime.platform = "win32".to_string(),
         });
-        assert!(!BlockCloneBackend::new(Arc::new(runtime), Arc::new(|| {
-            Err(isolation_core::NativeLoadError {
-                code: None,
-                message: "unused".to_string(),
-            })
-        }))
-        .probe(&p.repo_root, None)
-        .expect("probe")
-        .available);
+        assert!(
+            !BlockCloneBackend::new(
+                Arc::new(runtime),
+                Arc::new(|| {
+                    Err(isolation_core::NativeLoadError {
+                        code: None,
+                        message: "unused".to_string(),
+                    })
+                })
+            )
+            .probe(&p.repo_root, None)
+            .expect("probe")
+            .available
+        );
     }
 }
 
@@ -512,7 +528,13 @@ impl WindowsCloneApi for RecordingApi {
         self.calls
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .push(serde_json::json!(["ioctl", destination, source, 0x00098344u32, bytes]));
+            .push(serde_json::json!([
+                "ioctl",
+                destination,
+                source,
+                0x00098344u32,
+                bytes
+            ]));
         Ok(())
     }
 
@@ -565,7 +587,9 @@ fn zfs_failed_relocation_restores_the_source_parent_and_marker_identity() {
     std::fs::create_dir_all(&p.merged).expect("merged");
     std::fs::write(p.merged.join("sentinel"), "untouched").expect("sentinel");
     let final_dir = p.root.join("final");
-    let error = backend.relocate(&p.base_dir, &final_dir).expect_err("must fail");
+    let error = backend
+        .relocate(&p.base_dir, &final_dir)
+        .expect_err("must fail");
     assert!(error.to_string().contains("mount busy"));
     assert_eq!(
         std::fs::read_to_string(p.merged.join("sentinel")).expect("sentinel"),
@@ -637,7 +661,8 @@ fn zfs_clone_failure_leaves_a_snapshot_marker_that_restart_safe_stop_reclaims() 
         ])
     );
     assert!(!tail.iter().any(|argv| {
-        argv.get(1).map(String::as_str) == Some("destroy") && argv.get(2).map(String::as_str) == Some("-r")
+        argv.get(1).map(String::as_str) == Some("destroy")
+            && argv.get(2).map(String::as_str) == Some("-r")
     }));
 }
 
@@ -667,9 +692,11 @@ fn missing_cp_probe_cannot_leave_the_fallback_tier_enabled() {
     let load: LoadReflink = Arc::new(|| None);
     let backend = ReflinkBackend::new(Arc::new(runtime), load);
     assert!(!backend.probe(&p.repo_root, None).expect("probe").available);
-    assert!(backend
-        .start(&p.repo_root, &p.merged, &context(&p))
-        .is_err());
+    assert!(
+        backend
+            .start(&p.repo_root, &p.merged, &context(&p))
+            .is_err()
+    );
     assert!(recorded(&sink).is_empty());
 }
 
@@ -693,10 +720,12 @@ fn btrfs_probe_still_classifies_not_a_subvolume_as_unavailable() {
     let runtime = fake(&sink, |runtime| {
         runtime.run = Arc::new(|_| Ok(result(1, "", "Not a Btrfs subvolume: /x")));
     });
-    assert!(!BtrfsBackend::new(Arc::new(runtime))
-        .probe(&p.repo_root, None)
-        .expect("probe")
-        .available);
+    assert!(
+        !BtrfsBackend::new(Arc::new(runtime))
+            .probe(&p.repo_root, None)
+            .expect("probe")
+            .available
+    );
 }
 
 #[test]
@@ -720,7 +749,11 @@ fn zfs_snapshot_permission_failures_fall_through_as_unavailable() {
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new(move |argv: &[String]| {
             if argv.get(1).map(String::as_str) == Some("list") {
-                Ok(result(0, &format!("pool/repo\t{}\n", repo_root.display()), ""))
+                Ok(result(
+                    0,
+                    &format!("pool/repo\t{}\n", repo_root.display()),
+                    "",
+                ))
             } else {
                 Ok(result(1, "", "cannot create snapshot: permission denied"))
             }
@@ -740,7 +773,11 @@ fn zfs_unexpected_snapshot_failures_remain_hard_errors() {
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new(move |argv: &[String]| {
             if argv.get(1).map(String::as_str) == Some("list") {
-                Ok(result(0, &format!("pool/repo\t{}\n", repo_root.display()), ""))
+                Ok(result(
+                    0,
+                    &format!("pool/repo\t{}\n", repo_root.display()),
+                    "",
+                ))
             } else {
                 Ok(result(1, "", "internal error: Input/output error"))
             }
@@ -759,16 +796,24 @@ fn refs_probe_classifies_fsutil_failures_as_unavailable_so_the_walk_can_fall_thr
         runtime.platform = "win32".to_string();
         runtime.run = Arc::new(|_| Ok(result(1, "", "The volume does not exist")));
     });
-    let result = BlockCloneBackend::new(Arc::new(runtime), Arc::new(|| {
-        Err(isolation_core::NativeLoadError {
-            code: None,
-            message: "unused".to_string(),
-        })
-    }))
+    let result = BlockCloneBackend::new(
+        Arc::new(runtime),
+        Arc::new(|| {
+            Err(isolation_core::NativeLoadError {
+                code: None,
+                message: "unused".to_string(),
+            })
+        }),
+    )
     .probe(Path::new("C:\\repo"), None)
     .expect("probe");
     assert!(!result.available);
-    assert!(result.reason.unwrap_or_default().contains("volume does not exist"));
+    assert!(
+        result
+            .reason
+            .unwrap_or_default()
+            .contains("volume does not exist")
+    );
 }
 
 #[test]
@@ -777,15 +822,17 @@ fn overlayfs_mount_capability_failures_fall_through_as_unavailable() {
     let sink = calls();
     let runtime = fake(&sink, |runtime| {
         runtime.run = Arc::new(|argv: &[String]| {
-            Ok(if argv.first().map(String::as_str) == Some("fuse-overlayfs") {
-                result(
-                    1,
-                    "",
-                    "fusermount3: failed to access /dev/fuse: Permission denied",
-                )
-            } else {
-                ok()
-            })
+            Ok(
+                if argv.first().map(String::as_str) == Some("fuse-overlayfs") {
+                    result(
+                        1,
+                        "",
+                        "fusermount3: failed to access /dev/fuse: Permission denied",
+                    )
+                } else {
+                    ok()
+                },
+            )
         });
     });
     let error = OverlayfsBackend::new(Arc::new(runtime))
@@ -800,11 +847,13 @@ fn overlayfs_unexpected_mount_failures_remain_hard_errors() {
     let sink = calls();
     let runtime = fake(&sink, |runtime| {
         runtime.run = Arc::new(|argv: &[String]| {
-            Ok(if argv.first().map(String::as_str) == Some("fuse-overlayfs") {
-                result(1, "", "Input/output error")
-            } else {
-                ok()
-            })
+            Ok(
+                if argv.first().map(String::as_str) == Some("fuse-overlayfs") {
+                    result(1, "", "Input/output error")
+                } else {
+                    ok()
+                },
+            )
         });
     });
     let error = OverlayfsBackend::new(Arc::new(runtime))
@@ -823,7 +872,11 @@ fn btrfs_probe_treats_unprivileged_b_tree_search_as_inconclusive_and_lets_start_
             move |argv: &[String]| {
                 record(&sink, argv);
                 Ok(if argv.get(2).map(String::as_str) == Some("show") {
-                    result(1, "", "ERROR: Could not search B-tree: Operation not permitted")
+                    result(
+                        1,
+                        "",
+                        "ERROR: Could not search B-tree: Operation not permitted",
+                    )
                 } else {
                     ok()
                 })
@@ -862,10 +915,12 @@ fn btrfs_probe_trusts_the_filesystem_uuid_over_subvolume_st_dev() {
             })
         });
     });
-    assert!(BtrfsBackend::new(Arc::new(runtime))
-        .probe(&p.repo_root, Some(&context(&p)))
-        .expect("probe")
-        .available);
+    assert!(
+        BtrfsBackend::new(Arc::new(runtime))
+            .probe(&p.repo_root, Some(&context(&p)))
+            .expect("probe")
+            .available
+    );
 }
 
 #[test]
@@ -891,10 +946,12 @@ fn btrfs_probe_rejects_a_base_directory_on_a_different_btrfs_filesystem() {
             })
         });
     });
-    assert!(!BtrfsBackend::new(Arc::new(runtime))
-        .probe(&p.repo_root, Some(&context(&p)))
-        .expect("probe")
-        .available);
+    assert!(
+        !BtrfsBackend::new(Arc::new(runtime))
+            .probe(&p.repo_root, Some(&context(&p)))
+            .expect("probe")
+            .available
+    );
     let _ = checked(&FakeRuntime::linux(), &[]);
     let _ = IsolationError::other("placeholder");
     let _: Arc<dyn WindowsSymbols> = Arc::new(NoopSymbols);
@@ -904,7 +961,14 @@ fn btrfs_probe_rejects_a_base_directory_on_a_different_btrfs_filesystem() {
 struct NoopSymbols;
 
 impl WindowsSymbols for NoopSymbols {
-    fn create_file_w(&self, _path: &[u8], _access: u32, _share: u32, _disposition: u32, _flags: u32) -> i64 {
+    fn create_file_w(
+        &self,
+        _path: &[u8],
+        _access: u32,
+        _share: u32,
+        _disposition: u32,
+        _flags: u32,
+    ) -> i64 {
         -1
     }
 
@@ -916,7 +980,13 @@ impl WindowsSymbols for NoopSymbols {
         0
     }
 
-    fn device_io_control(&self, _handle: i64, _code: u32, _input: &[u8], _returned: &mut [u8]) -> i32 {
+    fn device_io_control(
+        &self,
+        _handle: i64,
+        _code: u32,
+        _input: &[u8],
+        _returned: &mut [u8],
+    ) -> i32 {
         0
     }
 

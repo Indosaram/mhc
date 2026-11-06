@@ -1,16 +1,63 @@
 use maho_ai::types::{ContentBlock, ImageContent};
-pub async fn normalize_tool_result_images(content: &[ContentBlock], auto_resize_images: Option<bool>) -> std::borrow::Cow<'_, [ContentBlock]> {
-    if !content.iter().any(|block| matches!(block, ContentBlock::Image(_))) { return std::borrow::Cow::Borrowed(content); }
-    let mut normalized = Vec::new(); let mut changed = false;
-    for block in content { let ContentBlock::Image(image) = block else { normalized.push(block.clone()); continue; }; let bytes = super::image_convert::decode_base64(&image.data); let Ok(processed) = super::image_process::process_image(&bytes, &image.mime_type, super::image_process::ProcessImageOptions { auto_resize_images, ..Default::default() }).await else { normalized.push(block.clone()); continue; }; if processed.data == image.data && processed.mime_type == image.mime_type && processed.hints.is_empty() { normalized.push(block.clone()); continue; } normalized.push(ContentBlock::Image(ImageContent { data: processed.data, mime_type: processed.mime_type })); if !processed.hints.is_empty() { normalized.push(ContentBlock::text(processed.hints.join("\n"))); } changed = true; }
-    if changed { std::borrow::Cow::Owned(normalized) } else { std::borrow::Cow::Borrowed(content) }
+pub async fn normalize_tool_result_images(
+    content: &[ContentBlock],
+    auto_resize_images: Option<bool>,
+) -> std::borrow::Cow<'_, [ContentBlock]> {
+    if !content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image(_)))
+    {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let mut normalized = Vec::new();
+    let mut changed = false;
+    for block in content {
+        let ContentBlock::Image(image) = block else {
+            normalized.push(block.clone());
+            continue;
+        };
+        let bytes = super::image_convert::decode_base64(&image.data);
+        let Ok(processed) = super::image_process::process_image(
+            &bytes,
+            &image.mime_type,
+            super::image_process::ProcessImageOptions {
+                auto_resize_images,
+                ..Default::default()
+            },
+        )
+        .await
+        else {
+            normalized.push(block.clone());
+            continue;
+        };
+        if processed.data == image.data
+            && processed.mime_type == image.mime_type
+            && processed.hints.is_empty()
+        {
+            normalized.push(block.clone());
+            continue;
+        }
+        normalized.push(ContentBlock::Image(ImageContent {
+            data: processed.data,
+            mime_type: processed.mime_type,
+        }));
+        if !processed.hints.is_empty() {
+            normalized.push(ContentBlock::text(processed.hints.join("\n")));
+        }
+        changed = true;
+    }
+    if changed {
+        std::borrow::Cow::Owned(normalized)
+    } else {
+        std::borrow::Cow::Borrowed(content)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine;
-    use flate2::{write::ZlibEncoder, Compression};
+    use flate2::{Compression, write::ZlibEncoder};
     use std::io::Write;
 
     fn png_chunk(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
@@ -84,13 +131,19 @@ mod tests {
     #[tokio::test]
     async fn leaves_non_image_content_borrowed() {
         let content = vec![ContentBlock::text("unchanged")];
-        assert!(matches!(normalize_tool_result_images(&content, None).await, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_tool_result_images(&content, None).await,
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[tokio::test]
     async fn keeps_images_within_limits_borrowed() {
         let content = vec![image_block(&create_png(1, 1), "image/png")];
-        assert!(matches!(normalize_tool_result_images(&content, None).await, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_tool_result_images(&content, None).await,
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[tokio::test]
@@ -99,18 +152,25 @@ mod tests {
         let normalized = normalize_tool_result_images(&content, None).await;
         assert!(matches!(normalized, std::borrow::Cow::Owned(_)));
         assert_eq!(normalized.len(), 2);
-        let ContentBlock::Image(image) = &normalized[0] else { panic!("first block should be image"); };
+        let ContentBlock::Image(image) = &normalized[0] else {
+            panic!("first block should be image");
+        };
         let (width, height) = png_dimensions(&image.data);
         assert!(width <= 2000);
         assert!(height <= 2000);
-        let ContentBlock::Text(note) = &normalized[1] else { panic!("second block should be note"); };
+        let ContentBlock::Text(note) = &normalized[1] else {
+            panic!("second block should be note");
+        };
         assert!(note.text.contains("original 2400x4800"));
     }
 
     #[tokio::test]
     async fn leaves_oversized_images_alone_when_resize_is_disabled() {
         let content = vec![image_block(&create_png(2400, 4800), "image/png")];
-        assert!(matches!(normalize_tool_result_images(&content, Some(false)).await, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_tool_result_images(&content, Some(false)).await,
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[tokio::test]
@@ -118,8 +178,12 @@ mod tests {
         let content = vec![image_block(&create_tiny_bmp_1x1_red_24bpp(), "image/bmp")];
         let normalized = normalize_tool_result_images(&content, Some(false)).await;
         assert!(matches!(normalized, std::borrow::Cow::Owned(_)));
-        assert!(matches!(&normalized[0], ContentBlock::Image(image) if image.mime_type == "image/png"));
-        assert!(matches!(&normalized[1], ContentBlock::Text(note) if note.text == "[Image converted from image/bmp to image/png.]"));
+        assert!(
+            matches!(&normalized[0], ContentBlock::Image(image) if image.mime_type == "image/png")
+        );
+        assert!(
+            matches!(&normalized[1], ContentBlock::Text(note) if note.text == "[Image converted from image/bmp to image/png.]")
+        );
     }
 
     #[tokio::test]
@@ -128,7 +192,10 @@ mod tests {
             data: "bm90LWFuLWltYWdl".to_owned(),
             mime_type: "image/png".to_owned(),
         })];
-        assert!(matches!(normalize_tool_result_images(&content, None).await, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_tool_result_images(&content, None).await,
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[tokio::test]
@@ -140,7 +207,15 @@ mod tests {
         ];
         let normalized = normalize_tool_result_images(&content, None).await;
         assert!(matches!(
-            normalized.iter().map(|block| match block { ContentBlock::Text(_) => "text", ContentBlock::Image(_) => "image", _ => "other" }).collect::<Vec<_>>().as_slice(),
+            normalized
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text(_) => "text",
+                    ContentBlock::Image(_) => "image",
+                    _ => "other",
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
             ["text", "image", "text", "text"]
         ));
         assert!(matches!(&normalized[0], ContentBlock::Text(text) if text.text == "before"));

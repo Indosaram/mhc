@@ -375,8 +375,7 @@ impl MemoryRecallWiring {
         *resources
             .project_scope
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(self.project_scope.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(self.project_scope.clone());
         let sidecar = KibitzerSidecar::new(KibitzerSidecarOptions {
             session_id: session_id.to_string(),
             resources,

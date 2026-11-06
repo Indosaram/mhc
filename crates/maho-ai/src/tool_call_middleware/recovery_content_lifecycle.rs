@@ -21,7 +21,10 @@ pub struct RecoveryContentLifecycle {
 
 impl RecoveryContentLifecycle {
     pub fn new() -> Self {
-        Self { active: None, last_ended_inner_index: -1 }
+        Self {
+            active: None,
+            last_ended_inner_index: -1,
+        }
     }
 
     pub fn can_start(&self, inner_index: usize) -> bool {
@@ -33,7 +36,8 @@ impl RecoveryContentLifecycle {
     }
 
     pub fn is_active(&self, inner_index: usize, kind: RecoveryContentKind) -> bool {
-        self.active.is_some_and(|active| active.inner_index == inner_index && active.kind == kind)
+        self.active
+            .is_some_and(|active| active.inner_index == inner_index && active.kind == kind)
     }
 
     pub fn end(&mut self, inner_index: usize, kind: RecoveryContentKind) -> bool {

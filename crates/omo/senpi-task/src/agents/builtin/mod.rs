@@ -10,7 +10,8 @@ use chrono::Datelike;
 use super::types::{AgentDefinition, AgentToolRule};
 use crate::delegate_adapter::DelegateFallbackEntry;
 
-pub(crate) const PLAN_REVIEWER_SEND_DENIAL_REMINDER: &str = prompts::PLAN_REVIEWER_SEND_DENIAL_REMINDER;
+pub(crate) const PLAN_REVIEWER_SEND_DENIAL_REMINDER: &str =
+    prompts::PLAN_REVIEWER_SEND_DENIAL_REMINDER;
 
 const READ_ONLY_TOOLS: [&str; 9] = [
     "read",
@@ -25,7 +26,10 @@ const READ_ONLY_TOOLS: [&str; 9] = [
 ];
 
 fn builtin(name: &str, description: &str, prompt: String) -> AgentDefinition {
-    let mut tools: Vec<_> = READ_ONLY_TOOLS.iter().map(|tool| AgentToolRule::new(tool, true)).collect();
+    let mut tools: Vec<_> = READ_ONLY_TOOLS
+        .iter()
+        .map(|tool| AgentToolRule::new(tool, true))
+        .collect();
     if name == "librarian" {
         tools.push(AgentToolRule::new("x_search", true));
     } else if name == "explore" {
@@ -87,7 +91,13 @@ pub fn curated_readonly_agent_names() -> BTreeSet<&'static str> {
 }
 
 pub fn ulw_reviewer_agent_names() -> BTreeSet<&'static str> {
-    ["omo-native-code-reviewer", "omo-native-gate-reviewer", "omo-native-qa-executor"].into_iter().collect()
+    [
+        "omo-native-code-reviewer",
+        "omo-native-gate-reviewer",
+        "omo-native-qa-executor",
+    ]
+    .into_iter()
+    .collect()
 }
 
 pub fn canonical_agent_name(name: &str) -> String {
@@ -105,11 +115,27 @@ fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFall
 
 fn fast_search_chain() -> Vec<DelegateFallbackEntry> {
     vec![
-        entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
-        entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
-        entry(&["anthropic-subscription", "anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+        entry(
+            &["kimi-coding", "kimi-for-coding"],
+            "kimi-for-coding-highspeed",
+            Some("off"),
+        ),
+        entry(
+            &["chatgpt-subscription", "openai"],
+            "gpt-6-luna-fast",
+            Some("low"),
+        ),
+        entry(
+            &["anthropic-subscription", "anthropic", "github-copilot"],
+            "claude-haiku-5-5",
+            Some("medium"),
+        ),
         entry(&["deepseek"], "deepseek-flash", Some("max")),
-        entry(&["opencode-go", "bailian-coding-plan"], "qwen3.7-plus", None),
+        entry(
+            &["opencode-go", "bailian-coding-plan"],
+            "qwen3.7-plus",
+            None,
+        ),
         entry(&["opencode-go"], "minimax-m2.7", None),
     ]
 }
@@ -117,7 +143,12 @@ fn fast_search_chain() -> Vec<DelegateFallbackEntry> {
 /// Hand transcription of model-core's agent requirements, keyed by builtin agent name.
 pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallbackEntry>)>> =
     LazyLock::new(|| {
-        let claude = ["anthropic-subscription", "anthropic", "github-copilot", "opencode"];
+        let claude = [
+            "anthropic-subscription",
+            "anthropic",
+            "github-copilot",
+            "opencode",
+        ];
         vec![
             ("explore", fast_search_chain()),
             ("librarian", fast_search_chain()),
@@ -126,7 +157,11 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
                 vec![
                     entry(&claude, "claude-fable-5-1", Some("max")),
                     entry(&claude, "claude-opus-5-5", Some("max")),
-                    entry(&["opencode-go", "kimi-for-coding", "moonshotai"], "kimi-k3.1-pro", Some("max")),
+                    entry(
+                        &["opencode-go", "kimi-for-coding", "moonshotai"],
+                        "kimi-k3.1-pro",
+                        Some("max"),
+                    ),
                     // OpenCode Zen does not serve K3.1, so its lane keeps the previous Kimi (`kimiK3`).
                     entry(&["opencode"], "kimi-k3", Some("max")),
                 ],
@@ -134,7 +169,11 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
             (
                 "plan-reviewer",
                 vec![
-                    entry(&["chatgpt-subscription", "openai"], "gpt-6-astra", Some("xhigh")),
+                    entry(
+                        &["chatgpt-subscription", "openai"],
+                        "gpt-6-astra",
+                        Some("xhigh"),
+                    ),
                     entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                     entry(
                         &["chatgpt-subscription", "openai", "opencode"],

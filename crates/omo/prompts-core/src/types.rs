@@ -2,11 +2,22 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelVariant {
-    Default, Gpt, Gemini, Kimi, Glm, Swe2, Planner, Codex, Opus47, Minimax,
+    Default,
+    Gpt,
+    Gemini,
+    Kimi,
+    Glm,
+    Swe2,
+    Planner,
+    Codex,
+    Opus47,
+    Minimax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FilesystemPromptSource { pub base_dir: PathBuf }
+pub struct FilesystemPromptSource {
+    pub base_dir: PathBuf,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BundledPromptSource {
@@ -21,7 +32,8 @@ pub enum PromptSource {
 }
 
 pub type InjectionError = Box<dyn std::error::Error + Send + Sync>;
-pub type InjectionFuture<'a> = Pin<Box<dyn Future<Output = Result<String, InjectionError>> + Send + 'a>>;
+pub type InjectionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<String, InjectionError>> + Send + 'a>>;
 pub struct RuntimeInjection<'a> {
     pub placeholder: &'a str,
     pub resolver: &'a (dyn Fn() -> InjectionFuture<'static> + Sync),

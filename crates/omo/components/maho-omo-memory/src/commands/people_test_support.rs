@@ -9,7 +9,10 @@ use memory_core::{
 use super::test_support::{TEST_IDENTITY, seed, seeded_repo, temp_identity};
 use super::types::MemoryCommandIdentity;
 
-pub const LIMITS: PeopleLimits = PeopleLimits { max_entries: 40, max_entry_chars: 200 };
+pub const LIMITS: PeopleLimits = PeopleLimits {
+    max_entries: 40,
+    max_entry_chars: 200,
+};
 
 const HUMAN_CARD: &str = "---\ndescription: who the user is\nkind: person\naliases: [\"Boss\"]\n---\n\nIDENTITY: the person you work with\nRELATIONSHIP: works-with: jane-doe\nRELATIONSHIP: mentors: sam-rivers\n\n";
 
@@ -39,7 +42,10 @@ fn observations_file(count: usize) -> String {
     lines.push(String::new());
     lines.push("## Inductive".to_owned());
     lines.push(String::new());
-    lines.push("- [2026-01-05] tends to review in the morning <!-- pattern: cadence; confidence: low -->".to_owned());
+    lines.push(
+        "- [2026-01-05] tends to review in the morning <!-- pattern: cadence; confidence: low -->"
+            .to_owned(),
+    );
     format!("{}\n", lines.join("\n"))
 }
 

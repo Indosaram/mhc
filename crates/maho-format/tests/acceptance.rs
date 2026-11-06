@@ -120,7 +120,10 @@ fn at03_path_keys_keep_spaces_drop_empty_and_dedupe() {
         "paths": ["b.ts", 3, " a.ts "],
         "filePaths": ["b.ts", "c.ts", null]
     });
-    assert_eq!(collect_paths("edit", &input, None), [" a.ts ", "b.ts", "c.ts"]);
+    assert_eq!(
+        collect_paths("edit", &input, None),
+        [" a.ts ", "b.ts", "c.ts"]
+    );
 }
 
 #[test]
@@ -160,15 +163,24 @@ fn chosen(markers: &[(&str, &str)], file: &str) -> Option<FormatterKind> {
 #[test]
 fn at06_formatter_choice_from_markers() {
     assert_eq!(
-        chosen(&[("biome.jsonc", "{}"), ("prettier.config.mjs", "")], "a.ts"),
+        chosen(
+            &[("biome.jsonc", "{}"), ("prettier.config.mjs", "")],
+            "a.ts"
+        ),
         Some(FormatterKind::Biome)
     );
     assert_eq!(
         chosen(&[(".prettierrc.yaml", "")], "a.css"),
         Some(FormatterKind::Prettier)
     );
-    assert_eq!(chosen(&[("rustfmt.toml", "")], "m.rs"), Some(FormatterKind::Rustfmt));
-    assert_eq!(chosen(&[("go.mod", "module m")], "m.go"), Some(FormatterKind::Gofmt));
+    assert_eq!(
+        chosen(&[("rustfmt.toml", "")], "m.rs"),
+        Some(FormatterKind::Rustfmt)
+    );
+    assert_eq!(
+        chosen(&[("go.mod", "module m")], "m.go"),
+        Some(FormatterKind::Gofmt)
+    );
     assert_eq!(
         chosen(&[("pyproject.toml", "[project]\n  [tool.ruff]\n")], "m.py"),
         Some(FormatterKind::Ruff)
@@ -212,11 +224,7 @@ async fn at08_large_and_git_ignored_files_are_skipped() {
     let mut config = settings(Mode::Required);
     config.max_file_bytes = 16;
     let report = engine(Arc::clone(&host))
-        .process(&project.request(
-            "write",
-            json!({"paths": ["big.go", "gen.go"]}),
-            config,
-        ))
+        .process(&project.request("write", json!({"paths": ["big.go", "gen.go"]}), config))
         .await;
     assert_eq!(report, FormatReport::default());
     assert_eq!(host.formatter_runs(), 0);
@@ -290,7 +298,10 @@ async fn run_failing_tool(body: &str, timeout: Duration) -> (FormatReport, Vec<u
     project.file("go.mod", "module m\n");
     let file = project.file("m.go", "package m\n");
     let original = std::fs::read(&file).expect("read");
-    let config = Settings { timeout, ..Settings::default() };
+    let config = Settings {
+        timeout,
+        ..Settings::default()
+    };
     let report = engine(project.host())
         .process(&project.request("edit", json!({"path": "m.go"}), config))
         .await;
@@ -310,8 +321,11 @@ async fn at12_nonzero_exit_restores_the_file() {
 #[tokio::test]
 async fn at13_timeout_kills_and_restores() {
     let started = std::time::Instant::now();
-    let (report, original, after) =
-        run_failing_tool(&format!("{ADD_TWO}; exec sleep 30"), Duration::from_millis(300)).await;
+    let (report, original, after) = run_failing_tool(
+        &format!("{ADD_TWO}; exec sleep 30"),
+        Duration::from_millis(300),
+    )
+    .await;
     assert!(started.elapsed() < Duration::from_secs(20));
     assert_eq!(after, original);
     assert_eq!(report, FormatReport::default());
@@ -367,7 +381,10 @@ async fn at17_missing_required_marks_error() {
         .await;
     assert!(report.is_error);
     let block = single_block(&report);
-    assert!(block.contains("gofmt") && block.contains("./src/m.go"), "{block}");
+    assert!(
+        block.contains("gofmt") && block.contains("./src/m.go"),
+        "{block}"
+    );
 }
 
 struct FakeLsp(LspAnswer);
@@ -387,7 +404,14 @@ impl LspFormat for FakeLsp {
 #[tokio::test]
 async fn at18_lsp_path() {
     let cases = [
-        (LspAnswer::Formatted { added: 4, removed: 3 }, Some("+4/-3"), 0),
+        (
+            LspAnswer::Formatted {
+                added: 4,
+                removed: 3,
+            },
+            Some("+4/-3"),
+            0,
+        ),
         (LspAnswer::Unavailable, Some("+2/-0"), 1),
         (LspAnswer::Other, None, 0),
     ];
@@ -487,7 +511,10 @@ async fn at20_bun_substitution() {
         &good,
     )
     .await;
-    assert!(block.contains("prettier") && !block.contains("bun format"), "{block}");
+    assert!(
+        block.contains("prettier") && !block.contains("bun format"),
+        "{block}"
+    );
     let block = bun_case(
         |project| {
             project.file("format/package.json", "{}");
@@ -496,9 +523,15 @@ async fn at20_bun_substitution() {
         &good,
     )
     .await;
-    assert!(block.contains("prettier") && !block.contains("bun format"), "{block}");
+    assert!(
+        block.contains("prettier") && !block.contains("bun format"),
+        "{block}"
+    );
     let block = bun_case(|_| {}, lazy).await;
-    assert!(block.contains("prettier") && !block.contains("bun format"), "{block}");
+    assert!(
+        block.contains("prettier") && !block.contains("bun format"),
+        "{block}"
+    );
 }
 
 #[test]

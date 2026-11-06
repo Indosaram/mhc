@@ -2,10 +2,10 @@ use senpi_desktop_backend_fake::{FakeMethod, SinkOp};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::protocol_params::{AxClickParams, AxElementAtParams};
 use senpi_desktop_core::types::Target;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::request::{Op, Response};
-use crate::test_support::{Harness, harness};
+use crate::test_support::{harness, Harness};
 
 fn window(id: &str, pid: u32, x: u32) -> Value {
     json!({"id": id, "title": id, "app": "App", "pid": pid, "x": x, "y": 120,

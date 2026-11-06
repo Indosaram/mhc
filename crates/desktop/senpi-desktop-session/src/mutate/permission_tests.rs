@@ -24,13 +24,11 @@ fn prompt_or_granted_input_passes_the_gate() {
     let reply = harness.process(type_hi());
     // Then
     assert!(reply.is_ok(), "{reply:?}");
-    assert!(
-        harness
-            .sink
-            .ops()
-            .iter()
-            .any(|op| matches!(op, SinkOp::TypeText { .. }))
-    );
+    assert!(harness
+        .sink
+        .ops()
+        .iter()
+        .any(|op| matches!(op, SinkOp::TypeText { .. })));
 }
 
 #[test]
@@ -44,13 +42,11 @@ fn unavailable_input_is_refused_before_the_backend() {
         reply.map_err(|error| error.code),
         Err(ErrorCode::PermissionDenied)
     );
-    assert!(
-        !harness
-            .sink
-            .ops()
-            .iter()
-            .any(|op| matches!(op, SinkOp::TypeText { .. }))
-    );
+    assert!(!harness
+        .sink
+        .ops()
+        .iter()
+        .any(|op| matches!(op, SinkOp::TypeText { .. })));
 }
 
 #[test]
@@ -71,13 +67,11 @@ fn denied_global_listener_enriches_click_without_injecting_input() {
     assert_eq!(data.permission, TccPermission::Accessibility);
     assert_eq!(data.app, "Marked fake launcher");
     assert!(data.relaunch_required);
-    assert!(
-        !harness
-            .sink
-            .ops()
-            .iter()
-            .any(|op| matches!(op, SinkOp::Pointer { .. }))
-    );
+    assert!(!harness
+        .sink
+        .ops()
+        .iter()
+        .any(|op| matches!(op, SinkOp::Pointer { .. })));
 }
 
 #[test]
@@ -90,11 +84,9 @@ fn ordinary_input_permission_refusal_is_also_backend_enriched() {
         error.permission.unwrap().permission,
         TccPermission::Accessibility
     );
-    assert!(
-        !harness
-            .sink
-            .ops()
-            .iter()
-            .any(|op| matches!(op, SinkOp::Pointer { .. }))
-    );
+    assert!(!harness
+        .sink
+        .ops()
+        .iter()
+        .any(|op| matches!(op, SinkOp::Pointer { .. })));
 }

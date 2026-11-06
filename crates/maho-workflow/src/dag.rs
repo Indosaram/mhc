@@ -1,8 +1,8 @@
 //! The `/dag` command text (spec §5).
+use crate::now_ms;
 use crate::scheduler::WorkflowScheduler;
 use crate::state::NodeState;
 use crate::tool::Caller;
-use crate::now_ms;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -39,10 +39,16 @@ pub struct DagOutput {
 pub fn render(scheduler: &Arc<WorkflowScheduler>, caller: &Caller, args: &str) -> DagOutput {
     let args = args.trim();
     if args.is_empty() {
-        return DagOutput { text: list(scheduler, caller), warning: false };
+        return DagOutput {
+            text: list(scheduler, caller),
+            warning: false,
+        };
     }
     match scheduler.snapshot(caller, Some(args)) {
-        Ok(_) => DagOutput { text: detail(scheduler, caller, args), warning: false },
+        Ok(_) => DagOutput {
+            text: detail(scheduler, caller, args),
+            warning: false,
+        },
         Err(_) => DagOutput {
             text: format!("No workflow run \"{}\" in this session.", sanitize(args)),
             warning: true,
@@ -94,15 +100,26 @@ fn detail(scheduler: &Arc<WorkflowScheduler>, caller: &Caller, run_id: &str) -> 
         header.push_str(&format!(", {} amendment(s)", snapshot.amendments));
     }
     lines.push(header);
-    let critical: BTreeSet<&str> = snapshot.graph.critical_path.iter().map(String::as_str).collect();
+    let critical: BTreeSet<&str> = snapshot
+        .graph
+        .critical_path
+        .iter()
+        .map(String::as_str)
+        .collect();
     let now = now_ms();
     for (index, wave) in snapshot.graph.waves.iter().enumerate() {
         lines.push(format!("Wave {}:", index + 1));
         for id in wave {
-            let Some(node) = snapshot.nodes.iter().find(|n| &n.id == id) else { continue };
+            let Some(node) = snapshot.nodes.iter().find(|n| &n.id == id) else {
+                continue;
+            };
             let mut line = format!(
                 "  {} {} [{}] {}",
-                if critical.contains(id.as_str()) { "*" } else { "-" },
+                if critical.contains(id.as_str()) {
+                    "*"
+                } else {
+                    "-"
+                },
                 sanitize(&node.label),
                 node.state.as_str(),
                 sanitize(&node.target)
@@ -114,21 +131,36 @@ fn detail(scheduler: &Arc<WorkflowScheduler>, caller: &Caller, run_id: &str) -> 
                 line.push_str(&format!(" attempt={}", node.attempt));
             }
             if node.state != NodeState::Pending
-                && let Some(ms) = node.duration_ms.or_else(|| node.started_at.map(|s| now.saturating_sub(s)))
+                && let Some(ms) = node
+                    .duration_ms
+                    .or_else(|| node.started_at.map(|s| now.saturating_sub(s)))
             {
                 line.push_str(&format!(" {}", duration(ms)));
             }
             if !node.depends_on.is_empty() {
-                let deps: Vec<String> = node.depends_on.iter().map(|d| sanitize(d.as_str())).collect();
+                let deps: Vec<String> = node
+                    .depends_on
+                    .iter()
+                    .map(|d| sanitize(d.as_str()))
+                    .collect();
                 line.push_str(&format!(" after {}", deps.join(", ")));
             }
             if let Some(error) = &node.error {
-                line.push_str(&format!(" error {}: {}", error.code, sanitize(&error.message)));
+                line.push_str(&format!(
+                    " error {}: {}",
+                    error.code,
+                    sanitize(&error.message)
+                ));
             }
             lines.push(line);
         }
     }
-    let path: Vec<String> = snapshot.graph.critical_path.iter().map(|id| sanitize(id.as_str())).collect();
+    let path: Vec<String> = snapshot
+        .graph
+        .critical_path
+        .iter()
+        .map(|id| sanitize(id.as_str()))
+        .collect();
     lines.push(format!("Critical path (*): {}", path.join(" -> ")));
     let bottlenecks: Vec<String> = snapshot
         .graph
@@ -139,7 +171,11 @@ fn detail(scheduler: &Arc<WorkflowScheduler>, caller: &Caller, run_id: &str) -> 
         .collect();
     lines.push(format!(
         "Bottlenecks: {}",
-        if bottlenecks.is_empty() { "none".to_owned() } else { bottlenecks.join(", ") }
+        if bottlenecks.is_empty() {
+            "none".to_owned()
+        } else {
+            bottlenecks.join(", ")
+        }
     ));
     lines.join("\n")
 }

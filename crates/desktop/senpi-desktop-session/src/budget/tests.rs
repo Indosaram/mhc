@@ -6,7 +6,7 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{CaptureCaps, CaptureMode};
 
 use super::encode::format_bytes;
-use super::{Budget, Delivery, ScreenshotResult, plan_screenshot};
+use super::{plan_screenshot, Budget, Delivery, ScreenshotResult};
 
 /// Deterministic per-pixel noise: PNG cannot compress it, JPEG q70 can.
 fn noise(width: u32, height: u32) -> RgbaImage {

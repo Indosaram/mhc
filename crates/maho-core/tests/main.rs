@@ -1,14 +1,14 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
-#[path = "keyword_paint_arm_parity.rs"]
-mod keyword_paint_arm_parity;
 #[path = "compaction_estimate.rs"]
 mod compaction_estimate;
 #[path = "context_selection.rs"]
 mod context_selection;
 #[path = "extension_lock_release.rs"]
 mod extension_lock_release;
+#[path = "keyword_paint_arm_parity.rs"]
+mod keyword_paint_arm_parity;
 #[path = "sdk_accounts.rs"]
 mod sdk_accounts;
 #[path = "sdk_async_hook_contract.rs"]

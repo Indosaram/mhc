@@ -16,10 +16,7 @@ pub fn resolve_task_agents(config: &Value) -> Vec<(String, AgentDefinition)> {
         .map(|definition| (definition.name.clone(), definition.clone()))
         .collect();
     for (name, definition) in map_omo_config_agents(config) {
-        match merged
-            .iter()
-            .position(|(existing, _)| existing == &name)
-        {
+        match merged.iter().position(|(existing, _)| existing == &name) {
             Some(index) => {
                 let base = merged[index].1.clone();
                 merged[index].1 = base.overlaid_with(definition);

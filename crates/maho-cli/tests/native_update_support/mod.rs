@@ -20,7 +20,12 @@ pub const NEWER_VERSION: &str = "9999.2.1";
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const SIBLINGS: [&str; 4] = ["ast-grep-mcp", "lsp-daemon", "omo-git-bash", "senpi-desktop-engine"];
+const SIBLINGS: [&str; 4] = [
+    "ast-grep-mcp",
+    "lsp-daemon",
+    "omo-git-bash",
+    "senpi-desktop-engine",
+];
 
 pub fn real_version() -> String {
     static VERSION: OnceLock<String> = OnceLock::new();
@@ -33,11 +38,17 @@ fn read_real_version() -> String {
         .output()
         .expect("run mhc --version");
     if !output.status.success() {
-        panic!("mhc --version failed: {}", String::from_utf8_lossy(&output.stderr));
+        panic!(
+            "mhc --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let text = String::from_utf8(output.stdout).expect("mhc --version is utf-8");
     let trimmed = text.trim();
-    trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed).to_owned()
+    trimmed
+        .strip_prefix(['v', 'V'])
+        .unwrap_or(trimmed)
+        .to_owned()
 }
 
 pub struct Fixture {
@@ -66,12 +77,20 @@ pub fn fixture() -> Fixture {
     let settings = json!({"theme": "dark", "customUserSetting": "keep"});
     std::fs::write(agent.join("settings.json"), format!("{settings}\n")).expect("settings.json");
     std::fs::write(home.join(".sentinel"), "sentinel").expect("home sentinel");
-    Fixture { dir, root, home, agent }
+    Fixture {
+        dir,
+        root,
+        home,
+        agent,
+    }
 }
 
 pub enum Payload {
     RealMhc,
-    Probe { version: String, fail_when_installed: bool },
+    Probe {
+        version: String,
+        fail_when_installed: bool,
+    },
 }
 
 pub fn build_package(out_parent: &Path, payload: Payload) -> PathBuf {
@@ -104,7 +123,11 @@ pub fn build_package(out_parent: &Path, payload: Payload) -> PathBuf {
         "skills": { "files": [skill] },
         "conditionalSkills": { "files": [] },
     });
-    if let Payload::Probe { version, fail_when_installed } = payload {
+    if let Payload::Probe {
+        version,
+        fail_when_installed,
+    } = payload
+    {
         manifest["probeVersion"] = Value::String(version);
         manifest["probeFailInstalled"] = Value::Bool(fail_when_installed);
     }
@@ -182,16 +205,28 @@ fn sign_with_test_key(archive: &[u8]) -> String {
     let secret = minisign::SecretKeyBox::from_string(key)
         .and_then(|boxed| boxed.into_secret_key(Some(String::new())))
         .expect("fixture test key");
-    minisign::sign(None, &secret, std::io::Cursor::new(archive), Some("mhc test"), None)
-        .expect("sign with fixture key")
-        .into_string()
+    minisign::sign(
+        None,
+        &secret,
+        std::io::Cursor::new(archive),
+        Some("mhc test"),
+        None,
+    )
+    .expect("sign with fixture key")
+    .into_string()
 }
 
 fn sign_with_other_key(archive: &[u8]) -> String {
     let pair = minisign::KeyPair::generate_unencrypted_keypair().expect("generate key pair");
-    minisign::sign(None, &pair.sk, std::io::Cursor::new(archive), Some("mhc other"), None)
-        .expect("sign with other key")
-        .into_string()
+    minisign::sign(
+        None,
+        &pair.sk,
+        std::io::Cursor::new(archive),
+        Some("mhc other"),
+        None,
+    )
+    .expect("sign with other key")
+    .into_string()
 }
 
 pub async fn serve_release(version: &str, archive: &Path, checksum_line: String) -> ReleaseServer {
@@ -204,8 +239,13 @@ pub async fn serve_release_signed(
     checksum_line: String,
     signing: Signing,
 ) -> ReleaseServer {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind release server");
-    let port = listener.local_addr().expect("release server address").port();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind release server");
+    let port = listener
+        .local_addr()
+        .expect("release server address")
+        .port();
     let asset_name = archive
         .file_name()
         .and_then(|name| name.to_str())
@@ -214,7 +254,9 @@ pub async fn serve_release_signed(
     let checksum_name = format!("{asset_name}.sha256");
     let signature_name = format!("{asset_name}.minisig");
     let signature_path = format!("/assets/{signature_name}");
-    let archive_bytes = tokio::fs::read(archive).await.expect("read release archive");
+    let archive_bytes = tokio::fs::read(archive)
+        .await
+        .expect("read release archive");
     let signature = match signing {
         Signing::Valid => Some(sign_with_test_key(&archive_bytes)),
         Signing::ValidFor(bytes) => Some(sign_with_test_key(&bytes)),
@@ -258,7 +300,11 @@ pub async fn serve_release_signed(
             let _ = serve_one(&mut socket, &served).await;
         }
     });
-    ReleaseServer { url, requests, _task }
+    ReleaseServer {
+        url,
+        requests,
+        _task,
+    }
 }
 
 pub fn mhc(fx: &Fixture, exe: &Path) -> Command {
@@ -309,7 +355,11 @@ pub async fn run(mut cmd: Command) -> std::process::Output {
     let (stderr_result, stderr) = stderr_task.await.expect("mhc stderr task");
     stdout_result.expect("read mhc stdout");
     stderr_result.expect("read mhc stderr");
-    std::process::Output { status, stdout, stderr }
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 pub fn launcher(fx: &Fixture) -> PathBuf {
@@ -319,8 +369,15 @@ pub fn launcher(fx: &Fixture) -> PathBuf {
 pub fn pointer(fx: &Fixture) -> (String, Option<String>) {
     let bytes = std::fs::read(fx.root.join("current.json")).expect("read current.json");
     let value: Value = serde_json::from_slice(&bytes).expect("parse current.json");
-    let current = value.get("current").and_then(Value::as_str).expect("current version").to_owned();
-    let previous = value.get("previous").and_then(Value::as_str).map(str::to_owned);
+    let current = value
+        .get("current")
+        .and_then(Value::as_str)
+        .expect("current version")
+        .to_owned();
+    let previous = value
+        .get("previous")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     (current, previous)
 }
 
@@ -334,7 +391,9 @@ pub fn versions(fx: &Fixture) -> Vec<String> {
     let mut names = Vec::new();
     for entry in entries {
         let entry = entry.unwrap_or_else(|error| panic!("read version entry: {error}"));
-        let kind = entry.file_type().unwrap_or_else(|error| panic!("version entry type: {error}"));
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("version entry type: {error}"));
         let file_name = entry.file_name();
         if kind.is_dir()
             && let Some(name) = file_name.to_str()
@@ -347,12 +406,18 @@ pub fn versions(fx: &Fixture) -> Vec<String> {
 }
 
 pub fn state_untouched(fx: &Fixture) -> bool {
-    let Ok(sentinel) = std::fs::read(fx.home.join(".sentinel")) else { return false };
+    let Ok(sentinel) = std::fs::read(fx.home.join(".sentinel")) else {
+        return false;
+    };
     if sentinel != b"sentinel" {
         return false;
     }
-    let Ok(bytes) = std::fs::read(fx.agent.join("settings.json")) else { return false };
-    let Ok(settings) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let Ok(bytes) = std::fs::read(fx.agent.join("settings.json")) else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
     settings.get("theme").and_then(Value::as_str) == Some("dark")
         && settings.get("customUserSetting").and_then(Value::as_str) == Some("keep")
 }
@@ -407,7 +472,13 @@ pub async fn spawn_session(fx: &Fixture) -> Session {
         stderr_task.abort();
         panic!("session did not answer id \"ready\" within 60s");
     }
-    Session { child, stdin, stdout, pid, stderr: stderr_task }
+    Session {
+        child,
+        stdin,
+        stdout,
+        pid,
+        stderr: stderr_task,
+    }
 }
 
 impl Session {
@@ -458,7 +529,8 @@ fn exe_name(name: &str) -> String {
 }
 
 fn package_join(package: &Path, rel: &str) -> PathBuf {
-    rel.split('/').fold(package.to_path_buf(), |path, part| path.join(part))
+    rel.split('/')
+        .fold(package.to_path_buf(), |path, part| path.join(part))
 }
 
 fn copy_executable(package: &Path, name: &str, source: &str) -> Value {
@@ -525,12 +597,16 @@ fn set_mode(path: &Path, mode: u32) {
 }
 
 fn copy_tree(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap_or_else(|error| panic!("create {}: {error}", dst.display()));
-    let entries = std::fs::read_dir(src).unwrap_or_else(|error| panic!("read {}: {error}", src.display()));
+    std::fs::create_dir_all(dst)
+        .unwrap_or_else(|error| panic!("create {}: {error}", dst.display()));
+    let entries =
+        std::fs::read_dir(src).unwrap_or_else(|error| panic!("read {}: {error}", src.display()));
     for entry in entries {
         let entry = entry.unwrap_or_else(|error| panic!("read package entry: {error}"));
         let target = dst.join(entry.file_name());
-        let kind = entry.file_type().unwrap_or_else(|error| panic!("package entry type: {error}"));
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("package entry type: {error}"));
         if kind.is_dir() {
             copy_tree(&entry.path(), &target);
         } else if kind.is_file() {
@@ -538,7 +614,10 @@ fn copy_tree(src: &Path, dst: &Path) {
                 panic!("copy {}: {error}", target.display());
             }
         } else {
-            panic!("package entry is not a regular file: {}", entry.path().display());
+            panic!(
+                "package entry is not a regular file: {}",
+                entry.path().display()
+            );
         }
     }
 }
@@ -562,7 +641,11 @@ fn write_zip(package_dir: &Path, destination: &Path, top: &str) -> std::io::Resu
     Ok(())
 }
 
-fn zip_dir(writer: &mut zip::ZipWriter<std::fs::File>, dir: &Path, prefix: &str) -> std::io::Result<()> {
+fn zip_dir(
+    writer: &mut zip::ZipWriter<std::fs::File>,
+    dir: &Path,
+    prefix: &str,
+) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let file_name = entry.file_name();
@@ -598,7 +681,9 @@ fn mode_bits(path: &Path) -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).map(|meta| meta.permissions().mode() & 0o777).unwrap_or(0o644)
+        std::fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o777)
+            .unwrap_or(0o644)
     }
     #[cfg(not(unix))]
     {
@@ -626,7 +711,10 @@ async fn serve_one(socket: &mut TcpStream, served: &ServedRelease) -> std::io::R
     let path = tokio::time::timeout(HEADER_TIMEOUT, read_request_path(socket))
         .await
         .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "release request headers timed out")
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "release request headers timed out",
+            )
         })??;
     served.requests.fetch_add(1, Ordering::SeqCst);
     let (status, body) = if path == served.latest_path {
@@ -680,7 +768,11 @@ fn request_path(headers: &str) -> Option<String> {
         return None;
     }
     let path = parts.next()?.split('?').next()?;
-    if path.is_empty() { None } else { Some(path.to_owned()) }
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_owned())
+    }
 }
 
 async fn write_http(socket: &mut TcpStream, status: &str, body: &[u8]) -> std::io::Result<()> {
@@ -707,7 +799,9 @@ where
 }
 
 fn response_id(line: &str, id: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(line) else { return false };
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
     value.get("type").and_then(Value::as_str) == Some("response")
         && value.get("id").and_then(Value::as_str) == Some(id)
 }

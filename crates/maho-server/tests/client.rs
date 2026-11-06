@@ -1,10 +1,12 @@
+use maho_chord::types::JsonValue as Value;
+use maho_server::transport_json as json;
 use maho_server::{
     client::{
         Client,
         errors::ClientError,
         service_transport::{ClientServiceTransport, ServiceListener},
-        transport::{ByteTransport, ByteTransportFactory, ByteTransportHandlers, TransportFuture},
         service_wire::ServiceStateDecoder,
+        transport::{ByteTransport, ByteTransportFactory, ByteTransportHandlers, TransportFuture},
         types::ConnectionState,
     },
     protocol::{
@@ -12,8 +14,6 @@ use maho_server::{
         framing::DEFAULT_MAX_FRAME_LENGTH as MAX,
     },
 };
-use maho_chord::types::JsonValue as Value;
-use maho_server::transport_json as json;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -24,12 +24,33 @@ use tokio::sync::mpsc;
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 #[tokio::test]
 async fn subscription_cancellation_sends_cancel_and_accepts_late_reply() {
-    let (memory,mut requests)=Memory::create(json!({"type":"hello","version":8,"serverId":ID}),false);
-    let client=Client::new(ID.into(),MAX,Arc::new(MemoryFactory(memory.clone()))).unwrap();client.connect().await.unwrap();requests.recv().await.unwrap();
+    let (memory, mut requests) =
+        Memory::create(json!({"type":"hello","version":8,"serverId":ID}), false);
+    let client = Client::new(ID.into(), MAX, Arc::new(MemoryFactory(memory.clone()))).unwrap();
+    client.connect().await.unwrap();
+    requests.recv().await.unwrap();
     let service_id = "echo".into();
-    let (abort,signal)=tokio::sync::watch::channel(None);let subscribing=client.subscribe_with_cancellation(json!({"serverId":ID}),&service_id,maho_chord::types::ServiceMode::Singleton,Some(signal));
-    let server=async {let request=requests.recv().await.unwrap();abort.send_replace(Some(ClientError::Disconnected("cancel subscription".into())));let cancel=requests.recv().await.unwrap();assert_eq!(cancel["type"], json!("cancel"));assert_eq!(cancel["id"],request["id"]);memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":null}));};
-    let (result,_)=tokio::join!(subscribing,server);assert!(matches!(result,Err(ClientError::Disconnected(_))));assert!(client.connected());client.dispose();
+    let (abort, signal) = tokio::sync::watch::channel(None);
+    let subscribing = client.subscribe_with_cancellation(
+        json!({"serverId":ID}),
+        &service_id,
+        maho_chord::types::ServiceMode::Singleton,
+        Some(signal),
+    );
+    let server = async {
+        let request = requests.recv().await.unwrap();
+        abort.send_replace(Some(ClientError::Disconnected(
+            "cancel subscription".into(),
+        )));
+        let cancel = requests.recv().await.unwrap();
+        assert_eq!(cancel["type"], json!("cancel"));
+        assert_eq!(cancel["id"], request["id"]);
+        memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":null}));
+    };
+    let (result, _) = tokio::join!(subscribing, server);
+    assert!(matches!(result, Err(ClientError::Disconnected(_))));
+    assert!(client.connected());
+    client.dispose();
 }
 #[tokio::test]
 async fn synchronous_listeners_preserve_every_change_and_unsubscribe() {
@@ -293,24 +314,31 @@ async fn callback_close_drains_delivered_updates() {
     let (client, memory, mut requests) = setup();
     client.connect().await.unwrap();
     requests.recv().await.unwrap();
-    let transport = ClientServiceTransport::new(client.clone(), Arc::new(|| Some(json!({"serverId":ID}))));
+    let transport =
+        ClientServiceTransport::new(client.clone(), Arc::new(|| Some(json!({"serverId":ID}))));
     let delivered = Arc::new(Mutex::new(Vec::new()));
     let (entered_tx, mut entered) = mpsc::unbounded_channel();
     let (gate, gate_rx) = tokio::sync::watch::channel(false);
     let captured = delivered.clone();
-    let listener: ServiceListener = Arc::new(move |update: Value| -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send>> {
-        let captured = captured.clone();
-        let entered_tx = entered_tx.clone();
-        let mut gate_rx = gate_rx.clone();
-        Box::pin(async move {
-            let _entered = entered_tx.send(());
-            assert!(gate_rx.wait_for(|open| *open).await.is_ok());
-            captured.lock().unwrap().push(update["ops"].clone());
-            Ok(())
-        })
-    });
+    let listener: ServiceListener = Arc::new(
+        move |update: Value| -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send>> {
+            let captured = captured.clone();
+            let entered_tx = entered_tx.clone();
+            let mut gate_rx = gate_rx.clone();
+            Box::pin(async move {
+                let _entered = entered_tx.send(());
+                assert!(gate_rx.wait_for(|open| *open).await.is_ok());
+                captured.lock().unwrap().push(update["ops"].clone());
+                Ok(())
+            })
+        },
+    );
     let service_id = "pi.models".into();
-    let opening = transport.subscribe(&service_id, maho_chord::types::ServiceMode::Singleton, listener);
+    let opening = transport.subscribe(
+        &service_id,
+        maho_chord::types::ServiceMode::Singleton,
+        listener,
+    );
     let server = async {
         let request = requests.recv().await.unwrap();
         memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":{"serviceId":"pi.models","mode":"singleton","instances":[{"members":[{"name":"state","kind":"state","sequence":0,"ops":[["r",{"revision":0}]]}]}]}}));
@@ -332,7 +360,10 @@ async fn callback_close_drains_delivered_updates() {
     result.unwrap();
     assert_eq!(
         *delivered.lock().unwrap(),
-        vec![json!([["s", ["revision"], 1]]), json!([["s", ["revision"], 2]])]
+        vec![
+            json!([["s", ["revision"], 1]]),
+            json!([["s", ["revision"], 2]])
+        ]
     );
     client.dispose();
 }
@@ -429,7 +460,11 @@ async fn buffers_updates_until_snapshot_and_activation() {
     client.connect().await.unwrap();
     requests.recv().await.unwrap();
     let service_id = "pi.models".into();
-    let opening = client.subscribe(json!({"serverId":ID}), &service_id, maho_chord::types::ServiceMode::Singleton);
+    let opening = client.subscribe(
+        json!({"serverId":ID}),
+        &service_id,
+        maho_chord::types::ServiceMode::Singleton,
+    );
     let server = async {
         let request = requests.recv().await.unwrap();
         memory.send(json!({"type":"service_update","subscriptionId":"service-1","update":{"type":"state","member":"state","sequence":1,"ops":[["s",["revision"],1]]}}));

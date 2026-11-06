@@ -109,7 +109,11 @@ fn file_url_to_path(parsed: &url::Url) -> Result<String, String> {
         .map_err(|_| "URI malformed".to_string())?;
     if cfg!(windows) {
         let bytes = decoded.as_bytes();
-        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
             return Ok(decoded[1..].to_string());
         }
     }

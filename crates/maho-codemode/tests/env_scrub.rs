@@ -72,29 +72,44 @@ async fn probe(passthrough: Option<Vec<String>>) -> String {
 #[tokio::test]
 async fn session_overlay_secret_is_scrubbed_from_the_eval_child() {
     let repr = probe(Some(Vec::new())).await;
-    assert_eq!(repr, "\"undefined|kept|undefined\"", "unexpected probe output");
+    assert_eq!(
+        repr, "\"undefined|kept|undefined\"",
+        "unexpected probe output"
+    );
 }
 
 #[tokio::test]
 async fn passthrough_keeps_the_overlay_secret_in_the_eval_child() {
     let repr = probe(Some(vec!["NPM_TOKEN".into()])).await;
-    assert_eq!(repr, "\"overlay-secret|kept|undefined\"", "unexpected probe output");
+    assert_eq!(
+        repr, "\"overlay-secret|kept|undefined\"",
+        "unexpected probe output"
+    );
 }
 
 #[tokio::test]
 async fn unset_passthrough_leaves_the_eval_environment_untouched() {
     let repr = probe(None).await;
-    assert_eq!(repr, "\"overlay-secret|kept|host-secret\"", "unexpected probe output");
+    assert_eq!(
+        repr, "\"overlay-secret|kept|host-secret\"",
+        "unexpected probe output"
+    );
 }
 
 #[tokio::test]
 async fn host_env_secret_is_scrubbed_from_the_eval_child() {
     let repr = probe(Some(Vec::new())).await;
-    assert_eq!(repr, "\"undefined|kept|undefined\"", "unexpected probe output");
+    assert_eq!(
+        repr, "\"undefined|kept|undefined\"",
+        "unexpected probe output"
+    );
 }
 
 #[tokio::test]
 async fn passthrough_keeps_a_host_env_secret_in_the_eval_child() {
     let repr = probe(Some(vec!["MAHO_PROBE_HOST_TOKEN".into()])).await;
-    assert_eq!(repr, "\"undefined|kept|host-secret\"", "unexpected probe output");
+    assert_eq!(
+        repr, "\"undefined|kept|host-secret\"",
+        "unexpected probe output"
+    );
 }

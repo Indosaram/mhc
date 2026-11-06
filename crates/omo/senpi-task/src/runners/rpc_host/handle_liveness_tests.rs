@@ -36,7 +36,9 @@ impl HostSessionPort for StalledPort {
             if let Some(entered) = self.probe_entered.lock().expect("probe entered").take() {
                 entered.send(()).expect("probe listener");
             }
-            release.recv_timeout(std::time::Duration::from_secs(5)).expect("probe release signal");
+            release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("probe release signal");
         }
         if *self.missing.lock().expect("missing") {
             return Err(HostError {
@@ -67,7 +69,12 @@ impl HostSessionPort for StalledPort {
         if let Some(entered) = self.outcome_entered.lock().expect("outcome entered").take() {
             entered.send(()).expect("outcome listener");
         }
-        let (_lost, wait) = self.outcome_release.wait_timeout_while(lost, std::time::Duration::from_secs(5), |lost| lost.is_empty()).expect("outcome signal");
+        let (_lost, wait) = self
+            .outcome_release
+            .wait_timeout_while(lost, std::time::Duration::from_secs(5), |lost| {
+                lost.is_empty()
+            })
+            .expect("outcome signal");
         assert!(!wait.timed_out(), "transport must settle outcome");
         Some(RunnerOutcome::Cancelled)
     }
@@ -76,7 +83,9 @@ impl HostSessionPort for StalledPort {
         let mut failures = self.close_failures.lock().expect("close failures");
         if *failures > 0 {
             *failures -= 1;
-            return Some(Err(HostError { message: "host unreachable".into() }));
+            return Some(Err(HostError {
+                message: "host unreachable".into(),
+            }));
         }
         Some(Ok(()))
     }
@@ -142,9 +151,15 @@ fn a_pending_host_probe_stays_single_flight_until_the_driver_receives_its_answer
     *port.probe_release.lock().expect("probe release") = Some(answer_rx);
     *port.probe_entered.lock().expect("probe entered") = Some(entered_tx);
     let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
-    handle.liveness_step_with_deadline(start, std::time::Duration::ZERO).expect("first driver probe");
-    entered_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("probe entered");
-    handle.liveness_step_with_deadline(start + 60_000, std::time::Duration::ZERO).expect("overdue driver probe");
+    handle
+        .liveness_step_with_deadline(start, std::time::Duration::ZERO)
+        .expect("first driver probe");
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("probe entered");
+    handle
+        .liveness_step_with_deadline(start + 60_000, std::time::Duration::ZERO)
+        .expect("overdue driver probe");
     assert_eq!(*port.probes.lock().expect("probes"), 1);
     let step_handle = Arc::clone(&handle);
     let step = std::thread::spawn(move || {
@@ -193,19 +208,24 @@ fn an_unreachable_host_retries_confirmed_close_without_releasing_outcome_waiters
     let waiter_handle = Arc::clone(&handle);
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     *port.outcome_entered.lock().expect("outcome entered") = Some(started_tx);
-    let waiter = std::thread::spawn(move || {
-        ManagedChildHandle::wait_for_outcome(waiter_handle.as_ref())
-    });
-    started_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("waiter started");
+    let waiter =
+        std::thread::spawn(move || ManagedChildHandle::wait_for_outcome(waiter_handle.as_ref()));
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("waiter started");
     let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
     miss_three(&handle, start);
-    handle.liveness_step_at(start + 170_000).expect("terminal-pending step");
+    handle
+        .liveness_step_at(start + 170_000)
+        .expect("terminal-pending step");
     handle.settle_close_for_tests();
     assert!(!handle.stopped());
     assert!(!waiter.is_finished());
     assert_eq!(*port.closes.lock().expect("closes"), 1);
     let probes = *port.probes.lock().expect("probes");
-    handle.liveness_step_at(start + 200_000).expect("retry close");
+    handle
+        .liveness_step_at(start + 200_000)
+        .expect("retry close");
     handle.settle_close_for_tests();
     assert!(handle.stopped());
     assert_eq!(*port.closes.lock().expect("closes"), 2);
@@ -243,14 +263,19 @@ fn termination_releases_a_waiter_created_before_terminal_pending() {
         .expect("outcome waiter entered before terminal pending");
     let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
     miss_three(&handle, start);
-    handle.liveness_step_at(start + 170_000).expect("overdue step");
+    handle
+        .liveness_step_at(start + 170_000)
+        .expect("overdue step");
     handle.settle_close_for_tests();
     assert!(!waiter.is_finished());
 
     handle.terminate().expect("terminate");
 
     assert!(handle.stopped());
-    assert_eq!(waiter.join().expect("early waiter"), RunnerOutcome::Cancelled);
+    assert_eq!(
+        waiter.join().expect("early waiter"),
+        RunnerOutcome::Cancelled
+    );
     assert_eq!(handle.wait_for_outcome(), RunnerOutcome::Cancelled);
 }
 

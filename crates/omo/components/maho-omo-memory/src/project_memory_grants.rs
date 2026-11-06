@@ -22,17 +22,26 @@ pub fn grant_project_memory_read(context: &MemoryIdentityContext, project_repo: 
     let canonical = std::fs::canonicalize(project_repo)
         .or_else(|_| resolve_path(project_repo))
         .unwrap_or_else(|_| project_repo.to_path_buf());
-    let mut grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    grants.entry(context.identity.clone()).or_default().insert(canonical);
+    let mut grants = GRANTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    grants
+        .entry(context.identity.clone())
+        .or_default()
+        .insert(canonical);
 }
 
 pub fn revoke_project_memory_reads(context: &MemoryIdentityContext) {
-    let mut grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut grants = GRANTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     grants.remove(&context.identity);
 }
 
 pub fn is_granted_project_memory_read(context: &MemoryIdentityContext, target: &Path) -> bool {
-    let grants = GRANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let grants = GRANTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(roots) = grants.get(&context.identity) else {
         return false;
     };
@@ -104,8 +113,8 @@ fn canonical_allowing_missing(target: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory_core::identity::layout::build_identity_paths;
     use crate::binding::MemorySessionBinding;
+    use memory_core::identity::layout::build_identity_paths;
 
     fn fixture_context(root: &Path, identity: &str) -> MemoryIdentityContext {
         let paths = build_identity_paths(root, identity);
@@ -155,10 +164,27 @@ mod tests {
         std::fs::write(&note, "x").unwrap();
         grant_project_memory_read(&own, &foreign_repo);
 
-        assert!(is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("missing.md")));
-        assert!(is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("a").join("b.md")));
-        assert!(!is_granted_project_memory_read(&own, &note.join("missing.md")));
-        assert!(!is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("..").join("system").join("x.md").join("..")));
+        assert!(is_granted_project_memory_read(
+            &own,
+            &foreign_repo.join("reference").join("missing.md")
+        ));
+        assert!(is_granted_project_memory_read(
+            &own,
+            &foreign_repo.join("reference").join("a").join("b.md")
+        ));
+        assert!(!is_granted_project_memory_read(
+            &own,
+            &note.join("missing.md")
+        ));
+        assert!(!is_granted_project_memory_read(
+            &own,
+            &foreign_repo
+                .join("reference")
+                .join("..")
+                .join("system")
+                .join("x.md")
+                .join("..")
+        ));
         revoke_project_memory_reads(&own);
     }
 }

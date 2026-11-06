@@ -119,7 +119,9 @@ pub fn node_schema(node: &Node) -> Value {
         Node::LiteralNumber(value) => json!({ "const": value }),
         Node::Enumeration(values) => json!({ "enum": values }),
         Node::Array(spec) => array_schema(spec),
-        Node::Record(inner) => json!({ "type": "object", "additionalProperties": node_schema(inner) }),
+        Node::Record(inner) => {
+            json!({ "type": "object", "additionalProperties": node_schema(inner) })
+        }
         Node::Object(spec) => object_schema(spec),
         Node::Union(branches) => {
             json!({ "anyOf": branches.iter().map(node_schema).collect::<Vec<_>>() })
@@ -135,7 +137,9 @@ pub fn optionalize_defaulted_properties(schema: &mut Value) {
                 Some(Value::Object(properties)) => properties
                     .iter()
                     .filter(|(_, property)| {
-                        property.get("default").is_some_and(|value| !value.is_null())
+                        property
+                            .get("default")
+                            .is_some_and(|value| !value.is_null())
                     })
                     .map(|(key, _)| key.clone())
                     .collect(),
@@ -190,7 +194,12 @@ pub fn omo_config_json_schema() -> Value {
 
 pub fn object_property_keys(node: &Node) -> Option<Vec<String>> {
     match node {
-        Node::Object(spec) => Some(spec.fields.iter().map(|field| field.key.to_string()).collect()),
+        Node::Object(spec) => Some(
+            spec.fields
+                .iter()
+                .map(|field| field.key.to_string())
+                .collect(),
+        ),
         _ => None,
     }
 }

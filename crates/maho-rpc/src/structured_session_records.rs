@@ -257,7 +257,9 @@ pub fn subscribe_structured_session_records_routed(
 > {
     use maho_core::structured_session_lane::AgentSessionStructuredRecord as Record;
     let gate = std::sync::Mutex::new(SeededBlockGate::default());
-    let route_str = route.map(ToOwned::to_owned).unwrap_or_else(|| session.session_id());
+    let route_str = route
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| session.session_id());
     let last_abort_source = last_abort_source.unwrap_or_default();
     let weak_session = session.weak_accessor();
     let carrier_session = session.weak_accessor();
@@ -563,7 +565,9 @@ pub(crate) mod tests {
             maho_core::agent_session::AgentSessionConfig {
                 agent,
                 session_manager: maho_core::session_manager::SessionManager::in_memory(
-                    &root.to_string_lossy(), None, None,
+                    &root.to_string_lossy(),
+                    None,
+                    None,
                 ),
                 settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
                     Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
@@ -611,9 +615,9 @@ pub(crate) mod tests {
     pub(crate) fn scripted_session(
         root: &std::path::Path,
         script: impl Fn(&maho_ai::types::AssistantMessageEventStream, maho_ai::types::AssistantMessage)
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> maho_core::agent_session::AgentSession {
         let channel = maho_agent::create_internal_agent_channel();
         let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |_, _, _| {
@@ -1020,18 +1024,20 @@ pub(crate) mod tests {
 
         let (emitted_tx, emitted_rx) = tokio::sync::oneshot::channel::<()>();
         let emitted_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(emitted_tx)));
-        let watch_subscription = session.subscribe(std::sync::Arc::new(move |event| {
-            if let maho_ext_api::AgentSessionEvent::Agent(
-                maho_agent::types::AgentEvent::MessageUpdate {
-                    assistant_message_event: maho_ai::types::AssistantMessageEvent::TextStart { .. },
-                    ..
-                },
-            ) = event
-                && let Some(tx) = emitted_tx.lock().unwrap().take()
-            {
-                let _ = tx.send(());
-            }
-        }));
+        let watch_subscription =
+            session.subscribe(std::sync::Arc::new(move |event| {
+                if let maho_ext_api::AgentSessionEvent::Agent(
+                    maho_agent::types::AgentEvent::MessageUpdate {
+                        assistant_message_event:
+                            maho_ai::types::AssistantMessageEvent::TextStart { .. },
+                        ..
+                    },
+                ) = event
+                    && let Some(tx) = emitted_tx.lock().unwrap().take()
+                {
+                    let _ = tx.send(());
+                }
+            }));
 
         let early_records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let early_sink = early_records.clone();

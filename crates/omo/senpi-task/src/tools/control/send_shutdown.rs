@@ -10,7 +10,9 @@ use crate::team::shutdown::SenpiShutdownErrorCode;
 use crate::tools::control::send_results::{SendInvariantError, invalid_arguments};
 use crate::tools::control::send_schema::{StructuredMessageInput, TaskSendInput};
 use crate::tools::control::tool_result::tool_result;
-use crate::tools::control::types::{SendResultDetails, SendToolResult, ShutdownFailedCode, ShutdownOperation};
+use crate::tools::control::types::{
+    SendResultDetails, SendToolResult, ShutdownFailedCode, ShutdownOperation,
+};
 use crate::tools::team::types::{TeamToolServiceError, TeamToolsService};
 
 /// Outcome of the wiring's default team run id resolver (single-owned-team defaulting).
@@ -80,8 +82,15 @@ pub enum TaskSendError {
 // Explicit ids (bound routing first, then the param) always win. Without one, the wiring's default
 // resolver (single-owned-team defaulting) is consulted; without a resolver the historical
 // team_run_id-required error is preserved so un-wired adapters behave exactly as before.
-pub fn resolve_send_team_run_id(params: &TaskSendInput, team_routing: &TaskSendTeamRouting) -> SendTeamRunIdResolution {
-    if let Some(explicit) = team_routing.team_run_id.as_ref().or(params.team_run_id.as_ref()) {
+pub fn resolve_send_team_run_id(
+    params: &TaskSendInput,
+    team_routing: &TaskSendTeamRouting,
+) -> SendTeamRunIdResolution {
+    if let Some(explicit) = team_routing
+        .team_run_id
+        .as_ref()
+        .or(params.team_run_id.as_ref())
+    {
         return SendTeamRunIdResolution::Resolved {
             team_run_id: explicit.clone(),
         };
@@ -92,9 +101,13 @@ pub fn resolve_send_team_run_id(params: &TaskSendInput, team_routing: &TaskSendT
         };
     };
     match resolver() {
-        DefaultTeamRunIdResolution::Resolved { team_run_id } => SendTeamRunIdResolution::Resolved { team_run_id },
+        DefaultTeamRunIdResolution::Resolved { team_run_id } => {
+            SendTeamRunIdResolution::Resolved { team_run_id }
+        }
         DefaultTeamRunIdResolution::None => SendTeamRunIdResolution::None,
-        DefaultTeamRunIdResolution::Ambiguous { reason } => SendTeamRunIdResolution::Error { reason },
+        DefaultTeamRunIdResolution::Ambiguous { reason } => {
+            SendTeamRunIdResolution::Error { reason }
+        }
         DefaultTeamRunIdResolution::Failed { reason } => SendTeamRunIdResolution::Failed { reason },
     }
 }
@@ -105,10 +118,14 @@ pub fn resolve_send_team_run_id(params: &TaskSendInput, team_routing: &TaskSendT
 pub fn classify_shutdown_service_error(error: &TeamToolServiceError) -> Option<ShutdownFailedCode> {
     if error.name == "SenpiShutdownError" {
         if error.message.starts_with("unknown team member") {
-            return Some(ShutdownFailedCode::Shutdown(SenpiShutdownErrorCode::UnknownMember));
+            return Some(ShutdownFailedCode::Shutdown(
+                SenpiShutdownErrorCode::UnknownMember,
+            ));
         }
         if error.message.starts_with("no pending shutdown request") {
-            return Some(ShutdownFailedCode::Shutdown(SenpiShutdownErrorCode::NoPendingRequest));
+            return Some(ShutdownFailedCode::Shutdown(
+                SenpiShutdownErrorCode::NoPendingRequest,
+            ));
         }
     }
     if is_missing_state_service_error(error) {
@@ -118,7 +135,9 @@ pub fn classify_shutdown_service_error(error: &TeamToolServiceError) -> Option<S
 }
 
 fn is_missing_state_service_error(error: &TeamToolServiceError) -> bool {
-    error.name == "ENOENT" || error.message.contains("ENOENT") || error.message.contains("No such file or directory")
+    error.name == "ENOENT"
+        || error.message.contains("ENOENT")
+        || error.message.contains("No such file or directory")
 }
 
 pub fn route_structured_message(
@@ -170,7 +189,9 @@ pub fn route_structured_message(
         }
         StructuredMessageInput::ShutdownResponse { reason, .. } => {
             let Some(reason) = reason.as_deref().filter(|reason| !reason.trim().is_empty()) else {
-                return Ok(invalid_arguments("reason is required when rejecting a shutdown"));
+                return Ok(invalid_arguments(
+                    "reason is required when rejecting a shutdown",
+                ));
             };
             if let Err(error) = service.reject_shutdown(&run_id, to, reason) {
                 return shutdown_failure(error, context(ShutdownOperation::Reject, &run_id, to));
@@ -193,7 +214,11 @@ struct ShutdownFailureContext {
     member: String,
 }
 
-fn context(operation: ShutdownOperation, team_run_id: &str, member: &str) -> ShutdownFailureContext {
+fn context(
+    operation: ShutdownOperation,
+    team_run_id: &str,
+    member: &str,
+) -> ShutdownFailureContext {
     ShutdownFailureContext {
         operation,
         team_run_id: team_run_id.to_string(),
@@ -228,7 +253,9 @@ fn shutdown_failure(
 fn shutdown_failure_reason(code: ShutdownFailedCode) -> &'static str {
     match code {
         ShutdownFailedCode::TeamStateMissing => "Team state is unavailable.",
-        ShutdownFailedCode::Shutdown(SenpiShutdownErrorCode::UnknownMember) => "Team member is unavailable.",
+        ShutdownFailedCode::Shutdown(SenpiShutdownErrorCode::UnknownMember) => {
+            "Team member is unavailable."
+        }
         ShutdownFailedCode::Shutdown(SenpiShutdownErrorCode::NoPendingRequest) => {
             "No pending shutdown request exists."
         }

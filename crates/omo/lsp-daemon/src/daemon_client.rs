@@ -391,9 +391,9 @@ pub fn is_retryable_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsp_core::abort::AbortController;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
-    use lsp_core::abort::AbortController;
 
     #[tokio::test]
     async fn failed_startup_ensures_once_and_only_probes_after_backoff() {
@@ -427,7 +427,9 @@ mod tests {
             })),
             ..CallToolOptions::default()
         };
-        let result = call_tool_via_daemon("status", Map::new(), options).await.expect("failure result");
+        let result = call_tool_via_daemon("status", Map::new(), options)
+            .await
+            .expect("failure result");
         assert!(result.is_error);
         assert_eq!(ensures.load(Ordering::SeqCst), 1);
         assert_eq!(probes.load(Ordering::SeqCst), 2);
@@ -442,7 +444,9 @@ mod tests {
             context: Some(current_request_context(&Env::new()).expect("valid process context")),
             paths: Some(DaemonPaths::under_dir(root.path(), "1")),
             signal: Some(controller.signal()),
-            ensure: Some(Arc::new(|_, _| Box::pin(async { Err("startup failed".to_string()) }))),
+            ensure: Some(Arc::new(|_, _| {
+                Box::pin(async { Err("startup failed".to_string()) })
+            })),
             sleep: Some(Arc::new(move |_, _| {
                 controller.abort();
                 Box::pin(async {})
@@ -450,7 +454,9 @@ mod tests {
             probe: Some(Arc::new(|_, _| panic!("cancelled retry must not probe"))),
             ..CallToolOptions::default()
         };
-        let result = call_tool_via_daemon("status", Map::new(), options).await.expect("failure result");
+        let result = call_tool_via_daemon("status", Map::new(), options)
+            .await
+            .expect("failure result");
         assert!(result.text().contains("cancelled"));
     }
 
@@ -460,7 +466,11 @@ mod tests {
             ensure: Some(Arc::new(|_, _| panic!("missing context must not dispatch"))),
             ..CallToolOptions::default()
         };
-        let error = call_format_via_daemon("/a.ts", options).await.expect_err("context required");
-        assert!(matches!(error, DaemonCallError::Request(request) if request.message == "daemon tool context is required"));
+        let error = call_format_via_daemon("/a.ts", options)
+            .await
+            .expect_err("context required");
+        assert!(
+            matches!(error, DaemonCallError::Request(request) if request.message == "daemon tool context is required")
+        );
     }
 }

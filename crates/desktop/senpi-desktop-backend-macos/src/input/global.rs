@@ -17,7 +17,11 @@ use super::cgevent::{
 };
 use super::held::{ButtonRoute, Held, HeldButton};
 
-pub(super) fn pointer(source: &CGEventSource, held: &mut Held, event: PointerEvent) -> CoreResult<()> {
+pub(super) fn pointer(
+    source: &CGEventSource,
+    held: &mut Held,
+    event: PointerEvent,
+) -> CoreResult<()> {
     match event {
         PointerEvent::Click {
             x,
@@ -52,7 +56,16 @@ pub(super) fn pointer(source: &CGEventSource, held: &mut Held, event: PointerEve
                     flags,
                 )?;
                 thread::sleep(Duration::from_millis(1));
-                post_global_mouse(source, up, cg_button, x, y, i64::from(click_state), number, flags)?;
+                post_global_mouse(
+                    source,
+                    up,
+                    cg_button,
+                    x,
+                    y,
+                    i64::from(click_state),
+                    number,
+                    flags,
+                )?;
                 held.button_up(&route, button);
                 if click_state < count.max(1) {
                     thread::sleep(Duration::from_millis(80));
@@ -160,7 +173,10 @@ fn post_global_mouse(
 /// Posts the mouse-up for a still-held button through the route it was pressed
 /// on: the HID tap for global presses, the stamped SkyLight post for window
 /// presses. The safety release must replay the original route.
-pub(super) fn release_button(source: &CGEventSource, held: &super::held::HeldButton) -> CoreResult<()> {
+pub(super) fn release_button(
+    source: &CGEventSource,
+    held: &super::held::HeldButton,
+) -> CoreResult<()> {
     let (cg_button, _, up, _, number) = button_types(held.button);
     match held.route {
         ButtonRoute::Global(at) => post_global_mouse(

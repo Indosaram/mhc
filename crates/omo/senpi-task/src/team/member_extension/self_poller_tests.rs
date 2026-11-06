@@ -115,7 +115,8 @@ fn persist_envelope(harness: &Harness, value: &Message) {
 }
 
 #[test]
-fn given_after_inject_hold_when_delivery_reaches_crash_window_then_reservation_stays_uncommitted_until_released() {
+fn given_after_inject_hold_when_delivery_reaches_crash_window_then_reservation_stays_uncommitted_until_released()
+ {
     // given
     let harness = create_harness();
     let value = message("11111111-1111-4111-8111-111111111111");
@@ -149,7 +150,8 @@ fn given_after_inject_hold_when_delivery_reaches_crash_window_then_reservation_s
 }
 
 #[test]
-fn given_unread_message_when_envelope_reaches_session_jsonl_then_commit_happens_only_after_persistence() {
+fn given_unread_message_when_envelope_reaches_session_jsonl_then_commit_happens_only_after_persistence()
+ {
     // given
     let harness = create_harness();
     let value = message("22222222-2222-4222-8222-222222222222");
@@ -160,7 +162,10 @@ fn given_unread_message_when_envelope_reaches_session_jsonl_then_commit_happens_
     self_poller.poll_once(None).unwrap();
 
     // then
-    assert_eq!(harness.injected(), vec![build_peer_message_envelope(&value)]);
+    assert_eq!(
+        harness.injected(),
+        vec![build_peer_message_envelope(&value)]
+    );
     assert!(
         harness
             .inbox_dir
@@ -202,7 +207,8 @@ fn given_unread_message_when_envelope_reaches_session_jsonl_then_commit_happens_
 }
 
 #[test]
-fn given_inject_without_ack_when_ack_checks_repeat_then_reservation_is_held_and_never_double_injected() {
+fn given_inject_without_ack_when_ack_checks_repeat_then_reservation_is_held_and_never_double_injected()
+ {
     // given
     let harness = create_harness();
     let value = message("33333333-3333-4333-8333-333333333333");
@@ -222,7 +228,12 @@ fn given_inject_without_ack_when_ack_checks_repeat_then_reservation_is_held_and_
             .join(format!(".delivering-{}.json", value.message_id))
             .exists()
     );
-    assert!(!harness.inbox_dir.join(format!("{}.json", value.message_id)).exists());
+    assert!(
+        !harness
+            .inbox_dir
+            .join(format!("{}.json", value.message_id))
+            .exists()
+    );
 
     // when
     persist_envelope(&harness, &value);
@@ -250,7 +261,10 @@ fn given_ack_miss_on_existing_transcript_when_envelope_is_appended_then_next_ack
     let self_poller = poller(&harness);
     self_poller.poll_once(None).unwrap();
     self_poller.check_pending_acks().unwrap();
-    assert_eq!(self_poller.pending_message_ids(), vec![value.message_id.clone()]);
+    assert_eq!(
+        self_poller.pending_message_ids(),
+        vec![value.message_id.clone()]
+    );
 
     // when
     let entry = json!({
@@ -282,7 +296,11 @@ fn given_ack_miss_with_unchanged_transcript_when_ack_check_repeats_then_lease_is
     let harness = create_harness();
     let value = message("66666666-6666-4666-8666-666666666666");
     seed(&harness, &value);
-    fs::write(harness.session_dir.join("20260712_session.jsonl"), "{\"type\":\"session\"}\n").unwrap();
+    fs::write(
+        harness.session_dir.join("20260712_session.jsonl"),
+        "{\"type\":\"session\"}\n",
+    )
+    .unwrap();
     let self_poller = poller(&harness);
     self_poller.poll_once(None).unwrap();
     self_poller.check_pending_acks().unwrap();
@@ -298,11 +316,15 @@ fn given_ack_miss_with_unchanged_transcript_when_ack_check_repeats_then_lease_is
     // then
     assert!(unchanged.is_ok());
     assert!(changed.is_err());
-    assert_eq!(self_poller.pending_message_ids(), vec![value.message_id.clone()]);
+    assert_eq!(
+        self_poller.pending_message_ids(),
+        vec![value.message_id.clone()]
+    );
 }
 
 #[test]
-fn given_crash_after_envelope_persistence_when_new_poller_recovers_then_commits_without_reinjecting() {
+fn given_crash_after_envelope_persistence_when_new_poller_recovers_then_commits_without_reinjecting()
+ {
     // given
     let harness = create_harness();
     let value = message("44444444-4444-4444-8444-444444444444");
@@ -331,13 +353,15 @@ fn given_crash_after_envelope_persistence_when_new_poller_recovers_then_commits_
 }
 
 #[test]
-fn given_consumed_ledger_stray_when_poller_sees_duplicate_unread_file_then_acks_without_injecting() {
+fn given_consumed_ledger_stray_when_poller_sees_duplicate_unread_file_then_acks_without_injecting()
+{
     // given
     let harness = create_harness();
     let value = message("55555555-5555-4555-8555-555555555555");
     seed(&harness, &value);
     let reservation =
-        reserve_message_for_delivery(TEAM_RUN_ID, "alice", &value.message_id, &harness.config).unwrap();
+        reserve_message_for_delivery(TEAM_RUN_ID, "alice", &value.message_id, &harness.config)
+            .unwrap();
     let reservation = reservation.expect("reservation");
     commit_delivery_reservation(&reservation).unwrap();
     seed(&harness, &value);
@@ -347,7 +371,12 @@ fn given_consumed_ledger_stray_when_poller_sees_duplicate_unread_file_then_acks_
 
     // then
     assert_eq!(harness.injected(), Vec::<String>::new());
-    assert!(!harness.inbox_dir.join(format!("{}.json", value.message_id)).exists());
+    assert!(
+        !harness
+            .inbox_dir
+            .join(format!("{}.json", value.message_id))
+            .exists()
+    );
     assert!(
         harness
             .inbox_dir

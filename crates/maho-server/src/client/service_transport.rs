@@ -1,5 +1,5 @@
 use super::{Client, api::ServiceSubscription, errors::ClientError};
-use maho_chord::types::{JsonValue as Value, JsString, ServiceMode};
+use maho_chord::types::{JsString, JsonValue as Value, ServiceMode};
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::{
     sync::{oneshot, watch},
@@ -37,18 +37,25 @@ impl ClientServiceTransport {
         mode: ServiceMode,
         listener: ServiceListener,
     ) -> Result<CallbackSubscription, ClientError> {
-        self.subscribe_with_cancellation(service_id,mode,listener,None).await
+        self.subscribe_with_cancellation(service_id, mode, listener, None)
+            .await
     }
-    pub async fn subscribe_with_cancellation(&self,service_id:&JsString,mode:ServiceMode,listener:ServiceListener,cancel:Option<watch::Receiver<Option<ClientError>>>)->Result<CallbackSubscription,ClientError> {
+    pub async fn subscribe_with_cancellation(
+        &self,
+        service_id: &JsString,
+        mode: ServiceMode,
+        listener: ServiceListener,
+        cancel: Option<watch::Receiver<Option<ClientError>>>,
+    ) -> Result<CallbackSubscription, ClientError> {
         let mut subscription = self
             .client
-            .subscribe_with_cancellation(self.target()?, service_id, mode,cancel)
+            .subscribe_with_cancellation(self.target()?, service_id, mode, cancel)
             .await?;
         let snapshot = subscription.snapshot.clone();
         let (activate, activated) = oneshot::channel();
         let (stop, mut stopping) = watch::channel(false);
         let mut tasks = JoinSet::new();
-        let client=self.client.clone();
+        let client = self.client.clone();
         tasks.spawn(async move {
             tokio::select! {_=async {let _stopped=stopping.wait_for(|v|*v).await;}=>{},activated=activated=>{
                 if activated.is_ok() {

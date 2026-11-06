@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use pretty_assertions::assert_eq;
 
-use super::kill_point::{maybe_kill_at, MEMORY_KILL_POINTS};
+use super::kill_point::{MEMORY_KILL_POINTS, maybe_kill_at};
 use super::receipts::{
+    MemoryReceiptIdentityInput, MemoryReceiptInput, ReadMemoryReceiptsOptions,
     append_memory_receipt, append_memory_receipt_once, read_memory_receipts, receipt_identity,
-    receipts_path, MemoryReceiptIdentityInput, MemoryReceiptInput, ReadMemoryReceiptsOptions,
+    receipts_path,
 };
 
 fn lines(dir: &Path) -> Vec<String> {
@@ -176,11 +177,32 @@ fn append_once_ignores_unparseable_lines_with_a_matching_identity() {
         serde_json::json!({"v":2,"at":"x","event":"committed","kind":"facts","batchId":"b"}),
         serde_json::json!({"v":1,"event":"committed","kind":"facts","batchId":"b"}),
     ];
-    std::fs::write(receipts_path(root.path()), stale.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
-    let input = MemoryReceiptInput::Facts { kind:"facts".into(), batch_id:"b".into(), trigger:"settle".into(), event:"committed".into(), sha:None, reason:None, detail:None };
+    std::fs::write(
+        receipts_path(root.path()),
+        stale
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let input = MemoryReceiptInput::Facts {
+        kind: "facts".into(),
+        batch_id: "b".into(),
+        trigger: "settle".into(),
+        event: "committed".into(),
+        sha: None,
+        reason: None,
+        detail: None,
+    };
     assert!(append_memory_receipt_once(root.path(), &input).unwrap());
     assert!(!append_memory_receipt_once(root.path(), &input).unwrap());
-    assert_eq!(read_memory_receipts(root.path(), &ReadMemoryReceiptsOptions::default()).unwrap().receipts.len(), 1);
+    assert_eq!(
+        read_memory_receipts(root.path(), &ReadMemoryReceiptsOptions::default())
+            .unwrap()
+            .receipts
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -191,14 +213,32 @@ fn loose_receipt_metadata_is_accepted_and_preserved_without_defaults() {
     let result = read_memory_receipts(root.path(), &ReadMemoryReceiptsOptions::default()).unwrap();
     assert_eq!(result.skipped_partial_lines, 0);
     assert_eq!(serde_json::to_value(&result.receipts[0]).unwrap(), raw);
-    assert!(!append_memory_receipt_once(root.path(), &MemoryReceiptInput::Facts { kind:"facts".into(), batch_id:"loose".into(), trigger:"settle".into(), event:"".into(), sha:None, reason:None, detail:None }).unwrap());
+    assert!(
+        !append_memory_receipt_once(
+            root.path(),
+            &MemoryReceiptInput::Facts {
+                kind: "facts".into(),
+                batch_id: "loose".into(),
+                trigger: "settle".into(),
+                event: "".into(),
+                sha: None,
+                reason: None,
+                detail: None
+            }
+        )
+        .unwrap()
+    );
 }
 
 #[test]
 fn receipt_reason_and_detail_bound_utf16_without_splitting_utf8() {
     let root = tempfile::tempdir().unwrap();
     let input = MemoryReceiptInput::Facts {
-        kind: "facts".into(), batch_id: "unicode".into(), trigger: "settle".into(), event: "failed".into(), sha: None,
+        kind: "facts".into(),
+        batch_id: "unicode".into(),
+        trigger: "settle".into(),
+        event: "failed".into(),
+        sha: None,
         reason: Some(format!("token=abc123456 {}", "\u{ac00}".repeat(600))),
         detail: Some("\u{ac00}".repeat(600)),
     };
@@ -211,8 +251,8 @@ fn receipt_reason_and_detail_bound_utf16_without_splitting_utf8() {
 }
 
 #[test]
-fn given_mixed_kinds_and_a_line_cut_off_by_a_crash_when_read_then_the_newest_of_one_kind_return_and_the_partial_line_is_counted(
-) {
+fn given_mixed_kinds_and_a_line_cut_off_by_a_crash_when_read_then_the_newest_of_one_kind_return_and_the_partial_line_is_counted()
+ {
     // given
     let root = tempfile::tempdir().unwrap();
     let dir = root.path();
@@ -294,8 +334,8 @@ fn given_no_receipts_file_when_read_then_nothing_is_returned_and_nothing_is_skip
 }
 
 #[test]
-fn given_the_same_merge_reported_from_four_threads_when_appended_once_then_exactly_one_line_exists_and_a_different_event_still_lands(
-) {
+fn given_the_same_merge_reported_from_four_threads_when_appended_once_then_exactly_one_line_exists_and_a_different_event_still_lands()
+ {
     // given
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().to_path_buf();
@@ -347,14 +387,8 @@ fn given_the_same_merge_reported_from_four_threads_when_appended_once_then_exact
         .iter()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let merged_count = receipts
-        .iter()
-        .filter(|r| r["event"] == "merged")
-        .count();
-    let launched_count = receipts
-        .iter()
-        .filter(|r| r["event"] == "launched")
-        .count();
+    let merged_count = receipts.iter().filter(|r| r["event"] == "merged").count();
+    let launched_count = receipts.iter().filter(|r| r["event"] == "launched").count();
     assert_eq!(merged_count, 1);
     assert_eq!(launched_count, 1);
     assert!(launched);
@@ -362,8 +396,8 @@ fn given_the_same_merge_reported_from_four_threads_when_appended_once_then_exact
 }
 
 #[test]
-fn given_one_run_in_two_generations_when_identities_are_compared_then_generations_stay_apart_and_a_re_read_ledger_gives_the_same_key(
-) {
+fn given_one_run_in_two_generations_when_identities_are_compared_then_generations_stay_apart_and_a_re_read_ledger_gives_the_same_key()
+ {
     // given
     let run_id = "run-x";
     let started_at = "2026-01-01T00:00:00.000Z";
@@ -407,8 +441,8 @@ fn given_one_run_in_two_generations_when_identities_are_compared_then_generation
 }
 
 #[test]
-fn given_kill_points_when_the_variable_is_unset_different_or_matching_then_only_a_match_kills_this_process_with_the_platforms_signal(
-) {
+fn given_kill_points_when_the_variable_is_unset_different_or_matching_then_only_a_match_kills_this_process_with_the_platforms_signal()
+ {
     // given
     type KillRecord = (u32, Option<String>);
     let kills: Arc<std::sync::Mutex<Vec<KillRecord>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -485,8 +519,8 @@ fn given_kill_points_when_the_variable_is_unset_different_or_matching_then_only_
 }
 
 #[test]
-fn given_a_fresh_runtime_dir_with_no_locks_dir_when_appended_then_the_receipts_lock_is_taken_under_runtime_locks_and_the_append_lands(
-) {
+fn given_a_fresh_runtime_dir_with_no_locks_dir_when_appended_then_the_receipts_lock_is_taken_under_runtime_locks_and_the_append_lands()
+ {
     // given
     let root = tempfile::tempdir().unwrap();
     let dir = root.path();

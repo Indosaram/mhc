@@ -38,7 +38,8 @@ fn t2_explicit_project_cwd_is_not_overwritten() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join(BINARY_NAME), b"x").expect("write binary");
     let exe = dir.path().join("mhc");
-    let declaration = plan(&exe, Path::new("/session/cwd"), Some("/explicit")).expect("declaration");
+    let declaration =
+        plan(&exe, Path::new("/session/cwd"), Some("/explicit")).expect("declaration");
     let env = declaration.env.expect("env");
     assert_eq!(env.get(CWD_ENV).map(String::as_str), Some("/explicit"));
 }

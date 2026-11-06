@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::index::SenpiTelemetryOptions;
 use crate::omo_native_session::{
-    OPTED_OUT_SESSION_HASH, is_omo_native_telemetry_config_enabled,
-    is_omo_native_telemetry_enabled,
+    OPTED_OUT_SESSION_HASH, is_omo_native_telemetry_config_enabled, is_omo_native_telemetry_enabled,
 };
 use crate::product_identity::hash_session_id;
 use crate::session_summary_purge::{ConfigSelection, config_selection_of, with_config_selection};
@@ -103,11 +102,7 @@ impl NativeConsent {
         let value = self.read_consent(cwd.as_deref());
         {
             let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            *cache = ConsentCache {
-                cwd,
-                at,
-                value,
-            };
+            *cache = ConsentCache { cwd, at, value };
         }
         // Events queued before the withdrawal are dropped the moment it is read, not sent by a later flush.
         if was_consented && !value {
@@ -138,11 +133,7 @@ impl NativeConsent {
             None => self.env.clone(),
             Some(selection) => with_config_selection(&self.env, selection),
         };
-        is_omo_native_telemetry_enabled(
-            &self.options,
-            scope.cwd.as_deref().map(Path::new),
-            &env,
-        )
+        is_omo_native_telemetry_enabled(&self.options, scope.cwd.as_deref().map(Path::new), &env)
     }
 
     /// Consent for the shared queue: the persisted setting only, read with a neutral env. An opt-out set by

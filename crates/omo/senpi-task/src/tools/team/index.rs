@@ -12,23 +12,25 @@ use serde_json::Value;
 
 use crate::tools::control::tool_result::AgentToolResult;
 use crate::tools::team::lifecycle::{
-    TeamCreateDetails, TeamCreateInput, TeamDeleteDetails, TeamDeleteInput, create_team_create_tool,
-    create_team_delete_tool,
-};
-use crate::tools::team::tasks::{
-    TeamTaskCreateDetails, TeamTaskCreateInput, TeamTaskGetDetails, TeamTaskGetInput, TeamTaskListDetails,
-    TeamTaskListInput, TeamTaskUpdateDetails, TeamTaskUpdateInput, create_team_task_create_tool,
-    create_team_task_get_tool, create_team_task_list_tool, create_team_task_update_tool,
+    TeamCreateDetails, TeamCreateInput, TeamDeleteDetails, TeamDeleteInput,
+    create_team_create_tool, create_team_delete_tool,
 };
 use crate::tools::team::query::{
     TeamListInput, TeamStatusInput, create_team_list_tool, create_team_status_tool,
+};
+use crate::tools::team::tasks::{
+    TeamTaskCreateDetails, TeamTaskCreateInput, TeamTaskGetDetails, TeamTaskGetInput,
+    TeamTaskListDetails, TeamTaskListInput, TeamTaskUpdateDetails, TeamTaskUpdateInput,
+    create_team_task_create_tool, create_team_task_get_tool, create_team_task_list_tool,
+    create_team_task_update_tool,
 };
 use crate::tools::team::types::{
     LeadTeamToolDeps, TeamListEntry, TeamStatus, TeamToolServiceError, TeamToolsService,
 };
 
 /// Runner signature shared by every lead team tool (the TS `execute` body).
-pub type TeamRunFn<P, D> = fn(&dyn TeamToolsService, &P) -> Result<AgentToolResult<D>, TeamToolServiceError>;
+pub type TeamRunFn<P, D> =
+    fn(&dyn TeamToolsService, &P) -> Result<AgentToolResult<D>, TeamToolServiceError>;
 
 /// Minimal model of a senpi `ToolDefinition` bound to the team tools service.
 pub struct TeamTool<P, D> {
@@ -52,18 +54,27 @@ pub enum LeadTeamToolError {
 }
 
 impl<P, D> TeamTool<P, D> {
-    pub fn execute(&self, _tool_call_id: &str, params: &P) -> Result<AgentToolResult<D>, TeamToolServiceError> {
+    pub fn execute(
+        &self,
+        _tool_call_id: &str,
+        params: &P,
+    ) -> Result<AgentToolResult<D>, TeamToolServiceError> {
         (self.run)(self.service.as_ref(), params)
     }
 }
 
 impl<P: DeserializeOwned, D: Serialize> TeamTool<P, D> {
     /// Executes the tool from raw JSON params and returns the JSON-encoded tool result.
-    pub fn execute_json(&self, tool_call_id: &str, params: &Value) -> Result<Value, LeadTeamToolError> {
-        let parsed: P =
-            serde_json::from_value(params.clone()).map_err(|error| LeadTeamToolError::InvalidParams(error.to_string()))?;
+    pub fn execute_json(
+        &self,
+        tool_call_id: &str,
+        params: &Value,
+    ) -> Result<Value, LeadTeamToolError> {
+        let parsed: P = serde_json::from_value(params.clone())
+            .map_err(|error| LeadTeamToolError::InvalidParams(error.to_string()))?;
         let result = self.execute(tool_call_id, &parsed)?;
-        serde_json::to_value(&result).map_err(|error| LeadTeamToolError::Serialization(error.to_string()))
+        serde_json::to_value(&result)
+            .map_err(|error| LeadTeamToolError::Serialization(error.to_string()))
     }
 }
 
@@ -111,7 +122,11 @@ impl LeadTeamTool {
         with_tool!(self, tool => &tool.parameters)
     }
 
-    pub fn execute_json(&self, tool_call_id: &str, params: &Value) -> Result<Value, LeadTeamToolError> {
+    pub fn execute_json(
+        &self,
+        tool_call_id: &str,
+        params: &Value,
+    ) -> Result<Value, LeadTeamToolError> {
         with_tool!(self, tool => tool.execute_json(tool_call_id, params))
     }
 }

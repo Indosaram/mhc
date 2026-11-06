@@ -287,13 +287,22 @@ fn a_deferred_owner_retry_loses_a_provisional_exit_instead_of_reviving_it() {
 fn same_session_detached_retry_loses_a_provisional_exit_without_replay() {
     let temp = temp_store();
     seed_exited(&temp, "parent-1");
-    temp.store.transition(TASK_ID, &TaskTransition::DetachRpc {
-        timestamp: crate::shared::iso_from_ms(now_ms()),
-    }).expect("detach");
+    temp.store
+        .transition(
+            TASK_ID,
+            &TaskTransition::DetachRpc {
+                timestamp: crate::shared::iso_from_ms(now_ms()),
+            },
+        )
+        .expect("detach");
     let h = harness(&temp, &[], Some(Arc::new(|_| {})));
     crate::lifecycle::deferred_revival::retry_deferred_scoped_child(
-        h.lifecycle.context(), TASK_ID, "parent-1", "lock_contended",
-    ).expect("scoped retry");
+        h.lifecycle.context(),
+        TASK_ID,
+        "parent-1",
+        "lock_contended",
+    )
+    .expect("scoped retry");
     assert_lost_without_replay(&temp, &h);
     h.lifecycle.dispose();
 }
@@ -305,8 +314,12 @@ fn stopped_scoped_retry_cannot_lose_or_revive_a_child() {
     let h = harness(&temp, &[], Some(Arc::new(|_| {})));
     crate::lifecycle::deferred_revival::stop_scoped_retries(h.lifecycle.context(), "parent-1");
     crate::lifecycle::deferred_revival::retry_deferred_scoped_child(
-        h.lifecycle.context(), TASK_ID, "parent-1", "lock_contended",
-    ).expect("stopped retry");
+        h.lifecycle.context(),
+        TASK_ID,
+        "parent-1",
+        "lock_contended",
+    )
+    .expect("stopped retry");
     assert_eq!(load(&temp), original);
     assert_eq!(h.respawns.load(Ordering::SeqCst), 0);
     h.lifecycle.dispose();

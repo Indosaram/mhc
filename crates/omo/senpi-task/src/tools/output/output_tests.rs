@@ -6,7 +6,9 @@ use std::sync::Arc;
 use pretty_assertions::assert_eq;
 
 use crate::manager::types::{ListScope, ListedTask};
-use crate::state::{ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus};
+use crate::state::{
+    ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus,
+};
 use crate::tools::output::output::{TaskOutputInput, TaskOutputMode, run_task_output};
 use crate::tools::output::records_fakes::{RecordOverrides, make_record};
 use crate::tools::output::types::{
@@ -20,7 +22,10 @@ struct FakeManager {
 
 impl OutputManager for FakeManager {
     fn get(&self, task_id: &str) -> Option<TaskRecord> {
-        self.records.iter().find(|record| record.task_id == task_id).cloned()
+        self.records
+            .iter()
+            .find(|record| record.task_id == task_id)
+            .cloned()
     }
 
     fn list(&self, scope: &ListScope) -> Vec<ListedTask> {
@@ -40,13 +45,15 @@ impl OutputManager for FakeManager {
 }
 
 fn empty_reader() -> TranscriptReader {
-    Arc::new(|_input: &TranscriptReaderInput<'_>| -> io::Result<TranscriptReadResult> {
-        Ok(TranscriptReadResult {
-            entries: Vec::new(),
-            source: TranscriptSource::None,
-            truncated: None,
-        })
-    })
+    Arc::new(
+        |_input: &TranscriptReaderInput<'_>| -> io::Result<TranscriptReadResult> {
+            Ok(TranscriptReadResult {
+                entries: Vec::new(),
+                source: TranscriptSource::None,
+                truncated: None,
+            })
+        },
+    )
 }
 
 fn deps_from(records: Vec<TaskRecord>, reader: Option<TranscriptReader>) -> TaskOutputDeps {
@@ -118,12 +125,19 @@ fn given_a_completed_task_in_tail_mode_when_read_then_the_last_assistant_text_is
     let deps = deps_from(vec![record], Some(reader));
 
     // when
-    let result = run_task_output(&deps, &by_id("st_done", Some(TaskOutputMode::Tail)), Some("session-parent"))
-        .expect("read succeeds");
+    let result = run_task_output(
+        &deps,
+        &by_id("st_done", Some(TaskOutputMode::Tail)),
+        Some("session-parent"),
+    )
+    .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "transcript");
-    let TaskOutputDetails::Transcript { transcript, source, .. } = &result.details else {
+    let TaskOutputDetails::Transcript {
+        transcript, source, ..
+    } = &result.details
+    else {
         panic!("expected transcript details");
     };
     assert!(transcript.contains("finished the work"));
@@ -149,12 +163,18 @@ fn given_a_source_truncated_transcript_when_read_then_the_rpc_visible_result_rep
     let task_id = record.task_id.clone();
     let deps = deps_from(vec![record], Some(reader));
 
-    let result = run_task_output(&deps, &by_id(&task_id, Some(TaskOutputMode::Full)), Some("session-parent"))
-        .expect("read succeeds");
+    let result = run_task_output(
+        &deps,
+        &by_id(&task_id, Some(TaskOutputMode::Full)),
+        Some("session-parent"),
+    )
+    .expect("read succeeds");
 
     assert_eq!(result.details.kind(), "transcript");
     let TaskOutputDetails::Transcript {
-        transcript, truncated, ..
+        transcript,
+        truncated,
+        ..
     } = &result.details
     else {
         panic!("expected transcript details");
@@ -175,7 +195,8 @@ fn given_default_mode_when_read_then_a_status_snapshot_with_final_response_is_re
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_done", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_done", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "status");
@@ -189,7 +210,8 @@ fn given_default_mode_when_read_then_a_status_snapshot_with_final_response_is_re
 #[test]
 fn given_a_task_with_a_resolved_model_when_read_then_status_uses_display_plus_reasoning_details() {
     // given
-    let mut resolved_model = ResolvedModelRecord::new(ResolvedModelSource::Category, "openai", "gpt-5.6-sol");
+    let mut resolved_model =
+        ResolvedModelRecord::new(ResolvedModelSource::Category, "openai", "gpt-5.6-sol");
     resolved_model.display = "GPT-5.6 Sol".to_string();
     resolved_model.reasoning_effort = Some("high".to_string());
     resolved_model.variant = Some("xhigh".to_string());
@@ -203,7 +225,8 @@ fn given_a_task_with_a_resolved_model_when_read_then_status_uses_display_plus_re
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_resolved", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_resolved", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     let text = first_text(&result);
@@ -228,7 +251,8 @@ fn given_a_task_without_a_resolved_model_when_read_then_status_keeps_raw_model_f
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_raw", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_raw", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     let text = first_text(&result);
@@ -238,7 +262,8 @@ fn given_a_task_without_a_resolved_model_when_read_then_status_keeps_raw_model_f
 }
 
 #[test]
-fn given_a_lost_task_when_read_then_a_status_view_with_lost_breadcrumbs_is_returned_without_throwing() {
+fn given_a_lost_task_when_read_then_a_status_view_with_lost_breadcrumbs_is_returned_without_throwing()
+ {
     // given
     let record = make_record(RecordOverrides {
         task_id: Some("st_lost".to_string()),
@@ -249,8 +274,12 @@ fn given_a_lost_task_when_read_then_a_status_view_with_lost_breadcrumbs_is_retur
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_lost", Some(TaskOutputMode::Tail)), Some("session-parent"))
-        .expect("read succeeds");
+    let result = run_task_output(
+        &deps,
+        &by_id("st_lost", Some(TaskOutputMode::Tail)),
+        Some("session-parent"),
+    )
+    .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "status");
@@ -274,8 +303,12 @@ fn given_a_task_owned_by_another_session_when_read_then_it_is_not_found() {
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_other", Some(TaskOutputMode::Status)), Some("session-parent"))
-        .expect("read succeeds");
+    let result = run_task_output(
+        &deps,
+        &by_id("st_other", Some(TaskOutputMode::Status)),
+        Some("session-parent"),
+    )
+    .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "not_found");
@@ -292,8 +325,8 @@ fn given_no_caller_session_when_read_then_it_fails_closed_as_not_found() {
     let deps = deps_from(vec![record], None);
 
     // when
-    let result =
-        run_task_output(&deps, &by_id("st_a", Some(TaskOutputMode::Status)), None).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_a", Some(TaskOutputMode::Status)), None)
+        .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "not_found");
@@ -344,7 +377,8 @@ fn given_a_name_instead_of_an_id_when_read_then_the_task_is_resolved_by_name() {
 }
 
 #[test]
-fn given_a_persisted_only_record_when_read_in_status_mode_then_the_status_text_states_it_is_suspended() {
+fn given_a_persisted_only_record_when_read_in_status_mode_then_the_status_text_states_it_is_suspended()
+ {
     // given
     let record = make_record(RecordOverrides {
         task_id: Some("st_susp".to_string()),
@@ -355,7 +389,8 @@ fn given_a_persisted_only_record_when_read_in_status_mode_then_the_status_text_s
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_susp", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_susp", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "status");
@@ -368,7 +403,8 @@ fn given_a_persisted_only_record_when_read_in_status_mode_then_the_status_text_s
 }
 
 #[test]
-fn given_an_rpc_detached_record_when_read_in_status_mode_then_the_status_text_states_it_is_suspended() {
+fn given_an_rpc_detached_record_when_read_in_status_mode_then_the_status_text_states_it_is_suspended()
+ {
     // given
     let record = make_record(RecordOverrides {
         task_id: Some("st_susp".to_string()),
@@ -379,7 +415,8 @@ fn given_an_rpc_detached_record_when_read_in_status_mode_then_the_status_text_st
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_susp", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_susp", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     assert_eq!(result.details.kind(), "status");
@@ -403,7 +440,8 @@ fn given_a_resident_record_when_read_in_status_mode_then_no_suspended_text_appea
     let deps = deps_from(vec![record], None);
 
     // when
-    let result = run_task_output(&deps, &by_id("st_live", None), Some("session-parent")).expect("read succeeds");
+    let result = run_task_output(&deps, &by_id("st_live", None), Some("session-parent"))
+        .expect("read succeeds");
 
     // then
     assert!(!first_text(&result).contains("suspended"));
@@ -423,9 +461,15 @@ fn given_an_unresponsive_host_session_when_read_then_status_says_so_and_running_
     running.host_liveness = Some(HostLivenessStatus::Running);
     let deps = deps_from(vec![record, running], None);
 
-    let quiet = first_text(&run_task_output(&deps, &by_id("st_quiet", None), Some("session-parent")).expect("read"));
-    let alive = first_text(&run_task_output(&deps, &by_id("st_alive", None), Some("session-parent")).expect("read"));
+    let quiet = first_text(
+        &run_task_output(&deps, &by_id("st_quiet", None), Some("session-parent")).expect("read"),
+    );
+    let alive = first_text(
+        &run_task_output(&deps, &by_id("st_alive", None), Some("session-parent")).expect("read"),
+    );
 
-    assert!(quiet.contains("unresponsive since 1970-01-01T00:00:00.000Z, retrying; the session may still be running"));
+    assert!(quiet.contains(
+        "unresponsive since 1970-01-01T00:00:00.000Z, retrying; the session may still be running"
+    ));
     assert!(!alive.contains("unresponsive"));
 }

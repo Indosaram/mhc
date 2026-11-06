@@ -124,7 +124,9 @@ impl<S: XServer> Enumeration<'_, S> {
 
 /// `WM_CLASS` is `instance\0class\0`; the class names the application.
 pub(crate) fn parse_wm_class(value: &[u8]) -> String {
-    let mut parts = value.split(|&byte| byte == 0).filter(|part| !part.is_empty());
+    let mut parts = value
+        .split(|&byte| byte == 0)
+        .filter(|part| !part.is_empty());
     let instance = parts.next();
     parts
         .next()

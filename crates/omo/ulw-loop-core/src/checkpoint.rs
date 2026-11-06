@@ -1,26 +1,36 @@
 //! Goal checkpointing and completion validation.
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::checkpoint_codex_validation::validate_checkpoint_codex_goal;
 use crate::checkpoint_reconciliation::combine_checkpoint_validation_errors;
 use crate::command_types::CheckpointOptions;
-use crate::domain_types::{UlwLoopAggregateCompletion, UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan, UlwLoopQualityGate};
+use crate::domain_types::{
+    UlwLoopAggregateCompletion, UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan, UlwLoopQualityGate,
+};
 use crate::driver_objective_ack::acknowledge_driver_objective;
-use crate::evidence::{require_all_criteria_pass, require_all_plan_criteria_pass, require_essential_criteria_pass};
+use crate::evidence::{
+    require_all_criteria_pass, require_all_plan_criteria_pass, require_essential_criteria_pass,
+};
 use crate::goal_status::{codex_goal_mode, is_final_run_completion_candidate};
-use crate::paths::{ulw_loop_attempt_evidence_dir, UlwLoopScope};
-use crate::plan_commit::{commit, CommitMutation};
+use crate::paths::{UlwLoopScope, ulw_loop_attempt_evidence_dir};
+use crate::plan_commit::{CommitMutation, commit};
 use crate::plan_crud::clear_goal_blocker_fields;
 use crate::plan_io::{read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::quality_gate::{classify_external_authorization_blocker, same_blocker_occurrences, validate_quality_gate, ValidateQualityGateOptions};
+use crate::quality_gate::{
+    ValidateQualityGateOptions, classify_external_authorization_blocker, same_blocker_occurrences,
+    validate_quality_gate,
+};
 use crate::quality_gate_artifacts::RealQualityGateFs;
-use crate::runtime::{iso, UlwLoopError};
-use crate::surface::{resolve_toolkit_surface, UlwLoopToolkitSurface};
-use crate::validation_batch::{batch_closed_by, require_all_validation_batches_closed, require_batch_final_ready, require_batch_gate};
+use crate::runtime::{UlwLoopError, iso};
+use crate::surface::{UlwLoopToolkitSurface, resolve_toolkit_surface};
+use crate::validation_batch::{
+    batch_closed_by, require_all_validation_batches_closed, require_batch_final_ready,
+    require_batch_gate,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckpointUlwLoopArgs {
@@ -248,7 +258,11 @@ pub fn checkpoint_ulw_loop(
                 let gate_input = read_json_input(args.quality_gate_json.as_deref(), root)?;
                 let gate_val = gate_input.unwrap_or(Value::Null);
                 let attempt_dir = if plan.evidence_layout_version == Some(2) {
-                    Some(ulw_loop_attempt_evidence_dir(&plan.goals[goal_idx].id, plan.goals[goal_idx].attempt, scope)?)
+                    Some(ulw_loop_attempt_evidence_dir(
+                        &plan.goals[goal_idx].id,
+                        plan.goals[goal_idx].attempt,
+                        scope,
+                    )?)
                 } else {
                     None
                 };
@@ -257,7 +271,9 @@ pub fn checkpoint_ulw_loop(
                     repo_root: Some(root),
                     fs: Some(&real_fs),
                     current_attempt_dir: attempt_dir.as_deref(),
-                    reviewer_surface: dependencies.and_then(|d| d.surface).or_else(|| Some(resolve_toolkit_surface())),
+                    reviewer_surface: dependencies
+                        .and_then(|d| d.surface)
+                        .or_else(|| Some(resolve_toolkit_surface())),
                 };
 
                 match validate_quality_gate(&gate_val, Some(&gate_opts)) {
@@ -267,7 +283,9 @@ pub fn checkpoint_ulw_loop(
                     }
                     Err(gate_err) => {
                         if let Some(codex_err) = codex_validation_error {
-                            return Err(combine_checkpoint_validation_errors(&codex_err, &gate_err));
+                            return Err(combine_checkpoint_validation_errors(
+                                &codex_err, &gate_err,
+                            ));
                         }
                         return Err(gate_err);
                     }
@@ -299,7 +317,8 @@ pub fn checkpoint_ulw_loop(
 
         if let Some(agg) = &aggregate_completion {
             plan.aggregate_completion = Some(agg.clone());
-            next_actions.push("aggregate complete — now update_goal({status:\"complete\"})".to_string());
+            next_actions
+                .push("aggregate complete — now update_goal({status:\"complete\"})".to_string());
         }
         plan.updated_at = now.clone();
 

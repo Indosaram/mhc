@@ -84,7 +84,11 @@ fn unadvertised_delivery_mode_is_refused() {
     let json = r#"{"capabilities":{"deliveryModes":["background"]}}"#;
     let mut backend = FakeBackend::new(FakeScenario::from_json(json).expect("parses"));
     let err = backend
-        .key_chord(&Target::Desktop, &[KeyName::Enter], DeliveryMode::Foreground)
+        .key_chord(
+            &Target::Desktop,
+            &[KeyName::Enter],
+            DeliveryMode::Foreground,
+        )
         .expect_err("refused");
     assert_eq!(err.code, ErrorCode::InputFailed);
 }
@@ -94,14 +98,22 @@ fn background_click_records_the_event_and_keeps_focus_and_cursor() {
     let mut backend = two_window_backend();
     let target = Target::Window("202".into());
     backend
-        .pointer(&target, click(1100.0, 150.0), &frame(), DeliveryMode::Background)
+        .pointer(
+            &target,
+            click(1100.0, 150.0),
+            &frame(),
+            DeliveryMode::Background,
+        )
         .expect("click");
     assert_eq!(
         backend.sink().ops(),
         vec![SinkOp::Pointer {
             target,
             event: RecordedPointer::Click {
-                at: DesktopPoint { x: 1100.0, y: 150.0 },
+                at: DesktopPoint {
+                    x: 1100.0,
+                    y: 150.0
+                },
                 button: MouseButton::Left,
                 count: 1,
                 modifiers: Modifiers::default(),
@@ -121,12 +133,20 @@ fn foreground_click_steals_focus_and_moves_the_cursor() {
     let mut backend = two_window_backend();
     let target = Target::Window("202".into());
     backend
-        .pointer(&target, click(1100.0, 150.0), &frame(), DeliveryMode::Foreground)
+        .pointer(
+            &target,
+            click(1100.0, 150.0),
+            &frame(),
+            DeliveryMode::Foreground,
+        )
         .expect("click");
     assert_eq!(focused_id(&mut backend), "202");
     assert_eq!(
         backend.cursor_position().expect("cursor"),
-        Some(DesktopPoint { x: 1100.0, y: 150.0 })
+        Some(DesktopPoint {
+            x: 1100.0,
+            y: 150.0
+        })
     );
 }
 
@@ -134,7 +154,10 @@ fn foreground_click_steals_focus_and_moves_the_cursor() {
 fn front_window_round_trip_restores_the_previous_focus() {
     // Given: the focus guard captured window 101 before a foreground action
     let mut backend = two_window_backend();
-    let front = backend.front_window().expect("front").expect("a focused window");
+    let front = backend
+        .front_window()
+        .expect("front")
+        .expect("a focused window");
     backend.raise_window("202").expect("raise");
     // When
     backend.restore_front_window(&front).expect("restore");

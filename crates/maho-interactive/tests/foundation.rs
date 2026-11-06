@@ -8,7 +8,8 @@ use maho_interactive::{
 };
 use serde_json::{Value, json};
 fn theme() -> Theme {
-    Theme::builtin("dark", ColorMode::Truecolor).expect("valid test fixture and successful operation")
+    Theme::builtin("dark", ColorMode::Truecolor)
+        .expect("valid test fixture and successful operation")
 }
 fn snapshot() -> FooterSnapshot {
     FooterSnapshot {
@@ -32,15 +33,23 @@ fn snapshot() -> FooterSnapshot {
 fn footer_matches_pinned_output_at_all_widths_and_themes() {
     let footer = FooterComponent::new(snapshot());
     for name in ["dark", "light", "grok-day", "grok-night"] {
-        let theme = Theme::builtin(name, ColorMode::Truecolor).expect("valid test fixture and successful operation");
+        let theme = Theme::builtin(name, ColorMode::Truecolor)
+            .expect("valid test fixture and successful operation");
         for width in [40, 60, 80, 120, 200] {
             let expected = std::fs::read_to_string(format!(
                 "{}/tests/golden/footer-{name}.{width}.ansi",
                 env!("CARGO_MANIFEST_DIR")
             ))
             .expect("valid test fixture and successful operation");
-            let actual = footer.render(width, &theme).expect("valid test fixture and successful operation").join("\n");
-            assert_eq!(actual.lines().collect::<Vec<_>>(), expected.lines().collect::<Vec<_>>(), "{name} at {width}");
+            let actual = footer
+                .render(width, &theme)
+                .expect("valid test fixture and successful operation")
+                .join("\n");
+            assert_eq!(
+                actual.lines().collect::<Vec<_>>(),
+                expected.lines().collect::<Vec<_>>(),
+                "{name} at {width}"
+            );
             assert_eq!(maho_tui::utils::visible_width(&actual), width);
         }
     }
@@ -48,27 +57,48 @@ fn footer_matches_pinned_output_at_all_widths_and_themes() {
 #[test]
 fn text_styles_leave_empty_text_unchanged() {
     let t = theme();
-    for styled in [t.bold(""), t.italic(""), t.underline(""), t.inverse(""), t.strikethrough("")] {
+    for styled in [
+        t.bold(""),
+        t.italic(""),
+        t.underline(""),
+        t.inverse(""),
+        t.strikethrough(""),
+    ] {
         assert_eq!(styled, "");
     }
 }
 #[test]
 fn highlight_colors_operator_punctuation_and_type_classes() {
     let t = theme();
-    let swift = maho_interactive::theme::highlight_code(&t, "let x = a + 1", Some("swift")).join("\n");
-    assert!(swift.contains(&t.fg(ThemeColor::SyntaxOperator, "+")), "{swift:?}");
-    let rust = maho_interactive::theme::highlight_code(&t, "fn main() -> i32 { 0 }", Some("rust")).join("\n");
-    assert!(rust.contains(&t.fg(ThemeColor::SyntaxPunctuation, "->")), "{rust:?}");
-    let ts = maho_interactive::theme::highlight_code(&t, "let n: number = 1;", Some("ts")).join("\n");
-    assert!(ts.contains(&t.fg(ThemeColor::SyntaxType, "number")), "{ts:?}");
+    let swift =
+        maho_interactive::theme::highlight_code(&t, "let x = a + 1", Some("swift")).join("\n");
+    assert!(
+        swift.contains(&t.fg(ThemeColor::SyntaxOperator, "+")),
+        "{swift:?}"
+    );
+    let rust = maho_interactive::theme::highlight_code(&t, "fn main() -> i32 { 0 }", Some("rust"))
+        .join("\n");
+    assert!(
+        rust.contains(&t.fg(ThemeColor::SyntaxPunctuation, "->")),
+        "{rust:?}"
+    );
+    let ts =
+        maho_interactive::theme::highlight_code(&t, "let n: number = 1;", Some("ts")).join("\n");
+    assert!(
+        ts.contains(&t.fg(ThemeColor::SyntaxType, "number")),
+        "{ts:?}"
+    );
 }
 #[test]
 fn highlight_matches_pinned_token_colors() {
-    let cases: Vec<Value> = serde_json::from_str(include_str!("golden/highlight.json")).expect("valid test fixture and successful operation");
+    let cases: Vec<Value> = serde_json::from_str(include_str!("golden/highlight.json"))
+        .expect("valid test fixture and successful operation");
     for case in cases {
         let actual = maho_interactive::theme::highlight_code(
             &theme(),
-            case["code"].as_str().expect("valid test fixture and successful operation"),
+            case["code"]
+                .as_str()
+                .expect("valid test fixture and successful operation"),
             case["language"].as_str(),
         );
         assert_eq!(json!(actual), case["lines"], "{}", case["language"]);
@@ -77,28 +107,43 @@ fn highlight_matches_pinned_token_colors() {
 #[test]
 fn working_status_matches_pinned_function_outputs() {
     use maho_interactive::working_status::*;
-    let cases: Vec<Value> =
-        serde_json::from_str(include_str!("golden/working-status.json")).expect("valid test fixture and successful operation");
+    let cases: Vec<Value> = serde_json::from_str(include_str!("golden/working-status.json"))
+        .expect("valid test fixture and successful operation");
     for c in cases {
         let a = &c["args"];
-        let actual = match c["fn"].as_str().expect("valid test fixture and successful operation") {
-            "formatWorkingElapsedSeconds" => format_working_elapsed_seconds(a[0].as_f64().expect("valid test fixture and successful operation")),
+        let actual = match c["fn"]
+            .as_str()
+            .expect("valid test fixture and successful operation")
+        {
+            "formatWorkingElapsedSeconds" => format_working_elapsed_seconds(
+                a[0].as_f64()
+                    .expect("valid test fixture and successful operation"),
+            ),
             "formatWorkingStatusMessage" => format_working_status_message(
-                a[0].as_str().expect("valid test fixture and successful operation"),
-                a[1].as_f64().expect("valid test fixture and successful operation"),
-                a[2].as_str().expect("valid test fixture and successful operation"),
+                a[0].as_str()
+                    .expect("valid test fixture and successful operation"),
+                a[1].as_f64()
+                    .expect("valid test fixture and successful operation"),
+                a[2].as_str()
+                    .expect("valid test fixture and successful operation"),
             ),
             "formatToolHookStatusMessage" => format_tool_hook_status_message(
-                a[0].as_str().expect("valid test fixture and successful operation"),
-                a[1].as_str().expect("valid test fixture and successful operation"),
-                a[2].as_f64().expect("valid test fixture and successful operation"),
+                a[0].as_str()
+                    .expect("valid test fixture and successful operation"),
+                a[1].as_str()
+                    .expect("valid test fixture and successful operation"),
+                a[2].as_f64()
+                    .expect("valid test fixture and successful operation"),
             ),
-            "sanitizeWorkingStatusPlainText" => {
-                sanitize_working_status_plain_text(a[0].as_str().expect("valid test fixture and successful operation"))
-            }
-            "formatActiveToolWorkingLabel" => {
-                format_active_tool_working_label(a[0].as_str().expect("valid test fixture and successful operation"), &a[1])
-            }
+            "sanitizeWorkingStatusPlainText" => sanitize_working_status_plain_text(
+                a[0].as_str()
+                    .expect("valid test fixture and successful operation"),
+            ),
+            "formatActiveToolWorkingLabel" => format_active_tool_working_label(
+                a[0].as_str()
+                    .expect("valid test fixture and successful operation"),
+                &a[1],
+            ),
             _ => panic!("unrecognized fixture"),
         };
         assert_eq!(json!(actual), c["result"]);
@@ -108,20 +153,34 @@ fn working_status_matches_pinned_function_outputs() {
 fn pacing_matches_pinned_function_outputs() {
     use maho_interactive::streaming_reveal_pacing::*;
     let cases: Vec<Value> =
-        serde_json::from_str(include_str!("golden/streaming-reveal-pacing.json")).expect("valid test fixture and successful operation");
+        serde_json::from_str(include_str!("golden/streaming-reveal-pacing.json"))
+            .expect("valid test fixture and successful operation");
     for c in cases {
         let a: Vec<f64> = c["args"]
             .as_array()
             .expect("valid test fixture and successful operation")
             .iter()
-            .map(|v| v.as_f64().expect("valid test fixture and successful operation"))
+            .map(|v| {
+                v.as_f64()
+                    .expect("valid test fixture and successful operation")
+            })
             .collect();
-        let actual = match c["fn"].as_str().expect("valid test fixture and successful operation") {
+        let actual = match c["fn"]
+            .as_str()
+            .expect("valid test fixture and successful operation")
+        {
             "nextStep" => next_step(a[0], a[1], a[2]),
             "updateArrivalRate" => update_arrival_rate(a[0], a[1], a[2]),
             _ => panic!("unrecognized fixture"),
         };
-        assert!((actual - c["result"].as_f64().expect("valid test fixture and successful operation")).abs() < 1e-10);
+        assert!(
+            (actual
+                - c["result"]
+                    .as_f64()
+                    .expect("valid test fixture and successful operation"))
+            .abs()
+                < 1e-10
+        );
     }
 }
 #[test]
@@ -193,7 +252,10 @@ fn tool_args_flush_exact_and_replace_component_identity() {
 fn tool_result_finishes_full_content_without_losing_details() {
     let mut controller = ToolResultRevealController::new(true, 60.);
     let result = json!({"content":[{"type":"text","text":"start"},{"type":"image","data":"opaque"}],"details":{"progress":42},"isError":true});
-    let first = controller.update("a", 1, result.clone(), 0.).1.expect("valid test fixture and successful operation");
+    let first = controller
+        .update("a", 1, result.clone(), 0.)
+        .1
+        .expect("valid test fixture and successful operation");
     assert_eq!(first["isError"], false);
     let mut target = result;
     target["content"][0]["text"] = json!("start more text");
@@ -207,7 +269,8 @@ fn theme_cache_roundtrips_and_rejects_invalid_documents() {
     use maho_interactive::theme::{TerminalTheme, terminal_theme_cache::*};
     let dir = tempfile::tempdir().expect("valid test fixture and successful operation");
     assert_eq!(read_terminal_theme_hint(dir.path()), None);
-    write_terminal_theme_hint(TerminalTheme::Light, dir.path()).expect("valid test fixture and successful operation");
+    write_terminal_theme_hint(TerminalTheme::Light, dir.path())
+        .expect("valid test fixture and successful operation");
     assert_eq!(
         read_terminal_theme_hint(dir.path()),
         Some(TerminalTheme::Light)
@@ -223,10 +286,18 @@ fn theme_cache_roundtrips_and_rejects_invalid_documents() {
 fn theme_registry_reloads_watched_custom_theme_after_debounce() {
     use maho_interactive::theme::registry::ThemeRegistry;
     let dir = tempfile::tempdir().expect("valid test fixture and successful operation");
-    let source = include_str!("../src/theme/dark.json").replacen("\"name\": \"dark\"", "\"name\": \"custom\"", 1);
-    std::fs::write(dir.path().join("custom.json"), &source).expect("valid test fixture and successful operation");
-    let mut registry = ThemeRegistry::new(dir.path().to_path_buf(), "custom", ColorMode::Truecolor).expect("valid test fixture and successful operation");
-    registry.set_theme("custom", true).expect("valid test fixture and successful operation");
+    let source = include_str!("../src/theme/dark.json").replacen(
+        "\"name\": \"dark\"",
+        "\"name\": \"custom\"",
+        1,
+    );
+    std::fs::write(dir.path().join("custom.json"), &source)
+        .expect("valid test fixture and successful operation");
+    let mut registry = ThemeRegistry::new(dir.path().to_path_buf(), "custom", ColorMode::Truecolor)
+        .expect("valid test fixture and successful operation");
+    registry
+        .set_theme("custom", true)
+        .expect("valid test fixture and successful operation");
     registry.on_file_change(Some(std::path::Path::new("other.json")), 0);
     assert!(!registry.reload_due(1_000));
     registry.on_file_change(Some(std::path::Path::new("custom.json")), 0);

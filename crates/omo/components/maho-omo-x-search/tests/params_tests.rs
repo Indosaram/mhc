@@ -1,7 +1,7 @@
 //! Port of omo-senpi `components/x-search/params.test.ts` at latest `455dee62`.
 
 use maho_omo_x_search::format::XSearchErrorCode;
-use maho_omo_x_search::params::{validate_x_search_params, XSearchParams, XSearchValidation};
+use maho_omo_x_search::params::{XSearchParams, XSearchValidation, validate_x_search_params};
 use serde_json::json;
 
 #[test]
@@ -44,7 +44,10 @@ fn test_rejects_both_handle_lists_as_invalid_filters() {
         panic!("expected Err");
     };
     assert_eq!(code, XSearchErrorCode::InvalidFilters);
-    assert_eq!(message, "allowed and excluded handles are mutually exclusive");
+    assert_eq!(
+        message,
+        "allowed and excluded handles are mutually exclusive"
+    );
 }
 
 #[test]
@@ -58,7 +61,10 @@ fn test_rejects_more_than_20_handles_as_too_many_handles() {
         panic!("expected Err");
     };
     assert_eq!(code, XSearchErrorCode::TooManyHandles);
-    assert_eq!(message, "allowed_x_handles cannot contain more than 20 handles");
+    assert_eq!(
+        message,
+        "allowed_x_handles cannot contain more than 20 handles"
+    );
 }
 
 #[test]
@@ -158,7 +164,9 @@ fn test_validation_priority_blank_query_precedes_handles_and_schema() {
         "excluded_x_handles": ["b"],
         "unexpected": 123
     }));
-    let XSearchValidation::Err { code, message } = result else { panic!("expected Err") };
+    let XSearchValidation::Err { code, message } = result else {
+        panic!("expected Err")
+    };
     assert_eq!(code, XSearchErrorCode::InvalidParams);
     assert_eq!(message, "query must not be blank");
 }
@@ -170,9 +178,14 @@ fn test_validation_priority_mutual_exclusivity_precedes_handle_count() {
         "allowed_x_handles": (0..25).map(|i| format!("user{i}")).collect::<Vec<_>>(),
         "excluded_x_handles": ["b"]
     }));
-    let XSearchValidation::Err { code, message } = result else { panic!("expected Err") };
+    let XSearchValidation::Err { code, message } = result else {
+        panic!("expected Err")
+    };
     assert_eq!(code, XSearchErrorCode::InvalidFilters);
-    assert_eq!(message, "allowed and excluded handles are mutually exclusive");
+    assert_eq!(
+        message,
+        "allowed and excluded handles are mutually exclusive"
+    );
 }
 
 #[test]
@@ -182,7 +195,12 @@ fn test_validation_priority_handle_count_precedes_invalid_dates() {
         "allowed_x_handles": (0..25).map(|i| format!("user{i}")).collect::<Vec<_>>(),
         "from_date": "invalid-date"
     }));
-    let XSearchValidation::Err { code, message } = result else { panic!("expected Err") };
+    let XSearchValidation::Err { code, message } = result else {
+        panic!("expected Err")
+    };
     assert_eq!(code, XSearchErrorCode::TooManyHandles);
-    assert_eq!(message, "allowed_x_handles cannot contain more than 20 handles");
+    assert_eq!(
+        message,
+        "allowed_x_handles cannot contain more than 20 handles"
+    );
 }

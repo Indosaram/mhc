@@ -1,8 +1,8 @@
 //! `tools/task/validation.test.ts`.
 // allow: SIZE_OK - one-to-one translation of validation.test.ts.
 
-use pretty_assertions::assert_eq;
 use crate::tools::task::types::{TaskToolDetails, TaskToolItemDetail, TaskToolMode};
+use pretty_assertions::assert_eq;
 
 use super::*;
 
@@ -77,7 +77,10 @@ fn given_only_category_when_validated_then_resolves_to_a_category_selection() {
 
 #[test]
 fn given_legacy_category_alias_when_validated_then_canonical_name_is_selected() {
-    assert_eq!(target(Some("deep"), None, None), TaskTargetSelection::Category("deep-low".to_string()));
+    assert_eq!(
+        target(Some("deep"), None, None),
+        TaskTargetSelection::Category("deep-low".to_string())
+    );
 }
 
 #[test]
@@ -190,8 +193,14 @@ fn given_an_empty_tasks_array_when_shape_validated_then_returns_an_empty_tasks_e
 fn given_agreeing_item_background_flags_when_resolved_then_hoists_the_shared_value() {
     let params = SpawnParamsInput {
         tasks: Some(vec![
-            SpawnItemInput { run_in_background: Some(true), ..item("one") },
-            SpawnItemInput { run_in_background: Some(true), ..item("two") },
+            SpawnItemInput {
+                run_in_background: Some(true),
+                ..item("one")
+            },
+            SpawnItemInput {
+                run_in_background: Some(true),
+                ..item("two")
+            },
         ]),
         ..SpawnParamsInput::default()
     };
@@ -219,7 +228,10 @@ fn given_conflicting_top_level_and_item_background_flags_when_resolved_then_retu
 fn given_item_background_flags_without_top_level_value_when_resolved_then_hoists_the_value() {
     let params = SpawnParamsInput {
         tasks: Some(vec![
-            SpawnItemInput { run_in_background: Some(false), ..item("one") },
+            SpawnItemInput {
+                run_in_background: Some(false),
+                ..item("one")
+            },
             item("two"),
         ]),
         ..SpawnParamsInput::default()
@@ -308,7 +320,11 @@ fn given_a_three_item_batch_when_resolved_then_inherits_top_level_model_and_suba
                 Some("anthropic/claude-haiku"),
                 strings(&["shared"])
             ),
-            (plan_reviewer, Some("anthropic/claude-opus-4"), strings(&["extra"])),
+            (
+                plan_reviewer,
+                Some("anthropic/claude-opus-4"),
+                strings(&["extra"])
+            ),
         ]
     );
 }

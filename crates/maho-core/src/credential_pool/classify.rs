@@ -14,7 +14,8 @@ use crate::credential_pool::failover_consts::{
 
 pub const COOLDOWN_BASE_MS: u64 = DEFAULT_SLOT_BLOCK_MS;
 pub const COOLDOWN_CAP_MS: u64 = MAX_SLOT_BLOCK_MS;
-pub const ACCOUNT_POOL_REFUSAL_NOTE: &str = "No request was sent: the account pool refused it locally.";
+pub const ACCOUNT_POOL_REFUSAL_NOTE: &str =
+    "No request was sent: the account pool refused it locally.";
 pub const RETRY_SAME_MAX_ATTEMPTS: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +108,11 @@ static ACCOUNT_USAGE_LIMIT: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)usage_limit_reached|usage_not_included|usage limit has been reached|\b(?:hit|reached)\s+your\b[^.]*?\blimit\b|\busage\s+limit\s+reached\b|\b(?:Go|Free)UsageLimitError\b|\bblocking_limit\b|\brapid_refill_breaker\b|\bquota\s+exceeded\b",
     )
 });
-static TEMPORARY_FAULT: LazyLock<Regex> = LazyLock::new(|| regex(r"time[ds]?[ _-]?out|timed out|disconnect|reset before|connection reset|gateway|temporarily|unavailable"));
+static TEMPORARY_FAULT: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
+        r"time[ds]?[ _-]?out|timed out|disconnect|reset before|connection reset|gateway|temporarily|unavailable",
+    )
+});
 static ABORT: LazyLock<Regex> = LazyLock::new(|| regex(r"\baborted?\b"));
 
 fn thrown_error(error: &Value) -> maho_ai::utils::error_body::ThrownProviderError {
@@ -159,7 +164,10 @@ pub fn classify_credential_failure(error: &Value, context: &ClassifyContext) -> 
     }
     let provider_fault = status == Some(408)
         || matches!(status, Some(code) if (500..600).contains(&code))
-        || (status.is_none() && (TEMPORARY_FAULT.is_match(&text) || NETWORK.is_match(&text) || OVERLOADED.is_match(&text)));
+        || (status.is_none()
+            && (TEMPORARY_FAULT.is_match(&text)
+                || NETWORK.is_match(&text)
+                || OVERLOADED.is_match(&text)));
     let usage_limit = ACCOUNT_USAGE_LIMIT.is_match(&text) && !is_overflow_text(&text);
     let limit_text = RATE_LIMIT.is_match(&text) || usage_limit;
     if text.contains(PROVIDER_NOT_CONFIGURED_PREFIX) {
@@ -167,7 +175,8 @@ pub fn classify_credential_failure(error: &Value, context: &ClassifyContext) -> 
             block: CredentialBlock::AuthError,
         };
     }
-    if status == Some(401) || (!provider_fault && status != Some(429) && AUTH_ERROR.is_match(&text)) {
+    if status == Some(401) || (!provider_fault && status != Some(429) && AUTH_ERROR.is_match(&text))
+    {
         return CredentialAction::Failover {
             block: CredentialBlock::AuthError,
         };
@@ -277,9 +286,20 @@ mod tests {
     #[test]
     fn provider_fault_auth_words_do_not_disable_credentials() {
         let context = ClassifyContext::default();
-        assert!(matches!(classify_credential_failure(&error(503, "unauthorized billing gateway"), &context), CredentialAction::RetrySame { .. }));
-        assert!(matches!(classify_credential_failure(&error(429, "unauthorized"), &context), CredentialAction::Failover { block: CredentialBlock::RateLimit { .. } }));
-        assert_eq!(classify_credential_failure(&error(401, ACCOUNT_POOL_REFUSAL_NOTE), &context), CredentialAction::FailRequest);
+        assert!(matches!(
+            classify_credential_failure(&error(503, "unauthorized billing gateway"), &context),
+            CredentialAction::RetrySame { .. }
+        ));
+        assert!(matches!(
+            classify_credential_failure(&error(429, "unauthorized"), &context),
+            CredentialAction::Failover {
+                block: CredentialBlock::RateLimit { .. }
+            }
+        ));
+        assert_eq!(
+            classify_credential_failure(&error(401, ACCOUNT_POOL_REFUSAL_NOTE), &context),
+            CredentialAction::FailRequest
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Port of omo-senpi `components/x-search/params.ts` at latest `455dee62`.
 
-use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::collections::HashSet;
 
 use crate::format::XSearchErrorCode;
 
@@ -69,7 +69,10 @@ pub fn x_search_parameters_schema() -> Value {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum XSearchValidation {
     Ok(XSearchParams),
-    Err { code: XSearchErrorCode, message: String },
+    Err {
+        code: XSearchErrorCode,
+        message: String,
+    },
 }
 
 fn failure(code: XSearchErrorCode, message: &str) -> XSearchValidation {
@@ -149,8 +152,12 @@ fn check_schema(input: &serde_json::Map<String, Value>) -> bool {
     }
 
     // query: string, minLength 1, maxLength 2000 (UTF-16 code units in JS TypeBox)
-    let Some(q_val) = input.get("query") else { return false };
-    let Some(q_str) = q_val.as_str() else { return false };
+    let Some(q_val) = input.get("query") else {
+        return false;
+    };
+    let Some(q_str) = q_val.as_str() else {
+        return false;
+    };
     let utf16_len = q_str.encode_utf16().count();
     if !(1..=2000).contains(&utf16_len) {
         return false;
@@ -165,7 +172,9 @@ fn check_schema(input: &serde_json::Map<String, Value>) -> bool {
 
     // allowed_x_handles
     if let Some(val) = input.get("allowed_x_handles") {
-        let Some(arr) = val.as_array() else { return false };
+        let Some(arr) = val.as_array() else {
+            return false;
+        };
         if arr.is_empty() || arr.len() > 20 {
             return false;
         }
@@ -180,7 +189,9 @@ fn check_schema(input: &serde_json::Map<String, Value>) -> bool {
 
     // excluded_x_handles
     if let Some(val) = input.get("excluded_x_handles") {
-        let Some(arr) = val.as_array() else { return false };
+        let Some(arr) = val.as_array() else {
+            return false;
+        };
         if arr.is_empty() || arr.len() > 20 {
             return false;
         }
@@ -236,7 +247,10 @@ fn check_schema(input: &serde_json::Map<String, Value>) -> bool {
 /// 7. !Value.Check(XSearchParams, raw) => INVALID_PARAMS, "Parameters failed validation"
 pub fn validate_x_search_params(raw: &Value) -> XSearchValidation {
     let Some(input) = raw.as_object() else {
-        return failure(XSearchErrorCode::InvalidParams, "Parameters must be an object");
+        return failure(
+            XSearchErrorCode::InvalidParams,
+            "Parameters must be an object",
+        );
     };
 
     if let Some(query_str) = input.get("query").and_then(Value::as_str)
@@ -287,22 +301,60 @@ pub fn validate_x_search_params(raw: &Value) -> XSearchValidation {
     }
 
     if !check_schema(input) {
-        return failure(XSearchErrorCode::InvalidParams, "Parameters failed validation");
+        return failure(
+            XSearchErrorCode::InvalidParams,
+            "Parameters failed validation",
+        );
     }
 
-    let query = input.get("query").and_then(Value::as_str).unwrap_or("").to_string();
-    let from_date = input.get("from_date").and_then(Value::as_str).map(str::to_string);
-    let to_date = input.get("to_date").and_then(Value::as_str).map(str::to_string);
-    let allowed_x_handles = input.get("allowed_x_handles").and_then(Value::as_array).map(|arr| {
-        arr.iter().filter_map(Value::as_str).map(str::to_string).collect()
-    });
-    let excluded_x_handles = input.get("excluded_x_handles").and_then(Value::as_array).map(|arr| {
-        arr.iter().filter_map(Value::as_str).map(str::to_string).collect()
-    });
-    let mode = input.get("mode").and_then(Value::as_str).unwrap_or("latest").to_string();
-    let max_results = input.get("max_results").and_then(Value::as_u64).unwrap_or(10) as usize;
-    let enable_image_understanding = input.get("enable_image_understanding").and_then(Value::as_bool).unwrap_or(false);
-    let enable_video_understanding = input.get("enable_video_understanding").and_then(Value::as_bool).unwrap_or(false);
+    let query = input
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let from_date = input
+        .get("from_date")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let to_date = input
+        .get("to_date")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let allowed_x_handles = input
+        .get("allowed_x_handles")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        });
+    let excluded_x_handles = input
+        .get("excluded_x_handles")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        });
+    let mode = input
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("latest")
+        .to_string();
+    let max_results = input
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .unwrap_or(10) as usize;
+    let enable_image_understanding = input
+        .get("enable_image_understanding")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let enable_video_understanding = input
+        .get("enable_video_understanding")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     XSearchValidation::Ok(XSearchParams {
         query,

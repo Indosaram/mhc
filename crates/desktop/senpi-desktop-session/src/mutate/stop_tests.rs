@@ -14,15 +14,15 @@ use senpi_desktop_core::keys::parse_keys;
 use senpi_desktop_core::protocol_params::{KeyChordParams, TypeTextParams};
 use senpi_desktop_core::types::Target;
 use senpi_desktop_safety::{
-    FakeClock, GateError, HEARTBEAT_FRESH_MS, MutatingAction, StopPathId, StopPathReason,
-    StopSource, Supervisor,
+    FakeClock, GateError, MutatingAction, StopPathId, StopPathReason, StopSource, Supervisor,
+    HEARTBEAT_FRESH_MS,
 };
 use serde_json::json;
 
-use super::{INPUT_TRANSACTION, Mutation};
+use super::{Mutation, INPUT_TRANSACTION};
 use crate::request::{Op, Response};
 use crate::test_support::{
-    Harness, delivery, foreground_click_mutation, harness, op_names, two_windows,
+    delivery, foreground_click_mutation, harness, op_names, two_windows, Harness,
 };
 use crate::worker::Worker;
 

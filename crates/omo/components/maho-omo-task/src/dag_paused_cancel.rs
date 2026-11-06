@@ -87,7 +87,8 @@ pub fn end_paused_run_children(
     Ok(())
 }
 
-pub type PausedNodeCancel = Arc<dyn Fn(&str, &str) -> Result<(), DagNodeControlError> + Send + Sync>;
+pub type PausedNodeCancel =
+    Arc<dyn Fn(&str, &str) -> Result<(), DagNodeControlError> + Send + Sync>;
 /// `createPausedNodeCancel`: the runtime's `cancelNode` capability.
 pub fn create_paused_node_cancel(
     options: Arc<dyn Fn(&str) -> DagSchedulerOptions + Send + Sync>,

@@ -14,7 +14,10 @@ pub async fn update(allow_unsigned: bool) -> Result<(), String> {
     if release::compare_versions(&latest.version, release::current_version())?
         != std::cmp::Ordering::Greater
     {
-        maho_core::output_guard::maho_write_stdout(&format!("mhc {} is up to date.\n", release::current_version()));
+        maho_core::output_guard::maho_write_stdout(&format!(
+            "mhc {} is up to date.\n",
+            release::current_version()
+        ));
         return Ok(());
     }
     let installed = install::install(&latest, allow_unsigned).await?;

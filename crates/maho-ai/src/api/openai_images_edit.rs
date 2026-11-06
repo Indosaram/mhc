@@ -25,9 +25,20 @@ pub fn build_edit_params(
         return Err("OpenAI image edits accept at most 16 reference images".into());
     }
     let mut params = params.clone();
-    params.insert("image".into(), Value::Array(images.iter().map(|image| serde_json::to_value(image).unwrap_or(Value::Null)).collect()));
+    params.insert(
+        "image".into(),
+        Value::Array(
+            images
+                .iter()
+                .map(|image| serde_json::to_value(image).unwrap_or(Value::Null))
+                .collect(),
+        ),
+    );
     if let Some(mask) = mask {
-        params.insert("mask".into(), serde_json::to_value(mask).unwrap_or(Value::Null));
+        params.insert(
+            "mask".into(),
+            serde_json::to_value(mask).unwrap_or(Value::Null),
+        );
     }
     Ok(params)
 }
@@ -38,24 +49,32 @@ mod tests {
     use serde_json::json;
 
     fn image(mime_type: &str) -> ImageContent {
-        ImageContent { data: "AA==".into(), mime_type: mime_type.to_owned() }
+        ImageContent {
+            data: "AA==".into(),
+            mime_type: mime_type.to_owned(),
+        }
     }
 
     #[test]
     fn upload_names_carry_the_mime_extension() {
-        assert_eq!(upload_name(&image("image/png"), "reference-0"), "reference-0.png");
+        assert_eq!(
+            upload_name(&image("image/png"), "reference-0"),
+            "reference-0.png"
+        );
         assert_eq!(upload_name(&image("image/jpeg"), "mask"), "mask.jpeg");
     }
 
     #[test]
     fn edit_params_attach_images_and_an_optional_mask() {
-        let params: Map<String, Value> = serde_json::from_value(json!({ "model": "m", "prompt": "p" })).expect("params");
+        let params: Map<String, Value> =
+            serde_json::from_value(json!({ "model": "m", "prompt": "p" })).expect("params");
         let references = vec![image("image/png"), image("image/webp")];
         let without_mask = build_edit_params(&params, &references, None).expect("edit params");
         assert_eq!(without_mask["image"].as_array().map(Vec::len), Some(2));
         assert!(without_mask.get("mask").is_none());
 
-        let with_mask = build_edit_params(&params, &references, Some(&image("image/png"))).expect("edit params");
+        let with_mask = build_edit_params(&params, &references, Some(&image("image/png")))
+            .expect("edit params");
         assert_eq!(with_mask["mask"]["mimeType"], json!("image/png"));
         assert_eq!(with_mask["model"], json!("m"));
     }

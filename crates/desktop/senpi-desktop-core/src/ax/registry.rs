@@ -36,8 +36,9 @@ impl AxRegistry {
         let generation = self.generations.entry(target.to_string()).or_default();
         *generation = generation.saturating_add(1);
         let current = *generation;
-        self.entries
-            .retain(|_, entry| entry.target_key != target || entry.generation.saturating_add(1) >= current);
+        self.entries.retain(|_, entry| {
+            entry.target_key != target || entry.generation.saturating_add(1) >= current
+        });
         current
     }
 
@@ -73,7 +74,9 @@ impl AxRegistry {
             .strip_prefix('e')
             .and_then(|id| id.parse::<u64>().ok())
             .and_then(|id| self.entries.get(&id))
-            .ok_or_else(|| DesktopError::stale_ref(format!("{reference} expired; re-run ax()/find()")))
+            .ok_or_else(|| {
+                DesktopError::stale_ref(format!("{reference} expired; re-run ax()/find()"))
+            })
     }
 
     fn enforce_cap(&mut self) {

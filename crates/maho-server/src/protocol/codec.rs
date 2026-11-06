@@ -62,28 +62,44 @@ pub trait TransportValue {
     fn transport_value(&self) -> Value;
 }
 impl<T: TransportValue + ?Sized> TransportValue for &T {
-    fn transport_value(&self) -> Value { (*self).transport_value() }
+    fn transport_value(&self) -> Value {
+        (*self).transport_value()
+    }
 }
 impl TransportValue for Value {
-    fn transport_value(&self) -> Value { self.clone() }
+    fn transport_value(&self) -> Value {
+        self.clone()
+    }
 }
 impl TransportValue for str {
-    fn transport_value(&self) -> Value { Value::String(self.into()) }
+    fn transport_value(&self) -> Value {
+        Value::String(self.into())
+    }
 }
 impl TransportValue for String {
-    fn transport_value(&self) -> Value { Value::String(self.clone().into()) }
+    fn transport_value(&self) -> Value {
+        Value::String(self.clone().into())
+    }
 }
 impl TransportValue for maho_chord::js_string::JsString {
-    fn transport_value(&self) -> Value { Value::String(self.clone()) }
+    fn transport_value(&self) -> Value {
+        Value::String(self.clone())
+    }
 }
 impl TransportValue for bool {
-    fn transport_value(&self) -> Value { Value::Bool(*self) }
+    fn transport_value(&self) -> Value {
+        Value::Bool(*self)
+    }
 }
 impl TransportValue for u64 {
-    fn transport_value(&self) -> Value { Value::Number((*self).into()) }
+    fn transport_value(&self) -> Value {
+        Value::Number((*self).into())
+    }
 }
 impl TransportValue for i32 {
-    fn transport_value(&self) -> Value { Value::Number((*self).into()) }
+    fn transport_value(&self) -> Value {
+        Value::Number((*self).into())
+    }
 }
 pub fn transport_value(value: &(impl TransportValue + ?Sized)) -> Value {
     value.transport_value()

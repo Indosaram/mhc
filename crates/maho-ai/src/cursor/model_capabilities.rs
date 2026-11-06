@@ -294,7 +294,13 @@ mod tests {
     fn marks_evidence_provenance_for_every_entry() {
         for (id, cap) in CURSOR_MODEL_CAPABILITIES.iter() {
             assert!(
-                ["available-models", "cli-live", "suffix-only", "served-checkpoint"].contains(&cap.evidence),
+                [
+                    "available-models",
+                    "cli-live",
+                    "suffix-only",
+                    "served-checkpoint"
+                ]
+                .contains(&cap.evidence),
                 "{id} evidence"
             );
         }

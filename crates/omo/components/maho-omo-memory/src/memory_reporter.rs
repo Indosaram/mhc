@@ -48,7 +48,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    type RegisteredReporters = BTreeMap<String, Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>>;
+    type RegisteredReporters =
+        BTreeMap<String, Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>>;
     struct FakeHost {
         registered: Mutex<RegisteredReporters>,
     }
@@ -59,7 +60,10 @@ mod tests {
             name: &str,
             reporter: Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>,
         ) {
-            self.registered.lock().unwrap().insert(name.to_string(), reporter);
+            self.registered
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), reporter);
         }
     }
 

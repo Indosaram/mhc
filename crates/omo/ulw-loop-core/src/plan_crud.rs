@@ -8,13 +8,15 @@ use crate::command_types::{AddGoalOptions, CreateUlwLoopOptions, StartNextOption
 use crate::domain_types::{UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan, UlwLoopSuccessCriterion};
 use crate::goal_status::{aggregate_codex_objective_for_scope, is_ulw_loop_done};
 use crate::paths::{
-    ulw_loop_brief_relative_path, ulw_loop_goals_relative_path, ulw_loop_ledger_relative_path,
-    UlwLoopScope,
+    UlwLoopScope, ulw_loop_brief_relative_path, ulw_loop_goals_relative_path,
+    ulw_loop_ledger_relative_path,
 };
-use crate::plan_commit::{commit, CommitMutation};
-use crate::plan_goal_factory::{append_goal_to_plan, derive_goal_candidates, make_goal, GoalSeedOptions};
+use crate::plan_commit::{CommitMutation, commit};
+use crate::plan_goal_factory::{
+    GoalSeedOptions, append_goal_to_plan, derive_goal_candidates, make_goal,
+};
 use crate::plan_io::{plan_exists, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::runtime::{iso, UlwLoopError};
+use crate::runtime::{UlwLoopError, iso};
 use crate::surface::UlwLoopToolkitSurface;
 use crate::validation_batch::parse_validation_batches;
 
@@ -99,7 +101,13 @@ pub fn create_ulw_loop_plan(
                 surface: Some(s),
                 ..Default::default()
             };
-            goals.push(make_goal(&title, &objective, index, &now, Some(&seed_opts))?);
+            goals.push(make_goal(
+                &title,
+                &objective,
+                index,
+                &now,
+                Some(&seed_opts),
+            )?);
         }
 
         let brief_content = if args.brief.ends_with('\n') {
@@ -119,7 +127,11 @@ pub fn create_ulw_loop_plan(
             brief_path: ulw_loop_brief_relative_path(scope),
             goals_path: ulw_loop_goals_relative_path(scope),
             ledger_path: ulw_loop_ledger_relative_path(scope),
-            codex_goal_mode: Some(args.codex_goal_mode.clone().unwrap_or_else(|| "aggregate".into())),
+            codex_goal_mode: Some(
+                args.codex_goal_mode
+                    .clone()
+                    .unwrap_or_else(|| "aggregate".into()),
+            ),
             codex_objective: None,
             codex_objective_aliases: None,
             acknowledged_driver_objectives: None,
@@ -129,7 +141,8 @@ pub fn create_ulw_loop_plan(
             goals,
         };
 
-        let validation_batches = parse_validation_batches(args.validation_batches_json.as_deref(), &plan.goals)?;
+        let validation_batches =
+            parse_validation_batches(args.validation_batches_json.as_deref(), &plan.goals)?;
         if let Some(vb) = validation_batches {
             plan.validation_batches = Some(vb);
         }
@@ -158,7 +171,10 @@ pub fn create_ulw_loop_plan(
     })
 }
 
-fn completed_plan_exists_error(scope: Option<&UlwLoopScope>, surface: UlwLoopToolkitSurface) -> UlwLoopError {
+fn completed_plan_exists_error(
+    scope: Option<&UlwLoopScope>,
+    surface: UlwLoopToolkitSurface,
+) -> UlwLoopError {
     let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
         format!(
             "Existing ulw-loop aggregate is already complete at {}. Start a new run under a fresh session id (a new session) or run `mhc ulw-loop create-goals --brief \"<brief>\" --force --json` to recreate.",
@@ -205,7 +221,13 @@ pub fn add_ulw_loop_goal(
             }),
             ..Default::default()
         };
-        let goal = append_goal_to_plan(&mut plan, &args.title, &args.objective, &now, Some(&seed_opts))?;
+        let goal = append_goal_to_plan(
+            &mut plan,
+            &args.title,
+            &args.objective,
+            &now,
+            Some(&seed_opts),
+        )?;
         let mut entries = vec![UlwLoopLedgerEntry {
             at: now,
             kind: "goal_added".to_string(),
@@ -253,11 +275,19 @@ pub fn start_next_ulw_loop(
     with_ulw_loop_mutation_lock(&repo_root, scope, None, || {
         let mut plan = read_ulw_loop_plan(&repo_root, scope)?;
         let now = iso();
-        if plan.aggregate_completion.as_ref().is_some_and(|c| c.status == "complete") {
+        if plan
+            .aggregate_completion
+            .as_ref()
+            .is_some_and(|c| c.status == "complete")
+        {
             return Ok(StartNextResult::Done { plan });
         }
 
-        if let Some(existing) = plan.goals.iter().find(|g| g.status == "in_progress" && is_schedule_eligible(g)) {
+        if let Some(existing) = plan
+            .goals
+            .iter()
+            .find(|g| g.status == "in_progress" && is_schedule_eligible(g))
+        {
             let goal = existing.clone();
             return Ok(StartNextResult::Started {
                 plan,
@@ -267,10 +297,15 @@ pub fn start_next_ulw_loop(
         }
 
         let mut entries = Vec::new();
-        let mut target_goal_idx = plan.goals.iter().position(|g| g.status == "pending" && is_schedule_eligible(g));
+        let mut target_goal_idx = plan
+            .goals
+            .iter()
+            .position(|g| g.status == "pending" && is_schedule_eligible(g));
 
         if target_goal_idx.is_none() && args.and_then(|a| a.retry_failed).unwrap_or(false) {
-            target_goal_idx = plan.goals.iter().position(|g| g.status == "failed" && !g.non_retriable.unwrap_or(false) && is_schedule_eligible(g));
+            target_goal_idx = plan.goals.iter().position(|g| {
+                g.status == "failed" && !g.non_retriable.unwrap_or(false) && is_schedule_eligible(g)
+            });
             if let Some(idx) = target_goal_idx {
                 let g = &plan.goals[idx];
                 entries.push(UlwLoopLedgerEntry {
@@ -330,13 +365,17 @@ pub fn start_next_ulw_loop(
 }
 
 pub fn summarize_ulw_loop_plan(plan: &UlwLoopPlan) -> UlwLoopPlanSummary {
-    let count_status = |status: &str| -> usize {
-        plan.goals.iter().filter(|g| g.status == status).count()
-    };
+    let count_status =
+        |status: &str| -> usize { plan.goals.iter().filter(|g| g.status == status).count() };
     let count_criteria = |status: &str| -> usize {
         plan.goals
             .iter()
-            .map(|g| g.success_criteria.iter().filter(|c| c.status == status).count())
+            .map(|g| {
+                g.success_criteria
+                    .iter()
+                    .filter(|c| c.status == status)
+                    .count()
+            })
             .sum()
     };
 

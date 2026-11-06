@@ -18,11 +18,11 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, Response, StatusCode};
 use axum::routing::any;
-use axum::Router;
 use maho_ai::api::anthropic_messages;
 use maho_ai::models_generated::MODELS;
 use maho_ai::types::{Context, Model, OnPayload, StreamOptions};
@@ -41,26 +41,32 @@ const FIRST_PARTY_HOST: &str = "api.anthropic.com";
 /// from the embedded catalog by properties the redactor leaves alone, and the selector panics
 /// unless exactly one row matches, so a catalog change cannot silently pick a different model.
 pub fn harness_haiku() -> &'static Model {
-    select(|model| {
-        let cost = model.cost.rates();
-        model.provider == "anthropic"
-            && segments(&model.id) == 4
-            && cost.input == 1.0
-            && cost.output == 5.0
-            && cost.cache_read == 0.1
-    }, "haiku-4-5")
+    select(
+        |model| {
+            let cost = model.cost.rates();
+            model.provider == "anthropic"
+                && segments(&model.id) == 4
+                && cost.input == 1.0
+                && cost.output == 5.0
+                && cost.cache_read == 0.1
+        },
+        "haiku-4-5",
+    )
 }
 
 /// The harness's second `modelId` default (see [`harness_haiku`]).
 pub fn harness_sonnet() -> &'static Model {
-    select(|model| {
-        let cost = model.cost.rates();
-        model.provider == "anthropic"
-            && segments(&model.id) == 4
-            && cost.input == 3.0
-            && cost.output == 15.0
-            && model.max_tokens == 128_000
-    }, "sonnet-4-6")
+    select(
+        |model| {
+            let cost = model.cost.rates();
+            model.provider == "anthropic"
+                && segments(&model.id) == 4
+                && cost.input == 3.0
+                && cost.output == 15.0
+                && model.max_tokens == 128_000
+        },
+        "sonnet-4-6",
+    )
 }
 
 fn segments(id: &str) -> usize {
@@ -68,10 +74,17 @@ fn segments(id: &str) -> usize {
 }
 
 fn select(predicate: impl Fn(&Model) -> bool, label: &str) -> &'static Model {
-    let models = MODELS.get("anthropic").expect("the anthropic catalog is embedded");
+    let models = MODELS
+        .get("anthropic")
+        .expect("the anthropic catalog is embedded");
     let mut hits = models.values().filter(|model| predicate(model));
-    let first = hits.next().unwrap_or_else(|| panic!("no anthropic catalog row matches {label}"));
-    assert!(hits.next().is_none(), "more than one anthropic catalog row matches {label}");
+    let first = hits
+        .next()
+        .unwrap_or_else(|| panic!("no anthropic catalog row matches {label}"));
+    assert!(
+        hits.next().is_none(),
+        "more than one anthropic catalog row matches {label}"
+    );
     first
 }
 
@@ -97,7 +110,10 @@ impl CaptureServer {
     pub async fn start_sse(body: String) -> Self {
         Self::start_response(
             StatusCode::OK,
-            vec![(HeaderName::from_static("content-type"), HeaderValue::from_static("text/event-stream"))],
+            vec![(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_static("text/event-stream"),
+            )],
             body.into_bytes(),
         )
         .await
@@ -108,18 +124,32 @@ impl CaptureServer {
         headers: Vec<(HeaderName, HeaderValue)>,
         body: Vec<u8>,
     ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind capture server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind capture server");
         let port = listener.local_addr().expect("capture server addr").port();
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(ServerState {
             requests: Arc::clone(&requests),
-            response: FixedResponse { status, headers, body },
+            response: FixedResponse {
+                status,
+                headers,
+                body,
+            },
         });
-        let router = Router::new().fallback(any(handle_request)).with_state(state);
+        let router = Router::new()
+            .fallback(any(handle_request))
+            .with_state(state);
         let handle = tokio::spawn(async move {
-            axum::serve(listener, router.into_make_service()).await.expect("capture server serve");
+            axum::serve(listener, router.into_make_service())
+                .await
+                .expect("capture server serve");
         });
-        Self { port, requests, handle }
+        Self {
+            port,
+            requests,
+            handle,
+        }
     }
 
     pub fn base_url(&self) -> String {
@@ -140,7 +170,12 @@ impl CaptureServer {
     }
 
     pub fn last_body(&self) -> Value {
-        self.requests.lock().expect("capture lock").last().cloned().expect("a recorded request")
+        self.requests
+            .lock()
+            .expect("capture lock")
+            .last()
+            .cloned()
+            .expect("a recorded request")
     }
 
     pub fn bodies(&self) -> Vec<Value> {
@@ -170,7 +205,9 @@ async fn handle_request(State(state): State<Arc<ServerState>>, body: Bytes) -> R
     for (name, value) in &state.response.headers {
         builder = builder.header(name, value);
     }
-    builder.body(Body::from(state.response.body.clone())).expect("build capture response")
+    builder
+        .body(Body::from(state.response.body.clone()))
+        .expect("build capture response")
 }
 
 /// Drives `anthropic_messages::stream` against `server` and returns the recorded request body.
@@ -203,7 +240,11 @@ pub async fn capture_params(context: &Context, on_payload: Option<OnPayload>) ->
     capture_params_on(harness_haiku(), context, on_payload).await
 }
 
-pub async fn capture_params_on(model: &Model, context: &Context, on_payload: Option<OnPayload>) -> Value {
+pub async fn capture_params_on(
+    model: &Model,
+    context: &Context,
+    on_payload: Option<OnPayload>,
+) -> Value {
     let server = CaptureServer::start_sse(final_text_sse()).await;
     let body = capture_params_with(&server, model, context, on_payload).await;
     server.shutdown();
@@ -226,7 +267,10 @@ pub fn final_text_sse() -> String {
             "content_block_delta",
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#,
         ),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
         (
             "message_delta",
             r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,

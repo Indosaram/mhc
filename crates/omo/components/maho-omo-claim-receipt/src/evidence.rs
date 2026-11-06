@@ -7,11 +7,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use maho_omo_post_mutation::post_mutation::{extract_mutated_file_paths, MUTATION_TOOL_NAMES};
 use maho_omo_post_mutation::PostMutationEvent;
+use maho_omo_post_mutation::post_mutation::{MUTATION_TOOL_NAMES, extract_mutated_file_paths};
 
-use crate::cell_commands::{cell_invoked_kinds, CellCheckKind};
-use crate::invocations::{invoked_kinds, InvokedKind};
+use crate::cell_commands::{CellCheckKind, cell_invoked_kinds};
+use crate::invocations::{InvokedKind, invoked_kinds};
 use crate::signatures::{is_relevant_path, judge_output, judge_structured};
 
 /// The kinds of evidence a session can produce.
@@ -120,8 +120,9 @@ static TERMINAL_DONE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Background terminal session (\S+) finished: (\w+) \(exit code (-?\d+)\)")
         .expect("valid terminal done regex")
 });
-static MONITOR_DESCRIPTION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Monitor event\(([^)]*)\)").expect("valid monitor description regex"));
+static MONITOR_DESCRIPTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Monitor event\(([^)]*)\)").expect("valid monitor description regex")
+});
 static WATCHER_ENDED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bwatcher (?:killed|timed_out)\b|\bwatcher\b[^\n]*\bkilled\b")
         .expect("valid watcher regex")
@@ -252,8 +253,10 @@ impl TimelineBuilder {
                         } else {
                             Value::Object(serde_json::Map::new())
                         };
-                        self.calls
-                            .insert(as_string(&part["id"]), (as_string(&part["name"]), arguments));
+                        self.calls.insert(
+                            as_string(&part["id"]),
+                            (as_string(&part["name"]), arguments),
+                        );
                     }
                 }
             }
@@ -268,20 +271,30 @@ impl TimelineBuilder {
         let tool_name = as_string(&message["toolName"]);
         let call_id = as_string(&message["toolCallId"]);
         let empty = Value::Object(serde_json::Map::new());
-        let args = self.calls.get(&call_id).map_or_else(
-            || empty.clone(),
-            |(_, arguments)| arguments.clone(),
-        );
+        let args = self
+            .calls
+            .get(&call_id)
+            .map_or_else(|| empty.clone(), |(_, arguments)| arguments.clone());
         let is_error = message["isError"] == Value::Bool(true);
         let text = content_text(&message["content"]);
         if tool_name == "eval" {
-            self.eval_result(call_id.as_str(), &args, &message["details"], &text, is_error, (index, entry_id));
+            self.eval_result(
+                call_id.as_str(),
+                &args,
+                &message["details"],
+                &text,
+                is_error,
+                (index, entry_id),
+            );
             return;
         }
         if MUTATION_TOOL_NAMES.contains(&tool_name.as_str()) {
             if !is_error {
-                let event =
-                    PostMutationEvent::new(tool_name, args.clone(), Some(message["details"].clone()));
+                let event = PostMutationEvent::new(
+                    tool_name,
+                    args.clone(),
+                    Some(message["details"].clone()),
+                );
                 self.add_edit(index as f64, entry_id, extract_mutated_file_paths(&event));
             }
             return;
@@ -349,11 +362,7 @@ impl TimelineBuilder {
     ) {
         let (index, entry_id) = position;
         let null = Value::Null;
-        let record = if details.is_object() {
-            details
-        } else {
-            &null
-        };
+        let record = if details.is_object() { details } else { &null };
         let host_calls: Vec<&Value> = record["toolCalls"]
             .as_array()
             .map(|calls| calls.iter().filter(|call| call.is_object()).collect())
@@ -656,12 +665,22 @@ mod tests {
 
     #[test]
     fn a_cell_can_support_a_claim_but_never_contradict_one() {
-        let passed = build_timeline(&eval_entries("c1", "await sh(`bun test x`)", " 35 pass\n 0 fail", "complete"));
+        let passed = build_timeline(&eval_entries(
+            "c1",
+            "await sh(`bun test x`)",
+            " 35 pass\n 0 fail",
+            "complete",
+        ));
         assert_eq!(passed.checks.len(), 1);
         assert_eq!(passed.checks[0].kind, CheckKind::Test);
         assert_eq!(passed.checks[0].outcome, CheckOutcome::Passed);
 
-        let red = build_timeline(&eval_entries("c2", "await sh(`bun test x`)", " 3 pass\n 1 fail", "complete"));
+        let red = build_timeline(&eval_entries(
+            "c2",
+            "await sh(`bun test x`)",
+            " 3 pass\n 1 fail",
+            "complete",
+        ));
         assert_eq!(red.checks[0].outcome, CheckOutcome::Unknown);
         assert_eq!(red.edits.len(), 0);
     }

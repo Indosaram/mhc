@@ -1,10 +1,10 @@
 //! Persistent task record store (`store/` in TypeScript). The on-disk layout and JSON shape match
 //! what the TypeScript store writes: `<state>/tasks/<id>.json`, `<state>/logs/<id>.jsonl`.
 
-mod parent_model_fallback_parse;
 mod claim;
 mod event_log;
 pub(crate) mod input_effects_parse;
+mod parent_model_fallback_parse;
 mod provisional_exit_parse;
 mod record_lock;
 mod record_parse;

@@ -25,10 +25,16 @@ pub fn register_task_memory_reporter(
 ) -> Result<(), ExtensionFailure> {
     let reporter: MemoryReporter = Arc::new(move || {
         let mut figures = BTreeMap::new();
-        figures.insert("residentChildren".to_string(), source.resident_task_ids().len());
+        figures.insert(
+            "residentChildren".to_string(),
+            source.resident_task_ids().len(),
+        );
         let resident = source.resident_figures();
         figures.insert("cachedRecords".to_string(), resident.cached_records);
-        figures.insert("cachedRecordBytes".to_string(), resident.cached_record_bytes);
+        figures.insert(
+            "cachedRecordBytes".to_string(),
+            resident.cached_record_bytes,
+        );
         figures.insert("openEventLogs".to_string(), resident.open_event_logs);
         figures
     });
@@ -72,7 +78,10 @@ mod tests {
             );
             let resident = reporter.resident_figures();
             figures.insert("cachedRecords".to_string(), resident.cached_records);
-            figures.insert("cachedRecordBytes".to_string(), resident.cached_record_bytes);
+            figures.insert(
+                "cachedRecordBytes".to_string(),
+                resident.cached_record_bytes,
+            );
             figures
         };
         assert_eq!(figures.get("residentChildren"), Some(&2));

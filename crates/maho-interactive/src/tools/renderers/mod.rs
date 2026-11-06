@@ -68,7 +68,11 @@ pub trait ToolRenderers {
     fn has_result_renderer(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent>;
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent>;
     fn render_result(
         &mut self,
         result: &ToolResult,
@@ -96,22 +100,54 @@ pub fn create_tool_renderer(name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>
 
 pub fn create_all_tool_renderers() -> HashMap<&'static str, Rc<RefCell<dyn ToolRenderers>>> {
     HashMap::from([
-        ("read", Rc::new(RefCell::new(read::ReadRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>),
-        ("bash", Rc::new(RefCell::new(bash::ShellRenderers::new("$"))) as Rc<RefCell<dyn ToolRenderers>>),
-        ("powershell", Rc::new(RefCell::new(bash::ShellRenderers::new("PS>"))) as Rc<RefCell<dyn ToolRenderers>>),
-        ("edit", Rc::new(RefCell::new(edit::EditRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>),
-        ("write", Rc::new(RefCell::new(write::WriteRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>),
-        ("grep", Rc::new(RefCell::new(grep::GrepRenderers)) as Rc<RefCell<dyn ToolRenderers>>),
-        ("find", Rc::new(RefCell::new(find::FindRenderers)) as Rc<RefCell<dyn ToolRenderers>>),
-        ("ls", Rc::new(RefCell::new(ls::LsRenderers)) as Rc<RefCell<dyn ToolRenderers>>),
+        (
+            "read",
+            Rc::new(RefCell::new(read::ReadRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "bash",
+            Rc::new(RefCell::new(bash::ShellRenderers::new("$"))) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "powershell",
+            Rc::new(RefCell::new(bash::ShellRenderers::new("PS>")))
+                as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "edit",
+            Rc::new(RefCell::new(edit::EditRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "write",
+            Rc::new(RefCell::new(write::WriteRenderers::default()))
+                as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "grep",
+            Rc::new(RefCell::new(grep::GrepRenderers)) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "find",
+            Rc::new(RefCell::new(find::FindRenderers)) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
+        (
+            "ls",
+            Rc::new(RefCell::new(ls::LsRenderers)) as Rc<RefCell<dyn ToolRenderers>>,
+        ),
     ])
 }
 
 /// The renderers a built-in tool definition carries (senpi spreads `...grepRenderers` into the
 /// `grep` definition and `find` likewise), exposed to HTML export through the erased factory.
 /// The template already renders bash/read/write/edit/ls, so only these two are needed there.
-pub fn built_in_export_renderers(tool_name: &str) -> Option<Arc<dyn maho_ext_api::ErasedToolRenderers>> {
-    let tool = match tool_name { "grep" => "grep", "find" => "find", _ => return None };
+pub fn built_in_export_renderers(
+    tool_name: &str,
+) -> Option<Arc<dyn maho_ext_api::ErasedToolRenderers>> {
+    let tool = match tool_name {
+        "grep" => "grep",
+        "find" => "find",
+        _ => return None,
+    };
     Some(Arc::new(BuiltInExportRenderers { tool }))
 }
 
@@ -132,9 +168,17 @@ impl BuiltInExportRenderers {
         args: &Value,
         theme: &maho_ext_api::Theme,
         width: usize,
-        result: Option<(&maho_ext_api::AgentToolResult, ToolRenderResultOptions, bool)>,
+        result: Option<(
+            &maho_ext_api::AgentToolResult,
+            ToolRenderResultOptions,
+            bool,
+        )>,
     ) -> Option<Vec<String>> {
-        let theme = crate::interactive_extension_ui::theme_from_extension(theme, crate::theme::ColorMode::Truecolor).ok()?;
+        let theme = crate::interactive_extension_ui::theme_from_extension(
+            theme,
+            crate::theme::ColorMode::Truecolor,
+        )
+        .ok()?;
         let context = ToolRenderContext {
             args,
             tool_call_id: "",
@@ -142,7 +186,9 @@ impl BuiltInExportRenderers {
             execution_started: true,
             args_complete: true,
             is_partial: false,
-            expanded: result.as_ref().is_some_and(|(_, options, _)| options.expanded),
+            expanded: result
+                .as_ref()
+                .is_some_and(|(_, options, _)| options.expanded),
             show_images: false,
             is_error: result.as_ref().is_some_and(|(_, _, is_error)| *is_error),
             has_result: result.is_some(),
@@ -154,7 +200,8 @@ impl BuiltInExportRenderers {
         let component = match result {
             None => renderers.render_call(&theme, &context)?,
             Some((result, options, _)) => {
-                let result: ToolResult = serde_json::from_value(serde_json::to_value(result).ok()?).ok()?;
+                let result: ToolResult =
+                    serde_json::from_value(serde_json::to_value(result).ok()?).ok()?;
                 renderers.render_result(&result, options, &theme, &context)?
             }
         };
@@ -164,12 +211,28 @@ impl BuiltInExportRenderers {
 }
 
 impl maho_ext_api::ErasedToolRenderers for BuiltInExportRenderers {
-    fn render_call(&self, args: &Value, theme: &maho_ext_api::Theme, width: usize) -> Option<Vec<String>> {
+    fn render_call(
+        &self,
+        args: &Value,
+        theme: &maho_ext_api::Theme,
+        width: usize,
+    ) -> Option<Vec<String>> {
         self.render(args, theme, width, None)
     }
 
-    fn render_result(&self, args: &Value, result: &maho_ext_api::AgentToolResult, theme: &maho_ext_api::Theme, width: usize) -> Option<Vec<String>> {
-        self.render(args, theme, width, Some((result, ToolRenderResultOptions::default(), false)))
+    fn render_result(
+        &self,
+        args: &Value,
+        result: &maho_ext_api::AgentToolResult,
+        theme: &maho_ext_api::Theme,
+        width: usize,
+    ) -> Option<Vec<String>> {
+        self.render(
+            args,
+            theme,
+            width,
+            Some((result, ToolRenderResultOptions::default(), false)),
+        )
     }
 
     fn render_result_with(
@@ -181,7 +244,10 @@ impl maho_ext_api::ErasedToolRenderers for BuiltInExportRenderers {
         theme: &maho_ext_api::Theme,
         width: usize,
     ) -> Option<Vec<String>> {
-        let options = ToolRenderResultOptions { expanded: options.expanded, is_partial: options.is_partial };
+        let options = ToolRenderResultOptions {
+            expanded: options.expanded,
+            is_partial: options.is_partial,
+        };
         self.render(args, theme, width, Some((result, options, is_error)))
     }
 }
@@ -205,7 +271,9 @@ pub fn with_built_in_renderers(
 /// which have no built-in renderer, so a card streamed while the registry is unbound still draws.
 pub fn ask_user_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
     maho_ext_ask_user::render::supports_tool(tool_name).then(|| {
-        Rc::new(RefCell::new(native::NativeToolRenderers::<()>::new(Arc::new(maho_ext_ask_user::render::renderers())))) as Rc<RefCell<dyn ToolRenderers>>
+        Rc::new(RefCell::new(native::NativeToolRenderers::<()>::new(
+            Arc::new(maho_ext_ask_user::render::renderers()),
+        ))) as Rc<RefCell<dyn ToolRenderers>>
     })
 }
 
@@ -217,15 +285,45 @@ struct WithRenderShell {
 }
 
 impl ToolRenderers for WithRenderShell {
-    fn render_shell(&self) -> RenderShell { self.shell }
-    fn is_built_in(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().is_built_in()) }
-    fn rebuild_call_after_result(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().rebuild_call_after_result()) }
-    fn has_result_renderer(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().has_result_renderer()) }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
-        self.inner.as_ref()?.borrow_mut().render_call(theme, context)
+    fn render_shell(&self) -> RenderShell {
+        self.shell
     }
-    fn render_result(&mut self, result: &ToolResult, options: ToolRenderResultOptions, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
-        self.inner.as_ref()?.borrow_mut().render_result(result, options, theme, context)
+    fn is_built_in(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.borrow().is_built_in())
+    }
+    fn rebuild_call_after_result(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.borrow().rebuild_call_after_result())
+    }
+    fn has_result_renderer(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.borrow().has_result_renderer())
+    }
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
+        self.inner
+            .as_ref()?
+            .borrow_mut()
+            .render_call(theme, context)
+    }
+    fn render_result(
+        &mut self,
+        result: &ToolResult,
+        options: ToolRenderResultOptions,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
+        self.inner
+            .as_ref()?
+            .borrow_mut()
+            .render_result(result, options, theme, context)
     }
 }
 
@@ -238,11 +336,19 @@ pub fn registered_definition_renderers(
     shell: Option<RenderShell>,
 ) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
     match (resolved, shell) {
-        (resolved, Some(shell)) if shell != RenderShell::Default && (registered || resolved.is_some()) => {
-            Some(Rc::new(RefCell::new(WithRenderShell { inner: resolved, shell })))
+        (resolved, Some(shell))
+            if shell != RenderShell::Default && (registered || resolved.is_some()) =>
+        {
+            Some(Rc::new(RefCell::new(WithRenderShell {
+                inner: resolved,
+                shell,
+            })))
         }
         (Some(resolved), _) => Some(resolved),
-        (None, _) if registered => Some(Rc::new(RefCell::new(WithRenderShell { inner: None, shell: RenderShell::Default }))),
+        (None, _) if registered => Some(Rc::new(RefCell::new(WithRenderShell {
+            inner: None,
+            shell: RenderShell::Default,
+        }))),
         (None, _) => None,
     }
 }
@@ -259,13 +365,20 @@ mod tests {
 
     #[test]
     fn registered_definition_carries_its_render_shell_and_keeps_a_card_without_renderers() {
-        let own = registered_definition_renderers(None, true, Some(RenderShell::Own)).expect("shell-only definition");
+        let own = registered_definition_renderers(None, true, Some(RenderShell::Own))
+            .expect("shell-only definition");
         assert_eq!(own.borrow().render_shell(), RenderShell::Own);
         assert!(!own.borrow().has_result_renderer());
-        let plain = registered_definition_renderers(None, true, None).expect("definition without renderers");
+        let plain = registered_definition_renderers(None, true, None)
+            .expect("definition without renderers");
         assert_eq!(plain.borrow().render_shell(), RenderShell::Default);
         assert!(registered_definition_renderers(None, false, None).is_none());
-        let built_in = registered_definition_renderers(create_all_tool_renderers().get("read").cloned(), true, None).expect("read");
+        let built_in = registered_definition_renderers(
+            create_all_tool_renderers().get("read").cloned(),
+            true,
+            None,
+        )
+        .expect("read");
         assert!(built_in.borrow().is_built_in());
     }
 }

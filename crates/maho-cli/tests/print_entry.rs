@@ -22,7 +22,8 @@ async fn real_print_entry_trims_piped_stdin() {
 async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched_scope() {
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
     std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
-    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n")
+        .expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
     std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
@@ -31,21 +32,45 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
     }}}).to_string()).expect("print-entry fixture operation");
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
     command
-        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
-        .args(["-p", "--offline", "--no-session", "--no-tools", "--no-extensions", "--model", "offline/offline", "--models", "nomatch-fixture*", "--definitely-unknown-flag=1", "hello"])
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .args([
+            "-p",
+            "--offline",
+            "--no-session",
+            "--no-tools",
+            "--no-extensions",
+            "--model",
+            "offline/offline",
+            "--models",
+            "nomatch-fixture*",
+            "--definitely-unknown-flag=1",
+            "hello",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     if cfg!(windows) {
         command.env("USERPROFILE", dir.path());
     }
     let child = command.spawn().expect("print-entry fixture operation");
-    let output = tokio::time::timeout(SAFETY_BOUND, child.wait_with_output()).await
-        .expect("print entry finished within the safety bound").expect("print-entry fixture operation");
+    let output = tokio::time::timeout(SAFETY_BOUND, child.wait_with_output())
+        .await
+        .expect("print entry finished within the safety bound")
+        .expect("print-entry fixture operation");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("Error: Unknown option: --definitely-unknown-flag"), "{stderr}");
-    assert!(stderr.contains("Warning: No models match pattern \"nomatch-fixture*\""), "{stderr}");
+    assert!(
+        stderr.contains("Error: Unknown option: --definitely-unknown-flag"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Warning: No models match pattern \"nomatch-fixture*\""),
+        "{stderr}"
+    );
 }
 
 /// A persisted print run holds its session file before the first write, and the holder's boot and
@@ -53,14 +78,24 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
 /// The `powershell` probe it replaces took 47-70 s on a loaded Windows runner before the first request.
 #[tokio::test]
 async fn real_print_entry_persists_its_session_with_no_shell_on_path() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
-    let address = listener.local_addr().expect("print-entry fixture operation");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("print-entry fixture operation");
+    let address = listener
+        .local_addr()
+        .expect("print-entry fixture operation");
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
     std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
-    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n")
+        .expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
-    std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("print-entry fixture operation");
-    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::create_dir_all(agent.join("omo-senpi/omo-native"))
+        .expect("print-entry fixture operation");
+    std::fs::write(
+        agent.join("omo-senpi/omo-native/onboarding-completed"),
+        "{}\n",
+    )
+    .expect("print-entry fixture operation");
     std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
         "api":"openai-completions", "baseUrl":format!("http://{address}/v1"), "apiKey":"offline-fixture",
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
@@ -70,12 +105,25 @@ async fn real_print_entry_persists_its_session_with_no_shell_on_path() {
     std::fs::create_dir(&empty_path).expect("print-entry fixture operation");
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
     command
-        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent).env("PATH", &empty_path)
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("MAHO_CODING_AGENT_DIR", &agent)
+        .env("PATH", &empty_path)
         .env_remove("__PI_INTERNAL_SPAWN")
-        .args(["-p", "--offline", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--session-dir"])
+        .args([
+            "-p",
+            "--offline",
+            "--no-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--session-dir",
+        ])
         .arg(&sessions)
         .args(["--model", "offline/offline", "hello"])
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     if cfg!(windows) {
         command.env("USERPROFILE", dir.path());
@@ -90,21 +138,39 @@ async fn real_print_entry_persists_its_session_with_no_shell_on_path() {
     .expect("print-entry fixture operation");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "offline acceptance\n", "{stderr}");
-    assert!(!stderr.contains("Failed to persist session entry"), "{stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "offline acceptance\n",
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("Failed to persist session entry"),
+        "{stderr}"
+    );
     let entries: Vec<serde_json::Value> = std::fs::read_dir(&sessions)
         .expect("the session directory exists")
         .flatten()
-        .filter(|entry| entry.path().extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("jsonl")
+        })
         .flat_map(|entry| {
             std::fs::read_to_string(entry.path())
                 .expect("print-entry fixture operation")
                 .lines()
-                .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("session entry is JSON"))
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).expect("session entry is JSON")
+                })
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert!(entries.iter().any(|entry| entry["type"] == "session"), "the session header is persisted: {entries:?}; {stderr}");
+    assert!(
+        entries.iter().any(|entry| entry["type"] == "session"),
+        "the session header is persisted: {entries:?}; {stderr}"
+    );
     assert!(
         entries.iter().any(|entry| entry["type"] == "message"
             && entry["message"]["role"] == "assistant"
@@ -121,15 +187,30 @@ async fn serve_one_completion(listener: &tokio::net::TcpListener) -> std::io::Re
     let mut chunk = [0; 4096];
     loop {
         let count = connection.read(&mut chunk).await?;
-        if count == 0 { return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "request closed before body")); }
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "request closed before body",
+            ));
+        }
         request.extend_from_slice(&chunk[..count]);
         if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
             let headers = String::from_utf8_lossy(&request[..end]);
-            let length = headers.lines().find_map(|line| line.split_once(':')
-                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length")).map(|(_, value)| value.trim()))
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing content length"))?
-                .parse::<usize>().map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-            if request.len() >= end + 4 + length { break; }
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .map(|(_, value)| value.trim())
+                })
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "missing content length")
+                })?
+                .parse::<usize>()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            if request.len() >= end + 4 + length {
+                break;
+            }
         }
     }
     let body = concat!(
@@ -143,36 +224,84 @@ async fn serve_one_completion(listener: &tokio::net::TcpListener) -> std::io::Re
 
 async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
-    let address = listener.local_addr().expect("print-entry fixture operation");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("print-entry fixture operation");
+    let address = listener
+        .local_addr()
+        .expect("print-entry fixture operation");
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
     std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
-    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n")
+        .expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
     // Onboarding state lives under the agent home (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`);
     // headless startup claims and injects it like upstream onboarding/component.ts, so mark it complete there.
-    std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("print-entry fixture operation");
-    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::create_dir_all(agent.join("omo-senpi/omo-native"))
+        .expect("print-entry fixture operation");
+    std::fs::write(
+        agent.join("omo-senpi/omo-native/onboarding-completed"),
+        "{}\n",
+    )
+    .expect("print-entry fixture operation");
     std::fs::create_dir(agent.join("prompts")).expect("print-entry fixture operation");
-    std::fs::write(agent.join("prompts/default.md"), "default prompt must not load").expect("print-entry fixture operation");
-    std::fs::write(dir.path().join("acceptance.md"), "expanded acceptance $1").expect("print-entry fixture operation");
-    std::fs::write(dir.path().join("system.md"), "fixture custom system").expect("print-entry fixture operation");
-    std::fs::write(dir.path().join("append.md"), "fixture file append").expect("print-entry fixture operation");
-    std::fs::write(dir.path().join("AGENTS.md"), "CONTEXT_FIXTURE_7f29").expect("print-entry fixture operation");
+    std::fs::write(
+        agent.join("prompts/default.md"),
+        "default prompt must not load",
+    )
+    .expect("print-entry fixture operation");
+    std::fs::write(dir.path().join("acceptance.md"), "expanded acceptance $1")
+        .expect("print-entry fixture operation");
+    std::fs::write(dir.path().join("system.md"), "fixture custom system")
+        .expect("print-entry fixture operation");
+    std::fs::write(dir.path().join("append.md"), "fixture file append")
+        .expect("print-entry fixture operation");
+    std::fs::write(dir.path().join("AGENTS.md"), "CONTEXT_FIXTURE_7f29")
+        .expect("print-entry fixture operation");
     std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
         "api":"openai-completions", "baseUrl":format!("http://{address}/v1"), "apiKey":"offline-fixture",
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
     command
-        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
-        .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
-        .args(["--system-prompt", "system.md", "--append-system-prompt", "append.md", "--append-system-prompt", "fixture literal append"])
-        .args(if no_context_files { vec!["--no-context-files"] } else { Vec::new() })
-        .stdin(if piped_stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
-        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .args([
+            "-p",
+            "--offline",
+            "--no-session",
+            "--no-tools",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--prompt-template",
+            "acceptance.md",
+            "--model",
+            "offline/offline",
+            "/acceptance fixture",
+        ])
+        .args([
+            "--system-prompt",
+            "system.md",
+            "--append-system-prompt",
+            "append.md",
+            "--append-system-prompt",
+            "fixture literal append",
+        ])
+        .args(if no_context_files {
+            vec!["--no-context-files"]
+        } else {
+            Vec::new()
+        })
+        .stdin(if piped_stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     if cfg!(windows) {
         command.env("USERPROFILE", dir.path());
@@ -180,7 +309,10 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     let mut child = command.spawn().expect("print-entry fixture operation");
     if let Some(text) = piped_stdin {
         let mut stdin = child.stdin.take().expect("print stdin");
-        stdin.write_all(text.as_bytes()).await.expect("print-entry fixture operation");
+        stdin
+            .write_all(text.as_bytes())
+            .await
+            .expect("print-entry fixture operation");
         drop(stdin);
     }
     let mut stdout = child.stdout.take().expect("print stdout");
@@ -221,25 +353,74 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     let (output, payload) = match result {
         Ok(Ok(result)) => result,
         other => {
-            child.kill().await.expect("kill print after failed bounded operation");
-            child.wait().await.expect("reap print after failed bounded operation");
+            child
+                .kill()
+                .await
+                .expect("kill print after failed bounded operation");
+            child
+                .wait()
+                .await
+                .expect("reap print after failed bounded operation");
             let mut err = Vec::new();
-            stderr.read_to_end(&mut err).await.expect("read print diagnostics after exit");
-            panic!("print operation failed: {other:?}\nstderr: {}", String::from_utf8_lossy(&err));
+            stderr
+                .read_to_end(&mut err)
+                .await
+                .expect("read print diagnostics after exit");
+            panic!(
+                "print operation failed: {other:?}\nstderr: {}",
+                String::from_utf8_lossy(&err)
+            );
         }
     };
     drop(listener);
     let messages = payload["messages"].as_array().expect("print messages");
-    assert!(messages.iter().any(|message| message["role"] == "user" && message["content"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "text" && part["text"] == piped_stdin.map_or_else(|| "expanded acceptance fixture".to_owned(), |text| format!("{}/acceptance fixture", text.trim())).as_str()))), "{payload}");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(String::from_utf8(output.stdout).expect("print-entry fixture operation"), "offline acceptance\n");
-    let system = messages.iter().find(|message| message["role"] == "system").expect("print-entry fixture operation");
-    let system = system["content"].as_str().expect("print-entry fixture operation");
-    let custom = system.find("fixture custom system").expect("custom system source forwarded");
-    let file_append = system.find("fixture file append").expect("file append source forwarded");
-    let literal_append = system.find("fixture literal append").expect("literal append source forwarded");
-    assert!(custom < file_append && file_append < literal_append, "source order preserved");
+    assert!(
+        messages.iter().any(|message| message["role"] == "user"
+            && message["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|part| part["type"] == "text"
+                    && part["text"]
+                        == piped_stdin
+                            .map_or_else(
+                                || "expanded acceptance fixture".to_owned(),
+                                |text| format!("{}/acceptance fixture", text.trim())
+                            )
+                            .as_str()))),
+        "{payload}"
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("print-entry fixture operation"),
+        "offline acceptance\n"
+    );
+    let system = messages
+        .iter()
+        .find(|message| message["role"] == "system")
+        .expect("print-entry fixture operation");
+    let system = system["content"]
+        .as_str()
+        .expect("print-entry fixture operation");
+    let custom = system
+        .find("fixture custom system")
+        .expect("custom system source forwarded");
+    let file_append = system
+        .find("fixture file append")
+        .expect("file append source forwarded");
+    let literal_append = system
+        .find("fixture literal append")
+        .expect("literal append source forwarded");
+    assert!(
+        custom < file_append && file_append < literal_append,
+        "source order preserved"
+    );
     // senpi `_rebuildSystemPrompt` uses a `--system-prompt` verbatim (agent-session.ts:3580): no project context either way.
     let _ = no_context_files;
-    assert!(!system.contains("CONTEXT_FIXTURE_7f29"), "a custom system prompt carries no project context");
+    assert!(
+        !system.contains("CONTEXT_FIXTURE_7f29"),
+        "a custom system prompt carries no project context"
+    );
 }

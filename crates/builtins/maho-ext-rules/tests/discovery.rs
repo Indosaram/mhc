@@ -1,5 +1,8 @@
+use maho_ext_rules::rules::{
+    finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates},
+    scanner::scan_rule_files,
+};
 use std::{collections::BTreeSet, fs};
-use maho_ext_rules::rules::{finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, scanner::scan_rule_files};
 
 #[test]
 fn scanner_orders_case_accents_and_punctuation_like_locale_compare() {
@@ -20,20 +23,35 @@ fn scanner_orders_case_accents_and_punctuation_like_locale_compare() {
     // When
     let files = scan_rule_files(root.path(), None, None);
     // Then
-    assert_eq!(files.iter().map(|file| file.path.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(),
-        expected);
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| file.path.file_name().unwrap().to_str().unwrap())
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[test]
 fn scanner_excludes_build_directories_and_limits_depth() {
     // Given
     let root = tempfile::tempdir().unwrap();
-    for name in ["nested", "dist"] { fs::create_dir(root.path().join(name)).unwrap(); }
-    for name in ["a.md", "nested/b.mdc", "dist/c.md", "ignored.txt"] { fs::write(root.path().join(name), "").unwrap(); }
+    for name in ["nested", "dist"] {
+        fs::create_dir(root.path().join(name)).unwrap();
+    }
+    for name in ["a.md", "nested/b.mdc", "dist/c.md", "ignored.txt"] {
+        fs::write(root.path().join(name), "").unwrap();
+    }
     // When
     let files = scan_rule_files(root.path(), None, Some(0));
     // Then
-    assert_eq!(files.iter().map(|file| file.path.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(), ["a.md"]);
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| file.path.file_name().unwrap().to_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a.md"]
+    );
     assert_eq!(scan_rule_files(root.path(), None, None).len(), 2);
 }
 
@@ -49,7 +67,10 @@ fn scanner_breaks_symlink_cycles_and_preserves_aliases() {
     let files = scan_rule_files(root.path(), None, None);
     // Then
     assert_eq!(files.len(), 2);
-    assert_eq!(files[1].real_path, fs::canonicalize(root.path().join("a.md")).unwrap());
+    assert_eq!(
+        files[1].real_path,
+        fs::canonicalize(root.path().join("a.md")).unwrap()
+    );
 }
 
 #[test]
@@ -67,10 +88,22 @@ fn discovery_walks_target_ancestors_and_keeps_both_home_single_files() {
     let disabled = BTreeSet::new();
     let target = root.path().join("nested/file.rs");
     // When
-    let files = find_rule_candidates(FinderOptions { project_root: Some(root.path()), target_file: Some(&target), home_dir: home.path(), disabled_sources: &disabled, skip_user_home: false }, &mut RuleDiscoveryCache::default());
+    let files = find_rule_candidates(
+        FinderOptions {
+            project_root: Some(root.path()),
+            target_file: Some(&target),
+            home_dir: home.path(),
+            disabled_sources: &disabled,
+            skip_user_home: false,
+        },
+        &mut RuleDiscoveryCache::default(),
+    );
     // Then
     assert_eq!(files.len(), 4);
-    assert_eq!(files.iter().map(|file| file.distance).collect::<Vec<_>>(), [0, 1, 9999, 9999]);
+    assert_eq!(
+        files.iter().map(|file| file.distance).collect::<Vec<_>>(),
+        [0, 1, 9999, 9999]
+    );
 }
 
 #[test]
@@ -79,7 +112,18 @@ fn discovery_omits_disabled_sources_and_caches_missing_files() {
     let root = tempfile::tempdir().unwrap();
     let disabled = BTreeSet::from(["CLAUDE.md".into()]);
     let mut cache = RuleDiscoveryCache::default();
-    let find = |cache: &mut RuleDiscoveryCache| find_rule_candidates(FinderOptions { project_root: Some(root.path()), target_file: None, home_dir: root.path(), disabled_sources: &disabled, skip_user_home: true }, cache);
+    let find = |cache: &mut RuleDiscoveryCache| {
+        find_rule_candidates(
+            FinderOptions {
+                project_root: Some(root.path()),
+                target_file: None,
+                home_dir: root.path(),
+                disabled_sources: &disabled,
+                skip_user_home: true,
+            },
+            cache,
+        )
+    };
     assert!(find(&mut cache).is_empty());
     fs::write(root.path().join("AGENTS.md"), "").unwrap();
     fs::write(root.path().join("CLAUDE.md"), "").unwrap();
@@ -96,7 +140,16 @@ fn discovery_normalizes_target_dot_segments_without_walking_outside_root() {
     fs::write(root.path().join("AGENTS.md"), "").unwrap();
     let disabled = BTreeSet::new();
     let target = root.path().join("absent/../file.rs");
-    let files = find_rule_candidates(FinderOptions { project_root: Some(root.path()), target_file: Some(&target), home_dir: root.path(), disabled_sources: &disabled, skip_user_home: true }, &mut RuleDiscoveryCache::default());
+    let files = find_rule_candidates(
+        FinderOptions {
+            project_root: Some(root.path()),
+            target_file: Some(&target),
+            home_dir: root.path(),
+            disabled_sources: &disabled,
+            skip_user_home: true,
+        },
+        &mut RuleDiscoveryCache::default(),
+    );
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].distance, 0);
     assert_eq!(files[0].relative_path, "AGENTS.md");

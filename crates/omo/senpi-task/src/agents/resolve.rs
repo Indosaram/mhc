@@ -96,9 +96,16 @@ pub fn resolve_agent(
 ) -> AgentResolutionResult {
     // `exclude_models` filters the registry before any candidate is read, so an excluded model never
     // resolves even when the machine holds credentials for it.
-    let excluded = options.exclude_models.clone().or_else(|| {
-        options.omo_config.as_ref().and_then(crate::category::exclude_model_patterns)
-    }).unwrap_or_default();
+    let excluded = options
+        .exclude_models
+        .clone()
+        .or_else(|| {
+            options
+                .omo_config
+                .as_ref()
+                .and_then(crate::category::exclude_model_patterns)
+        })
+        .unwrap_or_default();
     let filtered;
     let registry = match registry {
         Some(inner) if !excluded.is_empty() => {
@@ -107,7 +114,10 @@ pub fn resolve_agent(
         }
         other => other,
     };
-    let config = options.omo_config.clone().unwrap_or_else(|| serde_json::json!({}));
+    let config = options
+        .omo_config
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
     let mut available_agents: Vec<String> = agents
         .iter()
         .filter(|(_, definition)| definition.disable != Some(true))
@@ -256,13 +266,13 @@ pub fn resolve_agent(
     if let (Some(available), Some(chain)) = (&available_models, fallback_chain)
         && let Some(DelegateModelResolutionResult::Resolved(resolution)) =
             resolve_model_for_delegate_task(
-            &DelegateModelResolutionInput {
-                fallback_chain: Some(chain.to_vec()),
-                available_models: available.iter().cloned().collect(),
-                ..Default::default()
-            },
-            &warm_cache_deps(),
-        )
+                &DelegateModelResolutionInput {
+                    fallback_chain: Some(chain.to_vec()),
+                    available_models: available.iter().cloned().collect(),
+                    ..Default::default()
+                },
+                &warm_cache_deps(),
+            )
     {
         attempted_model = Some(resolution.model.clone());
         if let Some(found) = find_exact_agent_model(&resolution.model, registry) {

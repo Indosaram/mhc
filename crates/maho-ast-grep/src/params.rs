@@ -1,7 +1,7 @@
 //! Argument parsing and validation for the three tools (spec §3).
 
-use crate::error::{ToolError, UNSUPPORTED_LANGUAGE};
 use crate::error::Phase;
+use crate::error::{ToolError, UNSUPPORTED_LANGUAGE};
 use serde_json::{Map, Value};
 
 pub const LANGUAGES: [&str; 25] = [
@@ -98,17 +98,47 @@ pub struct Request {
 fn allowed_keys(kind: Kind) -> &'static [&'static str] {
     match kind {
         Kind::Search => &[
-            "paths", "workdir", "globs", "maxMatches", "timeoutMs", "includeHidden",
-            "followSymlinks", "pattern", "language", "selector", "strictness", "force",
+            "paths",
+            "workdir",
+            "globs",
+            "maxMatches",
+            "timeoutMs",
+            "includeHidden",
+            "followSymlinks",
+            "pattern",
+            "language",
+            "selector",
+            "strictness",
+            "force",
         ],
         Kind::Rewrite => &[
-            "paths", "workdir", "globs", "maxMatches", "timeoutMs", "includeHidden",
-            "followSymlinks", "pattern", "language", "selector", "strictness", "force", "rewrite",
+            "paths",
+            "workdir",
+            "globs",
+            "maxMatches",
+            "timeoutMs",
+            "includeHidden",
+            "followSymlinks",
+            "pattern",
+            "language",
+            "selector",
+            "strictness",
+            "force",
+            "rewrite",
             "apply",
         ],
         Kind::Scan => &[
-            "paths", "workdir", "globs", "maxMatches", "timeoutMs", "includeHidden",
-            "followSymlinks", "ruleFile", "inlineRules", "includeMetadata", "apply",
+            "paths",
+            "workdir",
+            "globs",
+            "maxMatches",
+            "timeoutMs",
+            "includeHidden",
+            "followSymlinks",
+            "ruleFile",
+            "inlineRules",
+            "includeMetadata",
+            "apply",
         ],
     }
 }
@@ -212,7 +242,10 @@ pub fn parse(kind: Kind, arguments: Option<&Value>) -> Result<Request, ToolError
         _ => return Err(ToolError::invalid("The arguments must be a JSON object.")),
     };
     let allowed = allowed_keys(kind);
-    let unknown: Vec<&String> = map.keys().filter(|key| !allowed.contains(&key.as_str())).collect();
+    let unknown: Vec<&String> = map
+        .keys()
+        .filter(|key| !allowed.contains(&key.as_str()))
+        .collect();
     if let Some(first) = unknown.first() {
         return Err(ToolError::invalid(format!("Unknown property `{first}`."))
             .with_details(serde_json::json!({ "unknown": unknown })));
@@ -222,7 +255,13 @@ pub fn parse(kind: Kind, arguments: Option<&Value>) -> Result<Request, ToolError
     let workdir = str_arg(map, "workdir", 1, 4096)?.map(str::to_owned);
     let globs = string_list(map, "globs", 0, 32, 1024)?;
     let max_matches = int_arg(map, "maxMatches", 1, MAX_MATCHES, DEFAULT_MAX_MATCHES)? as usize;
-    let timeout_ms = int_arg(map, "timeoutMs", MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, MAX_TIMEOUT_MS)?;
+    let timeout_ms = int_arg(
+        map,
+        "timeoutMs",
+        MIN_TIMEOUT_MS,
+        MAX_TIMEOUT_MS,
+        MAX_TIMEOUT_MS,
+    )?;
     let include_hidden = bool_arg(map, "includeHidden")?;
     let follow_symlinks = bool_arg(map, "followSymlinks")?;
     let apply = bool_arg(map, "apply")?;

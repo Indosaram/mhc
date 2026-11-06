@@ -65,7 +65,11 @@ impl ScriptedNotifier {
 }
 
 impl ParentNotifier for ScriptedNotifier {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: crate::completion::DeliveryCallbacks,
+    ) -> Result<(), HostError> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         let mut remaining = self
             .remaining_failures
@@ -205,7 +209,11 @@ fn assert_base_delay(delay: u64) {
 #[derive(Default)]
 struct DeferredParent(Mutex<Vec<DeliveryCallbacks>>);
 impl ParentNotifier for DeferredParent {
-    fn enqueue_with_callbacks(&self, _: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(
+        &self,
+        _: &ParentNotifierMessage,
+        callbacks: DeliveryCallbacks,
+    ) -> Result<(), HostError> {
         self.0.lock().expect("deliveries").push(callbacks);
         Ok(())
     }
@@ -216,15 +224,43 @@ fn pending_completion_is_reserved_until_actual_delivery_and_settles_once() {
     let record = completed_record();
     let store = MemoryStore::with([record.clone()]);
     let parent = Arc::new(DeferredParent::default());
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
-    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Pending(DeliveredDecision::Wake));
-    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Skipped(SkipReason::DeliveryPending));
-    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, -1);
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    assert_eq!(
+        notify(&completion, &record, ParentState::Idle, true),
+        NotifyResult::Pending(DeliveredDecision::Wake)
+    );
+    assert_eq!(
+        notify(&completion, &record, ParentState::Idle, true),
+        NotifyResult::Skipped(SkipReason::DeliveryPending)
+    );
+    assert_eq!(
+        store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record")
+            .notification
+            .notified_epoch,
+        -1
+    );
     let callback = parent.0.lock().expect("deliveries")[0].clone();
     callback.delivered();
-    callback.failed(HostError { message: "late rejection".into() });
-    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
-    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Skipped(SkipReason::AlreadyNotified));
+    callback.failed(HostError {
+        message: "late rejection".into(),
+    });
+    assert_eq!(
+        store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record")
+            .notification
+            .notified_epoch,
+        0
+    );
+    assert_eq!(
+        notify(&completion, &record, ParentState::Idle, true),
+        NotifyResult::Skipped(SkipReason::AlreadyNotified)
+    );
 }
 
 #[test]
@@ -239,8 +275,12 @@ fn rejected_async_completion_records_failure_and_retries_without_success_receipt
     let completion = create_completion_notifier(deps);
     notify(&completion, &record, ParentState::Idle, true);
     let callback = parent.0.lock().expect("deliveries")[0].clone();
-    callback.failed(HostError { message: "wake rejected".into() });
-    callback.failed(HostError { message: "duplicate rejection".into() });
+    callback.failed(HostError {
+        message: "wake rejected".into(),
+    });
+    callback.failed(HostError {
+        message: "duplicate rejection".into(),
+    });
     callback.delivered();
     let fresh = store.load(&record.task_id).expect("load").expect("record");
     assert_eq!(fresh.notification.notified_epoch, -1);
@@ -250,7 +290,15 @@ fn rejected_async_completion_records_failure_and_retries_without_success_receipt
     assert_eq!(parent.0.lock().expect("deliveries").len(), 2);
     let retried = parent.0.lock().expect("deliveries")[1].clone();
     retried.delivered();
-    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
+    assert_eq!(
+        store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record")
+            .notification
+            .notified_epoch,
+        0
+    );
 }
 
 #[test]
@@ -258,16 +306,33 @@ fn failed_buffered_wake_restores_entries_for_later_flush() {
     let record = completed_record();
     let store = MemoryStore::with([record.clone()]);
     let parent = Arc::new(DeferredParent::default());
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
     notify(&completion, &record, ParentState::Compacting, true);
-    assert_eq!(flush(&completion, "parent-session", false), FlushResult::Pending(1));
+    assert_eq!(
+        flush(&completion, "parent-session", false),
+        FlushResult::Pending(1)
+    );
     let callback = parent.0.lock().expect("deliveries")[0].clone();
-    callback.failed(HostError { message: "wake rejected".into() });
+    callback.failed(HostError {
+        message: "wake rejected".into(),
+    });
     assert_eq!(completion.buffered_count("parent-session"), 1);
-    assert_eq!(flush(&completion, "parent-session", false), FlushResult::Pending(1));
+    assert_eq!(
+        flush(&completion, "parent-session", false),
+        FlushResult::Pending(1)
+    );
     let retried = parent.0.lock().expect("deliveries")[1].clone();
     retried.delivered();
-    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
+    assert_eq!(
+        store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record")
+            .notification
+            .notified_epoch,
+        0
+    );
 }
 
 #[test]
@@ -275,12 +340,27 @@ fn stale_delivery_callback_does_not_stamp_a_new_run_epoch() {
     let record = completed_record();
     let store = MemoryStore::with([record.clone()]);
     let parent = Arc::new(DeferredParent::default());
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
     notify(&completion, &record, ParentState::Idle, true);
-    store.mutate(&record.task_id, &mut |fresh| { let mut next = fresh.clone(); next.notification.run_epoch = 1; next }).expect("new epoch");
+    store
+        .mutate(&record.task_id, &mut |fresh| {
+            let mut next = fresh.clone();
+            next.notification.run_epoch = 1;
+            next
+        })
+        .expect("new epoch");
     let callback = parent.0.lock().expect("deliveries")[0].clone();
     callback.delivered();
-    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, -1);
+    assert_eq!(
+        store
+            .load(&record.task_id)
+            .expect("load")
+            .expect("record")
+            .notification
+            .notified_epoch,
+        -1
+    );
 }
 
 // ---- completion.test.ts ---------------------------------------------------------------------------
@@ -950,10 +1030,8 @@ fn first_of_two_buffered_completions_fails_and_retries_while_second_notifies_onc
     let parent = Arc::new(SelectiveNotifier {
         calls: Mutex::new(Vec::new()),
     });
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(
-        parent.clone(),
-        store.clone(),
-    ));
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
 
     notify(&completion, &first, ParentState::Compacting, true);
     notify(&completion, &second, ParentState::Compacting, true);
@@ -1493,14 +1571,20 @@ fn run_ref_names_the_task_a_team_run_or_a_dag_run() {
     let plain = completed_record();
     assert_eq!(
         details_of(&plain).run_ref,
-        Some(RunRef { kind: RunRefKind::Task, id: "st_deadbeef".to_string() })
+        Some(RunRef {
+            kind: RunRefKind::Task,
+            id: "st_deadbeef".to_string()
+        })
     );
 
     let mut team = completed_record();
     team.team_run_id = Some("team-run-1".to_string());
     assert_eq!(
         details_of(&team).run_ref,
-        Some(RunRef { kind: RunRefKind::Team, id: "team-run-1".to_string() })
+        Some(RunRef {
+            kind: RunRefKind::Team,
+            id: "team-run-1".to_string()
+        })
     );
 
     let mut dag = completed_record();
@@ -1513,7 +1597,10 @@ fn run_ref_names_the_task_a_team_run_or_a_dag_run() {
     });
     assert_eq!(
         details_of(&dag).run_ref,
-        Some(RunRef { kind: RunRefKind::Dag, id: "dag-run-9".to_string() })
+        Some(RunRef {
+            kind: RunRefKind::Dag,
+            id: "dag-run-9".to_string()
+        })
     );
 }
 
@@ -1547,7 +1634,8 @@ fn parent_fallback(
 fn completion_lines_add_the_model_note_above_the_result() {
     let mut details = details_of(&completed_record());
     details.parent_model = Some("openai/gpt-6-luna".to_string());
-    details.parent_model_fallback = Some(parent_fallback(ParentModelFallbackReason::UsageLimit, None));
+    details.parent_model_fallback =
+        Some(parent_fallback(ParentModelFallbackReason::UsageLimit, None));
 
     let lines = completion_message_lines(&[details], None);
     let note = lines
@@ -1558,14 +1646,23 @@ fn completion_lines_add_the_model_note_above_the_result() {
         note,
         "model_note:ran on the parent session's model openai/gpt-6-luna: anthropic/fable hit its usage limit"
     );
-    let note_at = lines.iter().position(|line| line.starts_with("model_note:")).expect("index");
-    let result_at = lines.iter().position(|line| line.starts_with("result:\"")).expect("result");
+    let note_at = lines
+        .iter()
+        .position(|line| line.starts_with("model_note:"))
+        .expect("index");
+    let result_at = lines
+        .iter()
+        .position(|line| line.starts_with("result:\""))
+        .expect("result");
     assert!(note_at < result_at);
 }
 
 #[test]
 fn model_note_reports_the_switching_phase_and_interrupted_tools() {
-    let mut fallback = parent_fallback(ParentModelFallbackReason::Error, Some(ParentModelFallbackPhase::Switching));
+    let mut fallback = parent_fallback(
+        ParentModelFallbackReason::Error,
+        Some(ParentModelFallbackPhase::Switching),
+    );
     fallback.detail = Some("overloaded".to_string());
     fallback.resets = Some("01:00".to_string());
     fallback.interrupted_tools = Some(vec!["bash".to_string()]);

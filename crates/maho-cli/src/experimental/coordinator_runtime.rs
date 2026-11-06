@@ -1,84 +1,191 @@
-use std::{collections::BTreeMap, path::{Path, PathBuf}, time::Duration};
-use maho_ai::utils::abort::{AbortController, AbortSignal};
-use serde_json::{Value, json};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{UnixListener, UnixStream}, sync::mpsc};
 use super::{COORDINATOR_PROTOCOL_VERSION, routed_messages};
 use crate::experimental::process::MAX_CONTROL_LINE_BYTES;
-enum Event { Message(u64, Value), Disconnected(u64), PublicClosed(u64) }
-enum Role { Server { id: String, endpoint: String }, Peer(String), Lease }
-struct Connection { role: Role, output: mpsc::UnboundedSender<Value>, close: AbortController }
-impl Drop for Connection { fn drop(&mut self) { self.close.abort(None); } }
+use maho_ai::utils::abort::{AbortController, AbortSignal};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{UnixListener, UnixStream},
+    sync::mpsc,
+};
+enum Event {
+    Message(u64, Value),
+    Disconnected(u64),
+    PublicClosed(u64),
+}
+enum Role {
+    Server { id: String, endpoint: String },
+    Peer(String),
+    Lease,
+}
+struct Connection {
+    role: Role,
+    output: mpsc::UnboundedSender<Value>,
+    close: AbortController,
+}
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.close.abort(None);
+    }
+}
 struct SocketOwner(PathBuf);
-impl Drop for SocketOwner { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
+impl Drop for SocketOwner {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 async fn bind(path: &Path) -> Result<(UnixListener, SocketOwner), String> {
     use std::os::unix::{fs::FileTypeExt, fs::PermissionsExt};
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => {
-            if !metadata.file_type().is_socket() { return Err(format!("Coordinator path is not a socket: {}", path.display())); }
+            if !metadata.file_type().is_socket() {
+                return Err(format!(
+                    "Coordinator path is not a socket: {}",
+                    path.display()
+                ));
+            }
             match UnixStream::connect(path).await {
-                Ok(_) => return Err(format!("Coordinator socket is already active: {}", path.display())),
-                Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {},
+                Ok(_) => {
+                    return Err(format!(
+                        "Coordinator socket is already active: {}",
+                        path.display()
+                    ));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                    ) => {}
                 Err(error) => return Err(error.to_string()),
             }
-            tokio::fs::remove_file(path).await.map_err(|error| error.to_string())?;
+            tokio::fs::remove_file(path)
+                .await
+                .map_err(|error| error.to_string())?;
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
     let listener = UnixListener::bind(path).map_err(|error| error.to_string())?;
     let owner = SocketOwner(path.to_owned());
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await.map_err(|error| error.to_string())?;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .map_err(|error| error.to_string())?;
     Ok((listener, owner))
 }
-fn open_control(socket: UnixStream, id: u64, events: mpsc::UnboundedSender<Event>, signal: AbortSignal) -> (mpsc::UnboundedSender<Value>, AbortController) {
+fn open_control(
+    socket: UnixStream,
+    id: u64,
+    events: mpsc::UnboundedSender<Event>,
+    signal: AbortSignal,
+) -> (mpsc::UnboundedSender<Value>, AbortController) {
     let (input, mut output) = socket.into_split();
     let (sender, mut messages) = mpsc::unbounded_channel::<Value>();
-    let closed = AbortController::new(); let read_closed = closed.signal(); let write_closed = closed.signal();
-    let reader_events = events.clone(); let reader_signal = signal.clone(); let reader_close = closed.clone();
+    let closed = AbortController::new();
+    let read_closed = closed.signal();
+    let write_closed = closed.signal();
+    let reader_events = events.clone();
+    let reader_signal = signal.clone();
+    let reader_close = closed.clone();
     let writer_close = closed.clone();
     tokio::spawn(async move {
         let mut input = BufReader::new(input);
         let mut line = Vec::new();
         loop {
             let chunk = tokio::select! { biased; _ = reader_signal.cancelled() => break, _ = read_closed.cancelled() => break, chunk = input.fill_buf() => match chunk { Ok(chunk) if !chunk.is_empty() => chunk, _ => break } };
-            let count = chunk.iter().position(|byte| *byte == b'\n').map_or(chunk.len(), |index| index + 1);
-            if line.len() + count > MAX_CONTROL_LINE_BYTES { break; }
-            line.extend_from_slice(&chunk[..count]); input.consume(count);
+            let count = chunk
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(chunk.len(), |index| index + 1);
+            if line.len() + count > MAX_CONTROL_LINE_BYTES {
+                break;
+            }
+            line.extend_from_slice(&chunk[..count]);
+            input.consume(count);
             if line.last() == Some(&b'\n') {
-                let value = match serde_json::from_slice::<Value>(&line) { Ok(value) if value["type"].is_string() => value, _ => break };
-                line.clear(); if reader_events.send(Event::Message(id, value)).is_err() { break; }
+                let value = match serde_json::from_slice::<Value>(&line) {
+                    Ok(value) if value["type"].is_string() => value,
+                    _ => break,
+                };
+                line.clear();
+                if reader_events.send(Event::Message(id, value)).is_err() {
+                    break;
+                }
             }
         }
-        reader_close.abort(None); let _ = reader_events.send(Event::Disconnected(id));
+        reader_close.abort(None);
+        let _ = reader_events.send(Event::Disconnected(id));
     });
     tokio::spawn(async move {
         loop {
             let value = tokio::select! { biased; _ = signal.cancelled() => break, _ = write_closed.cancelled() => break, value = messages.recv() => match value { Some(value) => value, None => break } };
-            let line = match crate::experimental::process::encode_control_line(&value) { Ok(line) => line, Err(_) => break };
+            let line = match crate::experimental::process::encode_control_line(&value) {
+                Ok(line) => line,
+                Err(_) => break,
+            };
             let result = tokio::select! { biased; _ = signal.cancelled() => break, _ = write_closed.cancelled() => break, result = output.write_all(line.as_bytes()) => result };
-            if result.is_err() { break; }
+            if result.is_err() {
+                break;
+            }
         }
-        writer_close.abort(None); let _ = events.send(Event::Disconnected(id));
+        writer_close.abort(None);
+        let _ = events.send(Event::Disconnected(id));
     });
     (sender, closed)
 }
-fn send(connections: &BTreeMap<u64, Connection>, id: u64, message: Value) { if let Some(connection) = connections.get(&id) { let _ = connection.output.send(message); } }
-fn notify(connections: &BTreeMap<u64, Connection>, message: Value) { for connection in connections.values() { if matches!(connection.role, Role::Peer(_)) { let _ = connection.output.send(message.clone()); } } }
-fn server_id(connections: &BTreeMap<u64, Connection>, current: Option<u64>) -> Option<String> { match &connections.get(&current?)?.role { Role::Server { id, .. } => Some(id.clone()), _ => None } }
-pub async fn run_coordinator(public_path: &Path, control_path: &Path, signal: &AbortSignal) -> Result<(), String> {
+fn send(connections: &BTreeMap<u64, Connection>, id: u64, message: Value) {
+    if let Some(connection) = connections.get(&id) {
+        let _ = connection.output.send(message);
+    }
+}
+fn notify(connections: &BTreeMap<u64, Connection>, message: Value) {
+    for connection in connections.values() {
+        if matches!(connection.role, Role::Peer(_)) {
+            let _ = connection.output.send(message.clone());
+        }
+    }
+}
+fn server_id(connections: &BTreeMap<u64, Connection>, current: Option<u64>) -> Option<String> {
+    match &connections.get(&current?)?.role {
+        Role::Server { id, .. } => Some(id.clone()),
+        _ => None,
+    }
+}
+pub async fn run_coordinator(
+    public_path: &Path,
+    control_path: &Path,
+    signal: &AbortSignal,
+) -> Result<(), String> {
     run_coordinator_ready(public_path, control_path, signal, None).await
 }
-pub async fn run_coordinator_ready(public_path: &Path, control_path: &Path, signal: &AbortSignal, ready: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), String> {
+pub async fn run_coordinator_ready(
+    public_path: &Path,
+    control_path: &Path,
+    signal: &AbortSignal,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<(), String> {
     let (control, _control_owner) = bind(control_path).await?;
     let (public, _public_owner) = bind(public_path).await?;
-    if let Some(ready) = ready { let _ = ready.send(()); }
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let shutdown = AbortController::new();
     let (events, mut incoming) = mpsc::unbounded_channel();
-    let mut connections = BTreeMap::<u64, Connection>::new(); let mut current = None;
-    let mut proxies = BTreeMap::<u64, AbortController>::new(); let mut next_id = 1;
+    let mut connections = BTreeMap::<u64, Connection>::new();
+    let mut current = None;
+    let mut proxies = BTreeMap::<u64, AbortController>::new();
+    let mut next_id = 1;
     let mut empty_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(30));
     let result = loop {
-        let idle = async { match empty_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } };
+        let idle = async {
+            match empty_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             biased;
             _ = signal.cancelled() => break Ok(()),
@@ -157,6 +264,10 @@ pub async fn run_coordinator_ready(public_path: &Path, control_path: &Path, sign
             }
         }
     };
-    shutdown.abort(None); drop(connections); for (_, controller) in proxies { controller.abort(None); }
+    shutdown.abort(None);
+    drop(connections);
+    for (_, controller) in proxies {
+        controller.abort(None);
+    }
     result
 }

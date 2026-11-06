@@ -7,11 +7,11 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use maho_ext_api::{ExtensionActions, ExtensionUi, ExtensionUiDialogOptions, ModelRegistry, UiFuture};
+use maho_ext_api::{
+    ExtensionActions, ExtensionUi, ExtensionUiDialogOptions, ModelRegistry, UiFuture,
+};
 use memory_core::{
-    git::exec::GitExec,
-    identity::layout::MemoryIdentityPaths,
-    reflection::ReflectionEvent,
+    git::exec::GitExec, identity::layout::MemoryIdentityPaths, reflection::ReflectionEvent,
 };
 
 use crate::context::MemoryIdentityContext;
@@ -145,7 +145,11 @@ impl CommandResponse {
 }
 
 /// Notify (when a UI is present) and return the same text for headless consumers.
-pub fn respond(ctx: &CommandContext, text: impl Into<String>, level: NotifyLevel) -> CommandResponse {
+pub fn respond(
+    ctx: &CommandContext,
+    text: impl Into<String>,
+    level: NotifyLevel,
+) -> CommandResponse {
     let text = memory_core::sync::redact::redact_secret_like_material(&text.into());
     ctx.ui.notify(&text, level);
     CommandResponse { text, level }
@@ -204,7 +208,11 @@ pub fn require_identity(
 }
 
 /// The reflection runner the command layer calls: `(status, run_id)`.
-pub type Reflect = Arc<dyn Fn(String, ReflectionEvent) -> BoxFuture<'static, Result<ReflectionRequestReceipt, String>> + Send + Sync>;
+pub type Reflect = Arc<
+    dyn Fn(String, ReflectionEvent) -> BoxFuture<'static, Result<ReflectionRequestReceipt, String>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ManualReflectionRequest {
@@ -358,7 +366,11 @@ pub fn default_is_process_alive(pid: u32) -> bool {
         let Ok(pid) = i32::try_from(pid) else {
             return false;
         };
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None::<nix::sys::signal::Signal>).is_ok()
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            None::<nix::sys::signal::Signal>,
+        )
+        .is_ok()
     }
     #[cfg(not(unix))]
     {

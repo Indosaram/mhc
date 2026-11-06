@@ -47,7 +47,12 @@ fn given_live_holder_when_it_exits_between_polls_then_callback_fires_once() {
     });
     let fired = Arc::new(AtomicU64::new(0));
     let fired_callback = Arc::clone(&fired);
-    watch.watch(4242, Arc::new(move || { fired_callback.fetch_add(1, Ordering::SeqCst); }));
+    watch.watch(
+        4242,
+        Arc::new(move || {
+            fired_callback.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     timers.tick();
     assert_eq!(fired.load(Ordering::SeqCst), 0);
@@ -70,7 +75,12 @@ fn given_armed_watch_when_cancelled_then_no_callback_or_timer_remains() {
     });
     let fired = Arc::new(AtomicU64::new(0));
     let fired_callback = Arc::clone(&fired);
-    let cancel = watch.watch(4242, Arc::new(move || { fired_callback.fetch_add(1, Ordering::SeqCst); }));
+    let cancel = watch.watch(
+        4242,
+        Arc::new(move || {
+            fired_callback.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     cancel.cancel();
     timers.tick();
@@ -89,7 +99,12 @@ fn given_multiple_armed_watches_when_disposed_then_every_timer_is_cleared() {
     let fired = Arc::new(AtomicU64::new(0));
     for pid in [1, 2] {
         let fired_callback = Arc::clone(&fired);
-        watch.watch(pid, Arc::new(move || { fired_callback.fetch_add(1, Ordering::SeqCst); }));
+        watch.watch(
+            pid,
+            Arc::new(move || {
+                fired_callback.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
     }
     assert_eq!(timers.pending(), 2);
 

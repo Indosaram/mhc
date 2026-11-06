@@ -876,8 +876,12 @@ pub struct UsageCost {
 
 pub type RequestContextUsage = ContextUsage;
 
-fn deserialize_context_usage<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<RequestContextUsage>>, D::Error> {
-    Ok(Some(Option::<RequestContextUsage>::deserialize(deserializer)?))
+fn deserialize_context_usage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<RequestContextUsage>>, D::Error> {
+    Ok(Some(Option::<RequestContextUsage>::deserialize(
+        deserializer,
+    )?))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -886,7 +890,11 @@ pub struct Usage {
     /// Latest request context when billing spans multiple internal requests.
     /// None (outer Option) preserves the legacy single-request contract; Some(None)
     /// means no request measurement is available.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_context_usage")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_context_usage"
+    )]
     pub context_usage: Option<Option<ContextUsage>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_unknown: Option<bool>,

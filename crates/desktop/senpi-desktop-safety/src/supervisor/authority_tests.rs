@@ -1,5 +1,5 @@
 use super::authority_test_support::{backend, input, proof, supervisor};
-use super::{StopSource, authority::MAX_GENERATION};
+use super::{authority::MAX_GENERATION, StopSource};
 use crate::{AuthorityResetError, ResumeToken};
 use std::sync::atomic::Ordering;
 

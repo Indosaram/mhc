@@ -2,7 +2,9 @@
 //! `api/openai-responses.ts` (todo 10). Resolved through the builtin api registry seam.
 
 use crate::providers::builtin_api_streams;
-use crate::types::{AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StreamOptions,
+};
 
 pub fn stream_openai_responses(
     model: &Model,

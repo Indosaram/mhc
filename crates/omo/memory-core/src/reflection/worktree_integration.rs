@@ -112,7 +112,12 @@ fn find_exact_run_receipt(
     if commits_res.code != 0 {
         return None;
     }
-    for commit in commits_res.stdout.lines().map(str::trim).filter(|c| !c.is_empty()) {
+    for commit in commits_res
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
         if !has_exact_run_receipt(exec, parent_dir, commit, run_id) {
             continue;
         }

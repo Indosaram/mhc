@@ -111,12 +111,12 @@ pub mod promote_stop_pending_tools;
 pub mod proxy;
 #[path = "proxy_events.rs"]
 pub mod proxy_events;
+#[path = "thrown_provider_error_boundary.rs"]
+pub mod thrown_provider_error_boundary;
 #[path = "tool_argument_purity.rs"]
 pub mod tool_argument_purity;
 #[path = "tool_call_name_alias.rs"]
 pub mod tool_call_name_alias;
-#[path = "thrown_provider_error_boundary.rs"]
-pub mod thrown_provider_error_boundary;
 #[path = "tool_inline_is_error.rs"]
 pub mod tool_inline_is_error;
 

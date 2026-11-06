@@ -23,11 +23,18 @@ pub fn format_task_target(category: Option<&str>, subagent_type: Option<&str>) -
 }
 
 pub fn format_task_mode(run_in_background: Option<bool>) -> &'static str {
-    if run_in_background == Some(true) { "background" } else { "foreground" }
+    if run_in_background == Some(true) {
+        "background"
+    } else {
+        "foreground"
+    }
 }
 
 pub fn task_call_lines(args: &TaskCallArgs) -> Vec<String> {
-    vec![task_call_line(args, format_task_mode(args.run_in_background))]
+    vec![task_call_line(
+        args,
+        format_task_mode(args.run_in_background),
+    )]
 }
 
 pub fn render_task_call_lines(
@@ -55,16 +62,22 @@ fn task_call_line(args: &TaskCallArgs, mode: &str) -> String {
     join_renderer_tokens(&[Some("task"), prompt.as_deref(), Some(mode)])
 }
 
-fn task_call_line_for_width(args: &TaskCallArgs, mode: &str, plain_mode: &str, width: usize) -> String {
+fn task_call_line_for_width(
+    args: &TaskCallArgs,
+    mode: &str,
+    plain_mode: &str,
+    width: usize,
+) -> String {
     if width == 0 {
         return String::new();
     }
     let fixed_width = renderer_visible_width("task") + renderer_visible_width(plain_mode) + 4;
     let available = TASK_PROMPT_EXCERPT_WIDTH.min(width.saturating_sub(fixed_width));
     let prompt = match call_row_text(args) {
-        Some(normalized) if available > 0 => {
-            Some(format!("\"{}\"", excerpt_renderer_prompt_text(&normalized, Some(available))))
-        }
+        Some(normalized) if available > 0 => Some(format!(
+            "\"{}\"",
+            excerpt_renderer_prompt_text(&normalized, Some(available))
+        )),
         _ => None,
     };
     truncate_to_width(
@@ -76,6 +89,9 @@ fn task_call_line_for_width(args: &TaskCallArgs, mode: &str, plain_mode: &str, w
 
 fn prompt_token(text: Option<&str>) -> Option<String> {
     optional_renderer_text(text).map(|normalized| {
-        format!("\"{}\"", excerpt_renderer_prompt_text(&normalized, Some(TASK_PROMPT_EXCERPT_WIDTH)))
+        format!(
+            "\"{}\"",
+            excerpt_renderer_prompt_text(&normalized, Some(TASK_PROMPT_EXCERPT_WIDTH))
+        )
     })
 }

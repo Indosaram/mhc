@@ -11,8 +11,7 @@ use super::ask_user_question::AskUserQuestionComponent;
 use super::ask_user_question_state::{QuestionFocus, QuestionStatus};
 
 fn is_printable(data: &str) -> bool {
-    data.starts_with("\x1b[200~")
-        || (!data.is_empty() && !data.chars().any(char::is_control))
+    data.starts_with("\x1b[200~") || (!data.is_empty() && !data.chars().any(char::is_control))
 }
 
 pub fn handle_ask_user_key_input(component: &mut AskUserQuestionComponent, data: &str) {
@@ -74,7 +73,9 @@ fn handle_own_answer_key(component: &mut AskUserQuestionComponent, data: &str) {
     }
     if matches_key(data, "tab") || matches_key(data, "shift+tab") {
         save_typed_own_answer(component);
-        component.state.switch_tab(if matches_key(data, "tab") { 1 } else { -1 });
+        component
+            .state
+            .switch_tab(if matches_key(data, "tab") { 1 } else { -1 });
         component.update_all();
         return;
     }
@@ -111,12 +112,18 @@ fn handle_submit_key(component: &mut AskUserQuestionComponent, data: &str) {
     if kb.matches(data, "tui.select.up") || kb.matches(data, "tui.select.down") {
         component
             .state
-            .move_submit_row(if kb.matches(data, "tui.select.up") { -1 } else { 1 });
+            .move_submit_row(if kb.matches(data, "tui.select.up") {
+                -1
+            } else {
+                1
+            });
         component.update_all();
         return;
     }
     if matches_key(data, "shift+tab") || matches_key(data, "tab") {
-        component.state.switch_tab(if matches_key(data, "tab") { 1 } else { -1 });
+        component
+            .state
+            .switch_tab(if matches_key(data, "tab") { 1 } else { -1 });
         component.update_all();
         return;
     }
@@ -124,7 +131,9 @@ fn handle_submit_key(component: &mut AskUserQuestionComponent, data: &str) {
     if (matches_key(data, "left") || matches_key(data, "right"))
         && (!component.state.is_comment_focused() || !comment_has_text)
     {
-        component.state.switch_tab(if matches_key(data, "right") { 1 } else { -1 });
+        component
+            .state
+            .switch_tab(if matches_key(data, "right") { 1 } else { -1 });
         component.update_all();
         return;
     }

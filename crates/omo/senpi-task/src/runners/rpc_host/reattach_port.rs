@@ -1,10 +1,10 @@
 //! Bounded reattachment refuses late reopen (`rpc-host/reattach-port.ts`).
 pub type EnsureCallback = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 pub type OpenCallback = Arc<
-        dyn Fn(&str, &str) -> Result<(Arc<dyn HostSessionPort>, HostSessionIdentity), String>
-            + Send
-            + Sync,
-    >;
+    dyn Fn(&str, &str) -> Result<(Arc<dyn HostSessionPort>, HostSessionIdentity), String>
+        + Send
+        + Sync,
+>;
 use super::handle_port::{HostSessionIdentity, HostSessionPort};
 use std::sync::Arc;
 pub struct ReattachPortInput {
@@ -16,7 +16,8 @@ pub struct ReattachPortInput {
     pub notice: Arc<dyn Fn(&str) + Send + Sync>,
     pub attach_only: bool,
 }
-pub type ReattachedSession = Result<Option<(Arc<dyn HostSessionPort>, HostSessionIdentity)>, String>;
+pub type ReattachedSession =
+    Result<Option<(Arc<dyn HostSessionPort>, HostSessionIdentity)>, String>;
 pub fn create_reattach_port(
     input: &ReattachPortInput,
     socket: &str,

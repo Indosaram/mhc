@@ -3,9 +3,9 @@
 //! core's `AxRegistry`.
 
 mod actions;
+pub(crate) mod element;
 mod foreground;
 mod point_owner;
-pub(crate) mod element;
 mod props;
 mod tree;
 
@@ -14,9 +14,9 @@ use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::types::DesktopWindow;
 
 pub use self::element::is_trusted;
+use self::element::{element, handle};
 pub(crate) use self::foreground::{make_frontmost, prepare_foreground_input};
 pub(crate) use self::point_owner::ensure_points_owned;
-use self::element::{element, handle};
 
 #[derive(Debug, Default)]
 pub struct MacAx;
@@ -75,7 +75,6 @@ pub(crate) fn text_area_value(window: &DesktopWindow) -> Option<String> {
     None
 }
 
-
 impl AxBackend for MacAx {
     fn window_root(&mut self, win: &DesktopWindow) -> CoreResult<AxHandle> {
         tree::window_root(win).map(handle)
@@ -86,7 +85,10 @@ impl AxBackend for MacAx {
     }
 
     fn children(&mut self, h: &AxHandle) -> CoreResult<Vec<AxHandle>> {
-        Ok(tree::children(element(h)?).into_iter().map(handle).collect())
+        Ok(tree::children(element(h)?)
+            .into_iter()
+            .map(handle)
+            .collect())
     }
 
     fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>> {

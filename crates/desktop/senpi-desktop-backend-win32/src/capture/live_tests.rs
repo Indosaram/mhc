@@ -47,7 +47,9 @@ fn captures_primary_monitor() {
 #[test]
 #[ignore = "live: needs an interactive Windows desktop"]
 fn reports_win32_capabilities_with_integrity_level() {
-    let capabilities = Win32Backend::new(DisplaySelector::All).unwrap().capabilities();
+    let capabilities = Win32Backend::new(DisplaySelector::All)
+        .unwrap()
+        .capabilities();
     println!("capabilities={capabilities:?}");
     assert_eq!(capabilities.backend, "win32");
     assert!(capabilities.capture && capabilities.display_count >= 1);

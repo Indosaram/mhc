@@ -10,7 +10,8 @@ pub const SERVER_INFO_NAME: &str = "git_bash";
 /// Protocol version answered when the client sends none.
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 /// One-line usage message for a bad command line.
-pub const USAGE: &str = "usage: mhc-git-bash [mcp]  (serves the Git Bash MCP tools on stdin/stdout)";
+pub const USAGE: &str =
+    "usage: mhc-git-bash [mcp]  (serves the Git Bash MCP tools on stdin/stdout)";
 
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_REQUEST: i64 = -32600;

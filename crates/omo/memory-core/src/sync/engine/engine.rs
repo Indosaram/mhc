@@ -281,9 +281,10 @@ impl Inner {
             }
         }
         if before != this.shown_key()
-            && let Some(notify) = &this.deps.on_status_change {
-                notify();
-            }
+            && let Some(notify) = &this.deps.on_status_change
+        {
+            notify();
+        }
         this.reports.bump();
         this.settled.bump();
         if this.rerun.get()

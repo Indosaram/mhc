@@ -14,7 +14,8 @@ pub fn interrupted_assistant_message(
     partial: Option<AssistantMessage>,
     timestamp: i64,
 ) -> AssistantMessage {
-    let mut message = partial.unwrap_or_else(|| AssistantMessage { credential_served_recently: None,
+    let mut message = partial.unwrap_or_else(|| AssistantMessage {
+        credential_served_recently: None,
         thinking_level: None,
         provider_diagnostic: None,
         content: Vec::new(),

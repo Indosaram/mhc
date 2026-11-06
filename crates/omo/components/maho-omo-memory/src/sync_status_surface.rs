@@ -64,27 +64,39 @@ impl SyncStatusNotifier {
             Some(SyncSurfaceStatus::Failing(f)) => Some(f),
             _ => None,
         };
-        let mut announced = self.announced.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut announced = self
+            .announced
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = announced.get(repo).cloned();
         let Some(failure) = failure else {
             announced.remove(repo);
             if previous.is_some()
-                && let Some(ui) = ui {
-                    ui.notify(SYNC_RECOVERED_NOTICE, SyncNoticeLevel::Info);
-                }
+                && let Some(ui) = ui
+            {
+                ui.notify(SYNC_RECOVERED_NOTICE, SyncNoticeLevel::Info);
+            }
             return;
         };
         let key = if failure.paths.is_empty() {
             format!("{}\n{}", failure.kind, failure.action)
         } else {
-            format!("{}\n{}\n{}", failure.kind, failure.action, failure.paths.join(","))
+            format!(
+                "{}\n{}\n{}",
+                failure.kind,
+                failure.action,
+                failure.paths.join(",")
+            )
         };
         if previous.as_deref() == Some(&key) {
             return;
         }
         announced.insert(repo.to_path_buf(), key);
         if let Some(ui) = ui {
-            let message = format!("Memory sync is blocked. {} {}", failure.reason, failure.action);
+            let message = format!(
+                "Memory sync is blocked. {} {}",
+                failure.reason, failure.action
+            );
             ui.notify(&message, SyncNoticeLevel::Warning);
         }
     }
@@ -131,7 +143,10 @@ mod tests {
 
     impl SyncNoticeUi for TestUi {
         fn notify(&self, message: &str, level: SyncNoticeLevel) {
-            self.notices.lock().unwrap().push((message.to_string(), level));
+            self.notices
+                .lock()
+                .unwrap()
+                .push((message.to_string(), level));
         }
     }
 
@@ -145,7 +160,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_sync_transitions_when_notifier_hears_them_then_person_gets_one_notice_per_failure() {
+    async fn given_sync_transitions_when_notifier_hears_them_then_person_gets_one_notice_per_failure()
+     {
         let current_status: Arc<Mutex<Option<SyncSurfaceStatus>>> =
             Arc::new(Mutex::new(Some(SyncSurfaceStatus::Synced)));
         let status_ref = current_status.clone();
@@ -159,11 +175,19 @@ mod tests {
         notifier.changed(Path::new("/repo"), Some(&ui)).await;
         assert!(ui.notices.lock().unwrap().is_empty());
 
-        *current_status.lock().unwrap() = Some(failing("offline", "Cannot reach the service.", "Check your connection."));
+        *current_status.lock().unwrap() = Some(failing(
+            "offline",
+            "Cannot reach the service.",
+            "Check your connection.",
+        ));
         notifier.changed(Path::new("/repo"), Some(&ui)).await;
         notifier.changed(Path::new("/repo"), Some(&ui)).await;
 
-        *current_status.lock().unwrap() = Some(failing("auth_expired", "Sign-in expired.", "Sign in to OmO again."));
+        *current_status.lock().unwrap() = Some(failing(
+            "auth_expired",
+            "Sign-in expired.",
+            "Sign in to OmO again.",
+        ));
         notifier.changed(Path::new("/repo"), Some(&ui)).await;
 
         *current_status.lock().unwrap() = Some(SyncSurfaceStatus::Synced);
@@ -175,7 +199,8 @@ mod tests {
             notices,
             vec![
                 (
-                    "Memory sync is blocked. Cannot reach the service. Check your connection.".to_string(),
+                    "Memory sync is blocked. Cannot reach the service. Check your connection."
+                        .to_string(),
                     SyncNoticeLevel::Warning
                 ),
                 (

@@ -20,11 +20,36 @@ fn detected(state: &TmuxImageState) -> &TmuxBaseState {
 #[test]
 fn normalizes_historical_option_values_by_support_tier() {
     let cases = [
-        ("3.2a", "", TmuxSupportTier::Unsupported, TmuxAllowPassthrough::Off),
-        ("3.3", "1", TmuxSupportTier::OnOnly, TmuxAllowPassthrough::On),
-        ("3.3a", "on", TmuxSupportTier::OnOnly, TmuxAllowPassthrough::On),
-        ("3.4", "all", TmuxSupportTier::OnAndAll, TmuxAllowPassthrough::All),
-        ("3.7b", "all", TmuxSupportTier::OnAndAll, TmuxAllowPassthrough::All),
+        (
+            "3.2a",
+            "",
+            TmuxSupportTier::Unsupported,
+            TmuxAllowPassthrough::Off,
+        ),
+        (
+            "3.3",
+            "1",
+            TmuxSupportTier::OnOnly,
+            TmuxAllowPassthrough::On,
+        ),
+        (
+            "3.3a",
+            "on",
+            TmuxSupportTier::OnOnly,
+            TmuxAllowPassthrough::On,
+        ),
+        (
+            "3.4",
+            "all",
+            TmuxSupportTier::OnAndAll,
+            TmuxAllowPassthrough::All,
+        ),
+        (
+            "3.7b",
+            "all",
+            TmuxSupportTier::OnAndAll,
+            TmuxAllowPassthrough::All,
+        ),
     ];
 
     for (version, raw, tier, allow) in cases {

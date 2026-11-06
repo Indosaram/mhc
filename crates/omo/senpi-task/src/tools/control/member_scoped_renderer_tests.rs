@@ -19,7 +19,8 @@ impl RendererTheme for TestTheme {
 }
 
 #[test]
-fn given_a_member_scoped_team_message_when_its_tool_call_renders_then_delivery_mode_is_not_displayed() {
+fn given_a_member_scoped_team_message_when_its_tool_call_renders_then_delivery_mode_is_not_displayed()
+ {
     // given
     let theme = TestTheme;
     let args = MemberScopedTaskSendInput {
@@ -36,6 +37,12 @@ fn given_a_member_scoped_team_message_when_its_tool_call_renders_then_delivery_m
         .unwrap_or_default();
 
     // then
-    assert!(!rendered.contains("deliver:"), "unexpected delivery token in {rendered:?}");
-    assert!(!rendered.contains("followUp"), "unexpected followUp token in {rendered:?}");
+    assert!(
+        !rendered.contains("deliver:"),
+        "unexpected delivery token in {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("followUp"),
+        "unexpected followUp token in {rendered:?}"
+    );
 }

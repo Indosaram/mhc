@@ -1,4 +1,5 @@
-pub type ReconcileRunsCallback = Option<std::sync::Arc<dyn Fn(&MemoryIdentityContext) -> Result<(), String> + Send + Sync>>;
+pub type ReconcileRunsCallback =
+    Option<std::sync::Arc<dyn Fn(&MemoryIdentityContext) -> Result<(), String> + Send + Sync>>;
 use crate::{context::MemoryIdentityContext, wiring_runtime::MemoryRuntimeWiring};
 pub struct MemoryAfterBindInput<'a> {
     pub session_id: &'a str,
@@ -54,8 +55,7 @@ pub struct MemoryWiringSeams {
     pub sync_status: Option<crate::sync_status_cached::SyncStatusReader>,
     /// Settles reflection runs for an identity (the runtime's `reconcile`); the stale-holder recovery
     /// drives it when a later turn finds a provably dead lock holder.
-    pub reconcile_runs:
-        ReconcileRunsCallback,
+    pub reconcile_runs: ReconcileRunsCallback,
 }
 
 impl MemoryWiringSeams {

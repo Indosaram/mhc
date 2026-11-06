@@ -111,8 +111,11 @@ fn given_agent_mode_under_unresolved_auto_when_resolved_then_agent_mode_wins() {
     );
     assert_eq!(
         resolve_dag_node_execution_mode(&DagExecutionModeSources {
-            route: &agent_route("writer"), agents: &agents, config_mode: None,
-            config_is_auto: true, auto_mode: None,
+            route: &agent_route("writer"),
+            agents: &agents,
+            config_mode: None,
+            config_is_auto: true,
+            auto_mode: None,
         }),
         Some(ExecutionMode::Process)
     );
@@ -123,8 +126,11 @@ fn given_resolved_auto_without_agent_mode_when_resolved_then_auto_mode_is_used()
     let agents = BTreeMap::new();
     assert_eq!(
         resolve_dag_node_execution_mode(&DagExecutionModeSources {
-            route: &quick(), agents: &agents, config_mode: None,
-            config_is_auto: true, auto_mode: Some(ExecutionMode::Process),
+            route: &quick(),
+            agents: &agents,
+            config_mode: None,
+            config_is_auto: true,
+            auto_mode: Some(ExecutionMode::Process),
         }),
         Some(ExecutionMode::Process)
     );
@@ -135,8 +141,11 @@ fn given_unresolved_auto_without_agent_mode_when_resolved_then_result_is_none() 
     let agents = BTreeMap::new();
     assert_eq!(
         resolve_dag_node_execution_mode(&DagExecutionModeSources {
-            route: &quick(), agents: &agents, config_mode: None,
-            config_is_auto: true, auto_mode: None,
+            route: &quick(),
+            agents: &agents,
+            config_mode: None,
+            config_is_auto: true,
+            auto_mode: None,
         }),
         None
     );

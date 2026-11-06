@@ -1,14 +1,27 @@
 use maho_ext_api::{CompactionSettings, ResolvedCompactionSettings};
-use maho_ext_compaction::{extension_wiring::resolved_settings, orchestration::resolve_compaction_geometry};
+use maho_ext_compaction::{
+    extension_wiring::resolved_settings, orchestration::resolve_compaction_geometry,
+};
 
 fn nondefault() -> ResolvedCompactionSettings {
     ResolvedCompactionSettings {
-        enabled: true, reserve_tokens: 123, keep_recent_tokens: 456,
-        speculative_enabled: false, speculative_fraction: 0.42, speculative_cooldown_ms: 321.,
-        restoration_enabled: false, restoration_max_items: 2., restoration_max_tokens_per_item: 11.,
-        restoration_max_total_tokens: 22., restoration_context_ratio: 0.03,
-        idle_compaction_enabled: false, grace_band_enabled: false, tool_admission_enabled: false,
-        reminder_enabled: false, reserve_scaling_enabled: false, speculative_lead_tokens: Some(12000.),
+        enabled: true,
+        reserve_tokens: 123,
+        keep_recent_tokens: 456,
+        speculative_enabled: false,
+        speculative_fraction: 0.42,
+        speculative_cooldown_ms: 321.,
+        restoration_enabled: false,
+        restoration_max_items: 2.,
+        restoration_max_tokens_per_item: 11.,
+        restoration_max_total_tokens: 22.,
+        restoration_context_ratio: 0.03,
+        idle_compaction_enabled: false,
+        grace_band_enabled: false,
+        tool_admission_enabled: false,
+        reminder_enabled: false,
+        reserve_scaling_enabled: false,
+        speculative_lead_tokens: Some(12000.),
         summarization_max_duration_ms: Some(888.),
     }
 }
@@ -16,7 +29,11 @@ fn nondefault() -> ResolvedCompactionSettings {
 #[test]
 fn supplied_policy_controls_geometry_and_automatic_consumers() {
     // Given a resolved record that differs from all legacy defaults.
-    let legacy = CompactionSettings { enabled: false, reserve_tokens: 9999, keep_recent_tokens: 8888 };
+    let legacy = CompactionSettings {
+        enabled: false,
+        reserve_tokens: 9999,
+        keep_recent_tokens: 8888,
+    };
     let supplied = nondefault();
     // When the builtin resolves the host policy.
     let settings = resolved_settings(&legacy, Some(&supplied)).unwrap();
@@ -44,7 +61,11 @@ fn supplied_policy_controls_geometry_and_automatic_consumers() {
 #[test]
 fn legacy_host_does_not_fabricate_optional_policy() {
     // Given a host exposing only the three legacy fields.
-    let legacy = CompactionSettings { enabled: true, reserve_tokens: 123, keep_recent_tokens: 456 };
+    let legacy = CompactionSettings {
+        enabled: true,
+        reserve_tokens: 123,
+        keep_recent_tokens: 456,
+    };
     // When the resolved companion is unavailable.
     let settings = resolved_settings(&legacy, None).unwrap();
     // Then automatic optional consumers stand down rather than assert host defaults.
@@ -60,7 +81,11 @@ fn legacy_host_does_not_fabricate_optional_policy() {
 
 #[test]
 fn valid_fractional_policy_is_not_rejected_or_rounded_at_resolution() {
-    let legacy = CompactionSettings { enabled: true, reserve_tokens: 123, keep_recent_tokens: 456 };
+    let legacy = CompactionSettings {
+        enabled: true,
+        reserve_tokens: 123,
+        keep_recent_tokens: 456,
+    };
     for field in 0..5 {
         let mut supplied = nondefault();
         match field {
@@ -71,11 +96,27 @@ fn valid_fractional_policy_is_not_rejected_or_rounded_at_resolution() {
             4 => supplied.speculative_lead_tokens = Some(12000.5),
             _ => unreachable!(),
         }
-        let settings = resolved_settings(&legacy, Some(&supplied)).expect("valid finite fractional host policy");
-        assert_eq!(settings.speculative_cooldown_ms, Some(supplied.speculative_cooldown_ms));
-        assert_eq!(settings.restoration_max_items, Some(supplied.restoration_max_items));
-        assert_eq!(settings.restoration_max_tokens_per_item, Some(supplied.restoration_max_tokens_per_item));
-        assert_eq!(settings.restoration_max_total_tokens, Some(supplied.restoration_max_total_tokens));
-        assert_eq!(resolve_compaction_geometry(100_000., &settings, None).lead_tokens, supplied.speculative_lead_tokens.expect("configured lead"));
+        let settings = resolved_settings(&legacy, Some(&supplied))
+            .expect("valid finite fractional host policy");
+        assert_eq!(
+            settings.speculative_cooldown_ms,
+            Some(supplied.speculative_cooldown_ms)
+        );
+        assert_eq!(
+            settings.restoration_max_items,
+            Some(supplied.restoration_max_items)
+        );
+        assert_eq!(
+            settings.restoration_max_tokens_per_item,
+            Some(supplied.restoration_max_tokens_per_item)
+        );
+        assert_eq!(
+            settings.restoration_max_total_tokens,
+            Some(supplied.restoration_max_total_tokens)
+        );
+        assert_eq!(
+            resolve_compaction_geometry(100_000., &settings, None).lead_tokens,
+            supplied.speculative_lead_tokens.expect("configured lead")
+        );
     }
 }

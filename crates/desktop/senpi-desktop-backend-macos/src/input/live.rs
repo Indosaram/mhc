@@ -15,8 +15,8 @@ use senpi_desktop_core::types::{DisplaySelector, Target};
 use crate::backend::MacosBackend;
 use observer::{cursor, frontmost, wait_terminal_contains};
 use setup::{
-    BACKSPACE, assert_no_windows, bring_terminal_front, close_focused_window,
-    open_textedit_document, post_hid_character, post_hid_key, wait_listed,
+    assert_no_windows, bring_terminal_front, close_focused_window, open_textedit_document,
+    post_hid_character, post_hid_key, wait_listed, BACKSPACE,
 };
 
 fn backend() -> MacosBackend {

@@ -222,7 +222,9 @@ fn parse_simple_top_level_checkbox(line: &str) -> Option<ParsedCheckbox<'_>> {
     let rest = rest.trim_start_matches(is_blank).strip_prefix('[')?;
     let rest = rest.trim_start_matches(is_blank);
     let (status, rest) = match rest.chars().next() {
-        Some(marker @ ('x' | 'X' | '~')) => (parse_checkbox_status(marker), &rest[marker.len_utf8()..]),
+        Some(marker @ ('x' | 'X' | '~')) => {
+            (parse_checkbox_status(marker), &rest[marker.len_utf8()..])
+        }
         _ => (CheckboxStatus::Open, rest),
     };
     let rest = rest.trim_start_matches(is_blank).strip_prefix(']')?;
@@ -449,7 +451,10 @@ fn parse_task_separator_and_title(rest: &str) -> Option<&str> {
     }
 
     // Check if dash or em-dash follows
-    if let Some(after_dash) = after_blanks.strip_prefix('-').or_else(|| after_blanks.strip_prefix('—')) {
+    if let Some(after_dash) = after_blanks
+        .strip_prefix('-')
+        .or_else(|| after_blanks.strip_prefix('—'))
+    {
         let after_dash_blanks = after_dash.trim_start_matches(is_blank);
         let dash_blank_count = after_dash.len() - after_dash_blanks.len();
         if dash_blank_count > 0 {

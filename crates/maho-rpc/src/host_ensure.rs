@@ -233,20 +233,17 @@ pub async fn stop_managed_host(
             } else {
                 std::time::Duration::from_secs(2)
             };
-        loop {
-            if !crate::host_reservations::process_is_live(owner.pid)
+        let gone = crate::deadline::wait_until(deadline, crate::deadline::POLL_INTERVAL, || {
+            !crate::host_reservations::process_is_live(owner.pid)
                 || owner.process_start_time.as_ref().is_some_and(|recorded| {
                     crate::host_reservations::read_process_start_time(owner.pid)
                         .as_ref()
                         .is_some_and(|current| current != recorded)
                 })
-            {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        })
+        .await;
+        if gone {
+            return Ok(());
         }
     }
     Err(std::io::Error::other("host remained alive after SIGKILL"))
@@ -270,23 +267,21 @@ pub async fn stop_managed_host(
     }
     crate::host_stop::terminate_generation(owner.pid)?;
     let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if !crate::host_reservations::process_is_live(owner.pid)
+    let gone = crate::deadline::wait_until(deadline, crate::deadline::POLL_INTERVAL, || {
+        !crate::host_reservations::process_is_live(owner.pid)
             || owner.process_start_time.as_ref().is_some_and(|recorded| {
                 crate::host_reservations::read_process_start_time(owner.pid)
                     .as_ref()
                     .is_some_and(|current| current != recorded)
             })
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(std::io::Error::other(
-                "host remained alive after TerminateProcess",
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    })
+    .await;
+    if gone {
+        return Ok(());
     }
+    Err(std::io::Error::other(
+        "host remained alive after TerminateProcess",
+    ))
 }
 #[cfg(not(any(unix, windows)))]
 pub async fn stop_managed_host(
@@ -308,157 +303,158 @@ pub fn start_host(
     let socket = normalize_socket_path(socket).to_owned();
     let launch = launch.clone();
     async move {
-    let socket = socket.as_str();
-    let HostStartOptions {
-        env,
-        settings,
-        launch_profile_id,
-        timeout,
-        owner,
-    } = options;
-    let socket = normalize_socket_path(socket);
-    let lifetime_owner = owner
-        .then(crate::host_lifecycle_activity::caller_host_owner)
-        .transpose()?;
-    crate::host_daemon_state::write_host_settings(&paths, &settings)
-        .map_err(|error| error.source)?;
-    crate::host_lifecycle_activity::write_host_owner(
-        &crate::host_daemon_paths::generation_paths(&paths, &settings.instance_id).dir,
-        lifetime_owner.as_ref(),
-    )?;
-    // senpi `keepOwnerPipe`: the caller-lifetime pipe; win32 binds the owner by its recorded identity instead.
-    #[cfg(unix)]
-    let owner_pipe = owner
-        .then(crate::host_lifecycle_activity::OwnerPipe::new)
-        .transpose()?;
-    #[cfg(not(unix))]
-    let owner_pipe = None::<crate::host_lifecycle_activity::OwnerPipe>;
-    let mut stderr_options = std::fs::OpenOptions::new();
-    stderr_options
-        .create(true)
-        .write(true)
-        .truncate(settings.generation == 0.)
-        .append(settings.generation != 0.);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        stderr_options.mode(0o600);
-    }
-    let stderr = stderr_options.open(&paths.stderr_log)?;
-    // senpi `startHost`: the presenter channel enrolls this initial launch, and enforcement is the deployment opt-in.
-    let bootstrap = crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
-    let args: Vec<String> = launch
-        .args
-        .iter()
-        .cloned()
-        .chain(owner_pipe.iter().flat_map(|pipe| pipe.args()))
-        .chain(crate::mcp_presenter_bootstrap::presenter_launch_args(
-            bootstrap.is_some(),
-            crate::mcp_presenter_bootstrap::presenter_enforcement(),
-        ))
-        .collect();
-    let configure = |command: &mut tokio::process::Command| {
-        command
-            .env_clear()
-            .envs(env)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(stderr);
-        #[cfg(unix)]
-        command.process_group(0);
-    };
-    #[cfg(unix)]
-    let (mut child, presenter_enrollment) =
-        crate::mcp_presenter_bootstrap::spawn_with_presenter_bootstrap(
-            launch.command.as_os_str(),
-            &args,
-            configure,
-            bootstrap,
-            crate::mcp_presenter_bootstrap::PresenterLaunch {
-                kind: "initial",
-                predecessor_host_instance: Some(None),
-            },
-        )?;
-    #[cfg(not(unix))]
-    let (mut child, presenter_enrollment) = {
-        drop(bootstrap);
-        let mut command = tokio::process::Command::new(&launch.command);
-        command.args(&args);
-        configure(&mut command);
-        (command.spawn()?, None::<tokio::task::JoinHandle<()>>)
-    };
-    let pid = child
-        .id()
-        .ok_or_else(|| std::io::Error::other("RPC socket host has no process identity"))?;
-    if let Some(pipe) = owner_pipe {
-        pipe.keep(pid);
-    }
-    let result = async {
-        let registration = crate::host_daemon_registration::HostRegistration {
-            pid,
-            process_start_time: crate::host_reservations::read_process_start_time(pid),
-            socket: socket.into(),
-            instance_id: settings.instance_id.clone(),
-            generation: settings.generation,
+        let socket = socket.as_str();
+        let HostStartOptions {
+            env,
+            settings,
             launch_profile_id,
-            build: Some(crate::host_daemon_registration::RegisteredBuild::this_engine()),
-        };
-        crate::host_daemon_registration::write_host_registration(&paths, &registration)
+            timeout,
+            owner,
+        } = options;
+        let socket = normalize_socket_path(socket);
+        let lifetime_owner = owner
+            .then(crate::host_lifecycle_activity::caller_host_owner)
+            .transpose()?;
+        crate::host_daemon_state::write_host_settings(&paths, &settings)
             .map_err(|error| error.source)?;
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Err(std::io::Error::other(format!(
-                    "RPC socket host exited before ready ({status})"
-                )));
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "RPC socket host did not become ready",
-                ));
-            }
-            let probe_ms = remaining.as_millis().min(1000) as u64;
-            if let Some(protocol) = crate::host_probe::probe_protocol_info(socket, probe_ms).await
-                && protocol.instance_id.as_deref() == Some(settings.instance_id.as_str())
-            {
-                return Ok(protocol);
-            }
-            tokio::time::sleep(
-                std::time::Duration::from_millis(50)
-                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-            )
-            .await;
+        crate::host_lifecycle_activity::write_host_owner(
+            &crate::host_daemon_paths::generation_paths(&paths, &settings.instance_id).dir,
+            lifetime_owner.as_ref(),
+        )?;
+        // senpi `keepOwnerPipe`: the caller-lifetime pipe; win32 binds the owner by its recorded identity instead.
+        #[cfg(unix)]
+        let owner_pipe = owner
+            .then(crate::host_lifecycle_activity::OwnerPipe::new)
+            .transpose()?;
+        #[cfg(not(unix))]
+        let owner_pipe = None::<crate::host_lifecycle_activity::OwnerPipe>;
+        let mut stderr_options = std::fs::OpenOptions::new();
+        stderr_options
+            .create(true)
+            .write(true)
+            .truncate(settings.generation == 0.)
+            .append(settings.generation != 0.);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            stderr_options.mode(0o600);
         }
-    }
-    .await;
-    match result {
-        Ok(protocol) => {
-            // senpi `await presenterEnrollment` once the host is ready.
-            if let Some(enrollment) = presenter_enrollment {
-                let _ = enrollment.await;
-            }
-            Ok(StartedHost {
-                child,
-                protocol,
-                instance_id: settings.instance_id,
-            })
-        }
-        Err(error) => {
-            if let Some(enrollment) = presenter_enrollment {
-                enrollment.abort();
-            }
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            crate::host_daemon_registration::release_generation(
-                &paths,
-                &settings.instance_id,
-                pid,
+        let stderr = stderr_options.open(&paths.stderr_log)?;
+        // senpi `startHost`: the presenter channel enrolls this initial launch, and enforcement is the deployment opt-in.
+        let bootstrap = crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
+        let args: Vec<String> = launch
+            .args
+            .iter()
+            .cloned()
+            .chain(owner_pipe.iter().flat_map(|pipe| pipe.args()))
+            .chain(crate::mcp_presenter_bootstrap::presenter_launch_args(
+                bootstrap.is_some(),
+                crate::mcp_presenter_bootstrap::presenter_enforcement(),
+            ))
+            .collect();
+        let configure = |command: &mut tokio::process::Command| {
+            command
+                .env_clear()
+                .envs(env)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(stderr);
+            #[cfg(unix)]
+            command.process_group(0);
+        };
+        #[cfg(unix)]
+        let (mut child, presenter_enrollment) =
+            crate::mcp_presenter_bootstrap::spawn_with_presenter_bootstrap(
+                launch.command.as_os_str(),
+                &args,
+                configure,
+                bootstrap,
+                crate::mcp_presenter_bootstrap::PresenterLaunch {
+                    kind: "initial",
+                    predecessor_host_instance: Some(None),
+                },
             )?;
-            Err(error)
+        #[cfg(not(unix))]
+        let (mut child, presenter_enrollment) = {
+            drop(bootstrap);
+            let mut command = tokio::process::Command::new(&launch.command);
+            command.args(&args);
+            configure(&mut command);
+            (command.spawn()?, None::<tokio::task::JoinHandle<()>>)
+        };
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("RPC socket host has no process identity"))?;
+        if let Some(pipe) = owner_pipe {
+            pipe.keep(pid);
         }
-    }
+        let result = async {
+            let registration = crate::host_daemon_registration::HostRegistration {
+                pid,
+                process_start_time: crate::host_reservations::read_process_start_time(pid),
+                socket: socket.into(),
+                instance_id: settings.instance_id.clone(),
+                generation: settings.generation,
+                launch_profile_id,
+                build: Some(crate::host_daemon_registration::RegisteredBuild::this_engine()),
+            };
+            crate::host_daemon_registration::write_host_registration(&paths, &registration)
+                .map_err(|error| error.source)?;
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    return Err(std::io::Error::other(format!(
+                        "RPC socket host exited before ready ({status})"
+                    )));
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "RPC socket host did not become ready",
+                    ));
+                }
+                let probe_ms = remaining.as_millis().min(1000) as u64;
+                if let Some(protocol) =
+                    crate::host_probe::probe_protocol_info(socket, probe_ms).await
+                    && protocol.instance_id.as_deref() == Some(settings.instance_id.as_str())
+                {
+                    return Ok(protocol);
+                }
+                tokio::time::sleep(
+                    crate::deadline::POLL_INTERVAL
+                        .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+                )
+                .await;
+            }
+        }
+        .await;
+        match result {
+            Ok(protocol) => {
+                // senpi `await presenterEnrollment` once the host is ready.
+                if let Some(enrollment) = presenter_enrollment {
+                    let _ = enrollment.await;
+                }
+                Ok(StartedHost {
+                    child,
+                    protocol,
+                    instance_id: settings.instance_id,
+                })
+            }
+            Err(error) => {
+                if let Some(enrollment) = presenter_enrollment {
+                    enrollment.abort();
+                }
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                crate::host_daemon_registration::release_generation(
+                    &paths,
+                    &settings.instance_id,
+                    pid,
+                )?;
+                Err(error)
+            }
+        }
     }
 }
 /// senpi `ensureHost`'s owner claim on a reused or handed-off host: only the generation registered for this socket
@@ -497,40 +493,42 @@ pub fn start_refusal(
     let registration = prepared.registration.clone();
     let socket = normalize_socket_path(socket).to_owned();
     async move {
-    let socket = socket.as_str();
-    if let Some(registered) =
-        crate::host_daemon_registration::proven_owner(registration.as_ref(), socket)
-    {
-        if crate::host_daemon_registration::written_by_this_process(registered.writer.as_ref()) {
-            if crate::host_probe::probe_socket_reachable(socket, 2000).await {
-                return Ok(Some("host_busy"));
+        let socket = socket.as_str();
+        if let Some(registered) =
+            crate::host_daemon_registration::proven_owner(registration.as_ref(), socket)
+        {
+            if crate::host_daemon_registration::written_by_this_process(registered.writer.as_ref())
+            {
+                if crate::host_probe::probe_socket_reachable(socket, 2000).await {
+                    return Ok(Some("host_busy"));
+                }
+            } else if refuse_if_foreign_held(&paths, registered, socket)
+                .await
+                .is_err()
+            {
+                return Ok(Some("foreign_writer"));
             }
-        } else if refuse_if_foreign_held(&paths, registered, socket)
-            .await
-            .is_err()
-        {
-            return Ok(Some("foreign_writer"));
         }
-    }
-    let legacy = crate::host_daemon_state::read_file_or_undefined(&paths.legacy_pid_file)?;
-    if let Some(legacy) = crate::host_daemon_state::parse_json(legacy.as_deref())
-        && let Some(pid) = legacy
-            .get("pid")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-    {
-        let recorded = legacy
-            .get("processStartTime")
-            .and_then(serde_json::Value::as_str);
-        if crate::host_reservations::process_is_live(pid)
-            && recorded.is_none_or(|recorded| {
-                crate::host_reservations::read_process_start_time(pid).as_deref() == Some(recorded)
-            })
+        let legacy = crate::host_daemon_state::read_file_or_undefined(&paths.legacy_pid_file)?;
+        if let Some(legacy) = crate::host_daemon_state::parse_json(legacy.as_deref())
+            && let Some(pid) = legacy
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
         {
-            return Ok(Some("legacy_host"));
+            let recorded = legacy
+                .get("processStartTime")
+                .and_then(serde_json::Value::as_str);
+            if crate::host_reservations::process_is_live(pid)
+                && recorded.is_none_or(|recorded| {
+                    crate::host_reservations::read_process_start_time(pid).as_deref()
+                        == Some(recorded)
+                })
+            {
+                return Ok(Some("legacy_host"));
+            }
         }
-    }
-    Ok(None)
+        Ok(None)
     }
 }
 pub use crate::host_holder::HostHolder;
@@ -669,22 +667,14 @@ fn wait_out_stopping_generation(
         let Some((pid_file, generation)) = target else {
             return false;
         };
-        loop {
-            let gone = crate::host_ensure_stop::resolve_pid_file_ownership(
+        crate::deadline::wait_until(deadline, crate::deadline::POLL_INTERVAL, || {
+            crate::host_ensure_stop::resolve_pid_file_ownership(
                 &pid_file,
                 crate::host_reservations::read_process_start_time,
-            ) == crate::host_ensure_stop::PidFileOwnership::Gone;
-            if gone
+            ) == crate::host_ensure_stop::PidFileOwnership::Gone
                 && crate::host_stalled_evidence::host_child_alive(&generation, |_| {}) != Some(true)
-            {
-                return true;
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
-        }
+        })
+        .await
     }
 }
 fn stopping_generation_target(
@@ -773,16 +763,15 @@ pub fn ensure_supervisor_args(socket: &str, agent_dir: &str, host_args: &[String
  * else's host (senpi `ensureHost`).
  */
 pub async fn ensure_host(options: EnsureHostOptions) -> Result<EnsuredHostInfo, EnsureHostError> {
-    let root = crate::host_probe::rpc_key_root(
-        options.key_root.as_deref(),
-        options.agent_dir.as_deref(),
-    );
+    let root =
+        crate::host_probe::rpc_key_root(options.key_root.as_deref(), options.agent_dir.as_deref());
     let socket = normalize_socket_path(&options.socket).to_owned();
     let agent_dir = options
         .agent_dir
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()));
-    let ensured = crate::host_probe::with_rpc_key_root(root, ensure_host_in_key_root(options)).await;
+    let ensured =
+        crate::host_probe::with_rpc_key_root(root, ensure_host_in_key_root(options)).await;
     // Off the awaited path and outside the lock: the caller gets its host first, then dead endpoint records under
     // this agent dir are reaped in the background on `host gc`'s own evidence. A failed ensure schedules nothing.
     if ensured.is_ok() {

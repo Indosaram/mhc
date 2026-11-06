@@ -44,7 +44,11 @@ fn extract_frontmatter(content: &str) -> (Option<String>, String) {
     };
 
     let yaml_string = normalized.get(4..end_index).unwrap_or_default().to_string();
-    let body = normalized.get(end_index + 4..).unwrap_or_default().trim().to_string();
+    let body = normalized
+        .get(end_index + 4..)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     (Some(yaml_string), body)
 }
 
@@ -52,11 +56,15 @@ fn extract_frontmatter(content: &str) -> (Option<String>, String) {
 pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, FrontmatterParseError> {
     let (yaml_string, body) = extract_frontmatter(content);
     let Some(yaml_string) = yaml_string else {
-        return Ok(ParsedFrontmatter { frontmatter: Value::Object(serde_json::Map::new()), body });
+        return Ok(ParsedFrontmatter {
+            frontmatter: Value::Object(serde_json::Map::new()),
+            body,
+        });
     };
-    let parsed: Option<Value> = serde_yaml::from_str(&yaml_string).map_err(|error| FrontmatterParseError {
-        message: error.to_string(),
-    })?;
+    let parsed: Option<Value> =
+        serde_yaml::from_str(&yaml_string).map_err(|error| FrontmatterParseError {
+            message: error.to_string(),
+        })?;
     Ok(ParsedFrontmatter {
         frontmatter: parsed.unwrap_or_else(|| Value::Object(serde_json::Map::new())),
         body,
@@ -75,7 +83,8 @@ mod tests {
 
     #[test]
     fn parses_a_frontmatter_block_and_trims_the_body() {
-        let parsed = parse_frontmatter("---\nname: demo\ndescription: hi\n---\n\nbody text\n").expect("parse");
+        let parsed = parse_frontmatter("---\nname: demo\ndescription: hi\n---\n\nbody text\n")
+            .expect("parse");
         assert_eq!(parsed.frontmatter["name"], json!("demo"));
         assert_eq!(parsed.frontmatter["description"], json!("hi"));
         assert_eq!(parsed.body, "body text");
@@ -90,7 +99,8 @@ mod tests {
 
     #[test]
     fn normalizes_crlf_and_strips_a_bom() {
-        let parsed = parse_frontmatter("\u{feff}---\r\nname: demo\r\n---\r\nbody\r\n").expect("parse");
+        let parsed =
+            parse_frontmatter("\u{feff}---\r\nname: demo\r\n---\r\nbody\r\n").expect("parse");
         assert_eq!(parsed.frontmatter["name"], json!("demo"));
         assert_eq!(parsed.body, "body");
     }

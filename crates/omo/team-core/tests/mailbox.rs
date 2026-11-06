@@ -13,8 +13,7 @@ use team_core::TeamModeConfig;
 use team_core::error::TeamCoreError;
 use team_core::team_mailbox::{
     InboxConsumerLeaseOptions, SendContext, ack_messages, commit_delivery_reservation,
-    is_message_consumed, list_unread_messages, poll_and_build_injection,
-    read_unread_message_by_id,
+    is_message_consumed, list_unread_messages, poll_and_build_injection, read_unread_message_by_id,
     reserve_message_for_delivery, send_message, with_inbox_consumer_lease,
 };
 use team_core::team_registry::{get_inbox_dir, resolve_base_dir};

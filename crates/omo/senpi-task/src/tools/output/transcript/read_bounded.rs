@@ -28,7 +28,8 @@ fn read_into(file: &mut File, buffer: &mut [u8]) -> io::Result<()> {
 
 /// Valid UTF-8 (the common case) reuses the buffer instead of copying it through `from_utf8_lossy`.
 fn into_text(buffer: Vec<u8>) -> String {
-    String::from_utf8(buffer).unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+    String::from_utf8(buffer)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
 /// Reads a file as UTF-8 text, keeping at most `maximum_bytes` bytes (head + `\n` + tail).

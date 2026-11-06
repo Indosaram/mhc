@@ -15,7 +15,8 @@ const GIT_TIMEOUT_MS: u64 = 30_000;
 /// Mirrors upstream `git/stable-log-output.ts`: a user's `log.showSignature` puts gpg/ssh
 /// verification lines ahead of every parsed `--format` read, and `log.follow` turns a single-path
 /// log into `--follow`, which `--no-renames` rejects outright.
-pub const STABLE_LOG_OUTPUT: [&str; 4] = ["-c", "log.showSignature=false", "-c", "log.follow=false"];
+pub const STABLE_LOG_OUTPUT: [&str; 4] =
+    ["-c", "log.showSignature=false", "-c", "log.follow=false"];
 
 /// One memory entry the completion gate refused and removed from the run's commit. `path` is the
 /// repository path itself (the agent chose it, so it can be secret-shaped): redact it before
@@ -172,14 +173,7 @@ fn rename_sources(
     tip_sha: &str,
 ) -> Result<BTreeMap<String, String>, String> {
     let range = format!("{base_sha}..{tip_sha}");
-    let out = run.must(&[
-        "diff",
-        "--name-status",
-        "-M",
-        "-z",
-        range.as_str(),
-        "--",
-    ])?;
+    let out = run.must(&["diff", "--name-status", "-M", "-z", range.as_str(), "--"])?;
     let parts: Vec<&str> = out.split('\0').collect();
     let mut sources = BTreeMap::new();
     let mut index = 0;
@@ -288,7 +282,10 @@ pub fn squash_without_paths(
         ]);
         run.must_with_timeout(&commit_argv, COMMIT_TIMEOUT_MS)?;
     }
-    Ok(run.must(&["rev-parse", "--verify", "HEAD"])?.trim().to_string())
+    Ok(run
+        .must(&["rev-parse", "--verify", "HEAD"])?
+        .trim()
+        .to_string())
 }
 
 #[cfg(test)]

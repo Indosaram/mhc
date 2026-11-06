@@ -515,7 +515,8 @@ fn given_present_then_absent_resources_when_cleanup_repeats_then_both_receipts_c
 /// `worktree-integration.ts`: the integration merge is a memory commit, so it runs with the commit
 /// budget and without auto maintenance; the reads around it keep the git budget.
 #[test]
-fn given_auto_integration_when_it_merges_then_the_merge_gets_the_commit_budget_without_auto_maintenance() {
+fn given_auto_integration_when_it_merges_then_the_merge_gets_the_commit_budget_without_auto_maintenance()
+ {
     let fix = fixture("budget");
     commit_in_worktree(&fix.worktree, "budget.md", "budget\n");
     let validation = validated_tip(&fix.worktree);
@@ -538,10 +539,22 @@ fn given_auto_integration_when_it_merges_then_the_merge_gets_the_commit_budget_w
     let (argv, timeout) = recording.call_with("--no-ff");
     let mut expected: Vec<String> = NO_AUTO_MAINTENANCE.map(str::to_string).to_vec();
     expected.extend(
-        ["merge", "--no-ff", validation.tip_sha.as_str(), "-m", "merge(reflection): budget", "-m", "Omo-Run: budget"]
-            .map(str::to_string),
+        [
+            "merge",
+            "--no-ff",
+            validation.tip_sha.as_str(),
+            "-m",
+            "merge(reflection): budget",
+            "-m",
+            "Omo-Run: budget",
+        ]
+        .map(str::to_string),
     );
     assert_eq!(argv, expected);
     assert_eq!(timeout, COMMIT_TIMEOUT_MS, "{argv:?}");
-    assert_eq!(recording.call_with("status").1, 30_000, "reads keep the git budget");
+    assert_eq!(
+        recording.call_with("status").1,
+        30_000,
+        "reads keep the git budget"
+    );
 }

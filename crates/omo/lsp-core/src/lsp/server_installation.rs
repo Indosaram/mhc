@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::request_context::resolve;
 
@@ -12,7 +12,14 @@ struct LocalBinRule {
 
 const LOCAL_BIN_RULES: &[LocalBinRule] = &[
     LocalBinRule {
-        markers: &["package.json", "bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
+        markers: &[
+            "package.json",
+            "bun.lock",
+            "bun.lockb",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+        ],
         bin_dirs: &[&["node_modules", ".bin"]],
     },
     LocalBinRule {
@@ -59,7 +66,8 @@ static RESOLUTION_CACHE: Mutex<Option<HashMap<[String; 6], Option<String>>>> = M
 
 pub fn reset_server_binary_resolution_cache_for_tests() {
     if let Ok(mut lock) = RESOLUTION_CACHE.lock()
-        && let Some(map) = lock.as_mut() {
+        && let Some(map) = lock.as_mut()
+    {
         map.clear();
     }
     PROBE_COUNT.store(0, Ordering::SeqCst);
@@ -142,7 +150,8 @@ fn resolve_local(
             return None;
         }
         if let Some(ref b) = boundary
-            && &current == b {
+            && &current == b
+        {
             return None;
         }
         if !current.pop() {
@@ -187,7 +196,9 @@ pub fn resolve_server_binary(
 ) -> Option<String> {
     let cmd = command.first().filter(|c| !c.is_empty())?;
 
-    let platform = options.platform.unwrap_or(if cfg!(windows) { "win32" } else { "linux" });
+    let platform = options
+        .platform
+        .unwrap_or(if cfg!(windows) { "win32" } else { "linux" });
     let suffixes = executable_suffixes(platform, options.path_ext.as_deref());
 
     if cmd.contains('/') || cmd.contains('\\') {
@@ -208,7 +219,11 @@ pub fn resolve_server_binary(
         };
     }
 
-    let effective_path = options.path_env.clone().or_else(|| std::env::var("PATH").ok()).unwrap_or_default();
+    let effective_path = options
+        .path_env
+        .clone()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
     let cache_key = [
         working_directory.unwrap_or("").to_string(),
         cmd.clone(),

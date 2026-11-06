@@ -1,6 +1,10 @@
 use super::tests::{commit, files, seed, state};
 use super::*;
-use crate::sync::item::{self, frontmatter::{FmValue, split_item}, render::render_doc_content};
+use crate::sync::item::{
+    self,
+    frontmatter::{FmValue, split_item},
+    render::render_doc_content,
+};
 
 #[test]
 fn set_adoption_unions_elements_without_changing_key_kind() {
@@ -13,8 +17,15 @@ fn set_adoption_unions_elements_without_changing_key_kind() {
     // Then
     let parsed = split_item(&render_doc_content(&doc).expect("render"));
     let entries = parsed.fm.expect("header");
-    assert!(matches!(&entries[0].value, FmValue::Set { elements, .. } if elements == &vec!["a", "b", "c"]));
-    assert_eq!(confirm_removals(&doc, &plan, &sources).expect("gate").remove, vec![sources[0].path.clone()]);
+    assert!(
+        matches!(&entries[0].value, FmValue::Set { elements, .. } if elements == &vec!["a", "b", "c"])
+    );
+    assert_eq!(
+        confirm_removals(&doc, &plan, &sources)
+            .expect("gate")
+            .remove,
+        vec![sources[0].path.clone()]
+    );
 }
 
 #[test]
@@ -29,7 +40,12 @@ fn cross_kind_values_are_adopted_as_whole_register_or_set_elements() {
     let registers = item::active_registers(&doc);
     assert_eq!(registers["reg"], vec!["[ b, c ]", "old"]);
     let parsed = split_item(&render_doc_content(&doc).expect("render"));
-    let tags = parsed.fm.expect("header").into_iter().find(|e| e.key == "tags").expect("tags");
+    let tags = parsed
+        .fm
+        .expect("header")
+        .into_iter()
+        .find(|e| e.key == "tags")
+        .expect("tags");
     assert!(matches!(tags.value, FmValue::Set { elements, .. } if elements == vec!["a", "other"]));
 }
 
@@ -59,8 +75,14 @@ fn hub_frontmatter_is_captured_with_main_and_side_values() {
     // When
     commit(&doc, &plan);
     // Then
-    assert_eq!(item::active_registers(&doc)["title"], vec!["Main", "Other", "Side"]);
-    assert_eq!(split_item(&render_doc_content(&doc).expect("render")).body, "main\n");
+    assert_eq!(
+        item::active_registers(&doc)["title"],
+        vec!["Main", "Other", "Side"]
+    );
+    assert_eq!(
+        split_item(&render_doc_content(&doc).expect("render")).body,
+        "main\n"
+    );
 }
 
 #[test]
@@ -71,7 +93,10 @@ fn changed_file_over_tombstone_is_adopted_as_concurrent_edit() {
     let mut item = state(&doc);
     item.tombstoned = true;
     item.last_materialised = Some("body\n".into());
-    let sources = vec![Snapshot { path: "n.md".into(), text: "body\nchanged\n".into() }];
+    let sources = vec![Snapshot {
+        path: "n.md".into(),
+        text: "body\nchanged\n".into(),
+    }];
     let plan = plan_adoption(&sources, &item).expect("plan");
     // When
     commit(&doc, &plan);
@@ -90,5 +115,11 @@ fn missing_adopted_source_never_qualifies_for_removal() {
     let decision = confirm_removals(&doc, &plan, &[]).expect("gate");
     // Then
     assert!(decision.remove.is_empty());
-    assert_eq!(decision.retained, vec![RetainedSource { path: sources[0].path.clone(), reason: "source not among the adopted files".into() }]);
+    assert_eq!(
+        decision.retained,
+        vec![RetainedSource {
+            path: sources[0].path.clone(),
+            reason: "source not among the adopted files".into()
+        }]
+    );
 }

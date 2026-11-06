@@ -24,8 +24,14 @@ fn faults_handle_reaches_a_boxed_backend() {
     let faults = backend.faults();
     let mut boxed: Box<dyn Backend> = Box::new(backend);
     faults.fail_next(FakeMethod::Windows, ErrorCode::Internal);
-    assert_eq!(boxed.windows().expect_err("injected").code, ErrorCode::Internal);
-    assert!(boxed.displays().is_ok(), "a windows fault leaves displays alone");
+    assert_eq!(
+        boxed.windows().expect_err("injected").code,
+        ErrorCode::Internal
+    );
+    assert!(
+        boxed.displays().is_ok(),
+        "a windows fault leaves displays alone"
+    );
 }
 
 #[test]
@@ -79,7 +85,8 @@ fn scripted_resize_invalidates_the_previous_window_frame() {
 
 #[test]
 fn capture_unavailable_scenario_fails_capture() {
-    let scenario = FakeScenario::from_json(r#"{"capabilities":{"capture":false}}"#).expect("parses");
+    let scenario =
+        FakeScenario::from_json(r#"{"capabilities":{"capture":false}}"#).expect("parses");
     let mut backend = FakeBackend::new(scenario);
     let err = backend
         .capture(&Target::Desktop, &CaptureCaps::default())

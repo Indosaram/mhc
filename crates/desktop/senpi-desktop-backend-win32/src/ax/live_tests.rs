@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{AxRegistry, snapshot};
+use senpi_desktop_core::ax::{snapshot, AxRegistry};
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow, DisplaySelector};
 
 use super::Win32Ax;

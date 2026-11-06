@@ -40,7 +40,10 @@ pub fn parse_virtual_modifiers(section: &str) -> HashMap<String, u32> {
         .collect()
 }
 
-pub fn parse_types(section: &str, virtuals: &HashMap<String, u32>) -> HashMap<String, Arc<TypeDef>> {
+pub fn parse_types(
+    section: &str,
+    virtuals: &HashMap<String, u32>,
+) -> HashMap<String, Arc<TypeDef>> {
     let mut types = HashMap::new();
     let mut offset = 0;
     while let Some(relative) = section[offset..].find("type \"") {
@@ -73,7 +76,9 @@ fn parse_type_body(body: &str, virtuals: &HashMap<String, u32>) -> TypeDef {
                 parse_modifier_mask(modifiers.trim().trim_end_matches(';'), virtuals).unwrap_or(0);
             continue;
         }
-        let Some((combination, level)) = line.strip_prefix("map[").and_then(|map| map.split_once("]="))
+        let Some((combination, level)) = line
+            .strip_prefix("map[")
+            .and_then(|map| map.split_once("]="))
         else {
             continue;
         };

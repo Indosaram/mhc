@@ -19,14 +19,20 @@ pub const MIN_COMPLETION_TRANSPORT_LIMIT: usize = 1_000;
 pub const MAX_COMPLETION_TRANSPORT_LIMIT: usize = 64_000;
 
 pub fn read_configured_completion_transport_limit() -> usize {
-    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
+    let loaded =
+        omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
     loaded
         .config
         .get("task")
         .and_then(|task| task.get("completion_transport_limit"))
         .and_then(serde_json::Value::as_u64)
         .map(|limit| usize::try_from(limit).unwrap_or(DEFAULT_COMPLETION_TRANSPORT_LIMIT))
-        .map(|limit| limit.clamp(MIN_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT))
+        .map(|limit| {
+            limit.clamp(
+                MIN_COMPLETION_TRANSPORT_LIMIT,
+                MAX_COMPLETION_TRANSPORT_LIMIT,
+            )
+        })
         .unwrap_or(DEFAULT_COMPLETION_TRANSPORT_LIMIT)
 }
 
@@ -41,8 +47,11 @@ pub fn build_completion_details(
     record: &TaskRecord,
     options: BuildDetailsOptions<'_>,
 ) -> CompletionDetails {
-    let (final_response, final_response_file) =
-        final_response_for_notification(record, options.state_dir, options.completion_transport_limit);
+    let (final_response, final_response_file) = final_response_for_notification(
+        record,
+        options.state_dir,
+        options.completion_transport_limit,
+    );
     let run_stats = record.run_stats.clone();
     let tokens = options
         .tokens
@@ -103,7 +112,10 @@ fn final_response_for_notification(
 ) -> (String, Option<String>) {
     let limit = transport_limit
         .unwrap_or_else(read_configured_completion_transport_limit)
-        .clamp(MIN_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT);
+        .clamp(
+            MIN_COMPLETION_TRANSPORT_LIMIT,
+            MAX_COMPLETION_TRANSPORT_LIMIT,
+        );
     let source = record
         .final_response
         .as_deref()

@@ -10,7 +10,8 @@ use senpi_desktop_core::types::{DisplaySelector, Target};
 
 use super::observer::frontmost;
 use super::setup::{
-    assert_no_windows, bring_terminal_front, close_focused_window, open_textedit_document, wait_listed,
+    assert_no_windows, bring_terminal_front, close_focused_window, open_textedit_document,
+    wait_listed,
 };
 use super::{backend, center, click};
 use crate::backend::MacosBackend;
@@ -29,7 +30,10 @@ fn canary_receipt_roundtrip() {
     );
     println!("stop_reason={:?}", capabilities.stop_reason);
     assert!(result.focus_restored, "the canary left focus elsewhere");
-    assert_eq!(before.pid, after.pid, "the canary changed the frontmost app");
+    assert_eq!(
+        before.pid, after.pid,
+        "the canary changed the frontmost app"
+    );
     // The focused-title equality is printed, not asserted: Terminal's tab
     // title tracks its foreground child (the observer itself), so the middle
     // token legitimately differs between snapshots.

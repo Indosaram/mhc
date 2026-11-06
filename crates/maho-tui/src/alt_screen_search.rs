@@ -3,7 +3,9 @@
 use crate::components::input::{Input, InputOptions};
 use crate::keybindings::get_keybindings;
 use crate::tui::{Component, Focusable};
-use crate::utils::{graphemes, is_whitespace_char, strip_terminal_sequences, truncate_to_width, visible_width};
+use crate::utils::{
+    graphemes, is_whitespace_char, strip_terminal_sequences, truncate_to_width, visible_width,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct SearchSourceSpan {
@@ -117,7 +119,10 @@ fn normalize_query(query: &str) -> String {
     collapsed.trim().to_string()
 }
 
-fn find_search_corpus_matches(corpus: &SearchCorpus, normalized_query: &str) -> Vec<AltScreenSearchMatch> {
+fn find_search_corpus_matches(
+    corpus: &SearchCorpus,
+    normalized_query: &str,
+) -> Vec<AltScreenSearchMatch> {
     if normalized_query.is_empty() {
         return Vec::new();
     }
@@ -164,7 +169,11 @@ fn find_search_corpus_matches(corpus: &SearchCorpus, normalized_query: &str) -> 
                 previous.end_col = previous.end_col.max(end_col);
                 continue;
             }
-            segments.push(AltScreenSearchSegment { row: span.row, start_col, end_col });
+            segments.push(AltScreenSearchSegment {
+                row: span.row,
+                start_col,
+                end_col,
+            });
         }
         while span_index < corpus.spans.len() && corpus.spans[span_index].text_end <= end {
             span_index += 1;
@@ -197,14 +206,17 @@ pub struct AltScreenSearchIndex {
 
 impl AltScreenSearchIndex {
     pub fn new() -> Self {
-        Self { source_lines: None, corpus: None, normalized_query: None, matches: Vec::new() }
+        Self {
+            source_lines: None,
+            corpus: None,
+            normalized_query: None,
+            matches: Vec::new(),
+        }
     }
 
     pub fn search(&mut self, lines: &[String], query: &str) -> AltScreenSearchResult {
         let mut source_changed = self.source_lines.as_ref().map(Vec::len) != Some(lines.len());
-        if !source_changed
-            && let Some(source_lines) = &self.source_lines
-        {
+        if !source_changed && let Some(source_lines) = &self.source_lines {
             source_changed = source_lines.iter().zip(lines.iter()).any(|(a, b)| a != b);
         }
         if source_changed || self.corpus.is_none() {
@@ -215,14 +227,23 @@ impl AltScreenSearchIndex {
         let normalized_query = normalize_query(query);
         let changed = source_changed || Some(&normalized_query) != self.normalized_query.as_ref();
         let Some(corpus) = self.corpus.as_ref() else {
-            return AltScreenSearchResult { matches: Vec::new(), changed };
+            return AltScreenSearchResult {
+                matches: Vec::new(),
+                changed,
+            };
         };
         if !changed {
-            return AltScreenSearchResult { matches: Vec::new(), changed };
+            return AltScreenSearchResult {
+                matches: Vec::new(),
+                changed,
+            };
         }
         self.matches = find_search_corpus_matches(corpus, &normalized_query);
         self.normalized_query = Some(normalized_query);
-        AltScreenSearchResult { matches: self.matches.clone(), changed }
+        AltScreenSearchResult {
+            matches: self.matches.clone(),
+            changed,
+        }
     }
 }
 
@@ -243,7 +264,10 @@ pub fn find_alt_screen_search_matches(lines: &[String], query: &str) -> Vec<AltS
 
 pub fn get_alt_screen_search_match_key(m: &AltScreenSearchMatch) -> String {
     match (m.segments.first(), m.segments.last()) {
-        (Some(first), Some(last)) => format!("{}:{}:{}:{}", first.row, first.start_col, last.row, last.end_col),
+        (Some(first), Some(last)) => format!(
+            "{}:{}:{}:{}",
+            first.row, first.start_col, last.row, last.end_col
+        ),
         _ => String::new(),
     }
 }
@@ -266,17 +290,24 @@ pub struct AltScreenSearchComponent {
 }
 
 impl AltScreenSearchComponent {
-    pub fn new(on_query_change: Box<dyn FnMut(&str)>, navigation_button_style: Option<NavigationButtonStyle>, is_darwin: bool) -> Self {
+    pub fn new(
+        on_query_change: Box<dyn FnMut(&str)>,
+        navigation_button_style: Option<NavigationButtonStyle>,
+        is_darwin: bool,
+    ) -> Self {
         let mut input = Input::new(InputOptions {
             prompt: Some(" ".to_string()),
             placeholder: Some("Find in transcript".to_string()),
-            placeholder_style: Some(std::rc::Rc::new(|text: &str| format!("\x1b[2m{text}\x1b[22m"))),
+            placeholder_style: Some(std::rc::Rc::new(|text: &str| {
+                format!("\x1b[2m{text}\x1b[22m")
+            })),
         });
         input.set_focused(false);
         Self {
             input,
             on_query_change,
-            navigation_button_style: navigation_button_style.unwrap_or_else(|| std::rc::Rc::new(|text: &str, _hovered| text.to_string())),
+            navigation_button_style: navigation_button_style
+                .unwrap_or_else(|| std::rc::Rc::new(|text: &str, _hovered| text.to_string())),
             result_count: 0,
             result_index: -1,
             previous_button_start: -1,
@@ -378,7 +409,10 @@ impl Component for AltScreenSearchComponent {
         let inner_width = safe_width.saturating_sub(2);
 
         let kb = get_keybindings();
-        let previous_key_id = kb.get_keys("tui.altScreen.searchPrevious").into_iter().next();
+        let previous_key_id = kb
+            .get_keys("tui.altScreen.searchPrevious")
+            .into_iter()
+            .next();
         let next_key_id = kb.get_keys("tui.altScreen.searchNext").into_iter().next();
         let previous_key = self.format_key(previous_key_id.as_deref());
         let next_key = self.format_key(next_key_id.as_deref());
@@ -393,10 +427,22 @@ impl Component for AltScreenSearchComponent {
         };
         let result_space = inner_width.saturating_sub(3);
         let visible_result = truncate_to_width(&result_text_body, result_space, "", false);
-        let result_text = if visible_result.is_empty() { String::new() } else { format!("\x1b[2m {visible_result} \x1b[22m") };
+        let result_text = if visible_result.is_empty() {
+            String::new()
+        } else {
+            format!("\x1b[2m {visible_result} \x1b[22m")
+        };
         let input_width = inner_width.saturating_sub(visible_width(&result_text));
         let rendered_input_line = self.input.render(input_width.max(1));
-        let input_line = truncate_to_width(rendered_input_line.first().map(String::as_str).unwrap_or(""), input_width, "", false);
+        let input_line = truncate_to_width(
+            rendered_input_line
+                .first()
+                .map(String::as_str)
+                .unwrap_or(""),
+            input_width,
+            "",
+            false,
+        );
         let input_padding = " ".repeat(input_width.saturating_sub(visible_width(&input_line)));
         let content = format!("{input_line}{input_padding}{result_text}");
 
@@ -404,38 +450,71 @@ impl Component for AltScreenSearchComponent {
         let mut next_button = format!("\u{2193} {next_key}");
         let mut separator = " \u{b7} ".to_string();
         let outer_gap_width = 1usize;
-        let available_controls_width = inner_width.saturating_sub(outer_gap_width * 2).saturating_sub(1);
-        let mut controls_width = visible_width(&previous_button) + visible_width(&separator) + visible_width(&next_button);
+        let available_controls_width = inner_width
+            .saturating_sub(outer_gap_width * 2)
+            .saturating_sub(1);
+        let mut controls_width = visible_width(&previous_button)
+            + visible_width(&separator)
+            + visible_width(&next_button);
         if controls_width > available_controls_width {
             previous_button = "\u{2191}".to_string();
             next_button = "\u{2193}".to_string();
             separator = " ".to_string();
-            controls_width = visible_width(&previous_button) + visible_width(&separator) + visible_width(&next_button);
+            controls_width = visible_width(&previous_button)
+                + visible_width(&separator)
+                + visible_width(&next_button);
         }
         let show_buttons = controls_width <= available_controls_width;
         let rendered_buttons = if show_buttons {
             format!(
                 "{}{separator}{}",
-                (self.navigation_button_style)(&previous_button, self.hovered_navigation_direction == Some(-1)),
-                (self.navigation_button_style)(&next_button, self.hovered_navigation_direction == Some(1)),
+                (self.navigation_button_style)(
+                    &previous_button,
+                    self.hovered_navigation_direction == Some(-1)
+                ),
+                (self.navigation_button_style)(
+                    &next_button,
+                    self.hovered_navigation_direction == Some(1)
+                ),
             )
         } else {
             String::new()
         };
         let outer_gaps_width = if show_buttons { outer_gap_width * 2 } else { 0 };
-        let right_rule_width = if !rendered_buttons.is_empty() && inner_width > controls_width + outer_gaps_width { 1 } else { 0 };
+        let right_rule_width =
+            if !rendered_buttons.is_empty() && inner_width > controls_width + outer_gaps_width {
+                1
+            } else {
+                0
+            };
         let left_rule_width = inner_width
             .saturating_sub(if show_buttons { controls_width } else { 0 })
             .saturating_sub(outer_gaps_width)
             .saturating_sub(right_rule_width);
         let previous_start = 1 + left_rule_width as i64 + outer_gap_width as i64;
         self.previous_button_start = if show_buttons { previous_start } else { -1 };
-        self.previous_button_end = if show_buttons { previous_start + visible_width(&previous_button) as i64 } else { -1 };
-        self.next_button_start = if show_buttons { self.previous_button_end + visible_width(&separator) as i64 } else { -1 };
-        self.next_button_end = if show_buttons { self.next_button_start + visible_width(&next_button) as i64 } else { -1 };
+        self.previous_button_end = if show_buttons {
+            previous_start + visible_width(&previous_button) as i64
+        } else {
+            -1
+        };
+        self.next_button_start = if show_buttons {
+            self.previous_button_end + visible_width(&separator) as i64
+        } else {
+            -1
+        };
+        self.next_button_end = if show_buttons {
+            self.next_button_start + visible_width(&next_button) as i64
+        } else {
+            -1
+        };
 
         if safe_width == 1 {
-            return vec!["\u{250c}".to_string(), "\u{2502}".to_string(), "\u{2514}".to_string()];
+            return vec![
+                "\u{250c}".to_string(),
+                "\u{2502}".to_string(),
+                "\u{2514}".to_string(),
+            ];
         }
         vec![
             format!("\u{250c}{}\u{2510}", "\u{2500}".repeat(inner_width)),
@@ -443,9 +522,17 @@ impl Component for AltScreenSearchComponent {
             format!(
                 "\u{2514}{}{}{}{}{}\u{2518}",
                 "\u{2500}".repeat(left_rule_width),
-                if !rendered_buttons.is_empty() { " " } else { "" },
+                if !rendered_buttons.is_empty() {
+                    " "
+                } else {
+                    ""
+                },
                 rendered_buttons,
-                if !rendered_buttons.is_empty() { " " } else { "" },
+                if !rendered_buttons.is_empty() {
+                    " "
+                } else {
+                    ""
+                },
                 "\u{2500}".repeat(right_rule_width)
             ),
         ]

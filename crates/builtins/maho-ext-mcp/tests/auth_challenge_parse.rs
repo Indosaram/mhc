@@ -21,7 +21,10 @@ fn parses_quoted_scopes_and_multiple_params() {
             resource_metadata: Some("https://rs.test/meta".into()),
         }
     );
-    assert_eq!(parse_www_authenticate("bEaReR scope=a").unwrap().scopes, strings(&["a"]));
+    assert_eq!(
+        parse_www_authenticate("bEaReR scope=a").unwrap().scopes,
+        strings(&["a"])
+    );
 }
 
 #[test]
@@ -35,7 +38,10 @@ fn non_bearer_or_parameterless_challenges_yield_nothing() {
 #[test]
 fn step_up_only_for_403_with_insufficient_scope_or_scopes() {
     let header = r#"Bearer error="insufficient_scope", scope="a b""#;
-    assert_eq!(step_up_required(403, Some(header)).unwrap().scopes, strings(&["a", "b"]));
+    assert_eq!(
+        step_up_required(403, Some(header)).unwrap().scopes,
+        strings(&["a", "b"])
+    );
     assert!(step_up_required(401, Some(header)).is_none());
     assert!(step_up_required(403, None).is_none());
     assert!(step_up_required(403, Some(r#"Bearer error="invalid_token""#)).is_none());
@@ -46,14 +52,18 @@ fn step_up_only_for_403_with_insufficient_scope_or_scopes() {
 
 #[test]
 fn merge_keeps_first_seen_order_without_duplicates() {
-    assert_eq!(merge_scopes(&strings(&["a", "b"]), &strings(&["b", "c", "a", "c"])), strings(&["a", "b", "c"]));
+    assert_eq!(
+        merge_scopes(&strings(&["a", "b"]), &strings(&["b", "c", "a", "c"])),
+        strings(&["a", "b", "c"])
+    );
     assert!(merge_scopes(&[], &[]).is_empty());
 }
 
 #[test]
 fn provider_effective_scopes_are_configured_then_escalated() {
     let root = tempfile::tempdir().unwrap();
-    let mut provider = McpOAuthProvider::new(McpTokenStore::new(root.path(), "s", "https://x.test"));
+    let mut provider =
+        McpOAuthProvider::new(McpTokenStore::new(root.path(), "s", "https://x.test"));
     assert_eq!(provider.effective_scopes(), None);
     provider.escalate_scopes(&strings(&["w"]));
     assert_eq!(provider.effective_scopes(), Some(strings(&["w"])));

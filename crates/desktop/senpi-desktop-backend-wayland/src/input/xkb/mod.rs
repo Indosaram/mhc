@@ -17,8 +17,8 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use symbols::{extract_section, infer_type, parse_keycodes, parse_keys, resolve_keysyms};
-use types::{ModifierReq, TypeDef};
 use types::{expand_virtual_modifiers, holdable_modifiers, parse_types, parse_virtual_modifiers};
+use types::{ModifierReq, TypeDef};
 
 /// One evdev key press plus the evdev modifier keys held around it.
 #[derive(Debug, Clone, PartialEq, Eq)]

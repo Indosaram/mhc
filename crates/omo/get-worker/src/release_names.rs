@@ -13,9 +13,12 @@ pub fn is_release_version(value: &str) -> bool {
     let core = segments.next().unwrap_or("");
     let pre = segments.next();
     let mut numbers = core.split('.');
-    let (Some(major), Some(minor), Some(patch), None) =
-        (numbers.next(), numbers.next(), numbers.next(), numbers.next())
-    else {
+    let (Some(major), Some(minor), Some(patch), None) = (
+        numbers.next(),
+        numbers.next(),
+        numbers.next(),
+        numbers.next(),
+    ) else {
         return false;
     };
     if !major.chars().all(|c| c.is_ascii_digit())
@@ -31,9 +34,9 @@ pub fn is_release_version(value: &str) -> bool {
         None => true,
         Some(pre) => {
             !pre.is_empty()
-                && pre.split('.').all(|part| {
-                    !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric())
-                })
+                && pre
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()))
         }
     }
 }
@@ -84,7 +87,9 @@ fn is_binary_asset(name: &str) -> bool {
     let rest = rest.strip_suffix(".exe").unwrap_or(rest);
     let mut parts = rest.split('-');
     let Some(os) = parts.next() else { return false };
-    let Some(arch) = parts.next() else { return false };
+    let Some(arch) = parts.next() else {
+        return false;
+    };
     if !matches!(os, "darwin" | "linux" | "windows") || !matches!(arch, "x64" | "arm64") {
         return false;
     }

@@ -27,9 +27,15 @@ impl GrokWelcomeCard {
 impl Component for GrokWelcomeCard {
     fn render(&mut self, width: usize) -> Vec<String> {
         let tokens = get_grok_chrome_tokens(&self.theme);
-        let title = format!("{} {}", self.app_name, format_display_version(&self.version));
+        let title = format!(
+            "{} {}",
+            self.app_name,
+            format_display_version(&self.version)
+        );
         if width < 3 {
-            return vec![(tokens.primary_text)(&truncate_to_width(&title, width, "", false))];
+            return vec![(tokens.primary_text)(&truncate_to_width(
+                &title, width, "", false,
+            ))];
         }
 
         let content_width = width - 2;

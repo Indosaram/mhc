@@ -20,7 +20,12 @@ fn given_empty_omo_config_when_listed_then_builtin_categories_carry_descriptions
         .iter()
         .find(|entry| entry.name == "quick")
         .expect("quick listed");
-    assert!(quick.description.as_deref().is_some_and(|text| !text.is_empty()));
+    assert!(
+        quick
+            .description
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+    );
 }
 
 #[test]
@@ -58,7 +63,7 @@ fn given_disabled_category_when_listed_then_it_is_omitted() {
 
 #[test]
 fn given_loaded_agent_definitions_when_listed_then_names_and_descriptions_surface_disabled_excluded()
-{
+ {
     let mut plan_reviewer = AgentDefinition::named("plan-reviewer");
     plan_reviewer.description = "Deep reasoning".to_string().into();
     let mut hidden = AgentDefinition::named("hidden");

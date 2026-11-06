@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use memory_core::locks::{
-    acquire_lock, create_lock_record, release_lock, AcquireLockOptions, CreateLockRecordOptions,
+    AcquireLockOptions, CreateLockRecordOptions, acquire_lock, create_lock_record, release_lock,
 };
 
-use crate::backend::{error_text, IsolationError, Result};
-use crate::git::command::{git_text, run_git, str_args, GitOptions};
+use crate::backend::{IsolationError, Result, error_text};
+use crate::git::command::{GitOptions, git_text, run_git, str_args};
 use crate::git::delta::DeltaPatchResult;
 use crate::git::synthetic_tree::parse_diff_git_line_paths;
 use crate::util::{dirname, lock, resolve_path};
@@ -268,7 +268,11 @@ pub fn write_artifacts(
         nested_patch_paths.push(path);
     }
     let mut files: HashSet<String> = HashSet::new();
-    for path in delta.root_patch.split('\n').flat_map(parse_diff_git_line_paths) {
+    for path in delta
+        .root_patch
+        .split('\n')
+        .flat_map(parse_diff_git_line_paths)
+    {
         files.insert(path);
     }
     for nested in &delta.nested_patches {

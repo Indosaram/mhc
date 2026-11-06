@@ -26,8 +26,14 @@ pub fn read_devin_trailer_error(trailer: &str) -> Option<DevinTrailerError> {
     }
     let parsed: Value = serde_json::from_str(text).ok()?;
     let error = parsed.as_object()?.get("error")?.as_object()?;
-    let code = error.get("code").and_then(Value::as_str).unwrap_or_default();
-    let message = error.get("message").and_then(Value::as_str).unwrap_or_default();
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if code.is_empty() && message.is_empty() {
         return None;
     }
@@ -36,7 +42,11 @@ pub fn read_devin_trailer_error(trailer: &str) -> Option<DevinTrailerError> {
         Some(detail) => format!(" [details: {detail}]"),
         None => String::new(),
     };
-    let code_prefix = if code.is_empty() { String::new() } else { format!(" {code}") };
+    let code_prefix = if code.is_empty() {
+        String::new()
+    } else {
+        format!(" {code}")
+    };
     Some(DevinTrailerError {
         code: code.to_owned(),
         message: message.to_owned(),
@@ -51,8 +61,13 @@ fn summarize_details(details: Option<&Value>) -> Option<String> {
     }
     let mut parts: Vec<String> = Vec::new();
     for entry in details {
-        let Some(entry) = entry.as_object() else { continue };
-        let entry_type = entry.get("type").and_then(Value::as_str).filter(|value| !value.is_empty());
+        let Some(entry) = entry.as_object() else {
+            continue;
+        };
+        let entry_type = entry
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
         let evidence = evidence_of(entry);
         let part = match (entry_type, evidence) {
             (Some(entry_type), Some(evidence)) => format!("{entry_type}: {evidence}"),
@@ -69,7 +84,13 @@ fn summarize_details(details: Option<&Value>) -> Option<String> {
     }
     let summary = parts.join("; ");
     Some(if summary.chars().count() > MAX_TRAILER_EVIDENCE_CHARS {
-        format!("{}…", summary.chars().take(MAX_TRAILER_EVIDENCE_CHARS).collect::<String>())
+        format!(
+            "{}…",
+            summary
+                .chars()
+                .take(MAX_TRAILER_EVIDENCE_CHARS)
+                .collect::<String>()
+        )
     } else {
         summary
     })
@@ -82,5 +103,9 @@ fn evidence_of(entry: &Map<String, Value>) -> Option<String> {
         }
         return serde_json::to_string(debug).ok();
     }
-    entry.get("value").and_then(Value::as_str).filter(|value| !value.is_empty()).map(str::to_owned)
+    entry
+        .get("value")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }

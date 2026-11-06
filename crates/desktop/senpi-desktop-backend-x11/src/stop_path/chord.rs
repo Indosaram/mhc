@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use senpi_desktop_core::keys::parse_key;
 use senpi_desktop_safety::{Chord, StopPathError};
 
-use crate::input::{Keymap, keysym_variants};
+use crate::input::{keysym_variants, Keymap};
 
 /// X11 spelling of the default stop chord (`computer.stopHotkey` on Linux).
 pub const DEFAULT_STOP_CHORD: &str = "ctrl+alt+shift+escape";

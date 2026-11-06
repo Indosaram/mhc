@@ -2,7 +2,9 @@ use crate::common;
 
 use std::time::{Duration, Instant};
 
-use senpi_desktop_backend_fake::{DelayMs, FakeBackend, FakeClock, FakeMethod, FakeScenario, ScenarioError};
+use senpi_desktop_backend_fake::{
+    DelayMs, FakeBackend, FakeClock, FakeMethod, FakeScenario, ScenarioError,
+};
 use senpi_desktop_core::backend::Backend;
 use senpi_desktop_core::error::ErrorCode;
 
@@ -27,8 +29,9 @@ fn fixture_capabilities_count_the_scripted_displays() {
 
 #[test]
 fn capability_overlay_overrides_only_the_named_fields() {
-    let scenario = FakeScenario::from_json(r#"{"capabilities":{"capture":false,"displayCount":7}}"#)
-        .expect("scenario parses");
+    let scenario =
+        FakeScenario::from_json(r#"{"capabilities":{"capture":false,"displayCount":7}}"#)
+            .expect("scenario parses");
     assert!(!scenario.capabilities.capture);
     assert_eq!(scenario.capabilities.display_count, 7);
     assert!(scenario.capabilities.input);
@@ -36,14 +39,16 @@ fn capability_overlay_overrides_only_the_named_fields() {
 
 #[test]
 fn unknown_capability_field_is_rejected() {
-    let err = FakeScenario::from_json(r#"{"capabilities":{"captur":false}}"#).expect_err("typo rejected");
+    let err =
+        FakeScenario::from_json(r#"{"capabilities":{"captur":false}}"#).expect_err("typo rejected");
     assert!(matches!(err, ScenarioError::Parse(_)), "{err}");
     assert!(err.to_string().contains("captur"), "{err}");
 }
 
 #[test]
 fn ax_tree_for_an_unscripted_window_is_rejected() {
-    let err = FakeScenario::from_json(r#"{"ax":{"9":{"role":"window"}}}"#).expect_err("unknown window");
+    let err =
+        FakeScenario::from_json(r#"{"ax":{"9":{"role":"window"}}}"#).expect_err("unknown window");
     assert!(err.to_string().contains("unknown window '9'"), "{err}");
 }
 
@@ -55,8 +60,9 @@ fn unknown_top_level_key_is_rejected() {
 
 #[test]
 fn scripted_failures_are_queued_at_load() {
-    let scenario = FakeScenario::from_json(r#"{"fail_next":[{"method":"displays","code":"Timeout"}]}"#)
-        .expect("scenario parses");
+    let scenario =
+        FakeScenario::from_json(r#"{"fail_next":[{"method":"displays","code":"Timeout"}]}"#)
+            .expect("scenario parses");
     let mut backend = FakeBackend::new(scenario);
     let err = backend.displays().expect_err("scripted failure");
     assert_eq!(err.code, ErrorCode::Timeout);
@@ -79,7 +85,8 @@ fn scalar_delay_applies_to_every_method() {
 
 #[test]
 fn per_method_delay_applies_only_to_its_method() {
-    let scenario = FakeScenario::from_json(r#"{"delay_ms":{"capture":5000}}"#).expect("scenario parses");
+    let scenario =
+        FakeScenario::from_json(r#"{"delay_ms":{"capture":5000}}"#).expect("scenario parses");
     assert_eq!(
         scenario.delay_ms.for_method(FakeMethod::Capture),
         Some(Duration::from_secs(5))
@@ -90,7 +97,8 @@ fn per_method_delay_applies_only_to_its_method() {
 #[test]
 fn delayed_method_blocks_for_at_least_its_delay() {
     // Time is the behavior under test: the engine's timeout tests rely on it.
-    let scenario = FakeScenario::from_json(r#"{"delay_ms":{"displays":25}}"#).expect("scenario parses");
+    let scenario =
+        FakeScenario::from_json(r#"{"delay_ms":{"displays":25}}"#).expect("scenario parses");
     let mut backend = FakeBackend::new(scenario);
     let started = Instant::now();
     backend.displays().expect("displays");

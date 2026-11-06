@@ -1,9 +1,9 @@
 //! Quality gate artifact checks and compatibility.
 
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde_json::Value;
 
 use crate::domain_types::UlwLoopManualQaArtifactRef;
 use crate::paths::is_within_attempt_dir;
@@ -89,7 +89,9 @@ pub struct QualityGateCheckOptions<'a> {
 
 pub fn check_file(path_str: &str, field: &str, opts: Option<&QualityGateCheckOptions>) {
     let Some(options) = opts else { return };
-    let Some(root) = options.repo_root else { return };
+    let Some(root) = options.repo_root else {
+        return;
+    };
     let fs = options.fs.unwrap_or(&RealQualityGateFs);
     if is_poisoned(field) {
         return;
@@ -102,11 +104,17 @@ pub fn check_file(path_str: &str, field: &str, opts: Option<&QualityGateCheckOpt
     };
 
     if !fs.exists(&absolute) {
-        invalid(format!("{field} must point to an existing artifact."), field);
+        invalid(
+            format!("{field} must point to an existing artifact."),
+            field,
+        );
         return;
     }
     if fs.size(&absolute) == 0 {
-        invalid(format!("{field} must point to a non-empty artifact."), field);
+        invalid(
+            format!("{field} must point to a non-empty artifact."),
+            field,
+        );
     }
     if let Some(attempt_dir) = options.current_attempt_dir {
         let attempt_abs = root.join(attempt_dir);
@@ -114,7 +122,9 @@ pub fn check_file(path_str: &str, field: &str, opts: Option<&QualityGateCheckOpt
         let att_str = attempt_abs.to_string_lossy();
         if !is_within_attempt_dir(&abs_str, &att_str) {
             invalid(
-                format!("{field} ({path_str}) must point to an artifact from the current attempt ({attempt_dir})."),
+                format!(
+                    "{field} ({path_str}) must point to an artifact from the current attempt ({attempt_dir})."
+                ),
                 field,
             );
         }
@@ -126,15 +136,24 @@ pub fn parse_artifact_refs(
     opts: Option<&QualityGateCheckOptions>,
 ) -> Vec<UlwLoopManualQaArtifactRef> {
     let Some(v) = value else {
-        invalid("manualQa.artifactRefs must not be empty.", "manualQa.artifactRefs");
+        invalid(
+            "manualQa.artifactRefs must not be empty.",
+            "manualQa.artifactRefs",
+        );
         return Vec::new();
     };
     let Some(arr) = v.as_array() else {
-        invalid("manualQa.artifactRefs must not be empty.", "manualQa.artifactRefs");
+        invalid(
+            "manualQa.artifactRefs must not be empty.",
+            "manualQa.artifactRefs",
+        );
         return Vec::new();
     };
     if arr.is_empty() {
-        invalid("manualQa.artifactRefs must not be empty.", "manualQa.artifactRefs");
+        invalid(
+            "manualQa.artifactRefs must not be empty.",
+            "manualQa.artifactRefs",
+        );
         return Vec::new();
     }
 

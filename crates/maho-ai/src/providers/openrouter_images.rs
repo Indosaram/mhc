@@ -4,7 +4,7 @@ use crate::auth::helpers::{env_api_key_auth, lazy_oauth};
 use crate::auth::oauth::load::load_open_router_oauth;
 use crate::auth::types::ProviderAuth;
 use crate::images_models::{CreateImagesProviderOptions, ImagesProvider, create_images_provider};
-use crate::providers::{images::register_builtins::generate_images_openrouter};
+use crate::providers::images::register_builtins::generate_images_openrouter;
 use std::sync::Arc;
 
 pub fn openrouter_images_provider() -> Arc<dyn ImagesProvider> {
@@ -12,12 +12,21 @@ pub fn openrouter_images_provider() -> Arc<dyn ImagesProvider> {
         id: "openrouter".into(),
         name: Some("OpenRouter".into()),
         auth: ProviderAuth {
-            api_key: Some(Arc::new(env_api_key_auth("OpenRouter API key", &["OPENROUTER_API_KEY"]))),
-            oauth: Some(Arc::new(lazy_oauth("OpenRouter OAuth", false, Some("Sign in with OpenRouter".into()), || {
-                Box::pin(load_open_router_oauth())
-            }))),
+            api_key: Some(Arc::new(env_api_key_auth(
+                "OpenRouter API key",
+                &["OPENROUTER_API_KEY"],
+            ))),
+            oauth: Some(Arc::new(lazy_oauth(
+                "OpenRouter OAuth",
+                false,
+                Some("Sign in with OpenRouter".into()),
+                || Box::pin(load_open_router_oauth()),
+            ))),
         },
-        models: crate::image_models::get_image_models("openrouter").into_iter().cloned().collect(),
+        models: crate::image_models::get_image_models("openrouter")
+            .into_iter()
+            .cloned()
+            .collect(),
         refresh_models: None,
         api: generate_images_openrouter(),
     })

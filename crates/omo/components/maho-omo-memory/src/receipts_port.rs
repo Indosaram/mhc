@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use memory_core::receipts::{
-    append_memory_receipt_once, MemoryReceiptInput,
-};
+use memory_core::receipts::{MemoryReceiptInput, append_memory_receipt_once};
 use memory_core::reflection::ReflectionOutcome;
 
 pub trait MemoryReceiptsPort: Send + Sync {
@@ -53,15 +51,16 @@ pub fn emit_memory_receipt(
     let default_port = DefaultReceiptsPort;
     let effective_port = port.unwrap_or(&default_port);
     if let Err(error) = effective_port.append(runtime_dir, input)
-        && let Some(warn) = warn {
-            let mut fields = BTreeMap::new();
-            fields.insert("kind".to_string(), input.kind().to_string());
-            fields.insert("event".to_string(), input.event().to_string());
-            fields.insert("error".to_string(), error);
-            warn(
-                "memory receipt write failed; the run's own artifact still records its outcome",
-                &fields,
-            );
+        && let Some(warn) = warn
+    {
+        let mut fields = BTreeMap::new();
+        fields.insert("kind".to_string(), input.kind().to_string());
+        fields.insert("event".to_string(), input.event().to_string());
+        fields.insert("error".to_string(), error);
+        warn(
+            "memory receipt write failed; the run's own artifact still records its outcome",
+            &fields,
+        );
     }
 }
 
@@ -74,7 +73,10 @@ pub fn run_receipt(
     MemoryReceiptInput::Run {
         kind: ledger.kind.clone(),
         run_id: ledger.run_id.clone(),
-        trigger: ledger.origin.clone().unwrap_or_else(|| ledger.trigger.clone()),
+        trigger: ledger
+            .origin
+            .clone()
+            .unwrap_or_else(|| ledger.trigger.clone()),
         event: event.to_string(),
         generation: ledger.started_at.clone(),
         sha: extra.sha,

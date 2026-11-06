@@ -112,7 +112,8 @@ pub fn encode_log_record(record: &ReadableLogRecord) -> LogRecord {
     }
 }
 
-pub fn encode_span(span: &ReadableSpan) -> Span {    Span {
+pub fn encode_span(span: &ReadableSpan) -> Span {
+    Span {
         trace_id: hex_to_bytes(&span.span_context.trace_id),
         span_id: hex_to_bytes(&span.span_context.span_id),
         trace_state: String::new(),

@@ -4,8 +4,15 @@
 //! drain need goes through these two ports: the sender side (`GatewayEndpointPort`) and the
 //! receiver side (`SessionRuntimePort`).
 
-pub type ReleaseSessionCallback = Option<Arc<dyn Fn(GatewayEndpointRef, ReleaseSessionRequest) -> BoxFuture<ReleaseSessionReply> + Send + Sync>>;
-pub type RespondUiCallback = Option<Arc<dyn Fn(GatewayEndpointRef, UiAnswer) -> BoxFuture<UiAnswerReply> + Send + Sync>>;
+pub type ReleaseSessionCallback = Option<
+    Arc<
+        dyn Fn(GatewayEndpointRef, ReleaseSessionRequest) -> BoxFuture<ReleaseSessionReply>
+            + Send
+            + Sync,
+    >,
+>;
+pub type RespondUiCallback =
+    Option<Arc<dyn Fn(GatewayEndpointRef, UiAnswer) -> BoxFuture<UiAnswerReply> + Send + Sync>>;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -129,7 +136,10 @@ pub struct GatewayWakeReply {
 
 impl GatewayWakeReply {
     pub fn unroutable_no_live_session() -> Self {
-        Self { admitted: Vec::new(), unroutable: Some("no_live_session".to_owned()) }
+        Self {
+            admitted: Vec::new(),
+            unroutable: Some("no_live_session".to_owned()),
+        }
     }
 }
 
@@ -183,7 +193,11 @@ pub enum ReleaseSessionReply {
     #[serde(rename = "true")]
     Success { data: ReleaseSuccessData },
     #[serde(rename = "false")]
-    Failure { error: String, #[serde(default, skip_serializing_if = "Option::is_none")] error_data: Option<ReleaseErrorData> },
+    Failure {
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_data: Option<ReleaseErrorData>,
+    },
 }
 
 impl ReleaseSessionReply {
@@ -211,9 +225,11 @@ pub enum UiAnswerReply {
 /// Sender side: reaching another session's endpoint.
 #[derive(Clone)]
 pub struct GatewayEndpointPort {
-    pub wake: Arc<dyn Fn(GatewayEndpointRef, Vec<String>) -> BoxFuture<GatewayWakeReply> + Send + Sync>,
+    pub wake:
+        Arc<dyn Fn(GatewayEndpointRef, Vec<String>) -> BoxFuture<GatewayWakeReply> + Send + Sync>,
     pub release_session: ReleaseSessionCallback,
-    pub classify_liveness: Option<Arc<dyn Fn(GatewayEndpointRef) -> BoxFuture<EndpointLiveness> + Send + Sync>>,
+    pub classify_liveness:
+        Option<Arc<dyn Fn(GatewayEndpointRef) -> BoxFuture<EndpointLiveness> + Send + Sync>>,
     pub respond_ui: RespondUiCallback,
 }
 
@@ -222,7 +238,14 @@ impl GatewayEndpointPort {
     /// reach a receiver before COMMIT.
     pub fn inert() -> Self {
         Self {
-            wake: Arc::new(|_, _| Box::pin(async { GatewayWakeReply { admitted: Vec::new(), unroutable: Some("extension_transaction".into()) } })),
+            wake: Arc::new(|_, _| {
+                Box::pin(async {
+                    GatewayWakeReply {
+                        admitted: Vec::new(),
+                        unroutable: Some("extension_transaction".into()),
+                    }
+                })
+            }),
             release_session: None,
             classify_liveness: None,
             respond_ui: None,
@@ -252,9 +275,20 @@ pub struct SessionAdmissionGate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeliverySender {
-    Agent { session_id: String, #[serde(default, skip_serializing_if = "Option::is_none")] name: Option<String> },
-    CommandLine { #[serde(default, skip_serializing_if = "Option::is_none")] user: Option<String> },
-    External { platform: String, #[serde(default, skip_serializing_if = "Option::is_none")] author: Option<String> },
+    Agent {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    CommandLine {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+    },
+    External {
+        platform: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,7 +315,8 @@ pub struct AdmitResult {
 pub struct SessionRuntimePort {
     pub phase: Arc<dyn Fn() -> RuntimePhase + Send + Sync>,
     pub admission_gate: Arc<dyn Fn() -> SessionAdmissionGate + Send + Sync>,
-    pub admit_external_message: Arc<dyn Fn(AdmitExternalMessageInput) -> Result<AdmitResult, String> + Send + Sync>,
+    pub admit_external_message:
+        Arc<dyn Fn(AdmitExternalMessageInput) -> Result<AdmitResult, String> + Send + Sync>,
     pub list_admitted_deliveries: Arc<dyn Fn() -> AdmissionLedger + Send + Sync>,
 }
 
@@ -313,10 +348,15 @@ pub struct SessionControlDrainResult {
 }
 
 /// The host's `admitted` list names what the runtime took; the gateway's own refusals stay on the row.
-pub fn to_session_control_drain_result(admitted: &[(String, GatewayAdmissionKind)]) -> SessionControlDrainResult {
+pub fn to_session_control_drain_result(
+    admitted: &[(String, GatewayAdmissionKind)],
+) -> SessionControlDrainResult {
     let mut taken = Vec::new();
     for (delivery_id, kind) in admitted {
-        if matches!(kind, GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired) {
+        if matches!(
+            kind,
+            GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired
+        ) {
             continue;
         }
         let external = match kind {
@@ -328,9 +368,14 @@ pub fn to_session_control_drain_result(admitted: &[(String, GatewayAdmissionKind
             GatewayAdmissionKind::AlreadyAdmitted => ExternalAdmissionKind::AlreadyAdmitted,
             GatewayAdmissionKind::NotSteerable | GatewayAdmissionKind::Expired => continue,
         };
-        taken.push(Admission { delivery_id: delivery_id.clone(), kind: external });
+        taken.push(Admission {
+            delivery_id: delivery_id.clone(),
+            kind: external,
+        });
     }
-    SessionControlDrainResult { admitted: Some(taken) }
+    SessionControlDrainResult {
+        admitted: Some(taken),
+    }
 }
 
 #[cfg(test)]
@@ -347,7 +392,10 @@ mod tests {
         ];
         let result = to_session_control_drain_result(&admitted);
         let admitted = result.admitted.unwrap_or_default();
-        let ids: Vec<&str> = admitted.iter().map(|entry| entry.delivery_id.as_str()).collect();
+        let ids: Vec<&str> = admitted
+            .iter()
+            .map(|entry| entry.delivery_id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a", "d"]);
     }
 

@@ -72,8 +72,11 @@ impl<'de> Deserialize<'de> for CompactionModelOverride {
             )));
         };
         Ok(Self {
-            reserve_tokens: token_budget(object.get("reserveTokens"), "compaction.modelOverrides reserveTokens")
-                .map_err(serde::de::Error::custom)?,
+            reserve_tokens: token_budget(
+                object.get("reserveTokens"),
+                "compaction.modelOverrides reserveTokens",
+            )
+            .map_err(serde::de::Error::custom)?,
             keep_recent_tokens: token_budget(
                 object.get("keepRecentTokens"),
                 "compaction.modelOverrides keepRecentTokens",
@@ -92,9 +95,15 @@ impl<'de> Deserialize<'de> for CompactionSettings {
         let empty = serde_json::Map::new();
         let object = value.as_object().unwrap_or(&empty);
         let flag = |key: &str| object.get(key).and_then(Value::as_bool);
-        let number = |key: &str| object.get(key).and_then(Value::as_f64).filter(|number| number.is_finite());
+        let number = |key: &str| {
+            object
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|number| number.is_finite())
+        };
         let token = |key: &str| {
-            token_budget(object.get(key), &format!("compaction.{key}")).map_err(serde::de::Error::custom)
+            token_budget(object.get(key), &format!("compaction.{key}"))
+                .map_err(serde::de::Error::custom)
         };
         let model_overrides = match object.get("modelOverrides") {
             Some(Value::Object(overrides)) => Some(
@@ -168,7 +177,9 @@ fn default_token_setting(field: CompactionTokenField) -> i64 {
 }
 
 pub fn compaction_enabled(settings: Option<&CompactionSettings>) -> bool {
-    settings.and_then(|settings| settings.enabled).unwrap_or(true)
+    settings
+        .and_then(|settings| settings.enabled)
+        .unwrap_or(true)
 }
 
 /// Resolves one token budget through the model override, then the ordinary setting, then the
@@ -192,7 +203,10 @@ pub fn compaction_token_setting(
     }
 
     let model_key = for_model.map(|selector| format!("{}/{}", selector.provider, selector.id));
-    let override_value = match (&model_key, settings.and_then(|settings| settings.model_overrides.as_ref())) {
+    let override_value = match (
+        &model_key,
+        settings.and_then(|settings| settings.model_overrides.as_ref()),
+    ) {
         (Some(key), Some(overrides)) => overrides.get(key).and_then(|entry| match field {
             CompactionTokenField::ReserveTokens => entry.reserve_tokens,
             CompactionTokenField::KeepRecentTokens => entry.keep_recent_tokens,
@@ -208,7 +222,9 @@ pub fn compaction_token_setting(
             field.as_str()
         ));
     }
-    Ok(override_value.or(ordinary).unwrap_or_else(|| default_token_setting(field)))
+    Ok(override_value
+        .or(ordinary)
+        .unwrap_or_else(|| default_token_setting(field)))
 }
 
 pub fn compaction_reserve_tokens(
@@ -230,54 +246,102 @@ mod tests {
     use super::*;
 
     fn selector<'a>() -> CompactionModelSelector<'a> {
-        CompactionModelSelector { provider: "anthropic", id: "claude" }
+        CompactionModelSelector {
+            provider: "anthropic",
+            id: "claude",
+        }
     }
 
     #[test]
     fn compaction_defaults_to_enabled() {
         assert!(compaction_enabled(None));
-        let settings = CompactionSettings { enabled: Some(false), ..Default::default() };
+        let settings = CompactionSettings {
+            enabled: Some(false),
+            ..Default::default()
+        };
         assert!(!compaction_enabled(Some(&settings)));
     }
 
     #[test]
     fn token_budgets_fall_back_to_the_built_in_defaults() {
-        assert_eq!(compaction_reserve_tokens(None, None).expect("reserve"), 16384);
-        assert_eq!(compaction_keep_recent_tokens(None, None).expect("keep"), 20000);
+        assert_eq!(
+            compaction_reserve_tokens(None, None).expect("reserve"),
+            16384
+        );
+        assert_eq!(
+            compaction_keep_recent_tokens(None, None).expect("keep"),
+            20000
+        );
     }
 
     #[test]
     fn an_ordinary_setting_overrides_the_default() {
-        let settings = CompactionSettings { reserve_tokens: Some(4096), ..Default::default() };
-        assert_eq!(compaction_reserve_tokens(Some(&settings), None).expect("reserve"), 4096);
+        let settings = CompactionSettings {
+            reserve_tokens: Some(4096),
+            ..Default::default()
+        };
+        assert_eq!(
+            compaction_reserve_tokens(Some(&settings), None).expect("reserve"),
+            4096
+        );
     }
 
     #[test]
     fn a_model_override_wins_over_the_ordinary_setting() {
         let mut overrides = BTreeMap::new();
-        overrides.insert("anthropic/claude".to_owned(), CompactionModelOverride { reserve_tokens: Some(2048), keep_recent_tokens: None });
-        let settings = CompactionSettings { reserve_tokens: Some(4096), model_overrides: Some(overrides), ..Default::default() };
-        assert_eq!(compaction_reserve_tokens(Some(&settings), Some(selector())).expect("reserve"), 2048);
+        overrides.insert(
+            "anthropic/claude".to_owned(),
+            CompactionModelOverride {
+                reserve_tokens: Some(2048),
+                keep_recent_tokens: None,
+            },
+        );
+        let settings = CompactionSettings {
+            reserve_tokens: Some(4096),
+            model_overrides: Some(overrides),
+            ..Default::default()
+        };
+        assert_eq!(
+            compaction_reserve_tokens(Some(&settings), Some(selector())).expect("reserve"),
+            2048
+        );
     }
 
     #[test]
     fn an_invalid_ordinary_setting_is_an_error() {
-        let settings = CompactionSettings { reserve_tokens: Some(-1), ..Default::default() };
+        let settings = CompactionSettings {
+            reserve_tokens: Some(-1),
+            ..Default::default()
+        };
         assert!(compaction_reserve_tokens(Some(&settings), None).is_err());
     }
 
     #[test]
     fn an_invalid_override_is_an_error_naming_the_key() {
         let mut overrides = BTreeMap::new();
-        overrides.insert("anthropic/claude".to_owned(), CompactionModelOverride { reserve_tokens: Some(-5), keep_recent_tokens: None });
-        let settings = CompactionSettings { model_overrides: Some(overrides), ..Default::default() };
-        let error = compaction_reserve_tokens(Some(&settings), Some(selector())).expect_err("error");
+        overrides.insert(
+            "anthropic/claude".to_owned(),
+            CompactionModelOverride {
+                reserve_tokens: Some(-5),
+                keep_recent_tokens: None,
+            },
+        );
+        let settings = CompactionSettings {
+            model_overrides: Some(overrides),
+            ..Default::default()
+        };
+        let error =
+            compaction_reserve_tokens(Some(&settings), Some(selector())).expect_err("error");
         assert!(error.contains("anthropic/claude"));
     }
 
     #[test]
     fn the_ideal_projection_carries_the_ideal_fields() {
-        let settings = CompactionSettings { grace_band_enabled: Some(false), reserve_scaling_enabled: Some(true), ..Default::default() };
+        let settings = CompactionSettings {
+            grace_band_enabled: Some(false),
+            reserve_scaling_enabled: Some(true),
+            ..Default::default()
+        };
         let ideal = settings.ideal();
         assert_eq!(ideal.grace_band_enabled, Some(false));
         assert_eq!(ideal.reserve_scaling_enabled, Some(true));
@@ -290,14 +354,22 @@ mod tests {
                 .expect("settings");
         assert_eq!(settings.reserve_tokens, Some(4096));
         assert_eq!(settings.grace_band_enabled, Some(false));
-        assert_eq!(settings.model_overrides.as_ref().and_then(|m| m.get("a/b")).and_then(|o| o.reserve_tokens), Some(1));
+        assert_eq!(
+            settings
+                .model_overrides
+                .as_ref()
+                .and_then(|m| m.get("a/b"))
+                .and_then(|o| o.reserve_tokens),
+            Some(1)
+        );
     }
 
     #[test]
     fn a_mistyped_setting_falls_back_while_token_budgets_stay_strict() {
-        let settings: CompactionSettings =
-            serde_json::from_str(r#"{"enabled":"false","speculativeFraction":"0.5","reserveTokens":4096.0}"#)
-                .expect("settings");
+        let settings: CompactionSettings = serde_json::from_str(
+            r#"{"enabled":"false","speculativeFraction":"0.5","reserveTokens":4096.0}"#,
+        )
+        .expect("settings");
         assert_eq!(settings.enabled, None);
         assert_eq!(settings.speculative_fraction, None);
         assert_eq!(settings.reserve_tokens, Some(4096));

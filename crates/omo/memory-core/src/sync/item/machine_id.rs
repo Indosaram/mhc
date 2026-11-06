@@ -20,26 +20,24 @@ fn platform_machine_id() -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let text = run(
-            std::process::Command::new("ioreg")
-                .args(["-rd1", "-c", "IOPlatformExpertDevice"]),
-        )?;
-        text
-            .split("\"IOPlatformUUID\" = \"")
+        let text = run(std::process::Command::new("ioreg").args([
+            "-rd1",
+            "-c",
+            "IOPlatformExpertDevice",
+        ]))?;
+        text.split("\"IOPlatformUUID\" = \"")
             .nth(1)
             .and_then(|s| s.split('"').next())
             .map(str::to_owned)
     }
     #[cfg(target_os = "windows")]
     {
-        let text = run(
-            std::process::Command::new("reg").args([
-                "query",
-                r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                "/v",
-                "MachineGuid",
-            ]),
-        )?;
+        let text = run(std::process::Command::new("reg").args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ]))?;
         text.split("REG_SZ").nth(1).map(|s| s.trim().to_owned())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -112,7 +110,10 @@ fn bounded_output(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(Error::new(ErrorKind::TimedOut, "machine-id command timed out"));
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                "machine-id command timed out",
+            ));
         }
         if let Some(status) = child.0.try_wait()? {
             if !status.success() {
@@ -158,7 +159,10 @@ mod tests {
         let result = bounded_output(&mut child, std::time::Duration::ZERO);
 
         // Then: timeout is reported and the child has been terminated and reaped.
-        assert_eq!(result.expect_err("timeout").kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            result.expect_err("timeout").kind(),
+            std::io::ErrorKind::TimedOut
+        );
         assert!(!child.try_wait()?.expect("reaped child").success());
         Ok(())
     }

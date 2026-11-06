@@ -22,7 +22,10 @@ mod tests {
 
         let core = collect_core(&fixture.repo, Some(head.as_str())).unwrap();
         assert!(core.iter().any(|entry| entry.path == "system/persona.md"));
-        assert_eq!(UNCOMMITTED_LABEL, crate::palace::entry_collector::UNCOMMITTED_LABEL);
+        assert_eq!(
+            UNCOMMITTED_LABEL,
+            crate::palace::entry_collector::UNCOMMITTED_LABEL
+        );
         assert_eq!(
             HISTORY_MAX_COMMITS,
             crate::palace::history_collector::HISTORY_MAX_COMMITS

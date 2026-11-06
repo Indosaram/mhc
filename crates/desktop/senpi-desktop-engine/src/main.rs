@@ -36,9 +36,14 @@ fn main() -> ExitCode {
     }
     match Cli::parse().mode() {
         Mode::Schema => print_schema(),
-        Mode::Oneshot { endpoint, serve_args } => match endpoint.map_or_else(client::default_endpoint, Ok) {
+        Mode::Oneshot {
+            endpoint,
+            serve_args,
+        } => match endpoint.map_or_else(client::default_endpoint, Ok) {
             Ok(endpoint) => {
-                match oneshot::run(|request| client::exchange_or_start(&endpoint, &serve_args, request)) {
+                match oneshot::run(|request| {
+                    client::exchange_or_start(&endpoint, &serve_args, request)
+                }) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => fail(&format!("--oneshot: {error}")),
                 }
@@ -51,9 +56,10 @@ fn main() -> ExitCode {
             allow_host_relay_only_stop,
         } => match endpoint.map_or_else(client::default_endpoint, Ok) {
             Ok(endpoint) => {
-                let server = mcp::Server::new(allow_host_relay_only_stop, |request: &serde_json::Value| {
-                    client::exchange_or_start(&endpoint, &serve_args, request)
-                });
+                let server =
+                    mcp::Server::new(allow_host_relay_only_stop, |request: &serde_json::Value| {
+                        client::exchange_or_start(&endpoint, &serve_args, request)
+                    });
                 match server.run(std::io::stdin().lock(), std::io::stdout().lock()) {
                     Ok(()) => ExitCode::SUCCESS,
                     Err(error) => fail(&format!("--mcp: {error}")),
@@ -77,9 +83,12 @@ fn main() -> ExitCode {
                 .map(|()| println!("engine: selftest ok"))
         }),
         Mode::Stdio => with_engine(|engine| async move {
-            let served =
-                connection::serve_connection(Arc::clone(&engine), tokio::io::stdin(), tokio::io::stdout())
-                    .await;
+            let served = connection::serve_connection(
+                Arc::clone(&engine),
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+            )
+            .await;
             engine.shutdown().await;
             served.map_err(|error| error.to_string())
         }),

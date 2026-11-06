@@ -5,9 +5,9 @@ use std::sync::Arc;
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    cleanup_isolation, clone_with_symbols, ensure_isolation, ApfsBackend, CloneSymbols,
-    EnsureIsolationOptions, IsolationBackend, IsolationError, LoadApfs, NativeLoadError,
-    CLONE_NOFOLLOW,
+    ApfsBackend, CLONE_NOFOLLOW, CloneSymbols, EnsureIsolationOptions, IsolationBackend,
+    IsolationError, LoadApfs, NativeLoadError, cleanup_isolation, clone_with_symbols,
+    ensure_isolation,
 };
 
 struct FakeSymbols {
@@ -60,17 +60,20 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
     std::fs::create_dir_all(lower.join("node_modules/.bin")).expect("node_modules");
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink("../../tracked", lower.join("node_modules/.bin/x")).expect("bin link");
+        std::os::unix::fs::symlink("../../tracked", lower.join("node_modules/.bin/x"))
+            .expect("bin link");
     }
     std::fs::create_dir_all(lower.join("many")).expect("many");
     for index in 0..5000 {
         std::fs::write(lower.join(format!("many/{index}")), format!("file {index}")).expect("file");
     }
-    assert!(std::process::Command::new("mkfifo")
-        .arg(lower.join("fifo"))
-        .status()
-        .expect("mkfifo")
-        .success());
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(lower.join("fifo"))
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
     let backend = ApfsBackend::default();
     assert!(backend.probe(&lower, None).expect("probe").available);
     let merged = f.root.join("merged");
@@ -97,10 +100,12 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
     #[cfg(unix)]
     {
         for name in ["link", "node_modules/.bin/x"] {
-            assert!(std::fs::symlink_metadata(merged.join(name))
-                .expect("lstat")
-                .file_type()
-                .is_symlink());
+            assert!(
+                std::fs::symlink_metadata(merged.join(name))
+                    .expect("lstat")
+                    .file_type()
+                    .is_symlink()
+            );
         }
     }
     assert!(!merged.join("fifo").exists());
@@ -153,7 +158,10 @@ fn ensure_removes_stale_snapshot_locks_before_the_git_consistency_probe() {
     })
     .expect("handle");
     assert!(!handle.merged_dir.join(".git/index.lock").exists());
-    assert_eq!(git(&handle.merged_dir, &["status", "--porcelain"]).expect("status"), "");
+    assert_eq!(
+        git(&handle.merged_dir, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
     cleanup_isolation(&handle).expect("cleanup");
 }
 
@@ -166,7 +174,9 @@ fn apfs_loader_failures_other_than_a_missing_module_propagate() {
         })
     });
     let backend = ApfsBackend::with_platform(load, "darwin");
-    let error = backend.probe(Path::new("unused"), None).expect_err("must fail");
+    let error = backend
+        .probe(Path::new("unused"), None)
+        .expect_err("must fail");
     assert!(!error.is_unavailable());
     assert!(error.to_string().contains("dlopen exploded"));
 }
@@ -180,7 +190,9 @@ fn apfs_treats_a_missing_native_module_as_unavailable() {
         })
     });
     let backend = ApfsBackend::with_platform(load, "darwin");
-    let error = backend.probe(Path::new("unused"), None).expect_err("must fail");
+    let error = backend
+        .probe(Path::new("unused"), None)
+        .expect_err("must fail");
     assert!(error.is_unavailable());
     let _ = fixture();
     let _ = IsolationError::other("placeholder");

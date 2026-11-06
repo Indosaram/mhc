@@ -128,8 +128,11 @@ impl MemberSelfPoller {
         let from = filter.and_then(|filter| filter.from.clone());
         self.with_lease(|| {
             self.check_pending_under_lease()?;
-            let messages =
-                list_unread_messages(&self.deps.team_run_id, &self.deps.member_name, &self.deps.config)?;
+            let messages = list_unread_messages(
+                &self.deps.team_run_id,
+                &self.deps.member_name,
+                &self.deps.config,
+            )?;
             for message in messages {
                 if let Some(from) = from.as_ref()
                     && &message.from != from
@@ -165,7 +168,10 @@ impl MemberSelfPoller {
 
     /// Message ids currently injected but not yet acked through the session JSONL.
     pub fn pending_message_ids(&self) -> Vec<String> {
-        self.pending_lock().iter().map(|(id, _)| id.clone()).collect()
+        self.pending_lock()
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Lease-free pre-check: false only when the inbox provably holds no unread `*.json`.
@@ -203,9 +209,15 @@ impl MemberSelfPoller {
         let Ok(signature) = session_jsonl_signature(&self.deps.session_dir) else {
             return false;
         };
-        let misses = self.ack_misses.lock().unwrap_or_else(PoisonError::into_inner);
+        let misses = self
+            .ack_misses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let pending = self.pending_lock();
-        !pending.is_empty() && pending.iter().all(|(id, _)| misses.get(id) == Some(&signature))
+        !pending.is_empty()
+            && pending
+                .iter()
+                .all(|(id, _)| misses.get(id) == Some(&signature))
     }
 
     fn is_stopped(&self) -> bool {
@@ -254,7 +266,10 @@ impl MemberSelfPoller {
         } else {
             session_jsonl_signature(&self.deps.session_dir).ok()
         };
-        let mut misses = self.ack_misses.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut misses = self
+            .ack_misses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut scan = self.ack_scan.lock().unwrap_or_else(PoisonError::into_inner);
         let mut scanned = false;
         let mut kept: Vec<(String, PendingDelivery)> = Vec::new();
@@ -298,7 +313,12 @@ impl MemberSelfPoller {
 
     fn process_message(&self, message: Message) -> Result<(), SelfPollerError> {
         let deps = &self.deps;
-        if is_message_consumed(&deps.team_run_id, &deps.member_name, &message.message_id, &deps.config)? {
+        if is_message_consumed(
+            &deps.team_run_id,
+            &deps.member_name,
+            &message.message_id,
+            &deps.config,
+        )? {
             ack_messages(
                 &deps.team_run_id,
                 &deps.member_name,
@@ -408,11 +428,18 @@ fn read_reserved_message(path: &Path) -> Result<Message, SelfPollerError> {
 
 fn inbox_dir(deps: &MemberSelfPollerDeps) -> Result<PathBuf, SelfPollerError> {
     let base_dir = deps.config.base_dir.as_deref().unwrap_or("");
-    Ok(get_inbox_dir(Path::new(base_dir), &deps.team_run_id, &deps.member_name)?)
+    Ok(get_inbox_dir(
+        Path::new(base_dir),
+        &deps.team_run_id,
+        &deps.member_name,
+    )?)
 }
 
 fn append_delivered_event(deps: &MemberSelfPollerDeps, message: &Message) {
     if let Some(append_event) = deps.append_event.as_ref() {
-        append_event(TeamMessageEvent::for_message("team_message_delivered", message));
+        append_event(TeamMessageEvent::for_message(
+            "team_message_delivered",
+            message,
+        ));
     }
 }

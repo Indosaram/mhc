@@ -4,11 +4,11 @@ use crate::google_fixtures;
 
 use google_fixtures::tool;
 use maho_ai::api::google_shared::{
-    convert_tools, resolve_google_function_calling_mode, supports_google_strict_tool_sampling,
-    FunctionCallingConfigMode,
+    FunctionCallingConfigMode, convert_tools, resolve_google_function_calling_mode,
+    supports_google_strict_tool_sampling,
 };
 use maho_ai::types::{ConstrainedSampling, ConstrainedSamplingConfig, JsonSchemaStrictness};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn declaration(tools: &[maho_ai::types::Tool], use_parameters: bool) -> Value {
     let converted = convert_tools(tools, use_parameters, true).expect("convertTools succeeds");
@@ -17,10 +17,11 @@ fn declaration(tools: &[maho_ai::types::Tool], use_parameters: bool) -> Value {
 
 fn strict_tool(parameters: Value) -> maho_ai::types::Tool {
     let mut tool = tool("test_tool", "A test tool", parameters);
-    tool.constrained_sampling =
-        Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema {
+    tool.constrained_sampling = Some(ConstrainedSampling::Config(
+        ConstrainedSamplingConfig::JsonSchema {
             strict: JsonSchemaStrictness::Require,
-        }));
+        },
+    ));
     tool
 }
 
@@ -48,7 +49,10 @@ fn strips_json_schema_meta_keys_from_parameters_when_use_parameters_is_true() {
         json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] })
     );
     for key in ["$schema", "$id", "$comment", "$defs", "definitions"] {
-        assert!(decl["parameters"].get(key).is_none(), "parameters must not carry {key}");
+        assert!(
+            decl["parameters"].get(key).is_none(),
+            "parameters must not carry {key}"
+        );
     }
 }
 
@@ -68,7 +72,10 @@ fn recursively_strips_nested_json_schema_meta_keys() {
 
     let decl = declaration(&tools, true);
 
-    assert_eq!(decl["parameters"], json!({ "type": "object", "properties": { "deep": { "type": "string" } } }));
+    assert_eq!(
+        decl["parameters"],
+        json!({ "type": "object", "properties": { "deep": { "type": "string" } } })
+    );
 }
 
 #[test]
@@ -178,10 +185,13 @@ fn handles_tools_without_schema_gracefully() {
 fn uses_validated_function_calling_for_strict_tools_on_gemini_3() {
     let tool = strict_tool(json!({ "type": "object", "properties": {} }));
 
-    assert!(supports_google_strict_tool_sampling("gemini-3.1-pro-preview"));
+    assert!(supports_google_strict_tool_sampling(
+        "gemini-3.1-pro-preview"
+    ));
     assert!(!supports_google_strict_tool_sampling("gemini-2.5-pro"));
     assert_eq!(
-        resolve_google_function_calling_mode(std::slice::from_ref(&tool), None, true).expect("strict mode resolves"),
+        resolve_google_function_calling_mode(std::slice::from_ref(&tool), None, true)
+            .expect("strict mode resolves"),
         Some(FunctionCallingConfigMode::Validated)
     );
     let error = resolve_google_function_calling_mode(std::slice::from_ref(&tool), None, false)
@@ -199,7 +209,8 @@ fn returns_none_for_empty_tool_list() {
 }
 
 #[test]
-fn preserves_a_legitimate_property_named_optional_in_parameters_json_schema_when_use_parameters_is_false() {
+fn preserves_a_legitimate_property_named_optional_in_parameters_json_schema_when_use_parameters_is_false()
+ {
     let tools = [tool(
         "test_tool",
         "A test tool",
@@ -247,7 +258,8 @@ fn preserves_a_legitimate_property_named_optional_in_parameters_when_use_paramet
 }
 
 #[test]
-fn preserves_object_valued_const_default_examples_containing_optional_key_in_parameters_json_schema() {
+fn preserves_object_valued_const_default_examples_containing_optional_key_in_parameters_json_schema()
+ {
     let tools = [tool(
         "test_tool",
         "A test tool",
@@ -297,5 +309,8 @@ fn strips_optional_from_any_of_branches_on_both_use_parameters_paths() {
     );
 
     let parameters = declaration(&tools, true);
-    assert_eq!(parameters["parameters"], json!({ "anyOf": [{ "type": "string" }, { "type": "number" }] }));
+    assert_eq!(
+        parameters["parameters"],
+        json!({ "anyOf": [{ "type": "string" }, { "type": "number" }] })
+    );
 }

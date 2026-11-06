@@ -7,7 +7,7 @@
 //! boundary: a `write_http_metadata` that regressed to a no-op, or one applied after the
 //! overrides, fails here.
 
-use get_worker::{route, HttpMetadata, Method, Request, Response, IMMUTABLE};
+use get_worker::{HttpMetadata, IMMUTABLE, Method, Request, Response, route};
 
 use crate::fakes::{Harness, StaticFetcher};
 
@@ -64,8 +64,11 @@ fn a_get_serves_the_stored_http_metadata_and_the_service_overrides_win() {
     let h = Harness::new("", StaticFetcher::new());
     mirror(&h);
 
-    let response =
-        route(&request(Method::Get, "/v/5.1.1/omo-linux-x64"), &h.context()).expect("route");
+    let response = route(
+        &request(Method::Get, "/v/5.1.1/omo-linux-x64"),
+        &h.context(),
+    )
+    .expect("route");
 
     assert_eq!(response.status, 200);
     assert_eq!(response.body_text(), "binary-bytes");
@@ -78,8 +81,11 @@ fn a_head_returns_the_same_metadata_headers_with_no_body() {
     let h = Harness::new("", StaticFetcher::new());
     mirror(&h);
 
-    let response =
-        route(&request(Method::Head, "/v/5.1.1/omo-linux-x64"), &h.context()).expect("route");
+    let response = route(
+        &request(Method::Head, "/v/5.1.1/omo-linux-x64"),
+        &h.context(),
+    )
+    .expect("route");
 
     assert_eq!(response.status, 200);
     assert!(response.body.is_none());
@@ -108,11 +114,15 @@ fn the_metadata_survives_the_edge_cache_boundary() {
 #[test]
 fn an_object_without_stored_metadata_writes_no_metadata_headers() {
     let h = Harness::new("", StaticFetcher::new());
-    h.bucket.put("releases/v5.1.1/omo-linux-x64", "binary-bytes");
+    h.bucket
+        .put("releases/v5.1.1/omo-linux-x64", "binary-bytes");
     h.bucket.put("releases/v5.1.1/.complete", "{}");
 
-    let response =
-        route(&request(Method::Get, "/v/5.1.1/omo-linux-x64"), &h.context()).expect("route");
+    let response = route(
+        &request(Method::Get, "/v/5.1.1/omo-linux-x64"),
+        &h.context(),
+    )
+    .expect("route");
 
     assert_eq!(response.headers.get("Content-Language"), None);
     assert_eq!(response.headers.get("Content-Encoding"), None);

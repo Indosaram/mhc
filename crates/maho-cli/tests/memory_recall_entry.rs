@@ -11,13 +11,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use maho_omo_memory::kibitzer_nudge_tool::{KibitzerNudgeInput, KibitzerNudgeParams, execute_nudge};
+use maho_omo_memory::kibitzer_nudge_tool::{
+    KibitzerNudgeInput, KibitzerNudgeParams, execute_nudge,
+};
 use memory_core::git::{
     GitCommitAuthor, GitExec, GitExecOptions, GitExecResult, GitMemoryRepo, GitMemoryRepoOptions,
     GitSeedFile, InitializeGitRepoOptions, system_git_exec,
 };
-use memory_core::identity::{build_identity_paths, resolve_memory_identity};
 use memory_core::identity::layout::MemoryIdentityPaths;
+use memory_core::identity::{build_identity_paths, resolve_memory_identity};
 use notify::Watcher;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,7 +37,8 @@ const IDENTITY: &str = "qa-fixture";
 const HINT: &str = "The note records the canary rollback gate and the release order.";
 /// The user prompt. It shares tokens with the corpus doc so recall finds a candidate, and it NEVER contains
 /// the doc's path, which is how the server tells the parent request from the child's envelope.
-const PROMPT: &str = "what does the note record about the canary rollback gate and the release order?";
+const PROMPT: &str =
+    "what does the note record about the canary rollback gate and the release order?";
 /// The scripted tool-call id, which is what the continuation's tool result must name.
 const TOOL_CALL_ID: &str = "call_qa_nudge";
 /// `memory.recall.max_items`: 2, so ONE accepted nudge does NOT reach the cap and the batch continues.
@@ -51,7 +54,10 @@ struct Recorded {
 
 impl Recorded {
     fn new() -> Arc<Self> {
-        Arc::new(Self { parent: Mutex::new(None), children: Mutex::new(Vec::new()) })
+        Arc::new(Self {
+            parent: Mutex::new(None),
+            children: Mutex::new(Vec::new()),
+        })
     }
 
     fn set_parent(&self, body: String) {
@@ -65,11 +71,17 @@ impl Recorded {
     }
 
     fn parent(&self) -> Option<String> {
-        self.parent.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.parent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn children(&self) -> Vec<String> {
-        self.children.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.children
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -91,11 +103,15 @@ async fn read_request(connection: &mut TcpStream) -> std::io::Result<Option<Stri
                         .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
                         .map(|(_, value)| value.trim().to_owned())
                 })
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing content length"))?
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "missing content length")
+                })?
                 .parse::<usize>()
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             if request.len() >= end + 4 + length {
-                return Ok(Some(String::from_utf8_lossy(&request[end + 4..end + 4 + length]).into_owned()));
+                return Ok(Some(
+                    String::from_utf8_lossy(&request[end + 4..end + 4 + length]).into_owned(),
+                ));
             }
         }
     }
@@ -113,7 +129,9 @@ async fn write_stream(connection: &mut TcpStream, chunks: &[String]) -> std::io:
 }
 
 fn chunk(content: &str, finish: Option<&str>) -> String {
-    let finish = finish.map(|value| format!("\"{value}\"")).unwrap_or_else(|| "null".to_owned());
+    let finish = finish
+        .map(|value| format!("\"{value}\""))
+        .unwrap_or_else(|| "null".to_owned());
     format!(
         "data: {{\"id\":\"offline\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"offline\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":{}}},\"finish_reason\":{finish}}}]}}\n\n",
         serde_json::to_string(content).expect("chunk content serializes")
@@ -143,8 +161,14 @@ fn done_chunk() -> String {
 /// Serves ONE connection. A child request is answered immediately (tool call, then completions); the parent
 /// response is held until the delivery artifact has been read and cached, so the parent cannot end the run
 /// before the child's nudge was accepted and delivered.
-async fn serve_connection(mut connection: TcpStream, recorded: Arc<Recorded>, delivery: &mut watch::Receiver<bool>) {
-    let Ok(Some(body)) = read_request(&mut connection).await else { return };
+async fn serve_connection(
+    mut connection: TcpStream,
+    recorded: Arc<Recorded>,
+    delivery: &mut watch::Receiver<bool>,
+) {
+    let Ok(Some(body)) = read_request(&mut connection).await else {
+        return;
+    };
     if body.contains(CORPUS_PATH) {
         let turn = recorded.push_child(body);
         let chunks = if turn == 1 {
@@ -160,7 +184,11 @@ async fn serve_connection(mut connection: TcpStream, recorded: Arc<Recorded>, de
                 break;
             }
         }
-        let _ = write_stream(&mut connection, &[chunk("offline parent done", Some("stop")), done_chunk()]).await;
+        let _ = write_stream(
+            &mut connection,
+            &[chunk("offline parent done", Some("stop")), done_chunk()],
+        )
+        .await;
     }
 }
 
@@ -168,7 +196,12 @@ async fn serve_connection(mut connection: TcpStream, recorded: Arc<Recorded>, de
 /// parent NEVER blocks the accept loop. Shutdown is explicit and COMPLETE: the signal ends the accept loop,
 /// `abort_all` aborts every connection task, and the loop then AWAITS each one through `join_next` - the
 /// `JoinSet` is drained, not merely dropped.
-fn spawn_server(listener: TcpListener, recorded: Arc<Recorded>, delivery: watch::Receiver<bool>, mut shutdown: watch::Receiver<bool>) -> JoinHandle<()> {
+fn spawn_server(
+    listener: TcpListener,
+    recorded: Arc<Recorded>,
+    delivery: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut connections = JoinSet::new();
         loop {
@@ -259,38 +292,69 @@ fn seed_corpus(paths: &MemoryIdentityPaths) {
     let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
         dir: paths.repo.clone(),
         agent_id: IDENTITY.to_owned(),
-        exec: Some(Arc::new(FixtureGitExec { inner: system_git_exec() })),
+        exec: Some(Arc::new(FixtureGitExec {
+            inner: system_git_exec(),
+        })),
         install_hooks: None,
     })
     .expect("memory repo");
     let seeds: Vec<GitSeedFile> = memory_core::seeds::seeds::build_default_seed_files()
         .into_iter()
-        .map(|seed| GitSeedFile { relative_path: seed.relative_path, content: seed.content })
+        .map(|seed| GitSeedFile {
+            relative_path: seed.relative_path,
+            content: seed.content,
+        })
         .collect();
-    repo.init(InitializeGitRepoOptions { author_name: Some(GIT_NAME.to_owned()), seed_files: seeds, install_hooks: None })
-        .expect("repo init");
+    repo.init(InitializeGitRepoOptions {
+        author_name: Some(GIT_NAME.to_owned()),
+        seed_files: seeds,
+        install_hooks: None,
+    })
+    .expect("repo init");
     let notes = paths.repo.join("notes");
     std::fs::create_dir_all(&notes).expect("notes directory");
     std::fs::write(notes.join("qa.md"), "---\ndescription: Canary rollback gate and release order\n---\n# Deploy gate\nThe note records the canary rollback gate and the release order.\n")
         .expect("corpus document");
-    let author = GitCommitAuthor { agent_id: IDENTITY.to_owned(), author_name: GIT_NAME.to_owned(), author_email: Some(GIT_EMAIL.to_owned()) };
-    repo.commit_write(&[CORPUS_PATH], "fixture corpus", &author).expect("corpus commit");
+    let author = GitCommitAuthor {
+        agent_id: IDENTITY.to_owned(),
+        author_name: GIT_NAME.to_owned(),
+        author_email: Some(GIT_EMAIL.to_owned()),
+    };
+    repo.commit_write(&[CORPUS_PATH], "fixture corpus", &author)
+        .expect("corpus commit");
 }
 
 /// The child's environment: cleared, then set explicitly, so no inherited memory sentinel (which would
 /// disable memory) and no developer memory root can leak into the fixture.
-fn child_env(home: &Path, agent: &Path, memory_root: &Path, skills: &Path) -> Vec<(String, String)> {
+fn child_env(
+    home: &Path,
+    agent: &Path,
+    memory_root: &Path,
+    skills: &Path,
+) -> Vec<(String, String)> {
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
     if cfg!(windows) {
-        env.insert("USERPROFILE".to_owned(), home.to_string_lossy().into_owned());
+        env.insert(
+            "USERPROFILE".to_owned(),
+            home.to_string_lossy().into_owned(),
+        );
         if let Ok(sysroot) = std::env::var("SystemRoot") {
             env.insert("SystemRoot".to_owned(), sysroot);
         }
     }
-    env.insert("MAHO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
-    env.insert("MAHO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
-    env.insert("OMO_SENPI_SKILLS_ROOT".to_owned(), skills.to_string_lossy().into_owned());
+    env.insert(
+        "MAHO_CODING_AGENT_DIR".to_owned(),
+        agent.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "MAHO_MEMORY_HOME".to_owned(),
+        memory_root.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "OMO_SENPI_SKILLS_ROOT".to_owned(),
+        skills.to_string_lossy().into_owned(),
+    );
     env.insert("PATH".to_owned(), std::env::var("PATH").unwrap_or_default());
     env.into_iter().collect()
 }
@@ -304,11 +368,17 @@ fn read_offered_payload(directory: &Path) -> Option<serde_json::Value> {
         if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
-        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
-        let offers = payload["nudges"]
-            .as_array()
-            .is_some_and(|nudges| nudges.iter().any(|nudge| nudge["path"].as_str() == Some(CORPUS_PATH)));
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let offers = payload["nudges"].as_array().is_some_and(|nudges| {
+            nudges
+                .iter()
+                .any(|nudge| nudge["path"].as_str() == Some(CORPUS_PATH))
+        });
         if offers {
             return Some(payload);
         }
@@ -316,12 +386,12 @@ fn read_offered_payload(directory: &Path) -> Option<serde_json::Value> {
     None
 }
 
-
-
 /// The session ids the run actually used: each session file's HEADER entry must be `type: "session"` and carry
 /// a non-empty `id`. The file name stem is NOT the session id.
 fn session_ids(directory: &Path) -> Vec<String> {
-    let Ok(names) = std::fs::read_dir(directory) else { return Vec::new() };
+    let Ok(names) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
     names
         .flatten()
         .filter_map(|name| {
@@ -332,24 +402,42 @@ fn session_ids(directory: &Path) -> Vec<String> {
             let raw = std::fs::read_to_string(&path).ok()?;
             let header: serde_json::Value = serde_json::from_str(raw.lines().next()?).ok()?;
             (header["type"].as_str() == Some("session"))
-                .then(|| header["id"].as_str().filter(|id| !id.is_empty()).map(str::to_owned))
+                .then(|| {
+                    header["id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                })
                 .flatten()
         })
         .collect()
 }
 
 fn session_entries(directory: &Path) -> Vec<serde_json::Value> {
-    let Ok(names) = std::fs::read_dir(directory) else { return Vec::new() };
+    let Ok(names) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
     names
         .flatten()
-        .filter(|name| name.path().extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
+        .filter(|name| {
+            name.path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("jsonl")
+        })
         .filter_map(|name| std::fs::read_to_string(name.path()).ok())
-        .flat_map(|raw| raw.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).collect::<Vec<_>>())
+        .flat_map(|raw| {
+            raw.lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
 fn wake_slot_locks(directory: &Path) -> Vec<String> {
-    let Ok(names) = std::fs::read_dir(directory) else { return Vec::new() };
+    let Ok(names) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
     names
         .flatten()
         .filter_map(|name| name.file_name().to_str().map(str::to_owned))
@@ -368,10 +456,21 @@ fn shipped_nudge_text() -> String {
             max_items: RECALL_MAX_ITEMS,
             accepted: &mut accepted,
         },
-        &KibitzerNudgeParams { path: CORPUS_PATH.to_owned(), hint: HINT.to_owned() },
+        &KibitzerNudgeParams {
+            path: CORPUS_PATH.to_owned(),
+            hint: HINT.to_owned(),
+        },
     );
-    assert!(!result.is_error, "the shipped nudge contract accepts this call: {}", result.text);
-    assert_eq!(accepted.len(), 1, "the shipped nudge records exactly one accepted nudge");
+    assert!(
+        !result.is_error,
+        "the shipped nudge contract accepts this call: {}",
+        result.text
+    );
+    assert_eq!(
+        accepted.len(),
+        1,
+        "the shipped nudge records exactly one accepted nudge"
+    );
     result.text
 }
 
@@ -381,10 +480,12 @@ fn tool_result_content(body: &str, tool_call_id: &str) -> Option<String> {
     let message = parsed["messages"].as_array()?.iter().find(|message| {
         message["role"] == "tool" && message["tool_call_id"].as_str() == Some(tool_call_id)
     })?;
-    message["content"]
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| message["content"].as_array()?.iter().find_map(|part| part["text"].as_str().map(str::to_owned)))
+    message["content"].as_str().map(str::to_owned).or_else(|| {
+        message["content"]
+            .as_array()?
+            .iter()
+            .find_map(|part| part["text"].as_str().map(str::to_owned))
+    })
 }
 
 #[tokio::test]
@@ -404,20 +505,30 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     // Headless startup claims onboarding and sends a bootstrap turn like upstream onboarding/component.ts:41-55;
     // the marker lives under the agent home (`getOmoNativeStateDir`), so complete it there as print_entry does.
     std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("fixture directory");
-    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("onboarding marker");
+    std::fs::write(
+        agent.join("omo-senpi/omo-native/onboarding-completed"),
+        "{}\n",
+    )
+    .expect("onboarding marker");
     // The child's own git reads this fixture HOME, never the developer's.
-    std::fs::write(home.join(".gitconfig"), format!("[user]\n\tname = {GIT_NAME}\n\temail = {GIT_EMAIL}\n"))
-        .expect("gitconfig");
+    std::fs::write(
+        home.join(".gitconfig"),
+        format!("[user]\n\tname = {GIT_NAME}\n\temail = {GIT_EMAIL}\n"),
+    )
+    .expect("gitconfig");
     let config_path = write_user_config(home);
 
     let env = child_env(home, &agent, &memory_root, &skills);
     let env_map: BTreeMap<String, String> = env.iter().cloned().collect();
-    let identity = resolve_memory_identity(Some(IDENTITY), &project, &env_map).expect("memory identity");
+    let identity =
+        resolve_memory_identity(Some(IDENTITY), &project, &env_map).expect("memory identity");
     let paths = build_identity_paths(&memory_root, &identity.id);
     seed_corpus(&paths);
     std::fs::create_dir_all(&paths.recall_pending).expect("recall pending directory");
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("loopback listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("loopback listener");
     let address = listener.local_addr().expect("loopback address");
     write_models(&agent, address);
 
@@ -433,14 +544,24 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     let mut watcher = notify::RecommendedWatcher::new(
         move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
-            if !event.paths.iter().any(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json")) {
+            if !event.paths.iter().any(|path| {
+                path.extension().and_then(|extension| extension.to_str()) == Some("json")
+            }) {
                 return;
             }
-            if evidence_for_watcher.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+            if evidence_for_watcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some()
+            {
                 return;
             }
-            let Some(payload) = read_offered_payload(&pending_dir) else { return };
-            *evidence_for_watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(payload);
+            let Some(payload) = read_offered_payload(&pending_dir) else {
+                return;
+            };
+            *evidence_for_watcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(payload);
             let _ = watcher_tx.send(true);
         },
         notify::Config::default(),
@@ -450,14 +571,25 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         .watch(&paths.recall_pending, notify::RecursiveMode::NonRecursive)
         .expect("watch the pending directory");
 
-    let mut server = spawn_server(listener, Arc::clone(&recorded), delivery_rx.clone(), shutdown_rx);
+    let mut server = spawn_server(
+        listener,
+        Arc::clone(&recorded),
+        delivery_rx.clone(),
+        shutdown_rx,
+    );
 
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
     command
         .current_dir(&project)
         .env_clear()
         .envs(env)
-        .args(["-p", "--offline", "--no-skills", "--no-prompt-templates", "--session-dir"])
+        .args([
+            "-p",
+            "--offline",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--session-dir",
+        ])
         .arg(&sessions)
         .args(["--model", "offline/offline", PROMPT])
         .stdin(std::process::Stdio::null())
@@ -516,7 +648,8 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
             teardown_failure = Some(format!("the mhc process could not be killed: {error}"));
         }
         if let Err(error) = child.wait().await {
-            teardown_failure.get_or_insert_with(|| format!("the mhc process could not be reaped: {error}"));
+            teardown_failure
+                .get_or_insert_with(|| format!("the mhc process could not be reaped: {error}"));
         }
     }
 
@@ -524,11 +657,15 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     // server has been shut down and joined.
     let stdout_result = match stdout_drain.await {
         Ok(result) => result,
-        Err(error) => Err(std::io::Error::other(format!("the stdout drain task failed: {error}"))),
+        Err(error) => Err(std::io::Error::other(format!(
+            "the stdout drain task failed: {error}"
+        ))),
     };
     let stderr_result = match stderr_drain.await {
         Ok(result) => result,
-        Err(error) => Err(std::io::Error::other(format!("the stderr drain task failed: {error}"))),
+        Err(error) => Err(std::io::Error::other(format!(
+            "the stderr drain task failed: {error}"
+        ))),
     };
 
     // The server shutdown is complete and ASSERTED: signal, then join the accept task. On timeout the handle
@@ -556,7 +693,10 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         stdout_bytes.len(),
         stderr_bytes.len()
     );
-    assert!(cleanup_ok, "the loopback server must shut down and join cleanly; stderr={stderr_text}");
+    assert!(
+        cleanup_ok,
+        "the loopback server must shut down and join cleanly; stderr={stderr_text}"
+    );
     if let Some(failure) = teardown_failure {
         panic!("{failure}; stderr={stderr_text}");
     }
@@ -566,10 +706,21 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
 
     let children = recorded.children();
     let parent = recorded.parent();
-    assert!(parent.is_some(), "the parent request must be recorded: stderr={stderr_text} config={}", config_path.display());
-    assert!(parent.as_deref().is_some_and(|body| !body.contains(CORPUS_PATH)), "the parent request is not the envelope");
     assert!(
-        children.first().is_some_and(|body| body.contains(CORPUS_PATH)),
+        parent.is_some(),
+        "the parent request must be recorded: stderr={stderr_text} config={}",
+        config_path.display()
+    );
+    assert!(
+        parent
+            .as_deref()
+            .is_some_and(|body| !body.contains(CORPUS_PATH)),
+        "the parent request is not the envelope"
+    );
+    assert!(
+        children
+            .first()
+            .is_some_and(|body| body.contains(CORPUS_PATH)),
         "the child's first request is the rendered envelope carrying the offered corpus path; stderr={stderr_text}; children={}",
         children.len()
     );
@@ -577,9 +728,13 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         panic!("the child must continue after an accepted nudge under max_items={RECALL_MAX_ITEMS}; children={}", children.len())
     });
     let shipped = shipped_nudge_text();
-    let tool_result = tool_result_content(continuation, TOOL_CALL_ID)
-        .unwrap_or_else(|| panic!("the continuation must carry the tool result for {TOOL_CALL_ID}: {continuation}"));
-    assert_eq!(tool_result, shipped, "the child's tool result is exactly the shipped nudge text");
+    let tool_result = tool_result_content(continuation, TOOL_CALL_ID).unwrap_or_else(|| {
+        panic!("the continuation must carry the tool result for {TOOL_CALL_ID}: {continuation}")
+    });
+    assert_eq!(
+        tool_result, shipped,
+        "the child's tool result is exactly the shipped nudge text"
+    );
 
     assert!(
         matches!(delivery_observed, Ok(true)),
@@ -588,8 +743,15 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         paths.recall_pending.display()
     );
     let ids = session_ids(&sessions);
-    assert!(!ids.is_empty(), "the run must persist a session artifact whose HEADER entry is type=session with a non-empty id");
-    let cached = evidence.lock().unwrap_or_else(PoisonError::into_inner).clone().expect("the cached pending payload");
+    assert!(
+        !ids.is_empty(),
+        "the run must persist a session artifact whose HEADER entry is type=session with a non-empty id"
+    );
+    let cached = evidence
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .expect("the cached pending payload");
     let payload_session = cached["sessionId"].as_str().unwrap_or_default();
     assert!(
         ids.iter().any(|id| id == payload_session),
@@ -601,14 +763,21 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         .filter(|entry| entry.to_string().contains(CORPUS_PATH))
         .count();
     assert!(
-        cached["nudges"].as_array().is_some_and(|nudges| nudges.iter().any(|nudge| nudge["path"].as_str() == Some(CORPUS_PATH)))
+        cached["nudges"].as_array().is_some_and(|nudges| nudges
+            .iter()
+            .any(|nudge| nudge["path"].as_str() == Some(CORPUS_PATH)))
             || nudged_entries > 0,
         "the cached payload must name the offered path (or the nudged entry must exist); cached={cached}"
     );
 
     let status = status.expect("a completed run has a status");
-    assert!(status.success(), "mhc must exit successfully: {stderr_text}");
+    assert!(
+        status.success(),
+        "mhc must exit successfully: {stderr_text}"
+    );
     let locks = wake_slot_locks(&paths.locks);
-    assert!(locks.is_empty(), "every wake lease is released after a normal shutdown, found {locks:?}");
+    assert!(
+        locks.is_empty(),
+        "every wake lease is released after a normal shutdown, found {locks:?}"
+    );
 }
-

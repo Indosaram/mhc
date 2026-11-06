@@ -1,19 +1,22 @@
-pub mod sql;
-pub mod values;
-pub mod session_row;
-pub mod entries;
-pub mod storage;
 pub mod branch_entries;
+pub mod entries;
 pub mod repo;
-pub use sql::{SqlQuery, SqlValue, join_sql_fragments};
+pub mod session_row;
+pub mod sql;
+pub mod storage;
+pub mod values;
 pub use repo::SqliteSessionRepo;
+pub use sql::{SqlQuery, SqlValue, join_sql_fragments};
 pub use storage::SqliteStorage;
 pub fn apply_initial_schema(db: &rusqlite::Connection) -> rusqlite::Result<()> {
     db.execute_batch(include_str!("001_initial.sql"))
 }
-pub fn transaction<T>(db:&mut rusqlite::Connection,callback:impl FnOnce(&rusqlite::Transaction<'_>)->rusqlite::Result<T>)->rusqlite::Result<T> {
-    let transaction=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let result=callback(&transaction)?;
+pub fn transaction<T>(
+    db: &mut rusqlite::Connection,
+    callback: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let result = callback(&transaction)?;
     transaction.commit()?;
     Ok(result)
 }

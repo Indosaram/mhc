@@ -6,9 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use comment_checker_core::{
-    COMMENT_CHECKER_RELEASE_VERSION, COMMENT_CHECKER_VERSION_MARKER,
-};
+use comment_checker_core::{COMMENT_CHECKER_RELEASE_VERSION, COMMENT_CHECKER_VERSION_MARKER};
 use maho_ext_api::ComponentLogger;
 use maho_omo_comment_checker::downloader::download_senpi_comment_checker_binary;
 use maho_omo_comment_checker::resolver::resolve_with_options_cache;
@@ -79,7 +77,11 @@ async fn serve_release() -> (String, Arc<Mutex<usize>>, tokio::sync::oneshot::Se
         }
     });
 
-    (format!("http://127.0.0.1:{port}/release.tar.gz"), requests, tx)
+    (
+        format!("http://127.0.0.1:{port}/release.tar.gz"),
+        requests,
+        tx,
+    )
 }
 
 fn cache_with_binary(root: &Path, marker: Option<&str>) -> PathBuf {
@@ -91,8 +93,10 @@ fn cache_with_binary(root: &Path, marker: Option<&str>) -> PathBuf {
     if let Some(m) = marker {
         fs::write(
             cache_dir.join(COMMENT_CHECKER_VERSION_MARKER),
-            format!("{m}
-"),
+            format!(
+                "{m}
+"
+            ),
         )
         .expect("test assertion");
     }
@@ -127,7 +131,7 @@ async fn given_cached_checker_with_older_marker_when_resolving_then_cache_not_tr
 
 #[tokio::test]
 async fn given_cached_checker_with_no_version_marker_when_downloading_then_pinned_replaces_and_records()
-{
+ {
     let temp = tempdir().expect("test assertion");
     let cache_dir = cache_with_binary(temp.path(), None);
     let (url, requests, _shutdown) = serve_release().await;

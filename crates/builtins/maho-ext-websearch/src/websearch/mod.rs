@@ -1,16 +1,16 @@
-pub mod provider_endpoints;
-pub mod providers;
-pub mod types;
-pub mod search;
 pub mod config;
-pub mod native;
-pub mod tool;
-pub mod renderers;
 pub mod hosted_routes;
 pub mod html_document;
+pub mod native;
+pub mod provider_endpoints;
+pub mod providers;
+pub mod renderers;
 pub mod route_attempts;
+pub mod search;
 pub mod search_model;
 pub mod session_login_entries;
+pub mod tool;
+pub mod types;
 /// Engine providers ported by the ledger lane. `providers/mod.rs` (and the `SearchProvider`
 /// dispatch in it) belongs to senpi-builtins-b, so these compile here until that lane lists them.
 #[path = "providers"]

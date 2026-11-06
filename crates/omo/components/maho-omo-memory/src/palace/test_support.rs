@@ -90,7 +90,12 @@ pub fn create_palace_fixture(injection: bool) -> PalaceFixture {
     .unwrap();
 
     write_bytes(&paths.repo.join("reference/logo.png"), &PNG_BYTES);
-    let head = commit(&repo, &["reference/logo.png"], "chore: add binary asset", &identity);
+    let head = commit(
+        &repo,
+        &["reference/logo.png"],
+        "chore: add binary asset",
+        &identity,
+    );
     write_journal_state(&paths);
 
     let context = MemoryIdentityContext::new(
@@ -165,8 +170,14 @@ pub fn inline_json(html: &str) -> serde_json::Value {
         "<script type=\"application/json\" id=\"{}\">",
         crate::palace::template::PALACE_DATA_ELEMENT_ID
     );
-    let start = html.find(marker.as_str()).expect("palace html has no inline data script") + marker.len();
-    let end = start + html[start..].find("</script>").expect("inline data script is unterminated");
+    let start = html
+        .find(marker.as_str())
+        .expect("palace html has no inline data script")
+        + marker.len();
+    let end = start
+        + html[start..]
+            .find("</script>")
+            .expect("inline data script is unterminated");
     let decoded = html[start..end]
         .replace("\\u003c", "<")
         .replace("\\u2028", "\u{2028}")

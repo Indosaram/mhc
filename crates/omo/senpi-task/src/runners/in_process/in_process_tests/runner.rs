@@ -141,7 +141,11 @@ fn given_a_parent_tool_a_provider_rejects_by_name_when_a_child_is_started_then_e
     let fake = FakeSession::new("child-session-1");
     let session = Arc::clone(&fake);
     let (runner, captured) = capturing_runner(
-        vec![make_tool("grep"), make_tool("$web_search"), make_tool("mcp_ctx_query-docs")],
+        vec![
+            make_tool("grep"),
+            make_tool("$web_search"),
+            make_tool("mcp_ctx_query-docs"),
+        ],
         &[],
         None,
         move || session.clone(),
@@ -161,7 +165,9 @@ fn given_a_parent_tool_a_provider_rejects_by_name_when_a_child_is_started_then_e
     );
     assert!(names.iter().all(|name| {
         let mut chars = name.chars();
-        chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && name.len() <= 128
             && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     }));
@@ -430,7 +436,14 @@ fn given_a_parent_model_runtime_when_the_child_session_is_constructed_then_nativ
 #[test]
 fn given_task_team_and_dag_orchestration_names_when_classified_then_only_orchestration_names_match()
 {
-    for name in ["dag", "workflow", "task", "task_create", "task_send", "team_create"] {
+    for name in [
+        "dag",
+        "workflow",
+        "task",
+        "task_create",
+        "task_send",
+        "team_create",
+    ] {
         assert!(is_task_or_team_family_tool(name), "{name}");
     }
     for name in ["grep", "taskmaster"] {

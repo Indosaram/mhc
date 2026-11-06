@@ -23,9 +23,16 @@ pub fn parse_project_rules_activation(value: &Value) -> Option<ProjectRulesActiv
     if !value.is_object() || value.get("kind").and_then(Value::as_str) != Some("project-rules") {
         return None;
     }
-    let target_path = value.get("targetPath").and_then(Value::as_str).filter(|path| !path.is_empty())?;
+    let target_path = value
+        .get("targetPath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())?;
     let rules = value.get("rules").and_then(Value::as_array)?;
-    if rules.is_empty() || rules.iter().any(|rule| rule.as_str().is_none_or(str::is_empty)) {
+    if rules.is_empty()
+        || rules
+            .iter()
+            .any(|rule| rule.as_str().is_none_or(str::is_empty))
+    {
         return None;
     }
     let tool_call_id = value
@@ -35,14 +42,21 @@ pub fn parse_project_rules_activation(value: &Value) -> Option<ProjectRulesActiv
         .map(str::to_owned);
     Some(ProjectRulesActivation {
         target_path: target_path.to_owned(),
-        rules: rules.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+        rules: rules
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
         tool_call_id,
     })
 }
 
 pub fn project_rules_of_call(
     card: &CustomEntryComponent,
-    calls: &[(Rc<RefCell<ToolExecutionComponent>>, super::exploration_call::ExplorationCall)],
+    calls: &[(
+        Rc<RefCell<ToolExecutionComponent>>,
+        super::exploration_call::ExplorationCall,
+    )],
 ) -> Option<Vec<String>> {
     let entry = &card.custom_entry;
     if entry.get("customType").and_then(Value::as_str) != Some(RULE_ACTIVATION_ENTRY_TYPE) {
@@ -55,5 +69,9 @@ pub fn project_rules_of_call(
         let (_, call_id, _) = component.borrow().identity();
         call_id == tool_call_id
     });
-    if matches_call { Some(details.rules) } else { None }
+    if matches_call {
+        Some(details.rules)
+    } else {
+        None
+    }
 }

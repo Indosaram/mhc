@@ -1,10 +1,10 @@
-use maho_chord::{delta::*, json::parse, services::wire::*, types::*, JsString};
-use std::result::Result;
+use maho_chord::{JsString, delta::*, json::parse, services::wire::*, types::*};
 use serde_json::json;
+use std::result::Result;
 
 #[test]
-fn front_truncation_preserves_a_split_surrogate_in_checked_and_trusted_replay(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn front_truncation_preserves_a_split_surrogate_in_checked_and_trusted_replay()
+-> Result<(), Box<dyn std::error::Error>> {
     let base = parse(r#"{"text":"\ud83d\ude00tail"}"#)?;
     let operations = vec![Op::Truncate(vec!["text".into()], 1)];
     let expected = parse(r#"{"text":"\ude00tail"}"#)?;
@@ -28,8 +28,8 @@ fn append_joins_surrogates_without_replacement() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn strings_round_trip_each_isolated_surrogate_and_control_escape(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn strings_round_trip_each_isolated_surrogate_and_control_escape()
+-> Result<(), Box<dyn std::error::Error>> {
     for unit in 0xd800..=0xdfff {
         let value = JsonValue::String(JsString::from_utf16(vec![0, 34, 92, unit, 10]));
         let encoded = serde_json::to_string(&value)?;

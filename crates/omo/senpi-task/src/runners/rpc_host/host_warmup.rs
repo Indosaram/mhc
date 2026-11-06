@@ -14,9 +14,10 @@ pub fn warm_task_host(
     let context = serde_json::json!({"role":"child","task_id":HOST_WARMUP_TASK_ID,"state_dir":state_dir,"host_warmup":"1"});
     let reply=ask(socket,serde_json::json!({"id":"omo-task-host-warm","type":"warm","cwd":cwd,"kind":"worker","context":context}),60_000,agent_dir)?.ok_or_else(||"host warm refused: no_answer".to_string())?;
     if reply["success"] == true
-        && let Some(state @ ("warmed" | "already_warm")) = reply["data"]["state"].as_str() {
-            return Ok(state.into());
-        }
+        && let Some(state @ ("warmed" | "already_warm")) = reply["data"]["state"].as_str()
+    {
+        return Ok(state.into());
+    }
     if let Some(error) = reply["error"].as_str()
         && [
             "host_draining",
@@ -27,9 +28,9 @@ pub fn warm_task_host(
         ]
         .iter()
         .any(|code| error == *code || error.starts_with(&format!("{code}:")))
-        {
-            return Err(format!("host warm refused: {error}"));
-        }
+    {
+        return Err(format!("host warm refused: {error}"));
+    }
     fallback(context)?;
     Ok("warm_up_session".into())
 }

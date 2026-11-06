@@ -12,7 +12,7 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopWindow, FrontWindow};
 
 use crate::ax;
-use crate::front_app::{RestoreStep, current_front_pid, restore_step};
+use crate::front_app::{current_front_pid, restore_step, RestoreStep};
 use crate::input::MacInput;
 use crate::skylight;
 

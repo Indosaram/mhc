@@ -699,7 +699,16 @@ async fn native_faux_corrupt_memory_reports_ts_doctor_parser_error() {
     let exec = engine.repo.exec();
     for args in [
         vec!["add", "system/persona.md"],
-        vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "--no-verify", "-m", "corrupt persona"],
+        vec![
+            "-c",
+            "user.name=agent",
+            "-c",
+            "user.email=agent@example.invalid",
+            "commit",
+            "--no-verify",
+            "-m",
+            "corrupt persona",
+        ],
     ] {
         let output = exec.run_in(&paths.repo, &args).unwrap();
         assert_eq!(output.code, 0, "{}", output.stderr);

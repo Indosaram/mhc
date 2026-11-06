@@ -49,9 +49,12 @@ impl From<TransactionError> for DesktopError {
                 restore,
                 primary,
             ),
-            TransactionError::CursorRestoreFailed { primary, restore } => {
-                (ErrorCode::CursorRestoreFailed, "the cursor", restore, primary)
-            }
+            TransactionError::CursorRestoreFailed { primary, restore } => (
+                ErrorCode::CursorRestoreFailed,
+                "the cursor",
+                restore,
+                primary,
+            ),
         };
         let message = match primary {
             Some(primary) => {
@@ -78,7 +81,9 @@ impl Guard {
             )
         };
         let guard = match (Self::kind(action), delivery) {
-            (GuardKind::Untouched, _) | (GuardKind::Delivery, DeliveryMode::Background) => Self::Untouched,
+            (GuardKind::Untouched, _) | (GuardKind::Delivery, DeliveryMode::Background) => {
+                Self::Untouched
+            }
             (GuardKind::Delivery | GuardKind::Keys, DeliveryMode::Foreground) => Self::Foreground {
                 front: guarded(|| worker.backend()?.front_window()).map_err(captured)?,
                 cursor: guarded(|| worker.backend()?.cursor_position()).map_err(captured)?,
@@ -119,7 +124,9 @@ impl Guard {
                 front.map_or(Ok(()), |front| {
                     guarded(|| worker.backend()?.restore_front_window(&front))
                 }),
-                cursor.map_or(Ok(()), |point| guarded(|| worker.backend()?.warp_cursor(point))),
+                cursor.map_or(Ok(()), |point| {
+                    guarded(|| worker.backend()?.warp_cursor(point))
+                }),
             ),
             Self::KeyFocus { front } => (
                 front.map_or(Ok(()), |front| {

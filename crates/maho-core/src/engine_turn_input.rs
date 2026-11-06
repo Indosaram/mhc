@@ -76,7 +76,11 @@ impl EngineTurnInput {
             return;
         }
         if pending.consume_at_settlement {
-            if queued { for wake in &pending.wakes { enqueue(wake.message.clone()); } }
+            if queued {
+                for wake in &pending.wakes {
+                    enqueue(wake.message.clone());
+                }
+            }
             pending.admitted = true;
             return;
         }
@@ -99,18 +103,29 @@ impl EngineTurnInput {
     }
 
     pub fn reject(&mut self, hold: &mut EngineTurnHold) {
-        if self.pending.take().is_some() { hold.reject_input(); }
+        if self.pending.take().is_some() {
+            hold.reject_input();
+        }
     }
 
-    pub fn take_settlement_with_options(&mut self, hold: &mut EngineTurnHold, newer_stop: bool) -> Option<BTreeMap<String, usize>> {
+    pub fn take_settlement_with_options(
+        &mut self,
+        hold: &mut EngineTurnHold,
+        newer_stop: bool,
+    ) -> Option<BTreeMap<String, usize>> {
         let pending = self.pending.take()?;
         if !pending.admitted {
             hold.abandon_release();
             return None;
         }
         if pending.consume_at_settlement {
-            if newer_stop { hold.reject_input(); return None; }
-            for wake in &pending.wakes { hold.consume(&wake.source, Some(&wake.notice_ids)); }
+            if newer_stop {
+                hold.reject_input();
+                return None;
+            }
+            for wake in &pending.wakes {
+                hold.consume(&wake.source, Some(&wake.notice_ids));
+            }
         }
         let mut merged = pending.sources;
         merged.extend(hold.finish());
@@ -160,12 +175,20 @@ mod tests {
         input.admit(&mut hold, true, |_| {});
         assert_eq!(hold.notice_count(), 1);
         hold.add_hold(crate::engine_turn_hold::HoldKind::SessionHold, None, None);
-        assert!(input.take_settlement_with_options(&mut hold, true).is_none());
+        assert!(
+            input
+                .take_settlement_with_options(&mut hold, true)
+                .is_none()
+        );
         assert_eq!(hold.notice_count(), 1);
         assert!(hold.held());
         input.begin_with_options(&mut hold, true);
         input.admit(&mut hold, false, |_| {});
-        assert!(input.take_settlement_with_options(&mut hold, false).is_some());
+        assert!(
+            input
+                .take_settlement_with_options(&mut hold, false)
+                .is_some()
+        );
         assert_eq!(hold.notice_count(), 0);
     }
 

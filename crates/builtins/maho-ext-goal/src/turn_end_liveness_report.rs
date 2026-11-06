@@ -166,11 +166,8 @@ pub fn collect_and_report_restored_turn_end_liveness(
     goal: Option<Option<&Goal>>,
 ) -> Option<TurnEndLivenessVerdict> {
     let reference = crate::store_ref::context_goal_store_ref(ctx);
-    let facts = crate::lifecycle_facts::collect_goal_lifecycle_facts(
-        &reference,
-        Some(restored_end),
-        goal,
-    )?;
+    let facts =
+        crate::lifecycle_facts::collect_goal_lifecycle_facts(&reference, Some(restored_end), goal)?;
     report_turn_end_liveness_facts(pi, ctx, &facts)
 }
 
@@ -247,7 +244,8 @@ mod tests {
         let goal: Goal = serde_json::from_value(serde_json::json!({
             "id":"g1", "threadId":"s", "objective":"work", "status":"active",
             "tokensUsed":0, "timeUsedSeconds":0, "createdAt":0, "updatedAt":0
-        })).expect("goal fixture");
+        }))
+        .expect("goal fixture");
         let monitor = MonitorAwareGoalContinuation::default();
         let input = collect_turn_end_liveness_input(
             &ctx,
@@ -368,16 +366,14 @@ mod tests {
             provider_retry_at_ms: None,
         };
         let input_clone = input.clone();
-        service.register_goal_lifecycle_collector(Arc::new(
-            move |restored_end, _goal| {
-                assert!(restored_end.is_some());
-                crate::lifecycle_facts::GoalLifecycleFacts {
-                    goal: None,
-                    input: Some(input_clone.clone()),
-                    todo_outcome: Some("delivered".into()),
-                }
-            },
-        ));
+        service.register_goal_lifecycle_collector(Arc::new(move |restored_end, _goal| {
+            assert!(restored_end.is_some());
+            crate::lifecycle_facts::GoalLifecycleFacts {
+                goal: None,
+                input: Some(input_clone.clone()),
+                todo_outcome: Some("delivered".into()),
+            }
+        }));
         let api = test_api();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let capture = seen.clone();
@@ -387,12 +383,7 @@ mod tests {
                 capture.lock().unwrap().push(payload.clone());
             }),
         );
-        let verdict = collect_and_report_restored_turn_end_liveness(
-            &api,
-            &ctx,
-            &restored,
-            None,
-        );
+        let verdict = collect_and_report_restored_turn_end_liveness(&api, &ctx, &restored, None);
         assert_eq!(verdict, Some(TurnEndLivenessVerdict::Done));
         let events = seen.lock().unwrap();
         assert_eq!(events.len(), 1);

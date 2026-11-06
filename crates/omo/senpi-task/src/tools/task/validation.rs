@@ -175,9 +175,9 @@ pub fn validate_task_target(params: TargetInput<'_>) -> TaskTargetSelection {
             TaskTargetErrorCode::CategoryWithModel,
             CATEGORY_WITH_MODEL_MESSAGE,
         ),
-        (Some(category), None) => TaskTargetSelection::Category(
-            omo_config_core::canonical_category_name(category.trim()),
-        ),
+        (Some(category), None) => {
+            TaskTargetSelection::Category(omo_config_core::canonical_category_name(category.trim()))
+        }
         (None, Some(subagent)) => TaskTargetSelection::SubagentType(subagent.trim().to_string()),
         (None, None) => target_error(TaskTargetErrorCode::NoTarget, NO_TARGET_MESSAGE),
     }
@@ -227,7 +227,10 @@ pub fn resolve_run_in_background(
     }
     if values.len() > 1 {
         return Err(RunInBackgroundConflictError {
-            message: format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {}.", seen.join(", ")),
+            message: format!(
+                "{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {}.",
+                seen.join(", ")
+            ),
         });
     }
     Ok(values.first().copied())

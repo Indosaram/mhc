@@ -1,7 +1,7 @@
 //! Port of `src/scripts.ts`: install-script serving, root detection, docs redirect.
 
 use crate::datapoint::{
-    is_qa_install, record_download, request_country, DownloadEvent, RequestKind, ServedFrom,
+    DownloadEvent, RequestKind, ServedFrom, is_qa_install, record_download, request_country,
 };
 use crate::env::RequestContext;
 use crate::http::{Body, Method, Request, Response};

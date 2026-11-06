@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use comment_checker_core::ByteStream;
-use comment_checker_core::{CheckFailure, CheckResult};
 use comment_checker_core::ExitFuture;
 use comment_checker_core::HookInput;
 use comment_checker_core::HookToolInput;
@@ -16,6 +15,7 @@ use comment_checker_core::SpawnProcess;
 use comment_checker_core::SpawnSignal;
 use comment_checker_core::resolve_comment_checker_binary;
 use comment_checker_core::run_comment_checker;
+use comment_checker_core::{CheckFailure, CheckResult};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 

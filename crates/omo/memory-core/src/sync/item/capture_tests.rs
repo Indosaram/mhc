@@ -10,7 +10,12 @@ pub(super) fn sync(a: &LoroDoc, b: &LoroDoc) -> Result<(), ItemError> {
     Ok(())
 }
 
-pub(super) fn capture(doc: &LoroDoc, base: &str, at: &ItemFrontier, text: &str) -> Result<(), ItemError> {
+pub(super) fn capture(
+    doc: &LoroDoc,
+    base: &str,
+    at: &ItemFrontier,
+    text: &str,
+) -> Result<(), ItemError> {
     if let Some(update) = capture::capture_item(doc, base, at, text, None)? {
         doc.import(&update).map_err(crdt)?;
     }
@@ -18,10 +23,21 @@ pub(super) fn capture(doc: &LoroDoc, base: &str, at: &ItemFrontier, text: &str) 
 }
 
 pub(super) fn current(doc: &LoroDoc, text: &str) -> Result<(), ItemError> {
-    capture(doc, &render::render_doc_content(doc)?, &item_frontier(doc), text)
+    capture(
+        doc,
+        &render::render_doc_content(doc)?,
+        &item_frontier(doc),
+        text,
+    )
 }
 
-pub(super) fn fire(device: &ItemDevice, doc: &LoroDoc, base: &str, at: &ItemFrontier, text: &str) -> Result<(), ItemError> {
+pub(super) fn fire(
+    device: &ItemDevice,
+    doc: &LoroDoc,
+    base: &str,
+    at: &ItemFrontier,
+    text: &str,
+) -> Result<(), ItemError> {
     if let Some(update) = capture_on_device(device, "item.md", doc, base, at, text, &[])? {
         doc.import(&update).map_err(crdt)?;
     }
@@ -32,16 +48,28 @@ pub(super) fn fire(device: &ItemDevice, doc: &LoroDoc, base: &str, at: &ItemFron
 fn transplant_assigns_fresh_stamps_in_root_and_tag_order() -> Result<(), ItemError> {
     // Given merged maps whose insertion order differs from lexical order.
     let merged = create_item_doc(7)?;
-    merged.get_map("fm\u{1f}z\u{1f}set").insert("z-tag", "last").map_err(crdt)?;
-    merged.get_map("fm\u{1f}a\u{1f}set").insert("z-tag", "second").map_err(crdt)?;
-    merged.get_map("fm\u{1f}a\u{1f}set").insert("a-tag", "first").map_err(crdt)?;
+    merged
+        .get_map("fm\u{1f}z\u{1f}set")
+        .insert("z-tag", "last")
+        .map_err(crdt)?;
+    merged
+        .get_map("fm\u{1f}a\u{1f}set")
+        .insert("z-tag", "second")
+        .map_err(crdt)?;
+    merged
+        .get_map("fm\u{1f}a\u{1f}set")
+        .insert("a-tag", "first")
+        .map_err(crdt)?;
     merged.commit();
     let target = create_item_doc(1)?;
     // When merged contents become stable-device operations.
     transplant::transplant_content(&target, &merged)?;
     target.commit();
     // Then hash traversal cannot determine key or element first-write stamps.
-    assert_eq!(render_item(&target)?.as_deref(), Some("---\na:\n  - first\n  - second\nz:\n  - last\n---\n"));
+    assert_eq!(
+        render_item(&target)?.as_deref(),
+        Some("---\na:\n  - first\n  - second\nz:\n  - last\n---\n")
+    );
     Ok(())
 }
 
@@ -61,8 +89,16 @@ fn stale_capture_replays_identical_history_with_identical_operations() -> Result
     capture(&a, "base\n", &at, working)?;
     capture(&b, "base\n", &at, working)?;
     // Then fresh operations, tags and stamps agree, not only rendered values.
-    let changes = |doc: &LoroDoc| doc.export_json_updates_without_peer_compression(&loro::VersionVector::new(), &doc.oplog_vv());
-    assert_eq!(serde_json::to_value(changes(&a)).map_err(crdt)?, serde_json::to_value(changes(&b)).map_err(crdt)?);
+    let changes = |doc: &LoroDoc| {
+        doc.export_json_updates_without_peer_compression(
+            &loro::VersionVector::new(),
+            &doc.oplog_vv(),
+        )
+    };
+    assert_eq!(
+        serde_json::to_value(changes(&a)).map_err(crdt)?,
+        serde_json::to_value(changes(&b)).map_err(crdt)?
+    );
     assert_eq!(render_item(&a)?, render_item(&b)?);
     assert!(a.oplog_vv().iter().all(|(peer, _)| *peer == 0));
     Ok(())
@@ -83,7 +119,8 @@ fn capture_returns_an_update_without_mutating_the_source() -> Result<(), ItemErr
 }
 
 #[test]
-fn valid_frontmatter_can_be_replaced_by_invalid_yaml_without_losing_bytes() -> Result<(), ItemError> {
+fn valid_frontmatter_can_be_replaced_by_invalid_yaml_without_losing_bytes() -> Result<(), ItemError>
+{
     // Given a typed item.
     let doc = create_item_doc(1)?;
     current(&doc, "---\ndescription: hello\ncount: 2\n---\nbody\n")?;
@@ -143,11 +180,15 @@ fn sequential_and_interleaved_stale_captures_keep_each_written_marker() -> Resul
 }
 
 #[test]
-fn device_double_fires_and_drifted_replays_apply_each_edit_once() -> Result<(), Box<dyn std::error::Error>> {
+fn device_double_fires_and_drifted_replays_apply_each_edit_once()
+-> Result<(), Box<dyn std::error::Error>> {
     for seed in ["hello\n", "---\ndescription: hi\n---\nhello\n"] {
         // Given a receipted initial body or typed file.
         let dir = tempfile::tempdir()?;
-        let device = ItemDevice { peer: 1, state_dir: dir.path().into() };
+        let device = ItemDevice {
+            peer: 1,
+            state_dir: dir.path().into(),
+        };
         let doc = create_device_item_doc(&device)?;
         fire(&device, &doc, "", &vec![], seed)?;
         let at = item_frontier(&doc);
@@ -165,10 +206,14 @@ fn device_double_fires_and_drifted_replays_apply_each_edit_once() -> Result<(), 
 }
 
 #[test]
-fn frontmatter_double_fire_does_not_duplicate_a_register() -> Result<(), Box<dyn std::error::Error>> {
+fn frontmatter_double_fire_does_not_duplicate_a_register() -> Result<(), Box<dyn std::error::Error>>
+{
     // Given one receipted register.
     let dir = tempfile::tempdir()?;
-    let device = ItemDevice { peer: 1, state_dir: dir.path().into() };
+    let device = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().into(),
+    };
     let doc = create_device_item_doc(&device)?;
     let seed = "---\ndescription: hi\n---\n";
     fire(&device, &doc, "", &vec![], seed)?;
@@ -184,10 +229,14 @@ fn frontmatter_double_fire_does_not_duplicate_a_register() -> Result<(), Box<dyn
 }
 
 #[test]
-fn crash_before_import_recaptures_the_complete_drifted_text() -> Result<(), Box<dyn std::error::Error>> {
+fn crash_before_import_recaptures_the_complete_drifted_text()
+-> Result<(), Box<dyn std::error::Error>> {
     // Given a receipt whose update never reached the source document.
     let dir = tempfile::tempdir()?;
-    let device = ItemDevice { peer: 1, state_dir: dir.path().into() };
+    let device = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().into(),
+    };
     let doc = create_device_item_doc(&device)?;
     fire(&device, &doc, "", &vec![], "base\n")?;
     let at = item_frontier(&doc);
@@ -201,15 +250,25 @@ fn crash_before_import_recaptures_the_complete_drifted_text() -> Result<(), Box<
 }
 
 #[test]
-fn older_landed_baseline_replay_does_not_undo_a_newer_capture() -> Result<(), Box<dyn std::error::Error>> {
+fn older_landed_baseline_replay_does_not_undo_a_newer_capture()
+-> Result<(), Box<dyn std::error::Error>> {
     // Given edits captured under two successive baselines.
     let dir = tempfile::tempdir()?;
-    let device = ItemDevice { peer: 1, state_dir: dir.path().into() };
+    let device = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().into(),
+    };
     let doc = create_device_item_doc(&device)?;
     fire(&device, &doc, "", &vec![], "x\n")?;
     let at = item_frontier(&doc);
     fire(&device, &doc, "x\n", &at, "x\n<A>\n")?;
-    fire(&device, &doc, "x\n<A>\n", &item_frontier(&doc), "x\n<A>\n<B>\n")?;
+    fire(
+        &device,
+        &doc,
+        "x\n<A>\n",
+        &item_frontier(&doc),
+        "x\n<A>\n<B>\n",
+    )?;
     // When the older edit is replayed.
     let replay = capture_on_device(&device, "item.md", &doc, "x\n", &at, "x\n<A>\n", &[])?;
     // Then the replay is empty and the newer text remains.
@@ -219,11 +278,18 @@ fn older_landed_baseline_replay_does_not_undo_a_newer_capture() -> Result<(), Bo
 }
 
 #[test]
-fn hand_resolution_survives_sync_and_recapture_on_both_devices() -> Result<(), Box<dyn std::error::Error>> {
+fn hand_resolution_survives_sync_and_recapture_on_both_devices()
+-> Result<(), Box<dyn std::error::Error>> {
     // Given independently written register values.
     let dir = tempfile::tempdir()?;
-    let da = ItemDevice { peer: 1, state_dir: dir.path().join("a") };
-    let db = ItemDevice { peer: 2, state_dir: dir.path().join("b") };
+    let da = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().join("a"),
+    };
+    let db = ItemDevice {
+        peer: 2,
+        state_dir: dir.path().join("b"),
+    };
     let a = create_device_item_doc(&da)?;
     let b = create_device_item_doc(&db)?;
     fire(&da, &a, "", &vec![], "---\nn: 2\n---\n")?;
@@ -237,7 +303,18 @@ fn hand_resolution_survives_sync_and_recapture_on_both_devices() -> Result<(), B
     // Then both peers keep the resolution and settle without new operations.
     for (device, doc) in [(&da, &a), (&db, &b)] {
         assert_eq!(render_item(doc)?.as_deref(), Some(resolved));
-        assert!(capture_on_device(device, "item.md", doc, resolved, &item_frontier(doc), resolved, &[])?.is_none());
+        assert!(
+            capture_on_device(
+                device,
+                "item.md",
+                doc,
+                resolved,
+                &item_frontier(doc),
+                resolved,
+                &[]
+            )?
+            .is_none()
+        );
     }
     Ok(())
 }
@@ -246,7 +323,12 @@ fn hand_resolution_survives_sync_and_recapture_on_both_devices() -> Result<(), B
 fn drifted_field_edits_preserve_unseen_whole_values() -> Result<(), Box<dyn std::error::Error>> {
     // Given three devices, two of which edit registers while B retains the seed on disk.
     let dir = tempfile::tempdir()?;
-    let devices: Vec<_> = (1..=3).map(|peer| ItemDevice { peer, state_dir: dir.path().join(peer.to_string()) }).collect();
+    let devices: Vec<_> = (1..=3)
+        .map(|peer| ItemDevice {
+            peer,
+            state_dir: dir.path().join(peer.to_string()),
+        })
+        .collect();
     let a = create_device_item_doc(&devices[0])?;
     let b = create_device_item_doc(&devices[1])?;
     let c = create_device_item_doc(&devices[2])?;
@@ -255,20 +337,41 @@ fn drifted_field_edits_preserve_unseen_whole_values() -> Result<(), Box<dyn std:
     sync(&a, &b)?;
     sync(&a, &c)?;
     let at = item_frontier(&b);
-    fire(&devices[0], &a, seed, &item_frontier(&a), "---\nn: 2\nf: false\ndescription: the red bird sat\n---\nbody\n")?;
-    fire(&devices[2], &c, seed, &item_frontier(&c), "---\nn: 3\nf: 0\ndescription: the bird sat down\n---\nbody\n")?;
+    fire(
+        &devices[0],
+        &a,
+        seed,
+        &item_frontier(&a),
+        "---\nn: 2\nf: false\ndescription: the red bird sat\n---\nbody\n",
+    )?;
+    fire(
+        &devices[2],
+        &c,
+        seed,
+        &item_frontier(&c),
+        "---\nn: 3\nf: 0\ndescription: the bird sat down\n---\nbody\n",
+    )?;
     sync(&a, &c)?;
     sync(&a, &b)?;
     // When B captures a body edit, then drifts the numeric register to a string.
     fire(&devices[1], &b, seed, &at, &format!("{seed}<X>\n"))?;
-    fire(&devices[1], &b, seed, &at, "---\nn: hello\nf: true\ndescription: the bird sat\n---\nbody\n<X>\n")?;
+    fire(
+        &devices[1],
+        &b,
+        seed,
+        &at,
+        "---\nn: hello\nf: true\ndescription: the bird sat\n---\nbody\n<X>\n",
+    )?;
     sync(&a, &b)?;
     sync(&b, &c)?;
     // Then no value was spliced or superseded without having been seen.
     let values = active_registers(&b);
     assert_eq!(values["n"], ["2", "3", "hello"]);
     assert_eq!(values["f"], ["0", "false"]);
-    assert_eq!(values["description"], ["the bird sat down", "the red bird sat"]);
+    assert_eq!(
+        values["description"],
+        ["the bird sat down", "the red bird sat"]
+    );
     let text = render_item(&b)?.expect("live");
     assert_eq!(text.matches("<X>").count(), 1);
     assert_eq!(render_item(&a)?, render_item(&b)?);
@@ -280,15 +383,27 @@ fn drifted_field_edits_preserve_unseen_whole_values() -> Result<(), Box<dyn std:
 fn drifted_list_to_string_replaces_seen_elements_only() -> Result<(), Box<dyn std::error::Error>> {
     // Given a concurrent addition unknown to the stale disk writer.
     let dir = tempfile::tempdir()?;
-    let da = ItemDevice { peer: 1, state_dir: dir.path().join("a") };
-    let db = ItemDevice { peer: 2, state_dir: dir.path().join("b") };
+    let da = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().join("a"),
+    };
+    let db = ItemDevice {
+        peer: 2,
+        state_dir: dir.path().join("b"),
+    };
     let a = create_device_item_doc(&da)?;
     let b = create_device_item_doc(&db)?;
     let seed = "---\ntags:\n  - a\n---\nbody\n";
     fire(&da, &a, "", &vec![], seed)?;
     sync(&a, &b)?;
     let at = item_frontier(&b);
-    fire(&da, &a, seed, &item_frontier(&a), "---\ntags: [a, c]\n---\nbody\n")?;
+    fire(
+        &da,
+        &a,
+        seed,
+        &item_frontier(&a),
+        "---\ntags: [a, c]\n---\nbody\n",
+    )?;
     sync(&a, &b)?;
     fire(&db, &b, seed, &at, &format!("{seed}<X>\n"))?;
     // When the stale writer replaces its seen list with one string.
@@ -296,7 +411,9 @@ fn drifted_list_to_string_replaces_seen_elements_only() -> Result<(), Box<dyn st
     sync(&a, &b)?;
     // Then the unseen element remains beside the whole replacement string.
     let fields = render::frontmatter_entries(&b)?;
-    let (_, yaml::Value::Seq(tags)) = &fields[0] else { panic!("set-kind tags") };
+    let (_, yaml::Value::Seq(tags)) = &fields[0] else {
+        panic!("set-kind tags")
+    };
     assert!(tags.contains(&yaml::Value::String("c".into())));
     assert!(tags.contains(&yaml::Value::String("x: y".into())));
     assert_eq!(tags.len(), 2);
@@ -305,10 +422,14 @@ fn drifted_list_to_string_replaces_seen_elements_only() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn materialized_register_is_seen_and_can_be_replaced_after_a_crash() -> Result<(), Box<dyn std::error::Error>> {
+fn materialized_register_is_seen_and_can_be_replaced_after_a_crash()
+-> Result<(), Box<dyn std::error::Error>> {
     // Given a synced register written to disk without saving the new baseline.
     let dir = tempfile::tempdir()?;
-    let device = ItemDevice { peer: 2, state_dir: dir.path().into() };
+    let device = ItemDevice {
+        peer: 2,
+        state_dir: dir.path().into(),
+    };
     let a = create_item_doc(1)?;
     let b = create_device_item_doc(&device)?;
     let seed = "---\nn: 1\n---\n";
@@ -317,7 +438,13 @@ fn materialized_register_is_seen_and_can_be_replaced_after_a_crash() -> Result<(
     let at = item_frontier(&b);
     current(&a, "---\nn: 2\n---\n")?;
     sync(&a, &b)?;
-    record_materialized(&device, "item.md", &b, &at, &render_item(&b)?.expect("written"))?;
+    record_materialized(
+        &device,
+        "item.md",
+        &b,
+        &at,
+        &render_item(&b)?.expect("written"),
+    )?;
     // When the user overwrites the value they actually saw.
     fire(&device, &b, seed, &at, "---\nn: 5\n---\n")?;
     sync(&a, &b)?;
@@ -339,7 +466,9 @@ fn tombstones_cover_observed_edits_and_concurrent_deletes() -> Result<(), ItemEr
         sync(&a, &b)?;
         // When one or both peers delete it.
         delete_item(&a)?;
-        if simultaneous { delete_item(&b)?; }
+        if simultaneous {
+            delete_item(&b)?;
+        }
         sync(&a, &b)?;
         // Then neither the known edit nor the other delete revives it.
         assert!(!is_live(&a));
@@ -361,30 +490,68 @@ fn unchanged_stale_capture_does_not_revive_but_recreation_does() -> Result<(), I
     // When an unchanged stale capture is attempted, followed by a real recreation.
     assert!(capture::capture_item(&doc, old, &at, old, None)?.is_none());
     assert!(!is_live(&doc));
-    capture(&doc, old, &item_frontier(&doc), "---\ndescription: d\n---\nnew\n")?;
+    capture(
+        &doc,
+        old,
+        &item_frontier(&doc),
+        "---\ndescription: d\n---\nnew\n",
+    )?;
     // Then only the new content is live.
-    assert_eq!(render_item(&doc)?.as_deref(), Some("---\ndescription: d\n---\nnew\n"));
+    assert_eq!(
+        render_item(&doc)?.as_deref(),
+        Some("---\ndescription: d\n---\nnew\n")
+    );
     Ok(())
 }
 
 #[test]
-fn adoption_replay_never_reintroduces_a_superseded_value() -> Result<(), Box<dyn std::error::Error>> {
+fn adoption_replay_never_reintroduces_a_superseded_value() -> Result<(), Box<dyn std::error::Error>>
+{
     // Given an adopted value that a later user write superseded.
     let dir = tempfile::tempdir()?;
-    let device = ItemDevice { peer: 1, state_dir: dir.path().into() };
+    let device = ItemDevice {
+        peer: 1,
+        state_dir: dir.path().into(),
+    };
     let doc = create_device_item_doc(&device)?;
-    let values = [RegisterValue { key: "n".into(), value: "2".into() }];
-    let update = capture_on_device(&device, "item.md", &doc, "", &vec![], "---\nn: 1\n---\n", &values)?.expect("adoption");
+    let values = [RegisterValue {
+        key: "n".into(),
+        value: "2".into(),
+    }];
+    let update = capture_on_device(
+        &device,
+        "item.md",
+        &doc,
+        "",
+        &vec![],
+        "---\nn: 1\n---\n",
+        &values,
+    )?
+    .expect("adoption");
     // The receipt is durable before the update is returned, but not yet landed.
     let receipts = capture_receipts::read_receipts(dir.path(), "item.md")?;
     assert!(!capture_receipts::receipt_landed(&doc, &receipts[0]));
     doc.import(&update)?;
     assert!(capture_receipts::receipt_landed(&doc, &receipts[0]));
     let base = render_item(&doc)?.expect("joined");
-    fire(&device, &doc, &base, &item_frontier(&doc), "---\nn: 3\n---\n")?;
+    fire(
+        &device,
+        &doc,
+        &base,
+        &item_frontier(&doc),
+        "---\nn: 3\n---\n",
+    )?;
     // When the same stale adoption is requested again.
     let text = render_item(&doc)?.expect("resolved");
-    let update = capture_on_device(&device, "item.md", &doc, &text, &item_frontier(&doc), &text, &values)?;
+    let update = capture_on_device(
+        &device,
+        "item.md",
+        &doc,
+        &text,
+        &item_frontier(&doc),
+        &text,
+        &values,
+    )?;
     // Then the historical write counts as written, but is not active again.
     assert!(update.is_none());
     assert!(adopt_values::register_values_written(&doc, &values));

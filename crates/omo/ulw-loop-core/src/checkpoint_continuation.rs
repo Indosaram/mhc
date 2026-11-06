@@ -1,16 +1,18 @@
 //! Checkpoint and continue operation for ulw-loop.
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-use crate::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs, CheckpointUlwLoopResult};
+use crate::checkpoint::{CheckpointUlwLoopArgs, CheckpointUlwLoopResult, checkpoint_ulw_loop};
 use crate::checkpoint_template::checkpoint_template;
-use crate::codex_goal_instruction::{build_codex_goal_instruction, BuildCodexGoalInstructionArgs, UlwLoopGoalInstruction};
+use crate::cli_output::blocked_decision_handoff;
+use crate::codex_goal_instruction::{
+    BuildCodexGoalInstructionArgs, UlwLoopGoalInstruction, build_codex_goal_instruction,
+};
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan};
 use crate::paths::UlwLoopScope;
-use crate::plan_crud::{start_next_ulw_loop, StartNextResult};
+use crate::plan_crud::{StartNextResult, start_next_ulw_loop};
 use crate::runtime::UlwLoopError;
-use crate::cli_output::blocked_decision_handoff;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]

@@ -17,7 +17,12 @@ pub(super) fn version_lock_path(root: &Path, version: &str) -> PathBuf {
 }
 
 fn open_lock(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 fn lock_error(error: TryLockError, busy: &str) -> io::Error {
@@ -33,11 +38,16 @@ fn lock_error(error: TryLockError, busy: &str) -> io::Error {
 /// still takes the lease its parent created and keeps the version protected from cleanup.
 fn open_existing_lock_read_only(path: &Path, write_error: io::Error) -> io::Result<File> {
     match write_error.kind() {
-        io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::PermissionDenied => {
-            OpenOptions::new().read(true).open(path).map_err(|read_error| {
-                if read_error.kind() == io::ErrorKind::NotFound { write_error } else { read_error }
-            })
-        }
+        io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::PermissionDenied => OpenOptions::new()
+            .read(true)
+            .open(path)
+            .map_err(|read_error| {
+                if read_error.kind() == io::ErrorKind::NotFound {
+                    write_error
+                } else {
+                    read_error
+                }
+            }),
         _ => Err(write_error),
     }
 }
@@ -58,7 +68,8 @@ impl SessionLease {
 impl UpdateLease {
     pub fn acquire(root: &Path) -> io::Result<Self> {
         let file = open_lock(&root.join(".update.lock"))?;
-        file.try_lock().map_err(|error| lock_error(error, "another update is running"))?;
+        file.try_lock()
+            .map_err(|error| lock_error(error, "another update is running"))?;
         Ok(Self { _file: file })
     }
 }
@@ -85,7 +96,9 @@ mod tests {
         let second = SessionLease::acquire(root.path(), "1.0.0")?;
         assert!(try_exclusive_version(root.path(), "1.0.0")?.is_none());
         let update = UpdateLease::acquire(root.path())?;
-        assert!(matches!(UpdateLease::acquire(root.path()), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+        assert!(
+            matches!(UpdateLease::acquire(root.path()), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
         drop(update);
         drop((first, second));
         assert!(try_exclusive_version(root.path(), "1.0.0")?.is_some());
@@ -117,7 +130,10 @@ mod tests {
         }
         let session = session?;
         assert!(matches!(missing, Err(e) if e.kind() == io::ErrorKind::PermissionDenied));
-        assert!(try_exclusive_version(root.path(), "1.0.0")?.is_none(), "read-only lease defers cleanup");
+        assert!(
+            try_exclusive_version(root.path(), "1.0.0")?.is_none(),
+            "read-only lease defers cleanup"
+        );
         drop(session);
         assert!(try_exclusive_version(root.path(), "1.0.0")?.is_some());
         Ok(())

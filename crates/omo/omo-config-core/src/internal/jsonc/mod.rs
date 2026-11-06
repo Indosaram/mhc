@@ -49,10 +49,19 @@ mod parity_5138_tests {
     fn collects_recovered_errors_in_order_with_token_spans() {
         let result = parse_jsonc_safe("{\"a\":,\"b\":,\"c\" 1}");
         assert!(result.data.is_none());
-        let errors: Vec<_> = result.errors.iter().map(|error| {
-            (error.message.as_str(), error.offset, error.length)
-        }).collect();
-        assert_eq!(errors, vec![("ValueExpected", 5, 1), ("ValueExpected", 10, 1), ("ColonExpected", 15, 1)]);
+        let errors: Vec<_> = result
+            .errors
+            .iter()
+            .map(|error| (error.message.as_str(), error.offset, error.length))
+            .collect();
+        assert_eq!(
+            errors,
+            vec![
+                ("ValueExpected", 5, 1),
+                ("ValueExpected", 10, 1),
+                ("ColonExpected", 15, 1)
+            ]
+        );
     }
 
     #[test]
@@ -64,15 +73,23 @@ mod parity_5138_tests {
             (r#""\u12x""#, vec![("InvalidUnicode", 0, 7)]),
             ("1.", vec![("UnexpectedEndOfNumber", 0, 2)]),
             ("1e+", vec![("UnexpectedEndOfNumber", 0, 3)]),
-            ("/* open", vec![("UnexpectedEndOfComment", 0, 7), ("ValueExpected", 7, 0)]),
-            ("wat", vec![("InvalidSymbol", 0, 3), ("ValueExpected", 3, 0)]),
+            (
+                "/* open",
+                vec![("UnexpectedEndOfComment", 0, 7), ("ValueExpected", 7, 0)],
+            ),
+            (
+                "wat",
+                vec![("InvalidSymbol", 0, 3), ("ValueExpected", 3, 0)],
+            ),
         ];
         for (text, expected) in cases {
             let result = parse_jsonc_safe(text);
             assert!(result.data.is_none(), "{text:?}");
-            let actual: Vec<_> = result.errors.iter().map(|error| {
-                (error.message.as_str(), error.offset, error.length)
-            }).collect();
+            let actual: Vec<_> = result
+                .errors
+                .iter()
+                .map(|error| (error.message.as_str(), error.offset, error.length))
+                .collect();
             assert_eq!(actual, expected, "{text:?}");
         }
     }
@@ -80,21 +97,45 @@ mod parity_5138_tests {
     #[test]
     fn multi_error_files_join_every_recovered_message_like_the_loader() {
         let result = parse_jsonc_safe("{\"a\":,\"b\":,\"c\" 1}");
-        let joined = result.errors.iter().map(|error| error.message.as_str()).collect::<Vec<_>>().join(", ");
+        let joined = result
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         assert_eq!(joined, "ValueExpected, ValueExpected, ColonExpected");
     }
 
     #[test]
     fn recovery_reports_missing_commas_and_closing_delimiters() {
         let result = parse_jsonc_safe("[1 2, {\"a\":");
-        let actual: Vec<_> = result.errors.iter().map(|error| error.message.as_str()).collect();
-        assert_eq!(actual, ["CommaExpected", "ValueExpected", "CloseBraceExpected", "CloseBracketExpected"]);
+        let actual: Vec<_> = result
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                "CommaExpected",
+                "ValueExpected",
+                "CloseBraceExpected",
+                "CloseBracketExpected"
+            ]
+        );
     }
 
     #[test]
     fn errors_use_utf16_positions_after_stripping_bom() {
         let result = parse_jsonc_safe("\u{feff}{\"😀\":,\"b\":}");
-        assert_eq!(result.errors.iter().map(|error| (error.offset, error.length)).collect::<Vec<_>>(), [(6, 1), (11, 1)]);
+        assert_eq!(
+            result
+                .errors
+                .iter()
+                .map(|error| (error.offset, error.length))
+                .collect::<Vec<_>>(),
+            [(6, 1), (11, 1)]
+        );
     }
 
     #[test]

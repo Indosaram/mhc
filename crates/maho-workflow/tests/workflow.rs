@@ -2,7 +2,9 @@
 //! executor stands in for child tasks: the test decides when and how each child ends, and every
 //! wait is on an exact event (child start, scheduler event, notification) with a bounded timeout.
 use maho_workflow::definition::{WorkflowDefinition, WorkflowNode};
-use maho_workflow::executor::{BoxFuture, ChildOutcome, ChildProbe, NodeExecutor, NodeRequest, SendOutcome, StartError};
+use maho_workflow::executor::{
+    BoxFuture, ChildOutcome, ChildProbe, NodeExecutor, NodeRequest, SendOutcome, StartError,
+};
 use maho_workflow::scheduler::{RunEvent, SchedulerOptions, WorkflowScheduler};
 use maho_workflow::skills::DirSkillResolver;
 use maho_workflow::state::{NodeState, RunStatus};
@@ -18,7 +20,9 @@ use tokio::sync::{mpsc, watch};
 const LIMIT: Duration = Duration::from_secs(10);
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +65,12 @@ impl FakeExecutor {
     }
 
     fn complete(&self, task: &str) {
-        self.finish(task, ChildOutcome::Completed { output: format!("result of {task}") });
+        self.finish(
+            task,
+            ChildOutcome::Completed {
+                output: format!("result of {task}"),
+            },
+        );
     }
 }
 
@@ -80,14 +89,22 @@ impl NodeExecutor for FakeExecutor {
     }
 
     fn wait(&self, task_id: &str) -> BoxFuture<'static, ChildOutcome> {
-        let receiver = lock(&self.children).get(task_id).map(watch::Sender::subscribe);
+        let receiver = lock(&self.children)
+            .get(task_id)
+            .map(watch::Sender::subscribe);
         Box::pin(async move {
             let Some(mut receiver) = receiver else {
-                return ChildOutcome::Failed { message: "unknown child".into(), infrastructure: true };
+                return ChildOutcome::Failed {
+                    message: "unknown child".into(),
+                    infrastructure: true,
+                };
             };
             match receiver.wait_for(Option::is_some).await {
                 Ok(outcome) => outcome.clone().unwrap_or(ChildOutcome::Cancelled),
-                Err(_) => ChildOutcome::Failed { message: "child channel closed".into(), infrastructure: true },
+                Err(_) => ChildOutcome::Failed {
+                    message: "child channel closed".into(),
+                    infrastructure: true,
+                },
             }
         })
     }
@@ -108,7 +125,10 @@ impl NodeExecutor for FakeExecutor {
 
     fn send(&self, task_id: &str, message: &str) -> SendOutcome {
         lock(&self.sent).push((task_id.to_owned(), message.to_owned()));
-        match lock(&self.children).get(task_id).map(|s| s.borrow().is_none()) {
+        match lock(&self.children)
+            .get(task_id)
+            .map(|s| s.borrow().is_none())
+        {
             Some(true) => SendOutcome::Steered,
             Some(false) => SendOutcome::FollowUp,
             None => SendOutcome::NotContinuable,
@@ -116,7 +136,10 @@ impl NodeExecutor for FakeExecutor {
     }
 
     fn probe(&self, task_id: &str) -> ChildProbe {
-        match lock(&self.children).get(task_id).map(|s| s.borrow().clone()) {
+        match lock(&self.children)
+            .get(task_id)
+            .map(|s| s.borrow().clone())
+        {
             None => ChildProbe::Missing,
             Some(None) => ChildProbe::Running,
             Some(Some(outcome)) => ChildProbe::Settled(outcome),
@@ -133,12 +156,18 @@ struct Harness {
     caller: Caller,
 }
 
-fn scheduler_at(root: &Path, exec: &Arc<FakeExecutor>, settings: DagSettings) -> Arc<WorkflowScheduler> {
+fn scheduler_at(
+    root: &Path,
+    exec: &Arc<FakeExecutor>,
+    settings: DagSettings,
+) -> Arc<WorkflowScheduler> {
     WorkflowScheduler::new(SchedulerOptions {
         store: WorkflowStore::in_state_dir(root),
         settings,
         executor: Arc::clone(exec) as Arc<dyn NodeExecutor>,
-        skills: Arc::new(DirSkillResolver { roots: vec![root.join("skills")] }),
+        skills: Arc::new(DirSkillResolver {
+            roots: vec![root.join("skills")],
+        }),
         retry_base: Duration::from_secs(1),
     })
 }
@@ -148,7 +177,14 @@ fn harness_with(settings: DagSettings) -> Harness {
     let (exec, starts) = FakeExecutor::new();
     let scheduler = scheduler_at(dir.path(), &exec, settings);
     let events = scheduler.subscribe();
-    Harness { dir, exec, starts, scheduler, events, caller: Caller::new("parent-1") }
+    Harness {
+        dir,
+        exec,
+        starts,
+        scheduler,
+        events,
+        caller: Caller::new("parent-1"),
+    }
 }
 
 fn harness() -> Harness {
@@ -164,7 +200,10 @@ impl Harness {
     }
 
     fn no_pending_start(&mut self) {
-        assert!(self.starts.try_recv().is_err(), "no further child should have started");
+        assert!(
+            self.starts.try_recv().is_err(),
+            "no further child should have started"
+        );
     }
 
     async fn event(&mut self, matches: impl Fn(&RunEvent) -> bool) -> RunEvent {
@@ -183,7 +222,10 @@ impl Harness {
 
     async fn settled(&mut self, run_id: &str) -> RunStatus {
         let run_id = run_id.to_owned();
-        match self.event(|e| matches!(e, RunEvent::RunSettled { run_id: r, .. } if *r == run_id)).await {
+        match self
+            .event(|e| matches!(e, RunEvent::RunSettled { run_id: r, .. } if *r == run_id))
+            .await
+        {
             RunEvent::RunSettled { status, .. } => status,
             _ => unreachable!(),
         }
@@ -191,15 +233,26 @@ impl Harness {
 
     async fn node_settled(&mut self, node: &str) -> NodeState {
         let node = node.to_owned();
-        match self.event(|e| matches!(e, RunEvent::NodeSettled { node_id, .. } if *node_id == node)).await {
+        match self
+            .event(|e| matches!(e, RunEvent::NodeSettled { node_id, .. } if *node_id == node))
+            .await
+        {
             RunEvent::NodeSettled { state, .. } => state,
             _ => unreachable!(),
         }
     }
 
     fn state(&self, run_id: &str, node: &str) -> NodeState {
-        let snapshot = self.scheduler.snapshot(&self.caller, Some(run_id)).expect("snapshot");
-        snapshot.nodes.iter().find(|n| n.id == node).expect("node").state
+        let snapshot = self
+            .scheduler
+            .snapshot(&self.caller, Some(run_id))
+            .expect("snapshot");
+        snapshot
+            .nodes
+            .iter()
+            .find(|n| n.id == node)
+            .expect("node")
+            .state
     }
 
     async fn tool(&self, params: Value) -> tool::ToolOutcome {
@@ -218,10 +271,17 @@ fn node(id: &str, deps: &[&str]) -> WorkflowNode {
 }
 
 fn def(key: &str, nodes: Vec<WorkflowNode>) -> WorkflowDefinition {
-    WorkflowDefinition { key: key.into(), name: format!("flow {key}"), nodes }
+    WorkflowDefinition {
+        key: key.into(),
+        name: format!("flow {key}"),
+        nodes,
+    }
 }
 
-fn collector() -> (maho_task::Notifier, mpsc::UnboundedReceiver<(String, Value)>) {
+fn collector() -> (
+    maho_task::Notifier,
+    mpsc::UnboundedReceiver<(String, Value)>,
+) {
     let (tx, rx) = mpsc::unbounded_channel();
     let notifier: maho_task::Notifier = Arc::new(move |kind: &str, text: &str, details: Value| {
         assert_eq!(kind, tool::UPDATE_MESSAGE_TYPE);
@@ -233,7 +293,16 @@ fn collector() -> (maho_task::Notifier, mpsc::UnboundedReceiver<(String, Value)>
 #[tokio::test]
 async fn acceptance_01_chain_runs_in_order() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("chain", vec![node("a", &[]), node("b", &["a"]), node("c", &["b"])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def(
+                "chain",
+                vec![node("a", &[]), node("b", &["a"]), node("c", &["b"])],
+            ),
+        )
+        .expect("start");
     let run = out.run.run_id.clone();
     let a = h.next_start().await;
     assert_eq!(a.node, "a");
@@ -248,9 +317,15 @@ async fn acceptance_01_chain_runs_in_order() {
     assert_eq!(c.node, "c");
     h.exec.complete(&c.task);
     assert_eq!(h.settled(&run).await, RunStatus::Completed);
-    let snapshot = h.scheduler.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    let snapshot = h
+        .scheduler
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     assert_eq!(snapshot.graph.waves.len(), 3);
-    assert_eq!(h.scheduler.store().read_result(&run, "c").as_deref(), Some(format!("result of {}", c.task).as_str()));
+    assert_eq!(
+        h.scheduler.store().read_result(&run, "c").as_deref(),
+        Some(format!("result of {}", c.task).as_str())
+    );
 }
 
 #[tokio::test]
@@ -258,7 +333,19 @@ async fn acceptance_02_fan_out_fan_in() {
     let mut h = harness();
     let out = h
         .scheduler
-        .start(&h.caller, def("fan", vec![node("a", &[]), node("b1", &["a"]), node("b2", &["a"]), node("b3", &["a"]), node("d", &["b1", "b2", "b3"])]))
+        .start(
+            &h.caller,
+            def(
+                "fan",
+                vec![
+                    node("a", &[]),
+                    node("b1", &["a"]),
+                    node("b2", &["a"]),
+                    node("b3", &["a"]),
+                    node("d", &["b1", "b2", "b3"]),
+                ],
+            ),
+        )
         .expect("start");
     let run = out.run.run_id.clone();
     let a = h.next_start().await;
@@ -291,18 +378,27 @@ async fn acceptance_02_fan_out_fan_in() {
 async fn acceptance_03_two_problems_reported_and_no_run_created() {
     let mut h = harness();
     let outcome = h
-        .tool(json!({"action": "start", "definition": {"key": "bad", "name": "bad", "nodes": [
-            {"id": "a", "prompt": "x", "category": "quick", "dependsOn": ["a"]},
-            {"id": "b", "prompt": "y", "category": "quick", "dependsOn": ["ghost"]}
-        ]}}))
+        .tool(
+            json!({"action": "start", "definition": {"key": "bad", "name": "bad", "nodes": [
+                {"id": "a", "prompt": "x", "category": "quick", "dependsOn": ["a"]},
+                {"id": "b", "prompt": "y", "category": "quick", "dependsOn": ["ghost"]}
+            ]}}),
+        )
         .await;
     assert_eq!(outcome.code(), Some("invalid_definition"));
-    let codes: Vec<&str> = outcome.details["errors"].as_array().expect("errors").iter().filter_map(|e| e["code"].as_str()).collect();
+    let codes: Vec<&str> = outcome.details["errors"]
+        .as_array()
+        .expect("errors")
+        .iter()
+        .filter_map(|e| e["code"].as_str())
+        .collect();
     assert_eq!(codes, ["self_dependency", "unknown_dependency"]);
     assert!(h.scheduler.store().list().is_empty());
     h.no_pending_start();
     // Every rule maps to its code at the tool level too (unit coverage in definition.rs).
-    let empty = h.tool(json!({"action": "start", "definition": {"key": "e", "name": "e", "nodes": []}})).await;
+    let empty = h
+        .tool(json!({"action": "start", "definition": {"key": "e", "name": "e", "nodes": []}}))
+        .await;
     assert_eq!(empty.details["errors"][0]["code"], "empty_graph");
 }
 
@@ -310,15 +406,22 @@ async fn acceptance_03_two_problems_reported_and_no_run_created() {
 async fn acceptance_04_cycle_reports_closed_path() {
     let h = harness();
     let outcome = h
-        .tool(json!({"action": "start", "definition": {"key": "cyc", "name": "c", "nodes": [
-            {"id": "x", "prompt": "p", "category": "q", "dependsOn": ["y"]},
-            {"id": "y", "prompt": "p", "category": "q", "dependsOn": ["x"]}
-        ]}}))
+        .tool(
+            json!({"action": "start", "definition": {"key": "cyc", "name": "c", "nodes": [
+                {"id": "x", "prompt": "p", "category": "q", "dependsOn": ["y"]},
+                {"id": "y", "prompt": "p", "category": "q", "dependsOn": ["x"]}
+            ]}}),
+        )
         .await;
     assert_eq!(outcome.code(), Some("invalid_definition"));
     let error = &outcome.details["errors"][0];
     assert_eq!(error["code"], "cycle");
-    let path: Vec<&str> = error["path"].as_array().expect("path").iter().filter_map(Value::as_str).collect();
+    let path: Vec<&str> = error["path"]
+        .as_array()
+        .expect("path")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     assert_eq!(path.len(), 3);
     assert_eq!(path.first(), path.last());
 }
@@ -332,7 +435,10 @@ async fn acceptance_05_target_rules() {
     ] {
         let outcome = h.tool(json!({"action": "start", "definition": {"key": "t", "name": "t", "nodes": [node]}})).await;
         assert_eq!(outcome.code(), Some("invalid_definition"));
-        assert_eq!(outcome.details["errors"][0]["code"], maho_workflow::definition::INVALID_TARGET);
+        assert_eq!(
+            outcome.details["errors"][0]["code"],
+            maho_workflow::definition::INVALID_TARGET
+        );
         assert_eq!(outcome.details["node_ids"], json!(["a"]));
     }
 }
@@ -340,9 +446,14 @@ async fn acceptance_05_target_rules() {
 #[tokio::test]
 async fn acceptance_06_key_reuse_and_conflict() {
     let mut h = harness();
-    let first = h.scheduler.start(&h.caller, def("k", vec![node("a", &[])])).expect("start");
+    let first = h
+        .scheduler
+        .start(&h.caller, def("k", vec![node("a", &[])]))
+        .expect("start");
     h.next_start().await;
-    let again = h.tool(json!({"action": "start", "definition": def("k", vec![node("a", &[])])})).await;
+    let again = h
+        .tool(json!({"action": "start", "definition": def("k", vec![node("a", &[])])}))
+        .await;
     assert!(!again.is_error, "{}", again.text);
     assert_eq!(again.details["kind"], "started");
     assert_eq!(again.details["reused"], true);
@@ -350,16 +461,27 @@ async fn acceptance_06_key_reuse_and_conflict() {
     h.no_pending_start();
     let mut changed = node("a", &[]);
     changed.prompt = "something else".into();
-    let conflict = h.tool(json!({"action": "start", "definition": def("k", vec![changed])})).await;
+    let conflict = h
+        .tool(json!({"action": "start", "definition": def("k", vec![changed])}))
+        .await;
     assert_eq!(conflict.code(), Some("definition_conflict"));
 }
 
 #[tokio::test]
 async fn acceptance_07_run_limit_and_pruned_key_is_free() {
-    let mut h = harness_with(DagSettings { max_runs_per_session: 1, ..DagSettings::default() });
-    let first = h.scheduler.start(&h.caller, def("one", vec![node("a", &[])])).expect("start");
+    let mut h = harness_with(DagSettings {
+        max_runs_per_session: 1,
+        ..DagSettings::default()
+    });
+    let first = h
+        .scheduler
+        .start(&h.caller, def("one", vec![node("a", &[])]))
+        .expect("start");
     let a = h.next_start().await;
-    let error = h.scheduler.start(&h.caller, def("two", vec![node("a", &[])])).expect_err("over the limit");
+    let error = h
+        .scheduler
+        .start(&h.caller, def("two", vec![node("a", &[])]))
+        .expect_err("over the limit");
     assert_eq!(error.code, "run_limit_exceeded");
     h.exec.complete(&a.task);
     h.settled(&first.run.run_id).await;
@@ -373,20 +495,42 @@ async fn acceptance_07_run_limit_and_pruned_key_is_free() {
     assert!(failures.is_empty());
     let mut changed = node("a", &[]);
     changed.prompt = "new".into();
-    let second = h.scheduler.start(&h.caller, def("one", vec![changed])).expect("key is free again");
+    let second = h
+        .scheduler
+        .start(&h.caller, def("one", vec![changed]))
+        .expect("key is free again");
     assert!(!second.reused);
     assert_ne!(second.run.run_id, first.run.run_id);
 }
 
 /// Shared by 8 and 9: `a -> b` plus `c`; `a` fails, `c` completes.
 async fn failed_run(h: &mut Harness) -> String {
-    let out = h.scheduler.start(&h.caller, def("fail", vec![node("a", &[]), node("b", &["a"]), node("c", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def(
+                "fail",
+                vec![node("a", &[]), node("b", &["a"]), node("c", &[])],
+            ),
+        )
+        .expect("start");
     let run = out.run.run_id.clone();
     let first = h.next_start().await;
     let second = h.next_start().await;
-    let (a, c) = if first.node == "a" { (first, second) } else { (second, first) };
+    let (a, c) = if first.node == "a" {
+        (first, second)
+    } else {
+        (second, first)
+    };
     assert_eq!(c.node, "c");
-    h.exec.finish(&a.task, ChildOutcome::Failed { message: "boom".into(), infrastructure: false });
+    h.exec.finish(
+        &a.task,
+        ChildOutcome::Failed {
+            message: "boom".into(),
+            infrastructure: false,
+        },
+    );
     h.node_settled("a").await;
     h.exec.complete(&c.task);
     assert_eq!(h.settled(&run).await, RunStatus::Failed);
@@ -397,7 +541,10 @@ async fn failed_run(h: &mut Harness) -> String {
 async fn acceptance_08_failure_skips_dependents_only() {
     let mut h = harness();
     let run = failed_run(&mut h).await;
-    let snapshot = h.scheduler.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    let snapshot = h
+        .scheduler
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     assert_eq!(h.state(&run, "c"), NodeState::Completed);
     assert_eq!(h.state(&run, "b"), NodeState::Skipped);
     assert_eq!(h.state(&run, "a"), NodeState::Failed);
@@ -415,7 +562,10 @@ async fn acceptance_09_retry_reruns_failed_and_skipped() {
     assert_eq!(retried.details["node_ids"], json!(["a", "b"]));
     let a = h.next_start().await;
     assert_eq!((a.node.as_str(), a.attempt), ("a", 2));
-    let snapshot = h.scheduler.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    let snapshot = h
+        .scheduler
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     let c = snapshot.nodes.iter().find(|n| n.id == "c").expect("c");
     assert_eq!((c.state, c.attempt), (NodeState::Completed, 1));
     let busy = h.tool(json!({"action": "retry", "run_id": run})).await;
@@ -431,9 +581,13 @@ async fn acceptance_09_retry_reruns_failed_and_skipped() {
 async fn acceptance_10_retry_prompt_needs_one_node() {
     let mut h = harness();
     let run = failed_run(&mut h).await;
-    let outcome = h.tool(json!({"action": "retry", "run_id": run, "node_ids": ["a", "b"], "prompt": "again"})).await;
+    let outcome = h
+        .tool(json!({"action": "retry", "run_id": run, "node_ids": ["a", "b"], "prompt": "again"}))
+        .await;
     assert_eq!(outcome.code(), Some("invalid_arguments"));
-    let single = h.tool(json!({"action": "retry", "run_id": run, "node_id": "a", "prompt": "try harder"})).await;
+    let single = h
+        .tool(json!({"action": "retry", "run_id": run, "node_id": "a", "prompt": "try harder"}))
+        .await;
     assert!(!single.is_error, "{}", single.text);
     assert_eq!(h.next_start().await.prompt, "try harder");
 }
@@ -441,14 +595,30 @@ async fn acceptance_10_retry_prompt_needs_one_node() {
 #[tokio::test(start_paused = true)]
 async fn acceptance_11_infrastructure_retries_with_backoff() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("infra", vec![node("a", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("infra", vec![node("a", &[])]))
+        .expect("start");
     let run = out.run.run_id.clone();
     let mut task = h.next_start().await.task;
     let mut delays = Vec::new();
     for retry in 1..=2u32 {
-        h.exec.finish(&task, ChildOutcome::Failed { message: "host unavailable".into(), infrastructure: true });
-        let event = h.event(|e| matches!(e, RunEvent::NodeRetryScheduled { .. })).await;
-        let RunEvent::NodeRetryScheduled { retry: n, delay_ms, .. } = event else { unreachable!() };
+        h.exec.finish(
+            &task,
+            ChildOutcome::Failed {
+                message: "host unavailable".into(),
+                infrastructure: true,
+            },
+        );
+        let event = h
+            .event(|e| matches!(e, RunEvent::NodeRetryScheduled { .. }))
+            .await;
+        let RunEvent::NodeRetryScheduled {
+            retry: n, delay_ms, ..
+        } = event
+        else {
+            unreachable!()
+        };
         assert_eq!(n, retry);
         delays.push(delay_ms);
         let before = tokio::time::Instant::now();
@@ -458,15 +628,30 @@ async fn acceptance_11_infrastructure_retries_with_backoff() {
         task = restarted.task;
     }
     assert_eq!(delays, [1000, 2000]);
-    h.exec.finish(&task, ChildOutcome::Failed { message: "host unavailable".into(), infrastructure: true });
+    h.exec.finish(
+        &task,
+        ChildOutcome::Failed {
+            message: "host unavailable".into(),
+            infrastructure: true,
+        },
+    );
     assert_eq!(h.settled(&run).await, RunStatus::Failed);
     h.no_pending_start();
     let record = h.scheduler.store().load(&run).expect("record");
     assert_eq!(record.nodes["a"].infra_retries, 2);
 
-    let other = h.scheduler.start(&h.caller, def("plain", vec![node("x", &[])])).expect("start");
+    let other = h
+        .scheduler
+        .start(&h.caller, def("plain", vec![node("x", &[])]))
+        .expect("start");
     let x = h.next_start().await;
-    h.exec.finish(&x.task, ChildOutcome::Failed { message: "bad code".into(), infrastructure: false });
+    h.exec.finish(
+        &x.task,
+        ChildOutcome::Failed {
+            message: "bad code".into(),
+            infrastructure: false,
+        },
+    );
     assert_eq!(h.settled(&other.run.run_id).await, RunStatus::Failed);
     h.no_pending_start();
 }
@@ -475,7 +660,10 @@ async fn acceptance_11_infrastructure_retries_with_backoff() {
 async fn acceptance_12_amend() {
     let mut h = harness();
     let original = vec![node("a", &[]), node("b", &["a"]), node("c", &[])];
-    let out = h.scheduler.start(&h.caller, def("am", original.clone())).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("am", original.clone()))
+        .expect("start");
     let run = out.run.run_id.clone();
     for _ in 0..2 {
         let s = h.next_start().await;
@@ -487,21 +675,33 @@ async fn acceptance_12_amend() {
 
     let mut amended = original.clone();
     amended[0].prompt = "do a differently".into();
-    let outcome = h.tool(json!({"action": "amend", "run_id": run, "definition": def("am", amended.clone())})).await;
+    let outcome = h
+        .tool(json!({"action": "amend", "run_id": run, "definition": def("am", amended.clone())}))
+        .await;
     assert_eq!(outcome.details["kind"], "amended", "{}", outcome.text);
     assert_eq!(outcome.details["node_ids"], json!(["a", "b"]));
     let a = h.next_start().await;
-    assert_eq!((a.node.as_str(), a.prompt.as_str()), ("a", "do a differently"));
-    let snapshot = h.scheduler.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    assert_eq!(
+        (a.node.as_str(), a.prompt.as_str()),
+        ("a", "do a differently")
+    );
+    let snapshot = h
+        .scheduler
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     let c = snapshot.nodes.iter().find(|n| n.id == "c").expect("c");
     assert_eq!((c.state, c.attempt), (NodeState::Completed, 1));
     assert_eq!(snapshot.amendments, 1);
 
     let mut again = amended.clone();
     again[0].prompt = "while running".into();
-    let running = h.tool(json!({"action": "amend", "run_id": run, "definition": def("am", again)})).await;
+    let running = h
+        .tool(json!({"action": "amend", "run_id": run, "definition": def("am", again)}))
+        .await;
     assert_eq!(running.code(), Some("amend_running_node"));
-    let other_key = h.tool(json!({"action": "amend", "run_id": run, "definition": def("other", amended)})).await;
+    let other_key = h
+        .tool(json!({"action": "amend", "run_id": run, "definition": def("other", amended)}))
+        .await;
     assert_eq!(other_key.code(), Some("invalid_amendment"));
     h.exec.complete(&a.task);
     let b = h.next_start().await;
@@ -513,59 +713,109 @@ async fn acceptance_12_amend() {
 #[tokio::test]
 async fn acceptance_13_wait_detached_and_blocking() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("w", vec![node("a", &[]), node("b", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("w", vec![node("a", &[]), node("b", &[])]))
+        .expect("start");
     let run = out.run.run_id.clone();
     let first = h.next_start().await;
     let second = h.next_start().await;
     let (notifier, mut notices) = collector();
-    let waited = tool::run(&h.scheduler, &h.caller, &json!({"action": "wait", "run_id": run}), Some(notifier)).await;
+    let waited = tool::run(
+        &h.scheduler,
+        &h.caller,
+        &json!({"action": "wait", "run_id": run}),
+        Some(notifier),
+    )
+    .await;
     assert_eq!(waited.details["kind"], "detached", "{}", waited.text);
     assert!(notices.try_recv().is_err());
     h.exec.complete(&first.task);
     h.exec.complete(&second.task);
     let mut kinds = Vec::new();
     for _ in 0..3 {
-        let (_, details) = tokio::time::timeout(LIMIT, notices.recv()).await.expect("notice").expect("open");
+        let (_, details) = tokio::time::timeout(LIMIT, notices.recv())
+            .await
+            .expect("notice")
+            .expect("open");
         kinds.push(details["kind"].as_str().unwrap_or_default().to_owned());
     }
     assert_eq!(kinds, ["node_settled", "node_settled", "run_settled"]);
 
-    let out = h.scheduler.start(&h.caller, def("w2", vec![node("x", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("w2", vec![node("x", &[])]))
+        .expect("start");
     let x = h.next_start().await;
     let scheduler = Arc::clone(&h.scheduler);
     let caller = h.caller.clone();
     let run2 = out.run.run_id.clone();
     let blocking = tokio::spawn(async move {
-        tool::run(&scheduler, &caller, &json!({"action": "wait", "run_id": run2, "detach": false}), None).await
+        tool::run(
+            &scheduler,
+            &caller,
+            &json!({"action": "wait", "run_id": run2, "detach": false}),
+            None,
+        )
+        .await
     });
     h.exec.complete(&x.task);
-    let result = tokio::time::timeout(LIMIT, blocking).await.expect("returns after settle").expect("join");
+    let result = tokio::time::timeout(LIMIT, blocking)
+        .await
+        .expect("returns after settle")
+        .expect("join");
     assert_eq!(result.details["kind"], "waited");
     assert_eq!(result.details["status"], "completed");
-    assert_eq!(result.details["results"][0]["output"], json!(format!("result of {}", x.task)));
+    assert_eq!(
+        result.details["results"][0]["output"],
+        json!(format!("result of {}", x.task))
+    );
 }
 
 #[tokio::test]
 async fn acceptance_14_send() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("s", vec![node("a", &[]), node("b", &["a"])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("s", vec![node("a", &[]), node("b", &["a"])]))
+        .expect("start");
     let run = out.run.run_id.clone();
     let a = h.next_start().await;
-    let sent = h.tool(json!({"action": "send", "run_id": run, "node_id": "a", "message": "also check docs"})).await;
+    let sent = h
+        .tool(
+            json!({"action": "send", "run_id": run, "node_id": "a", "message": "also check docs"}),
+        )
+        .await;
     assert_eq!(sent.details["kind"], "sent", "{}", sent.text);
     assert_eq!(sent.details["delivery"], "steered");
-    assert_eq!(lock(&h.exec.sent).as_slice(), [(a.task.clone(), "also check docs".to_owned())]);
-    let none = h.tool(json!({"action": "send", "run_id": run, "node_id": "b", "message": "hi"})).await;
+    assert_eq!(
+        lock(&h.exec.sent).as_slice(),
+        [(a.task.clone(), "also check docs".to_owned())]
+    );
+    let none = h
+        .tool(json!({"action": "send", "run_id": run, "node_id": "b", "message": "hi"}))
+        .await;
     assert_eq!(none.code(), Some("node_has_no_task"));
 }
 
 #[tokio::test]
 async fn acceptance_15_cancel_stops_children() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("c", vec![node("a", &[]), node("b", &[]), node("d", &["a", "b"])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def(
+                "c",
+                vec![node("a", &[]), node("b", &[]), node("d", &["a", "b"])],
+            ),
+        )
+        .expect("start");
     let run = out.run.run_id.clone();
     let mut tasks = vec![h.next_start().await.task, h.next_start().await.task];
-    let outcome = h.tool(json!({"action": "cancel", "run_id": run, "reason": "not needed"})).await;
+    let outcome = h
+        .tool(json!({"action": "cancel", "run_id": run, "reason": "not needed"}))
+        .await;
     assert_eq!(outcome.details["kind"], "cancelled");
     assert_eq!(outcome.details["status"], "cancelled");
     let mut cancelled = lock(&h.exec.cancelled).clone();
@@ -581,13 +831,30 @@ async fn acceptance_15_cancel_stops_children() {
 #[tokio::test]
 async fn acceptance_16_ownership_and_unknown_run() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("o", vec![node("a", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("o", vec![node("a", &[])]))
+        .expect("start");
     h.next_start().await;
     let stranger = Caller::new("someone-else");
-    let foreign = tool::run(&h.scheduler, &stranger, &json!({"action": "snapshot", "run_id": out.run.run_id}), None).await;
+    let foreign = tool::run(
+        &h.scheduler,
+        &stranger,
+        &json!({"action": "snapshot", "run_id": out.run.run_id}),
+        None,
+    )
+    .await;
     assert_eq!(foreign.code(), Some("run_not_owned"));
-    assert_eq!(h.tool(json!({"action": "snapshot", "run_id": "wf_nope"})).await.code(), Some("run_not_found"));
-    assert_eq!(h.tool(json!({"action": "cancel"})).await.code(), Some("run_not_found"));
+    assert_eq!(
+        h.tool(json!({"action": "snapshot", "run_id": "wf_nope"}))
+            .await
+            .code(),
+        Some("run_not_found")
+    );
+    assert_eq!(
+        h.tool(json!({"action": "cancel"})).await.code(),
+        Some("run_not_found")
+    );
 }
 
 #[tokio::test]
@@ -595,16 +862,31 @@ async fn acceptance_17_skills_prepended_once() {
     let mut h = harness();
     let skill_dir = h.dir.path().join("skills").join("style");
     std::fs::create_dir_all(&skill_dir).expect("mkdir");
-    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: style\n---\nUse short names.").expect("write");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: style\n---\nUse short names.",
+    )
+    .expect("write");
     let mut a = node("a", &[]);
     a.load_skills = vec!["style".into(), "ghost".into()];
-    let out = h.scheduler.start(&h.caller, def("sk", vec![a])).expect("start");
+    let out = h
+        .scheduler
+        .start(&h.caller, def("sk", vec![a]))
+        .expect("start");
     let started = h.next_start().await;
-    assert!(started.prompt.contains("Use short names."), "{}", started.prompt);
+    assert!(
+        started.prompt.contains("Use short names."),
+        "{}",
+        started.prompt
+    );
     assert!(started.prompt.ends_with("do a"));
     assert_eq!(out.diagnostics.len(), 1);
     assert!(out.diagnostics[0].contains("ghost"));
-    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: style\n---\nChanged.").expect("rewrite");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: style\n---\nChanged.",
+    )
+    .expect("rewrite");
     let record = h.scheduler.store().load(&out.run.run_id).expect("record");
     assert!(record.nodes["a"].prompt.contains("Use short names."));
     assert!(!record.nodes["a"].prompt.contains("Changed."));
@@ -613,17 +895,33 @@ async fn acceptance_17_skills_prepended_once() {
 #[tokio::test]
 async fn acceptance_18_recovery_reattaches_live_children() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("rec", vec![node("a", &[]), node("b", &["a"]), node("gone", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def(
+                "rec",
+                vec![node("a", &[]), node("b", &["a"]), node("gone", &[])],
+            ),
+        )
+        .expect("start");
     let run = out.run.run_id.clone();
     let first = h.next_start().await;
     let second = h.next_start().await;
-    let (a, gone) = if first.node == "a" { (first, second) } else { (second, first) };
+    let (a, gone) = if first.node == "a" {
+        (first, second)
+    } else {
+        (second, first)
+    };
     // The owning process "dies": it stops driving, its record stays on disk.
     h.scheduler.shutdown();
     lock(&h.exec.children).remove(&gone.task);
     let successor = scheduler_at(h.dir.path(), &h.exec, DagSettings::default());
     let mut events = successor.subscribe();
-    assert_eq!(successor.recover(&h.caller.session_id), std::slice::from_ref(&run));
+    assert_eq!(
+        successor.recover(&h.caller.session_id),
+        std::slice::from_ref(&run)
+    );
     h.exec.complete(&a.task);
     let b = h.next_start().await;
     assert_eq!(b.node, "b");
@@ -638,25 +936,41 @@ async fn acceptance_18_recovery_reattaches_live_children() {
     .await
     .expect("settles");
     assert_eq!(status, RunStatus::Failed);
-    let snapshot = successor.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    let snapshot = successor
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     let states: HashMap<&str, (NodeState, Option<String>)> = snapshot
         .nodes
         .iter()
-        .map(|n| (n.id.as_str(), (n.state, n.error.as_ref().map(|e| e.code.clone()))))
+        .map(|n| {
+            (
+                n.id.as_str(),
+                (n.state, n.error.as_ref().map(|e| e.code.clone())),
+            )
+        })
         .collect();
     assert_eq!(states["a"].0, NodeState::Completed);
     assert_eq!(states["b"].0, NodeState::Completed);
-    assert_eq!(states["gone"], (NodeState::Failed, Some("resume_task_missing".into())));
+    assert_eq!(
+        states["gone"],
+        (NodeState::Failed, Some("resume_task_missing".into()))
+    );
 }
 
 #[tokio::test]
 async fn acceptance_19_retention_spares_running_runs() {
     let mut h = harness();
-    let done = h.scheduler.start(&h.caller, def("old", vec![node("a", &[])])).expect("start");
+    let done = h
+        .scheduler
+        .start(&h.caller, def("old", vec![node("a", &[])]))
+        .expect("start");
     let a = h.next_start().await;
     h.exec.complete(&a.task);
     h.settled(&done.run.run_id).await;
-    let running = h.scheduler.start(&h.caller, def("live", vec![node("x", &[])])).expect("start");
+    let running = h
+        .scheduler
+        .start(&h.caller, def("live", vec![node("x", &[])]))
+        .expect("start");
     h.next_start().await;
     let store = h.scheduler.store().clone();
     for id in [&done.run.run_id, &running.run.run_id] {
@@ -678,7 +992,16 @@ async fn acceptance_19_retention_spares_running_runs() {
 #[tokio::test]
 async fn acceptance_20_dag_command() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("d", vec![node("a", &[]), node("b", &["a"]), node("c", &["a"])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def(
+                "d",
+                vec![node("a", &[]), node("b", &["a"]), node("c", &["a"])],
+            ),
+        )
+        .expect("start");
     let a = h.next_start().await;
     h.exec.complete(&a.task);
     h.next_start().await;
@@ -689,8 +1012,19 @@ async fn acceptance_20_dag_command() {
     assert!(list.text.contains("1/3 done, 2 running"), "{}", list.text);
     let detail = dag::render(&h.scheduler, &h.caller, &out.run.run_id);
     assert!(!detail.warning);
-    for needle in ["Wave 1:", "Wave 2:", "Critical path (*): a -> b", "Bottlenecks: a (2)", "category:quick", "after a"] {
-        assert!(detail.text.contains(needle), "missing {needle:?} in\n{}", detail.text);
+    for needle in [
+        "Wave 1:",
+        "Wave 2:",
+        "Critical path (*): a -> b",
+        "Bottlenecks: a (2)",
+        "category:quick",
+        "after a",
+    ] {
+        assert!(
+            detail.text.contains(needle),
+            "missing {needle:?} in\n{}",
+            detail.text
+        );
     }
     let missing = dag::render(&h.scheduler, &h.caller, "nope");
     assert!(missing.warning);
@@ -701,35 +1035,74 @@ async fn acceptance_20_dag_command() {
 #[tokio::test]
 async fn acceptance_21_user_paused_run() {
     let mut h = harness();
-    let out = h.scheduler.start(&h.caller, def("p", vec![node("a", &[]), node("b", &["a"]), node("c", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(
+            &h.caller,
+            def("p", vec![node("a", &[]), node("b", &["a"]), node("c", &[])]),
+        )
+        .expect("start");
     let run = out.run.run_id.clone();
     h.next_start().await;
     h.next_start().await;
-    let not_paused = h.tool(json!({"action": "guide", "run_id": run, "text": "x"})).await;
+    let not_paused = h
+        .tool(json!({"action": "guide", "run_id": run, "text": "x"}))
+        .await;
     assert_eq!(not_paused.code(), Some("run_not_user_paused"));
-    let paused = h.scheduler.user_pause(&h.caller, Some(run.as_str())).expect("pause");
+    let paused = h
+        .scheduler
+        .user_pause(&h.caller, Some(run.as_str()))
+        .expect("pause");
     assert_eq!(paused.status, RunStatus::Paused);
-    assert_eq!(h.tool(json!({"action": "resume", "run_id": run})).await.code(), Some("run_paused_by_user"));
-    let added = h.tool(json!({"action": "guide", "run_id": run, "text": "prefer small diffs", "node_id": "a"})).await;
+    assert_eq!(
+        h.tool(json!({"action": "resume", "run_id": run}))
+            .await
+            .code(),
+        Some("run_paused_by_user")
+    );
+    let added = h
+        .tool(
+            json!({"action": "guide", "run_id": run, "text": "prefer small diffs", "node_id": "a"}),
+        )
+        .await;
     assert!(!added.is_error, "{}", added.text);
-    let id = added.details["guidance_id"].as_str().expect("id").to_owned();
+    let id = added.details["guidance_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
     let edited = h.tool(json!({"action": "guide", "run_id": run, "guidance_id": id, "text": "prefer tiny diffs"})).await;
     assert!(!edited.is_error, "{}", edited.text);
-    let extra = h.tool(json!({"action": "guide", "run_id": run, "text": "drop me"})).await;
-    let extra_id = extra.details["guidance_id"].as_str().expect("id").to_owned();
-    let removed = h.tool(json!({"action": "guide", "run_id": run, "guidance_id": extra_id, "remove": true})).await;
+    let extra = h
+        .tool(json!({"action": "guide", "run_id": run, "text": "drop me"}))
+        .await;
+    let extra_id = extra.details["guidance_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let removed = h
+        .tool(json!({"action": "guide", "run_id": run, "guidance_id": extra_id, "remove": true}))
+        .await;
     assert!(!removed.is_error, "{}", removed.text);
-    let gone = h.tool(json!({"action": "guide", "run_id": run, "guidance_id": extra_id, "remove": true})).await;
+    let gone = h
+        .tool(json!({"action": "guide", "run_id": run, "guidance_id": extra_id, "remove": true}))
+        .await;
     assert_eq!(gone.code(), Some("guidance_not_found"));
-    let snapshot = h.scheduler.snapshot(&h.caller, Some(run.as_str())).expect("snapshot");
+    let snapshot = h
+        .scheduler
+        .snapshot(&h.caller, Some(run.as_str()))
+        .expect("snapshot");
     assert_eq!(snapshot.guidance.len(), 1);
     assert_eq!(snapshot.guidance[0].text, "prefer tiny diffs");
-    let cancelled = h.tool(json!({"action": "cancel_node", "run_id": run, "node_id": "c"})).await;
+    let cancelled = h
+        .tool(json!({"action": "cancel_node", "run_id": run, "node_id": "c"}))
+        .await;
     assert!(!cancelled.is_error, "{}", cancelled.text);
     assert_eq!(cancelled.details["status"], "paused");
     assert_eq!(h.state(&run, "c"), NodeState::Cancelled);
     // The user's resume control delivers the guidance with the node's next dispatch.
-    h.scheduler.user_resume(&h.caller, Some(run.as_str())).expect("resume");
+    h.scheduler
+        .user_resume(&h.caller, Some(run.as_str()))
+        .expect("resume");
     let restarted = h.next_start().await;
     assert_eq!(restarted.node, "a");
     assert!(restarted.prompt.contains("prefer tiny diffs"));
@@ -742,28 +1115,52 @@ async fn acceptance_21_user_paused_run() {
 async fn delta_d1_parent_model_survives_retry_and_recovery() {
     let mut h = harness();
     let starter = h.caller.clone().with_parent_model(Some("p/main".into()));
-    let out = h.scheduler.start(&starter, def("pm", vec![node("a", &[])])).expect("start");
+    let out = h
+        .scheduler
+        .start(&starter, def("pm", vec![node("a", &[])]))
+        .expect("start");
     let run = out.run.run_id.clone();
     assert_eq!(out.run.parent_model.as_deref(), Some("p/main"));
     let a = h.next_start().await;
     assert_eq!(a.parent_model.as_deref(), Some("p/main"));
-    h.exec.finish(&a.task, ChildOutcome::Failed { message: "boom".into(), infrastructure: false });
+    h.exec.finish(
+        &a.task,
+        ChildOutcome::Failed {
+            message: "boom".into(),
+            infrastructure: false,
+        },
+    );
     assert_eq!(h.settled(&run).await, RunStatus::Failed);
 
     // The session switched models; the retry still sends the stored one.
     let switched = h.caller.clone().with_parent_model(Some("q/other".into()));
-    let retried = tool::run(&h.scheduler, &switched, &json!({"action": "retry", "run_id": run}), None).await;
+    let retried = tool::run(
+        &h.scheduler,
+        &switched,
+        &json!({"action": "retry", "run_id": run}),
+        None,
+    )
+    .await;
     assert!(!retried.is_error, "{}", retried.text);
     let again = h.next_start().await;
     assert_eq!(again.parent_model.as_deref(), Some("p/main"));
     // A reused start keeps the stored value too.
-    let reused = h.scheduler.start(&switched, def("pm", vec![node("a", &[])])).expect("reuse");
+    let reused = h
+        .scheduler
+        .start(&switched, def("pm", vec![node("a", &[])]))
+        .expect("reuse");
     assert!(reused.reused);
     assert_eq!(reused.run.parent_model.as_deref(), Some("p/main"));
 
     // The owner dies while a node waits for dispatch; the successor re-dispatches it with the
     // stored parent model.
-    let second = h.scheduler.start(&starter, def("pm2", vec![node("x", &[]), node("y", &["x"])])).expect("start");
+    let second = h
+        .scheduler
+        .start(
+            &starter,
+            def("pm2", vec![node("x", &[]), node("y", &["x"])]),
+        )
+        .expect("start");
     let x = h.next_start().await;
     assert_eq!(x.node, "x");
     h.scheduler.shutdown();

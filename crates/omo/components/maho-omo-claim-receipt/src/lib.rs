@@ -15,23 +15,23 @@ pub mod shell_words;
 pub mod signatures;
 pub mod verdict;
 
-pub use cell_commands::{cell_invoked_kinds, CellCheckKind, CellInvokedKinds};
+pub use cell_commands::{CellCheckKind, CellInvokedKinds, cell_invoked_kinds};
 pub use classify::{
-    classify_claims, join_soft_newlines, mask_quoted_prose, split_sentences, Claim, ClaimKind,
-    ClaimStrength,
+    Claim, ClaimKind, ClaimStrength, classify_claims, join_soft_newlines, mask_quoted_prose,
+    split_sentences,
 };
 pub use evidence::{
-    build_timeline, content_text, CheckEvidence, CheckKind, CheckOutcome, EditEvidence, Timeline,
+    CheckEvidence, CheckKind, CheckOutcome, EditEvidence, Timeline, build_timeline, content_text,
 };
-pub use index::{ClaimReceiptComponent, CLAIM_RECEIPT_NUDGE_FLAG};
-pub use invocations::{invoked_kinds, InvokedKind, MAX_DEPTH};
+pub use index::{CLAIM_RECEIPT_NUDGE_FLAG, ClaimReceiptComponent};
+pub use invocations::{InvokedKind, MAX_DEPTH, invoked_kinds};
 pub use r#match::{
-    is_flagged, match_claims, ClaimStatus, ClaimVerdict, InvalidatedBy, Receipt, UnsupportedReason,
+    ClaimStatus, ClaimVerdict, InvalidatedBy, Receipt, UnsupportedReason, is_flagged, match_claims,
 };
-pub use runtime::{evaluate_answer, AnswerVerdicts};
+pub use runtime::{AnswerVerdicts, evaluate_answer};
 pub use shell_words::{shell_segments, strip_heredoc_bodies, without_comment};
 pub use signatures::{is_relevant_path, judge_output, judge_structured};
 pub use verdict::{
-    gate_flags_block, nudge_text, verdict_value, VerdictRecord, GATE_FLAGS_TAG, NUDGE_MESSAGE_TYPE,
-    VERDICT_ENTRY_TYPE,
+    GATE_FLAGS_TAG, NUDGE_MESSAGE_TYPE, VERDICT_ENTRY_TYPE, VerdictRecord, gate_flags_block,
+    nudge_text, verdict_value,
 };

@@ -3,10 +3,10 @@
 //! Replaces model-supplied provenance with a verified claim receipt so neither identity keys
 //! nor claim receipts can be forged from tool arguments.
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 use crate::context::MemoryIdentityContext;
 
@@ -41,8 +41,14 @@ pub struct MemoryToolProvenanceInput<'a> {
     pub entries: &'a [Value],
 }
 
-pub fn memory_tool_provenance(input: MemoryToolProvenanceInput<'_>) -> InjectedMemoryToolProvenance {
-    let source_str = input.input.get("source").and_then(Value::as_str).unwrap_or("inferred");
+pub fn memory_tool_provenance(
+    input: MemoryToolProvenanceInput<'_>,
+) -> InjectedMemoryToolProvenance {
+    let source_str = input
+        .input
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("inferred");
     let user_quote = input.input.get("user_quote").and_then(Value::as_str);
 
     let claim = resolve_claim_receipt(source_str, user_quote, input.entries, input.tool_call_id);
@@ -87,7 +93,13 @@ pub fn resolve_claim_receipt(
             let approves = proposal_id(&exchange.proposal);
             return ClaimReceipt {
                 source: "user".to_string(),
-                user_quote: Some(exchange.reply.split_whitespace().collect::<Vec<_>>().join(" ")),
+                user_quote: Some(
+                    exchange
+                        .reply
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
                 approves: Some(approves),
                 downgraded: None,
             };
@@ -110,15 +122,26 @@ pub fn proposal_id(proposal: &str) -> String {
 }
 
 fn is_valid_user_reply(quote: &str, reply: &str) -> bool {
-    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let normalize = |text: &str| {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
     let q = normalize(quote);
     let r = normalize(reply);
     let bare_q = q.strip_suffix(['.', '!']).unwrap_or(&q);
     let bare_r = r.strip_suffix(['.', '!']).unwrap_or(&r);
     let allowed = reply.trim_matches(' ');
-    if allowed.is_empty() { return false; }
+    if allowed.is_empty() {
+        return false;
+    }
     let word = allowed.strip_suffix(['.', '!']).unwrap_or(allowed);
-    if !word.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == ' ' || ('\u{ac00}'..='\u{d7a3}').contains(&ch)) { return false; }
+    if !word.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || ch == ' ' || ('\u{ac00}'..='\u{d7a3}').contains(&ch)
+    }) {
+        return false;
+    }
     bare_q == bare_r && is_consent_phrase(bare_q)
 }
 
@@ -148,9 +171,9 @@ fn is_consent_phrase(phrase: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use memory_core::identity::layout::build_identity_paths;
     use crate::binding::MemorySessionBinding;
+    use memory_core::identity::layout::build_identity_paths;
+    use serde_json::json;
 
     fn fixture_context(root: &std::path::Path) -> MemoryIdentityContext {
         let paths = build_identity_paths(root, "agent-test");

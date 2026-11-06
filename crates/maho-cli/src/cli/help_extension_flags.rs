@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use maho_ext_api::{ExtensionFlag, FlagType};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct HelpExtensionFlagsResult {
     pub flags: Vec<Value>,
@@ -33,18 +33,36 @@ pub async fn resolve_help_extension_flags(
 ) -> Result<HelpExtensionFlagsResult, String> {
     let (widget_sender, _widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let factories = super::default_extensions::assembled_factories(
-        widget_sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings_manager, cwd, agent_dir,
+        widget_sender,
+        std::sync::Arc::new(std::sync::OnceLock::new()),
+        &settings_manager,
+        cwd,
+        agent_dir,
     );
     let cwd_text = cwd.to_string_lossy();
     // senpi help renders flags only; extensions that cannot load contribute none and are not reported.
     let (factories, _errors) = super::default_extensions::with_user_extensions(
-        factories, &mut settings_manager, &cwd_text, agent_dir, additional_extension_paths, no_extensions,
-    ).await?;
-    let loaded = maho_ext_host::loader::load_extensions_async(factories, cwd, Default::default()).await;
-    let mut result = HelpExtensionFlagsResult { flags: Vec::new(), extension_paths: Vec::new() };
+        factories,
+        &mut settings_manager,
+        &cwd_text,
+        agent_dir,
+        additional_extension_paths,
+        no_extensions,
+    )
+    .await?;
+    let loaded =
+        maho_ext_host::loader::load_extensions_async(factories, cwd, Default::default()).await;
+    let mut result = HelpExtensionFlagsResult {
+        flags: Vec::new(),
+        extension_paths: Vec::new(),
+    };
     for extension in &loaded.extensions {
-        result.flags.extend(extension.flags.iter().map(help_flag_value));
-        result.extension_paths.push(PathBuf::from(&extension.identity.resolved_path));
+        result
+            .flags
+            .extend(extension.flags.iter().map(help_flag_value));
+        result
+            .extension_paths
+            .push(PathBuf::from(&extension.identity.resolved_path));
     }
     Ok(result)
 }

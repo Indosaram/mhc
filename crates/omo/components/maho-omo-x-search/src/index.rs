@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maho_ext_api::{
-    ComponentLogger, EventKind, EventResult, Extension, ExtensionApi,
-    ExtensionEvent, ResourceDiscoverEntry, ResourcesDiscoverResult, SourceScope,
+    ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
+    ResourceDiscoverEntry, ResourcesDiscoverResult, SourceScope,
 };
 use maho_omo_agent_home::resolve_agent_home;
 use maho_omo_bundled_skills::contributed_skill::{
-    host_commands_from_runtime, read_discover_cwd, resolve_contributed_skill, ContributedSkill,
-    ResolveContributedSkillOptions,
+    ContributedSkill, ResolveContributedSkillOptions, host_commands_from_runtime,
+    read_discover_cwd, resolve_contributed_skill,
 };
 
 use crate::auth::has_xai_credential;
 use crate::client::XSearchFetch;
-use crate::tool::{create_x_search_tool, CreateXSearchToolOptions};
+use crate::tool::{CreateXSearchToolOptions, create_x_search_tool};
 
 pub use crate::tool::{X_SEARCH_MODEL_ENV, X_SEARCH_TOOL_DESCRIPTION, X_SEARCH_TOOL_NAME};
 
@@ -66,7 +66,11 @@ pub fn create_x_search_component(options: XSearchComponentOptions) -> XSearchCom
 
 impl Extension for XSearchComponent {
     fn register(&self, api: &mut ExtensionApi) {
-        let env = self.options.env.clone().unwrap_or_else(|| std::env::vars().collect());
+        let env = self
+            .options
+            .env
+            .clone()
+            .unwrap_or_else(|| std::env::vars().collect());
         let agent_dir = self.options.agent_dir.clone().unwrap_or_else(|| {
             let home = self
                 .options

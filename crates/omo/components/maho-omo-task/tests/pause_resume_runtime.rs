@@ -48,10 +48,14 @@ fn held_wakes_resume_does_not_starve_the_current_thread_host_runtime() {
     let host = runtime.handle().clone();
     let (resumed, resumed_seen) = mpsc::sync_channel(1);
     let effects = EngineRunPauseEffects {
-        sources: Arc::new(Mutex::new(vec![Arc::new(ChildSource) as Arc<dyn RunPauseSource>])),
+        sources: Arc::new(Mutex::new(vec![
+            Arc::new(ChildSource) as Arc<dyn RunPauseSource>
+        ])),
         task_records: Arc::new(Vec::new),
         pause_task: Arc::new(|_, _| {
-            Ok(Some(senpi_task::manager::run_pause::EngineInheritReceipt { child_seq: 1 }))
+            Ok(Some(senpi_task::manager::run_pause::EngineInheritReceipt {
+                child_seq: 1,
+            }))
         }),
         // Like a native child: admit the continue prompt on the host runtime, then wait for it.
         resume_task: Arc::new(move |_, _, _, _, _| {
@@ -75,6 +79,7 @@ fn held_wakes_resume_does_not_starve_the_current_thread_host_runtime() {
             engine.clone(),
         )),
         session_id: Arc::new(|| Some("parent".into())),
+        fail_resume: None,
     };
     let mut api = crate::support::api();
     let _subscription = custody.register(&mut api);

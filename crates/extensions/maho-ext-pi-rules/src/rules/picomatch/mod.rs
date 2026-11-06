@@ -65,11 +65,14 @@ pub struct Options {
     pub max_extglob_recursion: MaxExtglobRecursion,
 }
 
-
 impl Options {
     #[must_use]
     pub fn bash_dot() -> Self {
-        Self { bash: true, dot: true, ..Self::default() }
+        Self {
+            bash: true,
+            dot: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -105,7 +108,9 @@ impl Compiled {
         if input == self.glob {
             return true;
         }
-        self.regex.is_match(&utils::js_units(input)).unwrap_or(false)
+        self.regex
+            .is_match(&utils::js_units(input))
+            .unwrap_or(false)
     }
 
     #[must_use]
@@ -151,13 +156,17 @@ fn js_regex_expression(value: &str) -> String {
                 index += consumed;
             }
             '[' => {
-                if class { result.push('\\'); }
+                if class {
+                    result.push('\\');
+                }
                 class = true;
                 result.push(ch);
                 index += 1;
             }
             ']' => {
-                if !class { result.push('\\'); }
+                if !class {
+                    result.push('\\');
+                }
                 class = false;
                 result.push(ch);
                 index += 1;
@@ -213,7 +222,9 @@ fn js_escape(chars: &[char], start: usize) -> (String, usize) {
             // Brace escapes are generated mapped-unit regex source, not raw JS escapes.
             if chars.get(start + 2) == Some(&'{') {
                 let mut end = start + 3;
-                while end < chars.len() && chars[end] != '}' { end += 1; }
+                while end < chars.len() && chars[end] != '}' {
+                    end += 1;
+                }
                 if end < chars.len() {
                     let body: String = chars[start + 2..=end].iter().collect();
                     return (format!("\\u{body}"), end - start + 1);
@@ -244,8 +255,14 @@ fn js_escape(chars: &[char], start: usize) -> (String, usize) {
 /// pattern characters they span, including the backslash.
 fn legacy_octal(chars: &[char], start: usize) -> (String, usize) {
     let first = chars[start + 1];
-    let second = chars.get(start + 2).copied().filter(|ch| ('0'..='7').contains(ch));
-    let third = chars.get(start + 3).copied().filter(|ch| ('0'..='7').contains(ch));
+    let second = chars
+        .get(start + 2)
+        .copied()
+        .filter(|ch| ('0'..='7').contains(ch));
+    let third = chars
+        .get(start + 3)
+        .copied()
+        .filter(|ch| ('0'..='7').contains(ch));
     let digits = if first == '0' {
         match (second, third) {
             (Some(second), Some(third)) => format!("0{second}{third}"),
@@ -267,13 +284,17 @@ fn to_regex(source: &str) -> Regex {
     let translated = js_regex_expression(source);
     match Regex::new(&translated) {
         Ok(regex) => regex,
-        Err(_) => Regex::new("$^").unwrap_or_else(|_| unreachable!("constant never-match regex compiles")),
+        Err(_) => {
+            Regex::new("$^").unwrap_or_else(|_| unreachable!("constant never-match regex compiles"))
+        }
     }
 }
 
 pub fn compile(pattern: &str, options: &Options) -> Result<Compiled, PicomatchError> {
     if pattern.is_empty() {
-        return Err(PicomatchError::Type("Expected pattern to be a non-empty string".into()));
+        return Err(PicomatchError::Type(
+            "Expected pattern to be a non-empty string".into(),
+        ));
     }
 
     let first = pattern.chars().next();
@@ -290,13 +311,21 @@ pub fn compile(pattern: &str, options: &Options) -> Result<Compiled, PicomatchEr
         }
     };
 
-    let (prepend, append) = if options.contains { ("", "") } else { ("^", "$") };
+    let (prepend, append) = if options.contains {
+        ("", "")
+    } else {
+        ("^", "$")
+    };
     let mut regex_source = format!("{prepend}(?:{source}){append}");
     if negated {
         regex_source = format!("^(?!{regex_source}).*$");
     }
 
-    Ok(Compiled { regex: to_regex(&regex_source), glob: pattern.to_string(), negated })
+    Ok(Compiled {
+        regex: to_regex(&regex_source),
+        glob: pattern.to_string(),
+        negated,
+    })
 }
 
 #[must_use]

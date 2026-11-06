@@ -1,9 +1,12 @@
 //! Checkpoint error combination.
 
-use std::collections::BTreeMap;
 use crate::runtime::UlwLoopError;
+use std::collections::BTreeMap;
 
-pub fn combine_checkpoint_validation_errors(codex_error: &UlwLoopError, gate_error: &UlwLoopError) -> UlwLoopError {
+pub fn combine_checkpoint_validation_errors(
+    codex_error: &UlwLoopError,
+    gate_error: &UlwLoopError,
+) -> UlwLoopError {
     let mut details = BTreeMap::new();
     if let Some(d) = &codex_error.details {
         details.extend(d.clone());

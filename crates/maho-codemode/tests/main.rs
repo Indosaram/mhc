@@ -127,11 +127,13 @@ mod schema_bridge;
 mod schema_hint;
 #[path = "session_cwd.rs"]
 mod session_cwd;
-#[path = "session_manager_proxy.rs"]
-mod session_manager_proxy;
 #[path = "session_env.rs"]
 mod session_env;
+#[path = "session_manager_proxy.rs"]
+mod session_manager_proxy;
 
+#[path = "env_scrub.rs"]
+mod env_scrub;
 #[path = "settings.rs"]
 mod settings;
 #[path = "settled_snapshot_budget.rs"]
@@ -152,5 +154,3 @@ mod timeouts;
 mod tool_result_marshal;
 #[path = "worker_host.rs"]
 mod worker_host;
-#[path = "env_scrub.rs"]
-mod env_scrub;

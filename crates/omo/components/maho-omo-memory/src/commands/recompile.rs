@@ -7,8 +7,8 @@ use std::sync::Arc;
 use maho_ext_api::ExtensionApi;
 
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
 pub async fn handle_recompile(
@@ -52,7 +52,8 @@ mod tests {
     use crate::commands::test_support::*;
 
     #[tokio::test]
-    async fn given_a_bound_identity_when_invoked_then_the_prompt_cache_is_busted_for_the_next_run() {
+    async fn given_a_bound_identity_when_invoked_then_the_prompt_cache_is_busted_for_the_next_run()
+    {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -65,7 +66,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unbound_session_when_invoked_then_nothing_is_busted_and_an_error_is_returned() {
+    async fn given_an_unbound_session_when_invoked_then_nothing_is_busted_and_an_error_is_returned()
+    {
         let fake = fake_deps(None, FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 

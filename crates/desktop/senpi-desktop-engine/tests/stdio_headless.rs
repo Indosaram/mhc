@@ -10,9 +10,9 @@ mod error_codes;
 #[path = "headless/input_calls.rs"]
 mod input_calls;
 
-use common::scenario::{Scenario, capture, headless, make_stop_path_live, snapshot_ref};
-use common::{Engine, TWO_DISPLAYS, error_code, fake_backend};
-use serde_json::{Value, json};
+use common::scenario::{capture, headless, make_stop_path_live, snapshot_ref, Scenario};
+use common::{error_code, fake_backend, Engine, TWO_DISPLAYS};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 /// Base64 of the 8-byte PNG signature.

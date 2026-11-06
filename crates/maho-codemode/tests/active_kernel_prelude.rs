@@ -1,27 +1,43 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use maho_codemode::{
     bridges::output_bridge::OutputExecuteTool,
     bridges::schema_bridge::EvalSchemaToolInfo,
     config::settings::CodemodeSettings,
-    extension::kernel_preludes::{active_kernel_preludes, project_kernel_prelude, KernelPreludeCollisionError},
+    extension::kernel_preludes::{
+        KernelPreludeCollisionError, active_kernel_preludes, project_kernel_prelude,
+    },
     extension::session_manager::{CodemodeSessionManager, CreateCodemodeSessionManagerOptions},
-    prompt::eval_prompt::{build_eval_prompt, EvalPromptOptions},
+    prompt::eval_prompt::{EvalPromptOptions, build_eval_prompt},
     tool::{
-        detached_cell_manager::EvalDetachedCellManager,
-        eval_tool::create_eval_tool,
+        detached_cell_manager::EvalDetachedCellManager, eval_tool::create_eval_tool,
         eval_tool_options::*,
     },
 };
 use maho_tools::definition::{AbortSignal, KernelPrelude, ToolCall, ToolContent};
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 struct TestImageSdk;
 impl maho_codemode::tool::image_resize::EvalImageSdk for TestImageSdk {
-    fn resize_image<'a>(&'a self, _: Vec<u8>, _: &'a str, _: Option<usize>) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::ResizedImage>> {
+    fn resize_image<'a>(
+        &'a self,
+        _: Vec<u8>,
+        _: &'a str,
+        _: Option<usize>,
+    ) -> maho_codemode::tool::image_resize::ImageFuture<
+        'a,
+        Option<maho_codemode::tool::image_resize::ResizedImage>,
+    > {
         Box::pin(async { Ok(None) })
     }
-    fn convert_to_png<'a>(&'a self, _: &'a str, _: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::EvalImageContent>> {
+    fn convert_to_png<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> maho_codemode::tool::image_resize::ImageFuture<
+        'a,
+        Option<maho_codemode::tool::image_resize::EvalImageContent>,
+    > {
         Box::pin(async { Ok(None) })
     }
 }
@@ -37,7 +53,10 @@ impl OutputExecuteTool for TestExecutor {
         params: serde_json::Value,
         _options: maho_ext_api::ExecuteToolOptions,
     ) -> maho_ext_api::ExecuteToolFuture<'a> {
-        self.calls.lock().expect("test executor calls lock").push((tool_name.to_string(), params.clone()));
+        self.calls
+            .lock()
+            .expect("test executor calls lock")
+            .push((tool_name.to_string(), params.clone()));
         Box::pin(async move {
             let mut result = maho_ext_api::AgentToolResult::text("Executed computer");
             result.details = json!({ "ok": true, "value": "called" });
@@ -59,33 +78,39 @@ fn create_computer_prelude() -> KernelPrelude {
 async fn test_active_tool_kernel_prelude_js_execution() {
     let artifacts = tempfile::tempdir().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let executor = Arc::new(TestExecutor { calls: calls.clone() });
+    let executor = Arc::new(TestExecutor {
+        calls: calls.clone(),
+    });
 
     let active_tools = Arc::new(Mutex::new(vec!["computer".to_string()]));
     let computer_prelude = create_computer_prelude();
-    let all_tools = vec![
-        EvalSchemaToolInfo {
-            name: "computer".into(),
-            description: Some("Drive desktop GUI".into()),
-            parameters: Some(json!({"type": "object"})),
-            kernel_prelude: Some(computer_prelude.clone()),
-        },
-    ];
+    let all_tools = vec![EvalSchemaToolInfo {
+        name: "computer".into(),
+        description: Some("Drive desktop GUI".into()),
+        parameters: Some(json!({"type": "object"})),
+        kernel_prelude: Some(computer_prelude.clone()),
+    }];
 
     let all_tools_catalog = all_tools.clone();
-    let session = Arc::new(CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
-        session_id: "test-prelude-session".into(),
-        cwd: artifacts.path().into(),
-        settings: CodemodeSettings::default(),
-        local_roots: None,
-        artifacts_dir: Some(artifacts.path().into()),
-        session_env: None,
-        executor: executor.clone(),
-        list_tools: Some(Arc::new(move || Ok(all_tools_catalog.clone()))),
-        complete: Arc::new(|request| Box::pin(async move {
-            Ok(json!({"text": request.prompt, "details": {"model": "fixture/model"}}))
-        })),
-    }).await.unwrap());
+    let session = Arc::new(
+        CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
+            session_id: "test-prelude-session".into(),
+            cwd: artifacts.path().into(),
+            settings: CodemodeSettings::default(),
+            local_roots: None,
+            artifacts_dir: Some(artifacts.path().into()),
+            session_env: None,
+            executor: executor.clone(),
+            list_tools: Some(Arc::new(move || Ok(all_tools_catalog.clone()))),
+            complete: Arc::new(|request| {
+                Box::pin(async move {
+                    Ok(json!({"text": request.prompt, "details": {"model": "fixture/model"}}))
+                })
+            }),
+        })
+        .await
+        .unwrap(),
+    );
 
     let active_tools_clone = active_tools.clone();
     let all_tools_clone = all_tools.clone();
@@ -95,7 +120,10 @@ async fn test_active_tool_kernel_prelude_js_execution() {
     });
 
     let cells = Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default())));
-    let options = Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,
+    let options = Arc::new(CreateEvalToolOptions {
+        completion_handles: std::sync::Arc::new(Default::default()),
+        eval_handle_host: None,
+        owner_session_id: None,
         kernel_manager: session.clone(),
         executor: executor.clone(),
         list_tools: None,
@@ -125,7 +153,12 @@ async fn test_active_tool_kernel_prelude_js_execution() {
         context: None,
     }).await.unwrap();
 
-    assert!(js_call.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("true"))));
+    assert!(
+        js_call
+            .content
+            .iter()
+            .any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("true")))
+    );
 
     let js_invoke = (eval_tool.execute)(ToolCall {
         id: "call-js-2",
@@ -137,9 +170,16 @@ async fn test_active_tool_kernel_prelude_js_execution() {
         signal: AbortSignal::default(),
         on_update: None,
         context: None,
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
-    assert!(js_invoke.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("called"))));
+    assert!(
+        js_invoke
+            .content
+            .iter()
+            .any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("called")))
+    );
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert_eq!(calls.lock().unwrap()[0].0, "computer");
 
@@ -155,9 +195,16 @@ async fn test_active_tool_kernel_prelude_js_execution() {
         signal: AbortSignal::default(),
         on_update: None,
         context: None,
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
-    assert!(js_deactivated.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("undefined"))));
+    assert!(
+        js_deactivated
+            .content
+            .iter()
+            .any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("undefined")))
+    );
 
     session.dispose().await.unwrap();
 }
@@ -171,18 +218,26 @@ fn test_collision_prevention_on_builtins() {
         ..Default::default()
     };
     let err = project_kernel_prelude("bad_tool", Some(collision)).unwrap_err();
-    assert_eq!(err, KernelPreludeCollisionError {
-        tool_name: "bad_tool".into(),
-        colliding_export: "print".into(),
-    });
+    assert_eq!(
+        err,
+        KernelPreludeCollisionError {
+            tool_name: "bad_tool".into(),
+            colliding_export: "print".into(),
+        }
+    );
 }
 
 #[test]
 fn test_prompt_includes_active_prelude_documentation() {
-    let options = EvalPromptOptions { kernel_preludes: vec![create_computer_prelude()], ..Default::default() };
-    let enabled = maho_codemode::config::settings::Languages {
-        js: true,
+    let options = EvalPromptOptions {
+        kernel_preludes: vec![create_computer_prelude()],
+        ..Default::default()
     };
+    let enabled = maho_codemode::config::settings::Languages { js: true };
     let prompt = build_eval_prompt(&enabled, &options).unwrap();
-    assert!(prompt.description.contains("computer(args): Drive desktop GUI"));
+    assert!(
+        prompt
+            .description
+            .contains("computer(args): Drive desktop GUI")
+    );
 }

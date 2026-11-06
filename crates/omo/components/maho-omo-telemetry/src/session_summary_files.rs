@@ -114,7 +114,9 @@ pub fn is_safe_name(name: &str) -> bool {
 
 pub fn is_safe_uuid(value: &str) -> bool {
     value.len() == 36
-        && value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f' | b'-'))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f' | b'-'))
 }
 
 #[cfg(test)]
@@ -134,13 +136,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/window.json");
         write_json_atomic(&path, &json!({"v":2,"seq":3}), &owner()).unwrap();
-        assert_eq!(read_json_or_corrupt(&path).value(), Some(json!({"v":2,"seq":3})));
-        assert_eq!(list_names(&dir.path().join("nested")), vec!["window.json".to_string()]);
-        assert!(temp_path(&path, &owner())
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with(".4242-boot-a.tmp"));
+        assert_eq!(
+            read_json_or_corrupt(&path).value(),
+            Some(json!({"v":2,"seq":3}))
+        );
+        assert_eq!(
+            list_names(&dir.path().join("nested")),
+            vec!["window.json".to_string()]
+        );
+        assert!(
+            temp_path(&path, &owner())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".4242-boot-a.tmp")
+        );
     }
 
     #[cfg(unix)]
@@ -182,7 +192,10 @@ mod tests {
         let from = dir.path().join("window.json");
         std::fs::write(&from, "{}").unwrap();
         assert!(rename_if_present(&from, &dir.path().join("first.claimed")));
-        assert!(!rename_if_present(&from, &dir.path().join("second.claimed")));
+        assert!(!rename_if_present(
+            &from,
+            &dir.path().join("second.claimed")
+        ));
         assert_eq!(list_names(dir.path()), vec!["first.claimed".to_string()]);
     }
 

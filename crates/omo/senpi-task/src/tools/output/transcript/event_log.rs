@@ -10,17 +10,27 @@ use crate::tools::output::types::{TranscriptEntry, TranscriptReadResult, Transcr
 
 // Re-exported from the writer (manager/transcript_log.rs) so reader and writer share ONE contract for
 // the event-type names and can never drift.
-pub use crate::manager::transcript_log::{TRANSCRIPT_ASSISTANT_EVENT, TRANSCRIPT_ERROR_EVENT, TRANSCRIPT_TOOL_EVENT};
+pub use crate::manager::transcript_log::{
+    TRANSCRIPT_ASSISTANT_EVENT, TRANSCRIPT_ERROR_EVENT, TRANSCRIPT_TOOL_EVENT,
+};
 
 /// Reconstruct a child's transcript from OUR event log (logs/<taskId>.jsonl). Only the transcript
 /// event types are lifted; lifecycle/audit events on the same log are ignored. A missing log is an
 /// empty transcript, never an error (task_output is read-only and must tolerate absent state).
-pub fn read_event_log_transcript(state_dir: &str, task_id: &str) -> io::Result<Vec<TranscriptEntry>> {
+pub fn read_event_log_transcript(
+    state_dir: &str,
+    task_id: &str,
+) -> io::Result<Vec<TranscriptEntry>> {
     Ok(read_event_log_transcript_result(state_dir, task_id)?.entries)
 }
 
-pub fn read_event_log_transcript_result(state_dir: &str, task_id: &str) -> io::Result<TranscriptReadResult> {
-    let path = Path::new(state_dir).join("logs").join(format!("{task_id}.jsonl"));
+pub fn read_event_log_transcript_result(
+    state_dir: &str,
+    task_id: &str,
+) -> io::Result<TranscriptReadResult> {
+    let path = Path::new(state_dir)
+        .join("logs")
+        .join(format!("{task_id}.jsonl"));
     let Some(raw) = read_bounded_file_text(&path, None)? else {
         return Ok(TranscriptReadResult {
             entries: Vec::new(),
@@ -74,7 +84,9 @@ fn transcript_entry_of(entry: Option<&Value>) -> Option<TranscriptEntry> {
     if event_type == Some(TRANSCRIPT_ASSISTANT_EVENT)
         && let Some(text) = string_field(payload, "text")
     {
-        return Some(TranscriptEntry::Assistant { text: text.to_string() });
+        return Some(TranscriptEntry::Assistant {
+            text: text.to_string(),
+        });
     }
     if event_type == Some(TRANSCRIPT_TOOL_EVENT)
         && let Some(tool) = string_field(payload, "tool")
@@ -92,7 +104,8 @@ fn transcript_entry_of(entry: Option<&Value>) -> Option<TranscriptEntry> {
         });
     }
     if event_type == Some("team_message_waited")
-        && let (Some(from), Some(body)) = (string_field(payload, "from"), string_field(payload, "body"))
+        && let (Some(from), Some(body)) =
+            (string_field(payload, "from"), string_field(payload, "body"))
     {
         return Some(TranscriptEntry::Assistant {
             text: format!("[team message from {from}] {body}"),

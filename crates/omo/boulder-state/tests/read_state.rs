@@ -78,10 +78,24 @@ fn no_boulder_file_reads_as_none() {
 fn unreadable_state_returns_empty_queries() {
     let directory = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(directory.path().join(".omo/boulder.json")).expect("mkdir");
-    assert_eq!(read_boulder_state(directory.path()).expect("fallback"), None);
-    assert!(boulder_state::get_active_works(directory.path()).expect("fallback").is_empty());
-    assert!(boulder_state::get_work_resume_options(directory.path()).expect("fallback").is_empty());
-    assert_eq!(get_work_for_session(directory.path(), "sess-a").expect("fallback"), None);
+    assert_eq!(
+        read_boulder_state(directory.path()).expect("fallback"),
+        None
+    );
+    assert!(
+        boulder_state::get_active_works(directory.path())
+            .expect("fallback")
+            .is_empty()
+    );
+    assert!(
+        boulder_state::get_work_resume_options(directory.path())
+            .expect("fallback")
+            .is_empty()
+    );
+    assert_eq!(
+        get_work_for_session(directory.path(), "sess-a").expect("fallback"),
+        None
+    );
 }
 
 #[test]
@@ -91,8 +105,13 @@ fn work_arrays_project_selected_or_newest_without_normalizing_entries() {
     older["session_ids"] = json!(["bare"]);
     let newer = create_work("newer", "2026-10-20T00:00:00Z", None);
     for (selected, expected) in [(json!("older"), "older"), (Value::Null, "newer")] {
-        write_state(directory.path(), &json!({"active_work_id": selected, "works": [older, newer]}).to_string());
-        let state = read_boulder_state(directory.path()).expect("read").expect("state");
+        write_state(
+            directory.path(),
+            &json!({"active_work_id": selected, "works": [older, newer]}).to_string(),
+        );
+        let state = read_boulder_state(directory.path())
+            .expect("read")
+            .expect("state");
         assert_eq!(state.active_work_id(), Some(expected));
         assert_eq!(boulder_state::get_boulder_works(&state).len(), 2);
         assert!(state.to_json_value()["works"].is_array());

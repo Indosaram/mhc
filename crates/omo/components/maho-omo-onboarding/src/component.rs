@@ -156,12 +156,10 @@ fn eligible(ctx: &ExtensionContext, session_kind: SessionKind, runtime: &Extensi
 fn show_welcome(ctx: &ExtensionContext) {
     ctx.ui.set_widget(
         "omo-onboarding",
-        Some(WidgetContent::Lines(vec![
-            format!(
-                "Welcome to {}. Ask anything.",
-                maho_core::config::app_command()
-            ),
-        ])),
+        Some(WidgetContent::Lines(vec![format!(
+            "Welcome to {}. Ask anything.",
+            maho_core::config::app_command()
+        )])),
         ExtensionWidgetOptions::default(),
     );
 }
@@ -596,8 +594,10 @@ fn register_onboarding(
 /// Upstream `getBuiltinSkillsRoot(process.env, logger)`: a valid `OMO_BUNDLED_SKILLS_DIR` moves the
 /// tour; an invalid one is reported once and the packaged root stays.
 fn tour_skills_root(env: &std::collections::BTreeMap<String, String>, packaged: &str) -> String {
-    maho_omo_bundled_skills::resolve_bundled_skills_override(env, None, None)
-        .map_or_else(|| packaged.to_owned(), |dir| dir.to_string_lossy().into_owned())
+    maho_omo_bundled_skills::resolve_bundled_skills_override(env, None, None).map_or_else(
+        || packaged.to_owned(),
+        |dir| dir.to_string_lossy().into_owned(),
+    )
 }
 
 #[cfg(test)]

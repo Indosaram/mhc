@@ -8,8 +8,12 @@ use super::connection::{Monitor, Screen, XServer};
 /// Active monitors (the whole root screen when RandR reports none), filtered
 /// by the selector (id or name), with `pixel_x/pixel_y` relative to the
 /// top-left of the selected set. X11 has no per-monitor scale: `scale = 1`.
-pub(crate) fn displays(server: &impl XServer, selector: &DisplaySelector) -> CoreResult<Vec<DesktopDisplay>> {
-    let mut displays: Vec<DesktopDisplay> = server.monitors()?.into_iter().map(from_monitor).collect();
+pub(crate) fn displays(
+    server: &impl XServer,
+    selector: &DisplaySelector,
+) -> CoreResult<Vec<DesktopDisplay>> {
+    let mut displays: Vec<DesktopDisplay> =
+        server.monitors()?.into_iter().map(from_monitor).collect();
     if displays.is_empty() {
         displays.push(root_display(server.screen()));
     }
@@ -36,8 +40,9 @@ pub(crate) fn displays(server: &impl XServer, selector: &DisplaySelector) -> Cor
 }
 
 fn offset(value: i32, min: i32) -> CoreResult<u32> {
-    u32::try_from(i64::from(value) - i64::from(min))
-        .map_err(|_| DesktopError::capture_failed("X11 monitor layout exceeds composite coordinate space"))
+    u32::try_from(i64::from(value) - i64::from(min)).map_err(|_| {
+        DesktopError::capture_failed("X11 monitor layout exceeds composite coordinate space")
+    })
 }
 
 fn from_monitor(monitor: Monitor) -> DesktopDisplay {

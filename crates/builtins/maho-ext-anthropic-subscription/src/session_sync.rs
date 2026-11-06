@@ -98,7 +98,9 @@ fn image_neutral_content(content: &Value) -> Value {
             image_ids.push(id[..12].to_owned());
             normalized.push(json!({"type":"image","id":id[..12].to_owned()}));
         } else if block["type"] == "text"
-            && let Some(ids) = block["text"].as_str().and_then(maho_core::image_elision_placeholder::elided_image_ids)
+            && let Some(ids) = block["text"]
+                .as_str()
+                .and_then(maho_core::image_elision_placeholder::elided_image_ids)
         {
             for id in ids {
                 normalized.push(json!({"type":"image","id":id}));
@@ -267,7 +269,10 @@ mod tests {
             changed["content"][1]["text"] = json!("different text");
             let normalized = image_neutral_content(&message["content"]);
             assert_eq!(normalized[1], message["content"][1]);
-            assert_ne!(sent_message_hashes(&[message]), sent_message_hashes(&[changed]));
+            assert_ne!(
+                sent_message_hashes(&[message]),
+                sent_message_hashes(&[changed])
+            );
         }
     }
     #[test]

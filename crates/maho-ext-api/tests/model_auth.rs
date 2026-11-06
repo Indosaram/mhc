@@ -110,7 +110,8 @@ impl ModelRegistry for ScopedRegistry {
             if model.id == "failed" {
                 return Err("model auth rejected".into());
             }
-            Ok(ResolvedRequestAuth { ambient: false,
+            Ok(ResolvedRequestAuth {
+                ambient: false,
                 auth: maho_ai::models::ProviderAuthResult {
                     api_key: Some("synthetic-key".into()),
                     headers: Some(

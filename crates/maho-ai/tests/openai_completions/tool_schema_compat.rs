@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use maho_ai::api::openai_completions::{stream, OpenAiCompletionsOptions};
-use serde_json::{json, Value};
+use maho_ai::api::openai_completions::{OpenAiCompletionsOptions, stream};
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -41,7 +41,9 @@ async fn normalizes_tools_injected_by_the_final_payload_hook() {
     let server = RawServer::start(raw_handler(move |mut stream, request| {
         let sink = sink.clone();
         async move {
-            sink.lock().expect("request lock").push(request_body(&request));
+            sink.lock()
+                .expect("request lock")
+                .push(request_body(&request));
             let _ = write_sse(&mut stream, &sse_frames(), None).await;
         }
     }))
@@ -149,11 +151,20 @@ async fn never_sends_a_tool_whose_root_parameters_lack_type_object() {
 
     assert_eq!(result.stop_reason, maho_ai::types::StopReason::Stop);
     let bodies = bodies.lock().expect("request lock").clone();
-    let tools = bodies[0].get("tools").and_then(Value::as_array).expect("tools array");
+    let tools = bodies[0]
+        .get("tools")
+        .and_then(Value::as_array)
+        .expect("tools array");
     assert_eq!(tools.len(), 1);
     for tool in tools {
-        let parameters = tool.get("function").and_then(|function| function.get("parameters")).expect("parameters");
-        assert_eq!(parameters.get("type").and_then(Value::as_str), Some("object"));
+        let parameters = tool
+            .get("function")
+            .and_then(|function| function.get("parameters"))
+            .expect("parameters");
+        assert_eq!(
+            parameters.get("type").and_then(Value::as_str),
+            Some("object")
+        );
         let mut keys: Vec<&str> = parameters
             .get("properties")
             .and_then(Value::as_object)

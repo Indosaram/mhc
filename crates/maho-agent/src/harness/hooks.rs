@@ -139,15 +139,34 @@ impl AfterToolPatch {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HookResult {
     None,
-    BeforeRun { messages: Vec<AgentMessage> },
-    BeforeRunEnd { follow_up: String },
-    TransformContext { messages: Option<Vec<AgentMessage>>, system_prompt: Option<String> },
-    BeforeRequest { stream_options: AgentHarnessStreamOptionsPatch },
-    BeforePayload { payload: Value },
-    AfterResponse { message: Box<SettledAssistantMessage> },
-    BeforeTool { args: Option<Map<String, Value>>, block: Option<BlockDecision> },
+    BeforeRun {
+        messages: Vec<AgentMessage>,
+    },
+    BeforeRunEnd {
+        follow_up: String,
+    },
+    TransformContext {
+        messages: Option<Vec<AgentMessage>>,
+        system_prompt: Option<String>,
+    },
+    BeforeRequest {
+        stream_options: AgentHarnessStreamOptionsPatch,
+    },
+    BeforePayload {
+        payload: Value,
+    },
+    AfterResponse {
+        message: Box<SettledAssistantMessage>,
+    },
+    BeforeTool {
+        args: Option<Map<String, Value>>,
+        block: Option<BlockDecision>,
+    },
     AfterTool(AfterToolPatch),
-    Structural { decline: Option<bool>, value: Option<Value> },
+    Structural {
+        decline: Option<bool>,
+        value: Option<Value>,
+    },
 }
 
 /// The gate-guarded `before_payload` runner every provider request installs as its `onPayload`
@@ -160,7 +179,9 @@ pub fn before_payload_hook(
     run_id: String,
 ) -> maho_ai::types::AsyncOnPayload {
     let hook: maho_ai::types::AsyncOnPayload = Arc::new(
-        move |payload: Value, model: Model, _metadata: Option<maho_ai::types::ProviderRequestMetadata>| {
+        move |payload: Value,
+              model: Model,
+              _metadata: Option<maho_ai::types::ProviderRequestMetadata>| {
             let hooks = hooks.clone();
             let gate = gate.clone();
             let context = context.clone();
@@ -170,7 +191,10 @@ pub fn before_payload_hook(
                 let mut invocation = HookInvocation::new(lane, run_id);
                 invocation.model = Some(model);
                 invocation.payload = Some(payload);
-                match hooks.run_with_gate(HookName::BeforePayload, invocation, &gate, &context).await {
+                match hooks
+                    .run_with_gate(HookName::BeforePayload, invocation, &gate, &context)
+                    .await
+                {
                     Ok(HookResult::BeforePayload { payload }) => Ok(Some(payload)),
                     Ok(_) => Ok(None),
                     Err(error) => Err(error.to_string()),
@@ -182,8 +206,9 @@ pub fn before_payload_hook(
     hook
 }
 
-pub type HookHandler =
-    Arc<dyn Fn(HookInvocation, Context) -> BoxFuture<'static, Result<HookResult, String>> + Send + Sync>;
+pub type HookHandler = Arc<
+    dyn Fn(HookInvocation, Context) -> BoxFuture<'static, Result<HookResult, String>> + Send + Sync,
+>;
 
 #[derive(Debug, Clone)]
 pub enum HookRunError {
@@ -199,7 +224,8 @@ impl std::fmt::Display for HookRunError {
         }
     }
 }
-pub type HookErrorReporter = Arc<dyn Fn(String, HookName, String, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type HookErrorReporter =
+    Arc<dyn Fn(String, HookName, String, Context) -> BoxFuture<'static, ()> + Send + Sync>;
 
 struct HookRegistration {
     id: Option<String>,
@@ -226,12 +252,20 @@ impl HookRegistry {
             panic!("{error}");
         }
         let registration = Arc::new(HookRegistration { id, handler });
-        let mut registrations = self.registrations.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        registrations.entry(name).or_default().push(registration.clone());
+        let mut registrations = self
+            .registrations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registrations
+            .entry(name)
+            .or_default()
+            .push(registration.clone());
         let registry = HookRegistryHandle::new(self.registrations.clone());
         Unsubscribe::new(move || {
-            let mut registrations =
-                registry.registrations.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut registrations = registry
+                .registrations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(entry) = registrations.get_mut(&name) {
                 entry.retain(|candidate| !Arc::ptr_eq(candidate, &registration));
             }
@@ -247,7 +281,10 @@ impl HookRegistry {
     }
 
     pub fn close(&self, error: impl Into<String>) {
-        let mut closed = self.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut closed = self
+            .closed_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if closed.is_none() {
             *closed = Some(error.into());
         }
@@ -262,8 +299,14 @@ impl HookRegistry {
     ) -> Result<HookResult, HookRunError> {
         gate.admit(|| ()).map_err(HookRunError::Gate)?;
         let admitted_context = with_abort_signal(gate.signal(), context);
-        if let Some(signal) = admitted_context.abort_signal().filter(|signal| signal.aborted()) {
-            let message = signal.reason().map_or_else(|| "The operation was aborted".to_owned(), |reason| reason.message);
+        if let Some(signal) = admitted_context
+            .abort_signal()
+            .filter(|signal| signal.aborted())
+        {
+            let message = signal.reason().map_or_else(
+                || "The operation was aborted".to_owned(),
+                |reason| reason.message,
+            );
             return Err(HookRunError::Gate(GateRefusal::Closed(message)));
         }
         self.run_admitted(name, event, &admitted_context).await
@@ -278,8 +321,14 @@ impl HookRegistry {
     ) -> Result<HookResult, HookRunError> {
         gate.admit(|| ()).map_err(HookRunError::Gate)?;
         let admitted_context = with_abort_signal(gate.signal(), context);
-        if let Some(signal) = admitted_context.abort_signal().filter(|signal| signal.aborted()) {
-            let message = signal.reason().map_or_else(|| "The operation was aborted".to_owned(), |reason| reason.message);
+        if let Some(signal) = admitted_context
+            .abort_signal()
+            .filter(|signal| signal.aborted())
+        {
+            let message = signal.reason().map_or_else(
+                || "The operation was aborted".to_owned(),
+                |reason| reason.message,
+            );
             return Err(HookRunError::Gate(GateRefusal::Closed(message)));
         }
         match name {
@@ -290,7 +339,10 @@ impl HookRegistry {
     }
 
     fn closed(&self) -> Option<String> {
-        self.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.closed_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     async fn run_admitted(
@@ -320,13 +372,22 @@ impl HookRegistry {
             HookName::BeforeRunEnd => {
                 let follow_up = Arc::new(Mutex::new(None));
                 let sink = follow_up.clone();
-                self.invoke_all(name, &event, context, Arc::new(move |value| {
-                    if let HookResult::BeforeRunEnd { follow_up: value } = value {
-                        *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(value);
-                    }
-                }))
+                self.invoke_all(
+                    name,
+                    &event,
+                    context,
+                    Arc::new(move |value| {
+                        if let HookResult::BeforeRunEnd { follow_up: value } = value {
+                            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                Some(value);
+                        }
+                    }),
+                )
                 .await;
-                let follow_up = follow_up.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+                let follow_up = follow_up
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
                 Ok(match follow_up {
                     Some(follow_up) => HookResult::BeforeRunEnd { follow_up },
                     None => HookResult::None,
@@ -338,8 +399,13 @@ impl HookRegistry {
             HookName::AfterResponse => self.after_response(event, context).await,
             HookName::BeforeTool => self.before_tool(event, context).await,
             HookName::AfterTool => self.after_tool(event, context).await,
-            HookName::BeforeCompaction => self.first_structural(name, event, "compaction", context).await,
-            HookName::BeforeNavigation => self.first_structural(name, event, "summary", context).await,
+            HookName::BeforeCompaction => {
+                self.first_structural(name, event, "compaction", context)
+                    .await
+            }
+            HookName::BeforeNavigation => {
+                self.first_structural(name, event, "summary", context).await
+            }
         }
     }
 
@@ -352,7 +418,11 @@ impl HookRegistry {
             .unwrap_or_default()
     }
 
-    async fn before_run(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn before_run(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut prompt = event.prompt.clone();
         let mut injected: Vec<AgentMessage> = Vec::new();
         for registration in self.registrations_for(HookName::BeforeRun) {
@@ -365,7 +435,13 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message, HookName::BeforeRun, event.lane.clone(), context.clone()).await;
+                    (self.report_error)(
+                        message,
+                        HookName::BeforeRun,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
@@ -376,14 +452,24 @@ impl HookRegistry {
         })
     }
 
-    async fn before_tool(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn before_tool(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut args = event.args.clone();
         let mut block: Option<BlockDecision> = None;
         for registration in self.registrations_for(HookName::BeforeTool) {
             let mut current = event.clone();
             current.args = args.clone();
-            match self.invoke_tool_registration(HookName::BeforeTool, &registration, current, context).await {
-                Ok(HookResult::BeforeTool { args: next_args, block: next_block }) => {
+            match self
+                .invoke_tool_registration(HookName::BeforeTool, &registration, current, context)
+                .await
+            {
+                Ok(HookResult::BeforeTool {
+                    args: next_args,
+                    block: next_block,
+                }) => {
                     if let Some(next_args) = next_args {
                         args = next_args;
                     }
@@ -394,17 +480,32 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message.clone(), HookName::BeforeTool, event.lane.clone(), context.clone())
-                        .await;
-                    block = Some(BlockDecision { reason: message, terminate: None });
+                    (self.report_error)(
+                        message.clone(),
+                        HookName::BeforeTool,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
+                    block = Some(BlockDecision {
+                        reason: message,
+                        terminate: None,
+                    });
                     break;
                 }
             }
         }
-        Ok(HookResult::BeforeTool { args: if args == event.args { None } else { Some(args) }, block })
+        Ok(HookResult::BeforeTool {
+            args: if args == event.args { None } else { Some(args) },
+            block,
+        })
     }
 
-    async fn transform_context(&self, mut event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn transform_context(
+        &self,
+        mut event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         // Take the history out so the per-registration `event.clone()` does not copy it.
         let mut messages = std::mem::take(&mut event.messages);
         let mut system_prompt = std::mem::take(&mut event.system_prompt);
@@ -413,7 +514,10 @@ impl HookRegistry {
             current.messages = messages.clone();
             current.system_prompt = system_prompt.clone();
             match (registration.handler)(current, context.clone()).await {
-                Ok(HookResult::TransformContext { messages: next_messages, system_prompt: next_prompt }) => {
+                Ok(HookResult::TransformContext {
+                    messages: next_messages,
+                    system_prompt: next_prompt,
+                }) => {
                     if let Some(next_messages) = next_messages {
                         messages = next_messages;
                     }
@@ -423,29 +527,48 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message, HookName::TransformContext, event.lane.clone(), context.clone())
-                        .await;
+                    (self.report_error)(
+                        message,
+                        HookName::TransformContext,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
-        Ok(HookResult::TransformContext { messages: Some(messages), system_prompt: Some(system_prompt) })
+        Ok(HookResult::TransformContext {
+            messages: Some(messages),
+            system_prompt: Some(system_prompt),
+        })
     }
 
-    async fn before_request(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn before_request(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut stream_options = event.stream_options.clone();
         let mut changed = false;
         for registration in self.registrations_for(HookName::BeforeRequest) {
             let mut current = event.clone();
             current.stream_options = stream_options.clone();
             match (registration.handler)(current, context.clone()).await {
-                Ok(HookResult::BeforeRequest { stream_options: patch }) => {
+                Ok(HookResult::BeforeRequest {
+                    stream_options: patch,
+                }) => {
                     stream_options = apply_stream_options_patch(&stream_options, &patch);
                     changed = true;
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message, HookName::BeforeRequest, event.lane.clone(), context.clone())
-                        .await;
+                    (self.report_error)(
+                        message,
+                        HookName::BeforeRequest,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
@@ -458,7 +581,11 @@ impl HookRegistry {
         })
     }
 
-    async fn before_payload(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn before_payload(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut payload = event.payload.clone();
         for registration in self.registrations_for(HookName::BeforePayload) {
             let mut current = event.clone();
@@ -469,15 +596,26 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message, HookName::BeforePayload, event.lane.clone(), context.clone())
-                        .await;
+                    (self.report_error)(
+                        message,
+                        HookName::BeforePayload,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
-        Ok(HookResult::BeforePayload { payload: payload.unwrap_or(Value::Null) })
+        Ok(HookResult::BeforePayload {
+            payload: payload.unwrap_or(Value::Null),
+        })
     }
 
-    async fn after_response(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn after_response(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut message = event.message.clone();
         for registration in self.registrations_for(HookName::AfterResponse) {
             let mut current = event.clone();
@@ -488,17 +626,29 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(report) => {
-                    (self.report_error)(report, HookName::AfterResponse, event.lane.clone(), context.clone()).await;
+                    (self.report_error)(
+                        report,
+                        HookName::AfterResponse,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
         Ok(match message {
-            Some(message) => HookResult::AfterResponse { message: Box::new(message) },
+            Some(message) => HookResult::AfterResponse {
+                message: Box::new(message),
+            },
             None => HookResult::None,
         })
     }
 
-    async fn after_tool(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+    async fn after_tool(
+        &self,
+        event: HookInvocation,
+        context: &Context,
+    ) -> Result<HookResult, HookRunError> {
         let mut current_content = event.content.clone();
         let mut current_details = event.details.clone();
         let mut current_is_error = event.is_error;
@@ -510,7 +660,10 @@ impl HookRegistry {
             current.details = current_details.clone();
             current.is_error = current_is_error;
             current.usage = current_usage;
-            match self.invoke_tool_registration(HookName::AfterTool, &registration, current, context).await {
+            match self
+                .invoke_tool_registration(HookName::AfterTool, &registration, current, context)
+                .await
+            {
                 Ok(HookResult::AfterTool(patch)) => {
                     if patch.content.is_some() {
                         aggregate.content = patch.content.clone();
@@ -542,11 +695,21 @@ impl HookRegistry {
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    (self.report_error)(message, HookName::AfterTool, event.lane.clone(), context.clone()).await;
+                    (self.report_error)(
+                        message,
+                        HookName::AfterTool,
+                        event.lane.clone(),
+                        context.clone(),
+                    )
+                    .await;
                 }
             }
         }
-        Ok(if aggregate.is_empty() { HookResult::None } else { HookResult::AfterTool(aggregate) })
+        Ok(if aggregate.is_empty() {
+            HookResult::None
+        } else {
+            HookResult::AfterTool(aggregate)
+        })
     }
 
     async fn first_structural(
@@ -562,7 +725,10 @@ impl HookRegistry {
                     let declined = decline == Some(true);
                     if declined && value.is_some() {
                         (self.report_error)(
-                            format!("{} hook cannot return both decline and {result_field}", name.as_str()),
+                            format!(
+                                "{} hook cannot return both decline and {result_field}",
+                                name.as_str()
+                            ),
                             name,
                             event.lane.clone(),
                             context.clone(),
@@ -596,10 +762,19 @@ impl HookRegistry {
     ) -> Result<HookResult, String> {
         let mut attributes = Map::new();
         attributes.insert("pi.lane.name".to_owned(), Value::String(event.lane.clone()));
-        attributes.insert("pi.operation.id".to_owned(), Value::String(event.run_id.clone()));
-        attributes.insert("pi.hook.name".to_owned(), Value::String(name.as_str().to_owned()));
+        attributes.insert(
+            "pi.operation.id".to_owned(),
+            Value::String(event.run_id.clone()),
+        );
+        attributes.insert(
+            "pi.hook.name".to_owned(),
+            Value::String(name.as_str().to_owned()),
+        );
         if let Some(id) = &registration.id {
-            attributes.insert("pi.hook.registration_id".to_owned(), Value::String(id.clone()));
+            attributes.insert(
+                "pi.hook.registration_id".to_owned(),
+                Value::String(id.clone()),
+            );
         }
         let handler = registration.handler.clone();
         let handler_name = name;
@@ -615,16 +790,23 @@ impl HookRegistry {
                             let mut outcome = Map::new();
                             outcome.insert(
                                 "pi.hook.outcome".to_owned(),
-                                Value::String(if blocked { "blocked" } else { "completed" }.to_owned()),
+                                Value::String(
+                                    if blocked { "blocked" } else { "completed" }.to_owned(),
+                                ),
                             );
                             span.set_attributes(outcome);
                             Ok(value)
                         }
                         Err(error) => {
                             let mut outcome = Map::new();
-                            outcome.insert("pi.hook.outcome".to_owned(), Value::String("failed".to_owned()));
+                            outcome.insert(
+                                "pi.hook.outcome".to_owned(),
+                                Value::String("failed".to_owned()),
+                            );
                             span.set_attributes(outcome);
-                            span.set_status(crate::harness::telemetry::SpanStatus::Error { error: None });
+                            span.set_status(crate::harness::telemetry::SpanStatus::Error {
+                                error: None,
+                            });
                             Err(error)
                         }
                     }
@@ -643,7 +825,8 @@ impl HookRegistry {
     ) -> Result<(), HookRunError> {
         for registration in self.registrations_for(name) {
             if let Err(message) = (registration.handler)(event.clone(), context.clone()).await {
-                (self.report_error)(message.clone(), name, event.lane.clone(), context.clone()).await;
+                (self.report_error)(message.clone(), name, event.lane.clone(), context.clone())
+                    .await;
                 return Err(HookRunError::Handler(message));
             }
         }
@@ -684,7 +867,9 @@ pub struct Unsubscribe {
 
 impl Unsubscribe {
     fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { callback: Arc::new(callback) }
+        Self {
+            callback: Arc::new(callback),
+        }
     }
 
     pub fn call(&self) {
@@ -784,7 +969,9 @@ pub fn create_stream_options_patch(
             None => patch.headers = Some(None),
             Some(value_headers) => {
                 let mut headers: BTreeMap<String, Option<String>> = BTreeMap::new();
-                for key in base.headers.as_ref().map_or_else(Vec::new, |headers| headers.keys().cloned().collect::<Vec<_>>()) { 
+                for key in base.headers.as_ref().map_or_else(Vec::new, |headers| {
+                    headers.keys().cloned().collect::<Vec<_>>()
+                }) {
                     if !value_headers.contains_key(&key) {
                         headers.insert(key, None);
                     }
@@ -808,13 +995,18 @@ pub fn create_stream_options_patch(
             None => patch.metadata = Some(None),
             Some(value_metadata) => {
                 let mut metadata: BTreeMap<String, Option<Value>> = BTreeMap::new();
-                for key in base.metadata.as_ref().map_or_else(Vec::new, |metadata| metadata.keys().cloned().collect::<Vec<_>>()) { 
+                for key in base.metadata.as_ref().map_or_else(Vec::new, |metadata| {
+                    metadata.keys().cloned().collect::<Vec<_>>()
+                }) {
                     if !value_metadata.contains_key(&key) {
                         metadata.insert(key, None);
                     }
                 }
                 for (key, metadata_value) in value_metadata {
-                    let base_value = base.metadata.as_ref().and_then(|metadata| metadata.get(key));
+                    let base_value = base
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get(key));
                     if base_value != Some(metadata_value) {
                         metadata.insert(key.clone(), Some(metadata_value.clone()));
                     }

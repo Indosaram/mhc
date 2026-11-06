@@ -3,7 +3,7 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopPoint, Target};
 
-use super::{EDITOR, FakeInputServer, backend};
+use super::{backend, FakeInputServer, EDITOR};
 
 #[test]
 fn failed_click_restores_the_motion_that_preceded_failure() {

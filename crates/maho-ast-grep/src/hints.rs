@@ -1,8 +1,8 @@
 //! Pattern preflight (spec §4): common mistakes caught before the program is started.
 
 use crate::error::{
-    Phase, REWRITE_METAVARIABLE_KIND_MISMATCH, REWRITE_UNBOUND_METAVARIABLE,
-    PATTERN_HINT_REJECTED, ToolError,
+    PATTERN_HINT_REJECTED, Phase, REWRITE_METAVARIABLE_KIND_MISMATCH, REWRITE_UNBOUND_METAVARIABLE,
+    ToolError,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -145,9 +145,12 @@ fn check_heads(pattern: &str, language: &str, findings: &mut Vec<Finding>) {
     let has_body = text.contains('{');
     let bodiless = |prefixes: &[&str]| {
         let words: Vec<&str> = text.split_whitespace().collect();
-        let first = words
-            .iter()
-            .find(|word| !matches!(**word, "pub" | "async" | "export" | "default" | "const" | "unsafe"));
+        let first = words.iter().find(|word| {
+            !matches!(
+                **word,
+                "pub" | "async" | "export" | "default" | "const" | "unsafe"
+            )
+        });
         first.is_some_and(|word| prefixes.contains(word)) && !has_body
     };
     match language {
@@ -309,9 +312,11 @@ pub fn preflight(
             .iter()
             .map(|f| json!({ "code": f.code, "message": f.message, "rejecting": rejecting.contains(&f) }))
             .collect();
-        return Err(ToolError::new(first.code, Phase::Preflight, first.message.clone())
-            .with_language(language)
-            .with_details(json!({ "findings": listed })));
+        return Err(
+            ToolError::new(first.code, Phase::Preflight, first.message.clone())
+                .with_language(language)
+                .with_details(json!({ "findings": listed })),
+        );
     }
     Ok(all.into_iter().map(|f| f.message).collect())
 }

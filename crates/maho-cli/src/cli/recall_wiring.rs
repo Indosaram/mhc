@@ -14,10 +14,14 @@ use maho_ext_api::ExtensionActions;
 use maho_omo_memory::context::MemoryIdentityContext;
 use maho_omo_memory::kibitzer_child::KibitzerChildSpawner;
 use maho_omo_memory::kibitzer_contract::{KibitzerSidecarTimers, KibitzerWakeSpawn};
-use maho_omo_memory::kibitzer_delivery::{KibitzerIdleCoordinator, KibitzerPendingPort, KibitzerSteerMessage};
-use maho_omo_memory::kibitzer_session_resources::KibitzerSessionResources;
+use maho_omo_memory::kibitzer_delivery::{
+    KibitzerIdleCoordinator, KibitzerPendingPort, KibitzerSteerMessage,
+};
 use maho_omo_memory::kibitzer_events::KibitzerEventCaps;
-use maho_omo_memory::kibitzer_sidecar_admission::{BlockingAcquire, BlockingAcquireFuture, KibitzerBlockingExecutor, WakeAdmissionAttempt};
+use maho_omo_memory::kibitzer_session_resources::KibitzerSessionResources;
+use maho_omo_memory::kibitzer_sidecar_admission::{
+    BlockingAcquire, BlockingAcquireFuture, KibitzerBlockingExecutor, WakeAdmissionAttempt,
+};
 use maho_omo_memory::prompt::PromptContextResolver;
 use maho_omo_memory::recall_drain::PendingNudgesPort;
 use maho_omo_memory::recall_wiring::{MemoryRecallWiring, MemoryRecallWiringOptions};
@@ -38,7 +42,11 @@ pub struct CliSidecarTimers {
 
 impl CliSidecarTimers {
     pub fn new(executor: tokio::runtime::Handle) -> Arc<Self> {
-        Arc::new(Self { executor, next: AtomicU64::new(1), tasks: Arc::new(Mutex::new(BTreeMap::new())) })
+        Arc::new(Self {
+            executor,
+            next: AtomicU64::new(1),
+            tasks: Arc::new(Mutex::new(BTreeMap::new())),
+        })
     }
 }
 
@@ -52,7 +60,10 @@ impl KibitzerSidecarTimers for CliSidecarTimers {
         let registry = self.tasks.clone();
         let handle = self.executor.spawn(async move {
             tokio::time::sleep(delay).await;
-            registry.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&id);
             callback();
         });
         tasks.insert(id, handle);
@@ -60,7 +71,12 @@ impl KibitzerSidecarTimers for CliSidecarTimers {
     }
 
     fn clear(&self, handle: u64) {
-        if let Some(task) = self.tasks.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle) {
+        if let Some(task) = self
+            .tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&handle)
+        {
             task.abort();
         }
     }
@@ -92,7 +108,9 @@ impl KibitzerBlockingExecutor for CliBlockingExecutor {
                 // The worker produced no verdict: it panicked, or the runtime is shutting down.
                 // `Error(RecallWakeError)` is the only error channel the attempt enum carries, so the
                 // lock domain reports it; no admission is invented and no lease is fabricated.
-                Err(error) => WakeAdmissionAttempt::Error(RecallWakeError::Lock(format!("the blocking wake acquire did not complete: {error}"))),
+                Err(error) => WakeAdmissionAttempt::Error(RecallWakeError::Lock(format!(
+                    "the blocking wake acquire did not complete: {error}"
+                ))),
             }
         })
     }
@@ -101,11 +119,16 @@ impl KibitzerBlockingExecutor for CliBlockingExecutor {
 /// The CLI ports one recall wiring needs. The three `kibitzer_delivery` ports (`send_message`,
 /// `pending_for`, `coordinator`) are memory-owned types and are handed in by the memory composition.
 pub type RecallEnvironment = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
-pub type RecallPendingResolver = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
-pub type RecallDrainResolver = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
-pub type RecallQueuedDrain = Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<memory_core::recall::RecallNudge> + Send + Sync>;
+pub type RecallPendingResolver =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
+pub type RecallDrainResolver =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
+pub type RecallQueuedDrain = Arc<
+    dyn Fn(&str, &MemoryIdentityContext) -> Vec<memory_core::recall::RecallNudge> + Send + Sync,
+>;
 type RecallEntryAppender = Arc<dyn Fn(&str, Value) + Send + Sync>;
-type RecallRepoFactory = Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
+type RecallRepoFactory =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
 
 pub struct CliRecallWiringPorts {
     pub executor: tokio::runtime::Handle,
@@ -142,7 +165,9 @@ pub struct CliRecallWiringPorts {
 }
 
 /// Build the ONE resident recall wiring for a mount.
-pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Result<Arc<MemoryRecallWiring>, maho_ai::models::ModelsError> {
+pub fn create_memory_recall_wiring(
+    ports: CliRecallWiringPorts,
+) -> Result<Arc<MemoryRecallWiring>, maho_ai::models::ModelsError> {
     let CliRecallWiringPorts {
         executor,
         cwd,
@@ -180,12 +205,23 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Result<Arc<Me
     let timers: Arc<dyn KibitzerSidecarTimers> = CliSidecarTimers::new(executor.clone());
     // The retained NATIVE blocking executor: the machine-wide wake lease acquire runs on it, off the
     // reactor, and a dropped waiting future never cancels the worker (`CliBlockingExecutor`).
-    let blocking_executor: Arc<dyn KibitzerBlockingExecutor> = CliBlockingExecutor::new(executor.clone());
+    let blocking_executor: Arc<dyn KibitzerBlockingExecutor> =
+        CliBlockingExecutor::new(executor.clone());
     let spawner: Arc<dyn KibitzerChildSpawner> = {
         let resolve_context = resolve_context.clone();
         let recall_dir_for: super::kibitzer_child::SessionRecallDir =
-            Arc::new(move |session_id: &str| resolve_context(session_id).map(|identity| identity.identity_paths.recall));
-        CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, (registry_for, recall_dir_for), resources)?
+            Arc::new(move |session_id: &str| {
+                resolve_context(session_id).map(|identity| identity.identity_paths.recall)
+            });
+        CliKibitzerChildSpawner::from_agent_dir(
+            executor,
+            cwd,
+            agent_dir,
+            config,
+            category,
+            (registry_for, recall_dir_for),
+            resources,
+        )?
     };
 
     let append_entry: RecallEntryAppender = {
@@ -198,13 +234,18 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Result<Arc<Me
         })
     };
     let ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync> =
-        Arc::new(|identity: &MemoryIdentityContext| RecallLedger::new(identity.identity_paths.recall_ledger.clone()));
-    let create_repo: RecallRepoFactory =
         Arc::new(|identity: &MemoryIdentityContext| {
-            GitMemoryRepo::new(GitMemoryRepoOptions::new(identity.identity_paths.repo.clone(), identity.identity.clone()))
-                .map_err(|error| error.to_string())
+            RecallLedger::new(identity.identity_paths.recall_ledger.clone())
         });
-    let now_ms: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(memory_core::support::time::now_millis);
+    let create_repo: RecallRepoFactory = Arc::new(|identity: &MemoryIdentityContext| {
+        GitMemoryRepo::new(GitMemoryRepoOptions::new(
+            identity.identity_paths.repo.clone(),
+            identity.identity.clone(),
+        ))
+        .map_err(|error| error.to_string())
+    });
+    let now_ms: Arc<dyn Fn() -> i64 + Send + Sync> =
+        Arc::new(memory_core::support::time::now_millis);
     let random: Arc<dyn Fn() -> f64 + Send + Sync> = Arc::new(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -252,14 +293,19 @@ mod tests {
     use std::time::Duration;
 
     use maho_omo_memory::kibitzer_contract::KibitzerWakeSpawn;
+    use maho_omo_memory::kibitzer_session_resources::KibitzerSessionResourceRegistry;
     use maho_omo_memory::kibitzer_sidecar_admission::{
-        Admission, BlockingAcquire, BlockingAcquireFuture, KibitzerBlockingExecutor, SidecarAdmission, WakeAdmissionAttempt, create_admission,
+        Admission, BlockingAcquire, BlockingAcquireFuture, KibitzerBlockingExecutor,
+        SidecarAdmission, WakeAdmissionAttempt, create_admission,
     };
-    use maho_omo_memory::kibitzer_sidecar_core::{KibitzerSidecarCoreOptions, SidecarCore, create_sidecar_core};
+    use maho_omo_memory::kibitzer_sidecar_core::{
+        KibitzerSidecarCoreOptions, SidecarCore, create_sidecar_core,
+    };
     use maho_omo_memory::kibitzer_sidecar_recovery::create_recovery;
     use maho_omo_memory::kibitzer_sidecar_turn::create_turn_lifecycle;
-    use maho_omo_memory::kibitzer_session_resources::KibitzerSessionResourceRegistry;
-    use maho_omo_memory::kibitzer_wake_slot::{KibitzerWakeAdmission, KibitzerWakeSlot, KibitzerWakeSlotOptions};
+    use maho_omo_memory::kibitzer_wake_slot::{
+        KibitzerWakeAdmission, KibitzerWakeSlot, KibitzerWakeSlotOptions,
+    };
     use memory_core::locks::recall_wake_domain::RecallWakeError;
     use tokio::sync::mpsc::error::TryRecvError;
 
@@ -280,10 +326,16 @@ mod tests {
     /// timing-based: a task spawned while that thread is busy cannot start (no second thread exists), and
     /// a task's produced value is dropped by that same thread before it takes the next task.
     fn runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_time().max_blocking_threads(1).build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap()
     }
 
-    fn core_with_warnings(warnings: tokio::sync::mpsc::UnboundedSender<String>) -> Arc<SidecarCore> {
+    fn core_with_warnings(
+        warnings: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Arc<SidecarCore> {
         create_sidecar_core(KibitzerSidecarCoreOptions {
             session_id: "session".to_owned(),
             resources: KibitzerSessionResourceRegistry::new().for_session("session"),
@@ -317,8 +369,16 @@ mod tests {
         Arc::new(|_future| {})
     }
 
-    fn sidecar_admission(core: Arc<SidecarCore>, wake_slot: Arc<KibitzerWakeSlot>, executor: Arc<dyn KibitzerBlockingExecutor>) -> SidecarAdmission {
-        let turns = Arc::new(create_turn_lifecycle(Arc::clone(&core), noop_spawn(), Arc::new(|_outcome| {})));
+    fn sidecar_admission(
+        core: Arc<SidecarCore>,
+        wake_slot: Arc<KibitzerWakeSlot>,
+        executor: Arc<dyn KibitzerBlockingExecutor>,
+    ) -> SidecarAdmission {
+        let turns = Arc::new(create_turn_lifecycle(
+            Arc::clone(&core),
+            noop_spawn(),
+            Arc::new(|_outcome| {}),
+        ));
         let recovery = Arc::new(create_recovery(Arc::clone(&core), noop_spawn()));
         create_admission(core, wake_slot, turns, recovery, executor)
     }
@@ -328,7 +388,10 @@ mod tests {
     fn slot_is_free(wake_slot: &KibitzerWakeSlot) -> bool {
         match wake_slot.acquire(None).unwrap() {
             KibitzerWakeAdmission::Acquired { lease, .. } => {
-                assert!(lease.try_release().unwrap(), "the probe's own lease must release");
+                assert!(
+                    lease.try_release().unwrap(),
+                    "the probe's own lease must release"
+                );
                 true
             }
             KibitzerWakeAdmission::Busy { .. } => false,
@@ -348,7 +411,10 @@ mod tests {
     }
 
     async fn await_completion(completed: tokio::sync::oneshot::Receiver<()>) {
-        tokio::time::timeout(SIGNAL_DEADLINE, completed).await.expect("the worker must finish").unwrap();
+        tokio::time::timeout(SIGNAL_DEADLINE, completed)
+            .await
+            .expect("the worker must finish")
+            .unwrap();
     }
 
     /// The production adapter PLUS the test's window onto its worker. The executor under test is `inner`
@@ -363,8 +429,15 @@ mod tests {
     }
 
     impl WindowedExecutor {
-        fn new(handle: tokio::runtime::Handle, gate: Option<std::sync::mpsc::Receiver<()>>) -> Arc<Self> {
-            Arc::new(Self { inner: CliBlockingExecutor::new(handle), produced: Mutex::new(None), gate: Mutex::new(gate) })
+        fn new(
+            handle: tokio::runtime::Handle,
+            gate: Option<std::sync::mpsc::Receiver<()>>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                inner: CliBlockingExecutor::new(handle),
+                produced: Mutex::new(None),
+                gate: Mutex::new(gate),
+            })
         }
 
         /// The exact signal that the production worker has produced its verdict: at that moment a REAL
@@ -378,8 +451,16 @@ mod tests {
 
     impl KibitzerBlockingExecutor for WindowedExecutor {
         fn run_blocking(&self, task: BlockingAcquire) -> BlockingAcquireFuture {
-            let produced = self.produced.lock().unwrap_or_else(PoisonError::into_inner).take();
-            let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).take();
+            let produced = self
+                .produced
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let gate = self
+                .gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
             self.inner.run_blocking(Box::new(move || {
                 let verdict = task();
                 if let Some(produced) = produced {
@@ -397,7 +478,8 @@ mod tests {
     /// worker produces its verdict with nobody holding the handle. That produced value must be DROPPED on
     /// completion - the drop is what releases the machine lease - and never retained.
     #[test]
-    fn given_a_waiting_future_dropped_while_the_worker_runs_then_the_produced_verdict_is_dropped_and_the_lease_is_released() {
+    fn given_a_waiting_future_dropped_while_the_worker_runs_then_the_produced_verdict_is_dropped_and_the_lease_is_released()
+     {
         runtime().block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let (warnings, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -411,12 +493,21 @@ mod tests {
             let mut waiting = Box::pin(admission.admit());
             let waker = Waker::from(Arc::new(NoopWake));
             let mut context = Context::from_waker(&waker);
-            assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending), "the worker has not produced a verdict yet");
+            assert!(
+                matches!(waiting.as_mut().poll(&mut context), Poll::Pending),
+                "the worker has not produced a verdict yet"
+            );
 
             // The production worker ran and produced its verdict: a REAL lease is held, still as a local
             // inside the running (gated) task.
-            tokio::time::timeout(SIGNAL_DEADLINE, produced).await.expect("the worker must produce its verdict").unwrap();
-            assert!(!slot_is_free(&wake_slot), "the produced verdict holds the machine lease");
+            tokio::time::timeout(SIGNAL_DEADLINE, produced)
+                .await
+                .expect("the worker must produce its verdict")
+                .unwrap();
+            assert!(
+                !slot_is_free(&wake_slot),
+                "the produced verdict holds the machine lease"
+            );
 
             // Queued while the ONE blocking thread is still running the gated worker: it cannot start
             // before that worker finished.
@@ -425,23 +516,38 @@ mod tests {
             // THE CASE: the waiting future - and with it the only handle to the running worker - is
             // dropped before the worker handed its verdict to anyone.
             drop(waiting);
-            assert_eq!(reported.try_recv(), Err(TryRecvError::Empty), "dropping the waiting future releases nothing by itself");
-            assert!(!slot_is_free(&wake_slot), "the running worker still owns its lease");
+            assert_eq!(
+                reported.try_recv(),
+                Err(TryRecvError::Empty),
+                "dropping the waiting future releases nothing by itself"
+            );
+            assert!(
+                !slot_is_free(&wake_slot),
+                "the running worker still owns its lease"
+            );
 
             // Let the worker return; with no handle left, the pool drops what it produced.
             release.send(()).unwrap();
             await_completion(completed).await;
 
             // The lease is back: the produced verdict was dropped, not retained.
-            assert!(slot_is_free(&wake_slot), "the produced verdict must have been dropped, releasing the machine lease");
-            assert_eq!(reported.try_recv(), Err(TryRecvError::Empty), "a clean release is reported silently");
+            assert!(
+                slot_is_free(&wake_slot),
+                "the produced verdict must have been dropped, releasing the machine lease"
+            );
+            assert_eq!(
+                reported.try_recv(),
+                Err(TryRecvError::Empty),
+                "a clean release is reported silently"
+            );
         });
     }
 
     /// The companion case: the worker COMPLETED while the handle was still alive, so its produced value
     /// was RETAINED; dropping the handle must drop that retained value and release the lease.
     #[test]
-    fn given_a_completed_worker_when_the_waiting_future_is_dropped_then_the_retained_verdict_is_dropped_and_the_lease_is_released() {
+    fn given_a_completed_worker_when_the_waiting_future_is_dropped_then_the_retained_verdict_is_dropped_and_the_lease_is_released()
+     {
         runtime().block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let (warnings, _reported) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -455,53 +561,85 @@ mod tests {
             let mut waiting = Box::pin(admission.admit());
             let waker = Waker::from(Arc::new(NoopWake));
             let mut context = Context::from_waker(&waker);
-            assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending), "the worker has not produced a verdict yet");
-            tokio::time::timeout(SIGNAL_DEADLINE, produced).await.expect("the worker must produce its verdict").unwrap();
+            assert!(
+                matches!(waiting.as_mut().poll(&mut context), Poll::Pending),
+                "the worker has not produced a verdict yet"
+            );
+            tokio::time::timeout(SIGNAL_DEADLINE, produced)
+                .await
+                .expect("the worker must produce its verdict")
+                .unwrap();
 
             let completed = queue_completion_guard();
             // The worker returns while the handle is STILL alive, so its produced verdict is retained.
             release.send(()).unwrap();
             await_completion(completed).await;
 
-            assert!(!slot_is_free(&wake_slot), "the retained verdict still holds the machine lease");
+            assert!(
+                !slot_is_free(&wake_slot),
+                "the retained verdict still holds the machine lease"
+            );
             // Dropping the handle drops the retained value, synchronously on this thread.
             drop(waiting);
-            assert!(slot_is_free(&wake_slot), "the retained verdict must have been dropped, releasing the machine lease");
+            assert!(
+                slot_is_free(&wake_slot),
+                "the retained verdict must have been dropped, releasing the machine lease"
+            );
         });
     }
 
     /// The POLLED path is unchanged: a free machine slot is admitted through the bare production adapter
     /// and the real lease is handed over, releasing exactly once.
     #[test]
-    fn given_a_free_machine_slot_when_admitted_through_the_production_adapter_then_the_real_lease_is_handed_over() {
+    fn given_a_free_machine_slot_when_admitted_through_the_production_adapter_then_the_real_lease_is_handed_over()
+     {
         runtime().block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let (warnings, _reported) = tokio::sync::mpsc::unbounded_channel::<String>();
             let core = core_with_warnings(warnings);
             let wake_slot = Arc::new(slot(dir.path()));
-            let admission = sidecar_admission(Arc::clone(&core), Arc::clone(&wake_slot), CliBlockingExecutor::new(tokio::runtime::Handle::current()));
+            let admission = sidecar_admission(
+                Arc::clone(&core),
+                Arc::clone(&wake_slot),
+                CliBlockingExecutor::new(tokio::runtime::Handle::current()),
+            );
 
             match admission.admit().await {
                 Admission::Acquired { lease, .. } => {
                     assert_eq!(lease.slot, 1, "the single machine slot is the one admitted");
-                    assert!(lease.try_release().unwrap(), "the handed-over lease releases exactly once");
+                    assert!(
+                        lease.try_release().unwrap(),
+                        "the handed-over lease releases exactly once"
+                    );
                 }
                 _ => panic!("a free machine slot must be admitted"),
             }
-            assert!(slot_is_free(&wake_slot), "the released lease must have freed the real slot");
+            assert!(
+                slot_is_free(&wake_slot),
+                "the released lease must have freed the real slot"
+            );
         });
     }
 
     /// A worker that produced no verdict is reported as the lock-domain error, the only error channel the
     /// attempt carries; no admission is invented and no lease is fabricated.
     #[test]
-    fn given_a_worker_that_produced_no_verdict_when_awaited_then_the_attempt_is_the_lock_domain_error() {
+    fn given_a_worker_that_produced_no_verdict_when_awaited_then_the_attempt_is_the_lock_domain_error()
+     {
         runtime().block_on(async {
             let executor = CliBlockingExecutor::new(tokio::runtime::Handle::current());
-            let attempt = executor.run_blocking(Box::new(|| -> WakeAdmissionAttempt { panic!("the worker produced no verdict") })).await;
+            let attempt = executor
+                .run_blocking(Box::new(|| -> WakeAdmissionAttempt {
+                    panic!("the worker produced no verdict")
+                }))
+                .await;
             match attempt {
-                WakeAdmissionAttempt::Error(RecallWakeError::Lock(message)) => assert!(!message.is_empty()),
-                _ => panic!("a worker that produced no verdict must be reported as the lock-domain error"),
+                WakeAdmissionAttempt::Error(RecallWakeError::Lock(message)) => {
+                    assert!(!message.is_empty())
+                }
+                _ => panic!(
+                    "a worker that produced no verdict must be reported as the lock-domain error"
+                ),
             }
         });
     }

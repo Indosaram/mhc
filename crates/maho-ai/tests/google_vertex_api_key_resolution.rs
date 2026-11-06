@@ -7,9 +7,11 @@
 
 use crate::google_fixtures;
 
-use google_fixtures::server::{sse_body, RecordingServer};
+use google_fixtures::server::{RecordingServer, sse_body};
 use google_fixtures::{builtin_model, context, user_text};
-use maho_ai::api::google_vertex::{create_client, create_client_with_api_key, stream as stream_google_vertex};
+use maho_ai::api::google_vertex::{
+    create_client, create_client_with_api_key, stream as stream_google_vertex,
+};
 use maho_ai::types::{Model, ProviderRequestOptions, StopReason, StreamOptions};
 use maho_ai::utils::pi_user_agent::get_pi_user_agent;
 use serde_json::json;
@@ -17,12 +19,20 @@ use std::collections::BTreeMap;
 
 const REAL_API_KEY: &str = "AIzaSyExampleRealisticLookingApiKey123456";
 
-fn options(api_key: Option<&str>, project: Option<&str>, location: Option<&str>, headers: Option<Vec<(&str, &str)>>) -> StreamOptions {
+fn options(
+    api_key: Option<&str>,
+    project: Option<&str>,
+    location: Option<&str>,
+    headers: Option<Vec<(&str, &str)>>,
+) -> StreamOptions {
     StreamOptions {
         request: ProviderRequestOptions {
             api_key: api_key.map(str::to_owned),
             headers: headers.map(|headers| {
-                headers.into_iter().map(|(name, value)| (name.to_owned(), Some(value.to_owned()))).collect()
+                headers
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), Some(value.to_owned())))
+                    .collect()
             }),
             ..ProviderRequestOptions::default()
         },
@@ -47,7 +57,10 @@ fn vertex_model(base_url: &str) -> Model {
 }
 
 fn headers_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
-    entries.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
+    entries
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 fn http_headers(entries: &[(&str, &str)]) -> Option<BTreeMap<String, String>> {
@@ -59,7 +72,11 @@ fn resolved_api_key(api_key: Option<&str>) -> Option<String> {
     maho_ai::api::google_vertex::resolve_api_key(&options(api_key, None, None, None))
 }
 
-fn client_config_for(model: &Model, api_key: Option<&str>, headers: Option<BTreeMap<String, String>>) -> maho_ai::api::google_shared::GoogleClientConfig {
+fn client_config_for(
+    model: &Model,
+    api_key: Option<&str>,
+    headers: Option<BTreeMap<String, String>>,
+) -> maho_ai::api::google_shared::GoogleClientConfig {
     match resolved_api_key(api_key) {
         Some(api_key) => create_client_with_api_key(model, &api_key, headers.as_ref()),
         None => create_client(model, "test-project", "us-central1", headers.as_ref(), None),
@@ -80,18 +97,31 @@ fn falls_back_to_adc_when_options_api_key_is_a_placeholder_marker() {
 #[test]
 fn google_client_headers_override_case_variants_at_request_construction() {
     let mut model = vertex_model("https://example.test");
-    model.headers = Some(headers_map(&[("X-Override", "model"), ("USER-AGENT", "model-agent")]));
+    model.headers = Some(headers_map(&[
+        ("X-Override", "model"),
+        ("USER-AGENT", "model-agent"),
+    ]));
     let options = headers_map(&[("x-override", "request"), ("user-agent", "request-agent")]);
     let clients = [
         create_client_with_api_key(&model, REAL_API_KEY, Some(&options)),
         create_client(&model, "project", "location", Some(&options), None),
-        maho_ai::api::google_generative_ai::create_client(&model, Some(REAL_API_KEY), Some(&options)),
+        maho_ai::api::google_generative_ai::create_client(
+            &model,
+            Some(REAL_API_KEY),
+            Some(&options),
+        ),
     ];
     for client in clients {
         let headers = client.headers.expect("headers");
         assert_eq!(headers.len(), 2);
-        assert_eq!(headers.get("x-override").map(String::as_str), Some("request"));
-        assert_eq!(headers.get("user-agent").map(String::as_str), Some("request-agent"));
+        assert_eq!(
+            headers.get("x-override").map(String::as_str),
+            Some("request")
+        );
+        assert_eq!(
+            headers.get("user-agent").map(String::as_str),
+            Some("request-agent")
+        );
     }
 }
 
@@ -130,24 +160,48 @@ fn still_uses_the_api_key_client_for_real_api_keys() {
 #[test]
 fn does_not_forward_generated_vertex_base_url_placeholders() {
     let model = builtin_model("google-vertex", "gemini-3-flash-preview");
-    assert_eq!(model.base_url, "https://{location}-aiplatform.googleapis.com");
-    let client = client_config_for(&model, None, http_headers(&[("User-Agent", &get_pi_user_agent())]));
+    assert_eq!(
+        model.base_url,
+        "https://{location}-aiplatform.googleapis.com"
+    );
+    let client = client_config_for(
+        &model,
+        None,
+        http_headers(&[("User-Agent", &get_pi_user_agent())]),
+    );
     assert_eq!(client.base_url, None);
-    assert_eq!(client.headers.as_ref(), Some(&headers_map(&[("User-Agent", &get_pi_user_agent())])));
+    assert_eq!(
+        client.headers.as_ref(),
+        Some(&headers_map(&[("User-Agent", &get_pi_user_agent())]))
+    );
 }
 
 #[test]
 fn lets_explicit_headers_override_the_default_user_agent() {
     let model = vertex_model("https://us-central1-aiplatform.googleapis.com");
-    let client = client_config_for(&model, None, http_headers(&[("User-Agent", "custom-agent")]));
-    assert_eq!(client.headers.as_ref(), Some(&headers_map(&[("User-Agent", "custom-agent")])));
+    let client = client_config_for(
+        &model,
+        None,
+        http_headers(&[("User-Agent", "custom-agent")]),
+    );
+    assert_eq!(
+        client.headers.as_ref(),
+        Some(&headers_map(&[("User-Agent", "custom-agent")]))
+    );
 }
 
 #[test]
 fn forwards_custom_base_url_to_the_adc_client() {
     let model = vertex_model("https://proxy.example.com");
-    let client = client_config_for(&model, None, http_headers(&[("User-Agent", &get_pi_user_agent())]));
-    assert_eq!(client.base_url.as_deref(), Some("https://proxy.example.com"));
+    let client = client_config_for(
+        &model,
+        None,
+        http_headers(&[("User-Agent", &get_pi_user_agent())]),
+    );
+    assert_eq!(
+        client.base_url.as_deref(),
+        Some("https://proxy.example.com")
+    );
     assert!(client.base_url_resource_scope_collection);
     assert_eq!(client.api_version.as_deref(), Some("v1"));
 }
@@ -155,8 +209,15 @@ fn forwards_custom_base_url_to_the_adc_client() {
 #[test]
 fn forwards_custom_base_url_to_the_api_key_client() {
     let model = vertex_model("https://proxy.example.com");
-    let client = client_config_for(&model, Some(REAL_API_KEY), http_headers(&[("User-Agent", &get_pi_user_agent())]));
-    assert_eq!(client.base_url.as_deref(), Some("https://proxy.example.com"));
+    let client = client_config_for(
+        &model,
+        Some(REAL_API_KEY),
+        http_headers(&[("User-Agent", &get_pi_user_agent())]),
+    );
+    assert_eq!(
+        client.base_url.as_deref(),
+        Some("https://proxy.example.com")
+    );
     assert!(client.base_url_resource_scope_collection);
     assert_eq!(client.api_key.as_deref(), Some(REAL_API_KEY));
 }
@@ -164,8 +225,15 @@ fn forwards_custom_base_url_to_the_api_key_client() {
 #[test]
 fn does_not_append_api_version_when_custom_base_url_already_includes_one() {
     let model = vertex_model("https://proxy.example.com/v1/projects/test-project/locations/global");
-    let client = client_config_for(&model, None, http_headers(&[("User-Agent", &get_pi_user_agent())]));
-    assert_eq!(client.base_url.as_deref(), Some("https://proxy.example.com/v1/projects/test-project/locations/global"));
+    let client = client_config_for(
+        &model,
+        None,
+        http_headers(&[("User-Agent", &get_pi_user_agent())]),
+    );
+    assert_eq!(
+        client.base_url.as_deref(),
+        Some("https://proxy.example.com/v1/projects/test-project/locations/global")
+    );
     assert!(client.base_url_resource_scope_collection);
     assert_eq!(client.api_version.as_deref(), Some(""));
 }
@@ -195,8 +263,16 @@ async fn streams_against_the_api_key_client_with_the_configured_headers() {
     .expect("bounded wait")
     .expect("result");
 
-    assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);
+    assert_eq!(
+        message.stop_reason,
+        StopReason::Stop,
+        "{:?}",
+        message.error_message
+    );
     let request = server.last_request();
-    assert_eq!(request.url_path(), "/v1/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?alt=sse");
+    assert_eq!(
+        request.url_path(),
+        "/v1/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?alt=sse"
+    );
     assert_eq!(request.header("x-goog-api-key"), Some(REAL_API_KEY));
 }

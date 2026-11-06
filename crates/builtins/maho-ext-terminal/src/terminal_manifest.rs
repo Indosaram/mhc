@@ -48,9 +48,8 @@ pub type ReapOrphan = std::sync::Arc<
             String,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<
-                        Output = std::io::Result<crate::orphan_reaper::ReapResult>,
-                    > + Send,
+                dyn std::future::Future<Output = std::io::Result<crate::orphan_reaper::ReapResult>>
+                    + Send,
             >,
         > + Send
         + Sync,
@@ -74,7 +73,11 @@ impl TerminalManifestWriter {
     /// every command watch the restore will re-spawn that recorded its child, confirm the old
     /// watcher still runs and stop its tree. A kill reports `killed`, an unconfirmable pid
     /// `unverified`, a dead one nothing.
-    pub async fn reap_orphans(&mut self, state: &TerminalManifest, now: f64) -> std::io::Result<()> {
+    pub async fn reap_orphans(
+        &mut self,
+        state: &TerminalManifest,
+        now: f64,
+    ) -> std::io::Result<()> {
         self.reaped.clear();
         for monitor in &state.monitors {
             let Some(runtime) = &monitor.runtime else {
@@ -352,7 +355,8 @@ impl TerminalManifestWriter {
     ) -> crate::restore::RestoreDigest {
         let state = self.read_restore_state().await;
         if let Ok(Some(manifest)) = &state
-            && let Err(error) = self.reap_orphans(manifest, now).await {
+            && let Err(error) = self.reap_orphans(manifest, now).await
+        {
             maho_ext_api::diagnostic(&format!("Terminal restore failed: {error}"));
             return crate::restore::RestoreDigest {
                 store_error: true,
@@ -1132,9 +1136,15 @@ mod orphan_tests {
             .expect("fixture command options")
             .0
             .env(crate::shared::MONITOR_ENV_ID, monitor_id);
-        let id = manager.create(command, options).expect("create fixture watch");
+        let id = manager
+            .create(command, options)
+            .expect("create fixture watch");
         manager.bind_monitor_id(monitor_id, &id);
-        let identity = manager.get(&id).expect("registered watch").identity().expect("watch identity");
+        let identity = manager
+            .get(&id)
+            .expect("registered watch")
+            .identity()
+            .expect("watch identity");
         let mut writer = TerminalManifestWriter::new(dir, "orphans");
         writer
             .record_register_with(
@@ -1173,10 +1183,17 @@ mod orphan_tests {
         let digest = next.restore_live(manager, registry, now_ms()).await;
         assert_eq!(digest.restored, 1, "{digest:?}");
         next.persist_restored(now_ms()).await;
-        let saved = next.read_restore_state().await.expect("read restored state").expect("saved restore state");
+        let saved = next
+            .read_restore_state()
+            .await
+            .expect("read restored state")
+            .expect("saved restore state");
         (
             digest.results[0].orphan.clone(),
-            saved.monitors[0].runtime.clone().expect("fresh runtime recorded"),
+            saved.monitors[0]
+                .runtime
+                .clone()
+                .expect("fresh runtime recorded"),
         )
     }
 
@@ -1283,8 +1300,16 @@ mod orphan_tests {
                 })
             }));
             writer.reap_orphans(&state, now_ms()).await.unwrap();
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), reaps, "{command:?} {cwd:?}");
-            assert_eq!(writer.reaped.len(), reaps, "an orphan only for a reaped watch");
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                reaps,
+                "{command:?} {cwd:?}"
+            );
+            assert_eq!(
+                writer.reaped.len(),
+                reaps,
+                "an orphan only for a reaped watch"
+            );
         }
     }
 
@@ -1300,10 +1325,13 @@ mod orphan_tests {
         let id = crashed.resolve_id("mon_ORPHANUNVERIF1").unwrap();
         let mut exit = crashed.get(&id).unwrap().subscribe_exit();
         crashed.teardown().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), exit.wait_for(Option::is_some))
-            .await
-            .expect("watcher stopped")
-            .expect("exit channel open");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            exit.wait_for(Option::is_some),
+        )
+        .await
+        .expect("watcher stopped")
+        .expect("exit channel open");
         let mut manager = crate::manager::TerminalManager::default();
         let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
         let (orphan, _) = restart(&dir, &mut manager, &mut registry).await;
@@ -1322,9 +1350,14 @@ mod orphan_tests {
         }));
         let mut manager = crate::manager::TerminalManager::default();
         let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
-        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+        let digest = next
+            .restore_live(&mut manager, &mut registry, now_ms())
+            .await;
         assert_eq!(
-            digest.results[0].orphan.as_ref().map(|orphan| orphan.action),
+            digest.results[0]
+                .orphan
+                .as_ref()
+                .map(|orphan| orphan.action),
             Some(crate::restore_digest::OrphanAction::Unverified)
         );
         registry.dispose();
@@ -1350,7 +1383,9 @@ mod orphan_tests {
         }));
         let mut manager = crate::manager::TerminalManager::default();
         let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
-        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+        let digest = next
+            .restore_live(&mut manager, &mut registry, now_ms())
+            .await;
 
         assert!(digest.store_error);
         assert_eq!(digest.restored, 0);
@@ -1362,8 +1397,13 @@ mod orphan_tests {
         let id = crashed.resolve_id("mon_ORPHANKILLFAIL1").expect("watch id");
         let mut exited = crashed.get(&id).expect("watch").subscribe_exit();
         crashed.teardown().expect("stop original watcher");
-        tokio::time::timeout(std::time::Duration::from_secs(10), exited.wait_for(Option::is_some))
-            .await.expect("watch exit deadline").expect("watch exit");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            exited.wait_for(Option::is_some),
+        )
+        .await
+        .expect("watch exit deadline")
+        .expect("watch exit");
     }
 }
 

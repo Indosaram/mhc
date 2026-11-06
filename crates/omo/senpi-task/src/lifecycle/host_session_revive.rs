@@ -132,7 +132,10 @@ pub fn park_host_session_on_daemon_loss(
                 reason: SuspensionReason::DaemonUnavailable,
             });
         }
-        if let Some(before_attempt) = options.as_ref().and_then(|options| options.before_attempt.as_ref()) {
+        if let Some(before_attempt) = options
+            .as_ref()
+            .and_then(|options| options.before_attempt.as_ref())
+        {
             before_attempt(attempt);
         }
         context
@@ -160,7 +163,8 @@ pub fn park_host_session_on_daemon_loss(
 
 fn revive_parked_host_session(context: &LifecycleContext, task_id: &str) -> bool {
     let claimed = super::residency::claim_residency_slot(context, task_id, |fresh| {
-        fresh.residency_state == ResidencyState::RpcDetached && fresh.killed != Some(true)
+        fresh.residency_state == ResidencyState::RpcDetached
+            && fresh.killed != Some(true)
             && !super::deferred_revival::retries_stopped(context, &fresh.parent_session_id)
     });
     if !matches!(claimed, Ok(super::residency::ResidencyClaimResult::Claimed)) {

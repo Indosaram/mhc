@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
 
-use crate::agents::{
-    PlanArtifactReference, SkillInvocationState, interaction_policy_for_agent,
-};
+use crate::agents::{PlanArtifactReference, SkillInvocationState, interaction_policy_for_agent};
 use crate::host::HostError;
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;

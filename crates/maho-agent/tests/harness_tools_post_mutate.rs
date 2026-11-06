@@ -62,7 +62,8 @@ impl Fixture {
         std::fs::write(self.dir.join("file.txt"), text).expect("tool test operation must succeed");
     }
     fn get(&self) -> String {
-        std::fs::read_to_string(self.dir.join("file.txt")).expect("tool test operation must succeed")
+        std::fs::read_to_string(self.dir.join("file.txt"))
+            .expect("tool test operation must succeed")
     }
     async fn run(
         &self,
@@ -116,7 +117,9 @@ async fn hook_receives_absolute_path_and_appends_write_note() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let seen = calls.clone();
     f.context.post_mutate = Some(Arc::new(move |input| {
-        seen.lock().expect("tool test operation must succeed").push(input);
+        seen.lock()
+            .expect("tool test operation must succeed")
+            .push(input);
         Box::pin(async {
             Ok(PostMutateResult {
                 changed: false,
@@ -149,22 +152,32 @@ async fn hook_observes_freshly_written_bytes() {
     let seen = Arc::new(Mutex::new(None));
     let observed = seen.clone();
     f.context.post_mutate = Some(Arc::new(move |input| {
-        *observed.lock().expect("tool test operation must succeed") = Some(std::fs::read_to_string(input.path).expect("tool test operation must succeed"));
+        *observed.lock().expect("tool test operation must succeed") =
+            Some(std::fs::read_to_string(input.path).expect("tool test operation must succeed"));
         Box::pin(async { Ok(PostMutateResult::default()) })
     }));
-    f.write("written-bytes").await.expect("tool test operation must succeed");
-    assert_eq!(*seen.lock().expect("tool test operation must succeed"), Some("written-bytes".into()));
+    f.write("written-bytes")
+        .await
+        .expect("tool test operation must succeed");
+    assert_eq!(
+        *seen.lock().expect("tool test operation must succeed"),
+        Some("written-bytes".into())
+    );
 }
 #[tokio::test]
 #[cfg(unix)]
 async fn hook_receives_symlink_path_not_canonical_target() {
     let mut f = Fixture::new();
     f.put("alpha\nbeta\n");
-    std::os::unix::fs::symlink("file.txt", f.dir.join("link.txt")).expect("tool test operation must succeed");
+    std::os::unix::fs::symlink("file.txt", f.dir.join("link.txt"))
+        .expect("tool test operation must succeed");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let observed = seen.clone();
     f.context.post_mutate = Some(Arc::new(move |input| {
-        observed.lock().expect("tool test operation must succeed").push(input.path);
+        observed
+            .lock()
+            .expect("tool test operation must succeed")
+            .push(input.path);
         Box::pin(async { Ok(PostMutateResult::default()) })
     }));
     f.run(
@@ -185,8 +198,10 @@ async fn edit_diff_is_recomputed_after_hook_rewrite() {
     f.put("alpha\nbeta\ngamma\n");
     f.context.post_mutate = Some(Arc::new(|input| {
         Box::pin(async move {
-            let current = std::fs::read_to_string(&input.path).expect("tool test operation must succeed");
-            std::fs::write(input.path, current.replace("gamma", "GAMMA")).expect("tool test operation must succeed");
+            let current =
+                std::fs::read_to_string(&input.path).expect("tool test operation must succeed");
+            std::fs::write(input.path, current.replace("gamma", "GAMMA"))
+                .expect("tool test operation must succeed");
             Ok(PostMutateResult {
                 changed: true,
                 note: Some("auto-formatted".into()),
@@ -195,7 +210,12 @@ async fn edit_diff_is_recomputed_after_hook_rewrite() {
     }));
     let result = f.edit().await.expect("tool test operation must succeed");
     assert_eq!(f.get(), "ALPHA\nbeta\nGAMMA\n");
-    assert!(result.details["diff"].as_str().expect("tool test operation must succeed").contains("GAMMA"));
+    assert!(
+        result.details["diff"]
+            .as_str()
+            .expect("tool test operation must succeed")
+            .contains("GAMMA")
+    );
     assert!(
         result.details["patch"]
             .as_str()
@@ -236,14 +256,31 @@ async fn hook_runs_inside_mutation_queue() {
         let entered = entered.clone();
         let release = release.clone();
         Box::pin(async move {
-            let content = std::fs::read_to_string(input.path).expect("tool test operation must succeed");
-            events.lock().expect("tool test operation must succeed").push(format!("hook-start:{content}"));
+            let content =
+                std::fs::read_to_string(input.path).expect("tool test operation must succeed");
+            events
+                .lock()
+                .expect("tool test operation must succeed")
+                .push(format!("hook-start:{content}"));
             if content == "first" {
-                entered.lock().expect("tool test operation must succeed").take().expect("tool test operation must succeed").send(()).expect("tool test operation must succeed");
-                let pending = release.lock().expect("tool test operation must succeed").take().expect("tool test operation must succeed");
+                entered
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .take()
+                    .expect("tool test operation must succeed")
+                    .send(())
+                    .expect("tool test operation must succeed");
+                let pending = release
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .take()
+                    .expect("tool test operation must succeed");
                 pending.await.expect("tool test operation must succeed");
             }
-            events.lock().expect("tool test operation must succeed").push(format!("hook-end:{content}"));
+            events
+                .lock()
+                .expect("tool test operation must succeed")
+                .push(format!("hook-end:{content}"));
             Ok(PostMutateResult::default())
         })
     }));
@@ -258,7 +295,9 @@ async fn hook_runs_inside_mutation_queue() {
     tokio::pin!(second);
     assert!(futures::poll!(&mut second).is_pending());
     assert_eq!(f.get(), "first");
-    release_tx.send(()).expect("tool test operation must succeed");
+    release_tx
+        .send(())
+        .expect("tool test operation must succeed");
     let (a, b) = tokio::join!(first, second);
     a.expect("tool test operation must succeed");
     b.expect("tool test operation must succeed");
@@ -279,7 +318,10 @@ async fn throwing_hook_keeps_landed_write() {
     f.context.post_mutate = Some(Arc::new(|_| {
         Box::pin(async { Err("formatter exploded".into()) })
     }));
-    let result = f.write("payload").await.expect("tool test operation must succeed");
+    let result = f
+        .write("payload")
+        .await
+        .expect("tool test operation must succeed");
     assert_eq!(f.get(), "payload");
     assert_eq!(
         text(&result),
@@ -299,7 +341,12 @@ async fn throwing_hook_keeps_landed_edit() {
         text(&result),
         "Successfully replaced 1 block(s) in file.txt.\npostMutate hook failed: formatter exploded"
     );
-    assert!(result.details["diff"].as_str().expect("tool test operation must succeed").contains("ALPHA"));
+    assert!(
+        result.details["diff"]
+            .as_str()
+            .expect("tool test operation must succeed")
+            .contains("ALPHA")
+    );
 }
 #[tokio::test]
 async fn partial_hook_rewrite_is_reflected_after_error() {
@@ -307,8 +354,10 @@ async fn partial_hook_rewrite_is_reflected_after_error() {
     f.put("alpha\nbeta\ngamma\n");
     f.context.post_mutate = Some(Arc::new(|input| {
         Box::pin(async move {
-            let current = std::fs::read_to_string(&input.path).expect("tool test operation must succeed");
-            std::fs::write(input.path, current.replace("gamma", "GAMMA")).expect("tool test operation must succeed");
+            let current =
+                std::fs::read_to_string(&input.path).expect("tool test operation must succeed");
+            std::fs::write(input.path, current.replace("gamma", "GAMMA"))
+                .expect("tool test operation must succeed");
             Err("formatter exploded after writing".into())
         })
     }));
@@ -340,7 +389,12 @@ async fn reread_failure_keeps_landed_edit_result() {
         text(&result),
         "Successfully replaced 1 block(s) in file.txt.\nreplaced the file with nothing\npostMutate left the file unreadable: not_found. Reported diff describes the edit before the hook ran."
     );
-    assert!(result.details["diff"].as_str().expect("tool test operation must succeed").contains("ALPHA"));
+    assert!(
+        result.details["diff"]
+            .as_str()
+            .expect("tool test operation must succeed")
+            .contains("ALPHA")
+    );
 }
 #[tokio::test]
 async fn hook_receives_abort_signal_and_aborts_result() {
@@ -367,7 +421,13 @@ async fn hook_receives_abort_signal_and_aborts_result() {
     )
     .await;
     assert_eq!(result.unwrap_err(), "Operation aborted");
-    assert!(seen.lock().expect("tool test operation must succeed").as_ref().expect("tool test operation must succeed").aborted());
+    assert!(
+        seen.lock()
+            .expect("tool test operation must succeed")
+            .as_ref()
+            .expect("tool test operation must succeed")
+            .aborted()
+    );
     assert_eq!(f.get(), "payload");
 }
 #[tokio::test]
@@ -396,7 +456,10 @@ async fn preaborted_edit_skips_hook() {
 #[tokio::test]
 async fn absent_hook_preserves_original_results() {
     let f = Fixture::new();
-    let write = f.write("hello").await.expect("tool test operation must succeed");
+    let write = f
+        .write("hello")
+        .await
+        .expect("tool test operation must succeed");
     assert_eq!(text(&write), "Successfully wrote to file.txt");
     assert!(write.details.is_null());
     f.put("alpha\nbeta\n");

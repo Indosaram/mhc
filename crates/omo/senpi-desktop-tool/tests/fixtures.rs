@@ -2,15 +2,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 
 use maho_ai::model::Model;
 use maho_ai::types::ThinkingLevel;
-use maho_tools::definition::ToolSessionManager;
 use maho_tools::ToolContext;
+use maho_tools::definition::ToolSessionManager;
 use senpi_desktop_service::child::{ChildFactory, EngineChild};
 use senpi_desktop_service::rpc_client::DesktopServiceError;
 use senpi_desktop_service::service::{DesktopService, DesktopServiceOptions};
@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use senpi_desktop_tool::activation::ComputerHandle;
 use senpi_desktop_tool::session::{ComputerHostContext, ComputerModel};
-use senpi_desktop_tool::settings::{resolve_computer_settings, ComputerSettingsInput};
+use senpi_desktop_tool::settings::{ComputerSettingsInput, resolve_computer_settings};
 
 #[derive(Debug, Clone)]
 pub struct WireRequest {
@@ -54,8 +54,8 @@ impl SpawnLog {
             children_counter.fetch_add(1, Ordering::SeqCst);
 
             Box::pin(async move {
-                let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/fake_engine.py");
+                let script_path =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py");
                 let python_cmd = if cfg!(windows) { "python" } else { "python3" };
                 let mut cmd = Command::new(python_cmd);
                 cmd.arg(&script_path).arg("--stdio");
@@ -101,11 +101,19 @@ impl SpawnLog {
                 && let Some(msg) = params.get("message").and_then(Value::as_str)
                 && let Some(rest) = msg.strip_prefix("recv ")
                 && let Ok(val) = serde_json::from_str::<Value>(rest)
-                && let Some(m) = val.get("method").and_then(Value::as_str) {
-                let req = WireRequest { id: val.get("id").and_then(Value::as_u64), method: m.to_string(), params: val.get("params").cloned() };
+                && let Some(m) = val.get("method").and_then(Value::as_str)
+            {
+                let req = WireRequest {
+                    id: val.get("id").and_then(Value::as_u64),
+                    method: m.to_string(),
+                    params: val.get("params").cloned(),
+                };
                 let reqs = reqs.clone();
                 let notify = notify.clone();
-                tokio::spawn(async move { reqs.lock().await.push(req); notify.notify_waiters(); });
+                tokio::spawn(async move {
+                    reqs.lock().await.push(req);
+                    notify.notify_waiters();
+                });
             }
         })
     }
@@ -207,5 +215,10 @@ pub fn desktop_fixture(
 }
 
 pub async fn methods_of(log: &SpawnLog) -> Vec<String> {
-    log.requests.lock().await.iter().map(|r| r.method.clone()).collect()
+    log.requests
+        .lock()
+        .await
+        .iter()
+        .map(|r| r.method.clone())
+        .collect()
 }

@@ -13,7 +13,9 @@ use crate::dag::manager::{DagManagerError, DagManagerErrorCode, DagMaterializeSk
 use crate::dag::store::DagFileStore;
 use crate::dag::store::DagStoreError;
 use crate::dag::types::{DagDiagnostic, DagNodeId, DagRunId};
-use crate::tools::task::skills::{build_skill_prepend, create_fs_skill_loader, FsSkillLoaderOptions};
+use crate::tools::task::skills::{
+    FsSkillLoaderOptions, build_skill_prepend, create_fs_skill_loader,
+};
 use crate::tools::task::types::{LoadedSkill, SkillLoader};
 
 const SCHEMA_VERSION: u8 = 1;
@@ -69,7 +71,11 @@ pub struct DagSkillMaterializerOptions {
 pub struct DagSkillManifestError(#[from] DagStoreError);
 
 fn manifest_path(store: &DagFileStore, run_id: &str) -> PathBuf {
-    store.paths.root.join("skills").join(format!("{run_id}.json"))
+    store
+        .paths
+        .root
+        .join("skills")
+        .join(format!("{run_id}.json"))
 }
 
 fn sha256_hex(value: &str) -> String {
@@ -188,7 +194,9 @@ pub fn create_dag_skill_materializer(options: DagSkillMaterializerOptions) -> Da
             fs::write(&path, serialized).map_err(DagStoreError::Io)?;
             Ok(())
         })();
-        persist.map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, error.to_string()))?;
+        persist.map_err(|error| {
+            DagManagerError::new(DagManagerErrorCode::InvalidArguments, error.to_string())
+        })?;
         Ok(crate::dag::manager::DagSkillMaterialization {
             nodes: nodes
                 .into_iter()
@@ -200,23 +208,54 @@ pub fn create_dag_skill_materializer(options: DagSkillMaterializerOptions) -> Da
 }
 
 /// Resume path: read the creation-time materialization, never `SKILL.md`.
-pub fn read_dag_skill_manifest(store: &DagFileStore, run_id: &str) -> Result<Option<DagSkillManifest>, DagManagerError> {
+pub fn read_dag_skill_manifest(
+    store: &DagFileStore,
+    run_id: &str,
+) -> Result<Option<DagSkillManifest>, DagManagerError> {
     let path = manifest_path(store, run_id);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("failed to read DAG skill manifest: {error}"))),
+        Err(error) => {
+            return Err(DagManagerError::new(
+                DagManagerErrorCode::InvalidArguments,
+                format!("failed to read DAG skill manifest: {error}"),
+            ));
+        }
     };
-    serde_json::from_str(&raw).map(Some).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("invalid DAG skill manifest: {error}")))
+    serde_json::from_str(&raw).map(Some).map_err(|error| {
+        DagManagerError::new(
+            DagManagerErrorCode::InvalidArguments,
+            format!("invalid DAG skill manifest: {error}"),
+        )
+    })
 }
 
-pub fn write_dag_skill_manifest(store: &DagFileStore, manifest: &DagSkillManifest) -> Result<(), DagManagerError> {
+pub fn write_dag_skill_manifest(
+    store: &DagFileStore,
+    manifest: &DagSkillManifest,
+) -> Result<(), DagManagerError> {
     let path = manifest_path(store, &manifest.run_id);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            DagManagerError::new(
+                DagManagerErrorCode::InvalidArguments,
+                format!("DAG skill manifest persistence failed: {error}"),
+            )
+        })?;
     }
-    let serialized = serde_json::to_string(manifest).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))?;
-    fs::write(path, serialized).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))
+    let serialized = serde_json::to_string(manifest).map_err(|error| {
+        DagManagerError::new(
+            DagManagerErrorCode::InvalidArguments,
+            format!("DAG skill manifest persistence failed: {error}"),
+        )
+    })?;
+    fs::write(path, serialized).map_err(|error| {
+        DagManagerError::new(
+            DagManagerErrorCode::InvalidArguments,
+            format!("DAG skill manifest persistence failed: {error}"),
+        )
+    })
 }
 
 #[cfg(test)]

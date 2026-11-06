@@ -13,7 +13,10 @@ fn caller_cancelled_request_reports_cancellation() {
     assert!(result.is_error);
     assert_eq!(
         result.text(),
-        format!("LSP daemon request cancelled: the caller aborted this request (for example, the turn was interrupted).\nThe daemon stays available; no LSP work was applied. Retry when you are ready.\nSocket: {}", p.socket.display())
+        format!(
+            "LSP daemon request cancelled: the caller aborted this request (for example, the turn was interrupted).\nThe daemon stays available; no LSP work was applied. Retry when you are ready.\nSocket: {}",
+            p.socket.display()
+        )
     );
 }
 
@@ -35,13 +38,15 @@ fn timed_out_request_reports_the_timeout_budget() {
 #[test]
 fn genuine_transport_failure_reports_unreachable() {
     let p = paths();
-    let result = daemon_failure_result(
-        &p,
-        &DaemonRequestError::new("connect ENOENT", false).into(),
-    );
+    let result =
+        daemon_failure_result(&p, &DaemonRequestError::new("connect ENOENT", false).into());
     assert_eq!(
         result.text(),
-        format!("LSP daemon unreachable: connect ENOENT.\nThe MCP server is a thin proxy and never runs language servers in-process.\nSocket: {}\nLogs: {}\nThe daemon is auto-started on demand and will be retried on the next request.", p.socket.display(), p.log.display())
+        format!(
+            "LSP daemon unreachable: connect ENOENT.\nThe MCP server is a thin proxy and never runs language servers in-process.\nSocket: {}\nLogs: {}\nThe daemon is auto-started on demand and will be retried on the next request.",
+            p.socket.display(),
+            p.log.display()
+        )
     );
 }
 

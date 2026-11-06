@@ -102,7 +102,8 @@ fn ends_in_bash_exe(path: &str) -> bool {
 /// WSL launchers that `where bash` may list ahead of Git Bash.
 fn is_wsl_launcher(path: &str) -> bool {
     let normalized = path.replace('/', "\\").to_ascii_lowercase();
-    normalized.contains("\\windows\\system32\\") || normalized.contains("\\microsoft\\windowsapps\\")
+    normalized.contains("\\windows\\system32\\")
+        || normalized.contains("\\microsoft\\windowsapps\\")
 }
 
 fn non_blank(value: Option<String>) -> Option<String> {

@@ -21,7 +21,10 @@ impl PartialEq for DesktopEngineLocatorOptions {
             && self.exec_dir == other.exec_dir
             && self.package_dir == other.package_dir
             && self.repo_root == other.repo_root
-            && matches!((self.is_quarantined, other.is_quarantined), (None, None) | (Some(_), Some(_)))
+            && matches!(
+                (self.is_quarantined, other.is_quarantined),
+                (None, None) | (Some(_), Some(_))
+            )
     }
 }
 
@@ -91,8 +94,12 @@ pub fn explicit_path_diagnostic(
     if is_q(engine_path) {
         return Some(DesktopEngineLocateDiagnostic {
             code: "quarantined".to_string(),
-            message: format!("The senpi-desktop-engine binary for {host} is quarantined by macOS Gatekeeper: {engine_path}."),
-            cause: format!("{engine_path}: blocked because com.apple.quarantine is present (macOS Gatekeeper)"),
+            message: format!(
+                "The senpi-desktop-engine binary for {host} is quarantined by macOS Gatekeeper: {engine_path}."
+            ),
+            cause: format!(
+                "{engine_path}: blocked because com.apple.quarantine is present (macOS Gatekeeper)"
+            ),
             ..base
         });
     }
@@ -111,7 +118,8 @@ pub fn explicit_path_diagnostic(
         {
             use std::os::unix::fs::PermissionsExt;
             if let Ok(meta) = p.metadata()
-                && (meta.permissions().mode() & 0o111) == 0 {
+                && (meta.permissions().mode() & 0o111) == 0
+            {
                 return Some(DesktopEngineLocateDiagnostic {
                     cause: format!("{engine_path}: not executable (chmod +x)"),
                     ..base
@@ -141,10 +149,23 @@ pub fn get_desktop_engine_candidate_paths(
         paths.push(Path::new(ed).join(file_name).to_string_lossy().to_string());
     }
     if let Some(ref pd) = options.package_dir {
-        paths.push(Path::new(pd).join("prebuilds").join(host).join(file_name).to_string_lossy().to_string());
+        paths.push(
+            Path::new(pd)
+                .join("prebuilds")
+                .join(host)
+                .join(file_name)
+                .to_string_lossy()
+                .to_string(),
+        );
     }
     if let Some(ref rr) = options.repo_root {
-        paths.push(Path::new(rr).join("dist").join(file_name).to_string_lossy().to_string());
+        paths.push(
+            Path::new(rr)
+                .join("dist")
+                .join(file_name)
+                .to_string_lossy()
+                .to_string(),
+        );
     }
     paths
 }
@@ -166,7 +187,9 @@ pub fn resolve_installed_engine(
     );
 
     if let Some(ep) = engine_path {
-        if let Some(diag) = explicit_path_diagnostic(ep, &host, &platform, locator_options.is_quarantined) {
+        if let Some(diag) =
+            explicit_path_diagnostic(ep, &host, &platform, locator_options.is_quarantined)
+        {
             return InstalledEngine::Diagnostic(diag);
         } else {
             return InstalledEngine::Installed {
@@ -180,11 +203,23 @@ pub fn resolve_installed_engine(
     for cand in &candidates {
         let p = Path::new(cand);
         if p.exists() {
-            let source = if locator_options.runtime_dir.as_ref().is_some_and(|rd| cand.starts_with(rd)) {
+            let source = if locator_options
+                .runtime_dir
+                .as_ref()
+                .is_some_and(|rd| cand.starts_with(rd))
+            {
                 "runtime-dir"
-            } else if locator_options.exec_dir.as_ref().is_some_and(|ed| cand.starts_with(ed)) {
+            } else if locator_options
+                .exec_dir
+                .as_ref()
+                .is_some_and(|ed| cand.starts_with(ed))
+            {
                 "sidecar"
-            } else if locator_options.package_dir.as_ref().is_some_and(|pd| cand.starts_with(pd)) {
+            } else if locator_options
+                .package_dir
+                .as_ref()
+                .is_some_and(|pd| cand.starts_with(pd))
+            {
                 "package-prebuild"
             } else {
                 "dev-build"
@@ -208,7 +243,11 @@ pub fn resolve_installed_engine(
             .join("senpi-desktop-engine")
             .join(&host)
             .join(ver)
-            .join(if platform == "win32" { "senpi-desktop-engine.exe" } else { "senpi-desktop-engine" });
+            .join(if platform == "win32" {
+                "senpi-desktop-engine.exe"
+            } else {
+                "senpi-desktop-engine"
+            });
         if cache_path.exists() {
             return InstalledEngine::Installed {
                 path: cache_path.to_string_lossy().to_string(),

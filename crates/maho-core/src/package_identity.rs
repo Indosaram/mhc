@@ -29,7 +29,10 @@ fn read_nearest_package(package_root: &Path) -> NearestPackage {
 /// Walks up from `start_dir` to the nearest package.json. `memo` records the answer for every directory
 /// walked, so many resources under one folder probe each ancestor once instead of once per resource
 /// (omo#11437: one walk to the filesystem root per installed skill on every session open).
-fn find_nearest_package(start_dir: &Path, memo: &mut HashMap<PathBuf, NearestPackage>) -> NearestPackage {
+fn find_nearest_package(
+    start_dir: &Path,
+    memo: &mut HashMap<PathBuf, NearestPackage>,
+) -> NearestPackage {
     let mut walked = Vec::new();
     let mut current_path = start_dir.to_path_buf();
     let nearest = loop {
@@ -55,7 +58,10 @@ pub fn find_nearest_package_identity(resource_path: &str) -> Option<PackageIdent
     identity_of(resource_path, &mut HashMap::new())
 }
 
-fn identity_of(resource_path: &str, memo: &mut HashMap<PathBuf, NearestPackage>) -> Option<PackageIdentity> {
+fn identity_of(
+    resource_path: &str,
+    memo: &mut HashMap<PathBuf, NearestPackage>,
+) -> Option<PackageIdentity> {
     if resource_path.starts_with('<') {
         return None;
     }
@@ -66,17 +72,24 @@ fn identity_of(resource_path: &str, memo: &mut HashMap<PathBuf, NearestPackage>)
     match std::fs::metadata(&start_dir) {
         Ok(metadata) if metadata.is_dir() => {}
         _ => {
-            start_dir = start_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/"));
+            start_dir = start_dir
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/"));
         }
     }
     let (root, name) = find_nearest_package(&start_dir, memo)?;
-    let canonical_root =
-        crate::paths::strip_verbatim_prefix(std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
+    let canonical_root = crate::paths::strip_verbatim_prefix(
+        std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()),
+    );
     let relative = normalized_resource_path
         .strip_prefix(&canonical_root)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| normalized_resource_path.to_string_lossy().into_owned());
-    Some(PackageIdentity { key: format!("{name}:{relative}"), package_name: name })
+    Some(PackageIdentity {
+        key: format!("{name}:{relative}"),
+        package_name: name,
+    })
 }
 
 /// First path per identity wins (CLI before settings before discovery); unpackaged paths pass through.
@@ -112,7 +125,8 @@ mod tests {
         std::fs::write(pkg.join("package.json"), r#"{"name":"@scope/pkg"}"#).expect("write");
         let resource = pkg.join("src/skills/a.md");
         std::fs::write(&resource, "x").expect("write");
-        let identity = find_nearest_package_identity(&resource.to_string_lossy()).expect("identity");
+        let identity =
+            find_nearest_package_identity(&resource.to_string_lossy()).expect("identity");
         assert_eq!(identity.package_name, "@scope/pkg");
         assert!(identity.key.starts_with("@scope/pkg:"));
         assert!(identity.key.replace('\\', "/").ends_with("src/skills/a.md"));
@@ -135,7 +149,8 @@ mod tests {
         let second = pkg.join("a/y.md").to_string_lossy().into_owned();
         std::fs::write(&first, "1").expect("write");
         std::fs::write(&second, "2").expect("write");
-        let deduped = dedupe_paths_by_package_identity(&[first.clone(), second.clone(), first.clone()]);
+        let deduped =
+            dedupe_paths_by_package_identity(&[first.clone(), second.clone(), first.clone()]);
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0], first);
     }

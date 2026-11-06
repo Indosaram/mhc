@@ -21,11 +21,9 @@ fn self_responsible_identity_names_the_engine() {
         bundle_id: None,
     };
     let error = error_for(Some(identity));
-    assert!(
-        error
-            .message
-            .ends_with("(TCC identity: responsible=/tmp/engine, pid=41)")
-    );
+    assert!(error
+        .message
+        .ends_with("(TCC identity: responsible=/tmp/engine, pid=41)"));
 }
 
 #[test]

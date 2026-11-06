@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::get_agent_dir;
-use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError};
 use super::state_file::acquire_state_file_lock;
+use crate::config::get_agent_dir;
+use crate::lockfile_policy::{CredentialStoreBusyError, FILE_STORAGE_LOCK_RETRY_BUDGET_MS};
 
 pub const CREDENTIAL_POOL_STATE_FILENAME: &str = "credential-pool-state.json";
 pub const DEFAULT_HALF_OPEN_LEASE_TTL_MS: u64 = 30_000;
@@ -70,7 +70,11 @@ pub struct CredentialPoolStateDocument {
 
 impl CredentialPoolStateDocument {
     pub fn fresh() -> Self {
-        Self { schema_version: 1, installation_key: random_hex(32), providers: BTreeMap::new() }
+        Self {
+            schema_version: 1,
+            installation_key: random_hex(32),
+            providers: BTreeMap::new(),
+        }
     }
 }
 
@@ -84,11 +88,17 @@ fn random_hex(bytes: usize) -> String {
 }
 
 pub fn credential_pool_state_path(agent_dir: &str) -> String {
-    Path::new(agent_dir).join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned()
+    Path::new(agent_dir)
+        .join(CREDENTIAL_POOL_STATE_FILENAME)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn is_hex_256(bit: &str) -> bool {
-    bit.len() == 64 && bit.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    bit.len() == 64
+        && bit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn is_valid(document: &CredentialPoolStateDocument) -> bool {
@@ -98,8 +108,16 @@ fn is_valid(document: &CredentialPoolStateDocument) -> bool {
     document.providers.values().all(|provider| {
         provider.lanes.values().all(|lane| {
             lane.slots.values().all(|slot| {
-                let revision_ok = slot.credential_revision.as_deref().map(is_hex_256).unwrap_or(true);
-                let lease_ok = slot.lease.as_ref().map(|lease| !lease.id.is_empty() && lease.id.len() <= 128).unwrap_or(true);
+                let revision_ok = slot
+                    .credential_revision
+                    .as_deref()
+                    .map(is_hex_256)
+                    .unwrap_or(true);
+                let lease_ok = slot
+                    .lease
+                    .as_ref()
+                    .map(|lease| !lease.id.is_empty() && lease.id.len() <= 128)
+                    .unwrap_or(true);
                 let blocked_ok = slot.blocked_until.map(|until| until > 0).unwrap_or(true);
                 revision_ok && lease_ok && blocked_ok
             })
@@ -124,8 +142,13 @@ pub enum SlotHealth {
 
 /// Deadlines are absolute, so a restart never re-enables a cooling credential early.
 pub fn slot_health(state: Option<&CredentialSlotState>, now: u64) -> SlotHealth {
-    let Some(state) = state else { return SlotHealth::Ready };
-    if matches!(state.block_reason, Some(BlockReason::AuthError) | Some(BlockReason::AccountDisabled)) {
+    let Some(state) = state else {
+        return SlotHealth::Ready;
+    };
+    if matches!(
+        state.block_reason,
+        Some(BlockReason::AuthError) | Some(BlockReason::AccountDisabled)
+    ) {
         return SlotHealth::Blocked;
     }
     if let Some(blocked_until) = state.blocked_until {
@@ -133,9 +156,10 @@ pub fn slot_health(state: Option<&CredentialSlotState>, now: u64) -> SlotHealth 
             return SlotHealth::Blocked;
         }
         if let Some(lease) = &state.lease
-            && lease.expires_at > now {
-                return SlotHealth::HalfOpen;
-            }
+            && lease.expires_at > now
+        {
+            return SlotHealth::HalfOpen;
+        }
     }
     SlotHealth::Ready
 }
@@ -173,7 +197,9 @@ pub struct CredentialSlotRepository {
 
 impl CredentialSlotRepository {
     pub fn new(path: &str) -> Self {
-        Self { path: path.to_owned() }
+        Self {
+            path: path.to_owned(),
+        }
     }
 
     pub fn default_path() -> Self {
@@ -223,9 +249,16 @@ impl CredentialSlotRepository {
     }
 
     /// HMAC over the installation key: the revision is useless outside this installation.
-    pub async fn env_credential_revision(&self, env_var_name: &str, env_value: &str) -> Result<String, String> {
+    pub async fn env_credential_revision(
+        &self,
+        env_var_name: &str,
+        env_value: &str,
+    ) -> Result<String, String> {
         let key = self.installation_key().await?;
-        Ok(hmac_sha256_hex(&key, &format!("{env_var_name}\u{0}{env_value}")))
+        Ok(hmac_sha256_hex(
+            &key,
+            &format!("{env_var_name}\u{0}{env_value}"),
+        ))
     }
 
     pub async fn stored_credential_revision(
@@ -246,7 +279,11 @@ impl CredentialSlotRepository {
         ))
     }
 
-    pub async fn list_slots(&self, provider_id: &str, lane_id: &str) -> Result<BTreeMap<String, CredentialSlotState>, String> {
+    pub async fn list_slots(
+        &self,
+        provider_id: &str,
+        lane_id: &str,
+    ) -> Result<BTreeMap<String, CredentialSlotState>, String> {
         self.with_document(|document| {
             let slots = document
                 .providers
@@ -265,11 +302,14 @@ impl CredentialSlotRepository {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error.to_string()),
         };
-        if !parse_document(&content).providers.contains_key(provider_id) { return Ok(false); }
+        if !parse_document(&content).providers.contains_key(provider_id) {
+            return Ok(false);
+        }
         self.with_document(|mut document| {
             let removed = document.providers.remove(provider_id).is_some();
             (removed, removed.then_some(document))
-        }).await
+        })
+        .await
     }
 
     /// Atomic read-modify-write for one slot's health; a None result removes the slot state entirely.
@@ -281,7 +321,10 @@ impl CredentialSlotRepository {
         mutate: impl FnOnce(Option<&CredentialSlotState>) -> Option<CredentialSlotState>,
     ) -> Result<Option<CredentialSlotState>, String> {
         self.with_document(|mut document| {
-            let provider = document.providers.entry(provider_id.to_owned()).or_default();
+            let provider = document
+                .providers
+                .entry(provider_id.to_owned())
+                .or_default();
             let lane = provider.lanes.entry(lane_id.to_owned()).or_default();
             let current = lane.slots.get(slot_id).cloned();
             let mutated = mutate(current.as_ref());
@@ -292,7 +335,11 @@ impl CredentialSlotRepository {
                 }
                 Some(mutated) => {
                     let mut next = mutated;
-                    next.state_version = current.as_ref().map(|state| state.state_version).unwrap_or(0) + 1;
+                    next.state_version = current
+                        .as_ref()
+                        .map(|state| state.state_version)
+                        .unwrap_or(0)
+                        + 1;
                     lane.slots.insert(slot_id.to_owned(), next.clone());
                     Some(next)
                 }
@@ -346,8 +393,15 @@ pub async fn acquire_half_open_lease(
     repository
         .mutate_slot_state(provider_id, lane_id, slot_id, |current| {
             let current = current?;
-            let expired = current.blocked_until.map(|until| until <= now).unwrap_or(false);
-            let lease_live = current.lease.as_ref().map(|lease| lease.expires_at > now).unwrap_or(false);
+            let expired = current
+                .blocked_until
+                .map(|until| until <= now)
+                .unwrap_or(false);
+            let lease_live = current
+                .lease
+                .as_ref()
+                .map(|lease| lease.expires_at > now)
+                .unwrap_or(false);
             if !expired || lease_live || current.block_reason == Some(BlockReason::AuthError) {
                 return Some(current.clone());
             }
@@ -356,7 +410,10 @@ pub async fn acquire_half_open_lease(
                 expires_at: now + lease_ttl_ms,
             };
             let mut updated = current.clone();
-            updated.lease = Some(SlotLease { id: next_lease.lease_id.clone(), expires_at: next_lease.expires_at });
+            updated.lease = Some(SlotLease {
+                id: next_lease.lease_id.clone(),
+                expires_at: next_lease.expires_at,
+            });
             lease = Some(next_lease);
             Some(updated)
         })
@@ -393,7 +450,11 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_repository_writes_a_document_with_an_installation_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join(CREDENTIAL_POOL_STATE_FILENAME)
+            .to_string_lossy()
+            .into_owned();
         let repository = CredentialSlotRepository::new(&path);
         let key = repository.installation_key().await.expect("key");
         assert!(is_hex_256(&key));
@@ -404,21 +465,37 @@ mod tests {
     #[tokio::test]
     async fn clear_provider_removes_every_lane_and_is_idempotent() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let path = directory.path().join("pool.json").to_string_lossy().into_owned();
+        let path = directory
+            .path()
+            .join("pool.json")
+            .to_string_lossy()
+            .into_owned();
         let mut document = CredentialPoolStateDocument::fresh();
-        document.providers.insert("provider".into(), CredentialPoolProvider::default());
+        document
+            .providers
+            .insert("provider".into(), CredentialPoolProvider::default());
         write_document(&path, &document).expect("write");
         let repository = CredentialSlotRepository::new(&path);
         assert!(repository.clear_provider("provider").await.expect("clear"));
-        assert!(!repository.clear_provider("provider").await.expect("clear again"));
-        assert!(parse_document(&std::fs::read_to_string(path).expect("read")).providers.is_empty());
+        assert!(
+            !repository
+                .clear_provider("provider")
+                .await
+                .expect("clear again")
+        );
+        assert!(
+            parse_document(&std::fs::read_to_string(path).expect("read"))
+                .providers
+                .is_empty()
+        );
     }
 
     #[test]
     fn an_unreadable_or_invalid_document_resets_to_a_fresh_one() {
         assert_eq!(parse_document("not json").schema_version, 1);
         assert_eq!(parse_document("{\"schemaVersion\":2}").schema_version, 1);
-        let document = parse_document("{\"schemaVersion\":1,\"installationKey\":\"short\",\"providers\":{}}");
+        let document =
+            parse_document("{\"schemaVersion\":1,\"installationKey\":\"short\",\"providers\":{}}");
         assert!(is_hex_256(&document.installation_key));
         assert_ne!(document.installation_key, "short");
     }
@@ -430,12 +507,22 @@ mod tests {
         assert_eq!(slot_health(Some(&blocked), 100), SlotHealth::Blocked);
         assert_eq!(slot_health(Some(&blocked), 300), SlotHealth::Ready);
         let mut half_open = blocked.clone();
-        half_open.lease = Some(SlotLease { id: "l".to_owned(), expires_at: 250 });
+        half_open.lease = Some(SlotLease {
+            id: "l".to_owned(),
+            expires_at: 250,
+        });
         assert_eq!(slot_health(Some(&half_open), 240), SlotHealth::HalfOpen);
         assert_eq!(slot_health(Some(&half_open), 300), SlotHealth::Ready);
-        let permanent = CredentialSlotState { block_reason: Some(BlockReason::AuthError), blocked_until: Some(1), ..blocked.clone() };
+        let permanent = CredentialSlotState {
+            block_reason: Some(BlockReason::AuthError),
+            blocked_until: Some(1),
+            ..blocked.clone()
+        };
         assert_eq!(slot_health(Some(&permanent), 10_000), SlotHealth::Blocked);
-        let disabled = CredentialSlotState { block_reason: Some(BlockReason::AccountDisabled), ..blocked };
+        let disabled = CredentialSlotState {
+            block_reason: Some(BlockReason::AccountDisabled),
+            ..blocked
+        };
         assert_eq!(slot_health(Some(&disabled), 10_000), SlotHealth::Blocked);
     }
 
@@ -450,27 +537,77 @@ mod tests {
     #[tokio::test]
     async fn env_and_stored_revisions_are_installation_local_and_material_bound() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join(CREDENTIAL_POOL_STATE_FILENAME)
+            .to_string_lossy()
+            .into_owned();
         let repository = CredentialSlotRepository::new(&path);
-        let first = repository.env_credential_revision("ANTHROPIC_API_KEY", "secret").await.expect("revision");
+        let first = repository
+            .env_credential_revision("ANTHROPIC_API_KEY", "secret")
+            .await
+            .expect("revision");
         assert!(is_hex_256(&first));
-        assert_eq!(repository.env_credential_revision("ANTHROPIC_API_KEY", "secret").await.expect("revision"), first);
-        assert_ne!(repository.env_credential_revision("ANTHROPIC_API_KEY", "other").await.expect("revision"), first);
-        assert_ne!(repository.env_credential_revision("OTHER_KEY", "secret").await.expect("revision"), first);
+        assert_eq!(
+            repository
+                .env_credential_revision("ANTHROPIC_API_KEY", "secret")
+                .await
+                .expect("revision"),
+            first
+        );
+        assert_ne!(
+            repository
+                .env_credential_revision("ANTHROPIC_API_KEY", "other")
+                .await
+                .expect("revision"),
+            first
+        );
+        assert_ne!(
+            repository
+                .env_credential_revision("OTHER_KEY", "secret")
+                .await
+                .expect("revision"),
+            first
+        );
 
-        let material = CredentialMaterial { key: Some("k".to_owned()), ..CredentialMaterial::default() };
-        let stored = repository.stored_credential_revision("anthropic", "login-1", &material).await.expect("revision");
+        let material = CredentialMaterial {
+            key: Some("k".to_owned()),
+            ..CredentialMaterial::default()
+        };
+        let stored = repository
+            .stored_credential_revision("anthropic", "login-1", &material)
+            .await
+            .expect("revision");
         assert!(is_hex_256(&stored));
-        let rotated = CredentialMaterial { key: Some("k2".to_owned()), ..CredentialMaterial::default() };
-        assert_ne!(repository.stored_credential_revision("anthropic", "login-1", &rotated).await.expect("revision"), stored);
+        let rotated = CredentialMaterial {
+            key: Some("k2".to_owned()),
+            ..CredentialMaterial::default()
+        };
+        assert_ne!(
+            repository
+                .stored_credential_revision("anthropic", "login-1", &rotated)
+                .await
+                .expect("revision"),
+            stored
+        );
     }
 
     #[tokio::test]
     async fn slot_state_is_read_modify_written_with_incrementing_versions() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join(CREDENTIAL_POOL_STATE_FILENAME)
+            .to_string_lossy()
+            .into_owned();
         let repository = CredentialSlotRepository::new(&path);
-        assert!(repository.list_slots("anthropic", "primary").await.expect("list").is_empty());
+        assert!(
+            repository
+                .list_slots("anthropic", "primary")
+                .await
+                .expect("list")
+                .is_empty()
+        );
 
         let written = repository
             .mutate_slot_state("anthropic", "primary", "login-1", |current| {
@@ -495,66 +632,127 @@ mod tests {
         assert_eq!(updated.state_version, 2);
         assert_eq!(updated.blocked_until, Some(900));
 
-        let removed = repository.mutate_slot_state("anthropic", "primary", "login-1", |_| None).await.expect("mutate");
+        let removed = repository
+            .mutate_slot_state("anthropic", "primary", "login-1", |_| None)
+            .await
+            .expect("mutate");
         assert!(removed.is_none());
-        assert!(repository.list_slots("anthropic", "primary").await.expect("list").is_empty());
+        assert!(
+            repository
+                .list_slots("anthropic", "primary")
+                .await
+                .expect("list")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn exactly_one_caller_wins_the_half_open_lease() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join(CREDENTIAL_POOL_STATE_FILENAME)
+            .to_string_lossy()
+            .into_owned();
         let repository = CredentialSlotRepository::new(&path);
         repository
-            .mutate_slot_state("anthropic", "primary", "login-1", |_| Some(slot_state(Some(100), Some(BlockReason::RateLimit))))
+            .mutate_slot_state("anthropic", "primary", "login-1", |_| {
+                Some(slot_state(Some(100), Some(BlockReason::RateLimit)))
+            })
             .await
             .expect("mutate");
 
-        let first = acquire_half_open_lease(&repository, "anthropic", "primary", "login-1", 200, DEFAULT_HALF_OPEN_LEASE_TTL_MS)
-            .await
-            .expect("lease");
+        let first = acquire_half_open_lease(
+            &repository,
+            "anthropic",
+            "primary",
+            "login-1",
+            200,
+            DEFAULT_HALF_OPEN_LEASE_TTL_MS,
+        )
+        .await
+        .expect("lease");
         assert!(first.is_some());
-        let second = acquire_half_open_lease(&repository, "anthropic", "primary", "login-1", 200, DEFAULT_HALF_OPEN_LEASE_TTL_MS)
-            .await
-            .expect("lease");
+        let second = acquire_half_open_lease(
+            &repository,
+            "anthropic",
+            "primary",
+            "login-1",
+            200,
+            DEFAULT_HALF_OPEN_LEASE_TTL_MS,
+        )
+        .await
+        .expect("lease");
         assert!(second.is_none());
-        let after_lease = acquire_half_open_lease(&repository, "anthropic", "primary", "login-1", 200_000, DEFAULT_HALF_OPEN_LEASE_TTL_MS)
-            .await
-            .expect("lease");
+        let after_lease = acquire_half_open_lease(
+            &repository,
+            "anthropic",
+            "primary",
+            "login-1",
+            200_000,
+            DEFAULT_HALF_OPEN_LEASE_TTL_MS,
+        )
+        .await
+        .expect("lease");
         assert!(after_lease.is_some());
     }
 
     #[tokio::test]
     async fn an_auth_error_block_never_goes_half_open() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(CREDENTIAL_POOL_STATE_FILENAME).to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join(CREDENTIAL_POOL_STATE_FILENAME)
+            .to_string_lossy()
+            .into_owned();
         let repository = CredentialSlotRepository::new(&path);
         repository
-            .mutate_slot_state("anthropic", "primary", "login-1", |_| Some(slot_state(Some(100), Some(BlockReason::AuthError))))
+            .mutate_slot_state("anthropic", "primary", "login-1", |_| {
+                Some(slot_state(Some(100), Some(BlockReason::AuthError)))
+            })
             .await
             .expect("mutate");
-        assert!(acquire_half_open_lease(&repository, "anthropic", "primary", "login-1", 200, 30_000).await.expect("lease").is_none());
+        assert!(
+            acquire_half_open_lease(&repository, "anthropic", "primary", "login-1", 200, 30_000)
+                .await
+                .expect("lease")
+                .is_none()
+        );
     }
 
     #[test]
     fn the_document_serializes_with_camel_case_keys() {
         let mut document = CredentialPoolStateDocument::fresh();
         let mut blocked = slot_state(Some(5), Some(BlockReason::RateLimit));
-        blocked.lease = Some(SlotLease { id: "l".to_owned(), expires_at: 9 });
+        blocked.lease = Some(SlotLease {
+            id: "l".to_owned(),
+            expires_at: 9,
+        });
         document.providers.insert(
             "anthropic".to_owned(),
             CredentialPoolProvider {
                 lanes: BTreeMap::from([(
                     "primary".to_owned(),
-                    CredentialPoolLane { slots: BTreeMap::from([("login-1".to_owned(), blocked)]) },
+                    CredentialPoolLane {
+                        slots: BTreeMap::from([("login-1".to_owned(), blocked)]),
+                    },
                 )]),
             },
         );
         let value = document_to_value(&document);
         assert_eq!(value["schemaVersion"], 1);
-        assert_eq!(value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["blockedUntil"], 5);
-        assert_eq!(value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["blockReason"], "rate_limit");
-        assert_eq!(value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["lease"]["expiresAt"], 9);
+        assert_eq!(
+            value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["blockedUntil"],
+            5
+        );
+        assert_eq!(
+            value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["blockReason"],
+            "rate_limit"
+        );
+        assert_eq!(
+            value["providers"]["anthropic"]["lanes"]["primary"]["slots"]["login-1"]["lease"]["expiresAt"],
+            9
+        );
         assert!(serialize_document(&document).ends_with('\n'));
         assert_eq!(parse_document(&serialize_document(&document)), document);
     }

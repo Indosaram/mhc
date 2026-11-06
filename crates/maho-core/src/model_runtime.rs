@@ -117,15 +117,31 @@ impl CredentialStore for AuthStorageCredentialStore {
             || raw
                 .get("accounts")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|accounts| accounts.iter().any(|account| account.get("key").is_some_and(serde_json::Value::is_object)))
+                .is_some_and(|accounts| {
+                    accounts
+                        .iter()
+                        .any(|account| account.get("key").is_some_and(serde_json::Value::is_object))
+                })
         {
-            let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
-            let mut resolved = crate::auth_credential_values::resolve_stored_credential(raw, provider_id, auth_path.as_deref())
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let auth_path = self
+                .auth_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned());
+            let mut resolved = crate::auth_credential_values::resolve_stored_credential(
+                raw,
+                provider_id,
+                auth_path.as_deref(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             // Pooled reference keys resolve only through `read_slot`; the flat read never carries them.
-            if let Some(accounts) = resolved.get_mut("accounts").and_then(serde_json::Value::as_array_mut) {
-                accounts.retain(|account| !account.get("key").is_some_and(serde_json::Value::is_object));
+            if let Some(accounts) = resolved
+                .get_mut("accounts")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                accounts.retain(|account| {
+                    !account.get("key").is_some_and(serde_json::Value::is_object)
+                });
             }
             check_abort(&options)?;
             return Self::decode(resolved).map(Some);
@@ -172,12 +188,26 @@ impl CredentialStore for AuthStorageCredentialStore {
         }
         let raw = self.raw(provider_id);
         check_abort(&options)?;
-        let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        let auth_path = self
+            .auth_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
         let flat_path = auth_path.clone();
         let provider = provider_id.to_owned();
-        crate::auth_credential_values::resolve_stored_slot(raw, provider_id, slot_name, auth_path.as_deref(), |flat| async move {
-            crate::auth_credential_values::resolve_stored_credential(flat, &provider, flat_path.as_deref()).await
-        })
+        crate::auth_credential_values::resolve_stored_slot(
+            raw,
+            provider_id,
+            slot_name,
+            auth_path.as_deref(),
+            |flat| async move {
+                crate::auth_credential_values::resolve_stored_credential(
+                    flat,
+                    &provider,
+                    flat_path.as_deref(),
+                )
+                .await
+            },
+        )
         .await
         .map_err(|error| anyhow::anyhow!(error))
     }
@@ -239,14 +269,22 @@ impl CredentialStore for AuthStorageCredentialStore {
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         check_abort(&options)?;
-        let stored = self.credentials.modify_or_delete_credential(
-            provider_id,
-            move |current: Option<serde_json::Value>| async move {
-                let current = current.map(Self::decode).transpose().map_err(|error| error.to_string())?;
-                let next = f(current).await.map_err(|error| error.to_string())?;
-                next.map(|next| serde_json::to_value(&next).map_err(|error| error.to_string())).transpose()
-            },
-        ).await.map_err(|error| anyhow::anyhow!(error))?;
+        let stored = self
+            .credentials
+            .modify_or_delete_credential(
+                provider_id,
+                move |current: Option<serde_json::Value>| async move {
+                    let current = current
+                        .map(Self::decode)
+                        .transpose()
+                        .map_err(|error| error.to_string())?;
+                    let next = f(current).await.map_err(|error| error.to_string())?;
+                    next.map(|next| serde_json::to_value(&next).map_err(|error| error.to_string()))
+                        .transpose()
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
         stored.map(Self::decode).transpose()
     }
 
@@ -298,22 +336,32 @@ fn compose_provider_auth(
         .or_else(|| builtin_oauth(id));
     // Providers registered without declared auth keep the env-var lookup senpi's builtin
     // factories declare through `envApiKeyAuth`.
-    let inherited = base.and_then(|auth| auth.api_key.clone()).or_else(|| {
-        maho_ai::env_api_keys::get_api_key_env_vars(id).map(|vars| {
-            Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars))
-                as Arc<dyn maho_ai::auth::types::ApiKeyAuth>
+    let inherited = base
+        .and_then(|auth| auth.api_key.clone())
+        .or_else(|| {
+            maho_ai::env_api_keys::get_api_key_env_vars(id).map(|vars| {
+                Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars))
+                    as Arc<dyn maho_ai::auth::types::ApiKeyAuth>
+            })
         })
-    }).or_else(|| {
-        let extension_config = extension.as_ref().map(|extension| &extension.config);
-        let has_key = crate::provider_api_key_auth::configured_api_key(config.as_ref(), extension_config).is_some();
-        let has_headers = crate::provider_header_auth::header_auth_resolution_source(
-            config.as_ref().and_then(|config| config.headers.as_ref()),
-            extension_config.and_then(|config| config.headers.as_ref()),
-        ).is_some();
-        if has_key || has_headers { None } else {
-            extension.as_ref().and_then(|extension| extension.ambient_auth.clone())
-        }
-    });
+        .or_else(|| {
+            let extension_config = extension.as_ref().map(|extension| &extension.config);
+            let has_key =
+                crate::provider_api_key_auth::configured_api_key(config.as_ref(), extension_config)
+                    .is_some();
+            let has_headers = crate::provider_header_auth::header_auth_resolution_source(
+                config.as_ref().and_then(|config| config.headers.as_ref()),
+                extension_config.and_then(|config| config.headers.as_ref()),
+            )
+            .is_some();
+            if has_key || has_headers {
+                None
+            } else {
+                extension
+                    .as_ref()
+                    .and_then(|extension| extension.ambient_auth.clone())
+            }
+        });
     let api_key = crate::provider_api_key_auth::compose_api_key_auth(
         id,
         inherited,
@@ -335,7 +383,10 @@ impl RuntimeAuth {
     /// senpi `StoredProviderEnvReader` (senpi#4324): ambient auth reads another provider's stored api-key `env`
     /// (routing metadata such as `GOOGLE_CLOUD_PROJECT`, never keys) through the auth context.
     fn auth_context(&self) -> maho_ai::auth::context::StoredEnvAuthContext {
-        maho_ai::auth::context::StoredEnvAuthContext::new(Arc::new(DefaultAuthContext), self.store.clone())
+        maho_ai::auth::context::StoredEnvAuthContext::new(
+            Arc::new(DefaultAuthContext),
+            self.store.clone(),
+        )
     }
     fn provider_auth(&self, provider: &dyn Provider) -> ProviderAuth {
         compose_provider_auth(&self.config, &self.extensions, provider)
@@ -701,27 +752,25 @@ impl ModelRuntime {
         let catalog_base_url = options.catalog_base_url.clone();
         let providers = match options.providers {
             Some(providers) => providers,
-            None => {
-                maho_ai::providers::all::builtin_providers()?
-                    .into_iter()
-                    .map(|provider| {
-                        if provider.supports_refresh()
-                            || !crate::remote_catalog_provider::remote_catalog_serves_provider(
-                                provider.id(),
-                                catalog_base_url.as_deref(),
-                            )
-                        {
-                            provider
-                        } else {
-                            crate::remote_catalog_provider::with_remote_catalog(
-                                provider,
-                                catalog_base_url.as_deref(),
-                                generated_at,
-                            )
-                        }
-                    })
-                    .collect()
-            }
+            None => maho_ai::providers::all::builtin_providers()?
+                .into_iter()
+                .map(|provider| {
+                    if provider.supports_refresh()
+                        || !crate::remote_catalog_provider::remote_catalog_serves_provider(
+                            provider.id(),
+                            catalog_base_url.as_deref(),
+                        )
+                    {
+                        provider
+                    } else {
+                        crate::remote_catalog_provider::with_remote_catalog(
+                            provider,
+                            catalog_base_url.as_deref(),
+                            generated_at,
+                        )
+                    }
+                })
+                .collect(),
         };
         let builtins: IndexMap<String, Arc<dyn Provider>> = providers
             .into_iter()
@@ -973,7 +1022,9 @@ impl ModelRuntime {
     fn schedule_busy_availability_retry(&self) {
         let delay = {
             let mut state = self.availability_state();
-            if state.busy_retry_pending || state.busy_retries >= 5 { return; }
+            if state.busy_retry_pending || state.busy_retries >= 5 {
+                return;
+            }
             let delay = 250_u64 << state.busy_retries;
             state.busy_retries += 1;
             state.busy_retry_pending = true;
@@ -987,32 +1038,37 @@ impl ModelRuntime {
             let _ = runtime.queue_availability_refresh(None).await;
         });
     }
-    fn queue_availability_refresh(&self, signal: Option<AbortSignal>) -> BoxFuture<'_, Result<(), ModelsError>> {
+    fn queue_availability_refresh(
+        &self,
+        signal: Option<AbortSignal>,
+    ) -> BoxFuture<'_, Result<(), ModelsError>> {
         Box::pin(async move {
-
-        let (seq, error_seq) = {
-            let mut guard = self.availability_state();
-            guard.refresh_seq += 1;
-            for provider_seq in guard.provider_seq.values_mut() {
-                *provider_seq += 1;
+            let (seq, error_seq) = {
+                let mut guard = self.availability_state();
+                guard.refresh_seq += 1;
+                for provider_seq in guard.provider_seq.values_mut() {
+                    *provider_seq += 1;
+                }
+                guard.error_seq += 1;
+                (guard.refresh_seq, guard.error_seq)
+            };
+            let signal = operation_signal(signal);
+            let result = self
+                .run_availability_refresh(seq, error_seq, signal.clone())
+                .await;
+            if let Err(error) = &result {
+                let mut guard = self.availability_state();
+                if error_seq == guard.error_seq && !signal.aborted() {
+                    guard.error = Some(error.clone());
+                }
             }
-            guard.error_seq += 1;
-            (guard.refresh_seq, guard.error_seq)
-        };
-        let signal = operation_signal(signal);
-        let result = self
-            .run_availability_refresh(seq, error_seq, signal.clone())
-            .await;
-        if let Err(error) = &result {
-            let mut guard = self.availability_state();
-            if error_seq == guard.error_seq && !signal.aborted() {
-                guard.error = Some(error.clone());
+            if result
+                .as_ref()
+                .is_err_and(|error| error.message.to_ascii_lowercase().contains("busy"))
+            {
+                self.schedule_busy_availability_retry();
             }
-        }
-        if result.as_ref().is_err_and(|error| error.message.to_ascii_lowercase().contains("busy")) {
-            self.schedule_busy_availability_retry();
-        }
-        result
+            result
         })
     }
     async fn refresh_provider_availability(
@@ -1044,7 +1100,9 @@ impl ModelRuntime {
                     }),
                 )
                 .await?;
-            signal.throw_if_aborted().map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
+            signal
+                .throw_if_aborted()
+                .map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
             let credential = self.credentials.get(provider_id);
             let all = self.models.get_models(None);
             let mut guard = self.availability_state();
@@ -1149,10 +1207,7 @@ impl ModelRuntime {
     /// senpi `getAvailable`: a provider-scoped read goes straight to the registry; a full read
     /// runs one availability pass and returns the refreshed snapshot. A failed pass is recorded
     /// for `get_error` and rethrown without retrying the registry or returning stale models.
-    pub async fn get_available(
-        &self,
-        provider: Option<&str>,
-    ) -> Result<Vec<Model>, ModelsError> {
+    pub async fn get_available(&self, provider: Option<&str>) -> Result<Vec<Model>, ModelsError> {
         if let Some(provider) = provider {
             let error_seq = {
                 let mut guard = self.availability_state();
@@ -1270,7 +1325,10 @@ impl ModelRuntime {
     }
     /// Un-gated `get_auth`, only for CLI auth diagnostics (`mhc auth check`/`print`) so users can
     /// inspect credentials before consenting. Never use on a request path (SD-4).
-    pub async fn get_auth_unchecked(&self, id: &str) -> Result<Option<AuthResolution>, ModelsError> {
+    pub async fn get_auth_unchecked(
+        &self,
+        id: &str,
+    ) -> Result<Option<AuthResolution>, ModelsError> {
         self.models
             .get_auth(id, &AuthResolutionOverrides::default())
             .await
@@ -1718,9 +1776,7 @@ impl ModelRuntime {
                 if let Err(error) = outcome
                     && !signal.as_ref().is_some_and(AbortSignal::aborted)
                 {
-                    result
-                        .errors
-                        .insert(provider_id, error);
+                    result.errors.insert(provider_id, error);
                 }
             }
         } else {
@@ -1807,23 +1863,48 @@ impl ModelRuntime {
         Ok(())
     }
     /// senpi `getProviderOrigin` (senpi#4328).
-    pub fn get_provider_origin(&self, provider_id: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+    pub fn get_provider_origin(
+        &self,
+        provider_id: &str,
+    ) -> Option<crate::provider_origin::ProviderOrigin> {
         let id = normalize_provider_id(provider_id);
-        let paths = self.provider_extension_paths.read().unwrap_or_else(|p| p.into_inner());
-        let has_models_json = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(&id).is_some();
-        let models_path = self.models_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        let paths = self
+            .provider_extension_paths
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let has_models_json = self
+            .config
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_provider(&id)
+            .is_some();
+        let models_path = self
+            .models_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
         crate::provider_origin::provider_origin_of(crate::provider_origin::ProviderOriginFacts {
             builtin: self.builtins.contains_key(&id),
             native_extension: self.native.contains_key(&id),
-            extension: self.extensions.read().unwrap_or_else(|p| p.into_inner()).contains_key(&id),
+            extension: self
+                .extensions
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(&id),
             extension_path: paths.get(&id).map(String::as_str),
-            models_json_path: if has_models_json { models_path.as_deref() } else { None },
+            models_json_path: if has_models_json {
+                models_path.as_deref()
+            } else {
+                None
+            },
         })
     }
     /// senpi `noteExtensionPath`: `ProviderRegistrationOptions.extensionPath` of the latest registration.
     pub fn note_extension_path(&self, provider_id: &str, extension_path: Option<&str>) {
         let id = normalize_provider_id(provider_id);
-        let mut paths = self.provider_extension_paths.write().unwrap_or_else(|p| p.into_inner());
+        let mut paths = self
+            .provider_extension_paths
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         match extension_path {
             Some(path) => {
                 paths.insert(id, path.to_owned());
@@ -1957,14 +2038,25 @@ impl ModelRuntime {
     /// credential (an explicit or runtime key, `credentials.rotation: false`) and the provider can
     /// hold more than one slot.
     fn owns_account_selection(&self, provider_id: &str) -> bool {
-        self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(provider_id).is_some_and(|provider| provider.owns_account_selection)
+        self.extensions
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(provider_id)
+            .is_some_and(|provider| provider.owns_account_selection)
     }
     async fn retire_outer_slot_state(&self, provider_id: &str) -> Result<(), String> {
-        if !self.owns_account_selection(provider_id) { return Ok(()); }
+        if !self.owns_account_selection(provider_id) {
+            return Ok(());
+        }
         let mut retired = self.outer_slot_state_retired.lock().await;
-        if retired.contains(provider_id) { return Ok(()); }
+        if retired.contains(provider_id) {
+            return Ok(());
+        }
         match self.pool_repository.clear_provider(provider_id).await {
-            Ok(_) => { retired.insert(provider_id.into()); Ok(()) },
+            Ok(_) => {
+                retired.insert(provider_id.into());
+                Ok(())
+            }
             Err(error) if error.to_ascii_lowercase().contains("busy") => Ok(()),
             Err(error) => Err(error),
         }
@@ -1974,7 +2066,10 @@ impl ModelRuntime {
         model: &Model,
         request: &maho_ai::types::ProviderRequestOptions,
     ) -> Option<RotationContext> {
-        if self.owns_account_selection(&model.provider) || request.api_key.is_some() || self.credentials.has_runtime_api_key(&model.provider) {
+        if self.owns_account_selection(&model.provider)
+            || request.api_key.is_some()
+            || self.credentials.has_runtime_api_key(&model.provider)
+        {
             return None;
         }
         let policy = self
@@ -2065,7 +2160,8 @@ impl ModelRuntime {
     /// Consent gate for every request path (`stream`, `stream_simple`, `complete`): returns a
     /// terminal error stream before any rotation, refresh, header or network work starts.
     fn consent_error_stream(&self, model: &Model) -> Option<AssistantMessageEventStream> {
-        let message = crate::provider_consent::consent_failure(&self.credentials, &model.provider, None)?;
+        let message =
+            crate::provider_consent::consent_failure(&self.credentials, &model.provider, None)?;
         let mut error = maho_ai::utils::lazy::setup_error_message(model, &message);
         error.provider_diagnostic = Some(maho_ai::types::ProviderDiagnostic {
             category: maho_ai::types::ProviderDiagnosticCategory::Unknown,
@@ -2278,13 +2374,15 @@ impl ModelRuntime {
         let stream = AssistantMessageEventStream::assistant();
         let (source_tx, source_rx) = tokio::sync::oneshot::channel::<AssistantMessageEventStream>();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            let _ = cancel_tx.send(());
-            if let Ok(source) = source_rx.await {
-                source.cancel().await?;
-            }
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                let _ = cancel_tx.send(());
+                if let Ok(source) = source_rx.await {
+                    source.cancel().await?;
+                }
+                Ok(())
+            })
+        }));
         let target = stream.clone();
         let model = model.clone();
         let task = tokio::spawn(async move {
@@ -2559,39 +2657,89 @@ mod tests {
     #[tokio::test]
     async fn credential_store_conditional_delete_serializes_with_login() {
         // Given deletion suspended inside the shared account mutation transaction.
-        let credentials = Arc::new(crate::auth_storage::AuthStorage::in_memory(serde_json::Map::new()));
-        credentials.set("p", Some(serde_json::json!({"type":"api_key","key":"old"}))).expect("seed");
-        let store = AuthStorageCredentialStore { credentials, auth_path: None };
+        let credentials = Arc::new(crate::auth_storage::AuthStorage::in_memory(
+            serde_json::Map::new(),
+        ));
+        credentials
+            .set("p", Some(serde_json::json!({"type":"api_key","key":"old"})))
+            .expect("seed");
+        let store = AuthStorageCredentialStore {
+            credentials,
+            auth_path: None,
+        };
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let deletion = store.modify_or_delete("p", Box::new(move |current| Box::pin(async move {
-            assert_eq!(current.expect("old credential").as_api_key().and_then(|key| key.key.as_deref()), Some("old"));
-            entered_tx.send(()).expect("entry subscriber");
-            release_rx.await.expect("release");
-            Ok(None)
-        })), None);
+        let deletion = store.modify_or_delete(
+            "p",
+            Box::new(move |current| {
+                Box::pin(async move {
+                    assert_eq!(
+                        current
+                            .expect("old credential")
+                            .as_api_key()
+                            .and_then(|key| key.key.as_deref()),
+                        Some("old")
+                    );
+                    entered_tx.send(()).expect("entry subscriber");
+                    release_rx.await.expect("release");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
         tokio::pin!(deletion);
         assert!(futures::poll!(deletion.as_mut()).is_pending());
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("entry deadline").expect("entered");
-        let login = store.modify("p", Box::new(|current| Box::pin(async move {
-            assert!(current.is_none());
-            Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("new".into()), ..Default::default() })))
-        })), None);
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .expect("entry deadline")
+            .expect("entered");
+        let login = store.modify(
+            "p",
+            Box::new(|current| {
+                Box::pin(async move {
+                    assert!(current.is_none());
+                    Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                        key: Some("new".into()),
+                        ..Default::default()
+                    })))
+                })
+            }),
+            None,
+        );
         tokio::pin!(login);
         assert!(futures::poll!(login.as_mut()).is_pending());
         // When deletion commits before the queued login.
         release_tx.send(()).expect("release subscriber");
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), deletion).await.expect("delete deadline").expect("delete").is_none());
-        tokio::time::timeout(std::time::Duration::from_secs(5), login).await.expect("login deadline").expect("login");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), deletion)
+                .await
+                .expect("delete deadline")
+                .expect("delete")
+                .is_none()
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), login)
+            .await
+            .expect("login deadline")
+            .expect("login");
         // Then no trailing deletion removes the newly committed login.
-        assert_eq!(store.read("p", None).await.expect("read").expect("new credential").as_api_key().and_then(|key| key.key.as_deref()), Some("new"));
+        assert_eq!(
+            store
+                .read("p", None)
+                .await
+                .expect("read")
+                .expect("new credential")
+                .as_api_key()
+                .and_then(|key| key.key.as_deref()),
+            Some("new")
+        );
     }
 
     #[tokio::test]
     async fn cancellation_drops_pending_request_setup_before_acknowledging() {
         let model = maho_ai::providers::faux::faux_provider(Default::default())
             .expect("faux provider")
-            .get_model(None).expect("model");
+            .get_model(None)
+            .expect("model");
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
         let stream = ModelRuntime::lazy_request(&model, async move {
@@ -2599,9 +2747,20 @@ mod tests {
             started_tx.send(()).expect("setup subscriber");
             std::future::pending().await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx).await.expect("bounded setup").expect("setup started");
-        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel()).await.expect("bounded cancellation").expect("cancel setup");
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), dropped_rx).await.expect("bounded destruction").is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("bounded setup")
+            .expect("setup started");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("bounded cancellation")
+            .expect("cancel setup");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), dropped_rx)
+                .await
+                .expect("bounded destruction")
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2610,18 +2769,31 @@ mod tests {
         let (_, permit) = semaphores.bracket("p", None, || ()).await.expect("permit");
         let source = AssistantMessageEventStream::assistant();
         let (released_tx, released_rx) = tokio::sync::oneshot::channel();
-        source.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            released_tx.send(()).expect("cleanup subscriber");
-            Ok(())
-        })));
+        source.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                released_tx.send(()).expect("cleanup subscriber");
+                Ok(())
+            })
+        }));
         let message = maho_ai::providers::faux::faux_assistant_message("done", Default::default());
         source.end(Some(message));
         let stream = hold_permit(source, permit);
         while let Ok(Some(_)) = stream.next().await {}
-        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel()).await.expect("bounded cancellation").expect("terminal cleanup");
-        tokio::time::timeout(std::time::Duration::from_secs(5), released_rx).await.expect("bounded cleanup").expect("source cleanup acknowledged");
-        let (_, next) = tokio::time::timeout(std::time::Duration::from_secs(5), semaphores.bracket("p", None, || ()))
-            .await.expect("permit released").expect("next permit");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("bounded cancellation")
+            .expect("terminal cleanup");
+        tokio::time::timeout(std::time::Duration::from_secs(5), released_rx)
+            .await
+            .expect("bounded cleanup")
+            .expect("source cleanup acknowledged");
+        let (_, next) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            semaphores.bracket("p", None, || ()),
+        )
+        .await
+        .expect("permit released")
+        .expect("next permit");
         assert!(next.is_some());
     }
 
@@ -2631,8 +2803,15 @@ mod tests {
         let credentials = Arc::new(crate::auth_storage::AuthStorage::in_memory(
             serde_json::Map::from_iter([("p".to_owned(), raw.clone())]),
         ));
-        let store = AuthStorageCredentialStore { credentials, auth_path: None };
-        let credential = store.read("p", None).await.expect("read").expect("credential");
+        let store = AuthStorageCredentialStore {
+            credentials,
+            auth_path: None,
+        };
+        let credential = store
+            .read("p", None)
+            .await
+            .expect("read")
+            .expect("credential");
         let stored = serde_json::to_value(credential).expect("stored credential");
         assert_eq!(stored["accounts"], raw["accounts"]);
         assert_eq!(stored["pinned"], raw["pinned"]);
@@ -2648,7 +2827,8 @@ mod tests {
             models_path: Some(path),
             providers: Some(Vec::new()),
             ..Default::default()
-        }).expect("model runtime");
+        })
+        .expect("model runtime");
         (dir, runtime)
     }
     #[test]
@@ -2767,7 +2947,8 @@ mod tests {
                 ..Default::default()
             }]),
             ..Default::default()
-        }).expect("faux provider");
+        })
+        .expect("faux provider");
         let invoke =
             r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#;
         faux.core.set_responses(vec![
@@ -2816,8 +2997,14 @@ mod tests {
             provider: Some("faux-limit-capture".into()),
             response_headers: Some(std::collections::BTreeMap::from([
                 ("x-codex-primary-used-percent".to_owned(), "99".to_owned()),
-                ("x-codex-primary-window-minutes".to_owned(), "10080".to_owned()),
-                ("x-codex-primary-reset-at".to_owned(), "1792555751".to_owned()),
+                (
+                    "x-codex-primary-window-minutes".to_owned(),
+                    "10080".to_owned(),
+                ),
+                (
+                    "x-codex-primary-reset-at".to_owned(),
+                    "1792555751".to_owned(),
+                ),
             ])),
             ..Default::default()
         })
@@ -2852,7 +3039,10 @@ mod tests {
         assert_eq!(recorded.account, "default");
         assert_eq!(recorded.windows.len(), 1);
         assert_eq!(
-            (recorded.windows[0].id.as_str(), recorded.windows[0].used_percent),
+            (
+                recorded.windows[0].id.as_str(),
+                recorded.windows[0].used_percent
+            ),
             ("codex:primary", 99.0)
         );
     }
@@ -2893,7 +3083,8 @@ mod tests {
         ModelRuntime::create_sync(CreateModelRuntimeOptions {
             providers: Some(vec![provider]),
             ..Default::default()
-        }).expect("model runtime")
+        })
+        .expect("model runtime")
     }
 
     #[tokio::test]
@@ -3378,12 +3569,14 @@ mod tests {
                 keys.clone(),
             ))),
             images: IndexMap::new(),
-        }).expect("valid pool provider");
+        })
+        .expect("valid pool provider");
         let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
             providers: Some(vec![provider]),
             agent_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
-        }).expect("model runtime");
+        })
+        .expect("model runtime");
         // Automatic rotation across pooled accounts is gated behind recorded consent.
         std::fs::write(
             dir.path().join("settings.json"),
@@ -3415,11 +3608,21 @@ mod tests {
     /// Counts provider calls so a gated request can prove nothing was contacted.
     struct CountingStreams(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl maho_ai::types::ProviderStreams for CountingStreams {
-        fn stream(&self, model: &Model, _: &Context, _: Option<StreamOptions>) -> AssistantMessageEventStream {
+        fn stream(
+            &self,
+            model: &Model,
+            _: &Context,
+            _: Option<StreamOptions>,
+        ) -> AssistantMessageEventStream {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             maho_ai::utils::lazy::error_stream(model, "provider was contacted")
         }
-        fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+        fn stream_simple(
+            &self,
+            model: &Model,
+            context: &Context,
+            options: Option<SimpleStreamOptions>,
+        ) -> AssistantMessageEventStream {
             self.stream(model, context, options.map(|options| options.stream))
         }
     }
@@ -3448,29 +3651,46 @@ mod tests {
             fetch_models: None,
             restore_models: None,
             filter_models: None,
-            api: maho_ai::models::ProviderApi::Single(std::sync::Arc::new(CountingStreams(calls.clone()))),
+            api: maho_ai::models::ProviderApi::Single(std::sync::Arc::new(CountingStreams(
+                calls.clone(),
+            ))),
             images: IndexMap::new(),
-        }).expect("provider");
+        })
+        .expect("provider");
         let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
             providers: Some(vec![provider]),
             auth_path: Some(dir.path().join("auth.json")),
             agent_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
-        }).expect("model runtime");
+        })
+        .expect("model runtime");
         runtime
             .credentials
-            .set("github-copilot", Some(serde_json::json!({"type":"api_key","key":"k"})))
+            .set(
+                "github-copilot",
+                Some(serde_json::json!({"type":"api_key","key":"k"})),
+            )
             .expect("seed");
         let context = Context::default();
         let check = |message: maho_ai::types::AssistantMessage| {
             assert_eq!(message.stop_reason, maho_ai::types::StopReason::Error);
-            assert!(message.error_message.expect("message").contains("`mhc auth consent github-copilot`"));
+            assert!(
+                message
+                    .error_message
+                    .expect("message")
+                    .contains("`mhc auth consent github-copilot`")
+            );
             assert_eq!(
                 message.provider_diagnostic.and_then(|d| d.code).as_deref(),
                 Some("provider_consent_required")
             );
         };
-        check(runtime.complete(&model, &context, None).await.expect("stream result"));
+        check(
+            runtime
+                .complete(&model, &context, None)
+                .await
+                .expect("stream result"),
+        );
         let stream = runtime.stream_simple(&model, &context, None);
         while let Ok(Some(_)) = stream.next().await {}
         check(stream.result().await.expect("simple result"));
@@ -3479,7 +3699,8 @@ mod tests {
         std::fs::write(
             dir.path().join("settings.json"),
             r#"{"providerRiskConsent":{"github-copilot":"2026-01-01T00:00:00.000Z"}}"#,
-        ).expect("settings");
+        )
+        .expect("settings");
         let _ = runtime.complete(&model, &context, None).await;
         assert!(calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     }
@@ -3491,7 +3712,8 @@ mod tests {
             auth_path: Some(dir.path().join("auth.json")),
             agent_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
-        }).expect("model runtime");
+        })
+        .expect("model runtime");
         runtime
             .credentials
             .set(
@@ -3500,10 +3722,17 @@ mod tests {
             )
             .expect("seed expired oauth");
         // Resolving would refresh over the network; the gate must fail first with the consent code.
-        let error = runtime.get_auth("github-copilot").await.expect_err("consent required");
+        let error = runtime
+            .get_auth("github-copilot")
+            .await
+            .expect_err("consent required");
         assert_eq!(error.code, ModelsErrorCode::ConsentRequired);
         assert_eq!(error.code.as_str(), "provider_consent_required");
-        assert!(error.message.contains("`mhc auth consent github-copilot`"), "{}", error.message);
+        assert!(
+            error.message.contains("`mhc auth consent github-copilot`"),
+            "{}",
+            error.message
+        );
         let overrides = AuthResolutionOverrides::default();
         let error = runtime
             .get_auth_with_overrides("github-copilot", &overrides)
@@ -3514,7 +3743,10 @@ mod tests {
             .expect("faux provider")
             .get_model(None)
             .expect("model");
-        let model = Model { provider: "github-copilot".into(), ..model };
+        let model = Model {
+            provider: "github-copilot".into(),
+            ..model
+        };
         let error = runtime
             .get_auth_for_model(&model, &overrides)
             .await
@@ -3526,7 +3758,9 @@ mod tests {
     struct CloudAmbientAuth;
     #[async_trait::async_trait]
     impl maho_ai::auth::types::ApiKeyAuth for CloudAmbientAuth {
-        fn name(&self) -> &str { "cloud ambient" }
+        fn name(&self) -> &str {
+            "cloud ambient"
+        }
         async fn resolve(
             &self,
             _: &dyn maho_ai::auth::types::AuthContext,
@@ -3547,18 +3781,33 @@ mod tests {
         let (_dir, mut runtime) = configured_runtime(
             r#"{"providers":{"cloud-fixture":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#,
         );
-        runtime.register_provider("cloud-fixture", ProviderConfigInput {
-            ambient_auth: Some(Arc::new(CloudAmbientAuth)),
-            ..Default::default()
-        }).expect("register ambient provider");
-        let auth = runtime.get_auth("cloud-fixture").await.expect("resolve").expect("ambient auth");
+        runtime
+            .register_provider(
+                "cloud-fixture",
+                ProviderConfigInput {
+                    ambient_auth: Some(Arc::new(CloudAmbientAuth)),
+                    ..Default::default()
+                },
+            )
+            .expect("register ambient provider");
+        let auth = runtime
+            .get_auth("cloud-fixture")
+            .await
+            .expect("resolve")
+            .expect("ambient auth");
         assert!(auth.ambient);
         assert_eq!(auth.auth.api_key, None);
-        let available = runtime.get_available(Some("cloud-fixture")).await.expect("available models");
+        let available = runtime
+            .get_available(Some("cloud-fixture"))
+            .await
+            .expect("available models");
         assert_eq!(available.len(), 1);
         // A provider-scoped read intentionally bypasses the availability snapshot. Synchronous
         // status reads observe the full refresh, including ambient auth without a stored key.
-        runtime.get_available(None).await.expect("refresh auth snapshot");
+        runtime
+            .get_available(None)
+            .await
+            .expect("refresh auth snapshot");
         let status = runtime.get_provider_auth_status("cloud-fixture");
         assert!(status.configured);
         assert!(status.ambient);
@@ -3737,7 +3986,8 @@ mod tests {
             providers: Some(Vec::new()),
             ..Default::default()
         })
-        .await.expect("model runtime");
+        .await
+        .expect("model runtime");
         assert_eq!(runtime.get_error(), None);
         assert!(!runtime.model_network_enabled);
         assert_eq!(runtime.model_refresh_timeout_ms(), 15_000);
@@ -3848,7 +4098,8 @@ mod tests {
         let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
             providers: Some(vec![Arc::new(FilteringProvider) as Arc<dyn Provider>]),
             ..Default::default()
-        }).expect("model runtime");
+        })
+        .expect("model runtime");
         runtime
             .credentials
             .set(
@@ -3932,7 +4183,10 @@ mod tests {
             Box::pin(async move {
                 let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                 if call == self.fail_at {
-                    return Err(ModelsError::new(ModelsErrorCode::OAuth, "availability-fixture"));
+                    return Err(ModelsError::new(
+                        ModelsErrorCode::OAuth,
+                        "availability-fixture",
+                    ));
                 }
                 Ok(Some(AuthResolution::default()))
             })
@@ -3953,12 +4207,20 @@ mod tests {
             Box::pin(async move { Ok(stored.cloned()) })
         }
     }
-    async fn failing_availability_runtime(fail_at: usize) -> (ModelRuntime, Arc<std::sync::atomic::AtomicUsize>) {
+    async fn failing_availability_runtime(
+        fail_at: usize,
+    ) -> (ModelRuntime, Arc<std::sync::atomic::AtomicUsize>) {
         let mut runtime = filtering_registry().model_runtime;
-        runtime.get_available(None).await.expect("seed available snapshot");
+        runtime
+            .get_available(None)
+            .await
+            .expect("seed available snapshot");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         runtime.models = create_models(Some(CreateModelsOptions {
-            auth: Some(Arc::new(FailingAvailabilityAuth { calls: calls.clone(), fail_at })),
+            auth: Some(Arc::new(FailingAvailabilityAuth {
+                calls: calls.clone(),
+                fail_at,
+            })),
             ..Default::default()
         }));
         runtime.models.set_provider(Arc::new(FilteringProvider));
@@ -3967,17 +4229,27 @@ mod tests {
     #[tokio::test]
     async fn available_propagates_provider_errors_without_returning_stale_models() {
         let (runtime, calls) = failing_availability_runtime(1).await;
-        let error = runtime.get_available(Some("filtering")).await.expect_err("provider error");
+        let error = runtime
+            .get_available(Some("filtering"))
+            .await
+            .expect_err("provider error");
         assert_eq!(error.code, ModelsErrorCode::OAuth);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(runtime.availability_state().error.as_ref(), Some(&error));
-        assert!(runtime.get_error().is_some_and(|message| message.contains(&error.message)));
+        assert!(
+            runtime
+                .get_error()
+                .is_some_and(|message| message.contains(&error.message))
+        );
         assert!(!runtime.has_fresh_availability_snapshot());
     }
     #[tokio::test]
     async fn available_propagates_full_pass_errors_without_retrying_registry() {
         let (runtime, calls) = failing_availability_runtime(1).await;
-        let error = runtime.get_available(None).await.expect_err("full availability error");
+        let error = runtime
+            .get_available(None)
+            .await
+            .expect_err("full availability error");
         assert_eq!(error.code, ModelsErrorCode::OAuth);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(runtime.availability_state().error.as_ref(), Some(&error));
@@ -3985,7 +4257,10 @@ mod tests {
     #[tokio::test]
     async fn available_propagates_auth_check_errors_after_registry_success() {
         let (runtime, calls) = failing_availability_runtime(2).await;
-        let error = runtime.get_available(None).await.expect_err("auth check error");
+        let error = runtime
+            .get_available(None)
+            .await
+            .expect_err("auth check error");
         assert_eq!(error.code, ModelsErrorCode::OAuth);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(runtime.availability_state().error.as_ref(), Some(&error));
@@ -3993,19 +4268,37 @@ mod tests {
     #[tokio::test]
     async fn session_restore_propagates_availability_failure() {
         let (runtime, _) = failing_availability_runtime(1).await;
-        let result = crate::model_resolver::restore_model_from_session("missing", "missing", None, &runtime).await;
+        let result =
+            crate::model_resolver::restore_model_from_session("missing", "missing", None, &runtime)
+                .await;
         let error = result.err().expect("restore error");
         assert_eq!(error.code, ModelsErrorCode::OAuth);
     }
     #[tokio::test]
     async fn initial_model_propagates_availability_failure() {
         let (runtime, _) = failing_availability_runtime(1).await;
-        let result = crate::model_resolver::find_initial_model(crate::model_resolver::InitialModelOptions {
-            cli_provider: None, cli_model: None, scoped_models: &[], is_continuing: false,
-            default_provider: None, default_model_id: None, model_thinking_levels: None,
-        }, &runtime).await;
+        let result = crate::model_resolver::find_initial_model(
+            crate::model_resolver::InitialModelOptions {
+                cli_provider: None,
+                cli_model: None,
+                scoped_models: &[],
+                is_continuing: false,
+                default_provider: None,
+                default_model_id: None,
+                model_thinking_levels: None,
+            },
+            &runtime,
+        )
+        .await;
         assert!(result.is_err());
-        assert_eq!(runtime.availability_state().error.as_ref().map(|error| error.code), Some(ModelsErrorCode::OAuth));
+        assert_eq!(
+            runtime
+                .availability_state()
+                .error
+                .as_ref()
+                .map(|error| error.code),
+            Some(ModelsErrorCode::OAuth)
+        );
     }
     /// Answers selects with the first option id and every text/secret prompt with its own message,
     /// recording committed account receipts.

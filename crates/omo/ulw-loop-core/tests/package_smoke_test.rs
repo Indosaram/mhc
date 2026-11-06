@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use ulw_loop_core::cli_commands::{is_ulw_loop_subcommand, ULW_LOOP_SUBCOMMANDS};
-use ulw_loop_core::cli_output::{subcommand_help, ULW_LOOP_HELP};
+use ulw_loop_core::cli_commands::{ULW_LOOP_SUBCOMMANDS, is_ulw_loop_subcommand};
+use ulw_loop_core::cli_output::{ULW_LOOP_HELP, subcommand_help};
 use ulw_loop_core::paths::{resolve_ulw_loop_session_id_from_env, ulw_loop_dir};
 
 #[test]
@@ -79,13 +79,21 @@ fn package_requires_session_scope_for_state() {
 
 #[test]
 fn package_scopes_state_under_session_directory() {
-    assert_eq!(ulw_loop_dir("/repo", Some(&ulw_loop_core::paths::UlwLoopScope::new("session"))), PathBuf::from("/repo/.omo/ulw-loop/session"));
+    assert_eq!(
+        ulw_loop_dir(
+            "/repo",
+            Some(&ulw_loop_core::paths::UlwLoopScope::new("session"))
+        ),
+        PathBuf::from("/repo/.omo/ulw-loop/session")
+    );
 }
 
 #[test]
 fn package_resolves_pi_session_environment() {
     let mut env = BTreeMap::new();
     env.insert("PI_SESSION_ID".into(), "session-package".into());
-    assert_eq!(resolve_ulw_loop_session_id_from_env(&env), Some("session-package".into()));
+    assert_eq!(
+        resolve_ulw_loop_session_id_from_env(&env),
+        Some("session-package".into())
+    );
 }
-

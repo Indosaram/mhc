@@ -87,7 +87,9 @@ impl Held {
             .lock()
             .keys
             .retain(|held| !(held.route == route && held.code == code));
-        self.ledger.lock().released(key_route(route).lane(), Input::Key(code));
+        self.ledger
+            .lock()
+            .released(key_route(route).lane(), Input::Key(code));
     }
 
     pub(super) fn button_down(&mut self, button: HeldButton) {
@@ -101,7 +103,9 @@ impl Held {
             .lock()
             .buttons
             .retain(|held| !(same_route(&held.route, route) && held.button == button));
-        self.ledger.lock().released(button_route(route).lane(), button_input(button));
+        self.ledger
+            .lock()
+            .released(button_route(route).lane(), button_input(button));
     }
 
     /// A held window-route button dragged to the window-local point `to`: its
@@ -109,7 +113,9 @@ impl Held {
     pub(super) fn button_moved(&mut self, route: &ButtonRoute, button: MouseButton, to: CGPoint) {
         if let ButtonRoute::Window(pid, wid, _) = *route {
             let moved = ButtonRoute::Window(pid, wid, to);
-            self.ledger.lock().moved(button_route(&moved), button_input(button));
+            self.ledger
+                .lock()
+                .moved(button_route(&moved), button_input(button));
         }
     }
 
@@ -138,7 +144,12 @@ const fn key_route(route: KeyRoute) -> Route {
 const fn button_route(route: &ButtonRoute) -> Route {
     match *route {
         ButtonRoute::Global(_) => Route::Hid,
-        ButtonRoute::Window(pid, wid, at) => Route::Window { pid, wid, x: at.x, y: at.y },
+        ButtonRoute::Window(pid, wid, at) => Route::Window {
+            pid,
+            wid,
+            x: at.x,
+            y: at.y,
+        },
     }
 }
 
@@ -223,9 +234,16 @@ mod tests {
             &ButtonRoute::Window(7, 9, CGPoint::new(10.0, 12.0)),
             MouseButton::Left,
         );
-        assert_eq!(held.take_buttons().len(), 2, "a left-up releases no right button");
+        assert_eq!(
+            held.take_buttons().len(),
+            2,
+            "a left-up releases no right button"
+        );
         held.button_down(left());
-        held.button_up(&ButtonRoute::Global(CGPoint::new(10.0, 10.0)), MouseButton::Left);
+        held.button_up(
+            &ButtonRoute::Global(CGPoint::new(10.0, 10.0)),
+            MouseButton::Left,
+        );
         assert!(held.is_empty());
     }
 
@@ -233,7 +251,10 @@ mod tests {
     fn failed_down_never_records_and_double_up_is_inert() {
         let mut held = Held::default();
         held.key_up(KeyRoute::Global, 55);
-        held.button_up(&ButtonRoute::Global(CGPoint::new(0.0, 0.0)), MouseButton::Left);
+        held.button_up(
+            &ButtonRoute::Global(CGPoint::new(0.0, 0.0)),
+            MouseButton::Left,
+        );
         assert!(held.is_empty());
     }
 }

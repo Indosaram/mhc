@@ -11,19 +11,19 @@ use crate::state::TaskStatus;
 use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
 use crate::team::runtime_types::{CreateTeamResult, DeleteTeamResult};
 use crate::tools::control::send::{
-    MemberScopedTaskSendDeps, MemberScopedTaskSendTool, TASK_SEND_TOOL_NAME, TaskSendDeps, TaskSendTool,
-    create_member_scoped_task_send_tool, create_task_send_tool, run_task_send,
+    MemberScopedTaskSendDeps, MemberScopedTaskSendTool, TASK_SEND_TOOL_NAME, TaskSendDeps,
+    TaskSendTool, create_member_scoped_task_send_tool, create_task_send_tool, run_task_send,
 };
 use crate::tools::control::send_schema::{TaskSendInput, TaskSendMessage};
 use crate::tools::control::tool_result::ToolResultContent;
 use crate::tools::control::types::{
-    ControlListScope, ControlSendInput, ControlTaskRecord, SendManager, SendOutcome, SendResultDetails,
-    SendToolResult,
+    ControlListScope, ControlSendInput, ControlTaskRecord, SendManager, SendOutcome,
+    SendResultDetails, SendToolResult,
 };
 use crate::tools::team::types::{
-    ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput, DiscoveredTeamSpec,
-    TeamServiceResult, TeamStatus, TeamTaskListFilter, TeamToolServiceError, TeamToolsService,
-    UpdateTeamTaskServiceInput,
+    ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput,
+    DiscoveredTeamSpec, TeamServiceResult, TeamStatus, TeamTaskListFilter, TeamToolServiceError,
+    TeamToolsService, UpdateTeamTaskServiceInput,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -115,7 +115,10 @@ impl FakeManager {
     }
 
     fn set_status(&self, task_id: &str, status: FakeStatus) {
-        if let Some(task) = lock(&self.tasks).iter_mut().find(|task| task.task_id == task_id) {
+        if let Some(task) = lock(&self.tasks)
+            .iter_mut()
+            .find(|task| task.task_id == task_id)
+        {
             task.status = status;
         }
     }
@@ -132,10 +135,10 @@ impl FakeManager {
 impl SendManager for FakeManager {
     fn send_to_task(&self, input: &ControlSendInput) -> Result<SendOutcome, String> {
         let mut tasks = lock(&self.tasks);
-        let Some(task) = tasks
-            .iter_mut()
-            .find(|task| task.task_id == input.id_or_name || task.name.as_deref() == Some(input.id_or_name.as_str()))
-        else {
+        let Some(task) = tasks.iter_mut().find(|task| {
+            task.task_id == input.id_or_name
+                || task.name.as_deref() == Some(input.id_or_name.as_str())
+        }) else {
             return Ok(SendOutcome::NotFound {
                 reason: format!("No task found for \"{}\".", input.id_or_name),
             });
@@ -192,7 +195,9 @@ impl SendManager for FakeManager {
             .iter()
             .filter(|task| match scope {
                 ControlListScope::All => true,
-                ControlListScope::ParentSession { session_id } => &task.parent_session_id == session_id,
+                ControlListScope::ParentSession { session_id } => {
+                    &task.parent_session_id == session_id
+                }
             })
             .map(|task| ControlTaskRecord {
                 task_id: task.task_id.clone(),
@@ -236,10 +241,18 @@ impl TeamToolsService for FakeTeamToolsService {
     fn list_teams(&self) -> TeamServiceResult<Vec<ActiveTeamSummary>> {
         fail("listTeams")
     }
-    fn create_task(&self, _team_run_id: &str, _input: &CreateTeamTaskServiceInput) -> TeamServiceResult<Task> {
+    fn create_task(
+        &self,
+        _team_run_id: &str,
+        _input: &CreateTeamTaskServiceInput,
+    ) -> TeamServiceResult<Task> {
         fail("createTask")
     }
-    fn list_tasks(&self, _team_run_id: &str, _filter: Option<&TeamTaskListFilter>) -> TeamServiceResult<Vec<Task>> {
+    fn list_tasks(
+        &self,
+        _team_run_id: &str,
+        _filter: Option<&TeamTaskListFilter>,
+    ) -> TeamServiceResult<Vec<Task>> {
         fail("listTasks")
     }
     fn update_task(&self, _input: &UpdateTeamTaskServiceInput) -> TeamServiceResult<Task> {
@@ -248,22 +261,42 @@ impl TeamToolsService for FakeTeamToolsService {
     fn get_task(&self, _team_run_id: &str, _task_id: &str) -> TeamServiceResult<Task> {
         fail("getTask")
     }
-    fn request_shutdown(&self, _team_run_id: &str, _member: &str) -> TeamServiceResult<RuntimeState> {
+    fn request_shutdown(
+        &self,
+        _team_run_id: &str,
+        _member: &str,
+    ) -> TeamServiceResult<RuntimeState> {
         fail("requestShutdown")
     }
-    fn approve_shutdown(&self, _team_run_id: &str, _member: &str) -> TeamServiceResult<RuntimeState> {
+    fn approve_shutdown(
+        &self,
+        _team_run_id: &str,
+        _member: &str,
+    ) -> TeamServiceResult<RuntimeState> {
         fail("approveShutdown")
     }
-    fn reject_shutdown(&self, _team_run_id: &str, _member: &str, _reason: &str) -> TeamServiceResult<RuntimeState> {
+    fn reject_shutdown(
+        &self,
+        _team_run_id: &str,
+        _member: &str,
+        _reason: &str,
+    ) -> TeamServiceResult<RuntimeState> {
         fail("rejectShutdown")
     }
     fn aggregate_status(&self, _team_run_id: &str) -> TeamServiceResult<TeamStatus> {
         fail("aggregateStatus")
     }
-    fn discover_team_specs(&self, _project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
+    fn discover_team_specs(
+        &self,
+        _project_root: &Path,
+    ) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
         fail("discoverTeamSpecs")
     }
-    fn load_team_spec_member_count(&self, _name: &str, _project_root: &Path) -> TeamServiceResult<usize> {
+    fn load_team_spec_member_count(
+        &self,
+        _name: &str,
+        _project_root: &Path,
+    ) -> TeamServiceResult<usize> {
         fail("loadTeamSpec")
     }
 }
@@ -313,7 +346,8 @@ fn momus_reminder() -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn given_task_send_tool_factories_when_tools_are_created_then_both_expose_custom_call_and_result_renderers() {
+fn given_task_send_tool_factories_when_tools_are_created_then_both_expose_custom_call_and_result_renderers()
+ {
     let manager = SpyManager::new(SendOutcome::NotFound {
         reason: "unused".to_string(),
     });
@@ -338,7 +372,10 @@ fn given_task_send_tool_factories_when_tools_are_created_then_both_expose_custom
     let _member_render_result = MemberScopedTaskSendTool::render_result;
     assert_eq!(lead_tool.name, TASK_SEND_TOOL_NAME);
     assert_eq!(member_tool.name, TASK_SEND_TOOL_NAME);
-    assert_eq!(member_tool.team_routing.team_run_id.as_deref(), Some("team-run-1"));
+    assert_eq!(
+        member_tool.team_routing.team_run_id.as_deref(),
+        Some("team-run-1")
+    );
     assert_eq!(member_tool.team_routing.from, "atlas");
 }
 
@@ -347,7 +384,11 @@ fn given_a_running_child_when_a_message_is_sent_then_it_is_delivered_as_steer() 
     let manager = FakeManager::new();
     let task_id = manager.start("p1", None, None);
 
-    let result = send(manager.as_ref(), &input(&task_id, Some("keep going"), None), "p1");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("keep going"), None),
+        "p1",
+    );
 
     assert_eq!(result.details.kind(), "steered");
     let SendResultDetails::Steered {
@@ -360,14 +401,22 @@ fn given_a_running_child_when_a_message_is_sent_then_it_is_delivered_as_steer() 
     };
     assert_eq!(delivered, "steer");
     assert_eq!(steered_id, &task_id);
-    assert_eq!(manager.task(&task_id).steer_calls, vec!["keep going".to_string()]);
+    assert_eq!(
+        manager.task(&task_id).steer_calls,
+        vec!["keep going".to_string()]
+    );
 }
 
 #[test]
-fn given_a_caller_session_id_when_sending_then_caller_session_id_is_injected_into_the_steering_call() {
+fn given_a_caller_session_id_when_sending_then_caller_session_id_is_injected_into_the_steering_call()
+ {
     let manager = SpyManager::new(steered_outcome());
 
-    send(manager.as_ref(), &input("st_00000001", Some("hi"), None), "session-42");
+    send(
+        manager.as_ref(),
+        &input("st_00000001", Some("hi"), None),
+        "session-42",
+    );
 
     let calls = manager.calls();
     assert_eq!(calls[0].caller_session_id.as_deref(), Some("session-42"));
@@ -378,7 +427,11 @@ fn given_a_caller_session_id_when_sending_then_caller_session_id_is_injected_int
 fn given_all_scope_true_when_sending_then_all_scope_is_forwarded_to_the_engine() {
     let manager = SpyManager::new(steered_outcome());
 
-    send(manager.as_ref(), &input("st_00000001", Some("hi"), Some(true)), "session-42");
+    send(
+        manager.as_ref(),
+        &input("st_00000001", Some("hi"), Some(true)),
+        "session-42",
+    );
 
     let calls = manager.calls();
     assert_eq!(calls[0].all_scope, Some(true));
@@ -391,7 +444,11 @@ fn given_plain_text_send_without_a_message_when_sent_then_it_is_rejected_before_
         reason: "unused".to_string(),
     });
 
-    let result = send(manager.as_ref(), &input("alpha", None, None), "lead-session");
+    let result = send(
+        manager.as_ref(),
+        &input("alpha", None, None),
+        "lead-session",
+    );
 
     assert_eq!(
         result.details,
@@ -403,14 +460,22 @@ fn given_plain_text_send_without_a_message_when_sent_then_it_is_rejected_before_
 }
 
 #[test]
-fn given_a_child_owned_by_another_session_when_sent_without_all_scope_then_scope_is_denied_naming_the_owner() {
+fn given_a_child_owned_by_another_session_when_sent_without_all_scope_then_scope_is_denied_naming_the_owner()
+ {
     let manager = FakeManager::new();
     let task_id = manager.start("owner-session", None, None);
 
-    let result = send(manager.as_ref(), &input(&task_id, Some("hi"), None), "intruder-session");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("hi"), None),
+        "intruder-session",
+    );
 
     assert_eq!(result.details.kind(), "scope_denied");
-    let SendResultDetails::ScopeDenied { owning_session_id, .. } = &result.details else {
+    let SendResultDetails::ScopeDenied {
+        owning_session_id, ..
+    } = &result.details
+    else {
         panic!("expected scope_denied");
     };
     assert_eq!(owning_session_id, "owner-session");
@@ -450,7 +515,11 @@ fn given_a_cancelled_child_when_task_send_targets_it_then_it_is_not_continuable(
     let task_id = manager.start("p1", None, None);
     manager.set_status(&task_id, FakeStatus::Cancelled);
 
-    let result = send(manager.as_ref(), &input(&task_id, Some("revive?"), None), "p1");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("revive?"), None),
+        "p1",
+    );
 
     assert_eq!(result.details.kind(), "not_continuable");
 }
@@ -467,7 +536,11 @@ fn given_a_running_momus_child_when_task_send_targets_it_then_the_send_is_refuse
     let task_id = manager.start("p1", None, Some("plan-reviewer"));
 
     // when
-    let result = send(manager.as_ref(), &input(&task_id, Some("please reconsider"), None), "p1");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("please reconsider"), None),
+        "p1",
+    );
 
     // then
     assert_eq!(result.details.kind(), "one_shot_agent");
@@ -499,7 +572,11 @@ fn given_a_completed_resident_momus_child_when_task_send_targets_it_then_the_sen
     assert_eq!(manager.task(&task_id).status, FakeStatus::Completed);
 
     // when
-    let result = send(manager.as_ref(), &input(&task_id, Some("another round?"), None), "p1");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("another round?"), None),
+        "p1",
+    );
 
     // then
     assert_eq!(result.details.kind(), "one_shot_agent");
@@ -510,7 +587,8 @@ fn given_a_completed_resident_momus_child_when_task_send_targets_it_then_the_sen
 }
 
 #[test]
-fn given_a_completed_resident_non_momus_child_when_task_send_targets_it_then_it_still_revives_regression_guard() {
+fn given_a_completed_resident_non_momus_child_when_task_send_targets_it_then_it_still_revives_regression_guard()
+ {
     // given
     let manager = FakeManager::new();
     let task_id = manager.start("p1", None, Some("explore"));
@@ -518,9 +596,16 @@ fn given_a_completed_resident_non_momus_child_when_task_send_targets_it_then_it_
     assert_eq!(manager.task(&task_id).status, FakeStatus::Completed);
 
     // when
-    let result = send(manager.as_ref(), &input(&task_id, Some("second pass"), None), "p1");
+    let result = send(
+        manager.as_ref(),
+        &input(&task_id, Some("second pass"), None),
+        "p1",
+    );
 
     // then
     assert_eq!(result.details.kind(), "revived");
-    assert_eq!(manager.task(&task_id).follow_up_calls, vec!["second pass".to_string()]);
+    assert_eq!(
+        manager.task(&task_id).follow_up_calls,
+        vec!["second pass".to_string()]
+    );
 }

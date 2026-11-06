@@ -1440,7 +1440,11 @@ async fn omo_directory_creation_is_not_a_config_change_but_its_config_file_is() 
     let ancestor = |path: &Path| maho_ext_api::ConfigWatchTargetSpec {
         path: path.into(),
         kind: maho_ext_api::ConfigWatchTargetKind::Dir,
-        filter_globs: vec!["/.omo".into(), "/.omo/omo.jsonc".into(), "/.omo/omo.json".into()],
+        filter_globs: vec![
+            "/.omo".into(),
+            "/.omo/omo.jsonc".into(),
+            "/.omo/omo.json".into(),
+        ],
     };
     events.publish_config_watch(
         "omo",

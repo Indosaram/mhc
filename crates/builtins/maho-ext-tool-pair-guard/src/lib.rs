@@ -19,17 +19,26 @@ pub fn sanitize_payload_if_changed(payload: &Value) -> Option<Value> {
         .and_then(maho_ai::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs_if_changed)
         .map(Value::Object);
     let base = anthropic.as_ref().unwrap_or(payload);
-    let responses = sanitize_openai_responses_payload::sanitize_openai_responses_payload_if_changed(base);
+    let responses =
+        sanitize_openai_responses_payload::sanitize_openai_responses_payload_if_changed(base);
     let chat = sanitize_openai_chat_completions_payload::sanitize_openai_chat_completions_payload_if_changed(responses.as_ref().unwrap_or(base));
-    chat.or(responses).or(anthropic).filter(|sanitized| sanitized != payload)
+    chat.or(responses)
+        .or(anthropic)
+        .filter(|sanitized| sanitized != payload)
 }
 impl Extension for ToolPairGuard {
     fn register(&self, api: &mut ExtensionApi) {
-        api.on(EventKind::BeforeProviderRequest, Arc::new(|event, _ctx| Box::pin(async move {
-            let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else {
-                return Ok(EventResult::None);
-            };
-            Ok(sanitize_payload_if_changed(payload).map_or(EventResult::None, EventResult::ProviderPayload))
-        })));
+        api.on(
+            EventKind::BeforeProviderRequest,
+            Arc::new(|event, _ctx| {
+                Box::pin(async move {
+                    let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else {
+                        return Ok(EventResult::None);
+                    };
+                    Ok(sanitize_payload_if_changed(payload)
+                        .map_or(EventResult::None, EventResult::ProviderPayload))
+                })
+            }),
+        );
     }
 }

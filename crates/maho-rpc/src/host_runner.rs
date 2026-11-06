@@ -289,7 +289,10 @@ pub async fn handoff_outcome(
             serde_json::Map::from_iter([
                 ("reason".into(), upgrade_refusal(result.reason).into()),
                 ("socket".into(), socket.into()),
-                ("detail".into(), result.detail.as_deref().unwrap_or(result.reason).into()),
+                (
+                    "detail".into(),
+                    result.detail.as_deref().unwrap_or(result.reason).into(),
+                ),
                 ("upgradeable".into(), result.upgradeable.into()),
             ]),
         )),
@@ -377,10 +380,12 @@ pub fn identity_payload(
         crate::host_decision::HostDecisionPolicy::Upgrade,
     ))
     .expect("decision has no failing serializer");
-    let lifecycle = host.and_then(|host| host.lifecycle).map(|lifecycle| match lifecycle {
-        crate::host_protocol_info::HostLifecycle::Ready => "ready",
-        crate::host_protocol_info::HostLifecycle::Stopping => "stopping",
-    });
+    let lifecycle = host
+        .and_then(|host| host.lifecycle)
+        .map(|lifecycle| match lifecycle {
+            crate::host_protocol_info::HostLifecycle::Ready => "ready",
+            crate::host_protocol_info::HostLifecycle::Stopping => "stopping",
+        });
     serde_json::json!({"socket":socket,"pid":pid,"lifecycle":lifecycle,"instanceId":host.and_then(|host|host.instance_id.as_ref()),"generation":host.and_then(|host|host.generation),"engineVersion":host.and_then(|host|host.engine_version.as_ref()),"engineOrdinal":host.and_then(|host|host.engine_ordinal),"capabilities":host.map_or(&[][..],|host|host.capabilities.as_slice()),"launchProfileId":host.and_then(|host|host.launch_profile.as_ref()).map(|profile|&profile.profile_id),"upgradeable":decision["upgradeable"]})
 }
 pub async fn status_outcome(
@@ -409,7 +414,9 @@ pub async fn status_all_outcome(
     Ok(status_all_payload(rows))
 }
 fn status_all_payload(endpoints: Vec<serde_json::Value>) -> HostOutcome {
-    let reachable = endpoints.iter().any(|endpoint| endpoint["reachable"] == true);
+    let reachable = endpoints
+        .iter()
+        .any(|endpoint| endpoint["reachable"] == true);
     HostOutcome {
         exit_code: if reachable {
             HOST_EXIT_OK

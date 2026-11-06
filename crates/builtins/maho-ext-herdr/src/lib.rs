@@ -1,5 +1,4 @@
-pub mod state;
 pub mod client;
 pub mod reporter;
-pub use reporter::{Herdr,HerdrDependencies,HerdrExtension};
-
+pub mod state;
+pub use reporter::{Herdr, HerdrDependencies, HerdrExtension};

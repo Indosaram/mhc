@@ -2,7 +2,7 @@
 //! the conformance tests. An unsupported keyword is an error, so a schema
 //! change can never make validation vacuous.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 /// Validates values against subschemas of `root`, resolving `$ref`s in it.
 pub(super) struct Validator<'a> {

@@ -87,7 +87,9 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 </html>"#;
 
 fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>) -> String {
-    let details_block = details.map(|d| format!("<div class=\"details\">{}</div>", escape_html(d))).unwrap_or_default();
+    let details_block = details
+        .map(|d| format!("<div class=\"details\">{}</div>", escape_html(d)))
+        .unwrap_or_default();
     PAGE_TEMPLATE
         .replace("__MAHO_TITLE__", &escape_html(title))
         .replace("__MAHO_HEADING__", &escape_html(heading))
@@ -97,11 +99,21 @@ fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>)
 }
 
 pub fn oauth_success_html(message: &str) -> String {
-    render_page("Authentication successful", "Authentication successful", message, None)
+    render_page(
+        "Authentication successful",
+        "Authentication successful",
+        message,
+        None,
+    )
 }
 
 pub fn oauth_error_html(message: &str, details: Option<&str>) -> String {
-    render_page("Authentication failed", "Authentication failed", message, details)
+    render_page(
+        "Authentication failed",
+        "Authentication failed",
+        message,
+        details,
+    )
 }
 
 #[cfg(test)]
@@ -110,11 +122,14 @@ mod tests {
 
     #[test]
     fn success_page_uses_the_success_titles_and_the_escaped_message() {
-        let html = oauth_success_html("Anthropic authentication completed. You can close this window.");
+        let html =
+            oauth_success_html("Anthropic authentication completed. You can close this window.");
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<title>Authentication successful</title>"));
         assert!(html.contains("<h1>Authentication successful</h1>"));
-        assert!(html.contains("<p>Anthropic authentication completed. You can close this window.</p>"));
+        assert!(
+            html.contains("<p>Anthropic authentication completed. You can close this window.</p>")
+        );
         assert!(!html.contains("class=\"details\""));
         assert!(html.ends_with("</html>"));
     }

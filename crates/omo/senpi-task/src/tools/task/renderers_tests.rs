@@ -131,7 +131,10 @@ fn category_spawn_call_prompt_and_mode_stay_stable() {
     let lines = task_call_lines(&args);
 
     // then
-    assert_eq!(lines, vec![r#"task "inspect task rendering" foreground"#.to_string()]);
+    assert_eq!(
+        lines,
+        vec![r#"task "inspect task rendering" foreground"#.to_string()]
+    );
 }
 
 #[test]
@@ -153,7 +156,10 @@ fn spawn_call_target_and_mode_are_summarized() {
 #[test]
 fn spawn_call_without_target_falls_back_to_generic_task_label() {
     // when
-    let lines = task_call_lines(&TaskCallArgs { prompt: Some("more".to_string()), ..Default::default() });
+    let lines = task_call_lines(&TaskCallArgs {
+        prompt: Some("more".to_string()),
+        ..Default::default()
+    });
 
     // then
     let joined = lines.join(" ");
@@ -203,7 +209,10 @@ fn task_summary_replaces_truncated_prompt_excerpt() {
     let lines = task_call_lines(&args);
 
     // then
-    assert_eq!(lines, vec![r#"task "Audit the task tool boundary" foreground"#.to_string()]);
+    assert_eq!(
+        lines,
+        vec![r#"task "Audit the task tool boundary" foreground"#.to_string()]
+    );
 }
 
 #[test]
@@ -322,7 +331,13 @@ fn resolved_category_metadata_shows_target_model_mode_status_id_queue() {
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
         model: Some("openai/gpt-5.6-sol".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "GPT-5.6 Sol", Some("xhigh"), Some("xhigh"))),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            Some("xhigh"),
+            Some("xhigh"),
+        )),
         run_in_background: Some(true),
         queue_position: Some(3),
         reason: Some("provider capacity".to_string()),
@@ -333,7 +348,10 @@ fn resolved_category_metadata_shows_target_model_mode_status_id_queue() {
     let row = task_result_lines(&details).join(" ");
 
     // then
-    assert!(row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{row}");
+    assert!(
+        row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{row}"
+    );
     assert_eq!(row.matches("xhigh").count(), 1, "{row}");
     assert!(row.contains("background"), "{row}");
     assert!(row.contains("pending"), "{row}");
@@ -350,7 +368,13 @@ fn resolved_category_metadata_with_variant_only_shows_variant() {
         status: "pending".to_string(),
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "GPT-5.6 Sol", Some("xhigh"), Some("sol"))),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            Some("xhigh"),
+            Some("sol"),
+        )),
         ..Default::default()
     };
 
@@ -358,7 +382,10 @@ fn resolved_category_metadata_with_variant_only_shows_variant() {
     let row = task_result_lines(&details).join(" ");
 
     // then
-    assert!(row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{row}");
+    assert!(
+        row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{row}"
+    );
     assert!(!row.contains(":sol"), "{row}");
 }
 
@@ -370,7 +397,13 @@ fn resolved_category_metadata_with_reasoning_effort_only_shows_effort() {
         status: "pending".to_string(),
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "GPT-5.6 Sol", Some("xhigh"), None)),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            Some("xhigh"),
+            None,
+        )),
         ..Default::default()
     };
 
@@ -378,7 +411,10 @@ fn resolved_category_metadata_with_reasoning_effort_only_shows_effort() {
     let row = task_result_lines(&details).join(" ");
 
     // then
-    assert!(row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{row}");
+    assert!(
+        row.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{row}"
+    );
 }
 
 #[test]
@@ -389,7 +425,13 @@ fn resolved_category_metadata_without_effort_or_variant_has_no_suffix() {
         status: "pending".to_string(),
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "GPT-5.6 Sol", None, None)),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            None,
+            None,
+        )),
         ..Default::default()
     };
 
@@ -397,7 +439,10 @@ fn resolved_category_metadata_without_effort_or_variant_has_no_suffix() {
     let row = task_result_lines(&details).join(" ");
 
     // then
-    assert!(row.contains("category:ultrabrain(openai/gpt-5.6-sol)"), "{row}");
+    assert!(
+        row.contains("category:ultrabrain(openai/gpt-5.6-sol)"),
+        "{row}"
+    );
     assert!(!row.contains(":xhigh"), "{row}");
     assert!(!row.contains(":sol"), "{row}");
 }
@@ -432,18 +477,32 @@ fn provider_prefixed_display_is_not_duplicated_in_full_and_compact_rows() {
         status: "pending".to_string(),
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "OpenAI GPT-5.6 SOL", Some("xhigh"), None)),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "OpenAI GPT-5.6 SOL",
+            Some("xhigh"),
+            None,
+        )),
         run_in_background: Some(true),
         ..Default::default()
     };
 
     // when
     let plain = task_result_lines(&details).join(" ");
-    let compact = render_task_result_component(&details, &AnsiTheme).render(96).join(" ");
+    let compact = render_task_result_component(&details, &AnsiTheme)
+        .render(96)
+        .join(" ");
 
     // then
-    assert!(plain.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{plain}");
-    assert!(compact.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{compact}");
+    assert!(
+        plain.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{plain}"
+    );
+    assert!(
+        compact.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{compact}"
+    );
 }
 
 #[test]
@@ -454,10 +513,18 @@ fn result_component_at_width_80_keeps_model_and_reasoning_within_bounds() {
         status: "pending".to_string(),
         mode: TaskToolMode::Spawn,
         category: Some("ultrabrain".to_string()),
-        resolved_model: Some(model_record("openai", "gpt-5.6-sol", "GPT-5.6 Sol", Some("xhigh"), None)),
+        resolved_model: Some(model_record(
+            "openai",
+            "gpt-5.6-sol",
+            "GPT-5.6 Sol",
+            Some("xhigh"),
+            None,
+        )),
         run_in_background: Some(true),
         queue_position: Some(12),
-        reason: Some("긴 대기열 사유입니다. Provider capacity is constrained for this request.".to_string()),
+        reason: Some(
+            "긴 대기열 사유입니다. Provider capacity is constrained for this request.".to_string(),
+        ),
         ..Default::default()
     };
 
@@ -466,7 +533,10 @@ fn result_component_at_width_80_keeps_model_and_reasoning_within_bounds() {
 
     // then
     let joined = rendered.join(" ");
-    assert!(joined.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"), "{joined}");
+    assert!(
+        joined.contains("category:ultrabrain(openai/gpt-5.6-sol:xhigh)"),
+        "{joined}"
+    );
     for line in &rendered {
         assert!(renderer_visible_width(line) <= 80, "{line}");
     }
@@ -488,8 +558,20 @@ fn two_fallback_attempts_keep_canonical_model_and_fallback_count_visible() {
             None,
         )),
         fallback_attempts: Some(vec![
-            model_record("kimi-coding", "kimi-for-coding-highspeed", "kimi-for-coding-highspeed", None, None),
-            model_record("quotio-openai", "gpt-5.6-luna-fast", "gpt-5.6-luna-fast", Some("high"), None),
+            model_record(
+                "kimi-coding",
+                "kimi-for-coding-highspeed",
+                "kimi-for-coding-highspeed",
+                None,
+                None,
+            ),
+            model_record(
+                "quotio-openai",
+                "gpt-5.6-luna-fast",
+                "gpt-5.6-luna-fast",
+                Some("high"),
+                None,
+            ),
         ]),
         run_in_background: Some(false),
         ..Default::default()
@@ -497,11 +579,16 @@ fn two_fallback_attempts_keep_canonical_model_and_fallback_count_visible() {
 
     // when
     let plain = task_result_lines(&details).join(" ");
-    let compact = render_task_result_component(&details, &AnsiTheme).render(120).join(" ");
+    let compact = render_task_result_component(&details, &AnsiTheme)
+        .render(120)
+        .join(" ");
 
     // then
     for row in [&plain, &compact] {
-        assert!(row.contains("category:quick(quotio-openai/gpt-5.6-luna-fast:high)"), "{row}");
+        assert!(
+            row.contains("category:quick(quotio-openai/gpt-5.6-luna-fast:high)"),
+            "{row}"
+        );
         assert!(row.contains("fallback:2"), "{row}");
     }
     assert!(renderer_visible_width(&compact) <= 120, "{compact}");
@@ -540,7 +627,10 @@ fn injected_ansi_is_removed_while_trusted_theme_ansi_remains() {
 
     // then
     assert!(call.contains("\u{1b}[3mforeground\u{1b}[0m"), "{call:?}");
-    assert!(result.contains("\u{1b}[3mbackground\u{1b}[0m"), "{result:?}");
+    assert!(
+        result.contains("\u{1b}[3mbackground\u{1b}[0m"),
+        "{result:?}"
+    );
     assert!(!call.contains("\u{1b}[31m"), "{call:?}");
     assert!(!call.contains("\u{1b}[2J"), "{call:?}");
     assert!(!result.contains("https://example.com"), "{result:?}");
@@ -576,7 +666,10 @@ fn adversarial_terminal_sequences_are_removed_without_damaging_text() {
     // given
     let cases: [(&str, &str); 9] = [
         ("앞 \u{1b}[31m빨강\u{1b}[0m 뒤", "앞 빨강 뒤"),
-        ("앞 \u{1b}]8;;https://example.com\u{7}링크\u{1b}]8;;\u{7} 뒤", "앞 링크 뒤"),
+        (
+            "앞 \u{1b}]8;;https://example.com\u{7}링크\u{1b}]8;;\u{7} 뒤",
+            "앞 링크 뒤",
+        ),
         ("한\u{1b}]0;창 제목\u{1b}\\글", "한글"),
         ("한\u{7}글", "한글"),
         ("한\u{1b}[2J글", "한글"),
@@ -587,10 +680,16 @@ fn adversarial_terminal_sequences_are_removed_without_damaging_text() {
     ];
 
     // when
-    let normalized: Vec<String> = cases.iter().map(|(value, _)| normalize_renderer_text(value)).collect();
+    let normalized: Vec<String> = cases
+        .iter()
+        .map(|(value, _)| normalize_renderer_text(value))
+        .collect();
 
     // then
-    let expected: Vec<String> = cases.iter().map(|(_, expected)| expected.to_string()).collect();
+    let expected: Vec<String> = cases
+        .iter()
+        .map(|(_, expected)| expected.to_string())
+        .collect();
     assert_eq!(normalized, expected);
     for value in &normalized {
         expect_no_terminal_controls(value);
@@ -600,7 +699,10 @@ fn adversarial_terminal_sequences_are_removed_without_damaging_text() {
 #[test]
 fn lines_component_renders_lines_and_invalidate_is_callable() {
     // given
-    let component = lines_component(Lines::Static(vec!["row one".to_string(), "row two".to_string()]));
+    let component = lines_component(Lines::Static(vec![
+        "row one".to_string(),
+        "row two".to_string(),
+    ]));
 
     // when
     let rendered = component.render(80);
@@ -624,7 +726,11 @@ fn long_lines_rendered_at_72_are_truncated_by_visible_width() {
     // then
     assert_eq!(rendered.len(), 1);
     assert!(rendered[0].contains("..."), "{}", rendered[0]);
-    assert!(renderer_visible_width(&rendered[0]) <= 72, "{}", rendered[0]);
+    assert!(
+        renderer_visible_width(&rendered[0]) <= 72,
+        "{}",
+        rendered[0]
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -688,7 +794,13 @@ fn run_stats_cost_then_cache_hit_then_tps_in_order() {
         mode: TaskToolMode::Spawn,
         run_in_background: Some(false),
         // NOTE: TS also sets cache_hit_rate_last: 0.2, which the renderer does not read.
-        run_stats: Some(run_stats(134_000, 5, Some(118.0), Some(0.42131), Some(0.8712))),
+        run_stats: Some(run_stats(
+            134_000,
+            5,
+            Some(118.0),
+            Some(0.42131),
+            Some(0.8712),
+        )),
         ..Default::default()
     };
 
@@ -746,7 +858,13 @@ fn malformed_spend_facts_omit_impossible_money_and_cache_values() {
         status: "completed".to_string(),
         mode: TaskToolMode::Spawn,
         // NOTE: TS also sets cache_hit_rate_last: 0.2, which the renderer does not read.
-        run_stats: Some(run_stats(1_000, 0, Some(10.0), Some(f64::INFINITY), Some(2.0))),
+        run_stats: Some(run_stats(
+            1_000,
+            0,
+            Some(10.0),
+            Some(f64::INFINITY),
+            Some(2.0),
+        )),
         ..Default::default()
     }));
 
@@ -797,10 +915,15 @@ fn malformed_task_result_is_classified_as_error_with_reason() {
     };
 
     // when
-    let rendered = render_task_result_component(&details, &RecordingTheme).render(120).join("\n");
+    let rendered = render_task_result_component(&details, &RecordingTheme)
+        .render(120)
+        .join("\n");
 
     // then
     assert!(rendered.starts_with("<error>"), "{rendered}");
     assert!(rendered.contains("invalid_arguments"), "{rendered}");
-    assert!(rendered.contains(&format!("reason:{OBSERVED_REASON}")), "{rendered}");
+    assert!(
+        rendered.contains(&format!("reason:{OBSERVED_REASON}")),
+        "{rendered}"
+    );
 }

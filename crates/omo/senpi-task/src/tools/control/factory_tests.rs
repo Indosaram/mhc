@@ -5,14 +5,19 @@ use std::sync::Arc;
 use pretty_assertions::assert_eq;
 
 use crate::tools::control::caller_session::default_resolve_caller_session_id;
-use crate::tools::control::cancel::{TaskCancelDeps, create_task_cancel_tool, task_cancel_params_schema};
-use crate::tools::control::send::{
-    MemberScopedTaskSendDeps, TaskSendDeps, create_member_scoped_task_send_tool, create_task_send_tool,
+use crate::tools::control::cancel::{
+    TaskCancelDeps, create_task_cancel_tool, task_cancel_params_schema,
 };
-use crate::tools::control::send_schema::{member_scoped_task_send_params_schema, task_send_params_schema};
+use crate::tools::control::send::{
+    MemberScopedTaskSendDeps, TaskSendDeps, create_member_scoped_task_send_tool,
+    create_task_send_tool,
+};
+use crate::tools::control::send_schema::{
+    member_scoped_task_send_params_schema, task_send_params_schema,
+};
 use crate::tools::control::types::{
-    CancelManager, CancelOutcome, ControlListScope, ControlSendInput, ControlTaskRecord, SendManager, SendOutcome,
-    SessionIdCarrier, SessionIdSource,
+    CancelManager, CancelOutcome, ControlListScope, ControlSendInput, ControlTaskRecord,
+    SendManager, SendOutcome, SessionIdCarrier, SessionIdSource,
 };
 use crate::tools::team::types::TeamToolsService;
 
@@ -92,7 +97,10 @@ fn given_the_control_factories_when_built_then_names_labels_and_typebox_params_a
     assert_eq!(send.name, "task_send");
     assert_eq!(send.parameters, task_send_params_schema());
     assert_eq!(member_send.name, "task_send");
-    assert_eq!(member_send.parameters, member_scoped_task_send_params_schema());
+    assert_eq!(
+        member_send.parameters,
+        member_scoped_task_send_params_schema()
+    );
     assert_eq!(cancel.name, "task_cancel");
     assert_eq!(cancel.parameters, task_cancel_params_schema());
     for (description, label) in [
@@ -106,9 +114,12 @@ fn given_the_control_factories_when_built_then_names_labels_and_typebox_params_a
 }
 
 #[test]
-fn given_the_default_resolver_when_a_session_carrier_is_passed_then_the_current_session_id_is_read() {
+fn given_the_default_resolver_when_a_session_carrier_is_passed_then_the_current_session_id_is_read()
+{
     // given
-    let carrier = Carrier { session: LiveSession };
+    let carrier = Carrier {
+        session: LiveSession,
+    };
 
     // when
     let resolved = default_resolve_caller_session_id(&carrier);
@@ -125,7 +136,9 @@ fn given_no_resolver_override_when_send_tool_built_then_default_resolver_reads_c
         team_routing: None,
         resolve_caller_session_id: None,
     });
-    let carrier = Carrier { session: LiveSession };
+    let carrier = Carrier {
+        session: LiveSession,
+    };
 
     // when
     let resolved = (send.resolve_caller)(&carrier);

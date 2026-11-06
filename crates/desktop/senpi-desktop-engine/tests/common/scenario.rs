@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{Engine, TWO_DISPLAYS, fake_backend};
+use super::{fake_backend, Engine, TWO_DISPLAYS};
 
 pub const CHORD: &str = "ctrl+alt+shift+escape";
 

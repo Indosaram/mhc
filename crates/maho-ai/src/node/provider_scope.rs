@@ -30,7 +30,9 @@ pub struct ProviderScope {
 
 impl std::fmt::Debug for ProviderScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProviderScope").field("state", &self.state()).finish()
+        f.debug_struct("ProviderScope")
+            .field("state", &self.state())
+            .finish()
     }
 }
 
@@ -54,7 +56,11 @@ impl ProviderScope {
     }
 
     pub fn state(&self) -> ScopeState {
-        if self.lock().closed { ScopeState::Closed } else { ScopeState::Active }
+        if self.lock().closed {
+            ScopeState::Closed
+        } else {
+            ScopeState::Active
+        }
     }
 
     pub fn close(&self) {
@@ -64,7 +70,10 @@ impl ProviderScope {
         inner.images_overlay.clear();
     }
 
-    pub(crate) fn with_overlay<T>(&self, f: impl FnOnce(&mut HashMap<String, RegisteredApiProvider>) -> T) -> T {
+    pub(crate) fn with_overlay<T>(
+        &self,
+        f: impl FnOnce(&mut HashMap<String, RegisteredApiProvider>) -> T,
+    ) -> T {
         f(&mut self.lock().overlay)
     }
 
@@ -114,7 +123,10 @@ pub(crate) fn checked_active_scope() -> Result<Option<ProviderScope>, ProviderSc
     }
 }
 
-pub fn run_with_provider_scope<T>(scope: &ProviderScope, f: impl FnOnce() -> T) -> Result<T, ProviderScopeError> {
+pub fn run_with_provider_scope<T>(
+    scope: &ProviderScope,
+    f: impl FnOnce() -> T,
+) -> Result<T, ProviderScopeError> {
     if scope.state() == ScopeState::Closed {
         return Err(ProviderScopeError::Closed);
     }
@@ -129,7 +141,10 @@ pub fn run_with_provider_scope<T>(scope: &ProviderScope, f: impl FnOnce() -> T) 
     Ok(f())
 }
 
-pub async fn run_with_provider_scope_async<F: Future>(scope: &ProviderScope, future: F) -> Result<F::Output, ProviderScopeError> {
+pub async fn run_with_provider_scope_async<F: Future>(
+    scope: &ProviderScope,
+    future: F,
+) -> Result<F::Output, ProviderScopeError> {
     if scope.state() == ScopeState::Closed {
         return Err(ProviderScopeError::Closed);
     }
@@ -164,7 +179,10 @@ mod tests {
         .expect("outer");
         assert!(active_provider_scope().is_none());
         inner.close();
-        assert_eq!(run_with_provider_scope(&inner, || ()), Err(ProviderScopeError::Closed));
+        assert_eq!(
+            run_with_provider_scope(&inner, || ()),
+            Err(ProviderScopeError::Closed)
+        );
         assert!(bind_to_provider_scope(|| 1).is_err());
     }
 
@@ -174,7 +192,10 @@ mod tests {
         let seen = run_with_provider_scope_async(&scope, async {
             tokio::task::yield_now().await;
             let bound = bind_to_provider_scope(|| active_provider_scope().is_some()).expect("bind");
-            (active_provider_scope().is_some_and(|s| s.ptr_eq(&scope)), bound)
+            (
+                active_provider_scope().is_some_and(|s| s.ptr_eq(&scope)),
+                bound,
+            )
         })
         .await
         .expect("scope");

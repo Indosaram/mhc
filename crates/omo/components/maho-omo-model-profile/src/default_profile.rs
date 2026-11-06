@@ -24,13 +24,19 @@ pub async fn resolve_default_model_profile<T, F: Future<Output = (T, ProbeState)
     let [first, rest @ ..] = DEFAULT_MODEL_PROFILE_ORDER;
     let (primary, state) = resolve_for(first, probes).await;
     probes = state;
-    if matches!(resolution(&primary), ModelProfileResolution::Resolved { .. }) {
+    if matches!(
+        resolution(&primary),
+        ModelProfileResolution::Resolved { .. }
+    ) {
         return (primary, probes);
     }
     for profile_id in rest {
         let (candidate, state) = resolve_for(profile_id, probes).await;
         probes = state;
-        if matches!(resolution(&candidate), ModelProfileResolution::Resolved { .. }) {
+        if matches!(
+            resolution(&candidate),
+            ModelProfileResolution::Resolved { .. }
+        ) {
             return (candidate, probes);
         }
     }
@@ -58,12 +64,16 @@ mod tests {
                 |active, mut probes| async move {
                     probes.excluded_selectors.insert(active.to_owned());
                     let resolution = resolve_model_profile(&ResolveModelProfileInput {
-                        profiles: None, active, available_models: available, custom_providers: None,
+                        profiles: None,
+                        active,
+                        available_models: available,
+                        custom_providers: None,
                     });
                     (resolution, probes)
                 },
                 |resolution| resolution,
-            ).await;
+            )
+            .await;
             let id = match &result {
                 ModelProfileResolution::Resolved { profile, .. }
                 | ModelProfileResolution::Unavailable { profile, .. }
@@ -87,13 +97,17 @@ mod tests {
                 async move {
                     probes.excluded_selectors.insert(active.to_owned());
                     let resolution = resolve_model_profile(&ResolveModelProfileInput {
-                        profiles: Some(profiles), active, available_models: available, custom_providers: None,
+                        profiles: Some(profiles),
+                        active,
+                        available_models: available,
+                        custom_providers: None,
                     });
                     (resolution, probes)
                 }
             },
             |resolution| resolution,
-        ).await;
+        )
+        .await;
         let id = match &result {
             ModelProfileResolution::Resolved { profile, .. } => profile.id.as_str(),
             _ => panic!("expected resolved"),

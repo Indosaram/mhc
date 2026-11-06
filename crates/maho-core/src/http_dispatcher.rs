@@ -17,11 +17,26 @@ pub struct HttpIdleTimeoutChoice {
 }
 
 pub const HTTP_IDLE_TIMEOUT_CHOICES: [HttpIdleTimeoutChoice; 5] = [
-    HttpIdleTimeoutChoice { label: "30 sec", timeout_ms: 30_000 },
-    HttpIdleTimeoutChoice { label: "1 min", timeout_ms: 60_000 },
-    HttpIdleTimeoutChoice { label: "2 min", timeout_ms: 120_000 },
-    HttpIdleTimeoutChoice { label: "5 min", timeout_ms: 300_000 },
-    HttpIdleTimeoutChoice { label: "disabled", timeout_ms: 0 },
+    HttpIdleTimeoutChoice {
+        label: "30 sec",
+        timeout_ms: 30_000,
+    },
+    HttpIdleTimeoutChoice {
+        label: "1 min",
+        timeout_ms: 60_000,
+    },
+    HttpIdleTimeoutChoice {
+        label: "2 min",
+        timeout_ms: 120_000,
+    },
+    HttpIdleTimeoutChoice {
+        label: "5 min",
+        timeout_ms: 300_000,
+    },
+    HttpIdleTimeoutChoice {
+        label: "disabled",
+        timeout_ms: 0,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +54,11 @@ pub fn should_install_undici_globals(input: UndiciGlobalsInstallInput) -> bool {
     if input.is_bun {
         return false;
     }
-    if input.installed_fetch_present { input.current_fetch_is_installed } else { input.current_fetch_is_original }
+    if input.installed_fetch_present {
+        input.current_fetch_is_installed
+    } else {
+        input.current_fetch_is_original
+    }
 }
 
 pub fn parse_http_idle_timeout_ms(value: &serde_json::Value) -> Option<u64> {
@@ -67,7 +86,10 @@ fn parse_number(value: f64) -> Option<u64> {
 }
 
 pub fn format_http_idle_timeout_ms(timeout_ms: u64) -> String {
-    if let Some(choice) = HTTP_IDLE_TIMEOUT_CHOICES.iter().find(|choice| choice.timeout_ms == timeout_ms) {
+    if let Some(choice) = HTTP_IDLE_TIMEOUT_CHOICES
+        .iter()
+        .find(|choice| choice.timeout_ms == timeout_ms)
+    {
         return choice.label.to_owned();
     }
     format!("{} sec", timeout_ms / 1000)
@@ -80,7 +102,9 @@ pub fn apply_http_proxy_settings(
     is_multi_session_rpc: bool,
     env: &mut HashMap<String, String>,
 ) -> Result<(), String> {
-    let Some(proxy) = http_proxy.map(str::trim).filter(|proxy| !proxy.is_empty()) else { return Ok(()) };
+    let Some(proxy) = http_proxy.map(str::trim).filter(|proxy| !proxy.is_empty()) else {
+        return Ok(());
+    };
     if is_multi_session_rpc {
         let existing = env.get("HTTP_PROXY").or_else(|| env.get("HTTPS_PROXY"));
         if let Some(existing) = existing
@@ -89,8 +113,10 @@ pub fn apply_http_proxy_settings(
             return Err("Multi-session RPC shares one process-global HTTP proxy; proxy settings must be fixed at process startup.".to_owned());
         }
     }
-    env.entry("HTTP_PROXY".to_owned()).or_insert_with(|| proxy.to_owned());
-    env.entry("HTTPS_PROXY".to_owned()).or_insert_with(|| proxy.to_owned());
+    env.entry("HTTP_PROXY".to_owned())
+        .or_insert_with(|| proxy.to_owned());
+    env.entry("HTTPS_PROXY".to_owned())
+        .or_insert_with(|| proxy.to_owned());
     Ok(())
 }
 
@@ -129,15 +155,30 @@ mod tests {
 
     #[test]
     fn bun_never_installs_the_globals() {
-        let input = UndiciGlobalsInstallInput { is_bun: true, current_fetch_is_original: true, current_fetch_is_installed: false, installed_fetch_present: false };
+        let input = UndiciGlobalsInstallInput {
+            is_bun: true,
+            current_fetch_is_original: true,
+            current_fetch_is_installed: false,
+            installed_fetch_present: false,
+        };
         assert!(!should_install_undici_globals(input));
     }
 
     #[test]
     fn node_installs_unless_fetch_was_replaced() {
-        let untouched = UndiciGlobalsInstallInput { is_bun: false, current_fetch_is_original: true, current_fetch_is_installed: false, installed_fetch_present: false };
+        let untouched = UndiciGlobalsInstallInput {
+            is_bun: false,
+            current_fetch_is_original: true,
+            current_fetch_is_installed: false,
+            installed_fetch_present: false,
+        };
         assert!(should_install_undici_globals(untouched));
-        let replaced = UndiciGlobalsInstallInput { is_bun: false, current_fetch_is_original: false, current_fetch_is_installed: false, installed_fetch_present: false };
+        let replaced = UndiciGlobalsInstallInput {
+            is_bun: false,
+            current_fetch_is_original: false,
+            current_fetch_is_installed: false,
+            installed_fetch_present: false,
+        };
         assert!(!should_install_undici_globals(replaced));
     }
 
@@ -145,8 +186,14 @@ mod tests {
     fn a_proxy_is_applied_without_overriding_an_existing_value() {
         let mut env = HashMap::new();
         apply_http_proxy_settings(Some("http://proxy"), false, &mut env).expect("apply");
-        assert_eq!(env.get("HTTP_PROXY").map(String::as_str), Some("http://proxy"));
-        assert_eq!(env.get("HTTPS_PROXY").map(String::as_str), Some("http://proxy"));
+        assert_eq!(
+            env.get("HTTP_PROXY").map(String::as_str),
+            Some("http://proxy")
+        );
+        assert_eq!(
+            env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://proxy")
+        );
     }
 
     #[test]

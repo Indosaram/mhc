@@ -53,19 +53,41 @@ pub struct KibitzerChildSpawnInput {
 }
 
 pub trait KibitzerChild: Send + Sync {
-    fn steer<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
-    fn follow_up<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn steer<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn follow_up<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
     fn abort(&self);
-    fn subscribe_nudges(&self, listener: Arc<dyn Fn(RecallNudge) + Send + Sync>) -> Box<dyn FnOnce() + Send>;
+    fn subscribe_nudges(
+        &self,
+        listener: Arc<dyn Fn(RecallNudge) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send>;
     /// The child's observation channel (tool starts/ends and message ends). REQUIRED: no default
     /// implementation, so no observation can be silently dropped.
-    fn subscribe_observations(&self, listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>) -> Box<dyn FnOnce() + Send>;
+    fn subscribe_observations(
+        &self,
+        listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send>;
     fn settle(&self) -> Pin<Box<dyn Future<Output = JudgeSettle> + Send>>;
     fn dispose<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }
 
 /// The child-spawner future: resolves the resident child or a typed start error.
-pub type KibitzerChildSpawnFuture<'a> = Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, crate::kibitzer_sidecar_model::KibitzerSidecarStartError>> + Send + 'a>>;
+pub type KibitzerChildSpawnFuture<'a> = Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    Arc<dyn KibitzerChild>,
+                    crate::kibitzer_sidecar_model::KibitzerSidecarStartError,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
 
 pub trait KibitzerChildSpawner: Send + Sync {
     fn spawn<'a>(&'a self, input: KibitzerChildSpawnInput) -> KibitzerChildSpawnFuture<'a>;

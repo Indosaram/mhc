@@ -43,7 +43,11 @@ impl CredentialRotationPolicy<'_> {
         }
         // senpi `getProviderAuthStatus(provider).source === "runtime"`: a runtime API key wins over
         // the stored accounts, so the first turn resolves the flat credential only.
-        self.registry.get_provider_auth_status(provider).source.as_deref() != Some("runtime")
+        self.registry
+            .get_provider_auth_status(provider)
+            .source
+            .as_deref()
+            != Some("runtime")
     }
 }
 

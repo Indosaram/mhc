@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use idle_injection::IdleInjectionCoordinator;
-use maho_ext_api::{ComponentLogger, DeferredMacrotask, ExtensionContext, FlagValue, ToolDefinition};
+use maho_ext_api::{
+    ComponentLogger, DeferredMacrotask, ExtensionContext, FlagValue, ToolDefinition,
+};
 
 use crate::capture::ToolCaptureRegistry;
 use crate::coordinator::{IdleInjectionDelivery, IdleInjectionQueue};
@@ -44,7 +46,9 @@ impl OmoComponentContext {
     /// native components read `logger`, `idle_coordinator` and `defer_macrotask`.
     pub fn bind(&self, ctx: &mut ExtensionContext) {
         ctx.logger = Some(Arc::clone(&self.logger));
-        ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(&self.idle_coordinator)));
+        ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(
+            &self.idle_coordinator,
+        )));
         ctx.defer_macrotask = Some(Arc::clone(&self.defer_macrotask));
     }
 }
@@ -60,22 +64,39 @@ pub struct OmoRuntime {
 }
 
 impl OmoRuntime {
-    pub fn new(deliver: IdleInjectionDelivery, config: ConfigAccessor, options: OmoRuntimeOptions) -> Self {
-        let logger = options.logger.unwrap_or_else(|| Arc::new(StderrLogger) as Arc<dyn ComponentLogger>);
+    pub fn new(
+        deliver: IdleInjectionDelivery,
+        config: ConfigAccessor,
+        options: OmoRuntimeOptions,
+    ) -> Self {
+        let logger = options
+            .logger
+            .unwrap_or_else(|| Arc::new(StderrLogger) as Arc<dyn ComponentLogger>);
         let barrier = TurnBarrier::new();
-        let flush = options.flush_scheduler.unwrap_or_else(|| DeferredScheduler::runtime(Arc::clone(&barrier), Some(BATCH_WINDOW)));
+        let flush = options.flush_scheduler.unwrap_or_else(|| {
+            DeferredScheduler::runtime(Arc::clone(&barrier), Some(BATCH_WINDOW))
+        });
         let barrier = flush.barrier();
-        let soon = options.soon_scheduler.unwrap_or_else(|| DeferredScheduler::runtime(Arc::clone(&barrier), None));
+        let soon = options
+            .soon_scheduler
+            .unwrap_or_else(|| DeferredScheduler::runtime(Arc::clone(&barrier), None));
         let defer_macrotask = options.defer_macrotask.unwrap_or_else(|| {
             let scheduler = DeferredScheduler::runtime(Arc::clone(&barrier), None);
             Arc::new(move |task| scheduler.schedule(task))
         });
         let delivery = Arc::new(Mutex::new(deliver));
         let bound_delivery = Arc::clone(&delivery);
-        let coordinator = IdleInjectionQueue::new(Arc::new(move |message, mode| {
-            let deliver = bound_delivery.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            deliver(message, mode)
-        }), flush, soon);
+        let coordinator = IdleInjectionQueue::new(
+            Arc::new(move |message, mode| {
+                let deliver = bound_delivery
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                deliver(message, mode)
+            }),
+            flush,
+            soon,
+        );
         let config = Arc::new(Mutex::new(config));
         let bound_config = Arc::clone(&config);
         let capture = ToolCaptureRegistry::new();
@@ -83,14 +104,24 @@ impl OmoRuntime {
         let context = OmoComponentContext {
             logger,
             config: Arc::new(move |name| {
-                let read = bound_config.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let read = bound_config
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
                 read(name)
             }),
             idle_coordinator: Arc::new(coordinator.clone()),
             defer_macrotask,
             get_captured_tools: Arc::new(move || captured.get_captured_tools()),
         };
-        Self { context, coordinator, capture, delivery, config, startup: Arc::default() }
+        Self {
+            context,
+            coordinator,
+            capture,
+            delivery,
+            config,
+            startup: Arc::default(),
+        }
     }
 
     /// Rebinds a reload's extension API without replacing the queue or captured tool registry.
@@ -137,7 +168,10 @@ impl OmoRuntime {
     }
 
     pub fn startup_deferral(&self) -> crate::startup_deferral::StartupDeferral {
-        self.startup.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.startup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn capture_tools(&self, tools: Vec<ToolDefinition>) {

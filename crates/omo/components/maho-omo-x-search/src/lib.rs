@@ -15,28 +15,27 @@ pub mod index;
 pub mod params;
 pub mod tool;
 
-pub use auth::{has_xai_credential, resolve_xai_bearer, XAI_PROVIDER};
+pub use auth::{XAI_PROVIDER, has_xai_credential, resolve_xai_bearer};
 pub use client::{
+    DEFAULT_CARRIER, DEFAULT_PROMPT_VARIANT, PerformXSearchOptions, ReasoningEffort,
+    X_SEARCH_DEFAULT_DEADLINE_MS, X_SEARCH_ENDPOINT, X_SEARCH_MAX_OUTPUT_TOKENS, XSearchCarrier,
+    XSearchCarrierName, XSearchFetch, XSearchFetchOutcome, XSearchHttpResponse,
+    XSearchInputMessage, XSearchPromptVariant, XSearchRequestBody, XSearchRequestParams,
     build_x_search_request, carrier_model, default_fetch, normalize_x_search_response,
     perform_x_search, prompt_v1, prompt_v2, render_prompt,
-    PerformXSearchOptions, ReasoningEffort, XSearchCarrier, XSearchCarrierName,
-    XSearchFetch, XSearchFetchOutcome, XSearchHttpResponse, XSearchInputMessage,
-    XSearchPromptVariant, XSearchRequestBody, XSearchRequestParams, DEFAULT_CARRIER,
-    DEFAULT_PROMPT_VARIANT, X_SEARCH_DEFAULT_DEADLINE_MS, X_SEARCH_ENDPOINT,
-    X_SEARCH_MAX_OUTPUT_TOKENS,
 };
 pub use format::{
-    format_x_search_error, format_x_search_result, NormalizedXSearch, XSearchErrorCode,
-    XSearchResultItem, XSearchUsage, EMPTY_RESULT_TEXT,
+    EMPTY_RESULT_TEXT, NormalizedXSearch, XSearchErrorCode, XSearchResultItem, XSearchUsage,
+    format_x_search_error, format_x_search_result,
 };
 pub use index::{
-    create_x_search_component, resolve_x_search_skill_path, SkillPathResolver,
-    XSearchComponent, XSearchComponentOptions, X_SEARCH_COMPONENT_NAME,
+    SkillPathResolver, X_SEARCH_COMPONENT_NAME, XSearchComponent, XSearchComponentOptions,
+    create_x_search_component, resolve_x_search_skill_path,
 };
 pub use params::{
-    validate_x_search_params, x_search_parameters_schema, XSearchParams, XSearchValidation,
+    XSearchParams, XSearchValidation, validate_x_search_params, x_search_parameters_schema,
 };
 pub use tool::{
-    create_x_search_tool, BearerResolver, CreateXSearchToolOptions, XSearchToolDetails,
-    X_SEARCH_MODEL_ENV, X_SEARCH_TOOL_DESCRIPTION, X_SEARCH_TOOL_NAME,
+    BearerResolver, CreateXSearchToolOptions, X_SEARCH_MODEL_ENV, X_SEARCH_TOOL_DESCRIPTION,
+    X_SEARCH_TOOL_NAME, XSearchToolDetails, create_x_search_tool,
 };

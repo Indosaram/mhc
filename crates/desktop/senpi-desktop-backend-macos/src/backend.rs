@@ -14,9 +14,9 @@ use senpi_desktop_core::types::{
 };
 use senpi_desktop_core::user_input::UserPresses;
 
-use crate::ax::{MacAx, is_trusted};
+use crate::ax::{is_trusted, MacAx};
 use crate::capture::{MacCapture, Screencapture};
-use crate::input::{CANARY_STOP_REASON, CanaryMode, CanaryResult, MacInput, UserInputWatch};
+use crate::input::{CanaryMode, CanaryResult, MacInput, UserInputWatch, CANARY_STOP_REASON};
 
 #[path = "permissions.rs"]
 pub(crate) mod permissions;

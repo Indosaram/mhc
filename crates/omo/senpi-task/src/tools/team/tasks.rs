@@ -7,8 +7,8 @@ use team_core::types::{Task, TaskStatus};
 use crate::tools::control::tool_result::{AgentToolResult, tool_result};
 use crate::tools::team::index::TeamTool;
 use crate::tools::team::types::{
-    CreateTeamTaskServiceInput, TeamTaskListFilter, TeamToolDeps, TeamToolServiceError, TeamToolsService,
-    UpdateTeamTaskServiceInput,
+    CreateTeamTaskServiceInput, TeamTaskListFilter, TeamToolDeps, TeamToolServiceError,
+    TeamToolsService, UpdateTeamTaskServiceInput,
 };
 
 pub const TASK_CREATE_TOOL_NAME: &str = "task_create";
@@ -221,7 +221,9 @@ fn task_status_text(status: &TaskStatus) -> String {
 
 /// Equivalent of the TS `isMissingStateError` check on a service failure (ENOENT signature).
 pub fn is_missing_state_service_error(error: &TeamToolServiceError) -> bool {
-    error.name == "ENOENT" || error.message.contains("ENOENT") || error.message.contains("No such file or directory")
+    error.name == "ENOENT"
+        || error.message.contains("ENOENT")
+        || error.message.contains("No such file or directory")
 }
 
 pub fn run_team_task_create(
@@ -280,7 +282,10 @@ pub fn run_team_task_list(
             echo(&task.subject)
         )
     }));
-    Ok(tool_result(&lines.join("\n"), TeamTaskListDetails::List { tasks }))
+    Ok(tool_result(
+        &lines.join("\n"),
+        TeamTaskListDetails::List { tasks },
+    ))
 }
 
 pub fn run_team_task_get(
@@ -316,7 +321,12 @@ pub fn run_team_task_get(
     if !task.blocked_by.is_empty() {
         lines.push(format!("blocked by: {}", echo(&task.blocked_by.join(", "))));
     }
-    Ok(tool_result(&lines.join("\n"), TeamTaskGetDetails::Task { task: Box::new(task) }))
+    Ok(tool_result(
+        &lines.join("\n"),
+        TeamTaskGetDetails::Task {
+            task: Box::new(task),
+        },
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,12 +339,16 @@ enum UpdateFailureKind {
 
 fn classify_update_failure(name: &str) -> Option<UpdateFailureKind> {
     match name {
-        "TeamTaskAlreadyClaimedError" | "TaskAlreadyClaimedError" => Some(UpdateFailureKind::AlreadyClaimed),
-        "TeamTaskBlockedByError" | "TaskBlockedByError" => Some(UpdateFailureKind::BlockedBy),
-        "TeamTaskInvalidTransitionError" | "TaskInvalidTransitionError" | "InvalidTaskTransitionError" => {
-            Some(UpdateFailureKind::InvalidTransition)
+        "TeamTaskAlreadyClaimedError" | "TaskAlreadyClaimedError" => {
+            Some(UpdateFailureKind::AlreadyClaimed)
         }
-        "TeamTaskCrossOwnerUpdateError" | "TaskCrossOwnerUpdateError" => Some(UpdateFailureKind::CrossOwner),
+        "TeamTaskBlockedByError" | "TaskBlockedByError" => Some(UpdateFailureKind::BlockedBy),
+        "TeamTaskInvalidTransitionError"
+        | "TaskInvalidTransitionError"
+        | "InvalidTaskTransitionError" => Some(UpdateFailureKind::InvalidTransition),
+        "TeamTaskCrossOwnerUpdateError" | "TaskCrossOwnerUpdateError" => {
+            Some(UpdateFailureKind::CrossOwner)
+        }
         _ => None,
     }
 }
@@ -362,7 +376,12 @@ pub fn run_team_task_update(
                 task_status_text(&task.status),
                 echo(&task.subject)
             );
-            Ok(tool_result(&text, TeamTaskUpdateDetails::Updated { task: Box::new(task) }))
+            Ok(tool_result(
+                &text,
+                TeamTaskUpdateDetails::Updated {
+                    task: Box::new(task),
+                },
+            ))
         }
         Err(error) => {
             let Some(kind) = classify_update_failure(&error.name) else {
@@ -393,7 +412,9 @@ pub fn run_team_task_update(
     }
 }
 
-pub fn create_team_task_create_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskCreateInput, TeamTaskCreateDetails> {
+pub fn create_team_task_create_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamTaskCreateInput, TeamTaskCreateDetails> {
     TeamTool {
         name: TASK_CREATE_TOOL_NAME,
         label: TASK_CREATE_TOOL_LABEL,
@@ -404,7 +425,9 @@ pub fn create_team_task_create_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskCre
     }
 }
 
-pub fn create_team_task_list_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskListInput, TeamTaskListDetails> {
+pub fn create_team_task_list_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamTaskListInput, TeamTaskListDetails> {
     TeamTool {
         name: TASK_LIST_TOOL_NAME,
         label: TASK_LIST_TOOL_LABEL,
@@ -415,7 +438,9 @@ pub fn create_team_task_list_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskListI
     }
 }
 
-pub fn create_team_task_get_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskGetInput, TeamTaskGetDetails> {
+pub fn create_team_task_get_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamTaskGetInput, TeamTaskGetDetails> {
     TeamTool {
         name: TASK_GET_TOOL_NAME,
         label: TASK_GET_TOOL_LABEL,
@@ -426,7 +451,9 @@ pub fn create_team_task_get_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskGetInp
     }
 }
 
-pub fn create_team_task_update_tool(deps: &TeamToolDeps) -> TeamTool<TeamTaskUpdateInput, TeamTaskUpdateDetails> {
+pub fn create_team_task_update_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamTaskUpdateInput, TeamTaskUpdateDetails> {
     TeamTool {
         name: TASK_UPDATE_TOOL_NAME,
         label: TASK_UPDATE_TOOL_LABEL,

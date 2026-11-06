@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::{AuditRecord, warn};
+use super::{warn, AuditRecord};
 
 /// Rotate when the live file reaches this size.
 pub(crate) const ROTATE_BYTES: u64 = 50 * 1024 * 1024;

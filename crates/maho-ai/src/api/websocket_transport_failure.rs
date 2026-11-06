@@ -112,7 +112,10 @@ impl WebSocketTransportFailure {
             .grace
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let report_guard = self.reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let report_guard = self
+            .reported
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if *report_guard || grace.is_some() {
             return;
         }
@@ -222,13 +225,23 @@ mod tests {
     async fn reports_generic_error_when_close_never_arrives() {
         let (sent, received) = tokio::sync::oneshot::channel();
         let sent = Mutex::new(Some(sent));
-        let failure =
-            create_web_socket_transport_failure(move |error| {
-                sent.lock().unwrap().take().expect("one failure").send(error).expect("receiver");
-            }, 250);
+        let failure = create_web_socket_transport_failure(
+            move |error| {
+                sent.lock()
+                    .unwrap()
+                    .take()
+                    .expect("one failure")
+                    .send(error)
+                    .expect("receiver");
+            },
+            250,
+        );
         failure.on_error(&WebSocketErrorEvent::default());
         assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), received).await.expect("bounded failure").expect("failure"),
+            tokio::time::timeout(Duration::from_secs(1), received)
+                .await
+                .expect("bounded failure")
+                .expect("failure"),
             WebSocketTransportError::Message("WebSocket error".into())
         );
     }
@@ -346,7 +359,10 @@ mod tests {
 
         failure.on_error(&WebSocketErrorEvent::default());
         failure.on_error(&WebSocketErrorEvent::default());
-        tokio::time::timeout(Duration::from_secs(1), received.recv()).await.expect("bounded failure").expect("failure");
+        tokio::time::timeout(Duration::from_secs(1), received.recv())
+            .await
+            .expect("bounded failure")
+            .expect("failure");
         assert_eq!(
             seen.lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

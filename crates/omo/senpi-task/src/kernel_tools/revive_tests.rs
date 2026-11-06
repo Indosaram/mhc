@@ -23,7 +23,10 @@ fn revived_same_host_child_keeps_its_binding() {
     let mut bindings = create_kernel_tool_bindings();
     bindings.bind("st_00000901", grant("fixture_lookup"));
     assert!(bindings.get("st_00000901").is_some());
-    assert_eq!(bindings.get("st_00000901").unwrap().requested_names, ["fixture_lookup"]);
+    assert_eq!(
+        bindings.get("st_00000901").unwrap().requested_names,
+        ["fixture_lookup"]
+    );
 }
 
 #[test]
@@ -70,5 +73,8 @@ fn a_transcript_without_kernel_tool_envelopes_restores_nothing() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     writeln!(file, "{}", json!({"type":"session","id":"child-session"})).unwrap();
     writeln!(file, "{}", json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}})).unwrap();
-    assert_eq!(recorded_kernel_tool_names(file.path().to_str().unwrap()), Vec::<String>::new());
+    assert_eq!(
+        recorded_kernel_tool_names(file.path().to_str().unwrap()),
+        Vec::<String>::new()
+    );
 }

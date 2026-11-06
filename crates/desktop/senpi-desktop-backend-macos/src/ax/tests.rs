@@ -4,10 +4,10 @@ use senpi_desktop_core::ax::{AxBackend, AxBounds, AxHandle};
 use senpi_desktop_core::error::{CoreResult, DesktopError, ErrorCode};
 use senpi_desktop_core::types::DesktopWindow;
 
-use super::MacAx;
 use super::actions::action_name;
-use super::props::{AttributeSource, read_props, truncate_chars};
+use super::props::{read_props, truncate_chars, AttributeSource};
 use super::tree::{bounds_matches_window, pick_by_title_and_frame};
+use super::MacAx;
 
 /// In-memory AX element: attribute name -> string or bool.
 #[derive(Default)]

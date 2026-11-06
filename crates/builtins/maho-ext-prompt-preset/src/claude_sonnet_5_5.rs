@@ -1,11 +1,26 @@
 //! Port of senpi `packages/coding-agent/src/core/extensions/builtin/prompt-preset/claude-sonnet-5-5.ts`.
 
-use maho_core::dynamic_prompt::{PromptSurface, build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, handoff::build_handoff_section, verification::build_test_discipline_section, tool_categorization::get_tools_prompt_display, workstation::WorkstationDialect};
-use crate::execution_tooling::{build_execution_tooling_paragraph, ExecutionToolingDialect};
+use crate::execution_tooling::{ExecutionToolingDialect, build_execution_tooling_paragraph};
+use maho_core::dynamic_prompt::{
+    PromptSurface,
+    build::{
+        BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
+    },
+    handoff::build_handoff_section,
+    tool_categorization::get_tools_prompt_display,
+    verification::build_test_discipline_section,
+    workstation::WorkstationDialect,
+};
 
 fn build_search_line(context: &DynamicPromptCoreContext) -> String {
     let trigger_tools = get_tools_prompt_display(&context.tools);
-    if trigger_tools.is_empty() { String::new() } else { format!("\nSpecialized search available this turn: {trigger_tools}. Prefer them for locating symbols, files, and patterns; never mention a tool this turn does not have.\n") }
+    if trigger_tools.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nSpecialized search available this turn: {trigger_tools}. Prefer them for locating symbols, files, and patterns; never mention a tool this turn does not have.\n"
+        )
+    }
 }
 
 const INTENT_GATE_LEAD_TERMINAL: &str = "Open every turn with one short routing line:\n\nI read this as [intent] - [plan]. I'll stop when [the exact, observable condition that ends this turn].\n\nOnly the user's explicit request commits you to implementation. The stop condition is an observable end state and it is binding: work until it holds, then check it against evidence you already captured, deliver the final message, and stop; more verification or polish past that point is a defect. Never echo prompt scaffolding in user-facing output.";

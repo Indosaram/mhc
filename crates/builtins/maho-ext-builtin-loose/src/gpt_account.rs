@@ -15,12 +15,16 @@ pub enum AccountAction {
 }
 
 pub fn parse_action(raw: &str) -> Result<AccountAction, &'static str> {
-    if let Some(command) = parse_display_name_command(raw)? { return Ok(AccountAction::DisplayName(command)); }
+    if let Some(command) = parse_display_name_command(raw)? {
+        return Ok(AccountAction::DisplayName(command));
+    }
     let mut args = raw.split_whitespace();
     Ok(match args.next().unwrap_or("list") {
         "list" => AccountAction::List,
         "add" => AccountAction::Add,
-        "remove" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Remove(id.into())),
+        "remove" => args
+            .next()
+            .map_or(AccountAction::Usage, |id| AccountAction::Remove(id.into())),
         "pin" => match args.next() {
             Some("unpin") => AccountAction::Unpin,
             Some(id) => AccountAction::Pin(id.into()),
@@ -33,14 +37,21 @@ pub fn parse_action(raw: &str) -> Result<AccountAction, &'static str> {
 
 use maho_ext_api::*;
 use std::sync::Arc;
-pub type AccountLogin=Arc<dyn Fn(Arc<crate::oauth_login_interaction::ExtensionLoginInteraction>)->ExtensionFuture<'static,Option<maho_ai::auth::types::AccountLoginReceipt>>+Send+Sync>;
-pub struct GptAccount{
-    pub login:AccountLogin,
-    pub open_browser:Arc<dyn Fn(&str)+Send+Sync>,
+pub type AccountLogin = Arc<
+    dyn Fn(
+            Arc<crate::oauth_login_interaction::ExtensionLoginInteraction>,
+        ) -> ExtensionFuture<'static, Option<maho_ai::auth::types::AccountLoginReceipt>>
+        + Send
+        + Sync,
+>;
+pub struct GptAccount {
+    pub login: AccountLogin,
+    pub open_browser: Arc<dyn Fn(&str) + Send + Sync>,
 }
-impl Extension for GptAccount{
-    fn register(&self,api:&mut ExtensionApi){
-        let login=self.login.clone();let open_browser=self.open_browser.clone();
+impl Extension for GptAccount {
+    fn register(&self, api: &mut ExtensionApi) {
+        let login = self.login.clone();
+        let open_browser = self.open_browser.clone();
         api.register_command("gpt-account",Some("List and manage ChatGPT Subscription OAuth accounts.".into()),Some("[add | remove <id> | pin <id> | unpin | rename <id> <display name...> | clear-name <id>]".into()),Arc::new(move|raw,ctx|{
             let login=login.clone();let open_browser=open_browser.clone();
             Box::pin(async move{

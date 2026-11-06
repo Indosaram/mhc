@@ -2,12 +2,18 @@ use maho_codemode::tool::{runtime_label::*, types::EvalLanguage};
 
 #[test]
 fn contracts_home_with_separator_boundary() {
-    assert_eq!(minify_path("/Users/developer", "/Users/dev"), "/Users/developer");
+    assert_eq!(
+        minify_path("/Users/developer", "/Users/dev"),
+        "/Users/developer"
+    );
     assert_eq!(minify_path("/Users/dev", "/Users/dev"), "~");
 }
 #[test]
 fn middle_path_retains_tail_and_head() {
-    let minified = minify_path("/opt/homebrew/Cellar/node-runtime/26.7.0_1/libexec/bin/node", "/Users/dev");
+    let minified = minify_path(
+        "/opt/homebrew/Cellar/node-runtime/26.7.0_1/libexec/bin/node",
+        "/Users/dev",
+    );
     assert!(minified.starts_with("/opt/"));
     assert!(minified.ends_with("/bin/node"));
     assert!(minified.chars().count() <= 40);
@@ -19,10 +25,12 @@ fn oversized_segment_caps_codepoints() {
     assert!(minified.ends_with(&"가".repeat(39)));
 }
 #[test]
-fn windows_home_contracts() {
-}
+fn windows_home_contracts() {}
 #[test]
 fn runtime_badge_distinguishes_javascript_hosts() {
     assert!(format_runtime_badge(EvalLanguage::Js, "bun", "1.4.0", None, "").starts_with("bun "));
-    assert_eq!(format_runtime_badge(EvalLanguage::Js, "bun", "1.4.0", None, ""), "bun 1.4.0");
+    assert_eq!(
+        format_runtime_badge(EvalLanguage::Js, "bun", "1.4.0", None, ""),
+        "bun 1.4.0"
+    );
 }

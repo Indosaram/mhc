@@ -6,8 +6,8 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector};
 
 use super::frame::{
-    MonitorSample, PhysicalRect, capture_geometry_matches, composite, lay_out, logical_bounds,
-    logical_window_rect, physical_point,
+    capture_geometry_matches, composite, lay_out, logical_bounds, logical_window_rect,
+    physical_point, MonitorSample, PhysicalRect,
 };
 
 fn monitor(

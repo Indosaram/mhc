@@ -7,7 +7,11 @@ fn patch_paths_gate_edits_and_external_directories() {
     let project = tempfile::tempdir().expect("project");
     let input = json!({"input":"*** Begin Patch\n*** Update File: src/a.rs\n*** Move to: /outside/b.rs\n*** End Patch"});
     // When the registered builtin parser processes it.
-    let requests = create_builtin_parser_registry().parse("apply_patch", &input, (project.path(), project.path()));
+    let requests = create_builtin_parser_registry().parse(
+        "apply_patch",
+        &input,
+        (project.path(), project.path()),
+    );
     // Then every patched path is gated, including external access.
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[0].patterns, ["src/a.rs"]);
@@ -21,7 +25,8 @@ fn path_monitor_requires_read_and_external_directory() {
     let project = tempfile::tempdir().expect("project");
     let input = json!({"path":"/outside/log"});
     // When permission requests are extracted.
-    let requests = create_builtin_parser_registry().parse("monitor", &input, (project.path(), project.path()));
+    let requests =
+        create_builtin_parser_registry().parse("monitor", &input, (project.path(), project.path()));
     // Then the monitor cannot bypass read and external-directory policy.
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].permission, "read");
@@ -35,7 +40,8 @@ fn command_monitor_uses_bash_admission() {
     let project = tempfile::tempdir().expect("project");
     let input = json!({"command":"git status"});
     // When permission requests are extracted.
-    let requests = create_builtin_parser_registry().parse("monitor", &input, (project.path(), project.path()));
+    let requests =
+        create_builtin_parser_registry().parse("monitor", &input, (project.path(), project.path()));
     // Then command monitoring shares bash permissions.
     assert_eq!(requests[0].permission, "bash");
     assert_eq!(requests[0].patterns, ["git status"]);
@@ -53,11 +59,18 @@ fn patch_aliases_preserve_per_file_scope_and_empty_fallback() {
             assert_eq!(requests[0].patterns, ["a.txt"]);
             assert_eq!(requests[0].always, ["a.txt"]);
         }
-        for input in [json!({}), json!({"input":""}), json!({"input":"not a patch"})] {
+        for input in [
+            json!({}),
+            json!({"input":""}),
+            json!({"input":"not a patch"}),
+        ] {
             let requests = registry.parse(tool, &input, (project.path(), project.path()));
             assert_eq!(requests[0].permission, "edit");
             assert_eq!(requests[0].patterns, ["*"]);
         }
     }
-    assert_eq!(registry.parse("monitor", &json!({}), (project.path(), project.path()))[0].permission, "bash");
+    assert_eq!(
+        registry.parse("monitor", &json!({}), (project.path(), project.path()))[0].permission,
+        "bash"
+    );
 }

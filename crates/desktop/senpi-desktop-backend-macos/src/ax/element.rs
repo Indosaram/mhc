@@ -44,7 +44,9 @@ pub(super) fn ensure_trusted() -> CoreResult<()> {
     if is_trusted() {
         Ok(())
     } else {
-        Err(crate::backend::permissions::permission_denied(TccPermission::Accessibility))
+        Err(crate::backend::permissions::permission_denied(
+            TccPermission::Accessibility,
+        ))
     }
 }
 
@@ -138,12 +140,22 @@ pub(crate) fn copy_bool(element: &AXUIElement, attribute: &str) -> Option<bool> 
         .map(|value| value.as_bool())
 }
 
-pub(crate) fn copy_element(element: &AXUIElement, attribute: &str) -> Option<CFRetained<AXUIElement>> {
-    copy_attribute(element, attribute)?.downcast::<AXUIElement>().ok()
+pub(crate) fn copy_element(
+    element: &AXUIElement,
+    attribute: &str,
+) -> Option<CFRetained<AXUIElement>> {
+    copy_attribute(element, attribute)?
+        .downcast::<AXUIElement>()
+        .ok()
 }
 
-pub(crate) fn copy_elements(element: &AXUIElement, attribute: &str) -> Option<Vec<CFRetained<AXUIElement>>> {
-    let array = copy_attribute(element, attribute)?.downcast::<CFArray>().ok()?;
+pub(crate) fn copy_elements(
+    element: &AXUIElement,
+    attribute: &str,
+) -> Option<Vec<CFRetained<AXUIElement>>> {
+    let array = copy_attribute(element, attribute)?
+        .downcast::<CFArray>()
+        .ok()?;
     // SAFETY: AXWindows/AXChildren are documented CFArray<AXUIElement> values.
     let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
     Some(
@@ -172,7 +184,12 @@ pub(super) fn copy_name_array(
     let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
     Ok(array
         .iter()
-        .filter_map(|value| value.downcast::<CFString>().ok().map(|name| name.to_string()))
+        .filter_map(|value| {
+            value
+                .downcast::<CFString>()
+                .ok()
+                .map(|name| name.to_string())
+        })
         .collect())
 }
 
@@ -180,7 +197,9 @@ pub(crate) fn bounds(element: &AXUIElement) -> Option<AxBounds> {
     let position = copy_attribute(element, "AXPosition")?
         .downcast::<AXValue>()
         .ok()?;
-    let size = copy_attribute(element, "AXSize")?.downcast::<AXValue>().ok()?;
+    let size = copy_attribute(element, "AXSize")?
+        .downcast::<AXValue>()
+        .ok()?;
     let mut point = CGPoint { x: 0.0, y: 0.0 };
     let mut dimensions = CGSize {
         width: 0.0,
@@ -188,10 +207,12 @@ pub(crate) fn bounds(element: &AXUIElement) -> Option<AxBounds> {
     };
     // SAFETY: The output pointer targets a live CGPoint and the requested type
     // matches AXPosition.
-    let got_point = unsafe { position.value(AXValueType::CGPoint, NonNull::from(&mut point).cast()) };
+    let got_point =
+        unsafe { position.value(AXValueType::CGPoint, NonNull::from(&mut point).cast()) };
     // SAFETY: The output pointer targets a live CGSize and the requested type
     // matches AXSize.
-    let got_size = unsafe { size.value(AXValueType::CGSize, NonNull::from(&mut dimensions).cast()) };
+    let got_size =
+        unsafe { size.value(AXValueType::CGSize, NonNull::from(&mut dimensions).cast()) };
     (got_point && got_size).then_some(AxBounds {
         x: point.x,
         y: point.y,
@@ -212,6 +233,9 @@ pub(super) fn ax_result(error: AXError, context: impl Into<String>) -> CoreResul
     if error == AXError::Success {
         Ok(())
     } else {
-        Err(DesktopError::ax_failed(format!("{} ({error:?})", context.into())))
+        Err(DesktopError::ax_failed(format!(
+            "{} ({error:?})",
+            context.into()
+        )))
     }
 }

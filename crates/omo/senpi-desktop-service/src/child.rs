@@ -5,11 +5,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::rpc_client::DesktopServiceError;
 
@@ -60,8 +60,17 @@ pub struct AcquiredDesktopEngine {
     pub diagnostic_message: Option<String>,
 }
 
-pub type EngineAcquirer = Arc<dyn Fn(String, Option<String>) -> Pin<Box<dyn Future<Output = Result<AcquiredDesktopEngine, DesktopServiceError>> + Send>> + Send + Sync>;
-pub type EngineSpawner = Arc<dyn Fn(PathBuf) -> Result<EngineChild, DesktopServiceError> + Send + Sync>;
+pub type EngineAcquirer = Arc<
+    dyn Fn(
+            String,
+            Option<String>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<AcquiredDesktopEngine, DesktopServiceError>> + Send>,
+        > + Send
+        + Sync,
+>;
+pub type EngineSpawner =
+    Arc<dyn Fn(PathBuf) -> Result<EngineChild, DesktopServiceError> + Send + Sync>;
 
 pub struct AcquiringEngineChildOptions {
     pub version: String,
@@ -146,7 +155,11 @@ impl EngineChild {
         Self::new_with_hook(path, child, None)
     }
 
-    pub fn new_with_hook(path: String, mut child: Child, on_kill: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+    pub fn new_with_hook(
+        path: String,
+        mut child: Child,
+        on_kill: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         let alive = Arc::new(AtomicBool::new(true));
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
         let (stdin_close_tx, stdin_close_rx) = oneshot::channel::<()>();
@@ -241,9 +254,9 @@ impl EngineChild {
             };
 
             let reason = match exit_status {
-                Ok(status) => format!(
-                    "desktop engine exited ({status}){failure_part}; stderr: {stderr_str}"
-                ),
+                Ok(status) => {
+                    format!("desktop engine exited ({status}){failure_part}; stderr: {stderr_str}")
+                }
                 Err(err) => format!(
                     "desktop engine exited with error: {err}{failure_part}; stderr: {stderr_str}"
                 ),
@@ -283,7 +296,9 @@ impl EngineChild {
 
     pub fn write_line(&self, line: &str) -> Result<(), DesktopServiceError> {
         if !self.is_alive() {
-            return Err(DesktopServiceError::closed("desktop engine child not alive".to_string()));
+            return Err(DesktopServiceError::closed(
+                "desktop engine child not alive".to_string(),
+            ));
         }
         self.stdin_tx
             .send(line.to_string())
@@ -292,8 +307,9 @@ impl EngineChild {
 
     pub fn end(&self) {
         if let Ok(mut g) = self.stdin_close_tx.try_lock()
-            && let Some(tx) = g.take() {
-                let _ = tx.send(());
+            && let Some(tx) = g.take()
+        {
+            let _ = tx.send(());
         }
     }
 
@@ -305,8 +321,9 @@ impl EngineChild {
             on_kill();
         }
         if let Ok(mut g) = self.kill_tx.try_lock()
-            && let Some(tx) = g.take() {
-                let _ = tx.send(());
+            && let Some(tx) = g.take()
+        {
+            let _ = tx.send(());
         }
     }
 

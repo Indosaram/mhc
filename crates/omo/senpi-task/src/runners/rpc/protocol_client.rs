@@ -443,21 +443,21 @@ fn handle_line(
             if matches!(
                 parsed["type"].as_str(),
                 Some("session_id" | "session_replaced" | "session_info_changed")
-            )
-                && let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty()) {
-                    let listeners = {
-                        let mut state = shared.lock();
-                        state.durable_id = Some(id.to_owned());
-                        state
-                            .durable_listeners
-                            .iter()
-                            .map(|(_, listener)| listener.clone())
-                            .collect::<Vec<_>>()
-                    };
-                    for listener in listeners {
-                        listener(id);
-                    }
+            ) && let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty())
+            {
+                let listeners = {
+                    let mut state = shared.lock();
+                    state.durable_id = Some(id.to_owned());
+                    state
+                        .durable_listeners
+                        .iter()
+                        .map(|(_, listener)| listener.clone())
+                        .collect::<Vec<_>>()
+                };
+                for listener in listeners {
+                    listener(id);
                 }
+            }
             let listeners: Vec<RpcEventListener> = shared
                 .lock()
                 .event_listeners

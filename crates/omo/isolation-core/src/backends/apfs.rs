@@ -67,7 +67,8 @@ mod system {
     use std::sync::Arc;
 
     unsafe extern "C" {
-        fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32) -> libc::c_int;
+        fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32)
+        -> libc::c_int;
     }
 
     pub struct SystemCloneSymbols;

@@ -64,13 +64,7 @@ struct Process {
 impl Process {
     fn open(pid: u32) -> Option<Self> {
         // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            )
-        };
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             return None;
         }
@@ -79,11 +73,7 @@ impl Process {
         // SAFETY: `handle` is a live process handle and every out-pointer outlives the call.
         let queried = unsafe { GetProcessTimes(handle, creation, exit, kernel, user) };
         let created = (u64::from(times[0].high) << 32) | u64::from(times[0].low);
-        let process = Self {
-            pid,
-            handle,
-            created,
-        };
+        let process = Self { pid, handle, created };
         (queried != 0).then_some(process)
     }
 
@@ -139,7 +129,11 @@ pub(crate) fn terminate_process_tree(root: u32) -> bool {
     for _ in 0..MAX_PASSES {
         let mut adopted = Vec::new();
         for (pid, parent) in process_table() {
-            if tree.iter().chain(&adopted).any(|known: &Process| known.pid == pid) {
+            if tree
+                .iter()
+                .chain(&adopted)
+                .any(|known: &Process| known.pid == pid)
+            {
                 continue;
             }
             let Some(parent) = tree.iter().chain(&adopted).find(|known| known.pid == parent) else {

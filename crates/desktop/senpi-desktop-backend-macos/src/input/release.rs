@@ -10,7 +10,12 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 /// to it, through the route and code the in-process release uses. A button on
 /// the HID route is released where the pointer now is, so the user's pointer
 /// does not jump back to where the press began.
-pub(crate) fn post_helper_release(route: Route, input: Input, text: Option<&str>, flags: Option<u64>) -> CoreResult<()> {
+pub(crate) fn post_helper_release(
+    route: Route,
+    input: Input,
+    text: Option<&str>,
+    flags: Option<u64>,
+) -> CoreResult<()> {
     let source = cgevent::event_source()?;
     let mut detached = Held::default();
     let flags = CGEventFlags::from_bits_truncate(flags.unwrap_or(0));
@@ -22,19 +27,40 @@ pub(crate) fn post_helper_release(route: Route, input: Input, text: Option<&str>
     };
     let held = match (input, route) {
         (Input::Key(code), Route::Hid) => {
-            return keys::post_key(&source, &mut detached, code, text, false, flags, KeyRoute::Global);
+            return keys::post_key(
+                &source,
+                &mut detached,
+                code,
+                text,
+                false,
+                flags,
+                KeyRoute::Global,
+            );
         }
         (Input::Key(code), Route::Keyboard(pid)) => {
-            return keys::post_key(&source, &mut detached, code, text, false, flags, KeyRoute::Process(pid));
+            return keys::post_key(
+                &source,
+                &mut detached,
+                code,
+                text,
+                false,
+                flags,
+                KeyRoute::Process(pid),
+            );
         }
         (Input::Button(number), Route::Hid) => match button(number) {
-            Some(button) => Some(HeldButton { route: ButtonRoute::Global(pointer_location(&source)?), button }),
+            Some(button) => Some(HeldButton {
+                route: ButtonRoute::Global(pointer_location(&source)?),
+                button,
+            }),
             None => None,
         },
-        (Input::Button(number), Route::Window { pid, wid, x, y }) => button(number).map(|button| HeldButton {
-            route: ButtonRoute::Window(pid, wid, CGPoint::new(x, y)),
-            button,
-        }),
+        (Input::Button(number), Route::Window { pid, wid, x, y }) => {
+            button(number).map(|button| HeldButton {
+                route: ButtonRoute::Window(pid, wid, CGPoint::new(x, y)),
+                button,
+            })
+        }
         (Input::Key(_), Route::Window { .. }) | (Input::Button(_), Route::Keyboard(_)) => None,
     };
     held.map_or(Ok(()), |held| global::release_button(&source, &held))

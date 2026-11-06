@@ -130,7 +130,8 @@ fn artifact_true_with_zero_references_and_no_path_denies() {
 #[test]
 fn missing_resolver_fails_closed_into_deny_for_momus() {
     // A session without plan state (no resolver) never yields a child prompt.
-    let outcome = plan_review_contract_outcome(None, "plan-reviewer", &format!("review {PLAN_A}"), "s1");
+    let outcome =
+        plan_review_contract_outcome(None, "plan-reviewer", &format!("review {PLAN_A}"), "s1");
 
     assert_eq!(
         outcome,
@@ -256,10 +257,7 @@ fn extract_plan_paths_normalizes_and_dedupes() {
         r"see .omo\plans\alpha-plan.md and .omo/plans/alpha-plan.md and .omo/plans/beta-plan.md",
     );
 
-    assert_eq!(
-        paths,
-        vec![PLAN_A.to_string(), PLAN_B.to_string()]
-    );
+    assert_eq!(paths, vec![PLAN_A.to_string(), PLAN_B.to_string()]);
 }
 
 #[test]

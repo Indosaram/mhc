@@ -2,7 +2,9 @@ use super::*;
 use serde_json::json;
 
 fn document(path: &str) -> MentionDocument {
-    MentionDocument { path: path.to_string() }
+    MentionDocument {
+        path: path.to_string(),
+    }
 }
 
 fn entry(id: &str, text: &str) -> Value {
@@ -36,7 +38,11 @@ fn given_a_path_at_the_end_of_an_entry_when_scanned_then_it_is_a_mention() {
 
 #[test]
 fn given_an_incremental_index_when_compared_then_it_matches_the_window_scan() {
-    let documents = [document("notes/a.md"), document("notes/b.md"), document("notes/c.md")];
+    let documents = [
+        document("notes/a.md"),
+        document("notes/b.md"),
+        document("notes/c.md"),
+    ];
     let window = [
         entry("e1", "unrelated chatter"),
         entry("e2", "the deploy gate is in notes/b.md"),
@@ -60,13 +66,26 @@ fn given_a_streaming_newest_entry_when_it_grows_then_the_next_scan_sees_the_new_
     let documents = [document("notes/a.md")];
     let mut index = create_transcript_mention_index();
     let first = [entry("e1", "nothing here"), entry("e2", "still nothing")];
-    assert!(index
-        .excluded_paths(TranscriptMentionInput { session_id: "s1", entries: &first, documents: &documents })
-        .is_empty());
+    assert!(
+        index
+            .excluded_paths(TranscriptMentionInput {
+                session_id: "s1",
+                entries: &first,
+                documents: &documents
+            })
+            .is_empty()
+    );
     // The newest entry is never cached, so the appended mention is observed on the next scan.
-    let grown = [entry("e1", "nothing here"), entry("e2", "now see notes/a.md")];
+    let grown = [
+        entry("e1", "nothing here"),
+        entry("e2", "now see notes/a.md"),
+    ];
     assert_eq!(
-        index.excluded_paths(TranscriptMentionInput { session_id: "s1", entries: &grown, documents: &documents }),
+        index.excluded_paths(TranscriptMentionInput {
+            session_id: "s1",
+            entries: &grown,
+            documents: &documents
+        }),
         BTreeSet::from(["notes/a.md".to_string()])
     );
 }
@@ -92,10 +111,17 @@ fn given_more_than_the_session_cap_when_indexing_then_old_sessions_are_evicted()
     for number in 0..(MAX_TRACKED_SESSIONS + 3) {
         let session = format!("s{number}");
         let window = [entry(&format!("e{number}"), "nothing")];
-        index.excluded_paths(TranscriptMentionInput { session_id: &session, entries: &window, documents: &documents });
+        index.excluded_paths(TranscriptMentionInput {
+            session_id: &session,
+            entries: &window,
+            documents: &documents,
+        });
     }
     assert_eq!(index.sessions.len(), MAX_TRACKED_SESSIONS);
-    assert_eq!(index.sessions.first().map(|(id, _)| id.as_str()), Some("s3"));
+    assert_eq!(
+        index.sessions.first().map(|(id, _)| id.as_str()),
+        Some("s3")
+    );
 }
 
 #[test]
@@ -103,11 +129,19 @@ fn given_a_moved_corpus_when_indexing_then_the_session_cache_is_dropped_and_rebu
     let documents = [document("notes/a.md")];
     let window = [entry("e1", "nothing"), entry("e2", "nothing")];
     let mut index = create_transcript_mention_index();
-    index.excluded_paths(TranscriptMentionInput { session_id: "s1", entries: &window, documents: &documents });
+    index.excluded_paths(TranscriptMentionInput {
+        session_id: "s1",
+        entries: &window,
+        documents: &documents,
+    });
     let moved = [document("notes/a.md"), document("notes/b.md")];
     let mentioned = [entry("e1", "nothing"), entry("e2", "see notes/b.md")];
     assert_eq!(
-        index.excluded_paths(TranscriptMentionInput { session_id: "s1", entries: &mentioned, documents: &moved }),
+        index.excluded_paths(TranscriptMentionInput {
+            session_id: "s1",
+            entries: &mentioned,
+            documents: &moved
+        }),
         BTreeSet::from(["notes/b.md".to_string()])
     );
 }

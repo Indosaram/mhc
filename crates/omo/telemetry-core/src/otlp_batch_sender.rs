@@ -35,8 +35,7 @@ use crate::otlp_spool_names::SpoolEntry;
 use crate::types::TelemetryDiagnosticEvent;
 use crate::types::TelemetryError;
 
-pub type BatchReport =
-    Arc<dyn Fn(TelemetryDiagnosticEvent, Option<TelemetryError>) + Send + Sync>;
+pub type BatchReport = Arc<dyn Fn(TelemetryDiagnosticEvent, Option<TelemetryError>) + Send + Sync>;
 pub type BatchConsent = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub struct BatchSenderInput {
@@ -216,7 +215,10 @@ impl BatchSender {
         }
     }
 
-    fn spawn_lease_renewal(self: &Arc<Self>, deadline_ms: u64) -> Option<tokio::task::JoinHandle<()>> {
+    fn spawn_lease_renewal(
+        self: &Arc<Self>,
+        deadline_ms: u64,
+    ) -> Option<tokio::task::JoinHandle<()>> {
         let handle = tokio::runtime::Handle::try_current().ok()?;
         let sender = Arc::clone(self);
         let interval = self.input.lease_renew_interval_ms.max(1);
@@ -254,7 +256,10 @@ impl BatchSender {
                 // After stop() the claim has already been released, so a read that lost the file is
                 // expected.
                 if !self.stopped() {
-                    (self.input.report)(TelemetryDiagnosticEvent::TelemetryOtlpSendFailed, Some(error));
+                    (self.input.report)(
+                        TelemetryDiagnosticEvent::TelemetryOtlpSendFailed,
+                        Some(error),
+                    );
                     if let Some(current) = self.in_flight() {
                         self.release(&current);
                     }
@@ -275,7 +280,11 @@ impl BatchSender {
         result
     }
 
-    async fn post(self: &Arc<Self>, claimed: &str, ctx: &SpoolContext) -> Result<(), TelemetryError> {
+    async fn post(
+        self: &Arc<Self>,
+        claimed: &str,
+        ctx: &SpoolContext,
+    ) -> Result<(), TelemetryError> {
         let bytes = std::fs::read(ctx.dir.join(claimed))
             .map_err(|error| TelemetryError::new(error.to_string()))?;
         let request = spool_request(&bytes);
@@ -304,12 +313,13 @@ impl BatchSender {
                 let _deleted = delete_file(&ctx.dir, &current);
                 (self.input.on_accepted)();
                 if let Some(partial) = partial
-                    && partial.rejected > 0 {
-                        (self.input.report)(
-                            TelemetryDiagnosticEvent::TelemetryOtlpPartialSuccess,
-                            Some(TelemetryError::new(partial.message)),
-                        );
-                    }
+                    && partial.rejected > 0
+                {
+                    (self.input.report)(
+                        TelemetryDiagnosticEvent::TelemetryOtlpPartialSuccess,
+                        Some(TelemetryError::new(partial.message)),
+                    );
+                }
             }
             PostOutcome::Rejected { .. } => {
                 let _dropped = drop_file(ctx, &current, DropReason::Rejected);

@@ -50,13 +50,13 @@ use crate::kibitzer_nudge_tool::{KibitzerNudgeInput, KibitzerNudgeParams, execut
 use crate::kibitzer_session_resources::KibitzerSessionResources;
 use crate::kibitzer_tools_result::{KibitzerRejectionCode, KibitzerToolResult, rejection};
 
+/// The tool description, re-exported from the base (`{...template}`).
+pub use crate::kibitzer_nudge_tool::KIBITZER_NUDGE_DESCRIPTION;
+/// The upstream tool label (`Kibitzer`), re-exported from the base (`{...template}`).
+pub use crate::kibitzer_nudge_tool::KIBITZER_NUDGE_TOOL_LABEL;
 /// The registered tool name (`nudge`), re-exported from the base so the registry reads the metadata
 /// from the wrapper it registers (upstream `export { KIBITZER_NUDGE_TOOL_NAME }`).
 pub use crate::kibitzer_nudge_tool::KIBITZER_NUDGE_TOOL_NAME;
-/// The upstream tool label (`Kibitzer`), re-exported from the base (`{...template}`).
-pub use crate::kibitzer_nudge_tool::KIBITZER_NUDGE_TOOL_LABEL;
-/// The tool description, re-exported from the base (`{...template}`).
-pub use crate::kibitzer_nudge_tool::KIBITZER_NUDGE_DESCRIPTION;
 /// The `nudge` parameter schema, re-exported from the base (`{...template}`).
 pub use crate::kibitzer_nudge_tool::kibitzer_nudge_parameters;
 
@@ -102,12 +102,24 @@ impl KibitzerSidecarNudgeTool {
         // is acquired; `surfaced` is then held while the accepted slot is resolved
         // (`accepted.current()` takes the slot's own inner lock and returns its Arc) and the accepted
         // guard is taken from that Arc.
-        let offered: BTreeSet<String> =
-            self.resources.offered.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let searched: BTreeSet<String> =
-            self.resources.searched.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let offered: BTreeSet<String> = self
+            .resources
+            .offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let searched: BTreeSet<String> = self
+            .resources
+            .searched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let candidates: BTreeSet<String> = offered.union(&searched).cloned().collect();
-        let surfaced = self.resources.surfaced.lock().unwrap_or_else(PoisonError::into_inner);
+        let surfaced = self
+            .resources
+            .surfaced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let accepted = self.resources.accepted.current();
         let mut accepted = accepted.lock().unwrap_or_else(PoisonError::into_inner);
         execute_nudge(

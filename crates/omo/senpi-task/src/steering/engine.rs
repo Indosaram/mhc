@@ -262,7 +262,10 @@ impl SteeringEngine {
         {
             return Ok(stale_send(&fresh));
         }
-        if handle.liveness().is_some_and(|liveness| !liveness.is_running()) {
+        if handle
+            .liveness()
+            .is_some_and(|liveness| !liveness.is_running())
+        {
             if record.status == TaskStatus::Running {
                 return self.enqueue_pending(&record, &input.message, deliver_as);
             }
@@ -450,7 +453,10 @@ impl SteeringEngine {
         let Some(handle) = (self.port.live_handle)(task_id) else {
             return Ok(());
         };
-        if handle.liveness().is_some_and(|liveness| !liveness.is_running()) {
+        if handle
+            .liveness()
+            .is_some_and(|liveness| !liveness.is_running())
+        {
             return Ok(());
         }
         let mut ids = BTreeSet::new();
@@ -800,7 +806,12 @@ impl SteeringEngine {
         error_message: Option<String>,
         reason: Option<String>,
     ) -> Result<(), SteeringError> {
-        let previous_status = self.port.store.load(task_id)?.map(|record| record.status).unwrap_or(TaskStatus::Running);
+        let previous_status = self
+            .port
+            .store
+            .load(task_id)?
+            .map(|record| record.status)
+            .unwrap_or(TaskStatus::Running);
         let run_stats = (self.port.run_stats_snapshot)(task_id);
         let result = self.port.store.transition(
             task_id,

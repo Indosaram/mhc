@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -187,12 +187,7 @@ impl RecallLedger {
 
         let key = path_key(&target);
         match resilient::metadata(&target) {
-            Ok(meta) => remember_ledger(
-                &key,
-                stat_mtime_ms(&meta),
-                meta.len(),
-                Arc::new(written),
-            ),
+            Ok(meta) => remember_ledger(&key, stat_mtime_ms(&meta), meta.len(), Arc::new(written)),
             Err(_) => cache_remove(&key),
         }
         Ok(())

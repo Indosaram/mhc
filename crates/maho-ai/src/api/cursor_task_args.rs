@@ -52,12 +52,16 @@ mod tests {
 
     #[test]
     fn given_subagent_type_when_checked_then_usable() {
-        assert!(is_usable_cursor_task_args(&json!({ "subagent_type": "explore" })));
+        assert!(is_usable_cursor_task_args(
+            &json!({ "subagent_type": "explore" })
+        ));
     }
 
     #[test]
     fn given_nonempty_prompt_when_checked_then_usable() {
-        assert!(is_usable_cursor_task_args(&json!({ "prompt": "do the thing" })));
+        assert!(is_usable_cursor_task_args(
+            &json!({ "prompt": "do the thing" })
+        ));
     }
 
     #[test]
@@ -67,7 +71,9 @@ mod tests {
 
     #[test]
     fn given_nonempty_tasks_array_when_checked_then_usable() {
-        assert!(is_usable_cursor_task_args(&json!({ "tasks": [{ "prompt": "x" }] })));
+        assert!(is_usable_cursor_task_args(
+            &json!({ "tasks": [{ "prompt": "x" }] })
+        ));
     }
 
     #[test]
@@ -98,7 +104,10 @@ mod tests {
     fn given_unusable_next_and_usable_previous_when_kept_then_previous_wins() {
         let previous = json!({ "prompt": "old" });
         let next = json!({});
-        assert_eq!(keep_usable_cursor_task_args(previous.clone(), next), previous);
+        assert_eq!(
+            keep_usable_cursor_task_args(previous.clone(), next),
+            previous
+        );
     }
 
     #[test]

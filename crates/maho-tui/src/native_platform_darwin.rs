@@ -32,7 +32,8 @@ fn modifier_mask(key: ModifierKey) -> CGEventFlags {
 fn tiff_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use tiff::decoder::{Decoder, DecodingResult};
     let unsupported = || "Clipboard does not contain an image".to_string();
-    let mut decoder = Decoder::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
+    let mut decoder =
+        Decoder::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
     let (width, height) = decoder.dimensions().map_err(|error| error.to_string())?;
     let color = match decoder.colortype().map_err(|error| error.to_string())? {
         tiff::ColorType::RGBA(8) => png::ColorType::Rgba,
@@ -41,7 +42,8 @@ fn tiff_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
         tiff::ColorType::Gray(8) => png::ColorType::Grayscale,
         _ => return Err(unsupported()),
     };
-    let DecodingResult::U8(pixels) = decoder.read_image().map_err(|error| error.to_string())? else {
+    let DecodingResult::U8(pixels) = decoder.read_image().map_err(|error| error.to_string())?
+    else {
         return Err(unsupported());
     };
     let mut out = Vec::new();
@@ -49,7 +51,9 @@ fn tiff_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     encoder.set_color(color);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
-    writer.write_image_data(&pixels).map_err(|error| error.to_string())?;
+    writer
+        .write_image_data(&pixels)
+        .map_err(|error| error.to_string())?;
     writer.finish().map_err(|error| error.to_string())?;
     Ok(out)
 }
@@ -58,7 +62,9 @@ impl NativeClipboard for DarwinPlatformHelper {
     fn get_text(&self) -> Result<Option<String>, String> {
         autoreleasepool(|_| {
             let pasteboard = NSPasteboard::generalPasteboard();
-            Ok(pasteboard.stringForType(&NSString::from_str(TEXT_TYPE)).map(|text| text.to_string()))
+            Ok(pasteboard
+                .stringForType(&NSString::from_str(TEXT_TYPE))
+                .map(|text| text.to_string()))
         })
     }
 
@@ -109,7 +115,9 @@ impl NativeClipboard for DarwinPlatformHelper {
         Some(autoreleasepool(|_| {
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
-            if pasteboard.setString_forType(&NSString::from_str(text), &NSString::from_str(TEXT_TYPE)) {
+            if pasteboard
+                .setString_forType(&NSString::from_str(text), &NSString::from_str(TEXT_TYPE))
+            {
                 Ok(())
             } else {
                 Err("Could not set clipboard text".to_string())

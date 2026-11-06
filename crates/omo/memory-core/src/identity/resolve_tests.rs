@@ -109,8 +109,7 @@ fn test_resolve_memory_identity_when_cwd_spelling_varies_then_normalization_yiel
 #[test]
 fn test_resolve_memory_identity_when_auto_then_the_id_is_slug_plus_sha256_of_the_full_path() {
     let cwd = Path::new("/x/My Proj");
-    let identity =
-        resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
+    let identity = resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
     let normalized = resolve_from(Path::new("."), cwd);
     assert_eq!(identity.safe_slug, "my-proj");
     assert_eq!(
@@ -169,10 +168,8 @@ fn test_resolve_memory_identity_when_explicit_has_whitespace_then_it_matches_the
 #[test]
 fn test_resolve_memory_identity_when_value_is_auto_cased_then_only_lowercase_triggers_auto() {
     let cwd = Path::new("/repo/alpha");
-    let keyword =
-        resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
-    let named =
-        resolve_memory_identity(Some("Auto"), cwd, &BTreeMap::new()).unwrap();
+    let keyword = resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
+    let named = resolve_memory_identity(Some("Auto"), cwd, &BTreeMap::new()).unwrap();
     let normalized = resolve_from(Path::new("."), cwd);
     assert_eq!(
         keyword.id,

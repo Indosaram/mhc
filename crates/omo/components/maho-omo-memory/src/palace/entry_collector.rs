@@ -89,7 +89,8 @@ pub fn collect_core(
         let Some(raw) = read_entry_text(repo, head, &path, state) else {
             continue;
         };
-        let parsed = parse_memory_file(&raw).map_err(|error| PalaceError::Message(error.message))?;
+        let parsed =
+            parse_memory_file(&raw).map_err(|error| PalaceError::Message(error.message))?;
         entries.push(PalaceCoreEntry {
             projection: format!("{MEMORY_DIR_TOKEN}/{path}"),
             path,
@@ -265,7 +266,11 @@ fn is_binary_text(text: &str) -> bool {
 }
 
 fn unique_sorted(paths: Vec<String>) -> Vec<String> {
-    paths.into_iter().collect::<BTreeSet<String>>().into_iter().collect()
+    paths
+        .into_iter()
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -279,7 +284,10 @@ mod tests {
 
         let core = collect_core(&fixture.repo, Some(fixture.head.as_str())).unwrap();
 
-        let persona = core.iter().find(|entry| entry.path == "system/persona.md").unwrap();
+        let persona = core
+            .iter()
+            .find(|entry| entry.path == "system/persona.md")
+            .unwrap();
         assert_eq!(persona.projection, "$MEMORY_DIR/system/persona.md");
         assert!(persona.body.contains("fixture persona"));
         assert_eq!(persona.description, "who the agent is");
@@ -292,13 +300,24 @@ mod tests {
 
         let external = collect_external(&fixture.repo, Some(fixture.head.as_str())).unwrap();
 
-        let binary = external.iter().find(|entry| entry.path == "reference/logo.png").unwrap();
+        let binary = external
+            .iter()
+            .find(|entry| entry.path == "reference/logo.png")
+            .unwrap();
         assert!(binary.binary);
         assert!(binary.byte_size > 0);
         assert!(binary.body.is_none());
-        let text = external.iter().find(|entry| entry.path == "reference/notes.md").unwrap();
+        let text = external
+            .iter()
+            .find(|entry| entry.path == "reference/notes.md")
+            .unwrap();
         assert!(!text.binary);
-        assert!(text.body.as_deref().unwrap_or_default().contains("external note"));
+        assert!(
+            text.body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("external note")
+        );
     }
 
     #[test]
@@ -311,10 +330,16 @@ mod tests {
 
         let core = collect_core(&fixture.repo, Some(fixture.head.as_str())).unwrap();
 
-        let draft = core.iter().find(|entry| entry.path == "system/draft.md").unwrap();
+        let draft = core
+            .iter()
+            .find(|entry| entry.path == "system/draft.md")
+            .unwrap();
         assert_eq!(draft.state, PalaceEntryState::Uncommitted);
         assert_eq!(draft.state.label(), UNCOMMITTED_LABEL);
-        let persona = core.iter().find(|entry| entry.path == "system/persona.md").unwrap();
+        let persona = core
+            .iter()
+            .find(|entry| entry.path == "system/persona.md")
+            .unwrap();
         assert_eq!(persona.state, PalaceEntryState::Committed);
     }
 }

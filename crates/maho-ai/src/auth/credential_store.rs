@@ -24,7 +24,10 @@ impl InMemoryCredentialStore {
 
     fn lock_for(&self, provider_id: &str) -> std::sync::Arc<AsyncMutex<()>> {
         let mut locks = self.locks.lock().unwrap_or_else(|p| p.into_inner());
-        locks.entry(provider_id.to_string()).or_insert_with(|| std::sync::Arc::new(AsyncMutex::new(()))).clone()
+        locks
+            .entry(provider_id.to_string())
+            .or_insert_with(|| std::sync::Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     async fn enqueue<'a, T: Send + 'a>(
@@ -54,18 +57,27 @@ impl CredentialStore for InMemoryCredentialStore {
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         if let Some(opts) = &options
-            && let Some(signal) = &opts.signal {
-                signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
-            }
+            && let Some(signal) = &opts.signal
+        {
+            signal
+                .throw_if_aborted()
+                .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        }
         let credentials = self.credentials.lock().unwrap_or_else(|p| p.into_inner());
         Ok(credentials.get(provider_id).cloned())
     }
 
-    async fn list(&self, options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>> {
+    async fn list(
+        &self,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Vec<CredentialInfo>> {
         if let Some(opts) = &options
-            && let Some(signal) = &opts.signal {
-                signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
-            }
+            && let Some(signal) = &opts.signal
+        {
+            signal
+                .throw_if_aborted()
+                .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        }
         let credentials = self.credentials.lock().unwrap_or_else(|p| p.into_inner());
         Ok(credentials
             .iter()
@@ -79,7 +91,10 @@ impl CredentialStore for InMemoryCredentialStore {
     async fn modify(
         &self,
         provider_id: &str,
-        f: Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>,
+        f: Box<
+            dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>>
+                + Send,
+        >,
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         let signal_opts = options.clone();
@@ -103,25 +118,40 @@ impl CredentialStore for InMemoryCredentialStore {
     async fn modify_or_delete(
         &self,
         provider_id: &str,
-        f: Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>,
+        f: Box<
+            dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>>
+                + Send,
+        >,
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         let provider_id_owned = provider_id.to_owned();
         let task = async move {
-            let current = self.credentials.lock().unwrap_or_else(|p| p.into_inner())
-                .get(&provider_id_owned).cloned();
+            let current = self
+                .credentials
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&provider_id_owned)
+                .cloned();
             let next = f(current).await?;
             let mut credentials = self.credentials.lock().unwrap_or_else(|p| p.into_inner());
             match &next {
-                Some(credential) => { credentials.insert(provider_id_owned, credential.clone()); }
-                None => { credentials.remove(&provider_id_owned); }
+                Some(credential) => {
+                    credentials.insert(provider_id_owned, credential.clone());
+                }
+                None => {
+                    credentials.remove(&provider_id_owned);
+                }
             }
             Ok(next)
         };
         self.enqueue(provider_id, task, options).await?
     }
 
-    async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
+    async fn delete(
+        &self,
+        provider_id: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<()> {
         let provider_id_owned = provider_id.to_string();
         let credentials_lock = &self.credentials;
         let task = async move {
@@ -144,37 +174,89 @@ mod tests {
         let store = InMemoryCredentialStore::new();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let deletion = store.modify_or_delete("p", Box::new(move |_| Box::pin(async move {
-            entered_tx.send(()).expect("entered subscriber");
-            release_rx.await.expect("release");
-            Ok(None)
-        })), None);
+        let deletion = store.modify_or_delete(
+            "p",
+            Box::new(move |_| {
+                Box::pin(async move {
+                    entered_tx.send(()).expect("entered subscriber");
+                    release_rx.await.expect("release");
+                    Ok(None)
+                })
+            }),
+            None,
+        );
         tokio::pin!(deletion);
         assert!(futures::poll!(deletion.as_mut()).is_pending());
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("entry deadline").expect("entered");
-        let login = store.modify("p", Box::new(|current| Box::pin(async move {
-            assert!(current.is_none());
-            Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("new".into()), ..Default::default() })))
-        })), None);
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .expect("entry deadline")
+            .expect("entered");
+        let login = store.modify(
+            "p",
+            Box::new(|current| {
+                Box::pin(async move {
+                    assert!(current.is_none());
+                    Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                        key: Some("new".into()),
+                        ..Default::default()
+                    })))
+                })
+            }),
+            None,
+        );
         tokio::pin!(login);
         assert!(futures::poll!(login.as_mut()).is_pending());
         // When deletion completes and the queued login obtains the same lock.
         release_tx.send(()).expect("release subscriber");
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), deletion).await.expect("delete deadline").expect("delete").is_none());
-        tokio::time::timeout(std::time::Duration::from_secs(5), login).await.expect("login deadline").expect("login");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), deletion)
+                .await
+                .expect("delete deadline")
+                .expect("delete")
+                .is_none()
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), login)
+            .await
+            .expect("login deadline")
+            .expect("login");
         // Then no trailing delete can remove the new login.
-        assert_eq!(store.read("p", None).await.expect("read").expect("credential").as_api_key().and_then(|c| c.key.as_deref()), Some("new"));
+        assert_eq!(
+            store
+                .read("p", None)
+                .await
+                .expect("read")
+                .expect("credential")
+                .as_api_key()
+                .and_then(|c| c.key.as_deref()),
+            Some("new")
+        );
     }
 
     #[tokio::test]
     async fn conditional_delete_failure_leaves_existing_credential_unchanged() {
         // Given a stored credential.
         let store = InMemoryCredentialStore::new();
-        let initial = Credential::ApiKey(ApiKeyCredential { key: Some("old".into()), ..Default::default() });
+        let initial = Credential::ApiKey(ApiKeyCredential {
+            key: Some("old".into()),
+            ..Default::default()
+        });
         let seed = initial.clone();
-        store.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })), None).await.expect("seed");
+        store
+            .modify(
+                "p",
+                Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })),
+                None,
+            )
+            .await
+            .expect("seed");
         // When the conditional mutation fails.
-        let result = store.modify_or_delete("p", Box::new(|_| Box::pin(async { anyhow::bail!("failed mutation") })), None).await;
+        let result = store
+            .modify_or_delete(
+                "p",
+                Box::new(|_| Box::pin(async { anyhow::bail!("failed mutation") })),
+                None,
+            )
+            .await;
         // Then failure does not commit a deletion or replacement.
         assert!(result.is_err());
         assert_eq!(store.read("p", None).await.expect("read"), Some(initial));
@@ -199,12 +281,26 @@ mod tests {
         let written = store
             .modify(
                 "anthropic",
-                Box::new(|_current| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None, ..Default::default() }))) })),
+                Box::new(|_current| {
+                    box_fut(async {
+                        Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                            key: Some("k".into()),
+                            env: None,
+                            ..Default::default()
+                        })))
+                    })
+                }),
                 None,
             )
             .await
             .unwrap();
-        assert_eq!(written.as_ref().and_then(Credential::as_api_key).and_then(|c| c.key.clone()), Some("k".into()));
+        assert_eq!(
+            written
+                .as_ref()
+                .and_then(Credential::as_api_key)
+                .and_then(|c| c.key.clone()),
+            Some("k".into())
+        );
         let read_back = store.read("anthropic", None).await.unwrap();
         assert_eq!(read_back, written);
     }
@@ -213,17 +309,50 @@ mod tests {
     async fn modify_returning_none_leaves_entry_unchanged() {
         let store = InMemoryCredentialStore::new();
         store
-            .modify("p", Box::new(|_| box_fut(async { Ok(Some(Credential::OAuth(OAuthCredential::new("a", "r", 1.0)))) })), None)
+            .modify(
+                "p",
+                Box::new(|_| {
+                    box_fut(async {
+                        Ok(Some(Credential::OAuth(OAuthCredential::new("a", "r", 1.0))))
+                    })
+                }),
+                None,
+            )
             .await
             .unwrap();
-        let result = store.modify("p", Box::new(|current| box_fut(async move { Ok::<Option<Credential>, anyhow::Error>(None).map(|_| current) })), None).await.unwrap();
-        assert_eq!(result.and_then(|c| c.as_oauth().cloned()).map(|c| c.access), Some("a".into()));
+        let result = store
+            .modify(
+                "p",
+                Box::new(|current| {
+                    box_fut(async move {
+                        Ok::<Option<Credential>, anyhow::Error>(None).map(|_| current)
+                    })
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.and_then(|c| c.as_oauth().cloned()).map(|c| c.access),
+            Some("a".into())
+        );
     }
 
     #[tokio::test]
     async fn delete_removes_entry() {
         let store = InMemoryCredentialStore::new();
-        store.modify("p", Box::new(|_| box_fut(async { Ok(Some(Credential::OAuth(OAuthCredential::new("a", "r", 1.0)))) })), None).await.unwrap();
+        store
+            .modify(
+                "p",
+                Box::new(|_| {
+                    box_fut(async {
+                        Ok(Some(Credential::OAuth(OAuthCredential::new("a", "r", 1.0))))
+                    })
+                }),
+                None,
+            )
+            .await
+            .unwrap();
         store.delete("p", None).await.unwrap();
         assert_eq!(store.read("p", None).await.unwrap(), None);
     }
@@ -231,11 +360,29 @@ mod tests {
     #[tokio::test]
     async fn list_reports_metadata_without_secrets() {
         let store = InMemoryCredentialStore::new();
-        store.modify("p1", Box::new(|_| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("secret".into()), env: None, ..Default::default() }))) })), None).await.unwrap();
+        store
+            .modify(
+                "p1",
+                Box::new(|_| {
+                    box_fut(async {
+                        Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                            key: Some("secret".into()),
+                            env: None,
+                            ..Default::default()
+                        })))
+                    })
+                }),
+                None,
+            )
+            .await
+            .unwrap();
         let listed = store.list(None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].provider_id, "p1");
-        assert_eq!(listed[0].credential_type, crate::auth::types::CredentialType::ApiKey);
+        assert_eq!(
+            listed[0].credential_type,
+            crate::auth::types::CredentialType::ApiKey
+        );
     }
 
     #[tokio::test]
@@ -249,32 +396,56 @@ mod tests {
         let h1 = tokio::spawn(async move {
             s1.modify(
                 "p",
-                Box::new(move |_| box_fut(async move {
-                    entered_tx.send(()).unwrap();
-                    release_rx.await.unwrap();
-                    o1.lock().unwrap_or_else(|p| p.into_inner()).push(1);
-                    Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("1".into()), env: None, ..Default::default() })))
-                })),
+                Box::new(move |_| {
+                    box_fut(async move {
+                        entered_tx.send(()).unwrap();
+                        release_rx.await.unwrap();
+                        o1.lock().unwrap_or_else(|p| p.into_inner()).push(1);
+                        Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                            key: Some("1".into()),
+                            env: None,
+                            ..Default::default()
+                        })))
+                    })
+                }),
                 None,
             )
             .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
         let mut second = Box::pin(store.modify(
             "p",
-            Box::new(move |current| box_fut(async move {
-                assert_eq!(current.and_then(|c| c.as_api_key().and_then(|c| c.key.clone())), Some("1".into()));
-                o2.lock().unwrap_or_else(|p| p.into_inner()).push(2);
-                Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("2".into()), env: None, ..Default::default() })))
-            })),
+            Box::new(move |current| {
+                box_fut(async move {
+                    assert_eq!(
+                        current.and_then(|c| c.as_api_key().and_then(|c| c.key.clone())),
+                        Some("1".into())
+                    );
+                    o2.lock().unwrap_or_else(|p| p.into_inner()).push(2);
+                    Ok(Some(Credential::ApiKey(ApiKeyCredential {
+                        key: Some("2".into()),
+                        env: None,
+                        ..Default::default()
+                    })))
+                })
+            }),
             None,
         ));
-        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx))).await.is_pending());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
         release_tx.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             h1.await.unwrap().unwrap();
             second.await.unwrap();
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(*order.lock().unwrap_or_else(|p| p.into_inner()), vec![1, 2]);
     }
 }

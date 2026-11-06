@@ -14,7 +14,9 @@ pub trait ExportSessionManager {
 }
 
 fn export_file_name() -> String {
-    let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true).replace([':', '.'], "-");
+    let stamp = chrono::Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        .replace([':', '.'], "-");
     format!("session-{stamp}.jsonl")
 }
 
@@ -26,8 +28,14 @@ pub fn export_session_to_jsonl(
     output_path: Option<&str>,
     create_trailing_entries: Option<CreateTrailingEntries<'_>>,
 ) -> String {
-    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_owned());
-    let file_path = resolve_path(output_path.unwrap_or(&export_file_name()), &cwd, &PathInputOptions::default());
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_owned());
+    let file_path = resolve_path(
+        output_path.unwrap_or(&export_file_name()),
+        &cwd,
+        &PathInputOptions::default(),
+    );
     if let Some(dir) = Path::new(&file_path).parent()
         && !dir.as_os_str().is_empty()
     {
@@ -48,9 +56,15 @@ pub fn export_session_to_jsonl(
     for entry in session_manager.get_branch() {
         let mut with_parent = entry;
         if let Some(object) = with_parent.as_object_mut() {
-            object.insert("parentId".into(), parent_id.clone().map(Value::String).unwrap_or(Value::Null));
+            object.insert(
+                "parentId".into(),
+                parent_id.clone().map(Value::String).unwrap_or(Value::Null),
+            );
         }
-        parent_id = with_parent.get("id").and_then(Value::as_str).map(str::to_owned);
+        parent_id = with_parent
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         lines.push(serde_json::to_string(&with_parent).unwrap_or_default());
     }
     if let Some(create) = create_trailing_entries {
@@ -95,7 +109,10 @@ mod tests {
         };
         let path = export_session_to_jsonl(&manager, Some(&out), None);
         let content = std::fs::read_to_string(&path).expect("read");
-        let lines: Vec<Value> = content.lines().map(|line| serde_json::from_str(line).expect("line")).collect();
+        let lines: Vec<Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("line"))
+            .collect();
         assert_eq!(lines[0]["type"], json!("session"));
         assert_eq!(lines[0]["version"], json!(CURRENT_SESSION_VERSION));
         assert_eq!(lines[1]["parentId"], Value::Null);
@@ -106,11 +123,18 @@ mod tests {
     fn trailing_entries_are_appended_after_the_branch() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let out = tmp.path().join("out.jsonl").to_string_lossy().into_owned();
-        let manager = Manager { branch: vec![json!({ "type": "message", "id": "a" })] };
-        let create = |parent: Option<&str>, _timestamp: &str| vec![json!({ "type": "custom", "parentId": parent })];
+        let manager = Manager {
+            branch: vec![json!({ "type": "message", "id": "a" })],
+        };
+        let create = |parent: Option<&str>, _timestamp: &str| {
+            vec![json!({ "type": "custom", "parentId": parent })]
+        };
         let path = export_session_to_jsonl(&manager, Some(&out), Some(&create));
         let content = std::fs::read_to_string(&path).expect("read");
-        let lines: Vec<Value> = content.lines().map(|line| serde_json::from_str(line).expect("line")).collect();
+        let lines: Vec<Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("line"))
+            .collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[2]["type"], json!("custom"));
         assert_eq!(lines[2]["parentId"], json!("a"));

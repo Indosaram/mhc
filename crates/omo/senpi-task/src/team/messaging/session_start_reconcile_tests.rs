@@ -20,7 +20,9 @@ use crate::team::normalize::{TEAM_LEAD_SENTINEL, normalize_senpi_team_spec};
 use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::create_team;
 use crate::team::runtime_config::{TeamCoreConfig, to_team_core_config};
-use crate::team::runtime_fakes::{FakeTeamManager, FakeTeamManagerOptions, TeamBoundsOverrides, team_bounds};
+use crate::team::runtime_fakes::{
+    FakeTeamManager, FakeTeamManagerOptions, TeamBoundsOverrides, team_bounds,
+};
 use crate::team::runtime_types::CreateTeamDeps;
 use crate::team::storage::{resolve_team_member_inbox_dir, team_storage_base_dir};
 
@@ -101,7 +103,11 @@ fn build_message(from: &str, to: &str, body: &str) -> Message {
 fn deliver_and_reserve(inbox_dir: &Path, message: &Message) -> PathBuf {
     fs::create_dir_all(inbox_dir).expect("create inbox dir");
     let unread = inbox_dir.join(format!("{}.json", message.message_id));
-    fs::write(&unread, serde_json::to_vec(message).expect("serialize message")).expect("write unread");
+    fs::write(
+        &unread,
+        serde_json::to_vec(message).expect("serialize message"),
+    )
+    .expect("write unread");
     let reserved = inbox_dir.join(format!(".delivering-{}.json", message.message_id));
     fs::rename(&unread, &reserved).expect("reserve message");
     reserved
@@ -109,14 +115,18 @@ fn deliver_and_reserve(inbox_dir: &Path, message: &Message) -> PathBuf {
 
 fn age(path: &Path) {
     let past = SystemTime::now() - Duration::from_millis((STALE_TTL_MS * 4) as u64);
-    let file = fs::File::options().write(true).open(path).expect("open reserved");
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open reserved");
     file.set_modified(past).expect("set mtime");
 }
 
 fn reserve_and_age(team: &ActiveTeam, aged: bool) -> (Message, PathBuf) {
     let message = build_message("alpha", &team.member, "b");
     let inbox_dir =
-        resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, &team.member).expect("inbox dir");
+        resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, &team.member)
+            .expect("inbox dir");
     let reserved = deliver_and_reserve(&inbox_dir, &message);
     if aged {
         age(&reserved);
@@ -126,19 +136,22 @@ fn reserve_and_age(team: &ActiveTeam, aged: bool) -> (Message, PathBuf) {
 
 fn reserve_lead_and_age(team: &ActiveTeam) -> (Message, PathBuf, PathBuf) {
     let message = build_message(&team.member, TEAM_LEAD_SENTINEL, "lead note");
-    let inbox_dir = resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, TEAM_LEAD_SENTINEL)
-        .expect("lead inbox dir");
+    let inbox_dir =
+        resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, TEAM_LEAD_SENTINEL)
+            .expect("lead inbox dir");
     let reserved = deliver_and_reserve(&inbox_dir, &message);
     age(&reserved);
     (message, inbox_dir, reserved)
 }
 
 #[test]
-fn given_an_active_team_with_a_stale_reservation_when_reconciled_then_the_reservation_is_restored_to_unread() {
+fn given_an_active_team_with_a_stale_reservation_when_reconciled_then_the_reservation_is_restored_to_unread()
+ {
     // given
     let team = active_team_with_member("beta");
     let inbox_dir =
-        resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, &team.member).expect("inbox dir");
+        resolve_team_member_inbox_dir(&team.state_dir(), &team.team_run_id, &team.member)
+            .expect("inbox dir");
     let (message, reserved) = reserve_and_age(&team, true);
 
     // when
@@ -150,7 +163,12 @@ fn given_an_active_team_with_a_stale_reservation_when_reconciled_then_the_reserv
     });
 
     // then
-    assert_eq!(inbox_dir.join(format!("{}.json", message.message_id)).exists(), true);
+    assert_eq!(
+        inbox_dir
+            .join(format!("{}.json", message.message_id))
+            .exists(),
+        true
+    );
     assert_eq!(reserved.exists(), false);
 }
 
@@ -173,7 +191,8 @@ fn given_a_fresh_reservation_within_the_ttl_when_reconciled_then_it_is_left_rese
 }
 
 #[test]
-fn given_an_owned_team_with_a_stale_lead_reservation_when_reconciled_then_the_lead_inbox_is_restored() {
+fn given_an_owned_team_with_a_stale_lead_reservation_when_reconciled_then_the_lead_inbox_is_restored()
+ {
     // given
     let team = active_team_with_member("beta");
     let (message, inbox_dir, reserved) = reserve_lead_and_age(&team);
@@ -187,12 +206,18 @@ fn given_an_owned_team_with_a_stale_lead_reservation_when_reconciled_then_the_le
     });
 
     // then
-    assert_eq!(inbox_dir.join(format!("{}.json", message.message_id)).exists(), true);
+    assert_eq!(
+        inbox_dir
+            .join(format!("{}.json", message.message_id))
+            .exists(),
+        true
+    );
     assert_eq!(reserved.exists(), false);
 }
 
 #[test]
-fn given_a_foreign_team_with_a_stale_lead_reservation_when_reconciled_then_its_lead_inbox_is_untouched() {
+fn given_a_foreign_team_with_a_stale_lead_reservation_when_reconciled_then_its_lead_inbox_is_untouched()
+ {
     // given
     let team = active_team_with_member("beta");
     let (_message, _inbox_dir, reserved) = reserve_lead_and_age(&team);

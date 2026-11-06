@@ -125,7 +125,10 @@ fn given_member_and_lead_recipients_when_task_send_runs_then_each_durable_inbox_
         .collect();
     assert_eq!(
         event_types,
-        vec!["team_message_sent".to_string(), "team_message_sent".to_string()]
+        vec![
+            "team_message_sent".to_string(),
+            "team_message_sent".to_string()
+        ]
     );
 }
 
@@ -136,13 +139,16 @@ fn given_an_unknown_recipient_when_task_send_runs_then_it_rejects_without_writin
     let deps = basic_deps(&harness);
 
     // when / then
-    let error = run_member_task_send(&deps, &input("nobody", "nope"))
-        .expect_err("should reject");
+    let error = run_member_task_send(&deps, &input("nobody", "nope")).expect_err("should reject");
     assert!(matches!(error, MemberTaskSendError::UnknownRecipient(_)));
     assert!(error.to_string().contains("Unknown team recipient"));
-    assert!(!harness.config.base_dir.as_deref().is_some_and(|dir| {
-        std::path::Path::new(dir).join(TEAM_RUN_ID).exists()
-    }));
+    assert!(
+        !harness
+            .config
+            .base_dir
+            .as_deref()
+            .is_some_and(|dir| { std::path::Path::new(dir).join(TEAM_RUN_ID).exists() })
+    );
 }
 
 #[test]
@@ -152,8 +158,7 @@ fn given_an_unknown_recipient_when_task_send_runs_then_the_error_lists_the_valid
     let deps = basic_deps(&harness);
 
     // when
-    let caught = run_member_task_send(&deps, &input("ghost", "hello"))
-        .expect_err("should reject");
+    let caught = run_member_task_send(&deps, &input("ghost", "hello")).expect_err("should reject");
 
     // then
     let message = caught.to_string();
@@ -215,7 +220,7 @@ fn given_malformed_member_identity_env_when_parsed_then_typed_configuration_erro
         "SENPI_TASK_MEMBER_TASK_ID".to_string(),
         "st_bad".to_string(),
     );
-    let error: MemberExtensionConfigError = parse_member_extension_env(&env)
-        .expect_err("bad task id should be rejected");
+    let error: MemberExtensionConfigError =
+        parse_member_extension_env(&env).expect_err("bad task id should be rejected");
     assert_eq!(error.name(), "MemberExtensionConfigError");
 }

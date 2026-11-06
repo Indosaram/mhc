@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use memory_core::receipts::{
-    read_memory_receipts, MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions,
+    MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions, read_memory_receipts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,13 +48,19 @@ pub struct QuarantinedRun {
     pub evidence: Vec<String>,
 }
 
-pub fn check_receipts(runtime_dir: &Path, now_ms: i64) -> Result<(DoctorCheck, ReceiptSummaries), String> {
+pub fn check_receipts(
+    runtime_dir: &Path,
+    now_ms: i64,
+) -> Result<(DoctorCheck, ReceiptSummaries), String> {
     let read = read_memory_receipts(runtime_dir, &ReadMemoryReceiptsOptions::default())?;
     let (receipts, skipped_partial_lines) = (read.receipts, read.skipped_partial_lines);
 
     let find_newest = |kind: &str| -> Option<ReceiptSummary> {
         receipts.iter().find_map(|r| {
-            if r.input.kind() == kind && r.input.event() != "launched" && r.input.event() != "recovered" {
+            if r.input.kind() == kind
+                && r.input.event() != "launched"
+                && r.input.event() != "recovered"
+            {
                 Some(summarize(r))
             } else {
                 None
@@ -314,6 +320,9 @@ fn bound(text: &str) -> String {
     if text.encode_utf16().count() <= TEXT_LIMIT {
         text.to_string()
     } else {
-        format!("{}...", String::from_utf16_lossy(&text.encode_utf16().take(TEXT_LIMIT - 3).collect::<Vec<_>>()))
+        format!(
+            "{}...",
+            String::from_utf16_lossy(&text.encode_utf16().take(TEXT_LIMIT - 3).collect::<Vec<_>>())
+        )
     }
 }

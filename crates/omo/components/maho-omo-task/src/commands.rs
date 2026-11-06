@@ -1,17 +1,32 @@
-use std::sync::Arc;
-use maho_ext_api::{ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionUiDialogOptions, NotificationType};
-use senpi_task::{manager::{TaskManager, types::ListScope}, state::{TaskRecord, TaskRunStats, TaskStatus}, steering::CancelOptions};
 use crate::status_row_format::{format_task_row, task_identity};
+use maho_ext_api::{
+    ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionUiDialogOptions, NotificationType,
+};
+use senpi_task::{
+    manager::{TaskManager, types::ListScope},
+    state::{TaskRecord, TaskRunStats, TaskStatus},
+    steering::CancelOptions,
+};
+use std::sync::Arc;
 
 pub trait CommandManager: Send + Sync {
     fn list(&self, scope: &ListScope) -> Vec<TaskRecord>;
     fn cancel_task(&self, id: &str, reason: &str) -> Result<(), ExtensionFailure>;
-    fn run_stats_snapshot(&self, _task: &str) -> Option<TaskRunStats> { None }
+    fn run_stats_snapshot(&self, _task: &str) -> Option<TaskRunStats> {
+        None
+    }
 }
 impl CommandManager for TaskManager {
-    fn list(&self, scope: &ListScope) -> Vec<TaskRecord> { self.list(scope).into_iter().map(|entry| entry.record).collect() }
+    fn list(&self, scope: &ListScope) -> Vec<TaskRecord> {
+        self.list(scope)
+            .into_iter()
+            .map(|entry| entry.record)
+            .collect()
+    }
     fn cancel_task(&self, id: &str, reason: &str) -> Result<(), ExtensionFailure> {
-        self.cancel_task(id, Some(reason), CancelOptions::default()).map(|_| ()).map_err(|error| ExtensionFailure::new(error.to_string()))
+        self.cancel_task(id, Some(reason), CancelOptions::default())
+            .map(|_| ())
+            .map_err(|error| ExtensionFailure::new(error.to_string()))
     }
     fn run_stats_snapshot(&self, task: &str) -> Option<TaskRunStats> {
         self.run_stats_snapshot(task)
@@ -19,40 +34,127 @@ impl CommandManager for TaskManager {
 }
 pub fn task_list_text(manager: &dyn CommandManager, args: &str, session: Option<&str>) -> String {
     let all = args.split_whitespace().any(|token| token == "--all");
-    let records = if all { manager.list(&ListScope::All) } else { session.map_or_else(Vec::new, |id| manager.list(&ListScope::ParentSession(id.into()))) };
-    if records.is_empty() { format!("No tasks in {}.", if all { "all sessions" } else { "this session" }) } else {
-        records.iter().map(|r| format_task_row(r, manager.run_stats_snapshot(&r.task_id).as_ref())).collect::<Vec<_>>().join("\n")
+    let records = if all {
+        manager.list(&ListScope::All)
+    } else {
+        session.map_or_else(Vec::new, |id| {
+            manager.list(&ListScope::ParentSession(id.into()))
+        })
+    };
+    if records.is_empty() {
+        format!(
+            "No tasks in {}.",
+            if all { "all sessions" } else { "this session" }
+        )
+    } else {
+        records
+            .iter()
+            .map(|r| format_task_row(r, manager.run_stats_snapshot(&r.task_id).as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 pub fn kill_option(record: &TaskRecord) -> String {
     let identity = task_identity(record);
-    let suffix = if identity == record.task_id { String::new() } else { format!(" ({})", record.task_id) };
+    let suffix = if identity == record.task_id {
+        String::new()
+    } else {
+        format!(" ({})", record.task_id)
+    };
     format!("{identity}{suffix} {}", record.status.as_str())
 }
 pub fn register_task_commands(api: &mut ExtensionApi, manager: Arc<dyn CommandManager>) {
     register_task_commands_with_sync(api, manager, Arc::new(|| {}));
 }
-pub fn register_task_commands_with_sync(api: &mut ExtensionApi, manager: Arc<dyn CommandManager>, sync: Arc<dyn Fn() + Send + Sync>) {
+pub fn register_task_commands_with_sync(
+    api: &mut ExtensionApi,
+    manager: Arc<dyn CommandManager>,
+    sync: Arc<dyn Fn() + Send + Sync>,
+) {
     let list_manager = manager.clone();
-    api.register_command("tasks", Some("List session tasks (--all for every session).".into()), None, Arc::new(move |args, ctx| {
-        let manager = list_manager.clone();
-        Box::pin(async move { let session = ctx.session_manager.session_id(); ctx.ui.notify(&task_list_text(manager.as_ref(), args, Some(session)), NotificationType::Info); Ok(()) })
-    }));
-    api.register_command("task-kill", Some("Cancel a session task via selector.".into()), None, Arc::new(move |_, ctx| {
-        let manager = manager.clone();
-        let sync = sync.clone();
-        Box::pin(async move { let result = run_task_kill(manager.as_ref(), ctx).await; sync(); result })
-    }));
+    api.register_command(
+        "tasks",
+        Some("List session tasks (--all for every session).".into()),
+        None,
+        Arc::new(move |args, ctx| {
+            let manager = list_manager.clone();
+            Box::pin(async move {
+                let session = ctx.session_manager.session_id();
+                ctx.ui.notify(
+                    &task_list_text(manager.as_ref(), args, Some(session)),
+                    NotificationType::Info,
+                );
+                Ok(())
+            })
+        }),
+    );
+    api.register_command(
+        "task-kill",
+        Some("Cancel a session task via selector.".into()),
+        None,
+        Arc::new(move |_, ctx| {
+            let manager = manager.clone();
+            let sync = sync.clone();
+            Box::pin(async move {
+                let result = run_task_kill(manager.as_ref(), ctx).await;
+                sync();
+                result
+            })
+        }),
+    );
 }
-pub async fn run_task_kill(manager: &dyn CommandManager, ctx: &ExtensionContext) -> Result<(), ExtensionFailure> {
-    let records: Vec<_> = manager.list(&ListScope::ParentSession(ctx.session_manager.session_id().into())).into_iter().filter(|record| matches!(record.status, TaskStatus::Running | TaskStatus::Pending | TaskStatus::Interrupted)).collect();
-    if records.is_empty() { ctx.ui.notify("No cancellable tasks.", NotificationType::Info); return Ok(()) }
+pub async fn run_task_kill(
+    manager: &dyn CommandManager,
+    ctx: &ExtensionContext,
+) -> Result<(), ExtensionFailure> {
+    let records: Vec<_> = manager
+        .list(&ListScope::ParentSession(
+            ctx.session_manager.session_id().into(),
+        ))
+        .into_iter()
+        .filter(|record| {
+            matches!(
+                record.status,
+                TaskStatus::Running | TaskStatus::Pending | TaskStatus::Interrupted
+            )
+        })
+        .collect();
+    if records.is_empty() {
+        ctx.ui
+            .notify("No cancellable tasks.", NotificationType::Info);
+        return Ok(());
+    }
     let options: Vec<_> = records.iter().map(kill_option).collect();
-    let Some(choice) = ctx.ui.select("Cancel which task?", &options, ExtensionUiDialogOptions::default()).await else { return Ok(()) };
-    let Some(index) = options.iter().position(|option| option == &choice) else { return Ok(()) };
+    let Some(choice) = ctx
+        .ui
+        .select(
+            "Cancel which task?",
+            &options,
+            ExtensionUiDialogOptions::default(),
+        )
+        .await
+    else {
+        return Ok(());
+    };
+    let Some(index) = options.iter().position(|option| option == &choice) else {
+        return Ok(());
+    };
     let selected = &records[index];
-    if !ctx.ui.confirm("Cancel task", &format!("Cancel {}?", selected.task_id), ExtensionUiDialogOptions::default()).await { return Ok(()) }
+    if !ctx
+        .ui
+        .confirm(
+            "Cancel task",
+            &format!("Cancel {}?", selected.task_id),
+            ExtensionUiDialogOptions::default(),
+        )
+        .await
+    {
+        return Ok(());
+    }
     manager.cancel_task(&selected.task_id, "/task-kill")?;
-    ctx.ui.notify(&format!("Cancelled {}.", selected.task_id), NotificationType::Info);
+    ctx.ui.notify(
+        &format!("Cancelled {}.", selected.task_id),
+        NotificationType::Info,
+    );
     Ok(())
 }

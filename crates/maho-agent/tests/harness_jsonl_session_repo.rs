@@ -7,7 +7,9 @@ use std::sync::Arc;
 use maho_agent::harness::context::{BACKGROUND_CONTEXT, Context};
 use maho_agent::harness::env::nodejs::NodeExecutionEnv;
 use maho_agent::harness::session::jsonl::types::{JSONL_STORAGE_VERSION, JsonlSessionListOptions};
-use maho_agent::harness::session::jsonl::{JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions};
+use maho_agent::harness::session::jsonl::{
+    JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions,
+};
 use maho_agent::harness::session::types::{ForkOptions, Write};
 use maho_agent::harness::session::values::{session_name, set_value};
 use maho_agent::harness::types::FileSystem;
@@ -44,7 +46,10 @@ fn create_options(id: &str, cwd: &str) -> JsonlSessionCreateOptions {
     }
 }
 
-async fn only_metadata(repo: &JsonlSessionRepo, context: &Context) -> maho_agent::harness::session::jsonl::JsonlSessionMetadata {
+async fn only_metadata(
+    repo: &JsonlSessionRepo,
+    context: &Context,
+) -> maho_agent::harness::session::jsonl::JsonlSessionMetadata {
     repo.list(Some(JsonlSessionListOptions { cwd: None }), context)
         .await
         .expect("list")
@@ -64,7 +69,10 @@ async fn persists_metadata_and_filters_discovery_by_cwd() {
     let session = repo.create(options, &context).await.expect("create");
     let metadata = session.metadata().clone();
 
-    let expected_cwd = file_system.absolute_path("/workspace", &context).await.expect("cwd");
+    let expected_cwd = file_system
+        .absolute_path("/workspace", &context)
+        .await
+        .expect("cwd");
     assert_eq!(metadata.id, "child");
     assert_eq!(metadata.created_at, NOW);
     assert_eq!(metadata.storage_version, JSONL_STORAGE_VERSION);
@@ -83,10 +91,29 @@ async fn persists_metadata_and_filters_discovery_by_cwd() {
         .expect("list workspace");
     assert_eq!(workspace.len(), 1);
     assert_eq!(workspace[0].id, "child");
-    let safe_cwd = expected_cwd.trim_start_matches(['/', '\\']).chars().map(|c| match c { '/' | '\\' | ':' => '-', other => other }).collect::<String>();
-    let expected_dir_part = format!("sessions{}--{safe_cwd}--{}", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR);
-    assert!(workspace[0].path.contains(&expected_dir_part), "{}", workspace[0].path);
-    assert!(workspace[0].path.ends_with("_child.jsonl"), "{}", workspace[0].path);
+    let safe_cwd = expected_cwd
+        .trim_start_matches(['/', '\\'])
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            other => other,
+        })
+        .collect::<String>();
+    let expected_dir_part = format!(
+        "sessions{}--{safe_cwd}--{}",
+        std::path::MAIN_SEPARATOR,
+        std::path::MAIN_SEPARATOR
+    );
+    assert!(
+        workspace[0].path.contains(&expected_dir_part),
+        "{}",
+        workspace[0].path
+    );
+    assert!(
+        workspace[0].path.ends_with("_child.jsonl"),
+        "{}",
+        workspace[0].path
+    );
     assert!(workspace[0].modified_at > 0);
 
     let other = repo
@@ -132,7 +159,11 @@ async fn atomically_publishes_a_branchless_session_header() {
     let metadata = only_metadata(&repo, &context).await;
 
     let publications = observing.publications();
-    assert_eq!(publications.len(), 1, "expected exactly one atomic publication");
+    assert_eq!(
+        publications.len(),
+        1,
+        "expected exactly one atomic publication"
+    );
     let publication = &publications[0];
     assert_eq!(publication.destination_path, metadata.path);
     assert!(!publication.destination_existed);
@@ -175,7 +206,13 @@ async fn keeps_an_explicit_session_mutation_through_commit_until_end() {
     );
 
     let result = mutation
-        .commit(vec![Write::Value(set_value(&session_name(), serde_json::json!("explicit")))], &context)
+        .commit(
+            vec![Write::Value(set_value(
+                &session_name(),
+                serde_json::json!("explicit"),
+            ))],
+            &context,
+        )
         .await
         .expect("commit");
     assert_eq!(result.seqs.len(), 1);
@@ -193,7 +230,10 @@ async fn keeps_an_explicit_session_mutation_through_commit_until_end() {
     let metadata = only_metadata(&repo, &context).await;
     session.close(&context).await;
     let reopened = repo.open(metadata, &context).await.expect("reopen");
-    assert_eq!(reopened.get_name(&context).await.expect("name"), Some("explicit".to_owned()));
+    assert_eq!(
+        reopened.get_name(&context).await.expect("name"),
+        Some("explicit".to_owned())
+    );
     reopened.close(&context).await;
     repo.close(&context).await;
     std::fs::remove_dir_all(&root).expect("cleanup");
@@ -227,7 +267,11 @@ async fn rejects_unsupported_storage_versions_without_repairing_a_torn_tail() {
         .await
         .expect("write");
 
-    let error = repo.open(metadata.clone(), &context).await.err().expect("unsupported version");
+    let error = repo
+        .open(metadata.clone(), &context)
+        .await
+        .err()
+        .expect("unsupported version");
     assert!(
         error
             .message
@@ -279,19 +323,40 @@ async fn keeps_fork_destinations_claimed_until_close_and_rejects_deleting_open_s
         .await
         .err()
         .expect("already open");
-    assert!(open_error.message.contains("already open"), "{}", open_error.message);
+    assert!(
+        open_error.message.contains("already open"),
+        "{}",
+        open_error.message
+    );
     let delete_error = repo
         .delete(fork_metadata.clone(), &context)
         .await
         .expect_err("open session cannot be deleted");
-    assert!(delete_error.message.contains("open"), "{}", delete_error.message);
+    assert!(
+        delete_error.message.contains("open"),
+        "{}",
+        delete_error.message
+    );
     fork.close(&context).await;
 
-    let reopened = repo.open(fork_metadata.clone(), &context).await.expect("reopen");
+    let reopened = repo
+        .open(fork_metadata.clone(), &context)
+        .await
+        .expect("reopen");
     reopened.close(&context).await;
-    repo.delete(fork_metadata.clone(), &context).await.expect("delete");
-    let missing = repo.open(fork_metadata, &context).await.err().expect("deleted");
-    assert!(missing.message.contains("does not exist"), "{}", missing.message);
+    repo.delete(fork_metadata.clone(), &context)
+        .await
+        .expect("delete");
+    let missing = repo
+        .open(fork_metadata, &context)
+        .await
+        .err()
+        .expect("deleted");
+    assert!(
+        missing.message.contains("does not exist"),
+        "{}",
+        missing.message
+    );
 
     source.close(&context).await;
     repo.close(&context).await;
@@ -308,7 +373,10 @@ async fn rejects_concurrent_creates_for_the_same_working_directory_id() {
         repo.create(create_options("session", "/workspace"), &context),
         repo.create(create_options("session", "/workspace"), &context)
     );
-    let fulfilled = [first.is_ok(), second.is_ok()].iter().filter(|ok| **ok).count();
+    let fulfilled = [first.is_ok(), second.is_ok()]
+        .iter()
+        .filter(|ok| **ok)
+        .count();
     assert_eq!(fulfilled, 1);
     assert_eq!(
         repo.list(Some(JsonlSessionListOptions { cwd: None }), &context)
@@ -332,8 +400,14 @@ async fn allows_the_same_id_to_be_active_in_different_working_directories() {
     let root = temp_root("same-id");
     let context = BACKGROUND_CONTEXT.clone();
     let file_system = node_env(&root);
-    let cwd_a = file_system.absolute_path("/workspace-a", &context).await.expect("cwd a");
-    let cwd_b = file_system.absolute_path("/workspace-b", &context).await.expect("cwd b");
+    let cwd_a = file_system
+        .absolute_path("/workspace-a", &context)
+        .await
+        .expect("cwd a");
+    let cwd_b = file_system
+        .absolute_path("/workspace-b", &context)
+        .await
+        .expect("cwd b");
     let repo = repo(file_system);
     let first = repo
         .create(create_options("shared", &cwd_a), &context)
@@ -361,7 +435,11 @@ async fn allows_the_same_id_to_be_active_in_different_working_directories() {
         .await
         .err()
         .expect("duplicate");
-    assert!(duplicate.message.contains("already exists"), "{}", duplicate.message);
+    assert!(
+        duplicate.message.contains("already exists"),
+        "{}",
+        duplicate.message
+    );
 
     let (first_metadata, second_metadata) = (listing[0].clone(), listing[1].clone());
     first.close(&context).await;
@@ -371,7 +449,10 @@ async fn allows_the_same_id_to_be_active_in_different_working_directories() {
         repo.open(second_metadata, &context)
     );
     reopened_first.expect("reopen first").close(&context).await;
-    reopened_second.expect("reopen second").close(&context).await;
+    reopened_second
+        .expect("reopen second")
+        .close(&context)
+        .await;
     repo.close(&context).await;
     std::fs::remove_dir_all(&root).expect("cleanup");
 }

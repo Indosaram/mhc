@@ -12,7 +12,7 @@ pub mod diff;
 pub mod revision_validator;
 pub mod tracker;
 pub use diff::diff_revisions;
-pub use tracker::{track, Change, Draft, Prepared, Tracker};
+pub use tracker::{Change, Draft, Prepared, Tracker, track};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(untagged)]
@@ -25,7 +25,9 @@ impl<'de> Deserialize<'de> for Seg {
         let value = JsonValue::deserialize(d)?;
         match value {
             JsonValue::String(key) => Ok(Self::Key(key)),
-            value => count(&value).map(Self::Index).map_err(serde::de::Error::custom),
+            value => count(&value)
+                .map(Self::Index)
+                .map_err(serde::de::Error::custom),
         }
     }
 }
@@ -40,16 +42,24 @@ impl From<usize> for Seg {
     }
 }
 impl From<String> for Seg {
-    fn from(value: String) -> Self { Self::Key(value.into()) }
+    fn from(value: String) -> Self {
+        Self::Key(value.into())
+    }
 }
 impl From<JsString> for Seg {
-    fn from(value: JsString) -> Self { Self::Key(value) }
+    fn from(value: JsString) -> Self {
+        Self::Key(value)
+    }
 }
 fn path_value(path: &[Seg]) -> JsonValue {
-    JsonValue::array(path.iter().map(|seg| match seg {
-        Seg::Key(key) => JsonValue::String(key.clone()),
-        Seg::Index(index) => json!(index).into(),
-    }).collect())
+    JsonValue::array(
+        path.iter()
+            .map(|seg| match seg {
+                Seg::Key(key) => JsonValue::String(key.clone()),
+                Seg::Index(index) => json!(index).into(),
+            })
+            .collect(),
+    )
 }
 pub type Path = Vec<Seg>;
 pub type WireOp = JsonValue;
@@ -139,18 +149,24 @@ pub fn is_base(ops: &[Op]) -> bool {
 }
 pub fn assert_safe_path(path: &[Seg]) -> Result<()> {
     for seg in path {
-        if let Seg::Key(key) = seg && key.reserved() {
+        if let Seg::Key(key) = seg
+            && key.reserved()
+        {
             return Err(DeltaError::UnsafePath(seg.clone()));
         }
     }
     Ok(())
 }
 fn parse_path(value: &JsonValue, nonempty: bool) -> Result<Path> {
-    let path: Path = value.as_array().ok_or(DeltaError::Shape("path"))?.iter()
+    let path: Path = value
+        .as_array()
+        .ok_or(DeltaError::Shape("path"))?
+        .iter()
         .map(|value| match value {
             JsonValue::String(key) => Ok(Seg::Key(key.clone())),
             _ => count(value).map(Seg::Index),
-        }).collect::<Result<_>>()?;
+        })
+        .collect::<Result<_>>()?;
     if nonempty && path.is_empty() {
         return Err(DeltaError::Shape("empty path"));
     }
@@ -518,7 +534,11 @@ impl Encoder {
                     let id = self.next_id;
                     self.next_id += 1;
                     self.ids.insert(path.to_vec(), id);
-                    out.push(JsonValue::array(vec![JsonValue::String("#".into()), json!(id).into(), path_value(path)]));
+                    out.push(JsonValue::array(vec![
+                        JsonValue::String("#".into()),
+                        json!(id).into(),
+                        path_value(path),
+                    ]));
                     tuple[1] = json!(id).into();
                 } else {
                     self.seen.insert(path.to_vec());

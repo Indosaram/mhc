@@ -6,9 +6,9 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 use x11rb::protocol::xproto::AtomEnum;
 
-use super::X11Capture;
-use super::fake::{FakeServer, viewable};
+use super::fake::{viewable, FakeServer};
 use super::image::RootRect;
+use super::X11Capture;
 
 fn root_pixel(x: u8, y: u8) -> [u8; 4] {
     [x, y, 0x7f, 255]

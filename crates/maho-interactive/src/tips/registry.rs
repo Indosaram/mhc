@@ -2,8 +2,8 @@
 
 use std::sync::LazyLock;
 
-use super::catalog::computer_tips::COMPUTER_TIPS;
 use super::catalog::cli_tips::CLI_TIPS;
+use super::catalog::computer_tips::COMPUTER_TIPS;
 use super::catalog::dag_tips::DAG_TIPS;
 use super::catalog::ethos_tips::ETHOS_TIPS;
 use super::catalog::input_tips::INPUT_TIPS;

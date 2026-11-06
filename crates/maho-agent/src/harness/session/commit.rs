@@ -316,7 +316,11 @@ pub fn materialize_committed_entry(entry: NewEntry, seq: i64, timestamp: i64) ->
     }
 }
 
-pub fn prepare_storage_commit(writes: Vec<Write>, first_seq: i64, timestamp: i64) -> PreparedCommit {
+pub fn prepare_storage_commit(
+    writes: Vec<Write>,
+    first_seq: i64,
+    timestamp: i64,
+) -> PreparedCommit {
     let committed_writes: Vec<CommittedWrite> = writes
         .into_iter()
         .enumerate()
@@ -339,7 +343,8 @@ pub fn validate_committed_writes(
 ) -> Result<(), SessionError> {
     let mut previous_seq = first_seq - 1;
     let mut transaction_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut transaction_entry_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut transaction_entry_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for write in writes {
         if write.seq() <= previous_seq {
             return Err(SessionError::new(
@@ -361,12 +366,14 @@ pub fn validate_committed_writes(
         }
         if let CommittedWrite::Entry(entry) = write
             && let Some(parent_id) = &entry.parent_id
-                && !(state.has_entry_id)(parent_id) && !transaction_entry_ids.contains(parent_id) {
-                    return Err(SessionError::new(
-                        SessionErrorKind::MissingParent,
-                        format!("Missing parent entry: {parent_id}"),
-                    ));
-                }
+            && !(state.has_entry_id)(parent_id)
+            && !transaction_entry_ids.contains(parent_id)
+        {
+            return Err(SessionError::new(
+                SessionErrorKind::MissingParent,
+                format!("Missing parent entry: {parent_id}"),
+            ));
+        }
         transaction_ids.insert(id);
         if let CommittedWrite::Entry(entry) = write {
             transaction_entry_ids.insert(entry.id.clone());

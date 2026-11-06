@@ -7,8 +7,8 @@ use model_core::ModelResolutionResult;
 use model_core::resolve_model_with_fallback;
 use pretty_assertions::assert_eq;
 
-use crate::support::set;
 use crate::support::entry;
+use crate::support::set;
 
 fn resolve(chain: &[FallbackEntry], available: &[&str]) -> Option<ModelResolutionResult> {
     resolve_model_with_fallback(&ExtendedModelResolutionInput {
@@ -52,7 +52,10 @@ fn ultrabrain_and_deep_high_prefer_copilot_astra_when_available() {
 
 #[test]
 fn unspecified_high_never_borrows_copilot_astra() {
-    let with_opus = ["github-copilot/gpt-6-astra", "github-copilot/claude-opus-5-5"];
+    let with_opus = [
+        "github-copilot/gpt-6-astra",
+        "github-copilot/claude-opus-5-5",
+    ];
     let res_with_opus = resolve(
         &CATEGORY_MODEL_REQUIREMENTS["unspecified-high"].fallback_chain,
         &with_opus,
@@ -188,10 +191,7 @@ fn warm_cache_does_not_pick_up_transformed_vercel_astra() {
 fn warm_cache_prefers_the_copilot_rung_over_a_transformed_vercel_astra() {
     let result = resolve(
         &AGENT_MODEL_REQUIREMENTS["momus"].fallback_chain,
-        &[
-            "github-copilot/gpt-6-astra",
-            "vercel/openai/gpt-6-astra",
-        ],
+        &["github-copilot/gpt-6-astra", "vercel/openai/gpt-6-astra"],
     );
 
     assert_eq!(
@@ -236,7 +236,10 @@ fn copilot_is_never_included_in_a_gpt_5_6_xhigh_rung() {
 fn momus_prefers_native_astra_xhigh_over_the_copilot_astra_rung_when_both_are_available() {
     let result = resolve(
         &AGENT_MODEL_REQUIREMENTS["momus"].fallback_chain,
-        &["chatgpt-subscription/gpt-6-astra", "github-copilot/gpt-6-astra"],
+        &[
+            "chatgpt-subscription/gpt-6-astra",
+            "github-copilot/gpt-6-astra",
+        ],
     );
 
     assert_eq!(

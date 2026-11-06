@@ -21,8 +21,8 @@ pub use frontmatter::{
     sanitize_frontmatter_value,
 };
 pub use frontmatter_entries::{
-    FrontmatterEntry, content_frontmatter_entries, duplicate_frontmatter_keys,
-    frontmatter_entries, look_alike_frontmatter_keys, normalized_frontmatter_key,
+    FrontmatterEntry, content_frontmatter_entries, duplicate_frontmatter_keys, frontmatter_entries,
+    look_alike_frontmatter_keys, normalized_frontmatter_key,
 };
 pub use frontmatter_scalar::{
     decode_quoted_scalar, decode_scalar_source, decode_string_array, is_canonical_scalar_source,
@@ -38,9 +38,7 @@ pub use hooks::{
     InstallHooksOptions, InstalledHook, install_hooks, install_hooks_with_options,
     resolve_common_git_dir, resolve_hooks_dir,
 };
-pub use hooks_commit_msg::{
-    COMMIT_MSG_HOOK_SCRIPT, MemoryHookChecker, with_memory_hook_checker,
-};
+pub use hooks_commit_msg::{COMMIT_MSG_HOOK_SCRIPT, MemoryHookChecker, with_memory_hook_checker};
 pub use hooks_scripts::{
     HOOK_SECRET_PATTERNS, HookSecretPattern, POST_COMMIT_HOOK_SCRIPT, PRE_COMMIT_HOOK_SCRIPT,
 };

@@ -13,14 +13,14 @@ mod cli_source;
 mod config;
 #[path = "context_support.rs"]
 mod context_support;
+#[path = "denial_is_final.rs"]
+mod denial_is_final;
 #[path = "dispatch.rs"]
 mod dispatch;
 #[path = "dispatch_metadata.rs"]
 mod dispatch_metadata;
 #[path = "dispatch_policy.rs"]
 mod dispatch_policy;
-#[path = "denial_is_final.rs"]
-mod denial_is_final;
 #[path = "events.rs"]
 mod events;
 #[path = "external.rs"]

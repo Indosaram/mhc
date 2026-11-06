@@ -1,9 +1,9 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}},
-    time::Duration,
+use axum::{
+    Json, Router,
+    extract::{Request, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
-use axum::{Json, Router, extract::{Request, State}, http::StatusCode, response::{IntoResponse, Response}};
 use maho_ext_mcp::auth::{
     oauth::{OAuthRequestError, OAuthServerInfo, discover, reset_discovery_cache},
     oauth_provider::{CredentialScope, McpOAuthProvider},
@@ -11,6 +11,14 @@ use maho_ext_mcp::auth::{
     token_store::{McpStoredAuth, McpTokenStore},
 };
 use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 type Routes = HashMap<String, (u16, Option<Value>)>;
 
@@ -28,10 +36,18 @@ impl Drop for Server {
 }
 impl Server {
     fn count(&self, path: &str) -> usize {
-        self.hits.lock().expect("test fixture").iter().filter(|hit| *hit == path).count()
+        self.hits
+            .lock()
+            .expect("test fixture")
+            .iter()
+            .filter(|hit| *hit == path)
+            .count()
     }
     fn set(&self, path: &str, status: u16, body: Option<Value>) {
-        self.routes.lock().expect("test fixture").insert(path.into(), (status, body));
+        self.routes
+            .lock()
+            .expect("test fixture")
+            .insert(path.into(), (status, body));
     }
 }
 
@@ -49,16 +65,29 @@ async fn handle(State(state): State<AppState>, request: Request) -> Response {
     if let Ok(permit) = state.gate.acquire().await {
         drop(permit);
     }
-    let route = state.routes.lock().expect("test fixture").get(&path).cloned();
+    let route = state
+        .routes
+        .lock()
+        .expect("test fixture")
+        .get(&path)
+        .cloned();
     match route {
-        Some((status, Some(body))) => (StatusCode::from_u16(status).expect("test fixture"), Json(body)).into_response(),
-        Some((status, None)) => StatusCode::from_u16(status).expect("test fixture").into_response(),
+        Some((status, Some(body))) => (
+            StatusCode::from_u16(status).expect("test fixture"),
+            Json(body),
+        )
+            .into_response(),
+        Some((status, None)) => StatusCode::from_u16(status)
+            .expect("test fixture")
+            .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
 async fn server() -> Server {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test fixture");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test fixture");
     let base = format!("http://{}", listener.local_addr().expect("test fixture"));
     let state = AppState {
         hits: Arc::default(),
@@ -70,7 +99,13 @@ async fn server() -> Server {
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("test fixture");
     });
-    Server { base, hits: state.hits, routes: state.routes, gate: state.gate, task }
+    Server {
+        base,
+        hits: state.hits,
+        routes: state.routes,
+        gate: state.gate,
+        task,
+    }
 }
 
 fn metadata(base: &str) -> Value {
@@ -98,18 +133,31 @@ const ASM: &str = "/.well-known/oauth-authorization-server";
 async fn protected_resource_is_fetched_at_the_origin_and_issuer_origin_is_retried() {
     let server = server().await;
     let base = &server.base;
-    server.set(PRM, 200, Some(json!({"authorization_servers": ["", format!("{base}/tenant/")]})));
+    server.set(
+        PRM,
+        200,
+        Some(json!({"authorization_servers": ["", format!("{base}/tenant/")]})),
+    );
     server.set(ASM, 200, Some(metadata(base)));
     let root = tempfile::tempdir().expect("test fixture");
     let provider = provider(root.path(), &format!("{base}/deep/mcp?x=1#f"));
-    let info = discover(&provider, &reqwest::Client::new()).await.expect("test fixture");
+    let info = discover(&provider, &reqwest::Client::new())
+        .await
+        .expect("test fixture");
     assert_eq!(info.authorization_server_url, format!("{base}/tenant/"));
-    assert!(info.resource_metadata.get("authorization_servers").is_some());
+    assert!(
+        info.resource_metadata
+            .get("authorization_servers")
+            .is_some()
+    );
     assert_eq!(server.count(PRM), 1);
     assert_eq!(server.count("/deep/mcp"), 0);
     assert_eq!(server.count(&format!("{ASM}/tenant")), 1);
     assert_eq!(server.count(ASM), 1);
-    assert_eq!(info.authorization_server_metadata["token_endpoint"], format!("{base}/token"));
+    assert_eq!(
+        info.authorization_server_metadata["token_endpoint"],
+        format!("{base}/token")
+    );
 }
 
 #[tokio::test]
@@ -120,13 +168,34 @@ async fn missing_authorization_servers_and_bad_statuses_are_reported() {
     let provider = provider(root.path(), &format!("{}/mcp", server.base));
 
     server.set(PRM, 200, Some(json!({"authorization_servers": []})));
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("authorization_servers"));
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("authorization_servers")
+    );
 
     server.set(PRM, 200, Some(Value::Null));
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("not valid JSON"));
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("not valid JSON")
+    );
 
     server.set(PRM, 500, None);
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("500"));
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("500")
+    );
 }
 
 #[tokio::test]
@@ -136,12 +205,37 @@ async fn missing_token_endpoint_and_missing_metadata_are_reported() {
     let root = tempfile::tempdir().expect("test fixture");
     let client = reqwest::Client::new();
     let provider = provider(root.path(), &format!("{base}/mcp"));
-    server.set(ASM, 200, Some(json!({"authorization_endpoint": format!("{base}/authorize")})));
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("token_endpoint"));
+    server.set(
+        ASM,
+        200,
+        Some(json!({"authorization_endpoint": format!("{base}/authorize")})),
+    );
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("token_endpoint")
+    );
     server.set(ASM, 404, None);
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("not found"));
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("not found")
+    );
     server.set(ASM, 503, None);
-    assert!(message(discover(&provider, &client).await.expect_err("expected an error")).contains("503"));
+    assert!(
+        message(
+            discover(&provider, &client)
+                .await
+                .expect_err("expected an error")
+        )
+        .contains("503")
+    );
 }
 
 #[tokio::test]
@@ -151,7 +245,9 @@ async fn missing_protected_resource_falls_back_to_the_server_origin_as_issuer() 
     server.set(ASM, 200, Some(metadata(base)));
     let root = tempfile::tempdir().expect("test fixture");
     let provider = provider(root.path(), base);
-    let info = discover(&provider, &reqwest::Client::new()).await.expect("test fixture");
+    let info = discover(&provider, &reqwest::Client::new())
+        .await
+        .expect("test fixture");
     assert_eq!(info.authorization_server_url, format!("{base}/"));
     assert!(info.resource_metadata.is_null());
 }
@@ -183,7 +279,11 @@ async fn cache_serves_sequential_and_shares_concurrent_lookups() {
     .expect("test fixture");
     server.gate.add_permits(1 << 20);
     for lookup in lookups {
-        tokio::time::timeout(Duration::from_secs(5), lookup).await.expect("test fixture").expect("test fixture").expect("test fixture");
+        tokio::time::timeout(Duration::from_secs(5), lookup)
+            .await
+            .expect("test fixture")
+            .expect("test fixture")
+            .expect("test fixture");
     }
     assert_eq!((server.count(PRM), server.count(ASM)), (1, 1));
 
@@ -194,7 +294,9 @@ async fn cache_serves_sequential_and_shares_concurrent_lookups() {
     discover(&provider, &client).await.expect("test fixture");
     assert_eq!((server.count(PRM), server.count(ASM)), (2, 2));
 
-    provider.invalidate_credentials(CredentialScope::Discovery).expect("test fixture");
+    provider
+        .invalidate_credentials(CredentialScope::Discovery)
+        .expect("test fixture");
     discover(&provider, &client).await.expect("test fixture");
     assert_eq!(server.count(PRM), 3);
 }
@@ -225,7 +327,14 @@ async fn injected_discover_wins_over_a_warm_cache() {
     discover(&warm, &client).await.expect("test fixture");
 
     let store = McpTokenStore::new(root.path(), "disc", &url);
-    store.write(McpStoredAuth { access_token: Some("a".into()), refresh_token: Some("r".into()), expires_at: Some(0.0), ..Default::default() }).expect("test fixture");
+    store
+        .write(McpStoredAuth {
+            access_token: Some("a".into()),
+            refresh_token: Some("r".into()),
+            expires_at: Some(0.0),
+            ..Default::default()
+        })
+        .expect("test fixture");
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();
     let injected: DiscoverFn = Arc::new(move |_| {
@@ -244,7 +353,11 @@ async fn injected_discover_wins_over_a_warm_cache() {
     let manager = McpRefreshManager::new_with_options(
         Arc::new(refresh_provider),
         client,
-        RefreshManagerOptions { discover: Some(injected), max_retries: Some(0), ..Default::default() },
+        RefreshManagerOptions {
+            discover: Some(injected),
+            max_retries: Some(0),
+            ..Default::default()
+        },
     );
     assert!(manager.refresh().await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -254,18 +367,31 @@ async fn injected_discover_wins_over_a_warm_cache() {
 fn legacy_discovery_state_is_dropped_on_read_and_not_rewritten() {
     let root = tempfile::tempdir().expect("test fixture");
     let store = McpTokenStore::new(root.path(), "legacy", "https://legacy.test/mcp");
-    store.write(McpStoredAuth { access_token: Some("a".into()), ..Default::default() }).expect("test fixture");
-    let mut raw: Value = serde_json::from_str(&std::fs::read_to_string(store.tokens_path()).expect("test fixture")).expect("test fixture");
+    store
+        .write(McpStoredAuth {
+            access_token: Some("a".into()),
+            ..Default::default()
+        })
+        .expect("test fixture");
+    let mut raw: Value =
+        serde_json::from_str(&std::fs::read_to_string(store.tokens_path()).expect("test fixture"))
+            .expect("test fixture");
     raw["discoveryState"] = json!({"authorizationServerUrl": "https://old.test"});
     raw["customKey"] = json!({"keep": true});
-    std::fs::write(store.tokens_path(), serde_json::to_string(&raw).expect("test fixture")).expect("test fixture");
+    std::fs::write(
+        store.tokens_path(),
+        serde_json::to_string(&raw).expect("test fixture"),
+    )
+    .expect("test fixture");
 
     let record = store.read().expect("test fixture").expect("test fixture");
     assert!(!record.extra.contains_key("discoveryState"));
     assert_eq!(record.extra["customKey"], json!({"keep": true}));
 
     store.update(|record| record).expect("test fixture");
-    let rewritten: Value = serde_json::from_str(&std::fs::read_to_string(store.tokens_path()).expect("test fixture")).expect("test fixture");
+    let rewritten: Value =
+        serde_json::from_str(&std::fs::read_to_string(store.tokens_path()).expect("test fixture"))
+            .expect("test fixture");
     assert!(rewritten.get("discoveryState").is_none());
     assert_eq!(rewritten["customKey"], json!({"keep": true}));
     assert_eq!(rewritten["accessToken"], "a");

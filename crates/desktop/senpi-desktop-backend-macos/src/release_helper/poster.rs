@@ -34,10 +34,17 @@ impl Seam {
             return Ok(Self::Native);
         };
         let mut user = UserHolds::default();
-        for hold in std::env::var(USER_HOLDS_ENV).unwrap_or_default().split(',').filter(|hold| !hold.is_empty()) {
+        for hold in std::env::var(USER_HOLDS_ENV)
+            .unwrap_or_default()
+            .split(',')
+            .filter(|hold| !hold.is_empty())
+        {
             user.set(parse_hold(hold)?, true);
         }
-        Ok(Self::Record { path: PathBuf::from(path), user })
+        Ok(Self::Record {
+            path: PathBuf::from(path),
+            user,
+        })
     }
 
     /// Starts following the user's holds, answering READY once it does.
@@ -47,18 +54,20 @@ impl Seam {
             Self::Native => None,
             Self::Record { user, .. } => Some(*user),
         };
-        let started = thread::Builder::new().name("observe-user".to_owned()).spawn(move || match user {
-            None => tap::observe(&observation, ready),
-            Some(user) => {
-                observation.holds().hold_all(user);
-                let mut ready = ready;
-                observation.follow(&Recorded, || {
-                    if let Err(error) = ready.write_all(&[READY]) {
-                        eprintln!("release helper: READY: {error}");
-                    }
-                });
-            }
-        });
+        let started = thread::Builder::new()
+            .name("observe-user".to_owned())
+            .spawn(move || match user {
+                None => tap::observe(&observation, ready),
+                Some(user) => {
+                    observation.holds().hold_all(user);
+                    let mut ready = ready;
+                    observation.follow(&Recorded, || {
+                        if let Err(error) = ready.write_all(&[READY]) {
+                            eprintln!("release helper: READY: {error}");
+                        }
+                    });
+                }
+            });
         if let Err(error) = started {
             eprintln!("release helper: cannot observe the user: {error}");
         }
@@ -106,10 +115,13 @@ impl Poster {
             return;
         };
         let outcome = match (self, step) {
-            (Self::Native, Step::Post { flags, .. }) => {
-                crate::input::post_helper_release(press.route, press.input, press.text.as_deref(), *flags)
-                    .map_err(|error| error.message)
-            }
+            (Self::Native, Step::Post { flags, .. }) => crate::input::post_helper_release(
+                press.route,
+                press.input,
+                press.text.as_deref(),
+                *flags,
+            )
+            .map_err(|error| error.message),
             (Self::Native, Step::Leave { .. }) => Ok(()),
             (Self::Record(file), step) => writeln!(file, "{}", describe(press, step))
                 .and_then(|()| file.flush())
@@ -133,9 +145,16 @@ pub(crate) fn describe(press: &Open, step: &Step) -> String {
         Input::Key(code) => format!("key:{code}"),
         Input::Button(number) => format!("button:{number}"),
     };
-    let text = press.text.as_ref().map(|text| format!(" text={text}")).unwrap_or_default();
+    let text = press
+        .text
+        .as_ref()
+        .map(|text| format!(" text={text}"))
+        .unwrap_or_default();
     match step {
-        Step::Post { id, flags: Some(flags) } => format!("post {id} {route} {input}{text} flags={flags:#x}"),
+        Step::Post {
+            id,
+            flags: Some(flags),
+        } => format!("post {id} {route} {input}{text} flags={flags:#x}"),
         Step::Post { id, flags: None } => format!("post {id} {route} {input}{text} flags=-"),
         Step::Leave { id } => format!("leave {id} {route} {input}{text}"),
     }

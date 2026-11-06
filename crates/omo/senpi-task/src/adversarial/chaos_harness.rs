@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tempfile::TempDir;
 
-use crate::completion::{CompletionNotifierDeps, CompletionNotifierStore, ScheduledCancel, ScheduledTask, create_completion_notifier};
+use crate::completion::{
+    CompletionNotifierDeps, CompletionNotifierStore, ScheduledCancel, ScheduledTask,
+    create_completion_notifier,
+};
 use crate::lifecycle::TaskSettings;
 use crate::manager::types::ManagerConfig;
 use crate::manager::{AbortSignal, ManagedChildHandle, TaskManager};
@@ -20,7 +23,8 @@ use crate::store::{StateDirConfig, TaskRecordStore};
 use super::chaos_engine::{ChaosProcessTable, LifecycleChaosObservations};
 use super::chaos_engine_factory::{BuildChaosEnginesInput, ChaosEngine, build_chaos_engines};
 use super::chaos_invariants::{
-    InstrumentedNotifier, NotificationEpochTracker, create_chaos_notifier, instrument_completion_notifier,
+    InstrumentedNotifier, NotificationEpochTracker, create_chaos_notifier,
+    instrument_completion_notifier,
 };
 use super::observing_store::{SharedObservations, create_observing_store};
 
@@ -85,7 +89,13 @@ impl ChaosRetryScheduler {
 
     fn schedule(self: &Arc<Self>, task: ScheduledTask, delay_ms: u64) -> ScheduledCancel {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        lock(&self.pending).insert(id, ScheduledRetry { run: task, delay_ms });
+        lock(&self.pending).insert(
+            id,
+            ScheduledRetry {
+                run: task,
+                delay_ms,
+            },
+        );
         let scheduler = Arc::clone(self);
         Box::new(move || {
             lock(&scheduler.pending).remove(&id);
@@ -224,7 +234,12 @@ impl ChaosHarness {
         let before = self.store.load(task_id).ok().flatten();
         let result = mutate();
         let after = self.store.load(task_id).ok().flatten();
-        super::observing_store::observe_store_write(&self.store, &self.observations, before.as_ref(), after.as_ref());
+        super::observing_store::observe_store_write(
+            &self.store,
+            &self.observations,
+            before.as_ref(),
+            after.as_ref(),
+        );
         result
     }
 
@@ -235,7 +250,12 @@ impl ChaosHarness {
     }
 
     pub fn write_session(&self, task_id: &str) -> std::path::PathBuf {
-        let directory = self.store.state_dir().join("children").join(task_id).join("sessions");
+        let directory = self
+            .store
+            .state_dir()
+            .join("children")
+            .join(task_id)
+            .join("sessions");
         let _ = std::fs::create_dir_all(&directory);
         let path = directory.join(format!("{task_id}.jsonl"));
         let line = serde_json::json!({
@@ -302,9 +322,22 @@ impl ChaosHarness {
                 lock(&self.lifecycle_observations.live_handle_breaches).push(format!(
                     "{task_id} live in {} host={} status={}/{} after {trace}",
                     ids.join(","),
-                    record.as_ref().and_then(|record| record.host_pid).map_or("none".to_string(), |pid| pid.to_string()),
-                    record.as_ref().map_or("missing".to_string(), |record| record.status.as_str().to_string()),
-                    record.as_ref().map_or("missing".to_string(), |record| record.residency_state.as_str().to_string()),
+                    record
+                        .as_ref()
+                        .and_then(|record| record.host_pid)
+                        .map_or("none".to_string(), |pid| pid.to_string()),
+                    record
+                        .as_ref()
+                        .map_or("missing".to_string(), |record| record
+                            .status
+                            .as_str()
+                            .to_string()),
+                    record
+                        .as_ref()
+                        .map_or("missing".to_string(), |record| record
+                            .residency_state
+                            .as_str()
+                            .to_string()),
                 ));
             }
         }
@@ -373,19 +406,30 @@ pub fn build_harness(options: ChaosHarnessOptions) -> ChaosHarness {
     let retry_scheduler = ChaosRetryScheduler::new();
     let waiters = ChaosWaiters::new();
     let notification_epochs = Arc::new(NotificationEpochTracker::default());
-    let parent_notifier = create_chaos_notifier(Arc::clone(&store), Arc::clone(&observations), Arc::clone(&notification_epochs));
+    let parent_notifier = create_chaos_notifier(
+        Arc::clone(&store),
+        Arc::clone(&observations),
+        Arc::clone(&notification_epochs),
+    );
 
-    let completion_store: Arc<dyn CompletionNotifierStore> = Arc::clone(&store) as Arc<dyn CompletionNotifierStore>;
+    let completion_store: Arc<dyn CompletionNotifierStore> =
+        Arc::clone(&store) as Arc<dyn CompletionNotifierStore>;
     let scheduler_for_closure = Arc::clone(&retry_scheduler);
     let mut deps = CompletionNotifierDeps::new(
         Arc::clone(&parent_notifier) as Arc<dyn crate::completion::ParentNotifier>,
         completion_store,
     );
-    deps.schedule = Some(Arc::new(move |task, delay_ms| scheduler_for_closure.schedule(task, delay_ms)));
+    deps.schedule = Some(Arc::new(move |task, delay_ms| {
+        scheduler_for_closure.schedule(task, delay_ms)
+    }));
     deps.get_current_session_id = Some(Arc::new(|| Some(CHAOS_SESSION.to_string())));
     deps.get_parent_state = Some(Arc::new(|| crate::completion::ParentState::Idle));
     let base_notifier = create_completion_notifier(deps);
-    let notifier = instrument_completion_notifier(base_notifier, Arc::clone(&store), Arc::clone(&notification_epochs));
+    let notifier = instrument_completion_notifier(
+        base_notifier,
+        Arc::clone(&store),
+        Arc::clone(&notification_epochs),
+    );
 
     let runner = Arc::clone(&engines[0].in_process_runner);
     let residency_max = options.residency_max;

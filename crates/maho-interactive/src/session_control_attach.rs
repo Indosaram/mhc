@@ -19,16 +19,16 @@
 use crate::session_control_server::ControlConnection;
 use maho_core::agent_session::{AgentSession, AgentSessionSubscription};
 use maho_rpc::connection_roles::ConnectionRoles;
-use maho_rpc::session_event_fanout::SessionEventFanout;
-use maho_rpc::session_registry::RpcSessionState;
-use maho_rpc::session_status::{SessionStatusEntryView, SessionView};
-use maho_rpc::session_status_stream::{
-    SessionStatusDelivery, SessionStatusSource, SessionStatusStream,
-};
 use maho_rpc::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY;
 use maho_rpc::jsonl::serialize_json_line;
 use maho_rpc::media_placeholders::omit_inline_media;
+use maho_rpc::session_event_fanout::SessionEventFanout;
+use maho_rpc::session_registry::RpcSessionState;
+use maho_rpc::session_status::{SessionStatusEntryView, SessionView};
 use maho_rpc::session_status::{cause_of_record, terminal_of_lifecycle};
+use maho_rpc::session_status_stream::{
+    SessionStatusDelivery, SessionStatusSource, SessionStatusStream,
+};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -304,8 +304,11 @@ impl ControlAttachments {
                 };
                 let handle = session.session_id();
                 if record["sessionId"].as_str() == Some(handle.as_str()) {
-                    lifecycle_forwarder.deliver(&handle, None,
-                        maho_rpc::session_record_stream::session_record(record.clone()));
+                    lifecycle_forwarder.deliver(
+                        &handle,
+                        None,
+                        maho_rpc::session_record_stream::session_record(record.clone()),
+                    );
                 }
             }),
         );
@@ -393,11 +396,8 @@ impl ControlAttachments {
     /// Enqueues a session record with this connection as the current one (its targeted records reach
     /// it), senpi `run(connection, () => writer.enqueue(handle, record))`.
     pub fn enqueue_for(&self, connection: &ControlConnection, record: Value) {
-        self.forwarder.deliver(
-            &self.handle(),
-            Some(&key_of(connection)),
-            record,
-        );
+        self.forwarder
+            .deliver(&self.handle(), Some(&key_of(connection)), record);
     }
 
     pub fn respond(&self, connection: &ControlConnection, answer: &Value) -> bool {

@@ -5,7 +5,9 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 pub type ServerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ServerError>> + Send + 'a>>;
 pub type TerminationFuture = Pin<Box<dyn Future<Output = Option<ServerError>> + Send + 'static>>;
-pub type Publisher = Arc<dyn Fn(maho_chord::types::JsString, Value, Context) -> ServerFuture<'static, ()> + Send + Sync>;
+pub type Publisher = Arc<
+    dyn Fn(maho_chord::types::JsString, Value, Context) -> ServerFuture<'static, ()> + Send + Sync,
+>;
 
 pub trait RoutedSessionAttachment: Send + Sync {
     fn invoke_service<'a>(

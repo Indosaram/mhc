@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::model_vocabulary::{KNOWN_MODELS, KNOWN_PROVIDERS};
 use crate::session_role::TELEMETRY_SESSION_ROLES;
 use crate::session_summary_window::{
-    ENDED_BY, MODEL_SLOTS, MODEL_SLOT_NUMBER_KEYS, summary_number_keys,
+    ENDED_BY, MODEL_SLOT_NUMBER_KEYS, MODEL_SLOTS, summary_number_keys,
 };
 
 fn string_property() -> Value {

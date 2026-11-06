@@ -27,8 +27,12 @@ pub struct OllamaProviderOptions {
 }
 
 fn normalize_ollama_host(value: &str) -> Result<String, ModelsError> {
-    let mut host = Url::parse(value)
-        .map_err(|error| ModelsError::new(ModelsErrorCode::Provider, format!("invalid Ollama base URL {value}: {error}")))?;
+    let mut host = Url::parse(value).map_err(|error| {
+        ModelsError::new(
+            ModelsErrorCode::Provider,
+            format!("invalid Ollama base URL {value}: {error}"),
+        )
+    })?;
     let path = host.path().to_owned();
     let trimmed = path
         .strip_suffix("/v1/")
@@ -358,7 +362,10 @@ pub fn ollama_provider(
             .unwrap_or(DEFAULT_OLLAMA_CLOUD_URL),
     )?;
     // PERF-DIVERGENCE(senpi ollama.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let fetch = options.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let fetch = options
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let base_url = format!("{host}/v1");
     let fetch_models: FetchModels = {
         let host = host.clone();

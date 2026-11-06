@@ -26,14 +26,15 @@ pub mod utils;
 
 pub use result::{
     Closed, HarnessClosed, HarnessFault, InvalidLane, InvalidMessage, InvalidNavigation, LaneBusy,
-    NoActiveOperation, NoActiveRun, NothingToCompact, NothingToResume, OperationKind, OperationMismatch,
-    TaggedErrorValue, UnknownSkill, UnknownTarget, UnknownTemplate,
+    NoActiveOperation, NoActiveRun, NothingToCompact, NothingToResume, OperationKind,
+    OperationMismatch, TaggedErrorValue, UnknownSkill, UnknownTarget, UnknownTemplate,
 };
 pub use types::{
-    AgentHarnessResources, AgentHarnessStreamOptions, AgentHarnessStreamOptionsPatch, AgentHarnessTool,
-    AgentHarnessToolContextSource, AgentHarnessToolInvocation, AgentHarnessToolUpdateCallback,
-    AgentHarnessToolUpdateOptions, BranchSummaryError, CompactionError, ExecutionEnv, ExecutionError,
-    FileError, FileErrorCode, FileInfo, FileKind, FileSystem, PromptTemplate, Shell, ShellExecOptions,
-    ShellExecResult, ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputMetadata, ShellOutputRetention,
+    AgentHarnessResources, AgentHarnessStreamOptions, AgentHarnessStreamOptionsPatch,
+    AgentHarnessTool, AgentHarnessToolContextSource, AgentHarnessToolInvocation,
+    AgentHarnessToolUpdateCallback, AgentHarnessToolUpdateOptions, BranchSummaryError,
+    CompactionError, ExecutionEnv, ExecutionError, FileError, FileErrorCode, FileInfo, FileKind,
+    FileSystem, PromptTemplate, Shell, ShellExecOptions, ShellExecResult,
+    ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputMetadata, ShellOutputRetention,
     ShellOutputTruncation, ShellOutputUpdate, ShellOutputView, Skill, TextLine, TextLineReader,
 };

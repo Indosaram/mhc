@@ -1,10 +1,20 @@
-use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
-use sha2::{Digest, Sha256};
-use futures::{FutureExt, future::{BoxFuture, Shared}};
 use super::watch_event_source::{FsWatchEventSource, WatchErrorListener, WatchSubscription};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum WatchKind { Dir, DirRecursive }
+pub enum WatchKind {
+    Dir,
+    DirRecursive,
+}
 pub type WatchFilter = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 pub type HashFile = Arc<dyn Fn(&Path) -> Result<String, std::io::Error> + Send + Sync>;
 pub trait WatchClock: Send + Sync {
@@ -13,80 +23,188 @@ pub trait WatchClock: Send + Sync {
 }
 struct TokioWatchClock;
 impl WatchClock for TokioWatchClock {
-    fn now(&self) -> tokio::time::Instant { tokio::time::Instant::now() }
-    fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()> { Box::pin(tokio::time::sleep_until(deadline)) }
+    fn now(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+    fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()> {
+        Box::pin(tokio::time::sleep_until(deadline))
+    }
 }
 pub fn normalize_relative_path(filename: &Path) -> Option<PathBuf> {
-    if filename.is_absolute() { return None; }
+    if filename.is_absolute() {
+        return None;
+    }
     let mut normalized = PathBuf::new();
     for component in filename.components() {
         match component {
-            std::path::Component::ParentDir => { if !normalized.pop() { return None; } },
-            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::CurDir => {}
             std::path::Component::Normal(name) => normalized.push(name),
             std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
         }
     }
     (!normalized.as_os_str().is_empty()).then_some(normalized)
 }
-pub struct WatchTarget { pub id: String, pub kind: WatchKind, pub path: PathBuf, pub allow_list: Option<Vec<PathBuf>>, pub filter: Option<WatchFilter> }
+pub struct WatchTarget {
+    pub id: String,
+    pub kind: WatchKind,
+    pub path: PathBuf,
+    pub allow_list: Option<Vec<PathBuf>>,
+    pub filter: Option<WatchFilter>,
+}
 /// `directories` lists the changed paths that are an allowed directory appearing or vanishing,
 /// as opposed to a file whose content was created, edited or removed.
 #[derive(Default)]
-pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf>, pub directories: Vec<PathBuf> }
+pub struct RealChange {
+    pub changed_paths: Vec<PathBuf>,
+    pub created: Vec<PathBuf>,
+    pub deleted: Vec<PathBuf>,
+    pub directories: Vec<PathBuf>,
+}
 #[derive(Default)]
-struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
-pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify>, source: FsWatchEventSource, close_completion: Option<Shared<BoxFuture<'static, Result<(), String>>>>, clock: Arc<dyn WatchClock> }
+struct ScanResult {
+    hashes: BTreeMap<PathBuf, String>,
+    allowed_directories: BTreeSet<PathBuf>,
+    scanned_directories: BTreeSet<PathBuf>,
+}
+pub struct ConfigReloadWatchEngine {
+    targets: Vec<WatchTarget>,
+    states: Vec<ScanResult>,
+    closed: bool,
+    on_error: Option<WatchErrorListener>,
+    hash_file: HashFile,
+}
+pub struct NativeWatchEngine {
+    pub engine: ConfigReloadWatchEngine,
+    subscriptions: BTreeMap<PathBuf, WatchSubscription>,
+    receiver: std::sync::mpsc::Receiver<Option<PathBuf>>,
+    sender: std::sync::mpsc::Sender<Option<PathBuf>>,
+    on_error: WatchErrorListener,
+    debounce: std::time::Duration,
+    signal: Arc<tokio::sync::Notify>,
+    source: FsWatchEventSource,
+    close_completion: Option<Shared<BoxFuture<'static, Result<(), String>>>>,
+    clock: Arc<dyn WatchClock>,
+}
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
         Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
     }
-    pub fn with_debounce(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration) -> Result<Self, String> {
+    pub fn with_debounce(
+        targets: Vec<WatchTarget>,
+        on_error: WatchErrorListener,
+        debounce: std::time::Duration,
+    ) -> Result<Self, String> {
         Self::with_source(targets, on_error, debounce, FsWatchEventSource::shared())
     }
-    pub fn with_source(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration, source: FsWatchEventSource) -> Result<Self, String> {
-        let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
+    pub fn with_source(
+        targets: Vec<WatchTarget>,
+        on_error: WatchErrorListener,
+        debounce: std::time::Duration,
+        source: FsWatchEventSource,
+    ) -> Result<Self, String> {
+        let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error))
+            .map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source, close_completion: None, clock: Arc::new(TokioWatchClock) };
+        let mut state = Self {
+            engine,
+            subscriptions: BTreeMap::new(),
+            receiver,
+            sender,
+            on_error,
+            debounce,
+            signal: Arc::new(tokio::sync::Notify::new()),
+            source,
+            close_completion: None,
+            clock: Arc::new(TokioWatchClock),
+        };
         state.subscribe_wanted()?;
         Ok(state)
     }
-    pub fn set_clock(&mut self, clock: Arc<dyn WatchClock>) { self.clock = clock; }
+    pub fn set_clock(&mut self, clock: Arc<dyn WatchClock>) {
+        self.clock = clock;
+    }
     /// Re-aligns subscriptions with the scanned directories after a change. A directory first
     /// subscribed here was scanned before its watch existed, so a file written into it in between
     /// raised no event: queue a rescan of it so that file is still reported as a change.
     fn reconcile(&mut self) -> Result<(), String> {
         for path in self.subscribe_wanted()? {
-            if self.sender.send(Some(path)).is_ok() { self.signal.notify_one(); }
+            if self.sender.send(Some(path)).is_ok() {
+                self.signal.notify_one();
+            }
         }
         Ok(())
     }
     fn subscribe_wanted(&mut self) -> Result<Vec<PathBuf>, String> {
         let wanted = self.engine.watched_directories();
-        let removed: Vec<_> = self.subscriptions.keys().filter(|path| !wanted.contains(*path)).cloned().collect();
-        for path in removed { if let Some(mut subscription) = self.subscriptions.remove(&path) { subscription.close()?; } }
+        let removed: Vec<_> = self
+            .subscriptions
+            .keys()
+            .filter(|path| !wanted.contains(*path))
+            .cloned()
+            .collect();
+        for path in removed {
+            if let Some(mut subscription) = self.subscriptions.remove(&path) {
+                subscription.close()?;
+            }
+        }
         let mut added = Vec::new();
         for path in wanted {
-            if self.subscriptions.contains_key(&path) { continue; }
+            if self.subscriptions.contains_key(&path) {
+                continue;
+            }
             let sender = self.sender.clone();
             let signal = Arc::clone(&self.signal);
             let directory = path.clone();
-            let targets: Vec<_> = self.engine.targets.iter().map(|target| (target.path.clone(), target.kind, target.allow_list.clone(), target.filter.clone())).collect();
-            let subscription = self.source.subscribe(path.clone(), false, Arc::new(move |_, filename| {
-                let mut affected = None;
-                if let Some(filename) = filename {
-                    let Some(filename) = normalize_relative_path(&filename) else { return; };
-                    let absolute = directory.join(filename);
-                    if !targets.iter().any(|(root, kind, allowed, filter)| absolute.strip_prefix(root).is_ok_and(|relative| {
-                        (*kind == WatchKind::DirRecursive || relative.components().count() <= 1)
-                            && allowed.as_ref().is_none_or(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
-                            && filter.as_ref().is_none_or(|filter| filter(relative))
-                    })) { return; }
-                    affected = Some(absolute);
-                }
-                if sender.send(affected).is_ok() { signal.notify_one(); }
-            }), Arc::clone(&self.on_error))?;
+            let targets: Vec<_> = self
+                .engine
+                .targets
+                .iter()
+                .map(|target| {
+                    (
+                        target.path.clone(),
+                        target.kind,
+                        target.allow_list.clone(),
+                        target.filter.clone(),
+                    )
+                })
+                .collect();
+            let subscription = self.source.subscribe(
+                path.clone(),
+                false,
+                Arc::new(move |_, filename| {
+                    let mut affected = None;
+                    if let Some(filename) = filename {
+                        let Some(filename) = normalize_relative_path(&filename) else {
+                            return;
+                        };
+                        let absolute = directory.join(filename);
+                        if !targets.iter().any(|(root, kind, allowed, filter)| {
+                            absolute.strip_prefix(root).is_ok_and(|relative| {
+                                (*kind == WatchKind::DirRecursive
+                                    || relative.components().count() <= 1)
+                                    && allowed.as_ref().is_none_or(|allowed| {
+                                        allowed.iter().any(|allowed| {
+                                            relative == allowed || relative.starts_with(allowed)
+                                        })
+                                    })
+                                    && filter.as_ref().is_none_or(|filter| filter(relative))
+                            })
+                        }) {
+                            return;
+                        }
+                        affected = Some(absolute);
+                    }
+                    if sender.send(affected).is_ok() {
+                        signal.notify_one();
+                    }
+                }),
+                Arc::clone(&self.on_error),
+            )?;
             subscription.ready()?;
             self.subscriptions.insert(path.clone(), subscription);
             added.push(path);
@@ -94,17 +212,28 @@ impl NativeWatchEngine {
         Ok(added)
     }
     pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
-        let first = self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
+        let first = self
+            .receiver
+            .recv_timeout(timeout)
+            .map_err(|error| error.to_string())?;
         let mut full = first.is_none();
         let mut affected: BTreeSet<_> = first.into_iter().collect();
         loop {
             match self.receiver.recv_timeout(self.debounce) {
-                Ok(path) => { full |= path.is_none(); affected.extend(path); },
+                Ok(path) => {
+                    full |= path.is_none();
+                    affected.extend(path);
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                 Err(error) => return Err(error.to_string()),
             }
         }
-        let change = if full { self.engine.evaluate() } else { self.engine.evaluate_affected(&affected) }.map_err(|error| error.to_string())?;
+        let change = if full {
+            self.engine.evaluate()
+        } else {
+            self.engine.evaluate_affected(&affected)
+        }
+        .map_err(|error| error.to_string())?;
         self.reconcile()?;
         Ok(change)
     }
@@ -128,141 +257,379 @@ impl NativeWatchEngine {
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 let mut received = false;
-                while let Ok(path) = self.receiver.try_recv() { full |= path.is_none(); affected.extend(path); received = true; }
-                if received { deadline = self.clock.now() + self.debounce; }
+                while let Ok(path) = self.receiver.try_recv() {
+                    full |= path.is_none();
+                    affected.extend(path);
+                    received = true;
+                }
+                if received {
+                    deadline = self.clock.now() + self.debounce;
+                }
                 tokio::select! {
                     () = self.clock.sleep_until(deadline) => break,
                     () = &mut notified => {},
                 }
             }
-            let change = if full { self.engine.evaluate() } else { self.engine.evaluate_affected(&affected) }.map_err(|error| error.to_string())?;
+            let change = if full {
+                self.engine.evaluate()
+            } else {
+                self.engine.evaluate_affected(&affected)
+            }
+            .map_err(|error| error.to_string())?;
             self.reconcile()?;
-            if !change.changed_paths.is_empty() { return Ok(change); }
+            if !change.changed_paths.is_empty() {
+                return Ok(change);
+            }
         }
     }
     pub fn close(&mut self) -> Result<(), String> {
         self.engine.close();
         let mut errors = Vec::new();
-        for (_, mut subscription) in std::mem::take(&mut self.subscriptions) { if let Err(error) = subscription.close() { errors.push(error); } }
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+        for (_, mut subscription) in std::mem::take(&mut self.subscriptions) {
+            if let Err(error) = subscription.close() {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
-    pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
-        if let Some(completion) = &self.close_completion { return completion.clone(); }
+    pub fn close_async(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
+        if let Some(completion) = &self.close_completion {
+            return completion.clone();
+        }
         self.engine.close();
-        let closures: Vec<_> = std::mem::take(&mut self.subscriptions).into_values().map(|mut subscription| subscription.close_async()).collect();
+        let closures: Vec<_> = std::mem::take(&mut self.subscriptions)
+            .into_values()
+            .map(|mut subscription| subscription.close_async())
+            .collect();
         let completion = async move {
             let mut errors = Vec::new();
-            for closure in closures { if let Err(error) = closure.await { errors.push(error); } }
-            if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
-        }.boxed().shared();
+            for closure in closures {
+                if let Err(error) = closure.await {
+                    errors.push(error);
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        }
+        .boxed()
+        .shared();
         self.close_completion = Some(completion.clone());
         completion
     }
 }
-impl Drop for NativeWatchEngine { fn drop(&mut self) { if let Err(error) = self.close() { (self.on_error)(error, PathBuf::new()); } } }
+impl Drop for NativeWatchEngine {
+    fn drop(&mut self) {
+        if let Err(error) = self.close() {
+            (self.on_error)(error, PathBuf::new());
+        }
+    }
+}
 impl ConfigReloadWatchEngine {
     pub fn new(targets: Vec<WatchTarget>) -> Result<Self, std::io::Error> {
         Self::create(targets, None, Arc::new(hash_file))
     }
-    pub fn with_error_listener(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, std::io::Error> {
+    pub fn with_error_listener(
+        targets: Vec<WatchTarget>,
+        on_error: WatchErrorListener,
+    ) -> Result<Self, std::io::Error> {
         Self::create(targets, Some(on_error), Arc::new(hash_file))
     }
-    pub fn with_hash_file(targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>, hash_file: HashFile) -> Result<Self, std::io::Error> {
+    pub fn with_hash_file(
+        targets: Vec<WatchTarget>,
+        on_error: Option<WatchErrorListener>,
+        hash_file: HashFile,
+    ) -> Result<Self, std::io::Error> {
         Self::create(targets, on_error, hash_file)
     }
-    fn create(mut targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>, hash_file: HashFile) -> Result<Self, std::io::Error> {
+    fn create(
+        mut targets: Vec<WatchTarget>,
+        on_error: Option<WatchErrorListener>,
+        hash_file: HashFile,
+    ) -> Result<Self, std::io::Error> {
         for target in &mut targets {
             let absolute = std::path::absolute(&target.path)?;
             let mut path = PathBuf::new();
-            for component in absolute.components() { match component { std::path::Component::ParentDir => { path.pop(); }, std::path::Component::CurDir => {}, other => path.push(other.as_os_str()) } }
+            for component in absolute.components() {
+                match component {
+                    std::path::Component::ParentDir => {
+                        path.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => path.push(other.as_os_str()),
+                }
+            }
             target.path = path;
         }
-        let states = targets.iter().map(|target| scan(target, on_error.as_ref(), &hash_file)).collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { targets, states, closed: false, on_error, hash_file })
+        let states = targets
+            .iter()
+            .map(|target| scan(target, on_error.as_ref(), &hash_file))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            targets,
+            states,
+            closed: false,
+            on_error,
+            hash_file,
+        })
     }
-    pub fn close(&mut self) { self.closed = true; }
-    pub fn get_baseline_snapshot(&self) -> BTreeMap<PathBuf, String> { self.states.iter().flat_map(|state| state.hashes.clone()).collect() }
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+    pub fn get_baseline_snapshot(&self) -> BTreeMap<PathBuf, String> {
+        self.states
+            .iter()
+            .flat_map(|state| state.hashes.clone())
+            .collect()
+    }
     pub fn watched_directories(&self) -> BTreeSet<PathBuf> {
-        self.targets.iter().zip(&self.states).flat_map(|(target, state)| std::iter::once(target.path.clone()).chain(state.scanned_directories.iter().cloned())).collect()
+        self.targets
+            .iter()
+            .zip(&self.states)
+            .flat_map(|(target, state)| {
+                std::iter::once(target.path.clone())
+                    .chain(state.scanned_directories.iter().cloned())
+            })
+            .collect()
     }
     pub fn evaluate(&mut self) -> Result<RealChange, std::io::Error> {
         self.evaluate_paths(None)
     }
-    pub fn evaluate_affected(&mut self, paths: &BTreeSet<PathBuf>) -> Result<RealChange, std::io::Error> {
+    pub fn evaluate_affected(
+        &mut self,
+        paths: &BTreeSet<PathBuf>,
+    ) -> Result<RealChange, std::io::Error> {
         self.evaluate_paths(Some(paths))
     }
-    fn evaluate_paths(&mut self, paths: Option<&BTreeSet<PathBuf>>) -> Result<RealChange, std::io::Error> {
+    fn evaluate_paths(
+        &mut self,
+        paths: Option<&BTreeSet<PathBuf>>,
+    ) -> Result<RealChange, std::io::Error> {
         let mut changes = BTreeMap::new();
         let mut directories = BTreeSet::new();
-        if self.closed { return Ok(RealChange::default()); }
+        if self.closed {
+            return Ok(RealChange::default());
+        }
         for (target, state) in self.targets.iter().zip(&mut self.states) {
             let next = if let Some(paths) = paths {
-                let prefixes: Vec<_> = paths.iter().filter_map(|path| path.strip_prefix(&target.path).ok().filter(|relative| matches(target, relative)).map(|relative| (path, relative))).collect();
-                if prefixes.is_empty() { continue; }
-                let mut next = ScanResult { hashes: state.hashes.clone(), allowed_directories: state.allowed_directories.clone(), scanned_directories: state.scanned_directories.clone() };
+                let prefixes: Vec<_> = paths
+                    .iter()
+                    .filter_map(|path| {
+                        path.strip_prefix(&target.path)
+                            .ok()
+                            .filter(|relative| matches(target, relative))
+                            .map(|relative| (path, relative))
+                    })
+                    .collect();
+                if prefixes.is_empty() {
+                    continue;
+                }
+                let mut next = ScanResult {
+                    hashes: state.hashes.clone(),
+                    allowed_directories: state.allowed_directories.clone(),
+                    scanned_directories: state.scanned_directories.clone(),
+                };
                 for (path, relative) in prefixes {
                     next.hashes.retain(|key, _| !key.starts_with(path));
-                    next.allowed_directories.retain(|key| !key.starts_with(path));
-                    next.scanned_directories.retain(|key| !key.starts_with(path));
-                    scan_path(target, path, relative, &mut next, self.on_error.as_ref(), &self.hash_file)?;
+                    next.allowed_directories
+                        .retain(|key| !key.starts_with(path));
+                    next.scanned_directories
+                        .retain(|key| !key.starts_with(path));
+                    scan_path(
+                        target,
+                        path,
+                        relative,
+                        &mut next,
+                        self.on_error.as_ref(),
+                        &self.hash_file,
+                    )?;
                 }
                 next
-            } else { scan(target, self.on_error.as_ref(), &self.hash_file)? };
-            for (path, hash) in &next.hashes { if state.hashes.get(path) != Some(hash) { changes.insert(path.clone(), (!state.hashes.contains_key(path), false)); } }
-            for path in state.hashes.keys() { if !next.hashes.contains_key(path) { changes.insert(path.clone(), (false, true)); } }
-            for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (true, false)); } }
-            for path in &state.allowed_directories { if !next.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (false, true)); } }
+            } else {
+                scan(target, self.on_error.as_ref(), &self.hash_file)?
+            };
+            for (path, hash) in &next.hashes {
+                if state.hashes.get(path) != Some(hash) {
+                    changes.insert(path.clone(), (!state.hashes.contains_key(path), false));
+                }
+            }
+            for path in state.hashes.keys() {
+                if !next.hashes.contains_key(path) {
+                    changes.insert(path.clone(), (false, true));
+                }
+            }
+            for path in &next.allowed_directories {
+                if !state.allowed_directories.contains(path) {
+                    directories.insert(path.clone());
+                    changes.insert(path.clone(), (true, false));
+                }
+            }
+            for path in &state.allowed_directories {
+                if !next.allowed_directories.contains(path) {
+                    directories.insert(path.clone());
+                    changes.insert(path.clone(), (false, true));
+                }
+            }
             *state = next;
         }
         let changed_paths = changes.keys().cloned().collect();
-        let created = changes.iter().filter(|(_, flags)| flags.0).map(|(path, _)| path.clone()).collect();
-        let deleted = changes.iter().filter(|(_, flags)| flags.1).map(|(path, _)| path.clone()).collect();
-        Ok(RealChange { changed_paths, created, deleted, directories: directories.into_iter().collect() })
+        let created = changes
+            .iter()
+            .filter(|(_, flags)| flags.0)
+            .map(|(path, _)| path.clone())
+            .collect();
+        let deleted = changes
+            .iter()
+            .filter(|(_, flags)| flags.1)
+            .map(|(path, _)| path.clone())
+            .collect();
+        Ok(RealChange {
+            changed_paths,
+            created,
+            deleted,
+            directories: directories.into_iter().collect(),
+        })
     }
 }
 fn matches(target: &WatchTarget, relative: &Path) -> bool {
     (target.kind == WatchKind::DirRecursive || relative.components().count() <= 1)
-        && target.allow_list.as_ref().is_none_or(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
+        && target.allow_list.as_ref().is_none_or(|allowed| {
+            allowed
+                .iter()
+                .any(|allowed| relative == allowed || relative.starts_with(allowed))
+        })
         && target.filter.as_ref().is_none_or(|filter| filter(relative))
 }
-fn explicitly_allowed(target: &WatchTarget, relative: &Path) -> bool { target.allow_list.as_ref().is_some_and(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed))) }
-fn hash_file(path: &Path) -> Result<String, std::io::Error> { Ok(format!("{:x}", Sha256::digest(std::fs::read(path)?))) }
-fn scan(target: &WatchTarget, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<ScanResult, std::io::Error> {
+fn explicitly_allowed(target: &WatchTarget, relative: &Path) -> bool {
+    target.allow_list.as_ref().is_some_and(|allowed| {
+        allowed
+            .iter()
+            .any(|allowed| relative == allowed || relative.starts_with(allowed))
+    })
+}
+fn hash_file(path: &Path) -> Result<String, std::io::Error> {
+    Ok(format!("{:x}", Sha256::digest(std::fs::read(path)?)))
+}
+fn scan(
+    target: &WatchTarget,
+    on_error: Option<&WatchErrorListener>,
+    hash_file: &HashFile,
+) -> Result<ScanResult, std::io::Error> {
     let mut result = ScanResult::default();
-    scan_path(target, &target.path, Path::new(""), &mut result, on_error, hash_file)?;
+    scan_path(
+        target,
+        &target.path,
+        Path::new(""),
+        &mut result,
+        on_error,
+        hash_file,
+    )?;
     Ok(result)
 }
-fn scan_path(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
+fn scan_path(
+    target: &WatchTarget,
+    absolute: &Path,
+    relative: &Path,
+    result: &mut ScanResult,
+    on_error: Option<&WatchErrorListener>,
+    hash_file: &HashFile,
+) -> Result<(), std::io::Error> {
     if let Err(error) = scan_entry(target, absolute, relative, result, on_error, hash_file) {
-        if let Some(listener) = on_error { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(error.to_string(), absolute.into()))); } else { return Err(error); }
+        if let Some(listener) = on_error {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                listener(error.to_string(), absolute.into())
+            }));
+        } else {
+            return Err(error);
+        }
     }
     Ok(())
 }
 fn is_not_found(path: &Path, error: &std::io::Error) -> bool {
-    if error.kind() != std::io::ErrorKind::NotFound { return false; }
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return false;
+    }
     for ancestor in path.ancestors().skip(1) {
         if let Ok(meta) = std::fs::metadata(ancestor)
-            && !meta.is_dir() { return false; }
+            && !meta.is_dir()
+        {
+            return false;
+        }
     }
     true
 }
-fn scan_entry(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
-    if !relative.as_os_str().is_empty() && !matches(target, relative) { return Ok(()); }
-    let entry = match std::fs::symlink_metadata(absolute) { Ok(entry) => entry, Err(error) if is_not_found(absolute, &error) => return Ok(()), Err(error) => return Err(error) };
-    if entry.is_symlink() { return Ok(()); }
-    if entry.is_file() { result.hashes.insert(absolute.into(), hash_file(absolute)?); return Ok(()); }
-    if !entry.is_dir() { return Ok(()); }
+fn scan_entry(
+    target: &WatchTarget,
+    absolute: &Path,
+    relative: &Path,
+    result: &mut ScanResult,
+    on_error: Option<&WatchErrorListener>,
+    hash_file: &HashFile,
+) -> Result<(), std::io::Error> {
+    if !relative.as_os_str().is_empty() && !matches(target, relative) {
+        return Ok(());
+    }
+    let entry = match std::fs::symlink_metadata(absolute) {
+        Ok(entry) => entry,
+        Err(error) if is_not_found(absolute, &error) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if entry.is_symlink() {
+        return Ok(());
+    }
+    if entry.is_file() {
+        result.hashes.insert(absolute.into(), hash_file(absolute)?);
+        return Ok(());
+    }
+    if !entry.is_dir() {
+        return Ok(());
+    }
     let non_root = !relative.as_os_str().is_empty();
     let allowed = non_root && explicitly_allowed(target, relative);
-    if allowed { result.allowed_directories.insert(absolute.into()); }
-    if non_root && (target.kind == WatchKind::Dir || relative.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) && !allowed) { return Ok(()); }
+    if allowed {
+        result.allowed_directories.insert(absolute.into());
+    }
+    if non_root
+        && (target.kind == WatchKind::Dir
+            || relative
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+                && !allowed)
+    {
+        return Ok(());
+    }
     result.scanned_directories.insert(absolute.into());
     for child in std::fs::read_dir(absolute)? {
         let child = child?;
-        if child.file_type()?.is_symlink() || child.file_name() == "node_modules" || child.file_name() == ".git" { continue; }
+        if child.file_type()?.is_symlink()
+            || child.file_name() == "node_modules"
+            || child.file_name() == ".git"
+        {
+            continue;
+        }
         let child_relative = relative.join(child.file_name());
-        if child.file_type()?.is_dir() && child.file_name().to_string_lossy().starts_with('.') && !explicitly_allowed(target, &child_relative) { continue; }
-        scan_path(target, &child.path(), &child_relative, result, on_error, hash_file)?;
+        if child.file_type()?.is_dir()
+            && child.file_name().to_string_lossy().starts_with('.')
+            && !explicitly_allowed(target, &child_relative)
+        {
+            continue;
+        }
+        scan_path(
+            target,
+            &child.path(),
+            &child_relative,
+            result,
+            on_error,
+            hash_file,
+        )?;
     }
     Ok(())
 }

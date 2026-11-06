@@ -230,9 +230,13 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
     );
 
     // then
-    let issues = user_result.expect_err("preserved retired codex field is rejected by the strict schema");
+    let issues =
+        user_result.expect_err("preserved retired codex field is rejected by the strict schema");
     assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].code, omo_config_core::issue::IssueCode::UnrecognizedKeys);
+    assert_eq!(
+        issues[0].code,
+        omo_config_core::issue::IssueCode::UnrecognizedKeys
+    );
     assert_eq!(issues[0].path, vec!["[codex]".to_string()]);
     assert_eq!(issues[0].keys, vec!["disabled_hooks".to_string()]);
     assert!(
@@ -537,8 +541,12 @@ fn subscription_provider_rename_carries_unrelated_keys_through_verbatim() {
 fn subscription_provider_rename_gates_on_the_legacy_ids() {
     let canonical = json!({ "default_model": "anthropic-subscription/" });
     let legacy = json!({ "default_model": "claude-sdk-oauth/" });
-    assert!(!config_migration::has_legacy_subscription_provider_ids(&canonical));
-    assert!(config_migration::has_legacy_subscription_provider_ids(&legacy));
+    assert!(!config_migration::has_legacy_subscription_provider_ids(
+        &canonical
+    ));
+    assert!(config_migration::has_legacy_subscription_provider_ids(
+        &legacy
+    ));
 }
 
 #[test]

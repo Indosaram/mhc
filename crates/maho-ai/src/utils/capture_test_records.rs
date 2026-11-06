@@ -146,14 +146,16 @@ pub(crate) fn public_bytes(events: &[CapturedEvent]) -> Value {
                 {
                     if v.get("type").and_then(|t| t.as_str()) == Some("text_end")
                         && let Some(idx) = v.get("contentIndex").and_then(|i| i.as_u64())
-                        && let Some(block) = partial.get("content").and_then(|c| c.get(idx as usize))
+                        && let Some(block) =
+                            partial.get("content").and_then(|c| c.get(idx as usize))
                         && let Some(sig) = block.get("textSignature").cloned()
                         && let Value::Object(map) = &mut v
                     {
                         map.insert("contentSignature".into(), sig);
                     } else if v.get("type").and_then(|t| t.as_str()) == Some("toolcall_start")
                         && let Some(idx) = v.get("contentIndex").and_then(|i| i.as_u64())
-                        && let Some(block) = partial.get("content").and_then(|c| c.get(idx as usize))
+                        && let Some(block) =
+                            partial.get("content").and_then(|c| c.get(idx as usize))
                         && let (Some(id), Some(name)) =
                             (block.get("id").cloned(), block.get("name").cloned())
                         && let Value::Object(map) = &mut v

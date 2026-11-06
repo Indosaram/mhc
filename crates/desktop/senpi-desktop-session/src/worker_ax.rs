@@ -34,13 +34,19 @@ impl Worker {
     pub(crate) fn ax_element_at(&mut self, params: &AxElementAtParams) -> CoreResult<Response> {
         let target = Target::parse(&params.target);
         let (backend, registry) = self.ax_parts()?;
-        ax::element_at_node(backend, registry, target.key(), params.x, params.y).map(Response::MaybeNode)
+        ax::element_at_node(backend, registry, target.key(), params.x, params.y)
+            .map(Response::MaybeNode)
     }
 
     pub(crate) fn ax_focused(&mut self) -> CoreResult<Response> {
         let (backend, registry) = self.ax_parts()?;
         let node = match backend.focused_element()? {
-            Some(handle) => Some(register_node(backend, registry, Target::Desktop.key(), handle)?),
+            Some(handle) => Some(register_node(
+                backend,
+                registry,
+                Target::Desktop.key(),
+                handle,
+            )?),
             None => None,
         };
         Ok(Response::MaybeNode(node))
@@ -160,7 +166,11 @@ impl Worker {
         })
     }
 
-    pub(crate) fn ax_focus(&mut self, reference: &str, cancelled: &dyn Fn() -> bool) -> CoreResult<Audited> {
+    pub(crate) fn ax_focus(
+        &mut self,
+        reference: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> CoreResult<Audited> {
         let mutation = Mutation::new(
             MutatingAction::AxFocus,
             self.ref_target(reference),

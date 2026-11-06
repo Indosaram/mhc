@@ -3,13 +3,13 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::PoisonError;
 
-use reis::PendingRequestResult;
 use reis::eis;
 use reis::handshake::EisHandshaker;
 use reis::request::{DeviceCapability, EisRequest, EisRequestConverter, Seat};
+use reis::PendingRequestResult;
 use tokio::io::unix::AsyncFd;
 
-use super::{DeviceTopology, EisConfig, Recorded, Shared, SharedDevices, update};
+use super::{update, DeviceTopology, EisConfig, Recorded, Shared, SharedDevices};
 use crate::capture::layout::EisRegion;
 
 async fn next_requests(fd: &AsyncFd<eis::Context>) -> Result<Option<Vec<eis::Request>>, String> {

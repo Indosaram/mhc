@@ -1,7 +1,7 @@
 //! Computer tool action parameters and validation matching upstream `src/params.ts`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::action_schema::ComputerArgumentsError;
 
@@ -19,9 +19,7 @@ pub struct CallStep {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ComputerToolParams {
     #[serde(rename = "call")]
-    Call {
-        chain: Vec<CallStep>,
-    },
+    Call { chain: Vec<CallStep> },
     #[serde(rename = "run")]
     Run {
         code: String,
@@ -96,7 +94,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
         None => {
             return Err(ComputerArgumentsError::new(
                 r#"computer: "action" must be one of call, run, capabilities, close"#,
-            ))
+            ));
         }
     };
 
@@ -108,7 +106,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
         other => {
             return Err(ComputerArgumentsError::new(format!(
                 r#"computer: unknown action "{other}"; expected one of call, run, capabilities, close"#
-            )))
+            )));
         }
     };
 
@@ -131,7 +129,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                 None => {
                     return Err(ComputerArgumentsError::new(
                         r#"computer: action "call": must have required properties chain"#,
-                    ))
+                    ));
                 }
             };
             let chain_arr = match chain_val.as_array() {
@@ -139,7 +137,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                 None => {
                     return Err(ComputerArgumentsError::new(
                         r#"computer: action "call" at /chain: must be array"#,
-                    ))
+                    ));
                 }
             };
             let mut steps = Vec::new();
@@ -149,7 +147,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                     None => {
                         return Err(ComputerArgumentsError::new(format!(
                             r#"computer: action "call" at /chain/{idx}: must be object"#
-                        )))
+                        )));
                     }
                 };
                 for k in item_obj.keys() {
@@ -164,7 +162,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                     None => {
                         return Err(ComputerArgumentsError::new(format!(
                             r#"computer: action "call" at /chain/{idx}: missing method"#
-                        )))
+                        )));
                     }
                 };
                 let args = match item_obj.get("args") {
@@ -172,7 +170,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                     Some(_) => {
                         return Err(ComputerArgumentsError::new(format!(
                             r#"computer: action "call" at /chain/{idx}/args: must be array"#
-                        )))
+                        )));
                     }
                     None => None,
                 };
@@ -186,7 +184,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                 None => {
                     return Err(ComputerArgumentsError::new(
                         r#"computer: action "run": must have required properties code"#,
-                    ))
+                    ));
                 }
             };
             let read_only = match obj.get("read_only") {
@@ -194,7 +192,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                 Some(_) => {
                     return Err(ComputerArgumentsError::new(
                         r#"computer: action "run" at /read_only: must be boolean"#,
-                    ))
+                    ));
                 }
                 None => None,
             };
@@ -216,7 +214,7 @@ pub fn parse_computer_params(input: &Value) -> Result<ComputerToolParams, Comput
                 Some(_) => {
                     return Err(ComputerArgumentsError::new(
                         r#"computer: action "run" at /timeout: must be number"#,
-                    ))
+                    ));
                 }
                 None => None,
             };

@@ -79,7 +79,10 @@ impl RuntimeLane for Lane {
     fn emit<'a>(&'a self, events: Vec<HarnessEvent>, _: &'a Context) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let count = {
-                let mut stored = self.events.lock().expect("generation fixture must be valid");
+                let mut stored = self
+                    .events
+                    .lock()
+                    .expect("generation fixture must be valid");
                 stored.extend(events);
                 stored.len()
             };
@@ -1709,7 +1712,10 @@ impl Storage for FrameBlockingStorage {
     ) -> BoxFuture<'a, Result<Vec<UsageRow>, SessionError>> {
         self.decorator.scan_usage(query, context)
     }
-    fn get_stats<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+    fn get_stats<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
         self.decorator.get_stats(context)
     }
     fn close<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, ()> {
@@ -1750,7 +1756,9 @@ impl maho_ai::models::Provider for ScriptedFrameProvider {
         _: Option<maho_ai::types::SimpleStreamOptions>,
     ) -> maho_ai::types::AssistantMessageEventStream {
         use maho_ai::providers::faux::{FauxAssistantMessageOptions, faux_assistant_message};
-        use maho_ai::types::{AssistantMessageEvent, ContentBlock, DoneReason, StopReason, TextContent};
+        use maho_ai::types::{
+            AssistantMessageEvent, ContentBlock, DoneReason, StopReason, TextContent,
+        };
         let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let options = || FauxAssistantMessageOptions {
             timestamp: Some(5),

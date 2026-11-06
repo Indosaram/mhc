@@ -20,7 +20,10 @@ pub struct CursorRetryableStreamError {
 
 impl CursorRetryableStreamError {
     pub fn new(message: impl Into<String>, retry_cause: CursorStreamRetryCause) -> Self {
-        Self { message: message.into(), retry_cause }
+        Self {
+            message: message.into(),
+            retry_cause,
+        }
     }
 }
 
@@ -43,7 +46,9 @@ pub fn cursor_stream_retry_delay_ms(
         return fixed_delay_ms;
     }
     let base_delay_ms = options.base_delay_ms.unwrap_or(1000);
-    let backoff_ms = base_delay_ms.saturating_mul(1u64 << options.attempt.min(63)).min(60_000);
+    let backoff_ms = base_delay_ms
+        .saturating_mul(1u64 << options.attempt.min(63))
+        .min(60_000);
     let jitter = (backoff_ms as f64 * 0.2 * random()).floor() as u64;
     backoff_ms + jitter
 }
@@ -86,7 +91,11 @@ mod tests {
     #[test]
     fn given_fixed_delay_when_computing_retry_delay_then_ignores_backoff() {
         let ms = cursor_stream_retry_delay_ms(
-            CursorStreamRetryDelayOptions { attempt: 5, base_delay_ms: Some(1000), fixed_delay_ms: Some(42) },
+            CursorStreamRetryDelayOptions {
+                attempt: 5,
+                base_delay_ms: Some(1000),
+                fixed_delay_ms: Some(42),
+            },
             || 0.5,
         );
         assert_eq!(ms, 42);
@@ -95,7 +104,11 @@ mod tests {
     #[test]
     fn given_attempt_zero_when_computing_retry_delay_then_uses_base_plus_jitter() {
         let ms = cursor_stream_retry_delay_ms(
-            CursorStreamRetryDelayOptions { attempt: 0, base_delay_ms: Some(1000), fixed_delay_ms: None },
+            CursorStreamRetryDelayOptions {
+                attempt: 0,
+                base_delay_ms: Some(1000),
+                fixed_delay_ms: None,
+            },
             || 0.0,
         );
         assert_eq!(ms, 1000);
@@ -104,7 +117,11 @@ mod tests {
     #[test]
     fn given_large_attempt_when_computing_retry_delay_then_caps_backoff_at_60s() {
         let ms = cursor_stream_retry_delay_ms(
-            CursorStreamRetryDelayOptions { attempt: 30, base_delay_ms: Some(1000), fixed_delay_ms: None },
+            CursorStreamRetryDelayOptions {
+                attempt: 30,
+                base_delay_ms: Some(1000),
+                fixed_delay_ms: None,
+            },
             || 0.0,
         );
         assert_eq!(ms, 60_000);
@@ -113,7 +130,11 @@ mod tests {
     #[test]
     fn given_max_jitter_when_computing_retry_delay_then_adds_twenty_percent() {
         let ms = cursor_stream_retry_delay_ms(
-            CursorStreamRetryDelayOptions { attempt: 0, base_delay_ms: Some(1000), fixed_delay_ms: None },
+            CursorStreamRetryDelayOptions {
+                attempt: 0,
+                base_delay_ms: Some(1000),
+                fixed_delay_ms: None,
+            },
             || 1.0,
         );
         assert_eq!(ms, 1200);

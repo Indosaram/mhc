@@ -27,7 +27,11 @@ pub struct ToolExecutionImageOptions {
 
 impl Default for ToolExecutionImageOptions {
     fn default() -> Self {
-        Self { show_images: true, max_width_cells: 60, show_renderer_fallback: false }
+        Self {
+            show_images: true,
+            max_width_cells: 60,
+            show_renderer_fallback: false,
+        }
     }
 }
 
@@ -41,7 +45,13 @@ pub struct ToolExecutionImages {
 
 impl ToolExecutionImages {
     pub fn new(theme: Theme) -> Self {
-        Self { content: Container::new(), result: None, converted: HashMap::new(), options: ToolExecutionImageOptions::default(), theme }
+        Self {
+            content: Container::new(),
+            result: None,
+            converted: HashMap::new(),
+            options: ToolExecutionImageOptions::default(),
+            theme,
+        }
     }
 
     pub fn update_options(&mut self, options: ToolExecutionImageOptions) {
@@ -74,7 +84,9 @@ impl ToolExecutionImages {
                     .content
                     .iter()
                     .filter_map(|part| match part {
-                        ToolContent::Image { data, mime_type } => Some((data.clone(), mime_type.clone())),
+                        ToolContent::Image { data, mime_type } => {
+                            Some((data.clone(), mime_type.clone()))
+                        }
                         ToolContent::Text { .. } => None,
                     })
                     .collect()
@@ -84,9 +96,12 @@ impl ToolExecutionImages {
 
     fn prune_converted_images(&mut self) {
         let blocks = self.image_blocks();
-        self.converted.retain(|index, (source_data, source_mime, _, _)| {
-            blocks.get(*index).is_some_and(|(data, mime)| data == source_data && mime == source_mime)
-        });
+        self.converted
+            .retain(|index, (source_data, source_mime, _, _)| {
+                blocks
+                    .get(*index)
+                    .is_some_and(|(data, mime)| data == source_data && mime == source_mime)
+            });
     }
 
     fn maybe_convert_images_for_kitty(&mut self) {
@@ -94,15 +109,35 @@ impl ToolExecutionImages {
             return;
         }
         let mut changed = false;
-        for (index, (source_data, source_mime_type)) in self.image_blocks().into_iter().enumerate() {
-            if source_data.is_empty() || source_mime_type.is_empty() || source_mime_type == "image/png" {
+        for (index, (source_data, source_mime_type)) in self.image_blocks().into_iter().enumerate()
+        {
+            if source_data.is_empty()
+                || source_mime_type.is_empty()
+                || source_mime_type == "image/png"
+            {
                 continue;
             }
-            if self.converted.get(&index).is_some_and(|(data, mime, _, _)| *data == source_data && *mime == source_mime_type) {
+            if self
+                .converted
+                .get(&index)
+                .is_some_and(|(data, mime, _, _)| *data == source_data && *mime == source_mime_type)
+            {
                 continue;
             }
-            let Some(converted) = maho_core::utils::image_convert::convert_to_png(&source_data, &source_mime_type) else { continue; };
-            self.converted.insert(index, (source_data, source_mime_type, converted.data, converted.mime_type));
+            let Some(converted) =
+                maho_core::utils::image_convert::convert_to_png(&source_data, &source_mime_type)
+            else {
+                continue;
+            };
+            self.converted.insert(
+                index,
+                (
+                    source_data,
+                    source_mime_type,
+                    converted.data,
+                    converted.mime_type,
+                ),
+            );
             changed = true;
         }
         if changed {
@@ -131,9 +166,10 @@ impl ToolExecutionImages {
             };
             if capabilities.images == Some(ImageProtocol::Kitty) && image_mime_type != "image/png" {
                 if self.options.show_renderer_fallback {
-                    let text = self
-                        .theme
-                        .fg(ThemeColor::ToolOutput, &format!("[image: {}]", sanitize_terminal_label(&image_mime_type)));
+                    let text = self.theme.fg(
+                        ThemeColor::ToolOutput,
+                        &format!("[image: {}]", sanitize_terminal_label(&image_mime_type)),
+                    );
                     self.add_image_component(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))));
                 }
                 continue;
@@ -142,8 +178,13 @@ impl ToolExecutionImages {
             let image = Image::new(
                 image_data,
                 image_mime_type,
-                ImageTheme { fallback_color: Rc::new(move |text| theme.fg(ThemeColor::ToolOutput, text)) },
-                ImageOptions { max_width_cells: Some(self.options.max_width_cells), ..Default::default() },
+                ImageTheme {
+                    fallback_color: Rc::new(move |text| theme.fg(ThemeColor::ToolOutput, text)),
+                },
+                ImageOptions {
+                    max_width_cells: Some(self.options.max_width_cells),
+                    ..Default::default()
+                },
                 None,
             );
             self.add_image_component(Rc::new(RefCell::new(image)));
@@ -151,7 +192,8 @@ impl ToolExecutionImages {
     }
 
     fn add_image_component(&mut self, component: Rc<RefCell<dyn Component>>) {
-        self.content.add_child(Rc::new(RefCell::new(Spacer::new(1))));
+        self.content
+            .add_child(Rc::new(RefCell::new(Spacer::new(1))));
         self.content.add_child(component);
     }
 }

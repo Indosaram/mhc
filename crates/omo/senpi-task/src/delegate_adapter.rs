@@ -12,9 +12,16 @@ pub(crate) use delegate_core::{
 };
 pub(crate) use model_core::transform_model_for_provider;
 
-pub(crate) fn fallback_entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
+pub(crate) fn fallback_entry(
+    providers: &[&str],
+    model: &str,
+    variant: Option<&str>,
+) -> DelegateFallbackEntry {
     DelegateFallbackEntry {
-        providers: providers.iter().map(|provider| (*provider).to_string()).collect(),
+        providers: providers
+            .iter()
+            .map(|provider| (*provider).to_string())
+            .collect(),
         model: model.to_string(),
         variant: variant.map(str::to_string),
     }

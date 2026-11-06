@@ -600,7 +600,10 @@ mod tests {
     fn first_reply_prompt_tokens_skip_explicitly_unknown_context_usage() {
         let mut reply = assistant(1, 10, 20, 30);
         reply.data["message"]["usage"]["contextUsage"] = Value::Null;
-        assert_eq!(prompt_tokens_of_first_reply(&[reply, assistant(2, 40, 0, 0)]), Some(40));
+        assert_eq!(
+            prompt_tokens_of_first_reply(&[reply, assistant(2, 40, 0, 0)]),
+            Some(40)
+        );
     }
 
     #[test]

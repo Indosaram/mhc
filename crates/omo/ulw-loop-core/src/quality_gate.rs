@@ -1,8 +1,8 @@
 //! Quality gate validation.
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
-use serde_json::Value;
 
 use crate::domain_types::{
     UlwLoopManualQaAdversarialCase, UlwLoopManualQaArtifactRef, UlwLoopManualQaSurfaceEvidence,
@@ -10,8 +10,8 @@ use crate::domain_types::{
     UlwLoopQualityGateGateReview, UlwLoopQualityGateIteration, UlwLoopQualityGateManualQa,
 };
 use crate::quality_gate_artifacts::{
-    artifact_compatible, artifact_map, check_file, compatible_kinds_for, parse_artifact_refs,
-    referenced_artifacts, surface_field, QualityGateCheckOptions, QualityGateFs,
+    QualityGateCheckOptions, QualityGateFs, artifact_compatible, artifact_map, check_file,
+    compatible_kinds_for, parse_artifact_refs, referenced_artifacts, surface_field,
 };
 use crate::quality_gate_fields::{
     empty_blockers, invalid, is_poisoned, is_poisoned_artifact_kind, literal_bool, literal_str,
@@ -22,12 +22,11 @@ use crate::quality_gate_verdicts::{
     adversarial_verdict, code_quality_status_field, passed_verdict,
 };
 use crate::runtime::UlwLoopError;
-use crate::surface::{reviewer_roles_for, UlwLoopToolkitSurface};
+use crate::surface::{UlwLoopToolkitSurface, reviewer_roles_for};
 
 pub use crate::plan_crud::clear_goal_blocker_fields;
 pub use crate::quality_gate_blockers::{
-    classify_external_authorization_blocker, normalize_blocker_evidence,
-    same_blocker_occurrences,
+    classify_external_authorization_blocker, normalize_blocker_evidence, same_blocker_occurrences,
 };
 
 pub struct ValidateQualityGateOptions<'a> {
@@ -39,8 +38,12 @@ pub struct ValidateQualityGateOptions<'a> {
 
 fn accepted_reviewers(surface: UlwLoopToolkitSurface, section: &str) -> &'static [&'static str] {
     match (surface, section) {
-        (UlwLoopToolkitSurface::LazyCodex, "codeReview") => &["lazycodex-code-reviewer", "main-session"],
-        (UlwLoopToolkitSurface::LazyCodex, "manualQa") => &["lazycodex-qa-executor", "main-session"],
+        (UlwLoopToolkitSurface::LazyCodex, "codeReview") => {
+            &["lazycodex-code-reviewer", "main-session"]
+        }
+        (UlwLoopToolkitSurface::LazyCodex, "manualQa") => {
+            &["lazycodex-qa-executor", "main-session"]
+        }
         (UlwLoopToolkitSurface::LazyCodex, "gateReview") => &[
             "lazycodex-gate-reviewer",
             "category:deep-high",
@@ -50,7 +53,9 @@ fn accepted_reviewers(surface: UlwLoopToolkitSurface, section: &str) -> &'static
             "category:unspecified-low",
             "main-session",
         ],
-        (UlwLoopToolkitSurface::OmoSenpi, "manualQa") => &["main-session", "omo-native-qa-executor"],
+        (UlwLoopToolkitSurface::OmoSenpi, "manualQa") => {
+            &["main-session", "omo-native-qa-executor"]
+        }
         (UlwLoopToolkitSurface::OmoSenpi, "gateReview") => &[
             "category:deep-high",
             "category:deep-low",
@@ -71,7 +76,10 @@ fn reviewer_acceptor_field(
     let accepted = accepted_reviewers(surface, section_name);
     let s = value.and_then(|v| v.as_str()).unwrap_or("").trim();
     if s.is_empty() {
-        invalid(format!("Final quality gate requires non-empty {field}."), &field);
+        invalid(
+            format!("Final quality gate requires non-empty {field}."),
+            &field,
+        );
         return accepted.first().copied().unwrap_or("").to_string();
     }
     if !accepted.contains(&s) {
@@ -101,13 +109,17 @@ fn validate_quality_gate_uncollected(
     input: &Value,
     opts: Option<&ValidateQualityGateOptions>,
 ) -> Result<UlwLoopQualityGate, UlwLoopError> {
-    let surface = opts.and_then(|o| o.reviewer_surface).unwrap_or(UlwLoopToolkitSurface::LazyCodex);
+    let surface = opts
+        .and_then(|o| o.reviewer_surface)
+        .unwrap_or(UlwLoopToolkitSurface::LazyCodex);
     let gate_value = if let Some(qg) = input.get("qualityGate") {
         qg
     } else {
         input
     };
-    let gate = section(Some(gate_value), "qualityGate").cloned().unwrap_or_default();
+    let gate = section(Some(gate_value), "qualityGate")
+        .cloned()
+        .unwrap_or_default();
 
     for name in &["manualQa", "gateReview", "iteration", "criteriaCoverage"] {
         section(gate.get(*name), name);
@@ -117,22 +129,38 @@ fn validate_quality_gate_uncollected(
         invalid("omo-senpi gate has no codeReview lane.", "codeReview");
     }
 
-    let manual_qa = section(gate.get("manualQa"), "manualQa").cloned().unwrap_or_default();
-    let gate_review = section(gate.get("gateReview"), "gateReview").cloned().unwrap_or_default();
-    let iteration = section(gate.get("iteration"), "iteration").cloned().unwrap_or_default();
-    let coverage = section(gate.get("criteriaCoverage"), "criteriaCoverage").cloned().unwrap_or_default();
-    let code_review = if surface == UlwLoopToolkitSurface::LazyCodex && gate.contains_key("codeReview") {
-        Some(section(gate.get("codeReview"), "codeReview").cloned().unwrap_or_default())
-    } else {
-        None
-    };
+    let manual_qa = section(gate.get("manualQa"), "manualQa")
+        .cloned()
+        .unwrap_or_default();
+    let gate_review = section(gate.get("gateReview"), "gateReview")
+        .cloned()
+        .unwrap_or_default();
+    let iteration = section(gate.get("iteration"), "iteration")
+        .cloned()
+        .unwrap_or_default();
+    let coverage = section(gate.get("criteriaCoverage"), "criteriaCoverage")
+        .cloned()
+        .unwrap_or_default();
+    let code_review =
+        if surface == UlwLoopToolkitSurface::LazyCodex && gate.contains_key("codeReview") {
+            Some(
+                section(gate.get("codeReview"), "codeReview")
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        };
 
     let manual_qa_by = reviewer_acceptor_field(manual_qa.get("by"), surface, "manualQa");
     let gate_review_by = reviewer_acceptor_field(gate_review.get("by"), surface, "gateReview");
     let manual_qa_evidence = text_field(manual_qa.get("evidence"), "manualQa.evidence");
     let gate_review_evidence = text_field(gate_review.get("evidence"), "gateReview.evidence");
 
-    let total_criteria = number_field(coverage.get("totalCriteria"), "criteriaCoverage.totalCriteria");
+    let total_criteria = number_field(
+        coverage.get("totalCriteria"),
+        "criteriaCoverage.totalCriteria",
+    );
     let pass_count = number_field(coverage.get("passCount"), "criteriaCoverage.passCount");
     if !is_poisoned("criteriaCoverage.passCount") && pass_count < total_criteria {
         invalid(
@@ -154,16 +182,31 @@ fn validate_quality_gate_uncollected(
 
     let gate_report_path = text_field(gate_review.get("reportPath"), "gateReview.reportPath");
     if !is_poisoned("gateReview.reportPath") {
-        check_file(&gate_report_path, "gateReview.reportPath", check_opts.as_ref());
+        check_file(
+            &gate_report_path,
+            "gateReview.reportPath",
+            check_opts.as_ref(),
+        );
     }
 
     let parsed_code_review = if let Some(cr) = code_review {
         let code_report_path = text_field(cr.get("reportPath"), "codeReview.reportPath");
-        check_file(&code_report_path, "codeReview.reportPath", check_opts.as_ref());
+        check_file(
+            &code_report_path,
+            "codeReview.reportPath",
+            check_opts.as_ref(),
+        );
         Some(UlwLoopQualityGateCodeReview {
             by: reviewer_acceptor_field(cr.get("by"), surface, "codeReview"),
-            recommendation: literal_str(cr.get("recommendation"), "APPROVE", "codeReview.recommendation"),
-            code_quality_status: code_quality_status_field(cr.get("codeQualityStatus"), "codeReview.codeQualityStatus"),
+            recommendation: literal_str(
+                cr.get("recommendation"),
+                "APPROVE",
+                "codeReview.recommendation",
+            ),
+            code_quality_status: code_quality_status_field(
+                cr.get("codeQualityStatus"),
+                "codeReview.codeQualityStatus",
+            ),
             report_path: code_report_path,
             evidence: text_field(cr.get("evidence"), "codeReview.evidence"),
             blockers: empty_blockers(cr.get("blockers"), "codeReview.blockers"),
@@ -184,7 +227,11 @@ fn validate_quality_gate_uncollected(
         },
         gate_review: UlwLoopQualityGateGateReview {
             by: gate_review_by,
-            recommendation: literal_str(gate_review.get("recommendation"), "APPROVE", "gateReview.recommendation"),
+            recommendation: literal_str(
+                gate_review.get("recommendation"),
+                "APPROVE",
+                "gateReview.recommendation",
+            ),
             report_path: gate_report_path,
             evidence: gate_review_evidence,
             blockers: empty_blockers(gate_review.get("blockers"), "gateReview.blockers"),
@@ -199,9 +246,18 @@ fn validate_quality_gate_uncollected(
         criteria_coverage: UlwLoopQualityGateCriteriaCoverage {
             total_criteria,
             pass_count,
-            original_intent: text_field(coverage.get("originalIntent"), "criteriaCoverage.originalIntent"),
-            desired_outcome: text_field(coverage.get("desiredOutcome"), "criteriaCoverage.desiredOutcome"),
-            user_outcome_review: text_field(coverage.get("userOutcomeReview"), "criteriaCoverage.userOutcomeReview"),
+            original_intent: text_field(
+                coverage.get("originalIntent"),
+                "criteriaCoverage.originalIntent",
+            ),
+            desired_outcome: text_field(
+                coverage.get("desiredOutcome"),
+                "criteriaCoverage.desiredOutcome",
+            ),
+            user_outcome_review: text_field(
+                coverage.get("userOutcomeReview"),
+                "criteriaCoverage.userOutcomeReview",
+            ),
             adversarial_classes_covered: string_array_allow_empty(
                 coverage.get("adversarialClassesCovered"),
                 "criteriaCoverage.adversarialClassesCovered",
@@ -215,15 +271,24 @@ fn parse_surface_evidence(
     by_id: &BTreeMap<String, UlwLoopManualQaArtifactRef>,
 ) -> Vec<UlwLoopManualQaSurfaceEvidence> {
     let Some(v) = value else {
-        invalid("manualQa.surfaceEvidence must not be empty.", "manualQa.surfaceEvidence");
+        invalid(
+            "manualQa.surfaceEvidence must not be empty.",
+            "manualQa.surfaceEvidence",
+        );
         return Vec::new();
     };
     let Some(arr) = v.as_array() else {
-        invalid("manualQa.surfaceEvidence must not be empty.", "manualQa.surfaceEvidence");
+        invalid(
+            "manualQa.surfaceEvidence must not be empty.",
+            "manualQa.surfaceEvidence",
+        );
         return Vec::new();
     };
     if arr.is_empty() {
-        invalid("manualQa.surfaceEvidence must not be empty.", "manualQa.surfaceEvidence");
+        invalid(
+            "manualQa.surfaceEvidence must not be empty.",
+            "manualQa.surfaceEvidence",
+        );
         return Vec::new();
     }
 
@@ -237,7 +302,9 @@ fn parse_surface_evidence(
             );
             continue;
         }
-        let Some(row) = section(Some(item), &prefix) else { continue };
+        let Some(row) = section(Some(item), &prefix) else {
+            continue;
+        };
         if is_poisoned(&prefix) {
             continue;
         }
@@ -280,11 +347,17 @@ fn parse_adversarial_cases(
     by_id: &BTreeMap<String, UlwLoopManualQaArtifactRef>,
 ) -> Vec<UlwLoopManualQaAdversarialCase> {
     let Some(v) = value else {
-        invalid("manualQa.adversarialCases must not be empty.", "manualQa.adversarialCases");
+        invalid(
+            "manualQa.adversarialCases must not be empty.",
+            "manualQa.adversarialCases",
+        );
         return Vec::new();
     };
     let Some(arr) = v.as_array() else {
-        invalid("manualQa.adversarialCases must not be empty.", "manualQa.adversarialCases");
+        invalid(
+            "manualQa.adversarialCases must not be empty.",
+            "manualQa.adversarialCases",
+        );
         return Vec::new();
     };
     if arr.is_empty() {
@@ -301,7 +374,9 @@ fn parse_adversarial_cases(
             );
             continue;
         }
-        let Some(row) = section(Some(item), &prefix) else { continue };
+        let Some(row) = section(Some(item), &prefix) else {
+            continue;
+        };
         if is_poisoned(&prefix) {
             continue;
         }
@@ -314,7 +389,10 @@ fn parse_adversarial_cases(
             id: text_field(row.get("id"), &format!("{prefix}.id")),
             criterion_ref: text_field(row.get("criterionRef"), &format!("{prefix}.criterionRef")),
             scenario: text_field(row.get("scenario"), &format!("{prefix}.scenario")),
-            expected_behavior: text_field(row.get("expectedBehavior"), &format!("{prefix}.expectedBehavior")),
+            expected_behavior: text_field(
+                row.get("expectedBehavior"),
+                &format!("{prefix}.expectedBehavior"),
+            ),
             verdict,
             reason,
             artifact_refs: artifacts.into_iter().map(|a| a.id).collect(),

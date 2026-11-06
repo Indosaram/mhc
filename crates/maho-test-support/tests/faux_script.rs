@@ -27,7 +27,13 @@ fn appended_responses_follow_queued_ones() {
 #[test]
 fn script_names_cannot_escape_the_scripts_dir() {
     for bad in ["../hello", "", "-x", "Hello", "a/b"] {
-        assert!(matches!(load_script(bad), Err(FauxError::InvalidName(_))), "{bad}");
+        assert!(
+            matches!(load_script(bad), Err(FauxError::InvalidName(_))),
+            "{bad}"
+        );
     }
-    assert!(matches!(load_script("missing-script"), Err(FauxError::Read { .. })));
+    assert!(matches!(
+        load_script("missing-script"),
+        Err(FauxError::Read { .. })
+    ));
 }

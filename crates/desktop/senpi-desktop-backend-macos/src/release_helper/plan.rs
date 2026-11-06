@@ -17,7 +17,17 @@ pub(crate) struct Open {
 pub(crate) fn apply(open: &mut Vec<Open>, record: Record) {
     match record {
         Record::Hello { .. } | Record::Observe => {}
-        Record::Press { id, route, input, text } => open.push(Open { id, route, input, text }),
+        Record::Press {
+            id,
+            route,
+            input,
+            text,
+        } => open.push(Open {
+            id,
+            route,
+            input,
+            text,
+        }),
         Record::Update { id, route } => {
             if let Some(press) = open.iter_mut().find(|press| press.id == id) {
                 press.route = route;
@@ -60,9 +70,16 @@ pub(crate) fn plan(open: &[Open], user: UserHolds) -> Vec<Step> {
                         Input::Button(_) => None,
                     })
                     .fold(0, |flags, flag| flags | flag);
-                if hid { held | user.flags() } else { held }
+                if hid {
+                    held | user.flags()
+                } else {
+                    held
+                }
             });
-            Step::Post { id: press.id, flags }
+            Step::Post {
+                id: press.id,
+                flags,
+            }
         })
         .collect()
 }
@@ -70,5 +87,7 @@ pub(crate) fn plan(open: &[Open], user: UserHolds) -> Vec<Step> {
 /// The HID-route inputs of `open`, whose unsure user holds a plan takes for
 /// this request's presses.
 pub(crate) fn hid_inputs(open: &[Open]) -> impl Iterator<Item = Input> + '_ {
-    open.iter().filter(|press| press.route == Route::Hid).map(|press| press.input)
+    open.iter()
+        .filter(|press| press.route == Route::Hid)
+        .map(|press| press.input)
 }

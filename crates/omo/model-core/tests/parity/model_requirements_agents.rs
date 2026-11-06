@@ -30,7 +30,8 @@ fn oracle_has_gpt_5_6_sol_xhigh_as_primary() {
 }
 
 #[test]
-fn sisyphus_keeps_opus_primary_before_kimi_k3_1_pro_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle_fallbacks() {
+fn sisyphus_keeps_opus_primary_before_kimi_k3_1_pro_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle_fallbacks()
+ {
     let sisyphus = &AGENT_MODEL_REQUIREMENTS["sisyphus"];
     let chain = &sisyphus.fallback_chain;
 
@@ -47,7 +48,12 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_1_pro_kimi_k3_gpt_5_6_sol_glm_5_2_
     assert_eq!(
         chain[1],
         entry(
-            &["opencode-go", "kimi-for-coding", "moonshotai", "moonshotai-cn"],
+            &[
+                "opencode-go",
+                "kimi-for-coding",
+                "moonshotai",
+                "moonshotai-cn"
+            ],
             "kimi-k3.1-pro",
             None
         )
@@ -55,7 +61,13 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_1_pro_kimi_k3_gpt_5_6_sol_glm_5_2_
     assert_eq!(
         chain[2],
         entry(
-            &["opencode", "bailian-coding-plan", "firmware", "ollama-cloud", "aihubmix"],
+            &[
+                "opencode",
+                "bailian-coding-plan",
+                "firmware",
+                "ollama-cloud",
+                "aihubmix"
+            ],
             "kimi-k3",
             None
         )
@@ -95,7 +107,11 @@ fn assert_fast_agent_chain(agent: &str) {
                 "gpt-6-luna-fast",
                 Some("low")
             ),
-            entry(&["anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+            entry(
+                &["anthropic", "github-copilot"],
+                "claude-haiku-5-5",
+                Some("medium")
+            ),
             entry(&["deepseek"], "deepseek-flash", Some("max")),
             entry(
                 &["opencode-go", "bailian-coding-plan"],
@@ -149,7 +165,8 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max() {
+fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let full_chain = chain("prometheus");
 
     // the 5.5 rung exists only once FABLE_55_RELEASED is true
@@ -184,7 +201,8 @@ fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_befo
 }
 
 #[test]
-fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max() {
+fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max()
+ {
     let full_chain = chain("metis");
 
     // the 5.5 rung exists only once FABLE_55_RELEASED is true
@@ -259,9 +277,20 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
             Some("high")
         )
     );
-    assert_eq!(chain[4], entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("high")));
+    assert_eq!(
+        chain[4],
+        entry(
+            &["google", "google-vertex", "opencode"],
+            "gemini-4-argon",
+            Some("high")
+        )
+    );
     assert_eq!(chain[6], entry(&["opencode-go"], "glm-5.2", None));
-    assert!(!chain.iter().any(|entry| entry.model.starts_with("gpt-5.6-")));
+    assert!(
+        !chain
+            .iter()
+            .any(|entry| entry.model.starts_with("gpt-5.6-"))
+    );
 }
 
 #[test]
@@ -336,7 +365,8 @@ fn hephaestus_supports_openai_chatgpt_subscription_github_copilot_and_opencode_p
         ]))
     );
     assert!(
-        !hephaestus.requires_provider
+        !hephaestus
+            .requires_provider
             .as_ref()
             .unwrap()
             .iter()

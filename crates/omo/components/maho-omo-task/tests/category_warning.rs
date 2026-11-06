@@ -1,8 +1,8 @@
+use crate::support;
 use maho_omo_task::category_unavailable_warning::create_category_unavailable_warning_planner;
 use senpi_task::manager::types::{ChildPlanner, PlanResolutionCode, PlanResolutionError};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
-use crate::support;
 
 #[tokio::test]
 async fn registered_engine_delivers_real_category_failure_without_starting_child() {

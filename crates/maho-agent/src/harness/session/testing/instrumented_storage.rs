@@ -8,10 +8,12 @@ use maho_ai::types::BoxFuture;
 use crate::harness::context::Context;
 use crate::harness::session::session::{SessionError, SessionResult};
 use crate::harness::session::types::{
-    CommitResult, Entry, EntryScan, EntryStructure, SessionStats, Storage, StorageBranchScan, UsageRow, UsageScan,
-    Write,
+    CommitResult, Entry, EntryScan, EntryStructure, SessionStats, Storage, StorageBranchScan,
+    UsageRow, UsageScan, Write,
 };
-use crate::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
+use crate::harness::session::values::{
+    ListElement, ListReadOptions, StoredValue, Value, ValueList,
+};
 
 use super::storage_decorator::StorageDecorator;
 
@@ -30,16 +32,26 @@ impl InstrumentedStorage {
     }
 
     pub fn get_commit_attempts(&self) -> Vec<Vec<Write>> {
-        self.commit_attempts.lock().expect("commit attempts").clone()
+        self.commit_attempts
+            .lock()
+            .expect("commit attempts")
+            .clone()
     }
 
     pub fn clear_commit_attempts(&self) {
-        self.commit_attempts.lock().expect("commit attempts").clear();
+        self.commit_attempts
+            .lock()
+            .expect("commit attempts")
+            .clear();
     }
 }
 
 impl Storage for InstrumentedStorage {
-    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, SessionResult<CommitResult>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<CommitResult>> {
         Box::pin(async move {
             self.commit_attempts
                 .lock()
@@ -65,7 +77,11 @@ impl Storage for InstrumentedStorage {
         self.decorator.get_value(address, context)
     }
 
-    fn scan_values<'a>(&'a self, prefix: &'a Value, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<StoredValue>>> {
+    fn scan_values<'a>(
+        &'a self,
+        prefix: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<StoredValue>>> {
         self.decorator.scan_values(prefix, context)
     }
 
@@ -94,11 +110,19 @@ impl Storage for InstrumentedStorage {
         self.decorator.scan_branch_structure(query, context)
     }
 
-    fn scan_entries<'a>(&'a self, query: EntryScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+    fn scan_entries<'a>(
+        &'a self,
+        query: EntryScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
         self.decorator.scan_entries(query, context)
     }
 
-    fn scan_usage<'a>(&'a self, query: UsageScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
+    fn scan_usage<'a>(
+        &'a self,
+        query: UsageScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
         self.decorator.scan_usage(query, context)
     }
 

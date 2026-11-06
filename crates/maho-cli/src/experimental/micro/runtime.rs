@@ -224,10 +224,7 @@ struct OpenParts {
 }
 
 /// senpi `SettingsManager.create(cwd).getCompactionSettings(model)`, read once at open.
-fn compaction_settings(
-    cwd: &Path,
-    agent_dir: &Path,
-) -> CompactionSettingsFn {
+fn compaction_settings(cwd: &Path, agent_dir: &Path) -> CompactionSettingsFn {
     let settings = maho_core::settings_manager::SettingsManager::create(
         &cwd.to_string_lossy(),
         &agent_dir.to_string_lossy(),
@@ -1323,13 +1320,24 @@ mod lost_lock_log_tests {
 
     #[test]
     fn a_gated_storage_refusal_logs_its_lock_lost_code_and_no_message() {
-        let fields = lost_lock_error_fields(&Error::Storage("ELOCKLOST: /home/user/.pi/session.jsonl".to_owned()));
-        assert_eq!(fields, serde_json::json!({"name": "StorageError", "code": "ELOCKLOST"}));
+        let fields = lost_lock_error_fields(&Error::Storage(
+            "ELOCKLOST: /home/user/.pi/session.jsonl".to_owned(),
+        ));
+        assert_eq!(
+            fields,
+            serde_json::json!({"name": "StorageError", "code": "ELOCKLOST"})
+        );
     }
 
     #[test]
     fn other_errors_log_their_name_only() {
-        assert_eq!(lost_lock_error_fields(&Error::Storage("disk full".to_owned())), serde_json::json!({"name": "StorageError"}));
-        assert_eq!(lost_lock_error_fields(&Error::Closed), serde_json::json!({"name": "Closed"}));
+        assert_eq!(
+            lost_lock_error_fields(&Error::Storage("disk full".to_owned())),
+            serde_json::json!({"name": "StorageError"})
+        );
+        assert_eq!(
+            lost_lock_error_fields(&Error::Closed),
+            serde_json::json!({"name": "Closed"})
+        );
     }
 }

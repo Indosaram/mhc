@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use crate::dollar_invocation_autocomplete::{
     find_dollar_skill_mentions, get_dollar_invocation_context, get_dollar_invocation_suggestions,
@@ -19,7 +19,6 @@ use crate::slash_command_autocomplete::get_slash_command_suggestions;
 use crate::utils::is_autocomplete_separator;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutocompleteItem {
@@ -70,7 +69,13 @@ impl AutocompleteSignal {
 
     pub fn abort(&self) {
         self.state.aborted.store(true, Ordering::SeqCst);
-        if let Some(child) = self.state.child.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+        if let Some(child) = self
+            .state
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
             // Upstream kills only a still-running child; killing an exited one is a harmless error.
             let _ = child.kill();
         }
@@ -266,21 +271,18 @@ fn find_unclosed_quote_start(text: &str) -> Option<usize> {
             }
         }
     }
-    if in_quotes {
-        quote_start
-    } else {
-        None
-    }
+    if in_quotes { quote_start } else { None }
 }
 
 fn is_token_start(text: &str, index: usize) -> bool {
     if index == 0 {
         return true;
     }
-    text[..index]
-        .chars()
-        .next_back()
-        .is_some_and(|ch| PATH_DELIMITERS.contains(&ch) || is_autocomplete_separator(ch) || matches!(ch, '(' | '[' | '{' | '<' | '`'))
+    text[..index].chars().next_back().is_some_and(|ch| {
+        PATH_DELIMITERS.contains(&ch)
+            || is_autocomplete_separator(ch)
+            || matches!(ch, '(' | '[' | '{' | '<' | '`')
+    })
 }
 
 fn extract_quoted_prefix(text: &str) -> Option<String> {
@@ -387,7 +389,13 @@ fn join_posix(parts: &[&str]) -> String {
     let joined = parts
         .iter()
         .filter(|part| !part.is_empty())
-        .map(|part| if cfg!(windows) { to_display_path(part) } else { (*part).to_string() })
+        .map(|part| {
+            if cfg!(windows) {
+                to_display_path(part)
+            } else {
+                (*part).to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join("/");
     if joined.is_empty() {
@@ -527,7 +535,11 @@ fn walk_directory_with_fd(
     {
         // Publish the child under the lock that `abort` takes, so an abort racing the spawn either
         // sees the child (and kills it) or is seen here.
-        let mut slot = signal.state.child.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = signal
+            .state
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if signal.is_aborted() {
             let _ = child.kill();
             let _ = child.wait();
@@ -538,9 +550,15 @@ fn walk_directory_with_fd(
     let mut bytes = Vec::new();
     let read = child_stdout.map(|mut stdout| stdout.read_to_end(&mut bytes));
     // Take the child out before waiting so a concurrent `abort` never blocks on the wait.
-    let child = signal.state.child.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let child = signal
+        .state
+        .child
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
     let status = child.map(|mut child| child.wait());
-    let succeeded = matches!(read, Some(Ok(_))) && matches!(status, Some(Ok(status)) if status.success());
+    let succeeded =
+        matches!(read, Some(Ok(_))) && matches!(status, Some(Ok(status)) if status.success());
     if signal.is_aborted() || !succeeded {
         return Vec::new();
     }
@@ -632,7 +650,10 @@ impl CombinedAutocompleteProvider {
             return Some(path_prefix);
         }
 
-        if path_prefix.contains('/') || path_prefix.starts_with('.') || path_prefix.starts_with("~/") {
+        if path_prefix.contains('/')
+            || path_prefix.starts_with('.')
+            || path_prefix.starts_with("~/")
+        {
             return Some(path_prefix);
         }
 
@@ -643,7 +664,10 @@ impl CombinedAutocompleteProvider {
         None
     }
 
-    fn resolve_scoped_fuzzy_query(base_path: &str, raw_query: &str) -> Option<(String, String, String)> {
+    fn resolve_scoped_fuzzy_query(
+        base_path: &str,
+        raw_query: &str,
+    ) -> Option<(String, String, String)> {
         let normalized_query = to_display_path(raw_query);
         let slash_index = normalized_query.rfind('/')?;
 
@@ -670,7 +694,11 @@ impl CombinedAutocompleteProvider {
         if display_base == "/" {
             return format!("/{normalized_relative_path}");
         }
-        format!("{}{}", to_display_path(display_base), normalized_relative_path)
+        format!(
+            "{}{}",
+            to_display_path(display_base),
+            normalized_relative_path
+        )
     }
 
     fn get_file_suggestions(&self, prefix: &str) -> Vec<AutocompleteItem> {
@@ -722,10 +750,16 @@ impl CombinedAutocompleteProvider {
             }
 
             let file_type = entry.file_type();
-            let mut is_directory = file_type.as_ref().map(|file_type| file_type.is_dir()).unwrap_or(false);
+            let mut is_directory = file_type
+                .as_ref()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false);
             // Only a symlink (or an unknown type) can resolve to a directory; skip the stat otherwise.
             if !is_directory
-                && file_type.as_ref().ok().is_none_or(|file_type| file_type.is_symlink())
+                && file_type
+                    .as_ref()
+                    .ok()
+                    .is_none_or(|file_type| file_type.is_symlink())
                 && let Ok(metadata) = std::fs::metadata(entry.path())
             {
                 is_directory = metadata.is_dir();
@@ -750,7 +784,8 @@ impl CombinedAutocompleteProvider {
                         format!("{dir}/{name}")
                     }
                 } else {
-                    let joined = join_posix(&[dirname_posix(display_prefix).as_str(), name.as_str()]);
+                    let joined =
+                        join_posix(&[dirname_posix(display_prefix).as_str(), name.as_str()]);
                     if display_prefix.starts_with("./") && !joined.starts_with("./") {
                         format!("./{joined}")
                     } else {
@@ -769,7 +804,8 @@ impl CombinedAutocompleteProvider {
             } else {
                 relative_path
             };
-            let value = build_completion_value(&path_value, parsed.is_at_prefix, parsed.is_quoted_prefix);
+            let value =
+                build_completion_value(&path_value, parsed.is_at_prefix, parsed.is_quoted_prefix);
 
             suggestions.push(AutocompleteItem {
                 value,
@@ -817,7 +853,12 @@ impl CombinedAutocompleteProvider {
         score
     }
 
-    fn get_base_dir_suggestions(fd_path: &str, base_dir: &str, query: &str, signal: &AutocompleteSignal) -> Vec<(String, bool)> {
+    fn get_base_dir_suggestions(
+        fd_path: &str,
+        base_dir: &str,
+        query: &str,
+        signal: &AutocompleteSignal,
+    ) -> Vec<(String, bool)> {
         if signal.is_aborted() {
             return Vec::new();
         }
@@ -842,8 +883,10 @@ impl CombinedAutocompleteProvider {
             None => (base_path.to_string(), query.to_string()),
         };
 
-        let base_dir_entries = Self::get_base_dir_suggestions(fd_path, &fd_base_dir, &fd_query, signal);
-        let recursive_entries = walk_directory_with_fd(&fd_base_dir, fd_path, &fd_query, 100, signal, None);
+        let base_dir_entries =
+            Self::get_base_dir_suggestions(fd_path, &fd_base_dir, &fd_query, signal);
+        let recursive_entries =
+            walk_directory_with_fd(&fd_base_dir, fd_path, &fd_query, 100, signal, None);
         if signal.is_aborted() {
             return Vec::new();
         }
@@ -896,7 +939,9 @@ impl CombinedAutocompleteProvider {
                 entry_path.clone()
             };
             let display_path = match &scoped_query {
-                Some((_, _, display_base)) => Self::scoped_path_for_display(display_base, &path_without_slash),
+                Some((_, _, display_base)) => {
+                    Self::scoped_path_for_display(display_base, &path_without_slash)
+                }
                 None => path_without_slash.clone(),
             };
             let entry_name = basename_posix(&path_without_slash);
@@ -948,7 +993,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                     parsed.is_quoted_prefix,
                     &signal,
                 );
-                let suggestions = (!items.is_empty()).then_some(AutocompleteSuggestions { items, prefix: at_prefix });
+                let suggestions = (!items.is_empty()).then_some(AutocompleteSuggestions {
+                    items,
+                    prefix: at_prefix,
+                });
                 // The receiver is gone when the editor dropped a superseded request.
                 let _ = sender.send(suggestions);
             });
@@ -1006,8 +1054,11 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         if let Some(context) =
             get_dollar_invocation_context(&text_before_cursor, cursor_line, &self.commands)
         {
-            let suggestions =
-                get_dollar_invocation_suggestions(&self.commands, &context.query, context.skills_only);
+            let suggestions = get_dollar_invocation_suggestions(
+                &self.commands,
+                &context.query,
+                context.skills_only,
+            );
             if suggestions.is_empty() {
                 return None;
             }
@@ -1038,7 +1089,8 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                             .filter(|command| command.name().starts_with("skill:"))
                             .cloned()
                             .collect();
-                        let filtered = get_slash_command_suggestions(&skill_commands, &current_token[1..]);
+                        let filtered =
+                            get_slash_command_suggestions(&skill_commands, &current_token[1..]);
                         if filtered.is_empty() {
                             return None;
                         }
@@ -1148,7 +1200,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         if prefix.starts_with('@') {
             let is_directory = item.label.ends_with('/');
             let suffix = if is_directory { "" } else { " " };
-            let new_line = format!("{before_prefix}{}{suffix}{adjusted_after_cursor}", item.value);
+            let new_line = format!(
+                "{before_prefix}{}{suffix}{adjusted_after_cursor}",
+                item.value
+            );
             new_lines[cursor_line] = new_line;
 
             let has_trailing_quote = item.value.ends_with('"');

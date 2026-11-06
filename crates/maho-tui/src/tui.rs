@@ -1235,7 +1235,8 @@ impl TuiBaseState {
                 .options
                 .as_ref()
                 .is_some_and(|o| o.non_capturing);
-            if !non_capturing && TuiBaseState::is_overlay_visible(&state.overlay_stack[index], 0, 0) {
+            if !non_capturing && TuiBaseState::is_overlay_visible(&state.overlay_stack[index], 0, 0)
+            {
                 state.focus_order_counter += 1;
                 state.overlay_stack[index].focus_order = state.focus_order_counter;
                 state.set_focus_component(Some(Rc::clone(component)));

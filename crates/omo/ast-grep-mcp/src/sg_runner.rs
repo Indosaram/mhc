@@ -424,7 +424,9 @@ pub fn spawn_sg_runner(input: SgRunnerInput<'_>) -> Result<SgRunnerResult, SgRun
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(env) = &input.env {
-        command.env_clear().envs(env.iter().map(|(key, value)| (key, value)));
+        command
+            .env_clear()
+            .envs(env.iter().map(|(key, value)| (key, value)));
     }
     let mut child = command.spawn().map_err(|error| {
         runner_error(

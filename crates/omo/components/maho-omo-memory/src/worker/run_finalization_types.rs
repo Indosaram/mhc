@@ -1,7 +1,8 @@
-use memory_core::reflection::ReservedRun;
 use super::completion_contracts::ReflectionCompletionRecord;
+use memory_core::reflection::ReservedRun;
 
-type WarnCallback<'a> = dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync + 'a;
+type WarnCallback<'a> =
+    dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync + 'a;
 
 pub struct RunFinalizationContext<'a> {
     pub identity: &'a memory_core::identity::resolve::MemoryIdentity,

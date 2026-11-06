@@ -1,5 +1,5 @@
-use serde_json::{Value, json};
 use senpi_task::dag::types::DagRunSnapshot;
+use serde_json::{Value, json};
 
 pub const DAG_MAX_RUN_SNAPSHOTS: usize = 256;
 pub fn dag_updated_payload(parent_session_id: &str, runs: &[(DagRunSnapshot, String)]) -> Value {
@@ -18,6 +18,8 @@ pub fn dag_updated_payload(parent_session_id: &str, runs: &[(DagRunSnapshot, Str
         payload
     }).collect();
     let mut value = json!({"parent_session_id":parent_session_id,"runs":payloads});
-    if runs.len() > DAG_MAX_RUN_SNAPSHOTS { value["truncated_runs"] = json!(runs.len() - DAG_MAX_RUN_SNAPSHOTS); }
+    if runs.len() > DAG_MAX_RUN_SNAPSHOTS {
+        value["truncated_runs"] = json!(runs.len() - DAG_MAX_RUN_SNAPSHOTS);
+    }
     value
 }

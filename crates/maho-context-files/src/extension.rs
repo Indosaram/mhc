@@ -20,10 +20,7 @@ pub struct ContextFilesExtension {
 
 /// Whether the advisor runs in sessions of `mode` (long-lived ones only).
 pub fn advises_in(mode: ExtensionMode) -> bool {
-    matches!(
-        mode,
-        ExtensionMode::Tui | ExtensionMode::Rpc
-    )
+    matches!(mode, ExtensionMode::Tui | ExtensionMode::Rpc)
 }
 
 fn read_existing(root: PathBuf) -> impl Fn(&str, &str) -> Option<String> {

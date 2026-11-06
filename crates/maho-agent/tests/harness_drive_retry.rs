@@ -30,5 +30,8 @@ fn keeps_an_uncapped_delay_inside_the_jitter_band() {
 
 #[test]
 fn saturates_at_javascript_maximum_safe_integer() {
-    assert_eq!(retry_not_before(&policy(1000, 30000, 1.0), 1, 9_007_199_254_740_990), 9_007_199_254_740_991);
+    assert_eq!(
+        retry_not_before(&policy(1000, 30000, 1.0), 1, 9_007_199_254_740_990),
+        9_007_199_254_740_991
+    );
 }

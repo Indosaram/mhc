@@ -107,10 +107,7 @@ pub type InProcessHandleResult = Result<Arc<dyn ManagedChildHandle>, RunnerError
 
 /// `InProcessRunnerLike`.
 pub trait InProcessRunnerLike: Send + Sync {
-    fn create(
-        &self,
-        _spec: &ChildSpec,
-    ) -> Option<InProcessCreation> {
+    fn create(&self, _spec: &ChildSpec) -> Option<InProcessCreation> {
         None
     }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult;
@@ -125,10 +122,7 @@ fn erase(handle: Arc<InProcessChildHandle>) -> Arc<dyn ManagedChildHandle> {
 }
 
 impl InProcessRunnerLike for InProcessRunner {
-    fn create(
-        &self,
-        spec: &ChildSpec,
-    ) -> Option<InProcessCreation> {
+    fn create(&self, spec: &ChildSpec) -> Option<InProcessCreation> {
         Some(InProcessRunner::create(self, spec).map(|(handle, prompt)| (erase(handle), prompt)))
     }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult {
@@ -420,8 +414,10 @@ mod parity_tests {
             ..Default::default()
         };
         assert_eq!(to_rpc_spec(&spec).traceparent, spec.traceparent);
-        let persisted = serde_json::to_value(crate::state::TaskSpawnSpec::V1(crate::manager::helpers::build_spawn_spec_v1(&spec)))
-            .expect("spawn spec");
+        let persisted = serde_json::to_value(crate::state::TaskSpawnSpec::V1(
+            crate::manager::helpers::build_spawn_spec_v1(&spec),
+        ))
+        .expect("spawn spec");
         assert!(persisted.get("traceparent").is_none());
     }
 }

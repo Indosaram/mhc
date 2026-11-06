@@ -1,8 +1,12 @@
-use std::{future::Future, sync::{Arc, Mutex}, time::Duration};
-use maho_ai::utils::abort::{AbortReason, AbortSignal, ListenerId};
-use tokio::sync::watch;
-use crate::timeouts::idle_timeout::{IdleTimeout, IdleTimeoutOptions, TimeoutPauseHandle};
 use super::types::{EvalKernel, KernelInterruptHandle};
+use crate::timeouts::idle_timeout::{IdleTimeout, IdleTimeoutOptions, TimeoutPauseHandle};
+use maho_ai::utils::abort::{AbortReason, AbortSignal, ListenerId};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::watch;
 
 pub struct CellIdleWatchdogOptions {
     pub timeout_ms: u64,
@@ -27,89 +31,206 @@ pub struct CellExecution {
     interrupt_ready: watch::Sender<bool>,
 }
 impl CellExecution {
-    pub fn new(caller: AbortSignal, cell_id: String, idle: Option<CellIdleWatchdogOptions>, on_abort: Arc<dyn Fn(AbortReason) + Send + Sync>) -> Arc<Self> {
-        let (aborted,_)=watch::channel(None);
-        let (detached,_)=watch::channel(false);
-        let (interrupt_ready,_)=watch::channel(false);
-        let execution=Arc::new(Self {cell_id,caller:caller.clone(),on_abort,state:Mutex::new(State {active:true,kernel:None,watchdog:None,watchdog_task:None,listener:None}),aborted,detached,interrupt:Mutex::new(None),interrupt_ready});
-        if let Some(idle)=idle {execution.rearm_idle(idle.timeout_ms,idle.max_pause_grace_ms,idle.on_timeout);}
-        let weak=Arc::downgrade(&execution);
-        let listener=caller.add_abort_listener(move |reason|{if let Some(execution)=weak.upgrade() {execution.cancel(reason.clone());}});
-        execution.state.lock().expect("execution lock").listener=Some(listener);
+    pub fn new(
+        caller: AbortSignal,
+        cell_id: String,
+        idle: Option<CellIdleWatchdogOptions>,
+        on_abort: Arc<dyn Fn(AbortReason) + Send + Sync>,
+    ) -> Arc<Self> {
+        let (aborted, _) = watch::channel(None);
+        let (detached, _) = watch::channel(false);
+        let (interrupt_ready, _) = watch::channel(false);
+        let execution = Arc::new(Self {
+            cell_id,
+            caller: caller.clone(),
+            on_abort,
+            state: Mutex::new(State {
+                active: true,
+                kernel: None,
+                watchdog: None,
+                watchdog_task: None,
+                listener: None,
+            }),
+            aborted,
+            detached,
+            interrupt: Mutex::new(None),
+            interrupt_ready,
+        });
+        if let Some(idle) = idle {
+            execution.rearm_idle(idle.timeout_ms, idle.max_pause_grace_ms, idle.on_timeout);
+        }
+        let weak = Arc::downgrade(&execution);
+        let listener = caller.add_abort_listener(move |reason| {
+            if let Some(execution) = weak.upgrade() {
+                execution.cancel(reason.clone());
+            }
+        });
+        execution.state.lock().expect("execution lock").listener = Some(listener);
         execution
     }
-    pub fn rearm_idle(&self, timeout_ms:u64, max_pause_grace_ms:u64, on_timeout:Arc<dyn Fn(String)+Send+Sync>) {
-        let mut state=self.state.lock().expect("execution lock");
-        if !state.active {return;}
-        if let Some(task)=state.watchdog_task.take() {task.abort();}
-        if let Some(watchdog)=state.watchdog.take() {watchdog.dispose();}
-        let watchdog=IdleTimeout::new(IdleTimeoutOptions {cell_id:self.cell_id.clone(),timeout_ms,max_pause_grace_ms:Some(max_pause_grace_ms),deadline:Some(tokio::time::Instant::now()+Duration::from_millis(max_pause_grace_ms))});
-        let mut signal=watchdog.signal();
-        state.watchdog_task=Some(tokio::spawn(async move {
-            if signal.changed().await.is_ok() && let Some(event)=signal.borrow().clone() {on_timeout(event.error);}
+    pub fn rearm_idle(
+        &self,
+        timeout_ms: u64,
+        max_pause_grace_ms: u64,
+        on_timeout: Arc<dyn Fn(String) + Send + Sync>,
+    ) {
+        let mut state = self.state.lock().expect("execution lock");
+        if !state.active {
+            return;
+        }
+        if let Some(task) = state.watchdog_task.take() {
+            task.abort();
+        }
+        if let Some(watchdog) = state.watchdog.take() {
+            watchdog.dispose();
+        }
+        let watchdog = IdleTimeout::new(IdleTimeoutOptions {
+            cell_id: self.cell_id.clone(),
+            timeout_ms,
+            max_pause_grace_ms: Some(max_pause_grace_ms),
+            deadline: Some(tokio::time::Instant::now() + Duration::from_millis(max_pause_grace_ms)),
+        });
+        let mut signal = watchdog.signal();
+        state.watchdog_task = Some(tokio::spawn(async move {
+            if signal.changed().await.is_ok()
+                && let Some(event) = signal.borrow().clone()
+            {
+                on_timeout(event.error);
+            }
         }));
-        state.watchdog=Some(watchdog);
+        state.watchdog = Some(watchdog);
     }
-    pub fn pause(&self) {if let Some(watchdog)=&self.state.lock().expect("execution lock").watchdog {watchdog.pause();}}
-    pub fn resume(&self) {if let Some(watchdog)=&self.state.lock().expect("execution lock").watchdog {watchdog.resume();}}
-    pub fn set_kernel(&self, kernel:Arc<dyn EvalKernel>) {self.state.lock().expect("execution lock").kernel=Some(kernel);}
-    pub fn detached(&self) -> watch::Receiver<bool> {self.detached.subscribe()}
+    pub fn pause(&self) {
+        if let Some(watchdog) = &self.state.lock().expect("execution lock").watchdog {
+            watchdog.pause();
+        }
+    }
+    pub fn resume(&self) {
+        if let Some(watchdog) = &self.state.lock().expect("execution lock").watchdog {
+            watchdog.resume();
+        }
+    }
+    pub fn set_kernel(&self, kernel: Arc<dyn EvalKernel>) {
+        self.state.lock().expect("execution lock").kernel = Some(kernel);
+    }
+    pub fn detached(&self) -> watch::Receiver<bool> {
+        self.detached.subscribe()
+    }
     pub fn detach(&self) {
-        let mut state=self.state.lock().expect("execution lock");
-        if !state.active {return;}
-        if let Some(watchdog)=state.watchdog.take() {watchdog.dispose();}
-        if let Some(task)=state.watchdog_task.take() {task.abort();}
+        let mut state = self.state.lock().expect("execution lock");
+        if !state.active {
+            return;
+        }
+        if let Some(watchdog) = state.watchdog.take() {
+            watchdog.dispose();
+        }
+        if let Some(task) = state.watchdog_task.take() {
+            task.abort();
+        }
         self.detached.send_replace(true);
     }
-    pub fn cancel(self:&Arc<Self>, reason:AbortReason) {
-        let kernel={
-            let mut state=self.state.lock().expect("execution lock");
-            if !state.active {return;}
-            state.active=false;
+    pub fn cancel(self: &Arc<Self>, reason: AbortReason) {
+        let kernel = {
+            let mut state = self.state.lock().expect("execution lock");
+            if !state.active {
+                return;
+            }
+            state.active = false;
             self.cleanup(&mut state);
             state.kernel.clone()
         };
-        let reason=abort_error(reason);
+        let reason = abort_error(reason);
         (self.on_abort)(reason.clone());
-        let Some(kernel)=kernel else {self.aborted.send_replace(Some(reason));return;};
-        let execution=Arc::clone(self);
+        let Some(kernel) = kernel else {
+            self.aborted.send_replace(Some(reason));
+            return;
+        };
+        let execution = Arc::clone(self);
         tokio::spawn(async move {
-            let deadline=tokio::time::sleep(Duration::from_millis(100));
+            let deadline = tokio::time::sleep(Duration::from_millis(100));
             tokio::pin!(deadline);
-            let operation=kernel.interrupt(&reason.message,Some(&execution.cell_id));
+            let operation = kernel.interrupt(&reason.message, Some(&execution.cell_id));
             tokio::pin!(operation);
-            let outcome=tokio::select! {
+            let outcome = tokio::select! {
                 result=&mut operation=>Some(result),
                 ()=&mut deadline=>{execution.aborted.send_replace(Some(reason.clone()));None}
             };
-            let outcome=match outcome {Some(outcome)=>outcome,None=>operation.await};
+            let outcome = match outcome {
+                Some(outcome) => outcome,
+                None => operation.await,
+            };
             match outcome {
-                Ok(handle)=>{*execution.interrupt.lock().expect("interrupt lock")=Some(handle);execution.aborted.send_if_modified(|current|{if current.is_some(){false}else{*current=Some(reason.clone());true}});}
-                Err(error)=>{execution.aborted.send_if_modified(|current|{if current.is_some(){false}else{*current=Some(AbortReason::new("Error",error));true}});}
+                Ok(handle) => {
+                    *execution.interrupt.lock().expect("interrupt lock") = Some(handle);
+                    execution.aborted.send_if_modified(|current| {
+                        if current.is_some() {
+                            false
+                        } else {
+                            *current = Some(reason.clone());
+                            true
+                        }
+                    });
+                }
+                Err(error) => {
+                    execution.aborted.send_if_modified(|current| {
+                        if current.is_some() {
+                            false
+                        } else {
+                            *current = Some(AbortReason::new("Error", error));
+                            true
+                        }
+                    });
+                }
             }
             execution.interrupt_ready.send_replace(true);
         });
     }
-    pub fn take_interrupt_handle(&self) -> Option<KernelInterruptHandle> {self.interrupt.lock().expect("interrupt lock").take()}
-    pub fn timed_out(&self) -> bool {self.aborted.borrow().as_ref().is_some_and(|reason|reason.name=="TimeoutError")}
+    pub fn take_interrupt_handle(&self) -> Option<KernelInterruptHandle> {
+        self.interrupt.lock().expect("interrupt lock").take()
+    }
+    pub fn timed_out(&self) -> bool {
+        self.aborted
+            .borrow()
+            .as_ref()
+            .is_some_and(|reason| reason.name == "TimeoutError")
+    }
     pub async fn wait_interrupt_handle(&self) -> Option<KernelInterruptHandle> {
         self.state.lock().expect("execution lock").kernel.as_ref()?;
-        let mut ready=self.interrupt_ready.subscribe();
-        if !*ready.borrow_and_update() {let _=ready.wait_for(|ready|*ready).await;}
+        let mut ready = self.interrupt_ready.subscribe();
+        if !*ready.borrow_and_update() {
+            let _ = ready.wait_for(|ready| *ready).await;
+        }
         self.take_interrupt_handle()
     }
-    pub fn finish(&self) {let mut state=self.state.lock().expect("execution lock");state.active=false;self.cleanup(&mut state);}
-    fn cleanup(&self,state:&mut State) {
-        if let Some(listener)=state.listener.take() {self.caller.remove_abort_listener(listener);}
-        if let Some(watchdog)=state.watchdog.take() {watchdog.dispose();}
-        if let Some(task)=state.watchdog_task.take() {task.abort();}
+    pub fn finish(&self) {
+        let mut state = self.state.lock().expect("execution lock");
+        state.active = false;
+        self.cleanup(&mut state);
     }
-    pub async fn wait<T>(&self, operation:impl Future<Output=Result<T,String>>) -> Result<T,String> {
-        let mut aborted=self.aborted.subscribe();
-        let cancellation=async {
+    fn cleanup(&self, state: &mut State) {
+        if let Some(listener) = state.listener.take() {
+            self.caller.remove_abort_listener(listener);
+        }
+        if let Some(watchdog) = state.watchdog.take() {
+            watchdog.dispose();
+        }
+        if let Some(task) = state.watchdog_task.take() {
+            task.abort();
+        }
+    }
+    pub async fn wait<T>(
+        &self,
+        operation: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let mut aborted = self.aborted.subscribe();
+        let cancellation = async {
             loop {
-                if let Some(reason)=aborted.borrow().clone() {return reason.message;}
-                if aborted.changed().await.is_err() {return "Eval interrupted".into();}
+                if let Some(reason) = aborted.borrow().clone() {
+                    return reason.message;
+                }
+                if aborted.changed().await.is_err() {
+                    return "Eval interrupted".into();
+                }
             }
         };
         tokio::pin!(cancellation);
@@ -122,12 +243,23 @@ impl CellExecution {
         }
     }
 }
-impl Drop for CellExecution {fn drop(&mut self) {let mut state=self.state.lock().expect("execution lock");self.cleanup(&mut state);}}
+impl Drop for CellExecution {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().expect("execution lock");
+        self.cleanup(&mut state);
+    }
+}
 
 /// senpi `abortError`: a bare `controller.abort()` (the DOM `AbortError` default) becomes
 /// "Eval interrupted"; any other reason keeps its name and message. A native `AbortReason` named
 /// `AbortError` with a custom message is the port of senpi's string reason, which is kept.
-pub fn abort_error(reason:AbortReason) -> AbortReason {
-    let bare_abort=reason.name=="AbortError" && (reason.message==AbortReason::dom_default().message || reason.message=="The operation was aborted");
-    if bare_abort {AbortReason::new("AbortError","Eval interrupted")} else {reason}
+pub fn abort_error(reason: AbortReason) -> AbortReason {
+    let bare_abort = reason.name == "AbortError"
+        && (reason.message == AbortReason::dom_default().message
+            || reason.message == "The operation was aborted");
+    if bare_abort {
+        AbortReason::new("AbortError", "Eval interrupted")
+    } else {
+        reason
+    }
 }

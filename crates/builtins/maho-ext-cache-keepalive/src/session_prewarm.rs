@@ -101,11 +101,13 @@ impl PrewarmContext for ExtensionPrewarmContext {
             match ctx.get_prompt_cache_prefix_request(options).await.ok()? {
                 maho_ext_api::PromptCachePrefixResult::Ready(request) => {
                     let request = *request;
-                    Some(PromptCachePrefixOutcome::Ready(Box::new(PromptCachePrefixRequest {
-                        model: request.model,
-                        context: request.context,
-                        options: request.options,
-                    })))
+                    Some(PromptCachePrefixOutcome::Ready(Box::new(
+                        PromptCachePrefixRequest {
+                            model: request.model,
+                            context: request.context,
+                            options: request.options,
+                        },
+                    )))
                 }
                 maho_ext_api::PromptCachePrefixResult::Skipped(reason) => {
                     Some(PromptCachePrefixOutcome::Skipped(reason))
@@ -426,11 +428,13 @@ mod tests {
                 idle: AtomicBool::new(true),
                 pending: AtomicBool::new(false),
                 prefix: Mutex::new(Some(Box::new(|| {
-                    Some(PromptCachePrefixOutcome::Ready(Box::new(PromptCachePrefixRequest {
-                        model: model(),
-                        context: Context::default(),
-                        options: WarmPromptCacheOptions::default(),
-                    })))
+                    Some(PromptCachePrefixOutcome::Ready(Box::new(
+                        PromptCachePrefixRequest {
+                            model: model(),
+                            context: Context::default(),
+                            options: WarmPromptCacheOptions::default(),
+                        },
+                    )))
                 }))),
                 listeners: Mutex::default(),
             })

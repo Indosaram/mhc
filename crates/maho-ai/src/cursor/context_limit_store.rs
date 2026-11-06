@@ -41,7 +41,13 @@ struct Store {
 fn store() -> MutexGuard<'static, Store> {
     static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
     STORE
-        .get_or_init(|| Mutex::new(Store { observed: BTreeMap::new(), persistence: None, hydrated: false }))
+        .get_or_init(|| {
+            Mutex::new(Store {
+                observed: BTreeMap::new(),
+                persistence: None,
+                hydrated: false,
+            })
+        })
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -60,7 +66,9 @@ fn hydrate(store: &mut Store) {
         return;
     }
     store.hydrated = true;
-    let Some(persistence) = store.persistence.as_ref() else { return };
+    let Some(persistence) = store.persistence.as_ref() else {
+        return;
+    };
     for (model_id, max_tokens) in persistence.load() {
         store.observed.entry(model_id).or_insert(max_tokens);
     }
@@ -116,13 +124,22 @@ mod tests {
 
     impl TestPersistence {
         fn new() -> Self {
-            TestPersistence { data: StdMutex::new(BTreeMap::new()), saves: StdMutex::new(0) }
+            TestPersistence {
+                data: StdMutex::new(BTreeMap::new()),
+                saves: StdMutex::new(0),
+            }
         }
         fn saved(&self) -> BTreeMap<String, f64> {
-            self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+            self.data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
         fn save_count(&self) -> usize {
-            *self.saves.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            *self
+                .saves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
         }
     }
 
@@ -133,8 +150,16 @@ mod tests {
             self.0.saved()
         }
         fn save(&self, limits: &BTreeMap<String, f64>) {
-            *self.0.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = limits.clone();
-            *self.0.saves.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            *self
+                .0
+                .data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = limits.clone();
+            *self
+                .0
+                .saves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         }
     }
 
@@ -144,7 +169,9 @@ mod tests {
 
     /// Installs a fresh port and clears the store, so a test sees only its own writes.
     fn with_clean_store<T>(f: impl FnOnce(std::sync::Arc<TestPersistence>) -> T) -> T {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let persistence = std::sync::Arc::new(TestPersistence::new());
         install_cursor_context_limit_persistence(Box::new(Port(persistence.clone())));
         reset_cursor_context_limit_store_for_test();
@@ -160,7 +187,10 @@ mod tests {
             record_cursor_context_limit("kimi-k3", Some(200_000.0));
             reset_cursor_context_limit_store_for_test();
             assert_eq!(get_cursor_context_limit("kimi-k3"), Some(200_000.0));
-            assert_eq!(resolve_cursor_context_window("kimi-k3", 1_048_576.0), 200_000.0);
+            assert_eq!(
+                resolve_cursor_context_window("kimi-k3", 1_048_576.0),
+                200_000.0
+            );
         });
     }
 
@@ -169,7 +199,10 @@ mod tests {
         with_clean_store(|_| {
             record_cursor_context_limit("kimi-k3", Some(200_000.0));
             assert_eq!(get_cursor_context_limit("gemini-3.5-flash"), None);
-            assert_eq!(resolve_cursor_context_window("gemini-3.5-flash", 1_048_576.0), 1_048_576.0);
+            assert_eq!(
+                resolve_cursor_context_window("gemini-3.5-flash", 1_048_576.0),
+                1_048_576.0
+            );
         });
     }
 
@@ -186,7 +219,10 @@ mod tests {
             install_cursor_context_limit_persistence(Box::new(CorruptPersistence));
             reset_cursor_context_limit_store_for_test();
             assert_eq!(get_cursor_context_limit("kimi-k3"), None);
-            assert_eq!(resolve_cursor_context_window("kimi-k3", 1_048_576.0), 1_048_576.0);
+            assert_eq!(
+                resolve_cursor_context_window("kimi-k3", 1_048_576.0),
+                1_048_576.0
+            );
         });
     }
 

@@ -116,10 +116,7 @@ impl SetupHost for CliSetupHost {
         let mut values = serde_json::Map::new();
         values.insert("defaultProvider".into(), provider.into());
         values.insert("defaultModel".into(), model.into());
-        settings.set(
-            maho_core::settings_manager::SettingsScope::Global,
-            &values,
-        )?;
+        settings.set(maho_core::settings_manager::SettingsScope::Global, &values)?;
         maho_onboarding::apply::write_model_profile(&maho_config::process_env(), provider, model)
             .map(|_| ())
     }
@@ -127,9 +124,13 @@ impl SetupHost for CliSetupHost {
     fn mark_complete(&mut self, version: u32, provider: &str, model: &str) -> Result<(), String> {
         let home = self.agent_home();
         home.bootstrap().map_err(|error| error.to_string())?;
-        home.mark_setup_complete(version, Some(provider), Some(&format!("{provider}/{model}")))
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        home.mark_setup_complete(
+            version,
+            Some(provider),
+            Some(&format!("{provider}/{model}")),
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 }
 

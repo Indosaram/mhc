@@ -1,14 +1,14 @@
 //! Tests matching upstream `test/permission-guidance.test.ts`.
 
-use std::collections::HashMap;
 use maho_tools::definition::ToolCall;
 use senpi_desktop_protocol::PermissionDeniedData;
 use senpi_desktop_tool::cua_errors::computer_failure;
-use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
+use senpi_desktop_tool::tool::{ComputerToolDeps, create_computer_tool};
 use serde_json::json;
+use std::collections::HashMap;
 
 use crate::fixtures;
-use fixtures::{desktop_fixture, methods_of, TestToolContext};
+use fixtures::{TestToolContext, desktop_fixture, methods_of};
 
 #[tokio::test]
 async fn carries_engine_permission_metadata_through_public_computer_result() {
@@ -26,7 +26,12 @@ async fn carries_engine_permission_metadata_through_public_computer_result() {
         "chain": [{ "method": "press", "args": [["enter"]] }]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "permission",
         params: input,
@@ -40,14 +45,29 @@ async fn carries_engine_permission_metadata_through_public_computer_result() {
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
 
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_PERMISSION_REQUIRED"));
-    assert_eq!(val.get("permission").and_then(|v| v.as_str()), Some("accessibility"));
-    assert_eq!(val.get("settingsUrl").and_then(|v| v.as_str()), Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"));
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_PERMISSION_REQUIRED")
+    );
+    assert_eq!(
+        val.get("permission").and_then(|v| v.as_str()),
+        Some("accessibility")
+    );
+    assert_eq!(
+        val.get("settingsUrl").and_then(|v| v.as_str()),
+        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    );
     assert_eq!(val.get("app").and_then(|v| v.as_str()), Some("QA App"));
-    assert_eq!(val.get("relaunchRequired").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        val.get("relaunchRequired").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     let methods = methods_of(&fixture.log).await;
-    assert_eq!(methods.iter().filter(|m| m.as_str() == "keyChord").count(), 1);
+    assert_eq!(
+        methods.iter().filter(|m| m.as_str() == "keyChord").count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -66,7 +86,12 @@ async fn marks_denial_inside_details_so_code_mode_marshal_reports_has_error() {
         "chain": [{ "method": "press", "args": [["enter"]] }]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "permission",
         params: input,
@@ -79,7 +104,10 @@ async fn marks_denial_inside_details_so_code_mode_marshal_reports_has_error() {
     let details = result.details.expect("details");
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_PERMISSION_REQUIRED"));
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_PERMISSION_REQUIRED")
+    );
 }
 
 #[test]
@@ -90,11 +118,20 @@ fn retains_engine_message_while_exposing_same_permission_payload() {
         app: "QA App".to_string(),
         relaunch_required: true,
     };
-    let error = computer_failure("PermissionDenied", "unique engine diagnostic", "ctrl+escape", Some(&data));
+    let error = computer_failure(
+        "PermissionDenied",
+        "unique engine diagnostic",
+        "ctrl+escape",
+        Some(&data),
+    );
     assert_eq!(error.code, "COMPUTER_PERMISSION_REQUIRED");
     assert_eq!(error.permission.as_deref(), Some("screen_recording"));
     assert_eq!(error.settings_url.as_deref(), Some("settings:capture"));
     assert_eq!(error.app.as_deref(), Some("QA App"));
     assert_eq!(error.relaunch_required, Some(true));
-    assert!(error.message.starts_with("COMPUTER_PERMISSION_REQUIRED: unique engine diagnostic"));
+    assert!(
+        error
+            .message
+            .starts_with("COMPUTER_PERMISSION_REQUIRED: unique engine diagnostic")
+    );
 }

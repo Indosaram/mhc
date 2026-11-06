@@ -14,8 +14,12 @@ pub struct InvokeProtocolConfig {
     pub coerce: CoerceParametersFn,
 }
 
-pub const ANTHROPIC_XML_INVOKE_CONFIG: InvokeProtocolConfig =
-    InvokeProtocolConfig { protocol: "anthropic-xml", label: "Anthropic XML", id_prefix: "anthropic-xml-tool", coerce: coerce_parameters };
+pub const ANTHROPIC_XML_INVOKE_CONFIG: InvokeProtocolConfig = InvokeProtocolConfig {
+    protocol: "anthropic-xml",
+    label: "Anthropic XML",
+    id_prefix: "anthropic-xml-tool",
+    coerce: coerce_parameters,
+};
 
 #[cfg(test)]
 mod tests {

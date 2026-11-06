@@ -448,7 +448,8 @@ fn given_identified_inputs_when_delivered_then_the_session_receives_each_id() {
 }
 
 #[test]
-fn given_a_running_child_when_marked_stopping_then_queued_input_is_cleared_without_aborting_the_turn() {
+fn given_a_running_child_when_marked_stopping_then_queued_input_is_cleared_without_aborting_the_turn()
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -457,7 +458,9 @@ fn given_a_running_child_when_marked_stopping_then_queued_input_is_cleared_witho
         ChildCompletionPolicy::Turn,
     );
     fake.wait_prompt_calls(1);
-    handle.follow_up_turn("queued while running").expect("follow up");
+    handle
+        .follow_up_turn("queued while running")
+        .expect("follow up");
     ManagedChildHandle::mark_stopping(handle.as_ref());
     assert_eq!(fake.cleared_queues(), 1);
     assert_eq!(fake.abort_calls(), 0);

@@ -5,13 +5,13 @@ use crate::lsp::manager::LspManager;
 use crate::lsp::manager::SharedClient;
 use crate::lsp::manager::get_lsp_manager;
 use crate::lsp::outside_context_workspace::find_workspace_root_outside_context;
-use crate::lsp::workspace_markers::{GIT_WORKSPACE_MARKER, PROJECT_WORKSPACE_MARKERS};
+use crate::lsp::server_definitions::LSP_LOCAL_INSTALL_HINTS;
 use crate::lsp::server_install_state::InstallDecision;
 use crate::lsp::server_install_state::load_install_decision;
 use crate::lsp::server_resolution::find_server_for_extension;
-use crate::lsp::server_definitions::LSP_LOCAL_INSTALL_HINTS;
 use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::types::ServerLookupResult;
+use crate::lsp::workspace_markers::{GIT_WORKSPACE_MARKER, PROJECT_WORKSPACE_MARKERS};
 use crate::request_context::canonicalize_existing_or_nearest_ancestor;
 use crate::request_context::context_cwd;
 use crate::request_context::dirname;
@@ -63,14 +63,14 @@ pub fn find_workspace_root(file_path: &str) -> Result<String, LspError> {
         nearest_existing_directory_inside_context(&dir, &cwd).unwrap_or_else(|| cwd.clone());
     let mut nearest_package_root = None;
     while is_path_inside(&cwd, &dir) {
-        if let Some(canonical_dir) = existing_directory_inside_context(&dir, &cwd)
-        {
+        if let Some(canonical_dir) = existing_directory_inside_context(&dir, &cwd) {
             if Path::new(&dir).join(GIT_WORKSPACE_MARKER).exists() {
                 return Ok(canonical_dir);
             }
-            if nearest_package_root.is_none() && PROJECT_WORKSPACE_MARKERS
-                .iter()
-                .any(|marker| Path::new(&dir).join(marker).exists())
+            if nearest_package_root.is_none()
+                && PROJECT_WORKSPACE_MARKERS
+                    .iter()
+                    .any(|marker| Path::new(&dir).join(marker).exists())
             {
                 nearest_package_root = Some(canonical_dir);
             }
@@ -168,7 +168,10 @@ fn nearest_existing_directory_inside_context(directory: &str, cwd: &str) -> Opti
 }
 
 fn format_install_options(server_id: &str, install_hint: &str) -> Vec<String> {
-    if let Some((_, local_hint)) = LSP_LOCAL_INSTALL_HINTS.iter().find(|(id, _)| *id == server_id) {
+    if let Some((_, local_hint)) = LSP_LOCAL_INSTALL_HINTS
+        .iter()
+        .find(|(id, _)| *id == server_id)
+    {
         vec![
             "To install in THIS repository (preferred, no global install needed):".to_string(),
             format!("  {local_hint}"),
@@ -254,14 +257,17 @@ pub fn format_server_lookup_error(result: &FailedServerLookupResult) -> Result<S
                     "The user has pre-authorized LSP installation. Run the install command, then retry this tool:"
                         .to_string(),
                 );
-                lines.extend(format_install_options(&server.id, install_hint).into_iter().skip(1));
+                lines.extend(
+                    format_install_options(&server.id, install_hint)
+                        .into_iter()
+                        .skip(1),
+                );
                 return Ok(lines.join("\n"));
             }
             lines.extend(format_install_options(&server.id, install_hint));
             lines.push(String::new());
             lines.push(
-                "ACTION REQUIRED: ASK THE USER whether to install this LSP server."
-                    .to_string(),
+                "ACTION REQUIRED: ASK THE USER whether to install this LSP server.".to_string(),
             );
             if !context.capabilities.install_decision_tool {
                 lines.push(

@@ -132,7 +132,9 @@ async fn fetch_bai_models(
     Ok(discovered)
 }
 
-pub fn bai_provider(options: Option<BaiProviderOptions>) -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
+pub fn bai_provider(
+    options: Option<BaiProviderOptions>,
+) -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let options = options.unwrap_or_default();
     let base_url = normalize_base_url(options.base_url.as_deref().unwrap_or(BAI_BASE_URL));
     let anthropic_base_url = base_url.strip_suffix("/v1").unwrap_or(&base_url).to_owned();
@@ -152,7 +154,10 @@ pub fn bai_provider(options: Option<BaiProviderOptions>) -> Result<Arc<dyn Provi
         .collect();
     let catalog_by_id = Arc::new(index_catalog(&catalog));
     // PERF-DIVERGENCE(senpi bai.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let fetch = options.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let fetch = options
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
 
     let restore: RestoreModels = {
         let catalog_by_id = catalog_by_id.clone();

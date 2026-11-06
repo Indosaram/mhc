@@ -1,16 +1,24 @@
 //! Port of senpi packages/ai/test/google-shared-retry.test.ts.
 
-use maho_ai::api::google_shared::{retry_google_request, GoogleRequestError};
+use maho_ai::api::google_shared::{GoogleRequestError, retry_google_request};
 use maho_ai::utils::provider_retry::{ProviderRetryError, ProviderRetryOptions};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 fn google_api_error(status: u16) -> GoogleRequestError {
-    GoogleRequestError::Sdk { message: format!("got status: {status}"), status: Some(status), headers: None }
+    GoogleRequestError::Sdk {
+        message: format!("got status: {status}"),
+        status: Some(status),
+        headers: None,
+    }
 }
 
 fn options(max_retries: Option<u32>) -> ProviderRetryOptions {
-    ProviderRetryOptions { max_retries, max_retry_delay_ms: None, signal: None }
+    ProviderRetryOptions {
+        max_retries,
+        max_retry_delay_ms: None,
+        signal: None,
+    }
 }
 
 fn request_error(error: ProviderRetryError<GoogleRequestError>) -> GoogleRequestError {
@@ -27,7 +35,11 @@ async fn retries_a_headers_less_sdk_error_with_a_retryable_status() {
         || {
             let calls = Arc::clone(&calls);
             async move {
-                if calls.fetch_add(1, Ordering::SeqCst) == 0 { Err(google_api_error(429)) } else { Ok("ok") }
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(google_api_error(429))
+                } else {
+                    Ok("ok")
+                }
             }
         },
         &options(Some(1)),
@@ -54,7 +66,13 @@ async fn does_not_retry_when_max_retries_is_unset() {
     .await;
 
     let error = request_error(result.expect_err("the request fails"));
-    assert!(matches!(error, GoogleRequestError::Sdk { status: Some(429), .. }));
+    assert!(matches!(
+        error,
+        GoogleRequestError::Sdk {
+            status: Some(429),
+            ..
+        }
+    ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -74,6 +92,12 @@ async fn does_not_retry_a_non_retryable_status() {
     .await;
 
     let error = request_error(result.expect_err("the request fails"));
-    assert!(matches!(error, GoogleRequestError::Sdk { status: Some(400), .. }));
+    assert!(matches!(
+        error,
+        GoogleRequestError::Sdk {
+            status: Some(400),
+            ..
+        }
+    ));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

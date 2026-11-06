@@ -187,12 +187,7 @@ impl IsolationBackend for RcopyBackend {
                 .map(|text| text.trim().trim_start_matches("gitdir: ").to_string());
             match git_result(
                 merged,
-                &str_args(&[
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &merged.to_string_lossy(),
-                ]),
+                &str_args(&["worktree", "remove", "--force", &merged.to_string_lossy()]),
                 None,
             ) {
                 Ok(result) if result.code != 0 => {

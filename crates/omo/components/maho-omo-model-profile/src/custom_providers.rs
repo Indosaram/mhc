@@ -63,7 +63,10 @@ pub fn custom_model_providers(agent_dir: Option<&Path>) -> Vec<DeclaredModelProv
             if model_ids.is_empty() {
                 return None;
             }
-            Some(DeclaredModelProvider { provider: provider.clone(), model_ids })
+            Some(DeclaredModelProvider {
+                provider: provider.clone(),
+                model_ids,
+            })
         })
         .collect()
 }

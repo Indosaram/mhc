@@ -118,11 +118,6 @@ mod tests {
 }
 
 #[cfg(windows)]
-#[allow(
-    clippy::undocumented_unsafe_blocks,
-    reason = "Windows ProjFS bridge is FFI-heavy and safety is validated by pointer and handle \
-	          checks"
-)]
 mod imp {
     use std::{
         collections::{BTreeMap, btree_map::Entry},
@@ -226,12 +221,22 @@ mod imp {
         prj_write_placeholder_info2: PrjWritePlaceholderInfo2Fn,
     }
 
+    // SAFETY: `ProjfsApi` holds only an `HMODULE` and `extern "system"`
+    // function pointers. `Drop` keeps the module loaded for as long as the
+    // struct lives, and the ProjFS exports are thread-safe, so moving the
+    // struct to another thread is sound.
     unsafe impl Send for ProjfsApi {}
+    // SAFETY: As for `Send`: the module stays loaded while the struct lives and
+    // the ProjFS exports are thread-safe, so concurrent `&ProjfsApi` use is
+    // sound.
     unsafe impl Sync for ProjfsApi {}
 
     impl Drop for ProjfsApi {
         fn drop(&mut self) {
             if !self.module.is_null() {
+                // SAFETY: `module` is the non-null handle from `LoadLibraryW`;
+                // `ProjfsApi` owns that one reference and is being dropped, so
+                // this releases it exactly once.
                 unsafe {
                     FreeLibrary(self.module);
                 }
@@ -242,8 +247,12 @@ mod imp {
     impl ProjfsApi {
         fn load() -> std::result::Result<Self, String> {
             let library_name = to_wide(OsStr::new("ProjectedFSLib.dll"));
+            // SAFETY: `library_name` is a NUL-terminated wide string that
+            // outlives the call.
             let module = unsafe { LoadLibraryW(library_name.as_ptr()) };
             if module.is_null() {
+                // SAFETY: `GetLastError` takes no arguments and only reads the
+                // calling thread's last-error slot.
                 let win32 = unsafe { GetLastError() };
                 return Err(format!(
                     "ProjectedFSLib.dll could not be loaded (win32={win32})"
@@ -252,15 +261,26 @@ mod imp {
 
             macro_rules! load_symbol {
                 ($name:literal, $ty:ty) => {{
+                    // SAFETY: `module` is the live handle returned by
+                    // `LoadLibraryW`, and `$name` plus its NUL terminator is a
+                    // valid ASCII export name, so the `PCSTR` is valid for this
+                    // call.
                     let proc = unsafe {
                         GetProcAddress(module, concat!($name, "\0").as_ptr().cast::<u8>() as PCSTR)
                     };
                     let Some(proc) = proc else {
+                        // SAFETY: `module` is the handle just loaded and the
+                        // `ProjfsApi` that should own it does not exist yet, so
+                        // this releases that reference exactly once.
                         unsafe {
                             FreeLibrary(module);
                         }
                         return Err(format!("ProjectedFSLib.dll missing symbol {}", $name));
                     };
+                    // SAFETY: `proc` is the address of the named export and `$ty`
+                    // is declared with the documented `Prj*` signature, so the
+                    // transmute yields a function pointer with the correct ABI
+                    // and arity.
                     unsafe { mem::transmute::<unsafe extern "system" fn() -> isize, $ty>(proc) }
                 }};
             }
@@ -377,6 +397,8 @@ mod imp {
         }
 
         let mut instance_id = GUID::default();
+        // SAFETY: `instance_id` is a live, writable `GUID` that outlives the
+        // call.
         let guid_hr = unsafe { CoCreateGuid(&raw mut instance_id) };
         if is_failed(guid_hr) {
             PROJFS_SESSIONS
@@ -390,6 +412,10 @@ mod imp {
         }
 
         let root_wide = to_wide(projection_root_path.as_os_str());
+        // SAFETY: `root_wide` is NUL-terminated and outlives the call; the
+        // target path is optionally null and the version-info pointer is
+        // documented to be NULL here, and `instance_id` is a valid
+        // caller-owned `GUID`.
         let mark_hr = unsafe {
             (api.prj_mark_directory_as_placeholder)(
                 root_wide.as_ptr(),
@@ -422,6 +448,10 @@ mod imp {
         });
 
         let mut virtualization_context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT = std::ptr::null_mut();
+        // SAFETY: `root_wide` is NUL-terminated; `callbacks` lives in the `Box`
+        // stored in the session; `provider_context_ptr` is a live
+        // `Box<ProviderContext>` handed to ProjFS for the session's lifetime;
+        // and `virtualization_context` is a writable out-pointer.
         let start_hr = unsafe {
             (api.prj_start_virtualizing)(
                 root_wide.as_ptr(),
@@ -540,6 +570,8 @@ mod imp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         enumerations.insert(
+            // SAFETY: `enumeration_id` was checked non-null and points at a GUID
+            // ProjFS keeps valid for the duration of this callback.
             guid_to_u128(unsafe { &*enumeration_id }),
             DirectoryEnumeration {
                 entries,
@@ -565,6 +597,8 @@ mod imp {
             .enumerations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            // SAFETY: `enumeration_id` was checked non-null and points at a GUID
+            // ProjFS keeps valid for the duration of this callback.
             .remove(&guid_to_u128(unsafe { &*enumeration_id }));
         0
     }
@@ -582,6 +616,8 @@ mod imp {
             return hresult_from_win32(ERROR_INVALID_PARAMETER);
         }
 
+        // SAFETY: `enumeration_id` was checked non-null and points at a GUID
+        // ProjFS keeps valid for the duration of this callback.
         let enum_key = guid_to_u128(unsafe { &*enumeration_id });
         let mut enumerations = context
             .enumerations
@@ -607,6 +643,9 @@ mod imp {
         while enumeration.cursor < enumeration.entries.len() {
             let entry = &enumeration.entries[enumeration.cursor];
             let matched = if let Some(expression) = &enumeration.search_expression {
+                // SAFETY: Both names are NUL-terminated wide buffers owned by
+                // `enumeration` and outlive the call, and the API handle comes
+                // from the live ProjFS module.
                 unsafe {
                     (context.api.prj_file_name_match)(entry.name_wide.as_ptr(), expression.as_ptr())
                 }
@@ -631,6 +670,10 @@ mod imp {
                 let extended_info_ptr = extended_info
                     .as_ref()
                     .map_or(std::ptr::null(), |info| info as *const _);
+                // SAFETY: `dir_entry_buffer_handle` is the handle ProjFS passed
+                // to this callback; the name is NUL-terminated; and
+                // `basic_info` plus the optional `extended_info` (whose symlink
+                // target points into `entry`) outlive the call.
                 let hr = unsafe {
                     (context.api.prj_fill_dir_entry_buffer2)(
                         dir_entry_buffer_handle,
@@ -697,6 +740,10 @@ mod imp {
             callback_data.FilePathName
         };
 
+        // SAFETY: `destination` is NUL-terminated (either `EMPTY_WIDE` or
+        // ProjFS's path buffer); `placeholder_info` and `extended_info` (backed
+        // by `symlink_target`) outlive the call; and the namespace context is
+        // the one ProjFS supplied for this callback.
         unsafe {
             (context.api.prj_write_placeholder_info2)(
                 callback_data.NamespaceVirtualizationContext,
@@ -731,6 +778,8 @@ mod imp {
         }
 
         let chunk_size = usize::min(length as usize, MAX_READ_CHUNK);
+        // SAFETY: The namespace context belongs to the live callback data ProjFS
+        // passed in, so it is a valid virtualization context for this call.
         let aligned_ptr = unsafe {
             (context.api.prj_allocate_aligned_buffer)(
                 callback_data.NamespaceVirtualizationContext,
@@ -749,6 +798,9 @@ mod imp {
                 return io_error_to_hresult(&err);
             }
 
+            // SAFETY: The context and data stream id come from this callback,
+            // and the source buffer holds the `to_read` bytes `read_exact` just
+            // filled in the aligned allocation.
             let hr = unsafe {
                 (context.api.prj_write_file_data)(
                     callback_data.NamespaceVirtualizationContext,
@@ -784,12 +836,19 @@ mod imp {
         }
 
         const fn as_mut_slice(&mut self) -> &mut [u8] {
+            // SAFETY: `ptr` is the `len`-byte aligned allocation returned by
+            // `PrjAllocateAlignedBuffer` and is freed only in `Drop`, and
+            // `&mut self` keeps it exclusively borrowed for the slice's
+            // lifetime.
             unsafe { std::slice::from_raw_parts_mut(self.ptr.cast::<u8>(), self.len) }
         }
     }
 
     impl Drop for AlignedBuffer {
         fn drop(&mut self) {
+            // SAFETY: `ptr` came from `PrjAllocateAlignedBuffer`, is freed
+            // exactly once here, and the `Arc<ProjfsApi>` keeps the module
+            // loaded until after this call.
             unsafe {
                 (self.api.prj_free_aligned_buffer)(self.ptr);
             }
@@ -802,10 +861,16 @@ mod imp {
         if callback_data.is_null() {
             return Err(hresult_from_win32(ERROR_INVALID_PARAMETER));
         }
+        // SAFETY: `callback_data` was checked non-null and ProjFS passes a
+        // valid `PRJ_CALLBACK_DATA` that outlives the callback, so the
+        // `'static` borrow is only ever used within that callback.
         let callback_data = unsafe { &*callback_data };
         if callback_data.InstanceContext.is_null() {
             return Err(hresult_from_win32(ERROR_INVALID_PARAMETER));
         }
+        // SAFETY: `InstanceContext` was set to the live `Box<ProviderContext>`
+        // in `start` and is only freed after `PrjStopVirtualizing`, so the cast
+        // and deref are valid for the callback's duration.
         let context = unsafe { &*(callback_data.InstanceContext.cast::<ProviderContext>()) };
         Ok((callback_data, context))
     }
@@ -843,6 +908,9 @@ mod imp {
         }
 
         entries.sort_by(|left, right| {
+            // SAFETY: Both arguments are NUL-terminated names built by
+            // `to_wide` that outlive the comparison, and the API handle comes
+            // from the live ProjFS module.
             let compare = unsafe {
                 (context.api.prj_file_name_compare)(
                     left.name_wide.as_ptr(),
@@ -892,6 +960,9 @@ mod imp {
         }
 
         let mut len = 0usize;
+        // SAFETY: `value` was checked non-null; the loop scans up to the NUL
+        // terminator that a `PCWSTR` is documented to carry, and
+        // `from_raw_parts` then covers only the elements read.
         unsafe {
             while *value.add(len) != 0 {
                 len += 1;
@@ -1026,6 +1097,9 @@ mod imp {
     }
 
     fn guid_to_u128(guid: &GUID) -> u128 {
+        // SAFETY: `GUID` is a `repr(C)` struct of exactly 16 bytes with no
+        // padding, so transmuting a copy of it to `[u8; 16]` is
+        // layout-compatible.
         let bytes: [u8; 16] = unsafe { mem::transmute(*guid) };
         u128::from_le_bytes(bytes)
     }

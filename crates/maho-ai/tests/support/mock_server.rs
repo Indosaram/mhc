@@ -15,10 +15,10 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Response, StatusCode};
 use axum::routing::any;
-use axum::Router;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -97,14 +97,19 @@ impl MockFixtureServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock fixture server");
-        let addr: SocketAddr = listener.local_addr().expect("mock fixture server local addr");
+        let addr: SocketAddr = listener
+            .local_addr()
+            .expect("mock fixture server local addr");
         let router = Router::new().fallback(any(move || serve_fixture(fixture.clone())));
         let handle = tokio::spawn(async move {
             axum::serve(listener, router.into_make_service())
                 .await
                 .expect("mock fixture server serve");
         });
-        Self { base_url: format!("http://{addr}/v1"), handle }
+        Self {
+            base_url: format!("http://{addr}/v1"),
+            handle,
+        }
     }
 
     /// Base URL to hand to `Model::base_url` (matches senpi's own `startServer` test helpers,
@@ -126,7 +131,12 @@ impl Drop for MockFixtureServer {
 }
 
 async fn serve_fixture(fixture: Fixture) -> Result<Response<Body>, Infallible> {
-    let Fixture { status, headers, body, close_after_bytes } = fixture;
+    let Fixture {
+        status,
+        headers,
+        body,
+        close_after_bytes,
+    } = fixture;
     let body = match close_after_bytes {
         Some(cut) => body[..cut.min(body.len())].to_vec(),
         None => body,
@@ -135,7 +145,9 @@ async fn serve_fixture(fixture: Fixture) -> Result<Response<Body>, Infallible> {
     for (name, value) in headers {
         builder = builder.header(name, value);
     }
-    Ok(builder.body(Body::from(body)).expect("build mock fixture response"))
+    Ok(builder
+        .body(Body::from(body))
+        .expect("build mock fixture response"))
 }
 
 /// Runs `drive` (a closure that performs the HTTP round trip against `server`) to completion,
@@ -146,5 +158,7 @@ where
 {
     tokio::time::timeout(std::time::Duration::from_secs(seconds), drive)
         .await
-        .unwrap_or_else(|_| panic!("mock fixture server round trip did not complete within {seconds}s"))
+        .unwrap_or_else(|_| {
+            panic!("mock fixture server round trip did not complete within {seconds}s")
+        })
 }

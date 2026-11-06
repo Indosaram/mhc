@@ -148,24 +148,25 @@ pub(crate) fn suspend_handle_owned(
     if hosted
         && owns()
         && let Some(record) = context.store.load(handle.task_id())?
-            && record.status.is_terminal() {
-                let publisher = handle.clone();
-                let status = record.status;
-                let (send, receive) = std::sync::mpsc::sync_channel(1);
-                std::thread::spawn(move || {
-                    let _ = send.send(publisher.publish_task_status(status));
-                });
-                let result = receive
-                    .recv_timeout(std::time::Duration::from_millis(
-                        context.teardown_step_deadline_ms,
-                    ))
-                    .unwrap_or_else(|error| {
-                        Err(crate::host::HostError {
-                            message: format!("publish_task_status: {error}"),
-                        })
-                    });
-                best_effort(handle.task_id(), "publish_task_status", result, "suspend");
-            }
+        && record.status.is_terminal()
+    {
+        let publisher = handle.clone();
+        let status = record.status;
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = send.send(publisher.publish_task_status(status));
+        });
+        let result = receive
+            .recv_timeout(std::time::Duration::from_millis(
+                context.teardown_step_deadline_ms,
+            ))
+            .unwrap_or_else(|error| {
+                Err(crate::host::HostError {
+                    message: format!("publish_task_status: {error}"),
+                })
+            });
+        best_effort(handle.task_id(), "publish_task_status", result, "suspend");
+    }
     // Ownership drops BEFORE abort settles the turn so the outcome guard sees a forgotten child.
     if owns() {
         context.registry.forget(handle.task_id());

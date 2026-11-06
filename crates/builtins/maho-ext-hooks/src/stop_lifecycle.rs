@@ -265,7 +265,8 @@ impl<C: StopContext> StopLifecycle<C> {
     }
 }
 
-pub type BuildStopInput = Arc<dyn Fn(&ExtensionEvent, &ExtensionContext) -> Option<Value> + Send + Sync>;
+pub type BuildStopInput =
+    Arc<dyn Fn(&ExtensionEvent, &ExtensionContext) -> Option<Value> + Send + Sync>;
 
 /// Registers the Stop lifecycle on `api`. `build_input` turns an `agent_end` into the Stop hook
 /// input; `dispatch_stop` runs and applies the hook.

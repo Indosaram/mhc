@@ -463,7 +463,11 @@ fn parent_death_exits_the_proxy_while_stdin_stays_open() {
     let mut output = Vec::new();
     let deadline = std::time::Instant::now() + common::TIMEOUT;
     while !output.contains(&b'\n') {
-        output.extend(output_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).unwrap());
+        output.extend(
+            output_rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .unwrap(),
+        );
     }
     assert!(parse_responses(&output)[0]["result"]["serverInfo"].is_object());
     parent_alive.store(false, Ordering::SeqCst);

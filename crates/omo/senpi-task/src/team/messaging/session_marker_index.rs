@@ -70,7 +70,9 @@ impl SessionMarkerIndex {
         };
 
         let mut states = self.states.lock().unwrap_or_else(PoisonError::into_inner);
-        let state = states.entry(path.to_path_buf()).or_insert_with(PathState::fresh);
+        let state = states
+            .entry(path.to_path_buf())
+            .or_insert_with(PathState::fresh);
         if size < state.offset {
             // The file shrank (rotation/truncation): start clean and rescan from zero.
             *state = PathState::fresh();

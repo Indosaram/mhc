@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    create_windows_clone_api, duplicate_extents, BlockCloneBackend, IsolationBackend,
-    IsolationContext, NativeLoadError, WindowsCloneApi, WindowsSymbols,
+    BlockCloneBackend, IsolationBackend, IsolationContext, NativeLoadError, WindowsCloneApi,
+    WindowsSymbols, create_windows_clone_api, duplicate_extents,
 };
 
-use crate::fake::{record, FakeRuntime};
+use crate::fake::{FakeRuntime, record};
 
 const FSCTL_DUPLICATE_EXTENTS_TO_FILE: u32 = 0x00098344;
 
@@ -43,11 +43,7 @@ impl WindowsSymbols for FakeSymbols {
                 flags,
                 serde_json::Value::Null
             ]));
-        if access == 0x80000000 {
-            1
-        } else {
-            2
-        }
+        if access == 0x80000000 { 1 } else { 2 }
     }
 
     fn set_file_pointer_ex(&self, handle: i64, offset: u64) -> i32 {
@@ -87,11 +83,7 @@ impl WindowsSymbols for FakeSymbols {
                 returned.len(),
                 serde_json::Value::Null
             ]));
-        if self.fail_ioctl {
-            0
-        } else {
-            1
-        }
+        if self.fail_ioctl { 0 } else { 1 }
     }
 
     fn close_handle(&self, handle: i64) -> i32 {
@@ -134,11 +126,39 @@ fn native_refs_binding_uses_the_actual_fsctl_opcode_handle_structure_and_eof_cal
     assert_eq!(
         *calls.lock().unwrap_or_else(|poison| poison.into_inner()),
         vec![
-            serde_json::json!(["CreateFileW", "\\\\?\\C:\\source\0", 0x80000000u32, 7, null, 3, 0x80u32, null]),
-            serde_json::json!(["CreateFileW", "\\\\?\\C:\\target\0", 0x40000000u32, 7, null, 1, 0x80u32, null]),
+            serde_json::json!([
+                "CreateFileW",
+                "\\\\?\\C:\\source\0",
+                0x80000000u32,
+                7,
+                null,
+                3,
+                0x80u32,
+                null
+            ]),
+            serde_json::json!([
+                "CreateFileW",
+                "\\\\?\\C:\\target\0",
+                0x40000000u32,
+                7,
+                null,
+                1,
+                0x80u32,
+                null
+            ]),
             serde_json::json!(["SetFilePointerEx", 2, 8192u64, null, 0]),
             serde_json::json!(["SetEndOfFile", 2]),
-            serde_json::json!(["DeviceIoControl", 2, FSCTL_DUPLICATE_EXTENTS_TO_FILE, data, 32, null, 0, 4, null]),
+            serde_json::json!([
+                "DeviceIoControl",
+                2,
+                FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+                data,
+                32,
+                null,
+                0,
+                4,
+                null
+            ]),
             serde_json::json!(["SetFilePointerEx", 2, 8192u64, null, 0]),
             serde_json::json!(["SetEndOfFile", 2]),
             serde_json::json!(["CloseHandle", 2]),
@@ -160,7 +180,10 @@ fn native_refs_errors_preserve_classification_and_close_both_handles() {
         let error = duplicate_extents(api.as_ref(), "C:\\source", "C:\\target", 8192)
             .expect_err("must fail");
         assert_eq!(error.is_unavailable(), errno == 50);
-        let recorded = calls.lock().unwrap_or_else(|poison| poison.into_inner()).clone();
+        let recorded = calls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
         let tail = &recorded[recorded.len() - 2..];
         assert_eq!(
             tail,
@@ -191,15 +214,26 @@ fn refs_tiny_files_and_unaligned_tails_use_plain_copy_without_changing_the_sourc
         if size >= 4096 {
             std::fs::write(&destination, &content[..8192.min(content.len())]).expect("target");
         }
-        duplicate_extents(&api, &source.to_string_lossy(), &destination.to_string_lossy(), size)
-            .expect("duplicate");
+        duplicate_extents(
+            &api,
+            &source.to_string_lossy(),
+            &destination.to_string_lossy(),
+            size,
+        )
+        .expect("duplicate");
         assert_eq!(
             *cloned.lock().unwrap_or_else(|poison| poison.into_inner()),
             if size >= 4096 { vec![8192] } else { Vec::new() }
         );
         assert_eq!(
-            *allocations.lock().unwrap_or_else(|poison| poison.into_inner()),
-            if size >= 4096 { vec![12288, 8195] } else { Vec::new() }
+            *allocations
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+            if size >= 4096 {
+                vec![12288, 8195]
+            } else {
+                Vec::new()
+            }
         );
         assert_eq!(std::fs::read(&destination).expect("target"), content);
         assert_eq!(std::fs::read(&source).expect("source"), content);
@@ -224,7 +258,12 @@ impl WindowsCloneApi for TestCloneApi {
         Ok(())
     }
 
-    fn duplicate(&self, _destination: u64, _source: u64, bytes: u64) -> isolation_core::IsolationResult<()> {
+    fn duplicate(
+        &self,
+        _destination: u64,
+        _source: u64,
+        bytes: u64,
+    ) -> isolation_core::IsolationResult<()> {
         self.cloned
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -260,15 +299,25 @@ fn refs_probe_loads_ffi_only_on_a_matching_filesystem_and_rejects_cross_volume_t
     let loaded = Arc::new(Mutex::new(0usize));
     let load_sink = Arc::clone(&loaded);
     let load: isolation_core::LoadWindowsApi = Arc::new(move || {
-        *load_sink.lock().unwrap_or_else(|poison| poison.into_inner()) += 1;
+        *load_sink
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) += 1;
         let (_, symbols) = native();
         Ok(create_windows_clone_api(symbols))
     });
     let backend = BlockCloneBackend::new(Arc::new(runtime), load);
-    assert!(backend.probe(Path::new("R:\\repo"), None).expect("probe").available);
+    assert!(
+        backend
+            .probe(Path::new("R:\\repo"), None)
+            .expect("probe")
+            .available
+    );
     assert_eq!(crate::fake::recorded(&calls).len(), 1);
     assert_eq!(crate::fake::recorded(&calls)[0].len(), 4);
-    assert_eq!(*loaded.lock().unwrap_or_else(|poison| poison.into_inner()), 1);
+    assert_eq!(
+        *loaded.lock().unwrap_or_else(|poison| poison.into_inner()),
+        1
+    );
     let error = backend
         .start(
             &f.repo_root,
@@ -298,10 +347,12 @@ fn refs_probe_treats_absent_native_ffi_as_unavailable_but_propagates_other_loade
             message: "unsupported bun: scheme".to_string(),
         })
     });
-    assert!(!BlockCloneBackend::new(Arc::new(runtime.clone()), missing)
-        .probe(Path::new("R:\\repo"), None)
-        .expect("probe")
-        .available);
+    assert!(
+        !BlockCloneBackend::new(Arc::new(runtime.clone()), missing)
+            .probe(Path::new("R:\\repo"), None)
+            .expect("probe")
+            .available
+    );
     let broken: isolation_core::LoadWindowsApi = Arc::new(|| {
         Err(NativeLoadError {
             code: None,
@@ -339,9 +390,14 @@ fn refs_probe_rejects_a_different_target_volume_before_loading_native_symbols() 
         cross_device: false,
         max_copy_bytes: None,
     };
-    assert!(!backend
-        .probe(&f.repo_root, Some(&context))
-        .expect("probe")
-        .available);
-    assert_eq!(*loads.lock().unwrap_or_else(|poison| poison.into_inner()), 0);
+    assert!(
+        !backend
+            .probe(&f.repo_root, Some(&context))
+            .expect("probe")
+            .available
+    );
+    assert_eq!(
+        *loads.lock().unwrap_or_else(|poison| poison.into_inner()),
+        0
+    );
 }

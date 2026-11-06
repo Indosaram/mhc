@@ -166,7 +166,6 @@ impl IntervalThread {
     }
 }
 
-
 #[cfg(unix)]
 mod platform {
     /// POSIX `ESRCH`; the same value on Linux, macOS, and the BSDs.
@@ -203,7 +202,8 @@ mod platform {
         CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, INVALID_HANDLE_VALUE, STILL_ACTIVE,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcessId, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -220,7 +220,11 @@ mod platform {
         if handle.is_null() {
             // SAFETY: GetLastError only reads the calling thread's last-error value.
             let error = unsafe { GetLastError() };
-            return Some(if error == ERROR_INVALID_PARAMETER { ESRCH } else { i32::try_from(error).unwrap_or(i32::MAX) });
+            return Some(if error == ERROR_INVALID_PARAMETER {
+                ESRCH
+            } else {
+                i32::try_from(error).unwrap_or(i32::MAX)
+            });
         }
         let mut exit_code = 0u32;
         // SAFETY: `handle` is a live process handle and `exit_code` outlives the call.
@@ -308,12 +312,17 @@ mod tests {
         // Then every result arrives in order, including false before the single exit callback.
         for expected in [Some(true), Some(true), Some(true), Some(false), None] {
             assert_eq!(
-                events.recv_timeout(Duration::from_secs(5)).expect("watchdog event"),
+                events
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("watchdog event"),
                 expected
             );
         }
         watchdog.clear();
-        assert!(events.try_recv().is_err(), "polling stops after parent death");
+        assert!(
+            events.try_recv().is_err(),
+            "polling stops after parent death"
+        );
     }
 
     #[test]

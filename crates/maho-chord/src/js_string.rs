@@ -87,10 +87,13 @@ impl PartialEq<&str> for JsString {
 impl JsString {
     pub(crate) fn array_index(&self) -> Option<u32> {
         let key = self.as_str()?;
-        key.parse::<u32>().ok().filter(|i| *i != u32::MAX && i.to_string() == key)
+        key.parse::<u32>()
+            .ok()
+            .filter(|i| *i != u32::MAX && i.to_string() == key)
     }
     pub(crate) fn reserved(&self) -> bool {
-        self.as_str().is_some_and(|key| crate::delta::RESERVED_SEGMENTS.contains(&key))
+        self.as_str()
+            .is_some_and(|key| crate::delta::RESERVED_SEGMENTS.contains(&key))
     }
 }
 impl PartialOrd for JsString {

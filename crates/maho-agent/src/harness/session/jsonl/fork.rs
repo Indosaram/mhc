@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::harness::context::Context;
 use crate::harness::session::commit::{
-    CommittedEntryWrite, CommittedListAppendWrite, CommittedListWrite, CommittedValueSetWrite, CommittedValueWrite,
-    CommittedWrite,
+    CommittedEntryWrite, CommittedListAppendWrite, CommittedListWrite, CommittedValueSetWrite,
+    CommittedValueWrite, CommittedWrite,
 };
 use crate::harness::session::fork_policy::{
     ForkCurrentStatePlan, ForkCurrentStateRow, project_fork_current_state_write, select_branch_fork,
@@ -68,7 +68,10 @@ async fn read_jsonl_fork_header(
         super::codec::JsonlParsedSessionHeader::V3Legacy(_) => {
             return Err(SessionError::new(
                 SessionErrorKind::Io,
-                format!("Invalid JSONL storage {}: expected format 4 header", source.path),
+                format!(
+                    "Invalid JSONL storage {}: expected format 4 header",
+                    source.path
+                ),
             ));
         }
     };
@@ -87,7 +90,10 @@ async fn read_jsonl_fork_header(
     Ok(header)
 }
 
-fn reaches_fork_boundary(writes: &[CommittedWrite], stop_before_seq: Option<i64>) -> Result<bool, SessionError> {
+fn reaches_fork_boundary(
+    writes: &[CommittedWrite],
+    stop_before_seq: Option<i64>,
+) -> Result<bool, SessionError> {
     let Some(stop_before_seq) = stop_before_seq else {
         return Ok(false);
     };
@@ -159,7 +165,9 @@ impl JsonlForkIndex {
     pub fn apply_writes(&mut self, writes: &[CommittedWrite]) {
         for write in writes {
             match write {
-                CommittedWrite::Entry(entry) => self.apply_entry(&entry.id, entry.parent_id.clone()),
+                CommittedWrite::Entry(entry) => {
+                    self.apply_entry(&entry.id, entry.parent_id.clone())
+                }
                 CommittedWrite::Value(value) => {
                     let key = physical_key(value.namespace(), value.key());
                     match value {
@@ -179,7 +187,9 @@ impl JsonlForkIndex {
                             self.first_surviving_list_seqs.remove(&key);
                         }
                         CommittedListWrite::Append(append) => {
-                            self.first_surviving_list_seqs.entry(key).or_insert(append.seq);
+                            self.first_surviving_list_seqs
+                                .entry(key)
+                                .or_insert(append.seq);
                         }
                     }
                 }
@@ -195,7 +205,9 @@ impl JsonlForkIndex {
                 if present {
                     let value = write
                         .value()
-                        .and_then(|value| serde_json::from_value::<Option<String>>(value.clone()).ok())
+                        .and_then(|value| {
+                            serde_json::from_value::<Option<String>>(value.clone()).ok()
+                        })
                         .flatten();
                     self.branch_tips.insert(write.key().to_owned(), value);
                 } else {
@@ -229,7 +241,9 @@ impl JsonlForkIndex {
     }
 
     pub fn get_current_scalar_seq(&self, namespace: &str, key: &str) -> Option<i64> {
-        self.current_scalar_seqs.get(&physical_key(namespace, key)).copied()
+        self.current_scalar_seqs
+            .get(&physical_key(namespace, key))
+            .copied()
     }
 
     pub fn is_surviving_list_element(&self, namespace: &str, key: &str, seq: i64) -> bool {
@@ -254,7 +268,10 @@ impl JsonlForkIndex {
 }
 
 /// Validate the source lanes and return the fork plan.
-pub fn select_jsonl_fork(index: &JsonlForkIndex, options: &ForkOptions) -> Result<ForkCurrentStatePlan, SessionError> {
+pub fn select_jsonl_fork(
+    index: &JsonlForkIndex,
+    options: &ForkOptions,
+) -> Result<ForkCurrentStatePlan, SessionError> {
     if matches!(options, ForkOptions::Tree { .. }) {
         return Ok(ForkCurrentStatePlan::Tree);
     }
@@ -340,14 +357,18 @@ pub fn project_jsonl_fork_write(
                 key: set.key.clone(),
                 value: set.value.clone(),
             });
-            Ok(project_fork_current_state_write(&row, plan, is_entry_copied)?.map(|projected| match projected {
-                ForkCurrentStateRow::Value(projected) => {
-                    CommittedWrite::Value(CommittedValueWrite::Set(projected))
-                }
-                ForkCurrentStateRow::List(projected) => {
-                    CommittedWrite::List(CommittedListWrite::Append(projected))
-                }
-            }))
+            Ok(
+                project_fork_current_state_write(&row, plan, is_entry_copied)?.map(|projected| {
+                    match projected {
+                        ForkCurrentStateRow::Value(projected) => {
+                            CommittedWrite::Value(CommittedValueWrite::Set(projected))
+                        }
+                        ForkCurrentStateRow::List(projected) => {
+                            CommittedWrite::List(CommittedListWrite::Append(projected))
+                        }
+                    }
+                }),
+            )
         }
         CommittedWrite::List(list) => {
             let CommittedListWrite::Append(append) = list else {
@@ -364,14 +385,18 @@ pub fn project_jsonl_fork_write(
                 key: append.key.clone(),
                 value: append.value.clone(),
             });
-            Ok(project_fork_current_state_write(&row, plan, is_entry_copied)?.map(|projected| match projected {
-                ForkCurrentStateRow::Value(projected) => {
-                    CommittedWrite::Value(CommittedValueWrite::Set(projected))
-                }
-                ForkCurrentStateRow::List(projected) => {
-                    CommittedWrite::List(CommittedListWrite::Append(projected))
-                }
-            }))
+            Ok(
+                project_fork_current_state_write(&row, plan, is_entry_copied)?.map(|projected| {
+                    match projected {
+                        ForkCurrentStateRow::Value(projected) => {
+                            CommittedWrite::Value(CommittedValueWrite::Set(projected))
+                        }
+                        ForkCurrentStateRow::List(projected) => {
+                            CommittedWrite::List(CommittedListWrite::Append(projected))
+                        }
+                    }
+                }),
+            )
         }
         CommittedWrite::Usage(_) => Ok(None),
     }
@@ -389,13 +414,17 @@ pub async fn index_fork_input(
             index.apply_entry(&entry.id, entry.parent_id);
         }
         for value in &normalized.values {
-            index.apply_writes(&[CommittedWrite::Value(CommittedValueWrite::Set(value.clone()))]);
+            index.apply_writes(&[CommittedWrite::Value(CommittedValueWrite::Set(
+                value.clone(),
+            ))]);
         }
         return Ok((index, normalized.next_seq));
     }
     let metadata = input.metadata();
     let reader = file_value(
-        file_system.open_text_line_reader(&metadata.path, context).await,
+        file_system
+            .open_text_line_reader(&metadata.path, context)
+            .await,
         &format!("Failed to open JSONL fork source {}", metadata.path),
     )?;
     let result = async {
@@ -406,7 +435,10 @@ pub async fn index_fork_input(
             JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy input handled above"),
         };
         let mut highest_complete_seq = 0;
-        for writes in read_jsonl_fork_transactions(reader.as_ref(), &metadata.path, stop_before_seq, context).await? {
+        for writes in
+            read_jsonl_fork_transactions(reader.as_ref(), &metadata.path, stop_before_seq, context)
+                .await?
+        {
             index.apply_writes(&writes);
             if let Some(last) = writes.last() {
                 highest_complete_seq = last.seq();
@@ -414,7 +446,9 @@ pub async fn index_fork_input(
         }
         let next_seq = match input {
             JsonlForkInput::Open { next_seq, .. } => *next_seq,
-            JsonlForkInput::Closed { .. } => header.next_seq.unwrap_or(1).max(highest_complete_seq + 1),
+            JsonlForkInput::Closed { .. } => {
+                header.next_seq.unwrap_or(1).max(highest_complete_seq + 1)
+            }
             JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy input handled above"),
         };
         Ok::<_, SessionError>((next_seq,))
@@ -437,12 +471,20 @@ async fn stream_fork_writes(
     }
     let metadata = input.metadata();
     let reader = file_value(
-        file_system.open_text_line_reader(&metadata.path, context).await,
+        file_system
+            .open_text_line_reader(&metadata.path, context)
+            .await,
         &format!("Failed to open JSONL fork source {}", metadata.path),
     )?;
     let result = async {
         read_jsonl_fork_header(reader.as_ref(), metadata, context).await?;
-        let transactions = read_jsonl_fork_transactions(reader.as_ref(), &metadata.path, Some(stop_before_seq), context).await?;
+        let transactions = read_jsonl_fork_transactions(
+            reader.as_ref(),
+            &metadata.path,
+            Some(stop_before_seq),
+            context,
+        )
+        .await?;
         Ok::<_, SessionError>(transactions.into_iter().flatten().collect())
     }
     .await;
@@ -463,7 +505,9 @@ pub async fn run_jsonl_fork(
     if matches!(input, JsonlForkInput::Closed { .. }) {
         let metadata = input.metadata();
         let reader = file_value(
-            file_system.open_text_line_reader(&metadata.path, context).await,
+            file_system
+                .open_text_line_reader(&metadata.path, context)
+                .await,
             &format!("Failed to open JSONL fork source {}", metadata.path),
         )?;
         let parsed = read_jsonl_header(reader.as_ref(), &metadata.path, context).await;
@@ -476,7 +520,9 @@ pub async fn run_jsonl_fork(
             )
             .await?;
             if !matches!(fork, ForkOptions::Tree { .. }) {
-                return Err(session_invariant_error("Legacy v3 forks only support tree scope"));
+                return Err(session_invariant_error(
+                    "Legacy v3 forks only support tree scope",
+                ));
             }
             let writes = normalized.writes(context.clone(), None).await?;
             let mut header = destination_header.clone();

@@ -31,7 +31,9 @@ pub fn decode_resource_message(bytes: &[u8]) -> Result<Resource, ProtoError> {
     while !reader.is_empty() {
         let (field, wire) = reader.read_tag()?;
         match (field, wire) {
-            (1, WIRE_LEN) => resource.attributes.push(decode_key_value(reader.read_len()?)?),
+            (1, WIRE_LEN) => resource
+                .attributes
+                .push(decode_key_value(reader.read_len()?)?),
             (2, WIRE_VARINT) => {
                 resource.dropped_attributes_count =
                     u32::try_from(reader.read_varint()?).unwrap_or(u32::MAX);

@@ -11,10 +11,10 @@ mod props;
 use senpi_desktop_core::ax::{AxBackend, AxHandle, AxOwner, AxProps};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow};
-use uiautomation::UIElement;
 use uiautomation::types::ControlType;
+use uiautomation::UIElement;
 use windows_sys::Win32::Foundation::{HWND, POINT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, WindowFromPoint};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
 
 use self::action::UiaAction;
 use self::automation::Automation;

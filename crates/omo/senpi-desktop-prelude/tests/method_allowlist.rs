@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
 use senpi_desktop_prelude::{ComputerPreludeAssets, METHOD_ALLOWLIST};
 use senpi_desktop_protocol::{DESKTOP_METHODS, ELEMENT_METHODS, WINDOW_METHODS};
+use std::collections::BTreeSet;
 
 fn is_host_control(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -43,7 +43,11 @@ fn matches_the_javascript_facade_helper_names() {
 fn matches_the_python_facade_helper_names() {
     let py = ComputerPreludeAssets::python();
     for method in METHOD_ALLOWLIST {
-        let name = if *method == "raise" { "raise_" } else { *method };
+        let name = if *method == "raise" {
+            "raise_"
+        } else {
+            *method
+        };
         assert!(py.contains(name), "Python facade missing method: {}", name);
     }
 }
@@ -55,5 +59,9 @@ fn contains_no_host_only_control_a_model_could_reach() {
         .filter(|n| is_host_control(n))
         .map(|s| (*s).to_string())
         .collect();
-    assert!(host_only.is_empty(), "Allowlist exposed host controls: {:?}", host_only);
+    assert!(
+        host_only.is_empty(),
+        "Allowlist exposed host controls: {:?}",
+        host_only
+    );
 }

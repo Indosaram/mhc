@@ -205,7 +205,8 @@ impl<'a> Scanner<'a> {
                         } else {
                             self.token_error = Some("InvalidUnicode");
                             index = hex_start;
-                            while index < hex_end.min(len) && self.bytes[index].is_ascii_hexdigit() {
+                            while index < hex_end.min(len) && self.bytes[index].is_ascii_hexdigit()
+                            {
                                 index += 1;
                             }
                         }
@@ -292,7 +293,20 @@ impl<'a> Scanner<'a> {
     fn scan_keyword(&mut self) -> TokenKind {
         let start = self.pos;
         while self.pos < self.bytes.len()
-            && !matches!(self.bytes[self.pos], b' ' | b'\t' | b'\r' | b'\n' | b'{' | b'}' | b'[' | b']' | b'"' | b':' | b',' | b'/')
+            && !matches!(
+                self.bytes[self.pos],
+                b' ' | b'\t'
+                    | b'\r'
+                    | b'\n'
+                    | b'{'
+                    | b'}'
+                    | b'['
+                    | b']'
+                    | b'"'
+                    | b':'
+                    | b','
+                    | b'/'
+            )
         {
             self.pos += 1;
         }

@@ -6,7 +6,15 @@ use serde_json::Value;
 use crate::action_schema::ComputerArgumentsError;
 
 pub const ACTION_NAMES: &[&str] = &[
-    "screenshot", "click", "double_click", "move", "drag", "scroll", "type", "keypress", "wait",
+    "screenshot",
+    "click",
+    "double_click",
+    "move",
+    "drag",
+    "scroll",
+    "type",
+    "keypress",
+    "wait",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,15 +178,20 @@ fn parse_single_action(
         None => {
             return Err(ComputerArgumentsError::new(format!(
                 r#"{label}: "action" must be one of screenshot, click, double_click, move, drag, scroll, type, keypress, wait"#
-            )))
+            )));
         }
     };
 
     let allowed: &[&str] = match action {
         "screenshot" => &["action", "timeout", "include_screenshot"],
-        "click" | "double_click" | "move" => {
-            &["action", "x", "y", "button", "timeout", "include_screenshot"]
-        }
+        "click" | "double_click" | "move" => &[
+            "action",
+            "x",
+            "y",
+            "button",
+            "timeout",
+            "include_screenshot",
+        ],
         "drag" => &[
             "action",
             "x",
@@ -204,7 +217,7 @@ fn parse_single_action(
         other => {
             return Err(ComputerArgumentsError::new(format!(
                 r#"{label}: unknown action "{other}""#
-            )))
+            )));
         }
     };
 
@@ -234,7 +247,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "{action}": must have required properties x"#
-                    )))
+                    )));
                 }
             };
             let y = match obj.get("y").and_then(Value::as_f64) {
@@ -242,7 +255,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "{action}": must have required properties y"#
-                    )))
+                    )));
                 }
             };
             let button = obj.get("button").and_then(Value::as_str).map(String::from);
@@ -277,7 +290,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "drag": must have required properties x"#
-                    )))
+                    )));
                 }
             };
             let y = match obj.get("y").and_then(Value::as_f64) {
@@ -285,7 +298,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "drag": must have required properties y"#
-                    )))
+                    )));
                 }
             };
             let to_x = match obj.get("to_x").and_then(Value::as_f64) {
@@ -293,7 +306,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "drag": must have required properties to_x"#
-                    )))
+                    )));
                 }
             };
             let to_y = match obj.get("to_y").and_then(Value::as_f64) {
@@ -301,7 +314,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "drag": must have required properties to_y"#
-                    )))
+                    )));
                 }
             };
             let button = obj.get("button").and_then(Value::as_str).map(String::from);
@@ -321,7 +334,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "scroll": must have required properties x"#
-                    )))
+                    )));
                 }
             };
             let y = match obj.get("y").and_then(Value::as_f64) {
@@ -329,7 +342,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "scroll": must have required properties y"#
-                    )))
+                    )));
                 }
             };
             let scroll_x = match obj.get("scroll_x").and_then(Value::as_f64) {
@@ -337,7 +350,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "scroll": must have required properties scroll_x"#
-                    )))
+                    )));
                 }
             };
             let scroll_y = match obj.get("scroll_y").and_then(Value::as_f64) {
@@ -345,7 +358,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "scroll": must have required properties scroll_y"#
-                    )))
+                    )));
                 }
             };
             Ok(ComputerAction::Scroll {
@@ -363,7 +376,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "type": must have required properties text"#
-                    )))
+                    )));
                 }
             };
             Ok(ComputerAction::Type {
@@ -378,7 +391,7 @@ fn parse_single_action(
                 _ => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "keypress": must have non-empty array keys"#
-                    )))
+                    )));
                 }
             };
             let keys: Vec<String> = keys_arr
@@ -398,7 +411,7 @@ fn parse_single_action(
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         r#"{label}: action "wait": must have required properties ms"#
-                    )))
+                    )));
                 }
             };
             Ok(ComputerAction::Wait {
@@ -411,18 +424,24 @@ fn parse_single_action(
     }
 }
 
-pub fn parse_computer_actions(input: &Value) -> Result<ComputerActionsInput, ComputerArgumentsError> {
+pub fn parse_computer_actions(
+    input: &Value,
+) -> Result<ComputerActionsInput, ComputerArgumentsError> {
     let obj = match input.as_object() {
         Some(o) => o,
-        None => return Err(ComputerArgumentsError::new("computer_actions must be an object")),
+        None => {
+            return Err(ComputerArgumentsError::new(
+                "computer_actions must be an object",
+            ));
+        }
     };
 
     let action = match obj.get("action").and_then(Value::as_str) {
         Some(a) => a,
         None => {
             return Err(ComputerArgumentsError::new(
-                r#"computer_actions: "action" must be one of screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch"#
-            ))
+                r#"computer_actions: "action" must be one of screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch"#,
+            ));
         }
     };
 
@@ -444,8 +463,8 @@ pub fn parse_computer_actions(input: &Value) -> Result<ComputerActionsInput, Com
             Some(a) if !a.is_empty() => a,
             _ => {
                 return Err(ComputerArgumentsError::new(
-                    r#"computer_actions: action "batch": must have required non-empty array actions"#
-                ))
+                    r#"computer_actions: action "batch": must have required non-empty array actions"#,
+                ));
             }
         };
 
@@ -456,10 +475,11 @@ pub fn parse_computer_actions(input: &Value) -> Result<ComputerActionsInput, Com
                 None => {
                     return Err(ComputerArgumentsError::new(format!(
                         "computer_actions actions[{idx}] must be an object"
-                    )))
+                    )));
                 }
             };
-            let single = parse_single_action(item_obj, &format!("computer_actions actions[{idx}]"))?;
+            let single =
+                parse_single_action(item_obj, &format!("computer_actions actions[{idx}]"))?;
             actions.push(single);
         }
 

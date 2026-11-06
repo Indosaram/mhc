@@ -1,27 +1,34 @@
 //! SDK implementation and factory.
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
-use serde_json::Value;
 
-use crate::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs, CheckpointUlwLoopDependencies, CheckpointUlwLoopResult};
-use crate::checkpoint_template::{checkpoint_template, CheckpointTemplate, CheckpointTemplateDependencies};
-use crate::command_types::{AddGoalOptions, CreateGoalsOptions, RecordEvidenceOptions, RecordFinalReviewBlockersOptions};
+use crate::checkpoint::{
+    CheckpointUlwLoopArgs, CheckpointUlwLoopDependencies, CheckpointUlwLoopResult,
+    checkpoint_ulw_loop,
+};
+use crate::checkpoint_template::{
+    CheckpointTemplate, CheckpointTemplateDependencies, checkpoint_template,
+};
+use crate::command_types::{
+    AddGoalOptions, CreateGoalsOptions, RecordEvidenceOptions, RecordFinalReviewBlockersOptions,
+};
 use crate::domain_types::{UlwLoopPlan, UlwLoopSuccessCriterion};
-use crate::evidence::{record_evidence, RecordEvidenceArgs, RecordEvidenceResult};
+use crate::evidence::{RecordEvidenceArgs, RecordEvidenceResult, record_evidence};
 use crate::paths::{
-    normalize_ulw_loop_session_id, ulw_loop_attempt_evidence_dir, ulw_loop_evidence_root,
-    ulw_loop_goals_relative_path, UlwLoopScope,
+    UlwLoopScope, normalize_ulw_loop_session_id, ulw_loop_attempt_evidence_dir,
+    ulw_loop_evidence_root, ulw_loop_goals_relative_path,
 };
 use crate::plan_crud::{
-    add_ulw_loop_goal, create_ulw_loop_plan, start_next_ulw_loop, summarize_ulw_loop_plan,
-    AddGoalResult, StartNextResult,
+    AddGoalResult, StartNextResult, add_ulw_loop_goal, create_ulw_loop_plan, start_next_ulw_loop,
+    summarize_ulw_loop_plan,
 };
 use crate::plan_io::{list_ulw_loop_session_ids, read_ulw_loop_plan, read_ulw_loop_plan_sync};
 use crate::plan_missing_recovery::plan_missing_error;
-use crate::review_blockers::{record_final_review_blockers, RecordFinalReviewBlockersResult};
+use crate::review_blockers::{RecordFinalReviewBlockersResult, record_final_review_blockers};
 use crate::runtime::UlwLoopError;
-use crate::sdk::manifest::{ulw_loop_manifest, ToolkitManifest, ULW_LOOP_OPERATIONS};
+use crate::sdk::manifest::{ToolkitManifest, ULW_LOOP_OPERATIONS, ulw_loop_manifest};
 use crate::sdk::types::{
     CheckpointArgs, CompleteGoalsArgs, CriteriaResult, StatusResult, ToolkitContext,
     ToolkitDispatchRequest, ToolkitError, ToolkitResponse,
@@ -46,7 +53,10 @@ pub struct AgentToolkit {
 
 fn validate_context(context: &ToolkitContext) -> Result<(), UlwLoopError> {
     if context.cwd.trim().is_empty() {
-        return Err(UlwLoopError::new("cwd is required.", "ULW_LOOP_CWD_REQUIRED"));
+        return Err(UlwLoopError::new(
+            "cwd is required.",
+            "ULW_LOOP_CWD_REQUIRED",
+        ));
     }
     let session_id = context.session_id.trim();
     if session_id.is_empty() {
@@ -68,7 +78,14 @@ fn validate_context(context: &ToolkitContext) -> Result<(), UlwLoopError> {
 fn error_to_toolkit_error(err: &UlwLoopError) -> ToolkitError {
     let details = err.details.as_ref().map(|d| {
         d.iter()
-            .map(|(k, v)| (k.clone(), v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string()),
+                )
+            })
             .collect()
     });
     ToolkitError {
@@ -79,7 +96,10 @@ fn error_to_toolkit_error(err: &UlwLoopError) -> ToolkitError {
 }
 
 impl AgentToolkit {
-    pub fn new(context: ToolkitContext, deps: Option<AgentToolkitDependencies>) -> Result<Self, UlwLoopError> {
+    pub fn new(
+        context: ToolkitContext,
+        deps: Option<AgentToolkitDependencies>,
+    ) -> Result<Self, UlwLoopError> {
         validate_context(&context)?;
         Ok(Self { context, deps })
     }
@@ -115,7 +135,12 @@ impl AgentToolkit {
 
     pub fn create_goals(&self, args: &CreateGoalsOptions) -> ToolkitResponse<UlwLoopPlan> {
         let scope = self.scope();
-        let res = create_ulw_loop_plan(&self.context.cwd, args, Some(&scope), Some(self.context.surface));
+        let res = create_ulw_loop_plan(
+            &self.context.cwd,
+            args,
+            Some(&scope),
+            Some(self.context.surface),
+        );
         match res {
             Ok(plan) => {
                 let next_actions = status_next_actions(&plan, Some(self.context.surface));
@@ -150,9 +175,14 @@ impl AgentToolkit {
                 let summary = summarize_ulw_loop_plan(&plan);
                 let next_actions = status_next_actions(&plan, Some(self.context.surface));
                 let evidence_root = ulw_loop_evidence_root(Some(&scope));
-                let active = plan.active_goal_id.as_deref().and_then(|id| plan.goals.iter().find(|g| g.id == id));
+                let active = plan
+                    .active_goal_id
+                    .as_deref()
+                    .and_then(|id| plan.goals.iter().find(|g| g.id == id));
                 let current_attempt_dir = if plan.evidence_layout_version == Some(2) {
-                    active.and_then(|a| ulw_loop_attempt_evidence_dir(&a.id, a.attempt, Some(&scope)).ok())
+                    active.and_then(|a| {
+                        ulw_loop_attempt_evidence_dir(&a.id, a.attempt, Some(&scope)).ok()
+                    })
                 } else {
                     None
                 };
@@ -175,7 +205,9 @@ impl AgentToolkit {
                 resp
             }
             Err(err) => {
-                let err_out = if err.code == "ULW_LOOP_PLAN_MISSING" && self.context.surface == UlwLoopToolkitSurface::OmoSenpi {
+                let err_out = if err.code == "ULW_LOOP_PLAN_MISSING"
+                    && self.context.surface == UlwLoopToolkitSurface::OmoSenpi
+                {
                     let rel = ulw_loop_goals_relative_path(Some(&scope));
                     let sids = list_ulw_loop_session_ids(&self.context.cwd);
                     plan_missing_error(&rel, &sids, Some(self.context.surface))
@@ -194,10 +226,19 @@ impl AgentToolkit {
         }
     }
 
-    pub fn complete_goals(&self, args: Option<&CompleteGoalsArgs>) -> ToolkitResponse<StartNextResult> {
+    pub fn complete_goals(
+        &self,
+        args: Option<&CompleteGoalsArgs>,
+    ) -> ToolkitResponse<StartNextResult> {
         let scope = self.scope();
         let retry_failed = args.map(|a| a.retry_failed).unwrap_or(false);
-        let res = start_next_ulw_loop(&self.context.cwd, Some(&crate::command_types::StartNextOptions { retry_failed: Some(retry_failed) }), Some(&scope));
+        let res = start_next_ulw_loop(
+            &self.context.cwd,
+            Some(&crate::command_types::StartNextOptions {
+                retry_failed: Some(retry_failed),
+            }),
+            Some(&scope),
+        );
         match res {
             Ok(result) => {
                 let resp = ToolkitResponse::Success {
@@ -229,7 +270,12 @@ impl AgentToolkit {
             let deps = CheckpointTemplateDependencies {
                 surface: Some(self.context.surface),
             };
-            match checkpoint_template(&self.context.cwd, Some(&scope), args.goal_id.as_deref(), Some(&deps)) {
+            match checkpoint_template(
+                &self.context.cwd,
+                Some(&scope),
+                args.goal_id.as_deref(),
+                Some(&deps),
+            ) {
                 Ok(tmpl) => {
                     let val = serde_json::to_value(&tmpl).unwrap_or(Value::Null);
                     let resp = ToolkitResponse::Success {
@@ -313,7 +359,12 @@ impl AgentToolkit {
 
     pub fn steer(&self, args: &UlwLoopSteeringProposal) -> ToolkitResponse<SteerUlwLoopResult> {
         let scope = self.scope();
-        match steer_ulw_loop(&self.context.cwd, args, Some(&scope), Some(self.context.surface)) {
+        match steer_ulw_loop(
+            &self.context.cwd,
+            args,
+            Some(&scope),
+            Some(self.context.surface),
+        ) {
             Ok(result) => {
                 let resp = ToolkitResponse::Success {
                     ok: true,
@@ -340,7 +391,12 @@ impl AgentToolkit {
 
     pub fn add_goal(&self, args: &AddGoalOptions) -> ToolkitResponse<AddGoalResult> {
         let scope = self.scope();
-        match add_ulw_loop_goal(&self.context.cwd, args, Some(&scope), Some(self.context.surface)) {
+        match add_ulw_loop_goal(
+            &self.context.cwd,
+            args,
+            Some(&scope),
+            Some(self.context.surface),
+        ) {
             Ok(result) => {
                 let resp = ToolkitResponse::Success {
                     ok: true,
@@ -385,7 +441,10 @@ impl AgentToolkit {
                     self.notify("criteria", &resp);
                     resp
                 } else {
-                    let err = UlwLoopError::new(format!("Unknown ulw-loop id: {goal_id}."), "ULW_LOOP_GOAL_NOT_FOUND");
+                    let err = UlwLoopError::new(
+                        format!("Unknown ulw-loop id: {goal_id}."),
+                        "ULW_LOOP_GOAL_NOT_FOUND",
+                    );
                     let resp = ToolkitResponse::Failure {
                         ok: false,
                         operation: "criteria".to_string(),
@@ -409,7 +468,10 @@ impl AgentToolkit {
         }
     }
 
-    pub fn record_evidence(&self, args: &RecordEvidenceOptions) -> ToolkitResponse<RecordEvidenceResult> {
+    pub fn record_evidence(
+        &self,
+        args: &RecordEvidenceOptions,
+    ) -> ToolkitResponse<RecordEvidenceResult> {
         let scope = self.scope();
         match record_evidence(&self.context.cwd, args, Some(&scope)) {
             Ok(result) => {
@@ -436,7 +498,10 @@ impl AgentToolkit {
         }
     }
 
-    pub fn record_review_blockers(&self, args: &RecordFinalReviewBlockersOptions) -> ToolkitResponse<RecordFinalReviewBlockersResult> {
+    pub fn record_review_blockers(
+        &self,
+        args: &RecordFinalReviewBlockersOptions,
+    ) -> ToolkitResponse<RecordFinalReviewBlockersResult> {
         let scope = self.scope();
         match record_final_review_blockers(&self.context.cwd, args, Some(&scope)) {
             Ok(result) => {
@@ -466,9 +531,15 @@ impl AgentToolkit {
     }
 
     pub fn dispatch(&self, request: &Value) -> ToolkitResponse<Value> {
-        let op = request.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+        let op = request
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !ULW_LOOP_OPERATIONS.contains(&op) {
-            let err = UlwLoopError::new(format!("Unknown operation: {op}"), "ULW_LOOP_OPERATION_UNKNOWN");
+            let err = UlwLoopError::new(
+                format!("Unknown operation: {op}"),
+                "ULW_LOOP_OPERATION_UNKNOWN",
+            );
             let resp = ToolkitResponse::Failure {
                 ok: false,
                 operation: op.to_string(),
@@ -485,122 +556,356 @@ impl AgentToolkit {
             "help" => {
                 let r = self.help();
                 match r {
-                    ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                        ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                    }
-                    ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                    ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result,
+                        next_actions,
+                        warnings,
+                    } => ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result: serde_json::to_value(result).unwrap_or(Value::Null),
+                        next_actions,
+                        warnings,
+                    },
+                    ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    } => ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    },
                 }
             }
             "create-goals" => {
                 if let Ok(opts) = serde_json::from_value::<CreateGoalsOptions>(args.clone()) {
                     let r = self.create_goals(&opts);
                     match r {
-                        ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                            ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                        }
-                        ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                        ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result,
+                            next_actions,
+                            warnings,
+                        } => ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result: serde_json::to_value(result).unwrap_or(Value::Null),
+                            next_actions,
+                            warnings,
+                        },
+                        ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        } => ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        },
                     }
                 } else {
-                    let err = UlwLoopError::new("Invalid args for create-goals", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err = UlwLoopError::new(
+                        "Invalid args for create-goals",
+                        "ULW_LOOP_ARGUMENT_INVALID",
+                    );
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             "status" => {
                 let r = self.status();
                 match r {
-                    ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                        ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                    }
-                    ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                    ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result,
+                        next_actions,
+                        warnings,
+                    } => ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result: serde_json::to_value(result).unwrap_or(Value::Null),
+                        next_actions,
+                        warnings,
+                    },
+                    ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    } => ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    },
                 }
             }
             "complete-goals" => {
                 let opts = serde_json::from_value::<CompleteGoalsArgs>(args.clone()).ok();
                 let r = self.complete_goals(opts.as_ref());
                 match r {
-                    ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                        ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                    }
-                    ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                    ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result,
+                        next_actions,
+                        warnings,
+                    } => ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result: serde_json::to_value(result).unwrap_or(Value::Null),
+                        next_actions,
+                        warnings,
+                    },
+                    ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    } => ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    },
                 }
             }
             "checkpoint" => {
                 if let Ok(opts) = serde_json::from_value::<CheckpointArgs>(args.clone()) {
                     self.checkpoint(&opts)
                 } else {
-                    let err = UlwLoopError::new("Invalid args for checkpoint", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err = UlwLoopError::new(
+                        "Invalid args for checkpoint",
+                        "ULW_LOOP_ARGUMENT_INVALID",
+                    );
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             "steer" => {
                 if let Ok(opts) = serde_json::from_value::<UlwLoopSteeringProposal>(args.clone()) {
                     let r = self.steer(&opts);
                     match r {
-                        ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                            ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                        }
-                        ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                        ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result,
+                            next_actions,
+                            warnings,
+                        } => ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result: serde_json::to_value(result).unwrap_or(Value::Null),
+                            next_actions,
+                            warnings,
+                        },
+                        ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        } => ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        },
                     }
                 } else {
-                    let err = UlwLoopError::new("Invalid args for steer", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err =
+                        UlwLoopError::new("Invalid args for steer", "ULW_LOOP_ARGUMENT_INVALID");
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             "add-goal" => {
                 if let Ok(opts) = serde_json::from_value::<AddGoalOptions>(args.clone()) {
                     let r = self.add_goal(&opts);
                     match r {
-                        ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                            ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                        }
-                        ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                        ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result,
+                            next_actions,
+                            warnings,
+                        } => ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result: serde_json::to_value(result).unwrap_or(Value::Null),
+                            next_actions,
+                            warnings,
+                        },
+                        ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        } => ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        },
                     }
                 } else {
-                    let err = UlwLoopError::new("Invalid args for add-goal", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err =
+                        UlwLoopError::new("Invalid args for add-goal", "ULW_LOOP_ARGUMENT_INVALID");
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             "criteria" => {
                 let gid = args.get("goalId").and_then(|v| v.as_str()).unwrap_or("");
                 let r = self.criteria(gid);
                 match r {
-                    ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                        ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                    }
-                    ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                    ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result,
+                        next_actions,
+                        warnings,
+                    } => ToolkitResponse::Success {
+                        ok,
+                        operation,
+                        result: serde_json::to_value(result).unwrap_or(Value::Null),
+                        next_actions,
+                        warnings,
+                    },
+                    ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    } => ToolkitResponse::Failure {
+                        ok,
+                        operation,
+                        error,
+                        warnings,
+                    },
                 }
             }
             "record-evidence" => {
                 if let Ok(opts) = serde_json::from_value::<RecordEvidenceOptions>(args.clone()) {
                     let r = self.record_evidence(&opts);
                     match r {
-                        ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                            ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                        }
-                        ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                        ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result,
+                            next_actions,
+                            warnings,
+                        } => ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result: serde_json::to_value(result).unwrap_or(Value::Null),
+                            next_actions,
+                            warnings,
+                        },
+                        ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        } => ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        },
                     }
                 } else {
-                    let err = UlwLoopError::new("Invalid args for record-evidence", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err = UlwLoopError::new(
+                        "Invalid args for record-evidence",
+                        "ULW_LOOP_ARGUMENT_INVALID",
+                    );
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             "record-review-blockers" => {
-                if let Ok(opts) = serde_json::from_value::<RecordFinalReviewBlockersOptions>(args.clone()) {
+                if let Ok(opts) =
+                    serde_json::from_value::<RecordFinalReviewBlockersOptions>(args.clone())
+                {
                     let r = self.record_review_blockers(&opts);
                     match r {
-                        ToolkitResponse::Success { ok, operation, result, next_actions, warnings } => {
-                            ToolkitResponse::Success { ok, operation, result: serde_json::to_value(result).unwrap_or(Value::Null), next_actions, warnings }
-                        }
-                        ToolkitResponse::Failure { ok, operation, error, warnings } => ToolkitResponse::Failure { ok, operation, error, warnings },
+                        ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result,
+                            next_actions,
+                            warnings,
+                        } => ToolkitResponse::Success {
+                            ok,
+                            operation,
+                            result: serde_json::to_value(result).unwrap_or(Value::Null),
+                            next_actions,
+                            warnings,
+                        },
+                        ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        } => ToolkitResponse::Failure {
+                            ok,
+                            operation,
+                            error,
+                            warnings,
+                        },
                     }
                 } else {
-                    let err = UlwLoopError::new("Invalid args for record-review-blockers", "ULW_LOOP_ARGUMENT_INVALID");
-                    ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                    let err = UlwLoopError::new(
+                        "Invalid args for record-review-blockers",
+                        "ULW_LOOP_ARGUMENT_INVALID",
+                    );
+                    ToolkitResponse::Failure {
+                        ok: false,
+                        operation: op.to_string(),
+                        error: error_to_toolkit_error(&err),
+                        warnings: Vec::new(),
+                    }
                 }
             }
             _ => {
-                let err = UlwLoopError::new(format!("Unhandled operation: {op}"), "ULW_LOOP_OPERATION_UNHANDLED");
-                ToolkitResponse::Failure { ok: false, operation: op.to_string(), error: error_to_toolkit_error(&err), warnings: Vec::new() }
+                let err = UlwLoopError::new(
+                    format!("Unhandled operation: {op}"),
+                    "ULW_LOOP_OPERATION_UNHANDLED",
+                );
+                ToolkitResponse::Failure {
+                    ok: false,
+                    operation: op.to_string(),
+                    error: error_to_toolkit_error(&err),
+                    warnings: Vec::new(),
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-use senpi_task::runners::rpc::heartbeat::{HeartbeatMachine, MissVerdict, HEARTBEAT_DEADLINE_MS};
+use senpi_task::runners::rpc::heartbeat::{HEARTBEAT_DEADLINE_MS, HeartbeatMachine, MissVerdict};
 
 #[test]
 fn successful_heartbeat_activity_resets_failures_and_extends_deadline() {
@@ -7,7 +7,10 @@ fn successful_heartbeat_activity_resets_failures_and_extends_deadline() {
     let now = 10_000;
     machine.activity(now);
     assert_eq!(machine.failures(), 0);
-    assert_eq!(machine.miss(now + 1_000), MissVerdict::Rearm(HEARTBEAT_DEADLINE_MS - 1_000));
+    assert_eq!(
+        machine.miss(now + 1_000),
+        MissVerdict::Rearm(HEARTBEAT_DEADLINE_MS - 1_000)
+    );
     assert_eq!(machine.failures(), 0);
 }
 

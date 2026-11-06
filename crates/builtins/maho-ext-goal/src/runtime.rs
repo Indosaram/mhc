@@ -1095,10 +1095,12 @@ mod tests {
                 .consecutive_length_recoveries
                 .insert(goal.id.clone(), 1);
         }
-        let message =
-            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
-                maho_ai::providers::faux::faux_assistant_message("done", Default::default()),
-            )));
+        let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
+            std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
+                "done",
+                Default::default(),
+            )),
+        ));
         runtime
             .event(
                 &ExtensionEvent::AgentEnd {

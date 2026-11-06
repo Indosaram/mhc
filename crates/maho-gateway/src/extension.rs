@@ -24,10 +24,7 @@ pub struct GatewayExtension {
 
 /// Whether sessions of `mode` register an endpoint and receive deliveries (long-lived ones only).
 pub fn receives_in(mode: ExtensionMode) -> bool {
-    matches!(
-        mode,
-        ExtensionMode::Tui | ExtensionMode::Rpc
-    )
+    matches!(mode, ExtensionMode::Tui | ExtensionMode::Rpc)
 }
 
 struct Poller {

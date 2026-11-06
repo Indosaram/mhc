@@ -12,7 +12,9 @@ use crate::components::keybinding_hints::key_hint;
 use crate::components::write_result::format_write_result;
 use crate::theme::{Theme, ThemeColor};
 use crate::tools::diff_render::render_tool_diff;
-use crate::tools::render_utils::{normalize_display_text, render_tool_path, replace_tabs, str_value};
+use crate::tools::render_utils::{
+    normalize_display_text, render_tool_path, replace_tabs, str_value,
+};
 
 const WRITE_PARTIAL_FULL_HIGHLIGHT_LINES: usize = 50;
 
@@ -26,7 +28,10 @@ pub struct WriteHighlightCache {
 }
 
 fn highlight_single_line(line: &str, lang: &str, theme: &Theme) -> String {
-    crate::theme::highlight_code(theme, line, Some(lang)).first().cloned().unwrap_or_default()
+    crate::theme::highlight_code(theme, line, Some(lang))
+        .first()
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn refresh_write_highlight_prefix(cache: &mut WriteHighlightCache, theme: &Theme) {
@@ -37,10 +42,14 @@ fn refresh_write_highlight_prefix(cache: &mut WriteHighlightCache, theme: &Theme
     let prefix_source = cache.normalized_lines[..prefix_count].join("\n");
     let prefix_highlighted = crate::theme::highlight_code(theme, &prefix_source, Some(cache.lang));
     for index in 0..prefix_count {
-        cache.highlighted_lines[index] = prefix_highlighted
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| highlight_single_line(cache.normalized_lines.get(index).map_or("", String::as_str), cache.lang, theme));
+        cache.highlighted_lines[index] =
+            prefix_highlighted.get(index).cloned().unwrap_or_else(|| {
+                highlight_single_line(
+                    cache.normalized_lines.get(index).map_or("", String::as_str),
+                    cache.lang,
+                    theme,
+                )
+            });
     }
 }
 
@@ -93,10 +102,13 @@ fn update_write_highlight_cache_incremental(
     let segments: Vec<&str> = delta_normalized.split('\n').collect();
     let last_index = cache.normalized_lines.len() - 1;
     cache.normalized_lines[last_index].push_str(segments[0]);
-    cache.highlighted_lines[last_index] = highlight_single_line(&cache.normalized_lines[last_index], cache.lang, theme);
+    cache.highlighted_lines[last_index] =
+        highlight_single_line(&cache.normalized_lines[last_index], cache.lang, theme);
     for segment in segments.iter().skip(1) {
         cache.normalized_lines.push((*segment).to_owned());
-        cache.highlighted_lines.push(highlight_single_line(segment, cache.lang, theme));
+        cache
+            .highlighted_lines
+            .push(highlight_single_line(segment, cache.lang, theme));
     }
     // PERF-DIVERGENCE(senpi core/tools/renderers/write.ts): upstream re-highlights the first 50 lines on every delta; this port skips that when the delta only touched lines at index >= 50, since the prefix cannot change then. Output is identical.
     if last_index < WRITE_PARTIAL_FULL_HIGHLIGHT_LINES {
@@ -117,7 +129,12 @@ fn generate_added_content_diff(content: &str, visible_line_count: usize) -> Stri
     let line_num_width = visible_lines.len().max(1).to_string().len();
     let mut output: Vec<String> = Vec::new();
     for (index, line) in visible_lines.iter().take(visible_line_count).enumerate() {
-        output.push(format!("+{:>width$} {}", index + 1, line, width = line_num_width));
+        output.push(format!(
+            "+{:>width$} {}",
+            index + 1,
+            line,
+            width = line_num_width
+        ));
     }
     if visible_lines.len() > visible_line_count {
         output.push(format!(" {:>width$} ...", "", width = line_num_width));
@@ -133,15 +150,29 @@ fn format_write_call(
     cache: Option<&WriteHighlightCache>,
     cwd: &str,
 ) -> String {
-    let raw_path = args.and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path")))).flatten();
-    let file_content = args.and_then(|args| str_value(args.get("content"))).flatten();
+    let raw_path = args
+        .and_then(|args| str_value(args.get("file_path").or_else(|| args.get("path"))))
+        .flatten();
+    let file_content = args
+        .and_then(|args| str_value(args.get("content")))
+        .flatten();
     let path_display = render_tool_path(raw_path.clone(), theme, cwd, None);
-    let mut text = format!("{} {path_display}", theme.fg(ThemeColor::ToolTitle, &theme.bold("write")));
+    let mut text = format!(
+        "{} {path_display}",
+        theme.fg(ThemeColor::ToolTitle, &theme.bold("write"))
+    );
 
     match &file_content {
-        None => text += &format!("\n\n{}", theme.fg(ThemeColor::Error, "[invalid content arg - expected string]")),
+        None => {
+            text += &format!(
+                "\n\n{}",
+                theme.fg(ThemeColor::Error, "[invalid content arg - expected string]")
+            )
+        }
         Some(content) if !content.is_empty() => {
-            let lang = raw_path.as_deref().and_then(crate::theme::get_language_from_path);
+            let lang = raw_path
+                .as_deref()
+                .and_then(crate::theme::get_language_from_path);
             let normalized_content = replace_tabs(&normalize_display_text(content));
             // Line count after trimming trailing empty lines, without materializing every line.
             let total_lines = normalized_content
@@ -155,12 +186,26 @@ fn format_write_call(
             if args_complete {
                 text += &format!(
                     "\n\n{}",
-                    render_tool_diff(&generate_added_content_diff(&normalized_content, max_lines), raw_path.as_deref(), theme)
+                    render_tool_diff(
+                        &generate_added_content_diff(&normalized_content, max_lines),
+                        raw_path.as_deref(),
+                        theme
+                    )
                 );
             } else {
                 let shown: Vec<String> = match (lang, cache) {
-                    (Some(_), Some(cache)) => cache.highlighted_lines.iter().take(max_lines).cloned().collect(),
-                    (Some(_), None) => crate::theme::highlight_code(theme, &normalized_content, lang).into_iter().take(max_lines).collect(),
+                    (Some(_), Some(cache)) => cache
+                        .highlighted_lines
+                        .iter()
+                        .take(max_lines)
+                        .cloned()
+                        .collect(),
+                    (Some(_), None) => {
+                        crate::theme::highlight_code(theme, &normalized_content, lang)
+                            .into_iter()
+                            .take(max_lines)
+                            .collect()
+                    }
                     (None, _) => normalized_content
                         .split('\n')
                         .take(max_lines.min(total_lines))
@@ -172,7 +217,10 @@ fn format_write_call(
             if remaining > 0 {
                 text += &format!(
                     "{} {}{}",
-                    theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines, {total_lines} total,")),
+                    theme.fg(
+                        ThemeColor::Muted,
+                        &format!("\n... ({remaining} more lines, {total_lines} total,")
+                    ),
                     key_hint("app.tools.expand", "to expand", theme),
                     theme.fg(ThemeColor::Muted, ")")
                 );
@@ -192,7 +240,11 @@ impl ToolRenderers for WriteRenderers {
     fn is_built_in(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
         let raw_path = context
             .args
             .get("file_path")
@@ -205,14 +257,22 @@ impl ToolRenderers for WriteRenderers {
                 self.cache = if context.args_complete {
                     rebuild_write_highlight_cache_full(raw_path.as_deref(), content, theme)
                 } else {
-                    update_write_highlight_cache_incremental(self.cache.take(), raw_path.as_deref(), content, theme)
+                    update_write_highlight_cache_incremental(
+                        self.cache.take(),
+                        raw_path.as_deref(),
+                        content,
+                        theme,
+                    )
                 };
             }
             None => self.cache = None,
         }
         let text = format_write_call(
             Some(context.args),
-            ToolRenderResultOptions { expanded: context.expanded, is_partial: context.is_partial },
+            ToolRenderResultOptions {
+                expanded: context.expanded,
+                is_partial: context.is_partial,
+            },
             context.args_complete,
             theme,
             self.cache.as_ref(),

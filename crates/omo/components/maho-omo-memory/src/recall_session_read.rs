@@ -13,8 +13,11 @@ pub const RECALL_CUSTOM_TYPE: &str = "omo-kibitzer:recall";
 pub const RECALL_TEXT_WINDOW: usize = 6;
 
 /// Memory-owned hidden channels, excluded from both the planner window and the judge transcript.
-pub const EXCLUDED_CUSTOM_TYPES: [&str; 3] =
-    [RECALL_CUSTOM_TYPE, "omo-memorian:recall", MEMORY_NOTICE_CUSTOM_TYPE];
+pub const EXCLUDED_CUSTOM_TYPES: [&str; 3] = [
+    RECALL_CUSTOM_TYPE,
+    "omo-memorian:recall",
+    MEMORY_NOTICE_CUSTOM_TYPE,
+];
 
 /// The role of one judge-transcript line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +134,10 @@ pub fn text_of(content: Option<&Value>) -> String {
                 if block.get("type").and_then(Value::as_str) != Some("text") {
                     return None;
                 }
-                block.get("text").and_then(Value::as_str).map(str::to_string)
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -159,8 +165,14 @@ mod tests {
         assert_eq!(
             turns,
             vec![
-                RecallTranscriptTurn { role: RecallRole::User, text: "first".into() },
-                RecallTranscriptTurn { role: RecallRole::Assistant, text: "second".into() },
+                RecallTranscriptTurn {
+                    role: RecallRole::User,
+                    text: "first".into()
+                },
+                RecallTranscriptTurn {
+                    role: RecallRole::Assistant,
+                    text: "second".into()
+                },
             ]
         );
     }
@@ -180,7 +192,9 @@ mod tests {
 
     #[test]
     fn given_more_than_the_window_when_read_then_only_the_newest_window_is_kept() {
-        let entries: Vec<Value> = (0..10).map(|index| user_message(&format!("m{index}"))).collect();
+        let entries: Vec<Value> = (0..10)
+            .map(|index| user_message(&format!("m{index}")))
+            .collect();
         let turns = judge_transcript(&entries);
         assert_eq!(turns.len(), RECALL_TEXT_WINDOW);
         assert_eq!(turns.first().map(|turn| turn.text.as_str()), Some("m4"));
@@ -195,7 +209,10 @@ mod tests {
             json!({ "type": "custom", "message": { "role": "user", "content": "hidden" } }),
             user_message("newest"),
         ];
-        assert_eq!(user_texts(&entries), vec!["newest".to_string(), "oldest".to_string()]);
+        assert_eq!(
+            user_texts(&entries),
+            vec!["newest".to_string(), "oldest".to_string()]
+        );
     }
 
     #[test]

@@ -6,7 +6,12 @@ use serde_json::json;
 fn live_duration_replaces_only_first_cell_and_preserves_source() {
     let mut result = AgentToolResult::text("output");
     result.details = json!({"durationMs":2,"toolCalls":[],"cells":[{"durationMs":2,"queuedBehind":["old"]},{"durationMs":5}]});
-    let next = result_for_detached_state(&result, EvalDetachedCellState::Detached, 20.0, Some(&["A".into()]));
+    let next = result_for_detached_state(
+        &result,
+        EvalDetachedCellState::Detached,
+        20.0,
+        Some(&["A".into()]),
+    );
     assert_eq!(next.details["durationMs"], 20.0);
     assert_eq!(next.details["cells"][0]["status"], "queued");
     assert_eq!(next.details["cells"][0]["queuedBehind"], json!(["A"]));
@@ -39,14 +44,37 @@ fn empty_list_has_control_metadata() {
 
 #[tokio::test]
 async fn list_preview_preserves_javascript_whitespace_boundaries() {
-    use maho_codemode::tool::{detached_cell_manager::{EvalDetachedCellManager,DetachedCellManagerOptions},types::{EvalToolInput,EvalLanguage}};
-    let mut manager=EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
-    let cell=manager.create("preview".into(),EvalToolInput {language:EvalLanguage::Js,code:"42".into(),summary:"unused".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None}).unwrap();
+    use maho_codemode::tool::{
+        detached_cell_manager::{DetachedCellManagerOptions, EvalDetachedCellManager},
+        types::{EvalLanguage, EvalToolInput},
+    };
+    let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
+    let cell = manager
+        .create(
+            "preview".into(),
+            EvalToolInput {
+                language: EvalLanguage::Js,
+                code: "42".into(),
+                summary: "unused".into(),
+                action: None,
+                timeout: None,
+                on_timeout: None,
+                reset: None,
+                isolate: None,
+            },
+        )
+        .unwrap();
     manager.mark_running(&cell);
-    let mut result=AgentToolResult::text("");
-    result.details=json!({"summary":"\u{feff}  alpha\u{0085}beta\t ","durationMs":0,"cells":[]});
-    assert!(manager.complete(&cell,result));
-    let listed=create_eval_list_result(&[],&manager.list().1);
-    let maho_ext_api::ContentBlock::Text(text)=&listed.content[0] else {panic!("list text")};
-    assert!(text.text.ends_with(" -  alpha\u{0085}beta "),"{}",text.text);
+    let mut result = AgentToolResult::text("");
+    result.details = json!({"summary":"\u{feff}  alpha\u{0085}beta\t ","durationMs":0,"cells":[]});
+    assert!(manager.complete(&cell, result));
+    let listed = create_eval_list_result(&[], &manager.list().1);
+    let maho_ext_api::ContentBlock::Text(text) = &listed.content[0] else {
+        panic!("list text")
+    };
+    assert!(
+        text.text.ends_with(" -  alpha\u{0085}beta "),
+        "{}",
+        text.text
+    );
 }

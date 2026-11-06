@@ -4,11 +4,11 @@
 
 use std::thread;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
+use crate::common::scenario::{capture, headless, make_stop_path_live, snapshot_ref, Scenario};
+use crate::common::{error_code, Engine};
 use crate::WINDOW;
-use crate::common::scenario::{Scenario, capture, headless, make_stop_path_live, snapshot_ref};
-use crate::common::{Engine, error_code};
 
 const ERROR_RS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

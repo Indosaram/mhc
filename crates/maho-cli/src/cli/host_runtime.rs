@@ -353,8 +353,7 @@ pub async fn resolve_runtime_project_trust_with_warnings(
     has_ui: bool,
     selector: Box<super::project_trust::Selector>,
 ) -> (bool, Vec<String>) {
-    let resolved =
-        resolve_launch_project_trust(config, cwd, mode, has_ui, selector, None).await;
+    let resolved = resolve_launch_project_trust(config, cwd, mode, has_ui, selector, None).await;
     (resolved.trusted, resolved.warnings)
 }
 
@@ -393,7 +392,8 @@ pub async fn resolve_launch_project_trust(
     selector: Box<super::project_trust::Selector>,
     launch_profile: Option<&AgentSessionLaunchProfile>,
 ) -> LaunchProjectTrust {
-    resolve_launch_project_trust_with(config, cwd, mode, has_ui, selector, launch_profile, None).await
+    resolve_launch_project_trust_with(config, cwd, mode, has_ui, selector, launch_profile, None)
+        .await
 }
 
 /// [`resolve_launch_project_trust`] where the extension `project_trust` handlers run with a live session's UI and
@@ -442,10 +442,20 @@ pub async fn resolve_launch_project_trust_with(
         && config.project_trust_override.is_none()
         && saved != Some(true);
     if let Some(trusted) = cached {
-        return LaunchProjectTrust { trusted, trust_from_full_access, decided: true, warnings: Vec::new() };
+        return LaunchProjectTrust {
+            trusted,
+            trust_from_full_access,
+            decided: true,
+            warnings: Vec::new(),
+        };
     }
     if full_access_trust && config.project_trust_override.is_none() {
-        return LaunchProjectTrust { trusted: true, trust_from_full_access, decided: true, warnings: Vec::new() };
+        return LaunchProjectTrust {
+            trusted: true,
+            trust_from_full_access,
+            decided: true,
+            warnings: Vec::new(),
+        };
     }
     let should_resolve = config.project_trust_override.is_none() && has_trust_requiring_resources;
     let default_project_trust = bootstrap
@@ -481,10 +491,11 @@ pub async fn resolve_launch_project_trust_with(
                 }
             }),
         });
-        let (handler_ui, handler_has_ui): (Arc<dyn maho_ext_api::ExtensionUi>, bool) = match session_ui {
-            Some(session_ui) => (session_ui, true),
-            None => (ui, has_ui),
-        };
+        let (handler_ui, handler_has_ui): (Arc<dyn maho_ext_api::ExtensionUi>, bool) =
+            match session_ui {
+                Some(session_ui) => (session_ui, true),
+                None => (ui, has_ui),
+            };
         let resolved = super::project_trust::resolve_extension_project_trust_with(
             cwd,
             &config.agent_dir,
@@ -557,10 +568,18 @@ pub async fn resolve_launch_project_trust_with(
         || saved.is_some()
         || matches!(
             default_project_trust,
-            Some(maho_core::project_trust::DefaultProjectTrust::Always | maho_core::project_trust::DefaultProjectTrust::Never)
+            Some(
+                maho_core::project_trust::DefaultProjectTrust::Always
+                    | maho_core::project_trust::DefaultProjectTrust::Never
+            )
         )
         || (has_ui && mode == AppMode::Interactive);
-    LaunchProjectTrust { trusted, trust_from_full_access: false, decided, warnings }
+    LaunchProjectTrust {
+        trusted,
+        trust_from_full_access: false,
+        decided,
+        warnings,
+    }
 }
 
 /// senpi `createServices` for a replacement's cwd: the extension `project_trust` event, the saved decision and
@@ -571,32 +590,36 @@ pub fn project_trust_resolver(
     config: &CliRuntimeConfiguration,
 ) -> maho_core::agent_session_runtime::ProjectTrustResolver {
     let config = config.clone();
-    Arc::new(move |cwd: String, preset: Option<String>, session_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>| {
-        let config = config.clone();
-        Box::pin(async move {
-            let profile = AgentSessionLaunchProfile {
-                cwd: cwd.clone(),
-                permission_preset: preset,
-                ..Default::default()
-            };
-            let resolved = resolve_launch_project_trust_with(
-                &config,
-                &cwd,
-                to_project_trust_mode(config.app_mode),
-                false,
-                Box::new(|_, _| None),
-                Some(&profile),
-                session_ui,
-            )
-            .await;
-            maho_core::agent_session_runtime::ResolvedProjectTrust {
-                trusted: resolved.trusted,
-                trust_from_full_access: resolved.trust_from_full_access,
-                decided: resolved.decided,
-                warnings: resolved.warnings,
-            }
-        }) as maho_core::agent_session_runtime::ProjectTrustResolution
-    })
+    Arc::new(
+        move |cwd: String,
+              preset: Option<String>,
+              session_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>| {
+            let config = config.clone();
+            Box::pin(async move {
+                let profile = AgentSessionLaunchProfile {
+                    cwd: cwd.clone(),
+                    permission_preset: preset,
+                    ..Default::default()
+                };
+                let resolved = resolve_launch_project_trust_with(
+                    &config,
+                    &cwd,
+                    to_project_trust_mode(config.app_mode),
+                    false,
+                    Box::new(|_, _| None),
+                    Some(&profile),
+                    session_ui,
+                )
+                .await;
+                maho_core::agent_session_runtime::ResolvedProjectTrust {
+                    trusted: resolved.trusted,
+                    trust_from_full_access: resolved.trust_from_full_access,
+                    decided: resolved.decided,
+                    warnings: resolved.warnings,
+                }
+            }) as maho_core::agent_session_runtime::ProjectTrustResolution
+        },
+    )
 }
 
 /// The host's project-trust inputs for `AgentSession::switch_session_with_cwd`: the shared `projectTrustByCwd`
@@ -1030,7 +1053,10 @@ pub async fn mount_agent_session_runtime(
     #[cfg(feature = "omo")]
     if let Some(data) = policy.entry_to_record() {
         created.session.with_session_manager_mut(|manager| {
-            manager.append_custom(super::session_policy::SESSION_POLICY_CUSTOM_TYPE, Some(data))
+            manager.append_custom(
+                super::session_policy::SESSION_POLICY_CUSTOM_TYPE,
+                Some(data),
+            )
         });
     }
     let diagnostics = created.services.diagnostics.clone();
@@ -1088,7 +1114,9 @@ fn keep_session_policy(
     let switch_guard: maho_core::agent_session_runtime::SwitchGuard =
         Box::new(move |entries: &[serde_json::Value]| {
             super::session_policy::cross_role_switch_error(denied, entries)
-                .or_else(|| super::session_policy::effect_tools_switch_error(effect_denied, entries))
+                .or_else(|| {
+                    super::session_policy::effect_tools_switch_error(effect_denied, entries)
+                })
                 .or_else(|| {
                     super::session_policy::memory_identity_switch_error(
                         restricted_identity.as_deref(),
@@ -1570,7 +1598,9 @@ pub async fn resolve_cli_initial_model(
     Ok(CliInitialModel {
         model: resolved.parsed.model,
         thinking_level: resolved.parsed.thinking_level,
-        provenance: Some(maho_core::model_resolver::initial_model_provenance_str(resolved.provenance)),
+        provenance: Some(maho_core::model_resolver::initial_model_provenance_str(
+            resolved.provenance,
+        )),
         thinking_selection: resolved.parsed.thinking_selection,
     })
 }

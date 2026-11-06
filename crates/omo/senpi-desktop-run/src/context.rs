@@ -2,8 +2,8 @@
 //!
 //! Provides the `ComputerRunError`, `RunOutput`, `RunContext`, and facade method guarding.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
 use senpi_desktop_protocol::{
@@ -141,13 +141,10 @@ impl RunOutput {
     }
 
     pub async fn image(&self, data: impl Into<String>, mime_type: impl Into<String>) {
-        self.entries
-            .lock()
-            .await
-            .push(ComputerDisplay::Image {
-                data: data.into(),
-                mime_type: mime_type.into(),
-            });
+        self.entries.lock().await.push(ComputerDisplay::Image {
+            data: data.into(),
+            mime_type: mime_type.into(),
+        });
     }
 
     pub async fn finish(&self) -> Vec<ComputerDisplay> {
@@ -207,9 +204,7 @@ pub type EngineCall = Arc<
             &'static str,
             Value,
         ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Result<Value, DesktopError>> + Send,
-            >,
+            Box<dyn std::future::Future<Output = Result<Value, DesktopError>> + Send>,
         > + Send
         + Sync,
 >;

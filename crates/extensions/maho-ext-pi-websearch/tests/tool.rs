@@ -128,7 +128,10 @@ async fn tool_round_robin_state_persists_and_progress_is_typed() {
         assert_eq!(details.entry_id.as_deref(), Some(expected));
     }
     let paths = tokio::time::timeout(std::time::Duration::from_secs(5), servers.join_next())
-        .await.expect("server deadline").expect("server task").expect("server");
+        .await
+        .expect("server deadline")
+        .expect("server task")
+        .expect("server");
     assert_eq!(paths, vec!["/one", "/two"]);
     assert_eq!(updates.len(), 4);
     let SearchRenderDetails::Progress(progress) = &updates[0] else {
@@ -186,7 +189,12 @@ mod upstream_tool_suite {
 
     /// Records request lines. CONNECT tunnels (native https routes) are refused so the attempt
     /// fails at the transport and routing falls through; plain requests get an Exa payload.
-    async fn gateway() -> (String, reqwest::Client, Arc<Mutex<Vec<String>>>, GatewayGuard) {
+    async fn gateway() -> (
+        String,
+        reqwest::Client,
+        Arc<Mutex<Vec<String>>>,
+        GatewayGuard,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -242,7 +250,12 @@ mod upstream_tool_suite {
             .proxy(proxy)
             .build()
             .expect("client");
-        (format!("http://{address}/exa"), client, seen, GatewayGuard(task))
+        (
+            format!("http://{address}/exa"),
+            client,
+            seen,
+            GatewayGuard(task),
+        )
     }
 
     fn config(manual: &str, auto: bool, max_results: Option<f64>) -> WebsearchConfig {
@@ -384,7 +397,11 @@ mod upstream_tool_suite {
                 Vec::new(),
             )
             .await;
-            assert_eq!(*seen.lock().expect("request log"), ["POST /exa"], "auto={auto} id={id}");
+            assert_eq!(
+                *seen.lock().expect("request log"),
+                ["POST /exa"],
+                "auto={auto} id={id}"
+            );
             assert_eq!(details.provider, SearchProvider::Exa);
             assert_eq!(details.entry_id.as_deref(), Some("manual"));
         }
@@ -421,9 +438,13 @@ mod upstream_tool_suite {
     #[tokio::test]
     async fn discovered_native_entry_id_renders_as_provider_native() {
         let (address, server) = crate::tool_tls::spawn_gateway_server(1, |_, _| {
-            (200, serde_json::json!({"output": [{"type": "web_search_call", "action": {
-                "sources": [{"url": "https://native.example.com"}]
-            }}]}).to_string())
+            (
+                200,
+                serde_json::json!({"output": [{"type": "web_search_call", "action": {
+                    "sources": [{"url": "https://native.example.com"}]
+                }}]})
+                .to_string(),
+            )
         });
         let client = crate::tool_tls::test_client(address);
         let provider = serde_json::json!({"provider":"openai","id":"native-openai-abc123","apiKey":"openai-test","baseUrl":"https://gateway.example.com/v1/responses","model":"gpt-5.5"});
@@ -435,7 +456,10 @@ mod upstream_tool_suite {
         };
         let active = model("openai", "gpt-5.5", "https://gateway.example.com/v1");
         let (_, updates) = run(&client, config, "native label", active, Vec::new()).await;
-        assert_eq!(server.join().await, ["https://gateway.example.com/v1/responses"]);
+        assert_eq!(
+            server.join().await,
+            ["https://gateway.example.com/v1/responses"]
+        );
         let SearchRenderDetails::Progress(first) = &updates[0].details else {
             panic!("initial progress")
         };

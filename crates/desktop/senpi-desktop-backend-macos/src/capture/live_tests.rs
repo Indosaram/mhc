@@ -11,7 +11,7 @@ use image::RgbaImage;
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector, Target};
 
-use super::{MacCapture, Screencapture, capture_permission};
+use super::{capture_permission, MacCapture, Screencapture};
 use crate::MacosBackend;
 
 fn primary_display() -> DesktopDisplay {

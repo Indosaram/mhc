@@ -65,7 +65,10 @@ pub struct PendingLease {
 
 impl PendingLease {
     fn new(lease: KibitzerWakeLease, core: Arc<SidecarCore>) -> Self {
-        Self { lease: Some(lease), core }
+        Self {
+            lease: Some(lease),
+            core,
+        }
     }
 
     /// Hands the lease to the turn; the wrapper then releases nothing. `None` only if it was already
@@ -98,7 +101,8 @@ pub enum WakeAdmissionAttempt {
 pub type BlockingAcquire = Box<dyn FnOnce() -> WakeAdmissionAttempt + Send + 'static>;
 
 /// The future a retained native blocking executor resolves with the work item's value.
-pub type BlockingAcquireFuture = Pin<Box<dyn Future<Output = WakeAdmissionAttempt> + Send + 'static>>;
+pub type BlockingAcquireFuture =
+    Pin<Box<dyn Future<Output = WakeAdmissionAttempt> + Send + 'static>>;
 
 /// The retained NATIVE blocking executor.
 ///
@@ -118,7 +122,10 @@ pub trait KibitzerBlockingExecutor: Send + Sync {
 /// (`KibitzerWakeAdmission | { status: "error"; error: unknown }`).
 pub enum Admission {
     /// A machine slot was taken; the lease is handed to the turn and released on exit.
-    Acquired { lease: KibitzerWakeLease, waited_ms: i64 },
+    Acquired {
+        lease: KibitzerWakeLease,
+        waited_ms: i64,
+    },
     /// Every slot stayed with a live owner for the whole bounded wait.
     Busy { waited_ms: i64 },
     /// The caller's signal fired while waiting.
@@ -161,7 +168,11 @@ impl Drop for AdmissionGuard {
         // awaiting future is dropped rather than completed.
         self.signal.store(true, Ordering::SeqCst);
         // Remove only OUR handle; a newer admission installed after ours is left intact.
-        let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut record = self
+            .core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let still_ours = record
             .admission
             .as_ref()
@@ -192,7 +203,10 @@ impl SidecarAdmission {
         let cancel = self.core.begin_admission();
         let probe = cancel.signal();
         // The guard owns this wait's installed admission for its whole life, including a drop.
-        let _guard = AdmissionGuard { core: Arc::clone(&self.core), signal: Arc::clone(&probe) };
+        let _guard = AdmissionGuard {
+            core: Arc::clone(&self.core),
+            signal: Arc::clone(&probe),
+        };
         let slot = Arc::clone(&self.wake_slot);
         let worker_probe = Arc::clone(&probe);
         let worker_core = Arc::clone(&self.core);
@@ -211,10 +225,15 @@ impl SidecarAdmission {
                         } else {
                             // A drop-safe hand-over: if this result is never consumed (the awaiting
                             // future was dropped), dropping it releases the slot and reports it.
-                            WakeAdmissionAttempt::Acquired { lease: PendingLease::new(lease, worker_core), waited_ms }
+                            WakeAdmissionAttempt::Acquired {
+                                lease: PendingLease::new(lease, worker_core),
+                                waited_ms,
+                            }
                         }
                     }
-                    Ok(KibitzerWakeAdmission::Busy { waited_ms }) => WakeAdmissionAttempt::Busy { waited_ms },
+                    Ok(KibitzerWakeAdmission::Busy { waited_ms }) => {
+                        WakeAdmissionAttempt::Busy { waited_ms }
+                    }
                     Ok(KibitzerWakeAdmission::Aborted) => WakeAdmissionAttempt::Aborted,
                     Err(error) => WakeAdmissionAttempt::Error(error),
                 }
@@ -222,7 +241,9 @@ impl SidecarAdmission {
             .await;
         match attempt {
             WakeAdmissionAttempt::Acquired { lease, waited_ms } => {
-                let Some(lease) = lease.into_lease() else { return Admission::Aborted };
+                let Some(lease) = lease.into_lease() else {
+                    return Admission::Aborted;
+                };
                 // Shutdown raced the acquisition between the worker's check and here: hand the lease
                 // back before reporting disposed, and never launch a child after closing.
                 if self.core.is_closing() {
@@ -254,16 +275,31 @@ impl SidecarAdmission {
     }
 
     /// An admission that yielded no lease, turned into the offer result; an error is a start failure.
-    pub fn refused(&self, refusal: Refusal, generation: u64, max_items: usize, candidate_count: usize) -> KibitzerOfferResult {
+    pub fn refused(
+        &self,
+        refusal: Refusal,
+        generation: u64,
+        max_items: usize,
+        candidate_count: usize,
+    ) -> KibitzerOfferResult {
         match refusal {
-            Refusal::Busy { .. } => KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::SlotBusy },
-            Refusal::Aborted => KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Disposed },
+            Refusal::Busy { .. } => KibitzerOfferResult::Buffered {
+                reason: KibitzerBufferedReason::SlotBusy,
+            },
+            Refusal::Aborted => KibitzerOfferResult::Buffered {
+                reason: KibitzerBufferedReason::Disposed,
+            },
             Refusal::Error(error) => {
                 let turn = self.turns.new_turn(generation, max_items, candidate_count);
-                let end = start_failure_end(&format!("wake admission failed: {}", describe(&error)), None);
+                let end = start_failure_end(
+                    &format!("wake admission failed: {}", describe(&error)),
+                    None,
+                );
                 self.turns.report(&turn, &end, &[], None, None);
                 self.recovery.enter_backoff();
-                KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Backoff }
+                KibitzerOfferResult::Buffered {
+                    reason: KibitzerBufferedReason::Backoff,
+                }
             }
         }
     }
@@ -280,7 +316,13 @@ pub fn create_admission(
     recovery: Arc<KibitzerRecovery>,
     executor: Arc<dyn KibitzerBlockingExecutor>,
 ) -> SidecarAdmission {
-    SidecarAdmission { core, wake_slot, turns, recovery, executor }
+    SidecarAdmission {
+        core,
+        wake_slot,
+        turns,
+        recovery,
+        executor,
+    }
 }
 
 #[cfg(test)]
@@ -293,11 +335,13 @@ mod tests {
 
     use super::*;
     use crate::kibitzer_contract::KibitzerWakeSpawn;
-    use crate::kibitzer_sidecar_core::{AdmissionCancel, KibitzerSidecarCoreOptions, create_sidecar_core};
+    use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
+    use crate::kibitzer_sidecar_core::{
+        AdmissionCancel, KibitzerSidecarCoreOptions, create_sidecar_core,
+    };
     use crate::kibitzer_sidecar_outcome::KibitzerWakeOutcome;
     use crate::kibitzer_sidecar_recovery::create_recovery;
     use crate::kibitzer_sidecar_turn::create_turn_lifecycle;
-    use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
     use crate::kibitzer_wake_slot::KibitzerWakeSlotOptions;
 
     struct NoopWake;
@@ -334,7 +378,10 @@ mod tests {
             random: None,
             timers: None,
             warn: Some(Arc::new(move |message: &str| {
-                warnings.lock().unwrap_or_else(PoisonError::into_inner).push(message.to_string());
+                warnings
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(message.to_string());
             })),
         })
     }
@@ -355,7 +402,8 @@ mod tests {
         wake_slot: Arc<KibitzerWakeSlot>,
         executor: Arc<dyn KibitzerBlockingExecutor>,
     ) -> SidecarAdmission {
-        let spawn: KibitzerWakeSpawn = Arc::new(|_future: Pin<Box<dyn Future<Output = ()> + Send>>| {});
+        let spawn: KibitzerWakeSpawn =
+            Arc::new(|_future: Pin<Box<dyn Future<Output = ()> + Send>>| {});
         let turns = Arc::new(create_turn_lifecycle(
             Arc::clone(&core),
             Arc::clone(&spawn),
@@ -382,7 +430,10 @@ mod tests {
     }
 
     fn warning_count(warnings: &Arc<Mutex<Vec<String>>>) -> usize {
-        warnings.lock().unwrap_or_else(PoisonError::into_inner).len()
+        warnings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     #[test]
@@ -392,22 +443,38 @@ mod tests {
         core.mark_closing();
         let dir = tempfile::tempdir().unwrap();
         let executor = Arc::new(ManualExecutor::default());
-        let admission = admission_with(Arc::clone(&core), Arc::new(slot(dir.path(), 1)), executor.clone());
+        let admission = admission_with(
+            Arc::clone(&core),
+            Arc::new(slot(dir.path(), 1)),
+            executor.clone(),
+        );
 
         let waker = Waker::from(Arc::new(NoopWake));
         let mut cx = Context::from_waker(&waker);
         let mut future = Box::pin(admission.admit());
 
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Ready(Admission::Aborted)));
-        assert_eq!(executor.calls.load(Ordering::SeqCst), 0, "closing must never start a blocking worker");
+        assert!(matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Admission::Aborted)
+        ));
+        assert_eq!(
+            executor.calls.load(Ordering::SeqCst),
+            0,
+            "closing must never start a blocking worker"
+        );
         assert!(
-            core.record.lock().unwrap_or_else(PoisonError::into_inner).admission.is_none(),
+            core.record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .admission
+                .is_none(),
             "a closing core installs no admission handle at all"
         );
     }
 
     #[test]
-    fn given_a_pending_admit_when_dropped_then_it_aborts_its_probe_and_removes_only_its_own_handle() {
+    fn given_a_pending_admit_when_dropped_then_it_aborts_its_probe_and_removes_only_its_own_handle()
+    {
         let waker = Waker::from(Arc::new(NoopWake));
         let mut cx = Context::from_waker(&waker);
 
@@ -416,17 +483,32 @@ mod tests {
         let core = core_with_warnings(Arc::clone(&warnings));
         let dir = tempfile::tempdir().unwrap();
         let executor = Arc::new(ManualExecutor::default());
-        let admission = admission_with(Arc::clone(&core), Arc::new(slot(dir.path(), 1)), executor.clone());
+        let admission = admission_with(
+            Arc::clone(&core),
+            Arc::new(slot(dir.path(), 1)),
+            executor.clone(),
+        );
 
         let mut future = Box::pin(admission.admit());
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending), "the manual worker never completes");
-        assert_eq!(executor.calls.load(Ordering::SeqCst), 1, "the pending wait started exactly one worker");
+        assert!(
+            matches!(future.as_mut().poll(&mut cx), Poll::Pending),
+            "the manual worker never completes"
+        );
+        assert_eq!(
+            executor.calls.load(Ordering::SeqCst),
+            1,
+            "the pending wait started exactly one worker"
+        );
         let own = installed_admission(&core);
 
         drop(future);
         assert!(own.is_aborted(), "dropping the wait aborts its own probe");
         assert!(
-            core.record.lock().unwrap_or_else(PoisonError::into_inner).admission.is_none(),
+            core.record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .admission
+                .is_none(),
             "the dropped wait removes its own admission handle"
         );
 
@@ -435,7 +517,11 @@ mod tests {
         let core_b = core_with_warnings(Arc::clone(&warnings_b));
         let dir_b = tempfile::tempdir().unwrap();
         let executor_b = Arc::new(ManualExecutor::default());
-        let admission_b = admission_with(Arc::clone(&core_b), Arc::new(slot(dir_b.path(), 1)), executor_b.clone());
+        let admission_b = admission_with(
+            Arc::clone(&core_b),
+            Arc::new(slot(dir_b.path(), 1)),
+            executor_b.clone(),
+        );
 
         let mut future_b = Box::pin(admission_b.admit());
         assert!(matches!(future_b.as_mut().poll(&mut cx), Poll::Pending));
@@ -443,16 +529,28 @@ mod tests {
         let newer = core_b.begin_admission();
 
         drop(future_b);
-        assert!(own_b.is_aborted(), "the dropped wait still aborts its own probe");
         assert!(
-            core_b.record.lock().unwrap_or_else(PoisonError::into_inner).admission.is_some(),
+            own_b.is_aborted(),
+            "the dropped wait still aborts its own probe"
+        );
+        assert!(
+            core_b
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .admission
+                .is_some(),
             "a newer admission must survive the dropped wait"
         );
-        assert!(!newer.is_aborted(), "the newer admission's probe is untouched");
+        assert!(
+            !newer.is_aborted(),
+            "the newer admission's probe is untouched"
+        );
     }
 
     #[test]
-    fn given_an_unconsumed_pending_lease_when_dropped_then_the_real_slot_frees_and_the_outcome_is_reported() {
+    fn given_an_unconsumed_pending_lease_when_dropped_then_the_real_slot_frees_and_the_outcome_is_reported()
+     {
         let dir = tempfile::tempdir().unwrap();
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let core = core_with_warnings(Arc::clone(&warnings));
@@ -461,7 +559,11 @@ mod tests {
         // (A) A clean release frees the REAL slot and reports exactly zero warnings (Ok(true) silent).
         let lease = acquire(&wake_slot);
         drop(PendingLease::new(lease, Arc::clone(&core)));
-        assert_eq!(warning_count(&warnings), 0, "a clean release emits no warning");
+        assert_eq!(
+            warning_count(&warnings),
+            0,
+            "a clean release emits no warning"
+        );
         match wake_slot.acquire(None).unwrap() {
             KibitzerWakeAdmission::Acquired { lease, .. } => assert!(lease.try_release().unwrap()),
             _ => panic!("the dropped lease must have freed the real slot"),
@@ -472,6 +574,10 @@ mod tests {
         let lock_path = recall_wake_lock_path(dir.path(), lease.slot).unwrap();
         std::fs::remove_file(&lock_path).unwrap();
         drop(PendingLease::new(lease, Arc::clone(&core)));
-        assert_eq!(warning_count(&warnings), 1, "an already-gone release emits exactly one warning");
+        assert_eq!(
+            warning_count(&warnings),
+            1,
+            "an already-gone release emits exactly one warning"
+        );
     }
 }

@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::{
-    BackendKind, IsolationBackend, IsolationContext, IsolationError, ProbeResult, Result,
-    StartDetail, BACKEND_FILE,
+    BACKEND_FILE, BackendKind, IsolationBackend, IsolationContext, IsolationError, ProbeResult,
+    Result, StartDetail,
 };
 use crate::backend_marker::mark_started;
 use crate::backends::btrfs::remove_dir_all_force;
-use crate::backends::runtime::{checked, BackendRuntime, SystemRuntime};
+use crate::backends::runtime::{BackendRuntime, SystemRuntime, checked};
 use crate::util::{dirname, resolve_path};
 
 pub struct ZfsBackend {
@@ -35,15 +35,16 @@ impl ZfsBackend {
         if !self.io.which("zfs") {
             return Ok(None);
         }
-        let result = self.io.run(&Self::argv(&["zfs", "list", "-H", "-o", "name,mountpoint"]))?;
+        let result = self
+            .io
+            .run(&Self::argv(&["zfs", "list", "-H", "-o", "name,mountpoint"]))?;
         if result.code != 0 {
             if is_missing_pool(&result.stderr) {
                 return Ok(None);
             }
             return Err(IsolationError::other(format!(
                 "zfs list failed ({}): {}",
-                result.code,
-                result.stderr
+                result.code, result.stderr
             )));
         }
         let target = resolve_path(lower);
@@ -96,9 +97,13 @@ impl ZfsBackend {
             Err(error) => {
                 let message = error.to_string();
                 let lower = message.to_lowercase();
-                if ["permission denied", "dataset does not exist", "not delegated"]
-                    .iter()
-                    .any(|needle| lower.contains(needle))
+                if [
+                    "permission denied",
+                    "dataset does not exist",
+                    "not delegated",
+                ]
+                .iter()
+                .any(|needle| lower.contains(needle))
                     || (lower.contains("pool ") && lower.contains(" does not exist"))
                 {
                     return Err(IsolationError::unavailable(message));
@@ -140,8 +145,8 @@ fn is_valid_id(id: &str) -> bool {
 }
 
 fn write_marker(base: &Path, marker: &ZfsMarker) -> Result<()> {
-    let text = serde_json::to_string(marker)
-        .map_err(|error| IsolationError::other(error.to_string()))?;
+    let text =
+        serde_json::to_string(marker).map_err(|error| IsolationError::other(error.to_string()))?;
     std::fs::write(base.join(BACKEND_FILE), text)?;
     Ok(())
 }

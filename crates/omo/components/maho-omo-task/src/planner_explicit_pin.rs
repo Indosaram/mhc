@@ -97,7 +97,10 @@ pub fn split_model_decorators(pin: &str) -> PinDecorators {
     }
 }
 
-fn with_default_route(message: String, resolve_default_route: Option<&ResolveDefaultRoute>) -> String {
+fn with_default_route(
+    message: String,
+    resolve_default_route: Option<&ResolveDefaultRoute>,
+) -> String {
     match resolve_default_route.and_then(|route| route()) {
         None => message,
         Some(route) => format!(
@@ -196,7 +199,9 @@ fn resolve_pin_by_exact_id(
         return ExplicitPinResolution::Error(ExplicitPinError {
             code: ExplicitPinCode::ModelUnavailable,
             message: with_default_route(
-                format!("The task model pin \"{pin}\" did not resolve to a model in the live registry."),
+                format!(
+                    "The task model pin \"{pin}\" did not resolve to a model in the live registry."
+                ),
                 resolve_default_route,
             ),
         });
@@ -216,14 +221,15 @@ mod tests {
 
     impl SenpiModelRegistry for Registry {
         fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
-            Ok(json!(self
-                .models
-                .iter()
-                .map(|key| {
-                    let (provider, id) = key.split_once('/').unwrap_or((key.as_str(), ""));
-                    json!({"provider": provider, "id": id})
-                })
-                .collect::<Vec<_>>()))
+            Ok(json!(
+                self.models
+                    .iter()
+                    .map(|key| {
+                        let (provider, id) = key.split_once('/').unwrap_or((key.as_str(), ""));
+                        json!({"provider": provider, "id": id})
+                    })
+                    .collect::<Vec<_>>()
+            ))
         }
         fn find(&self, provider: &str, model_id: &str) -> Option<serde_json::Value> {
             self.models
@@ -256,7 +262,12 @@ mod tests {
     #[test]
     fn a_pin_outside_the_list_resolves_with_its_thinking_level() {
         let patterns = vec!["anthropic/*".to_string()];
-        match resolve_explicit_pin("openai/gpt-5:high", Some(&registry()), None, Some(&patterns)) {
+        match resolve_explicit_pin(
+            "openai/gpt-5:high",
+            Some(&registry()),
+            None,
+            Some(&patterns),
+        ) {
             ExplicitPinResolution::Resolved {
                 canonical,
                 thinking_level,
@@ -276,7 +287,9 @@ mod tests {
             ExplicitPinResolution::Error(error) => {
                 assert_eq!(error.code, ExplicitPinCode::InvalidTarget)
             }
-            ExplicitPinResolution::Resolved { .. } => panic!("a pin without a provider is malformed"),
+            ExplicitPinResolution::Resolved { .. } => {
+                panic!("a pin without a provider is malformed")
+            }
         }
     }
 

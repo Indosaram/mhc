@@ -1,11 +1,11 @@
 //! Codex goal validation during checkpoint.
 
-use std::path::Path;
 use serde_json::Value;
+use std::path::Path;
 
 use crate::codex_goal_snapshot::{
-    format_codex_goal_reconciliation, read_codex_goal_snapshot_input, reconcile_codex_goal_snapshot,
-    ReconcileCodexGoalOptions,
+    ReconcileCodexGoalOptions, format_codex_goal_reconciliation, read_codex_goal_snapshot_input,
+    reconcile_codex_goal_snapshot,
 };
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan};
 use crate::driver_objective_ack::acknowledged_driver_objectives;

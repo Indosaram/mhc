@@ -22,7 +22,11 @@ fn binary_stays_disabled_off_windows_and_writes_nothing() {
         "{{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\"}}"
     );
     if let Err(error) = written {
-        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write request: {error}");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "write request: {error}"
+        );
     }
     drop(stdin);
 

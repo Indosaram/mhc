@@ -6,7 +6,9 @@ use std::time::Duration;
 use pretty_assertions::assert_eq;
 
 use super::*;
-use crate::dag::store::{DagEventReadOptions, DagStoreConfig, DagStoreError, DagStoreOptions, create_dag_file_store};
+use crate::dag::store::{
+    DagEventReadOptions, DagStoreConfig, DagStoreError, DagStoreOptions, create_dag_file_store,
+};
 use crate::dag::types::{DagNodeId, DagNodeState, DagNodeTransitionReason, DagRunEventPayload};
 
 const RUN_ID: &str = "run-journal";
@@ -77,13 +79,33 @@ fn run_started(generation: u64) -> DagRunEventPayload {
 #[test]
 fn removing_one_commit_observer_preserves_the_other() {
     let root = tempfile::tempdir().expect("root");
-    let store = Arc::new(create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store"));
+    let store = Arc::new(
+        create_dag_file_store(
+            &DagStoreConfig::new(root.path()),
+            DagStoreOptions::default(),
+        )
+        .expect("store"),
+    );
     let first = subscribe_dag_journal(&store, &run_id(), Arc::new(|_| {}));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = calls.clone();
-    let second = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+    let second = subscribe_dag_journal(
+        &store,
+        &run_id(),
+        Arc::new(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
     first();
-    let journal = create_dag_journal(DagJournalOptions { store:store.clone(), run_id:run_id(), initial_checkpoint:initial_checkpoint(), apply_event:Arc::new(apply_event), subscriber_ring:None, now:Some(Arc::new(|| 1)) }).expect("journal");
+    let journal = create_dag_journal(DagJournalOptions {
+        store: store.clone(),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: Some(Arc::new(|| 1)),
+    })
+    .expect("journal");
     journal.append(run_started(1)).expect("append");
     journal.when_idle();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -93,16 +115,38 @@ fn removing_one_commit_observer_preserves_the_other() {
 #[test]
 fn checkpoint_observer_runs_only_after_successful_persistence() {
     let root = tempfile::tempdir().expect("root");
-    let store = Arc::new(create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store"));
+    let store = Arc::new(
+        create_dag_file_store(
+            &DagStoreConfig::new(root.path()),
+            DagStoreOptions::default(),
+        )
+        .expect("store"),
+    );
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed = calls.clone(); let reads = Arc::downgrade(&store);
+    let observed = calls.clone();
+    let reads = Arc::downgrade(&store);
     store.set_checkpoint_listener(Some(Arc::new(move || {
-        assert!(reads.upgrade().expect("store").read_checkpoint::<TestCheckpoint>(&run_id()).expect("read").is_some());
+        assert!(
+            reads
+                .upgrade()
+                .expect("store")
+                .read_checkpoint::<TestCheckpoint>(&run_id())
+                .expect("read")
+                .is_some()
+        );
         observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     })));
-    store.write_checkpoint(&run_id(), &initial_checkpoint()).expect("write");
-    store.set_checkpoint_hook(Arc::new(|_| Err(DagStoreError::Message("write denied".into()))));
-    assert!(store.write_checkpoint(&run_id(), &initial_checkpoint()).is_err());
+    store
+        .write_checkpoint(&run_id(), &initial_checkpoint())
+        .expect("write");
+    store.set_checkpoint_hook(Arc::new(|_| {
+        Err(DagStoreError::Message("write denied".into()))
+    }));
+    assert!(
+        store
+            .write_checkpoint(&run_id(), &initial_checkpoint())
+            .is_err()
+    );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     store.set_checkpoint_listener(None);
 }
@@ -173,7 +217,7 @@ fn given_three_mutations_when_appended_then_subscribers_see_durable_events_in_or
 
 #[test]
 fn given_checkpoint_replacement_crashes_after_wal_append_when_reopened_on_the_same_store_then_replay_never_reaches_the_previous_journal_subscriber()
-{
+ {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let store = temp_store();
@@ -181,7 +225,9 @@ fn given_checkpoint_replacement_crashes_after_wal_append_when_reopened_on_the_sa
     let flag = Arc::clone(&fail_once);
     store.set_checkpoint_hook(Arc::new(move |_value: &serde_json::Value| {
         if flag.swap(false, Ordering::SeqCst) {
-            Err(DagStoreError::Message("injected checkpoint crash".to_string()))
+            Err(DagStoreError::Message(
+                "injected checkpoint crash".to_string(),
+            ))
         } else {
             Ok(())
         }
@@ -227,7 +273,10 @@ fn given_checkpoint_replacement_crashes_after_wal_append_when_reopened_on_the_sa
     let second = reopened.append(run_started(2)).expect("append 2");
     reopened.when_idle();
 
-    assert_eq!(*delivered_before_durability.lock().unwrap(), Vec::<u64>::new());
+    assert_eq!(
+        *delivered_before_durability.lock().unwrap(),
+        Vec::<u64>::new()
+    );
     assert_eq!(second.seq, 2);
     assert_eq!(*delivered_after_reopen.lock().unwrap(), vec![2]);
     let snapshot = reopened.snapshot();
@@ -256,11 +305,25 @@ fn after_wal_append_fault_leaves_reducer_unapplied_until_reopen() {
     let store = temp_store();
     let fail_once = AtomicBool::new(true);
     store.set_append_hook(Arc::new(move |_| {
-        if fail_once.swap(false, Ordering::SeqCst) { Err(DagStoreError::Message("after WAL crash".into())) } else { Ok(()) }
+        if fail_once.swap(false, Ordering::SeqCst) {
+            Err(DagStoreError::Message("after WAL crash".into()))
+        } else {
+            Ok(())
+        }
     }));
-    let options = || DagJournalOptions { store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(), apply_event: Arc::new(apply_event), subscriber_ring: None, now: None };
+    let options = || DagJournalOptions {
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
+    };
     let first = create_dag_journal(options()).unwrap();
-    assert_eq!(first.append(run_started(1)).unwrap_err().to_string(), "after WAL crash");
+    assert_eq!(
+        first.append(run_started(1)).unwrap_err().to_string(),
+        "after WAL crash"
+    );
     assert_eq!(first.snapshot().generations, Vec::<u64>::new());
     let reopened = create_dag_journal(options()).unwrap();
     assert_eq!(reopened.snapshot().generations, vec![1]);
@@ -291,7 +354,14 @@ fn given_a_queued_node_transition_when_appended_then_the_journal_preserves_its_q
         .expect("append transition");
 
     let events = store
-        .read_events(&run_id(), 0, &DagEventReadOptions { limit: 10, ..Default::default() })
+        .read_events(
+            &run_id(),
+            0,
+            &DagEventReadOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
         .expect("read events")
         .events;
     let found = events.iter().any(|event| match &event.payload {
@@ -302,7 +372,10 @@ fn given_a_queued_node_transition_when_appended_then_the_journal_preserves_its_q
         } => found_node == &node_id && *queue_position == 3,
         _ => false,
     });
-    assert!(found, "expected a queued node-transitioned event with queuePosition 3");
+    assert!(
+        found,
+        "expected a queued node-transitioned event with queuePosition 3"
+    );
 }
 
 #[test]
@@ -380,8 +453,12 @@ fn given_a_durable_commit_subscription_when_it_is_removed_before_another_journal
 fn given_a_foreign_instance_commit_when_refresh_is_called_then_the_snapshot_catches_up() {
     let store = temp_store();
     let options = || DagJournalOptions {
-        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
-        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
     };
     let first = create_dag_journal(options()).expect("first journal");
     let second = create_dag_journal(options()).expect("second journal");
@@ -391,11 +468,16 @@ fn given_a_foreign_instance_commit_when_refresh_is_called_then_the_snapshot_catc
 }
 
 #[test]
-fn given_interleaved_appends_from_two_journals_then_each_replays_foreign_events_and_seq_stays_contiguous() {
+fn given_interleaved_appends_from_two_journals_then_each_replays_foreign_events_and_seq_stays_contiguous()
+ {
     let store = temp_store();
     let options = || DagJournalOptions {
-        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
-        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
     };
     let first = create_dag_journal(options()).expect("first journal");
     let second = create_dag_journal(options()).expect("second journal");
@@ -405,25 +487,72 @@ fn given_interleaved_appends_from_two_journals_then_each_replays_foreign_events_
     assert_eq!(first.append(run_started(4)).expect("append 4").seq, 4);
     assert_eq!(first.snapshot().generations, vec![1, 2, 3, 4]);
     assert_eq!(first.snapshot().checkpoint_seq, 4);
-    let page = store.read_events(&run_id(), 0, &DagEventReadOptions { limit: 10, ..Default::default() }).expect("read");
-    assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    let page = store
+        .read_events(
+            &run_id(),
+            0,
+            &DagEventReadOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .expect("read");
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
 }
 
 #[test]
 fn given_a_duplicate_predicate_match_when_appended_then_nothing_is_journaled_or_notified() {
     let store = temp_store();
     let journal = create_dag_journal(DagJournalOptions {
-        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
-        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
-    }).expect("journal");
-    journal.set_skip_duplicate(Arc::new(|_, payload| matches!(payload, DagRunEventPayload::RunStarted { generation: 7 })));
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
+    })
+    .expect("journal");
+    journal.set_skip_duplicate(Arc::new(|_, payload| {
+        matches!(payload, DagRunEventPayload::RunStarted { generation: 7 })
+    }));
     let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = Arc::clone(&delivered);
-    let _unsubscribe = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
-    assert_eq!(journal.append_maybe(run_started(7)).expect("duplicate check"), None);
+    let _unsubscribe = subscribe_dag_journal(
+        &store,
+        &run_id(),
+        Arc::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
+    assert_eq!(
+        journal
+            .append_maybe(run_started(7))
+            .expect("duplicate check"),
+        None
+    );
     journal.when_idle();
     assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(store.read_events(&run_id(), 0, &DagEventReadOptions { limit: 10, ..Default::default() }).expect("read").events.len(), 0);
+    assert_eq!(
+        store
+            .read_events(
+                &run_id(),
+                0,
+                &DagEventReadOptions {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
+            .expect("read")
+            .events
+            .len(),
+        0
+    );
 }
 
 #[test]
@@ -431,10 +560,22 @@ fn given_a_panicking_durable_listener_when_a_commit_is_published_then_later_list
     let store = temp_store();
     let _first = subscribe_dag_journal(&store, &run_id(), Arc::new(|_| panic!("listener fault")));
     let (tx, rx) = mpsc::channel();
-    let _second = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { let _ = tx.send(()); }));
+    let _second = subscribe_dag_journal(
+        &store,
+        &run_id(),
+        Arc::new(move |_| {
+            let _ = tx.send(());
+        }),
+    );
     let journal = create_dag_journal(DagJournalOptions {
-        store, run_id: run_id(), initial_checkpoint: initial_checkpoint(), apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
-    }).expect("journal");
+        store,
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
+    })
+    .expect("journal");
     journal.append(run_started(1)).expect("append");
     recv_within(&rx, "second commit listener");
 }
@@ -461,7 +602,10 @@ fn given_a_subscriber_blocked_on_its_first_event_when_its_ring_overflows_then_it
         delivered_for_listener.lock().unwrap().push(event.clone());
         if event.seq == 1 && matches!(event.payload, DagRunEventPayload::RunStarted { .. }) {
             let _ = first_started_tx.send(());
-            let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
         }
     }));
     journal.append(run_started(1)).expect("append 1");
@@ -490,7 +634,10 @@ fn given_a_subscriber_blocked_on_its_first_event_when_its_ring_overflows_then_it
     assert_eq!(*dropped_count, 2);
     assert_eq!(*recover_after_seq, 1);
     assert_eq!(
-        delivered[2..].iter().map(|event| event.seq).collect::<Vec<_>>(),
+        delivered[2..]
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
         vec![4, 5]
     );
 }
@@ -516,11 +663,16 @@ fn given_a_viewer_recovering_a_subscriber_overflow_when_it_catches_up_from_the_r
     let store_for_listener = Arc::clone(&store);
     let applied_for_listener = Arc::clone(&applied);
     let _unsubscribe = journal.subscribe(Arc::new(move |event: &DagRunEvent| {
-        let apply_once = |event: &DagRunEvent, applied: &Arc<Mutex<std::collections::BTreeMap<u64, DagRunEvent>>>| {
-            let mut applied = applied.lock().unwrap();
-            applied.entry(event.seq).or_insert_with(|| event.clone());
-        };
-        if let DagRunEventPayload::StreamOverflow { recover_after_seq, .. } = &event.payload {
+        let apply_once =
+            |event: &DagRunEvent,
+             applied: &Arc<Mutex<std::collections::BTreeMap<u64, DagRunEvent>>>| {
+                let mut applied = applied.lock().unwrap();
+                applied.entry(event.seq).or_insert_with(|| event.clone());
+            };
+        if let DagRunEventPayload::StreamOverflow {
+            recover_after_seq, ..
+        } = &event.payload
+        {
             let recovery = store_for_listener
                 .read_events(
                     &run_id(),
@@ -540,7 +692,10 @@ fn given_a_viewer_recovering_a_subscriber_overflow_when_it_catches_up_from_the_r
         apply_once(event, &applied_for_listener);
         if event.seq == 1 {
             let _ = first_started_tx.send(());
-            let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
         }
     }));
     journal.append(run_started(1)).expect("append 1");
@@ -554,7 +709,14 @@ fn given_a_viewer_recovering_a_subscriber_overflow_when_it_catches_up_from_the_r
     journal.when_idle();
 
     let wal = store
-        .read_events(&run_id(), 0, &DagEventReadOptions { limit: 100, ..Default::default() })
+        .read_events(
+            &run_id(),
+            0,
+            &DagEventReadOptions {
+                limit: 100,
+                ..Default::default()
+            },
+        )
         .expect("read wal")
         .events;
     let seqs: Vec<u64> = wal.iter().map(|event| event.seq).collect();
@@ -563,7 +725,11 @@ fn given_a_viewer_recovering_a_subscriber_overflow_when_it_catches_up_from_the_r
     assert_eq!(unique.len(), seqs.len());
     let last = wal.last().expect("wal not empty");
     assert_eq!(last.seq, 6);
-    let DagRunEventPayload::StreamOverflow { dropped_count, recover_after_seq } = &last.payload else {
+    let DagRunEventPayload::StreamOverflow {
+        dropped_count,
+        recover_after_seq,
+    } = &last.payload
+    else {
         panic!("expected trailing overflow event");
     };
     assert_eq!(*dropped_count, 2);
@@ -594,7 +760,10 @@ fn given_a_slow_async_listener_when_another_mutation_is_appended_then_the_mutati
         if let Some(tx) = listener_started_tx.lock().unwrap().take() {
             let _ = tx.send(());
         }
-        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+        let _ = release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5));
     }));
     journal.append(run_started(1)).expect("append 1");
     recv_within(&listener_started_rx, "listener_started");

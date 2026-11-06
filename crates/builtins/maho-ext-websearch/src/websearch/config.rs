@@ -1,142 +1,506 @@
+use super::{provider_endpoints::is_allowed_provider_base_url, types::*};
+use serde_json::{Map, Value, value::RawValue};
 use std::path::Path;
-use serde_json::{Value,Map,value::RawValue};
-use super::{types::*,provider_endpoints::is_allowed_provider_base_url};
 // RawValue validates JSON without converting overflow literals to bounded numbers.
 // Only this ingestion boundary projects nonfinite numbers to null, which the
 // optional config accessors ignore just as they ignore JSON.parse's infinities.
-fn config_value(raw:&RawValue,depth:usize)->Result<Value,serde_json::Error> {
-    let text=raw.get();
-    if depth>=127 && matches!(text.as_bytes().first(),Some(b'{'|b'[')) {
-        return Err(serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData,"recursion limit exceeded")));
+fn config_value(raw: &RawValue, depth: usize) -> Result<Value, serde_json::Error> {
+    let text = raw.get();
+    if depth >= 127 && matches!(text.as_bytes().first(), Some(b'{' | b'[')) {
+        return Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "recursion limit exceeded",
+        )));
     }
     match text.as_bytes().first() {
-        Some(b'{')=>{
-            let fields:std::collections::BTreeMap<String,&RawValue>=serde_json::from_str(text)?;
-            fields.into_iter().map(|(key,value)|Ok((key,config_value(value,depth+1)?))).collect::<Result<Map<String,Value>,serde_json::Error>>().map(Value::Object)
+        Some(b'{') => {
+            let fields: std::collections::BTreeMap<String, &RawValue> = serde_json::from_str(text)?;
+            fields
+                .into_iter()
+                .map(|(key, value)| Ok((key, config_value(value, depth + 1)?)))
+                .collect::<Result<Map<String, Value>, serde_json::Error>>()
+                .map(Value::Object)
         }
-        Some(b'[')=>{
-            let values:Vec<&RawValue>=serde_json::from_str(text)?;
-            values.into_iter().map(|value|config_value(value,depth+1)).collect::<Result<Vec<_>,_>>().map(Value::Array)
+        Some(b'[') => {
+            let values: Vec<&RawValue> = serde_json::from_str(text)?;
+            values
+                .into_iter()
+                .map(|value| config_value(value, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
         }
-        Some(b'-'|b'0'..=b'9')=>Ok(text.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null,Value::Number)),
-        _=>serde_json::from_str(text),
+        Some(b'-' | b'0'..=b'9') => Ok(text
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number)),
+        _ => serde_json::from_str(text),
     }
 }
-fn string(raw:&Value,key:&str)->Option<String> { raw.get(key).and_then(Value::as_str).filter(|s|!s.is_empty()).map(str::to_owned) }
-fn number(raw:&Value,key:&str)->Option<f64> { raw.get(key).and_then(Value::as_f64).filter(|n|n.is_finite()) }
-fn strings(raw:&Value,key:&str)->Option<Vec<String>> { raw.get(key)?.as_array()?.iter().map(|value|value.as_str().map(str::to_owned)).collect() }
-fn provider(value:&str)->Option<SearchProvider> { Some(match value { "exa"=>SearchProvider::Exa,"tavily"=>SearchProvider::Tavily,"brave"=>SearchProvider::Brave,"duckduckgo-html"=>SearchProvider::DuckduckgoHtml,"deepseek"=>SearchProvider::Deepseek,"serper"=>SearchProvider::Serper,"google-cse"=>SearchProvider::GoogleCse,"google"=>SearchProvider::Google,"z-ai"=>SearchProvider::Zai,"openai"=>SearchProvider::Openai,"codex"=>SearchProvider::Codex,"chatgpt-subscription"=>SearchProvider::ChatgptSubscription,"anthropic"=>SearchProvider::Anthropic,"perplexity"=>SearchProvider::Perplexity,"xai"=>SearchProvider::Xai,"kimi"=>SearchProvider::Kimi,_=>return None }) }
-fn entry(raw:&Value)->Option<SearchProviderEntry> {
-    raw.as_object()?;
-    let kind=raw.get("provider").and_then(Value::as_str).and_then(provider).or_else(||raw.get("backend").and_then(Value::as_str).and_then(provider))?;
-    let mut config=SearchProviderConfig::new(kind);
-    config.id=string(raw,"id"); config.api_key=string(raw,"apiKey"); config.base_url=string(raw,"baseUrl"); config.search_engine_id=string(raw,"searchEngineId"); config.max_results=number(raw,"maxResults").filter(|n|*n!=0.); config.model=string(raw,"model");
-    config.codex_mode=match string(raw,"codexMode").as_deref() { Some("cached")=>Some(CodexSearchMode::Cached),Some("live")=>Some(CodexSearchMode::Live),_=>None };
-    config.search_context_size=match string(raw,"searchContextSize").as_deref() { Some("low")=>Some(SearchContextSize::Low),Some("medium")=>Some(SearchContextSize::Medium),Some("high")=>Some(SearchContextSize::High),_=>None };
-    config.allowed_domains=strings(raw,"allowedDomains"); config.blocked_domains=strings(raw,"blockedDomains"); config.timeout_ms=number(raw,"timeoutMs");
-    if let Some(location)=raw.get("userLocation").filter(|location|location.is_object()) { let mut object=Map::new(); for key in ["country","region","city","timezone"] { if let Some(value)=string(location,key) { object.insert(key.into(),Value::String(value)); } } if !object.is_empty() { config.user_location=Some(Value::Object(object)); } }
-    Some(SearchProviderEntry{config,priority:number(raw,"priority").filter(|value|*value!=0.),weight:number(raw,"weight").filter(|value|*value!=0.),fallback_model:None})
+fn string(raw: &Value, key: &str) -> Option<String> {
+    raw.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
-pub fn config_from_object(raw:&Value)->Option<WebsearchConfig> {
-    raw.as_object()?;
-    let auto=raw.get("auto").and_then(Value::as_bool).unwrap_or(true);
-    let native_model=string(raw,"nativeModel");
-    if let Some(providers)=raw.get("providers").and_then(Value::as_array) {
-        if raw.get("provider").and_then(Value::as_str).and_then(provider).is_some() { return None; }
-        let strategy=match string(raw,"strategy").as_deref() { Some("round-robin")=>RoutingStrategy::RoundRobin,Some("fill-first")=>RoutingStrategy::FillFirst,_=>RoutingStrategy::Priority };
-        Some(WebsearchConfig{strategy,fallback:raw.get("fallback").and_then(Value::as_bool).unwrap_or(true),auto,native_model,providers:providers.iter().filter_map(entry).collect()})
-    } else { Some(WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto,native_model,providers:vec![entry(raw)?]}) }
+fn number(raw: &Value, key: &str) -> Option<f64> {
+    raw.get(key)
+        .and_then(Value::as_f64)
+        .filter(|n| n.is_finite())
 }
-pub fn validate_provider_config(entry:&SearchProviderEntry)->Result<(),(ConfigLoadFailureReason,String)> {
-    let config=&entry.config;
-    let invalid=|message:&str|Err((ConfigLoadFailureReason::InvalidConfig,message.into()));
-    if config.allowed_domains.is_some() && config.blocked_domains.is_some() { return invalid("Provider config cannot specify both allowedDomains and blockedDomains."); }
-    if entry.weight.is_some_and(|weight|weight<=0.) { return invalid("Provider weight must be greater than 0."); }
-    if config.timeout_ms.is_some_and(|timeout|timeout<=0.) { return invalid("Provider timeoutMs must be greater than 0."); }
-    if config.base_url.as_ref().is_some_and(|url|!url.is_empty() && !is_allowed_provider_base_url(url)) { return Err((ConfigLoadFailureReason::InvalidConfig,format!("Provider {} baseUrl must be a public HTTPS URL without credentials.",config.provider.as_str()))); }
-    let missing=|message:String|Err((ConfigLoadFailureReason::MissingApiKey,message));
-    if config.provider==SearchProvider::GoogleCse && config.search_engine_id.as_ref().is_none_or(String::is_empty) { return missing("Provider google-cse requires searchEngineId.".into()); }
-    if config.api_key.as_ref().is_none_or(String::is_empty) { match config.provider {
-        SearchProvider::Openai|SearchProvider::Codex=>return missing(format!("Provider {} requires apiKey for hosted Responses API search.",config.provider.as_str())),provider if super::search::is_keyless_provider(provider)||super::session_login_entries::is_session_login_provider(provider)=>{},_=>return missing(format!("Provider {} requires apiKey.",config.provider.as_str())),
-    } }
+fn strings(raw: &Value, key: &str) -> Option<Vec<String>> {
+    raw.get(key)?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect()
+}
+fn provider(value: &str) -> Option<SearchProvider> {
+    Some(match value {
+        "exa" => SearchProvider::Exa,
+        "tavily" => SearchProvider::Tavily,
+        "brave" => SearchProvider::Brave,
+        "duckduckgo-html" => SearchProvider::DuckduckgoHtml,
+        "deepseek" => SearchProvider::Deepseek,
+        "serper" => SearchProvider::Serper,
+        "google-cse" => SearchProvider::GoogleCse,
+        "google" => SearchProvider::Google,
+        "z-ai" => SearchProvider::Zai,
+        "openai" => SearchProvider::Openai,
+        "codex" => SearchProvider::Codex,
+        "chatgpt-subscription" => SearchProvider::ChatgptSubscription,
+        "anthropic" => SearchProvider::Anthropic,
+        "perplexity" => SearchProvider::Perplexity,
+        "xai" => SearchProvider::Xai,
+        "kimi" => SearchProvider::Kimi,
+        _ => return None,
+    })
+}
+fn entry(raw: &Value) -> Option<SearchProviderEntry> {
+    raw.as_object()?;
+    let kind = raw
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(provider)
+        .or_else(|| {
+            raw.get("backend")
+                .and_then(Value::as_str)
+                .and_then(provider)
+        })?;
+    let mut config = SearchProviderConfig::new(kind);
+    config.id = string(raw, "id");
+    config.api_key = string(raw, "apiKey");
+    config.base_url = string(raw, "baseUrl");
+    config.search_engine_id = string(raw, "searchEngineId");
+    config.max_results = number(raw, "maxResults").filter(|n| *n != 0.);
+    config.model = string(raw, "model");
+    config.codex_mode = match string(raw, "codexMode").as_deref() {
+        Some("cached") => Some(CodexSearchMode::Cached),
+        Some("live") => Some(CodexSearchMode::Live),
+        _ => None,
+    };
+    config.search_context_size = match string(raw, "searchContextSize").as_deref() {
+        Some("low") => Some(SearchContextSize::Low),
+        Some("medium") => Some(SearchContextSize::Medium),
+        Some("high") => Some(SearchContextSize::High),
+        _ => None,
+    };
+    config.allowed_domains = strings(raw, "allowedDomains");
+    config.blocked_domains = strings(raw, "blockedDomains");
+    config.timeout_ms = number(raw, "timeoutMs");
+    if let Some(location) = raw
+        .get("userLocation")
+        .filter(|location| location.is_object())
+    {
+        let mut object = Map::new();
+        for key in ["country", "region", "city", "timezone"] {
+            if let Some(value) = string(location, key) {
+                object.insert(key.into(), Value::String(value));
+            }
+        }
+        if !object.is_empty() {
+            config.user_location = Some(Value::Object(object));
+        }
+    }
+    Some(SearchProviderEntry {
+        config,
+        priority: number(raw, "priority").filter(|value| *value != 0.),
+        weight: number(raw, "weight").filter(|value| *value != 0.),
+        fallback_model: None,
+    })
+}
+pub fn config_from_object(raw: &Value) -> Option<WebsearchConfig> {
+    raw.as_object()?;
+    let auto = raw.get("auto").and_then(Value::as_bool).unwrap_or(true);
+    let native_model = string(raw, "nativeModel");
+    if let Some(providers) = raw.get("providers").and_then(Value::as_array) {
+        if raw
+            .get("provider")
+            .and_then(Value::as_str)
+            .and_then(provider)
+            .is_some()
+        {
+            return None;
+        }
+        let strategy = match string(raw, "strategy").as_deref() {
+            Some("round-robin") => RoutingStrategy::RoundRobin,
+            Some("fill-first") => RoutingStrategy::FillFirst,
+            _ => RoutingStrategy::Priority,
+        };
+        Some(WebsearchConfig {
+            strategy,
+            fallback: raw.get("fallback").and_then(Value::as_bool).unwrap_or(true),
+            auto,
+            native_model,
+            providers: providers.iter().filter_map(entry).collect(),
+        })
+    } else {
+        Some(WebsearchConfig {
+            strategy: RoutingStrategy::Priority,
+            fallback: true,
+            auto,
+            native_model,
+            providers: vec![entry(raw)?],
+        })
+    }
+}
+pub fn validate_provider_config(
+    entry: &SearchProviderEntry,
+) -> Result<(), (ConfigLoadFailureReason, String)> {
+    let config = &entry.config;
+    let invalid = |message: &str| Err((ConfigLoadFailureReason::InvalidConfig, message.into()));
+    if config.allowed_domains.is_some() && config.blocked_domains.is_some() {
+        return invalid("Provider config cannot specify both allowedDomains and blockedDomains.");
+    }
+    if entry.weight.is_some_and(|weight| weight <= 0.) {
+        return invalid("Provider weight must be greater than 0.");
+    }
+    if config.timeout_ms.is_some_and(|timeout| timeout <= 0.) {
+        return invalid("Provider timeoutMs must be greater than 0.");
+    }
+    if config
+        .base_url
+        .as_ref()
+        .is_some_and(|url| !url.is_empty() && !is_allowed_provider_base_url(url))
+    {
+        return Err((
+            ConfigLoadFailureReason::InvalidConfig,
+            format!(
+                "Provider {} baseUrl must be a public HTTPS URL without credentials.",
+                config.provider.as_str()
+            ),
+        ));
+    }
+    let missing = |message: String| Err((ConfigLoadFailureReason::MissingApiKey, message));
+    if config.provider == SearchProvider::GoogleCse
+        && config
+            .search_engine_id
+            .as_ref()
+            .is_none_or(String::is_empty)
+    {
+        return missing("Provider google-cse requires searchEngineId.".into());
+    }
+    if config.api_key.as_ref().is_none_or(String::is_empty) {
+        match config.provider {
+            SearchProvider::Openai | SearchProvider::Codex => {
+                return missing(format!(
+                    "Provider {} requires apiKey for hosted Responses API search.",
+                    config.provider.as_str()
+                ));
+            }
+            provider
+                if super::search::is_keyless_provider(provider)
+                    || super::session_login_entries::is_session_login_provider(provider) => {}
+            _ => {
+                return missing(format!(
+                    "Provider {} requires apiKey.",
+                    config.provider.as_str()
+                ));
+            }
+        }
+    }
     Ok(())
 }
-pub fn validate_websearch_config(config:&WebsearchConfig)->Result<(),(ConfigLoadFailureReason,String)> { if config.providers.is_empty() { return Err((ConfigLoadFailureReason::InvalidConfig,"Websearch config requires at least one provider.".into())); } for provider in &config.providers { validate_provider_config(provider)?; } Ok(()) }
-pub async fn load_websearch_config(cwd:&Path,home:&Path)->Result<ConfigLoadResult,std::io::Error> {
-    let paths=[cwd.join(".senpi/websearch.json"),cwd.join(".pi/websearch.json"),home.join("websearch.json"),home.join(".senpi/websearch.json"),home.join(".pi/websearch.json")];
-    let mut seen=Vec::new();
-    for path in paths { if seen.contains(&path) { continue; } seen.push(path.clone()); if tokio::fs::metadata(&path).await.is_err() { continue; }
-        let bytes=tokio::fs::read(&path).await?; let text=String::from_utf8_lossy(&bytes); let source=path.to_string_lossy().into_owned();
-        let raw:Value=match serde_json::from_str::<&RawValue>(&text).and_then(|raw|config_value(raw,0)) { Ok(value) if value.is_object()=>value,_=>return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)}) };
-        if raw.get("nativeModel").is_some_and(|value| value.as_str().is_none_or(|model| model.is_empty())) { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Websearch config nativeModel in {source} must be a non-empty model id."),source:Some(source)}); }
-        let Some(config)=config_from_object(&raw) else { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid provider config in {source}"),source:Some(source)}); };
-        return Ok(match validate_websearch_config(&config) { Ok(())=>ConfigLoadResult::Ok{config,source},Err((reason,message))=>ConfigLoadResult::Err{reason,message,source:Some(source)} });
+pub fn validate_websearch_config(
+    config: &WebsearchConfig,
+) -> Result<(), (ConfigLoadFailureReason, String)> {
+    if config.providers.is_empty() {
+        return Err((
+            ConfigLoadFailureReason::InvalidConfig,
+            "Websearch config requires at least one provider.".into(),
+        ));
     }
-    let mut provider=SearchProviderConfig::new(SearchProvider::DuckduckgoHtml); provider.id=Some("default".into()); provider.max_results=Some(10.);
-    Ok(ConfigLoadResult::Ok{config:WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,native_model:None,providers:vec![SearchProviderEntry{config:provider,priority:None,weight:None,fallback_model:None}]},source:"default:duckduckgo-html".into()})
+    for provider in &config.providers {
+        validate_provider_config(provider)?;
+    }
+    Ok(())
+}
+pub async fn load_websearch_config(
+    cwd: &Path,
+    home: &Path,
+) -> Result<ConfigLoadResult, std::io::Error> {
+    let paths = [
+        cwd.join(".senpi/websearch.json"),
+        cwd.join(".pi/websearch.json"),
+        home.join("websearch.json"),
+        home.join(".senpi/websearch.json"),
+        home.join(".pi/websearch.json"),
+    ];
+    let mut seen = Vec::new();
+    for path in paths {
+        if seen.contains(&path) {
+            continue;
+        }
+        seen.push(path.clone());
+        if tokio::fs::metadata(&path).await.is_err() {
+            continue;
+        }
+        let bytes = tokio::fs::read(&path).await?;
+        let text = String::from_utf8_lossy(&bytes);
+        let source = path.to_string_lossy().into_owned();
+        let raw: Value =
+            match serde_json::from_str::<&RawValue>(&text).and_then(|raw| config_value(raw, 0)) {
+                Ok(value) if value.is_object() => value,
+                _ => {
+                    return Ok(ConfigLoadResult::Err {
+                        reason: ConfigLoadFailureReason::InvalidConfig,
+                        message: format!("Invalid JSON object in {source}"),
+                        source: Some(source),
+                    });
+                }
+            };
+        if raw
+            .get("nativeModel")
+            .is_some_and(|value| value.as_str().is_none_or(|model| model.is_empty()))
+        {
+            return Ok(ConfigLoadResult::Err {
+                reason: ConfigLoadFailureReason::InvalidConfig,
+                message: format!(
+                    "Websearch config nativeModel in {source} must be a non-empty model id."
+                ),
+                source: Some(source),
+            });
+        }
+        let Some(config) = config_from_object(&raw) else {
+            return Ok(ConfigLoadResult::Err {
+                reason: ConfigLoadFailureReason::InvalidConfig,
+                message: format!("Invalid provider config in {source}"),
+                source: Some(source),
+            });
+        };
+        return Ok(match validate_websearch_config(&config) {
+            Ok(()) => ConfigLoadResult::Ok { config, source },
+            Err((reason, message)) => ConfigLoadResult::Err {
+                reason,
+                message,
+                source: Some(source),
+            },
+        });
+    }
+    let mut provider = SearchProviderConfig::new(SearchProvider::DuckduckgoHtml);
+    provider.id = Some("default".into());
+    provider.max_results = Some(10.);
+    Ok(ConfigLoadResult::Ok {
+        config: WebsearchConfig {
+            strategy: RoutingStrategy::Priority,
+            fallback: true,
+            auto: true,
+            native_model: None,
+            providers: vec![SearchProviderEntry {
+                config: provider,
+                priority: None,
+                weight: None,
+                fallback_model: None,
+            }],
+        },
+        source: "default:duckduckgo-html".into(),
+    })
 }
 #[cfg(test)]
 mod tests {
-    use super::*; use serde_json::json;
-    #[tokio::test] async fn upstream_project_config_path_priority() {
-        for (paths,winner) in [(vec![".senpi/websearch.json"],".senpi/websearch.json"),(vec![".pi/websearch.json"],".pi/websearch.json"),(vec![".senpi/websearch.json",".pi/websearch.json"],".senpi/websearch.json")] {
-            let cwd=tempfile::tempdir().unwrap(); let home=tempfile::tempdir().unwrap();
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn upstream_project_config_path_priority() {
+        for (paths, winner) in [
+            (vec![".senpi/websearch.json"], ".senpi/websearch.json"),
+            (vec![".pi/websearch.json"], ".pi/websearch.json"),
+            (
+                vec![".senpi/websearch.json", ".pi/websearch.json"],
+                ".senpi/websearch.json",
+            ),
+        ] {
+            let cwd = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
             std::fs::create_dir(home.path().join(".senpi")).unwrap();
-            std::fs::write(home.path().join(".senpi/websearch.json"),r#"{"provider":"duckduckgo-html","id":"home"}"#).unwrap();
-            for path in paths { let path=cwd.path().join(path); std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(path,r#"{"provider":"duckduckgo-html","id":"project"}"#).unwrap(); }
-            let ConfigLoadResult::Ok{config,source}=load_websearch_config(cwd.path(),home.path()).await.unwrap() else { panic!("expected project config"); };
-            assert_eq!(source,cwd.path().join(winner).to_string_lossy()); assert_eq!(config.providers[0].config.id.as_deref(),Some("project"));
+            std::fs::write(
+                home.path().join(".senpi/websearch.json"),
+                r#"{"provider":"duckduckgo-html","id":"home"}"#,
+            )
+            .unwrap();
+            for path in paths {
+                let path = cwd.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, r#"{"provider":"duckduckgo-html","id":"project"}"#).unwrap();
+            }
+            let ConfigLoadResult::Ok { config, source } =
+                load_websearch_config(cwd.path(), home.path())
+                    .await
+                    .unwrap()
+            else {
+                panic!("expected project config");
+            };
+            assert_eq!(source, cwd.path().join(winner).to_string_lossy());
+            assert_eq!(config.providers[0].config.id.as_deref(), Some("project"));
         }
     }
-    #[test] fn backend_alias_and_false_auto_are_preserved() { let config=config_from_object(&json!({"backend":"duckduckgo-html","auto":false,"maxResults":0,"timeoutMs":0})).unwrap(); assert!(!config.auto); assert_eq!(config.providers[0].config.max_results,None); assert_eq!(config.providers[0].config.timeout_ms,Some(0.)); assert!(validate_websearch_config(&config).is_err()); }
-    #[test] fn invalid_entries_are_filtered_before_validation() { let config=config_from_object(&json!({"providers":[null,{"provider":"invalid"},{"provider":"duckduckgo-html"}],"strategy":"round-robin"})).unwrap(); assert_eq!(config.providers.len(),1); assert_eq!(config.strategy,RoutingStrategy::RoundRobin); assert!(validate_websearch_config(&config).is_ok()); }
-    #[test] fn native_model_is_parsed_for_both_shapes() {
-        assert_eq!(config_from_object(&json!({"provider":"duckduckgo-html","nativeModel":"gpt-5-mini"})).unwrap().native_model.as_deref(),Some("gpt-5-mini"));
+    #[test]
+    fn backend_alias_and_false_auto_are_preserved() {
+        let config = config_from_object(
+            &json!({"backend":"duckduckgo-html","auto":false,"maxResults":0,"timeoutMs":0}),
+        )
+        .unwrap();
+        assert!(!config.auto);
+        assert_eq!(config.providers[0].config.max_results, None);
+        assert_eq!(config.providers[0].config.timeout_ms, Some(0.));
+        assert!(validate_websearch_config(&config).is_err());
+    }
+    #[test]
+    fn invalid_entries_are_filtered_before_validation() {
+        let config=config_from_object(&json!({"providers":[null,{"provider":"invalid"},{"provider":"duckduckgo-html"}],"strategy":"round-robin"})).unwrap();
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.strategy, RoutingStrategy::RoundRobin);
+        assert!(validate_websearch_config(&config).is_ok());
+    }
+    #[test]
+    fn native_model_is_parsed_for_both_shapes() {
+        assert_eq!(
+            config_from_object(&json!({"provider":"duckduckgo-html","nativeModel":"gpt-5-mini"}))
+                .unwrap()
+                .native_model
+                .as_deref(),
+            Some("gpt-5-mini")
+        );
         assert_eq!(config_from_object(&json!({"providers":[{"provider":"duckduckgo-html"}],"nativeModel":"claude-haiku-4-5"})).unwrap().native_model.as_deref(),Some("claude-haiku-4-5"));
-        assert_eq!(config_from_object(&json!({"provider":"duckduckgo-html"})).unwrap().native_model,None);
+        assert_eq!(
+            config_from_object(&json!({"provider":"duckduckgo-html"}))
+                .unwrap()
+                .native_model,
+            None
+        );
     }
-    #[tokio::test] async fn blank_native_model_is_an_invalid_config() {
-        for value in [json!(""),json!(42)] {
-            let cwd=tempfile::tempdir().unwrap(); let home=tempfile::tempdir().unwrap();
+    #[tokio::test]
+    async fn blank_native_model_is_an_invalid_config() {
+        for value in [json!(""), json!(42)] {
+            let cwd = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
             std::fs::create_dir(cwd.path().join(".senpi")).unwrap();
-            let path=cwd.path().join(".senpi/websearch.json");
-            std::fs::write(&path,json!({"provider":"duckduckgo-html","nativeModel":value}).to_string()).unwrap();
-            let ConfigLoadResult::Err{reason,message,..}=load_websearch_config(cwd.path(),home.path()).await.unwrap() else { panic!("expected invalid nativeModel"); };
-            assert_eq!(reason,ConfigLoadFailureReason::InvalidConfig);
-            assert_eq!(message,format!("Websearch config nativeModel in {} must be a non-empty model id.",path.to_string_lossy()));
+            let path = cwd.path().join(".senpi/websearch.json");
+            std::fs::write(
+                &path,
+                json!({"provider":"duckduckgo-html","nativeModel":value}).to_string(),
+            )
+            .unwrap();
+            let ConfigLoadResult::Err {
+                reason, message, ..
+            } = load_websearch_config(cwd.path(), home.path())
+                .await
+                .unwrap()
+            else {
+                panic!("expected invalid nativeModel");
+            };
+            assert_eq!(reason, ConfigLoadFailureReason::InvalidConfig);
+            assert_eq!(
+                message,
+                format!(
+                    "Websearch config nativeModel in {} must be a non-empty model id.",
+                    path.to_string_lossy()
+                )
+            );
         }
     }
-    #[test] fn mixed_single_and_list_is_rejected() { assert!(config_from_object(&json!({"provider":"exa","providers":[]})).is_none()); }
-    #[test] fn empty_domain_lists_still_conflict() { let config=config_from_object(&json!({"provider":"duckduckgo-html","allowedDomains":[],"blockedDomains":[]})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::InvalidConfig); }
-    #[test] fn hosted_search_requires_key() { let config=config_from_object(&json!({"provider":"openai"})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::MissingApiKey); }
-    #[test] fn private_override_rejected_before_missing_key() { let config=config_from_object(&json!({"provider":"exa","baseUrl":"https://localhost"})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::InvalidConfig); }
-    #[tokio::test] async fn config_read_replaces_invalid_utf8_like_node() {
-        let dir=tempfile::tempdir().unwrap();
-        let cwd=dir.path().join("project"); let home=dir.path().join("home");
+    #[test]
+    fn mixed_single_and_list_is_rejected() {
+        assert!(config_from_object(&json!({"provider":"exa","providers":[]})).is_none());
+    }
+    #[test]
+    fn empty_domain_lists_still_conflict() {
+        let config = config_from_object(
+            &json!({"provider":"duckduckgo-html","allowedDomains":[],"blockedDomains":[]}),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_websearch_config(&config).unwrap_err().0,
+            ConfigLoadFailureReason::InvalidConfig
+        );
+    }
+    #[test]
+    fn hosted_search_requires_key() {
+        let config = config_from_object(&json!({"provider":"openai"})).unwrap();
+        assert_eq!(
+            validate_websearch_config(&config).unwrap_err().0,
+            ConfigLoadFailureReason::MissingApiKey
+        );
+    }
+    #[test]
+    fn private_override_rejected_before_missing_key() {
+        let config =
+            config_from_object(&json!({"provider":"exa","baseUrl":"https://localhost"})).unwrap();
+        assert_eq!(
+            validate_websearch_config(&config).unwrap_err().0,
+            ConfigLoadFailureReason::InvalidConfig
+        );
+    }
+    #[tokio::test]
+    async fn config_read_replaces_invalid_utf8_like_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("project");
+        let home = dir.path().join("home");
         tokio::fs::create_dir_all(cwd.join(".senpi")).await.unwrap();
-        let mut bytes=b"{\"provider\":\"duckduckgo-html\",\"auto\":false,\"id\":\"".to_vec();
-        bytes.push(0xff); bytes.extend_from_slice(b"\"}");
-        tokio::fs::write(cwd.join(".senpi/websearch.json"),bytes).await.unwrap();
-        let result=load_websearch_config(&cwd,&home).await.unwrap();
+        let mut bytes = b"{\"provider\":\"duckduckgo-html\",\"auto\":false,\"id\":\"".to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice(b"\"}");
+        tokio::fs::write(cwd.join(".senpi/websearch.json"), bytes)
+            .await
+            .unwrap();
+        let result = load_websearch_config(&cwd, &home).await.unwrap();
         match result {
-            ConfigLoadResult::Ok{config,..}=>assert_eq!(config.providers[0].config.id.as_deref(),Some("\u{fffd}")),
-            _=>panic!("expected decoded configuration"),
+            ConfigLoadResult::Ok { config, .. } => {
+                assert_eq!(config.providers[0].config.id.as_deref(), Some("\u{fffd}"))
+            }
+            _ => panic!("expected decoded configuration"),
         }
     }
-    #[tokio::test] async fn invalid_project_config_does_not_fall_through_to_home() {
-        let dir=tempfile::tempdir().unwrap();
-        let cwd=dir.path().join("project"); let home=dir.path().join("home");
+    #[tokio::test]
+    async fn invalid_project_config_does_not_fall_through_to_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("project");
+        let home = dir.path().join("home");
         tokio::fs::create_dir_all(cwd.join(".senpi")).await.unwrap();
         tokio::fs::create_dir_all(&home).await.unwrap();
-        tokio::fs::write(cwd.join(".senpi/websearch.json"),b"\xff").await.unwrap();
-        tokio::fs::write(home.join("websearch.json"),b"{\"provider\":\"duckduckgo-html\",\"auto\":false}").await.unwrap();
-        let result=load_websearch_config(&cwd,&home).await.unwrap();
+        tokio::fs::write(cwd.join(".senpi/websearch.json"), b"\xff")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.join("websearch.json"),
+            b"{\"provider\":\"duckduckgo-html\",\"auto\":false}",
+        )
+        .await
+        .unwrap();
+        let result = load_websearch_config(&cwd, &home).await.unwrap();
         match result {
-            ConfigLoadResult::Err{reason,source,..}=>{
-                assert_eq!(reason,ConfigLoadFailureReason::InvalidConfig);
-                assert_eq!(source,Some(cwd.join(".senpi/websearch.json").to_string_lossy().into_owned()));
-            },
-            _=>panic!("expected invalid first configuration"),
+            ConfigLoadResult::Err { reason, source, .. } => {
+                assert_eq!(reason, ConfigLoadFailureReason::InvalidConfig);
+                assert_eq!(
+                    source,
+                    Some(
+                        cwd.join(".senpi/websearch.json")
+                            .to_string_lossy()
+                            .into_owned()
+                    )
+                );
+            }
+            _ => panic!("expected invalid first configuration"),
         }
     }
 }

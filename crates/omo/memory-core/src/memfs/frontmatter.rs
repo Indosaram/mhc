@@ -103,7 +103,8 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
         Some(desc) if !desc.trim().is_empty() => desc,
         _ => {
             return Err(FrontmatterError {
-                message: "frontmatter: target file frontmatter is missing 'description'".to_string(),
+                message: "frontmatter: target file frontmatter is missing 'description'"
+                    .to_string(),
             });
         }
     };
@@ -208,9 +209,10 @@ fn assert_strict_round_trip(
         mismatches.push("read_only");
     }
     if let Some(kind) = &frontmatter.kind
-        && reparsed.kind.as_deref() != Some(&sanitize_frontmatter_value(kind)) {
-            mismatches.push("kind");
-        }
+        && reparsed.kind.as_deref() != Some(&sanitize_frontmatter_value(kind))
+    {
+        mismatches.push("kind");
+    }
     if serde_json::to_string(&reparsed.aliases).unwrap_or_default()
         != serde_json::to_string(&frontmatter.aliases).unwrap_or_default()
     {

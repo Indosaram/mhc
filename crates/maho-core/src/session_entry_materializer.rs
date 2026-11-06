@@ -19,11 +19,18 @@ pub fn materialize_session_entries<'a>(
     let materialized: Vec<Value> = entries
         .into_iter()
         .map(|entry| {
-            let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-            resident_store.materialize_with(entry, Some(&|_missing| {
-                missing_entry_ids.borrow_mut().insert(entry_id.clone());
-                None
-            }))
+            let entry_id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            resident_store.materialize_with(
+                entry,
+                Some(&|_missing| {
+                    missing_entry_ids.borrow_mut().insert(entry_id.clone());
+                    None
+                }),
+            )
         })
         .collect();
 
@@ -47,7 +54,11 @@ pub fn materialize_session_entries<'a>(
     let repaired: Vec<Value> = materialized
         .into_iter()
         .map(|entry| {
-            let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             if !missing.contains(&id) {
                 return entry;
             }
@@ -66,7 +77,9 @@ pub fn materialize_session_entries<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_resident_store::{ResidentStringStore, ResidentStringStoreOptions, RESIDENT_STRING_PREFIX};
+    use crate::session_resident_store::{
+        RESIDENT_STRING_PREFIX, ResidentStringStore, ResidentStringStoreOptions,
+    };
     use serde_json::json;
 
     fn store() -> ResidentStringStore {
@@ -79,7 +92,13 @@ mod tests {
         let entries = vec![json!({ "id": "a", "type": "message", "text": "plain" })];
         let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
         let result = materialize_session_entries(&entries, &store, Vec::new, |entry| {
-            seen.borrow_mut().push(entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned());
+            seen.borrow_mut().push(
+                entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
         });
         assert_eq!(result.len(), 1);
         assert_eq!(seen.into_inner(), vec!["a".to_owned()]);
@@ -104,6 +123,11 @@ mod tests {
         let missing_ref = format!("{RESIDENT_STRING_PREFIX}gone");
         let entries = vec![json!({ "id": "a", "type": "message", "text": missing_ref })];
         let result = materialize_session_entries(&entries, &store, Vec::new, |_| {});
-        assert!(result[0]["text"].as_str().unwrap_or_default().contains(RESIDENT_STRING_PREFIX));
+        assert!(
+            result[0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(RESIDENT_STRING_PREFIX)
+        );
     }
 }

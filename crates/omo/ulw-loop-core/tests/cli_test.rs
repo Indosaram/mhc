@@ -31,7 +31,13 @@ fn test_is_ulw_loop_subcommand() {
 #[test]
 fn test_normalize_codex_goal_mode() {
     assert_eq!(normalize_codex_goal_mode(None).unwrap(), "aggregate");
-    assert_eq!(normalize_codex_goal_mode(Some("aggregate")).unwrap(), "aggregate");
-    assert_eq!(normalize_codex_goal_mode(Some("per_story")).unwrap(), "per_story");
+    assert_eq!(
+        normalize_codex_goal_mode(Some("aggregate")).unwrap(),
+        "aggregate"
+    );
+    assert_eq!(
+        normalize_codex_goal_mode(Some("per_story")).unwrap(),
+        "per_story"
+    );
     assert!(normalize_codex_goal_mode(Some("invalid")).is_err());
 }

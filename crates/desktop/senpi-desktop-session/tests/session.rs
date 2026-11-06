@@ -142,11 +142,9 @@ async fn capture_returns_a_frame_that_later_clicks_map_through() {
         panic!("expected a capture, got {capture:?}");
     };
     assert_eq!((capture.source_width, capture.source_height), (4800, 1800));
-    assert!(
-        capture
-            .data
-            .is_some_and(|data| data.starts_with("iVBORw0KGgo"))
-    );
+    assert!(capture
+        .data
+        .is_some_and(|data| data.starts_with("iVBORw0KGgo")));
     assert_eq!(
         session.submit(click_desktop()).wait().await,
         Ok(Response::Unit)
@@ -220,12 +218,10 @@ async fn an_abandoned_request_never_reaches_the_backend() {
         .expect("barrier answers");
     // Then
     let sink = sinks.lock().last().cloned().expect("open built a backend");
-    assert!(
-        !sink
-            .ops()
-            .iter()
-            .any(|op| matches!(op, SinkOp::Pointer { .. }))
-    );
+    assert!(!sink
+        .ops()
+        .iter()
+        .any(|op| matches!(op, SinkOp::Pointer { .. })));
 }
 
 #[tokio::test]

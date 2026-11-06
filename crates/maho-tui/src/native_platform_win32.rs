@@ -7,7 +7,10 @@
 //! so it keeps the trait default (`None`): callers fall back exactly as when senpi's addon is
 //! missing.
 
-use clipboard_win::{formats, get_clipboard, get_clipboard_string, is_format_avail, register_format, set_clipboard_string};
+use clipboard_win::{
+    formats, get_clipboard, get_clipboard_string, is_format_avail, register_format,
+    set_clipboard_string,
+};
 use crossterm_winapi::{ConsoleMode, Handle, HandleType};
 
 use crate::native_platform::{NativeClipboard, NativePlatformHelper};
@@ -34,7 +37,11 @@ fn dib_pixel_offset(dib: &[u8]) -> Option<usize> {
     let header_size = read_u32(dib, 0)? as usize;
     if header_size == 12 {
         let bits_per_pixel = read_u16(dib, 10)?;
-        let color_count = if bits_per_pixel <= 8 { 1usize << bits_per_pixel } else { 0 };
+        let color_count = if bits_per_pixel <= 8 {
+            1usize << bits_per_pixel
+        } else {
+            0
+        };
         let offset = header_size + color_count * 3;
         return (offset <= size).then_some(offset);
     }
@@ -76,23 +83,32 @@ impl NativeClipboard for Win32PlatformHelper {
         if !is_format_avail(formats::CF_UNICODETEXT) {
             return Ok(None);
         }
-        get_clipboard_string().map(Some).map_err(|error| error.to_string())
+        get_clipboard_string()
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     fn get_image(&self) -> Result<Option<Vec<u8>>, String> {
-        let png_format = register_format("PNG").map(std::num::NonZeroU32::get).filter(|format| is_format_avail(*format));
-        let dib_format = [formats::CF_DIBV5, formats::CF_DIB].into_iter().find(|format| is_format_avail(*format));
+        let png_format = register_format("PNG")
+            .map(std::num::NonZeroU32::get)
+            .filter(|format| is_format_avail(*format));
+        let dib_format = [formats::CF_DIBV5, formats::CF_DIB]
+            .into_iter()
+            .find(|format| is_format_avail(*format));
         let Some(format) = png_format.or(dib_format) else {
             return Ok(None);
         };
-        let bytes: Vec<u8> = get_clipboard(formats::RawData(format)).map_err(|error| error.to_string())?;
+        let bytes: Vec<u8> =
+            get_clipboard(formats::RawData(format)).map_err(|error| error.to_string())?;
         if bytes.is_empty() {
             return Err("Clipboard does not contain an image".to_string());
         }
         if png_format.is_some() {
             return Ok(Some(bytes));
         }
-        dib_to_bmp(&bytes).map(Some).ok_or_else(|| "Could not create clipboard image buffer".to_string())
+        dib_to_bmp(&bytes)
+            .map(Some)
+            .ok_or_else(|| "Could not create clipboard image buffer".to_string())
     }
 
     fn set_text(&self, text: &str) -> Option<Result<(), String>> {
@@ -102,10 +118,12 @@ impl NativeClipboard for Win32PlatformHelper {
 
 impl NativePlatformHelper for Win32PlatformHelper {
     fn enable_virtual_terminal_input(&self) -> Option<bool> {
-        let enabled = Handle::new(HandleType::InputHandle).map(ConsoleMode::from).and_then(|console| {
-            let mode = console.mode()?;
-            console.set_mode(mode | ENABLE_VIRTUAL_TERMINAL_INPUT)
-        });
+        let enabled = Handle::new(HandleType::InputHandle)
+            .map(ConsoleMode::from)
+            .and_then(|console| {
+                let mode = console.mode()?;
+                console.set_mode(mode | ENABLE_VIRTUAL_TERMINAL_INPUT)
+            });
         Some(enabled.is_ok())
     }
 }

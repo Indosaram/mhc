@@ -6,8 +6,8 @@ use super::{
     types::{ConnectionOptions, ConnectionState, ConnectionStateChange},
 };
 use crate::protocol::{codec::encode_client_message, messages::is_server_id};
-use maho_chord::types::JsonValue as Value;
 use crate::transport_json as json;
+use maho_chord::types::JsonValue as Value;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 type Reply = oneshot::Sender<Result<Option<Value>, ClientError>>;
 type ConnectionListener = Arc<dyn Fn(ConnectionStateChange) + Send + Sync>;
 type AttachmentListener = Arc<dyn Fn(Option<Value>) + Send + Sync>;
-type ListenerErrorObserver=Arc<dyn Fn(ClientError)+Send+Sync>;
+type ListenerErrorObserver = Arc<dyn Fn(ClientError) + Send + Sync>;
 struct Pending {
     reply: Option<Reply>,
     subscription: Option<maho_chord::types::JsString>,
@@ -41,7 +41,7 @@ struct State {
     listener_sequence: u64,
     connection_listeners: BTreeMap<u64, ConnectionListener>,
     attachment_listeners: BTreeMap<u64, AttachmentListener>,
-    listener_error:Option<ListenerErrorObserver>,
+    listener_error: Option<ListenerErrorObserver>,
 }
 
 pub struct Client {
@@ -77,7 +77,7 @@ impl Client {
             pending: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             listener_sequence: 0,
-            listener_error:None,
+            listener_error: None,
             connection_listeners: BTreeMap::new(),
             attachment_listeners: BTreeMap::new(),
         }));
@@ -249,13 +249,24 @@ impl Client {
         let mut state = lock(&self.state);
         state.connection_listeners.clear();
         state.attachment_listeners.clear();
-        state.listener_error=None;
+        state.listener_error = None;
     }
-    pub fn set_listener_error_observer(&self,observer:Option<ListenerErrorObserver>)->Result<(),ClientError> {
-        let mut state=lock(&self.state);if state.disposed {return Err(ClientError::Disposed);}state.listener_error=observer;Ok(())
+    pub fn set_listener_error_observer(
+        &self,
+        observer: Option<ListenerErrorObserver>,
+    ) -> Result<(), ClientError> {
+        let mut state = lock(&self.state);
+        if state.disposed {
+            return Err(ClientError::Disposed);
+        }
+        state.listener_error = observer;
+        Ok(())
     }
-    pub fn report_listener_error(&self,error:ClientError) {
-        let observer=lock(&self.state).listener_error.clone();if let Some(observer)=observer {observer(error);}
+    pub fn report_listener_error(&self, error: ClientError) {
+        let observer = lock(&self.state).listener_error.clone();
+        if let Some(observer) = observer {
+            observer(error);
+        }
     }
     pub async fn request(
         &self,
@@ -351,17 +362,30 @@ impl Client {
         service_id: &maho_chord::types::JsString,
         mode: maho_chord::types::ServiceMode,
     ) -> Result<ServiceSubscription, ClientError> {
-        self.subscribe_with_cancellation(target,service_id,mode,None).await
+        self.subscribe_with_cancellation(target, service_id, mode, None)
+            .await
     }
     pub async fn subscribe_with_cancellation(
-        self:&Arc<Self>,target:Value,service_id:&maho_chord::types::JsString,mode:maho_chord::types::ServiceMode,mut cancellation:Option<watch::Receiver<Option<ClientError>>>,
-    )->Result<ServiceSubscription,ClientError> {
-        if let Some(reason)=cancellation.as_ref().and_then(|signal|signal.borrow().clone()) {return Err(reason);}
+        self: &Arc<Self>,
+        target: Value,
+        service_id: &maho_chord::types::JsString,
+        mode: maho_chord::types::ServiceMode,
+        mut cancellation: Option<watch::Receiver<Option<ClientError>>>,
+    ) -> Result<ServiceSubscription, ClientError> {
+        if let Some(reason) = cancellation
+            .as_ref()
+            .and_then(|signal| signal.borrow().clone())
+        {
+            return Err(reason);
+        }
         let (updates, rx) = mpsc::unbounded_channel();
         let id = {
             let mut state = lock(&self.state);
             state.subscription_sequence = state.subscription_sequence.wrapping_add(1);
-            let id = maho_chord::types::JsString::from(format!("service-{}", state.subscription_sequence));
+            let id = maho_chord::types::JsString::from(format!(
+                "service-{}",
+                state.subscription_sequence
+            ));
             state.subscriptions.insert(
                 id.clone(),
                 SubscriptionState {
@@ -506,7 +530,9 @@ fn handle_message(
             }
         }
         Some("service_update") => {
-            let Value::String(id) = &message["subscriptionId"] else { return Err(ClientError::Protocol("Invalid subscription ID".into())); };
+            let Value::String(id) = &message["subscriptionId"] else {
+                return Err(ClientError::Protocol("Invalid subscription ID".into()));
+            };
             if let Some(active) = state.subscriptions.get_mut(id) {
                 if !active.hydrated {
                     active.wire.push(message["update"].clone());

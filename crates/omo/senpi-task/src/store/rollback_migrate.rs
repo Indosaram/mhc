@@ -186,9 +186,10 @@ pub fn migrate_host_session_sockets(
                     .then(|| "session_unavailable".into());
             }
             if unsupported(cost_status(&next), R0_COST_STATUSES)
-                && let Some(stats) = next.run_stats.as_mut() {
-                    stats.cost_status = Some(CostReportStatus::Reported);
-                }
+                && let Some(stats) = next.run_stats.as_mut()
+            {
+                stats.cost_status = Some(CostReportStatus::Reported);
+            }
             next
         })?;
         if next.is_none() {

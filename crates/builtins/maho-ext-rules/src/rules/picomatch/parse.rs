@@ -8,10 +8,11 @@
 //! the pattern contains astral characters.
 
 use super::constants::{
-    ExtglobChars, MAX_LENGTH, extglob_chars, glob_chars, posix_regex_source,
-    replacement,
+    ExtglobChars, MAX_LENGTH, extglob_chars, glob_chars, posix_regex_source, replacement,
 };
-use super::utils::{escape_regex, has_regex_chars, js_length, js_unit_order, js_units, remove_prefix, unit_value};
+use super::utils::{
+    escape_regex, has_regex_chars, js_length, js_unit_order, js_units, remove_prefix, unit_value,
+};
 use super::{Options, PicomatchError};
 
 #[derive(Clone, Debug, Default)]
@@ -77,13 +78,39 @@ fn prefix_chars(value: &str, count: usize) -> String {
 }
 
 fn rfind_char(value: &str, ch: char) -> Option<usize> {
-    value.chars().enumerate().filter(|(_, c)| *c == ch).map(|(i, _)| i).last()
+    value
+        .chars()
+        .enumerate()
+        .filter(|(_, c)| *c == ch)
+        .map(|(i, _)| i)
+        .last()
 }
 
 fn non_special_chars_len(value: &str) -> usize {
     value
         .chars()
-        .take_while(|ch| !matches!(ch, '@' | '!' | '[' | ']' | '.' | ',' | '$' | '*' | '+' | '?' | '^' | '{' | '}' | '(' | ')' | '|' | '\\' | '/'))
+        .take_while(|ch| {
+            !matches!(
+                ch,
+                '@' | '!'
+                    | '['
+                    | ']'
+                    | '.'
+                    | ','
+                    | '$'
+                    | '*'
+                    | '+'
+                    | '?'
+                    | '^'
+                    | '{'
+                    | '}'
+                    | '('
+                    | ')'
+                    | '|'
+                    | '\\'
+                    | '/'
+            )
+        })
         .count()
 }
 
@@ -148,7 +175,10 @@ fn is_plain_branch(branch: &str) -> bool {
             escaped = true;
             continue;
         }
-        if matches!(ch, '?' | '*' | '+' | '@' | '!' | '(' | ')' | '[' | ']' | '{' | '}') {
+        if matches!(
+            ch,
+            '?' | '*' | '+' | '@' | '!' | '(' | ')' | '[' | ']' | '{' | '}'
+        ) {
             return false;
         }
     }
@@ -161,7 +191,11 @@ fn normalize_simple_branch(branch: &str) -> Option<String> {
     while changed {
         changed = false;
         if is_wrapped_at_group(&value) {
-            value = value.chars().skip(2).take(value.chars().count().saturating_sub(3)).collect();
+            value = value
+                .chars()
+                .skip(2)
+                .take(value.chars().count().saturating_sub(3))
+                .collect();
             changed = true;
         }
     }
@@ -200,7 +234,10 @@ fn unescape_single(value: &str) -> String {
 }
 
 fn has_repeated_char_prefix_overlap(branches: &[String]) -> bool {
-    let values: Vec<String> = branches.iter().filter_map(|branch| normalize_simple_branch(branch)).collect();
+    let values: Vec<String> = branches
+        .iter()
+        .filter_map(|branch| normalize_simple_branch(branch))
+        .collect();
     for i in 0..values.len() {
         for j in i + 1..values.len() {
             let a = &values[i];
@@ -297,7 +334,10 @@ fn build_char_class_star(chars: &[String]) -> String {
     let source = if chars.len() == 1 {
         escape_regex(&chars[0])
     } else {
-        format!("[{}]", chars.iter().map(|ch| escape_regex(ch)).collect::<String>())
+        format!(
+            "[{}]",
+            chars.iter().map(|ch| escape_regex(ch)).collect::<String>()
+        )
     };
     format!("{source}*")
 }
@@ -312,7 +352,10 @@ fn get_star_extglob_sequence_chars(pattern: &str) -> Option<Vec<String>> {
         if matched.kind != '*' {
             return None;
         }
-        let branches: Vec<String> = split_top_level(&matched.body).into_iter().map(|branch| branch.trim().to_string()).collect();
+        let branches: Vec<String> = split_top_level(&matched.body)
+            .into_iter()
+            .map(|branch| branch.trim().to_string())
+            .collect();
         if branches.len() != 1 {
             return None;
         }
@@ -346,13 +389,21 @@ fn analyze_repeated_extglob(body: &str, options: &Options) -> Analysis {
         return Analysis::default();
     }
     let max = options.max_extglob_recursion.depth();
-    let branches: Vec<String> = split_top_level(body).into_iter().map(|branch| branch.trim().to_string()).collect();
+    let branches: Vec<String> = split_top_level(body)
+        .into_iter()
+        .map(|branch| branch.trim().to_string())
+        .collect();
     if branches.len() > 1
         && (branches.iter().any(String::is_empty)
-            || branches.iter().any(|branch| !branch.is_empty() && branch.chars().all(|ch| ch == '*' || ch == '?'))
+            || branches.iter().any(|branch| {
+                !branch.is_empty() && branch.chars().all(|ch| ch == '*' || ch == '?')
+            })
             || has_repeated_char_prefix_overlap(&branches))
     {
-        return Analysis { risky: true, safe_output: None };
+        return Analysis {
+            risky: true,
+            safe_output: None,
+        };
     }
 
     let mut safe_chars: Vec<String> = Vec::new();
@@ -372,7 +423,10 @@ fn analyze_repeated_extglob(body: &str, options: &Options) -> Analysis {
         }
         combinable = false;
         if repeated_extglob_recursion(branch) > max {
-            return Analysis { risky: true, safe_output: None };
+            return Analysis {
+                risky: true,
+                safe_output: None,
+            };
         }
     }
 
@@ -384,9 +438,15 @@ fn analyze_repeated_extglob(body: &str, options: &Options) -> Analysis {
                     unique.push(ch);
                 }
             }
-            return Analysis { risky: true, safe_output: Some(build_char_class_star(&unique)) };
+            return Analysis {
+                risky: true,
+                safe_output: Some(build_char_class_star(&unique)),
+            };
         }
-        return Analysis { risky: true, safe_output: None };
+        return Analysis {
+            risky: true,
+            safe_output: None,
+        };
     }
     Analysis::default()
 }
@@ -408,7 +468,11 @@ fn expand_range(args: &[String]) -> String {
         UnitClass::OutOfOrder => escape_range_fallback(&sorted),
         UnitClass::Unsupported => {
             let value = format!("[{}]", sorted.join("-"));
-            if fancy_regex::Regex::new(&value).is_ok() { value } else { escape_range_fallback(&sorted) }
+            if fancy_regex::Regex::new(&value).is_ok() {
+                value
+            } else {
+                escape_range_fallback(&sorted)
+            }
         }
     }
 }
@@ -416,7 +480,11 @@ fn expand_range(args: &[String]) -> String {
 /// `args.map(v => utils.escapeRegex(v)).join('..')` -- the pinned fallback when
 /// `new RegExp(value)` throws.
 fn escape_range_fallback(sorted: &[String]) -> String {
-    sorted.iter().map(|entry| escape_regex(entry)).collect::<Vec<_>>().join("..")
+    sorted
+        .iter()
+        .map(|entry| escape_regex(entry))
+        .collect::<Vec<_>>()
+        .join("..")
 }
 
 /// The outcome of rewriting a JS class body into the mapped unit domain.
@@ -439,7 +507,10 @@ fn translate_unit_class(body: &str) -> UnitClass {
     let mut out = String::new();
     let mut index = 0;
     while index < atoms.len() {
-        let is_range = index + 2 < atoms.len() && atoms[index + 1].dash && !atoms[index].dash && !atoms[index + 2].dash;
+        let is_range = index + 2 < atoms.len()
+            && atoms[index + 1].dash
+            && !atoms[index].dash
+            && !atoms[index + 2].dash;
         if is_range {
             if atoms[index].value > atoms[index + 2].value {
                 return UnitClass::OutOfOrder;
@@ -469,7 +540,10 @@ fn class_atoms(chars: &[char]) -> Option<Vec<ClassAtom>> {
     while index < chars.len() {
         let ch = chars[index];
         if ch != '\\' {
-            atoms.push(ClassAtom { value: unit_value(ch), dash: ch == '-' });
+            atoms.push(ClassAtom {
+                value: unit_value(ch),
+                dash: ch == '-',
+            });
             index += 1;
             continue;
         }
@@ -487,15 +561,21 @@ fn class_atoms(chars: &[char]) -> Option<Vec<ClassAtom>> {
                 (u32::from_str_radix(&digits, 8).unwrap_or(0), len)
             }
             'x' => match (chars.get(index + 2), chars.get(index + 3)) {
-                (Some(&high), Some(&low)) if high.is_ascii_hexdigit() && low.is_ascii_hexdigit() => {
-                    (u32::from_str_radix(&format!("{high}{low}"), 16).unwrap_or(0), 4)
+                (Some(&high), Some(&low))
+                    if high.is_ascii_hexdigit() && low.is_ascii_hexdigit() =>
+                {
+                    (
+                        u32::from_str_radix(&format!("{high}{low}"), 16).unwrap_or(0),
+                        4,
+                    )
                 }
                 _ => (u32::from('x'), 2),
             },
             'u' => match chars.get(index + 2..index + 6) {
-                Some(digits) if digits.iter().all(char::is_ascii_hexdigit) => {
-                    (u32::from_str_radix(&digits.iter().collect::<String>(), 16).unwrap_or(0), 6)
-                }
+                Some(digits) if digits.iter().all(char::is_ascii_hexdigit) => (
+                    u32::from_str_radix(&digits.iter().collect::<String>(), 16).unwrap_or(0),
+                    6,
+                ),
                 _ => (u32::from('u'), 2),
             },
             _ => (u32::from(escaped), 2),
@@ -509,8 +589,14 @@ fn class_atoms(chars: &[char]) -> Option<Vec<ClassAtom>> {
 /// JS `LegacyOctalEscapeSequence` (Annex B) digit collection.
 fn octal_digits(chars: &[char], start: usize) -> (String, usize) {
     let first = chars[start + 1];
-    let second = chars.get(start + 2).copied().filter(|ch| ('0'..='7').contains(ch));
-    let third = chars.get(start + 3).copied().filter(|ch| ('0'..='7').contains(ch));
+    let second = chars
+        .get(start + 2)
+        .copied()
+        .filter(|ch| ('0'..='7').contains(ch));
+    let third = chars
+        .get(start + 3)
+        .copied()
+        .filter(|ch| ('0'..='7').contains(ch));
     let digits = if first == '0' {
         match (second, third) {
             (Some(second), Some(third)) => format!("0{second}{third}"),
@@ -551,7 +637,12 @@ fn push_unit_piece(out: &mut String, from: u32, to: u32, mapped: bool) {
     }
 }
 
-fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str, qmark_no_dot: &str) -> (String, bool) {
+fn fastpath_replace(
+    input: &str,
+    glob: &super::constants::GlobChars,
+    star: &str,
+    qmark_no_dot: &str,
+) -> (String, bool) {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
     let mut backslashes = false;
@@ -564,7 +655,9 @@ fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str,
                 continue;
             }
             let start = index + esc_len;
-            let Some(first) = chars.get(start).copied() else { continue };
+            let Some(first) = chars.get(start).copied() else {
+                continue;
+            };
             if is_word_char(first) {
                 continue;
             }
@@ -572,7 +665,11 @@ fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str,
             while chars.get(end) == Some(&first) {
                 end += 1;
             }
-            let esc: String = if esc_len == 1 { "\\".into() } else { String::new() };
+            let esc: String = if esc_len == 1 {
+                "\\".into()
+            } else {
+                String::new()
+            };
             let group: String = chars[start..end].iter().collect();
             let rest: String = chars[start + 1..end].iter().collect();
             matched = Some((esc, group, first.to_string(), rest));
@@ -591,7 +688,11 @@ fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str,
                 whole.clone()
             }
             "?" => {
-                let tail = if rest.is_empty() { String::new() } else { glob.qmark.repeat(rest.chars().count()) };
+                let tail = if rest.is_empty() {
+                    String::new()
+                } else {
+                    glob.qmark.repeat(rest.chars().count())
+                };
                 if !esc.is_empty() {
                     format!("{esc}?{tail}")
                 } else if match_offset == 0 {
@@ -603,7 +704,14 @@ fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str,
             "." => glob.dot_literal.repeat(group.chars().count()),
             "*" => {
                 if !esc.is_empty() {
-                    format!("{esc}*{}", if rest.is_empty() { String::new() } else { star.to_string() })
+                    format!(
+                        "{esc}*{}",
+                        if rest.is_empty() {
+                            String::new()
+                        } else {
+                            star.to_string()
+                        }
+                    )
                 } else {
                     star.to_string()
                 }
@@ -623,7 +731,8 @@ fn fastpath_replace(input: &str, glob: &super::constants::GlobChars, star: &str,
 
 impl Options {
     fn effective_noextglob(&self) -> bool {
-        self.noext.unwrap_or_else(|| self.noextglob.unwrap_or(false))
+        self.noext
+            .unwrap_or_else(|| self.noextglob.unwrap_or(false))
     }
 }
 
@@ -657,7 +766,9 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn new(input: &str, options: &'a Options) -> Result<Self, PicomatchError> {
         let replaced = replacement(input).unwrap_or(input).to_string();
-        let max = options.max_length.map_or(MAX_LENGTH, |value| value.min(MAX_LENGTH));
+        let max = options
+            .max_length
+            .map_or(MAX_LENGTH, |value| value.min(MAX_LENGTH));
         let unit_length = js_length(&replaced);
         if unit_length > max {
             return Err(PicomatchError::Syntax(format!(
@@ -665,14 +776,27 @@ impl<'a> Parser<'a> {
             )));
         }
         let glob = glob_chars(options.windows);
-        let capture = if options.capture { String::new() } else { "?:".into() };
+        let capture = if options.capture {
+            String::new()
+        } else {
+            "?:".into()
+        };
         let star = if options.bash {
             globstar_source(&glob, &capture, options.dot)
         } else {
             glob.star.clone()
         };
-        let star = if options.capture { format!("({star})") } else { star };
-        let bos = Token { kind: "bos".into(), value: String::new(), output: Some(options.prepend.clone().unwrap_or_default()), ..Token::default() };
+        let star = if options.capture {
+            format!("({star})")
+        } else {
+            star
+        };
+        let bos = Token {
+            kind: "bos".into(),
+            value: String::new(),
+            output: Some(options.prepend.clone().unwrap_or_default()),
+            ..Token::default()
+        };
         let mut prefix = None;
         let stripped = remove_prefix(&js_units(&replaced), &mut prefix);
         let chars: Vec<char> = stripped.chars().collect();
@@ -714,7 +838,9 @@ impl<'a> Parser<'a> {
         if target < 0 {
             return String::new();
         }
-        self.input.get(target as usize).map_or_else(String::new, |ch| ch.to_string())
+        self.input
+            .get(target as usize)
+            .map_or_else(String::new, |ch| ch.to_string())
     }
 
     fn advance(&mut self) -> String {
@@ -722,7 +848,9 @@ impl<'a> Parser<'a> {
         if self.index < 0 {
             return String::new();
         }
-        self.input.get(self.index as usize).map_or_else(String::new, |ch| ch.to_string())
+        self.input
+            .get(self.index as usize)
+            .map_or_else(String::new, |ch| ch.to_string())
     }
 
     fn remaining(&self) -> String {
@@ -786,9 +914,15 @@ impl<'a> Parser<'a> {
     fn push(&mut self, mut tok: Token) {
         if self.tokens[self.prev].kind == "globstar" {
             let is_brace = self.braces > 0 && (tok.kind == "comma" || tok.kind == "brace");
-            let is_extglob = tok.extglob || (!self.extglobs.is_empty() && (tok.kind == "pipe" || tok.kind == "paren"));
+            let is_extglob = tok.extglob
+                || (!self.extglobs.is_empty() && (tok.kind == "pipe" || tok.kind == "paren"));
             if tok.kind != "slash" && tok.kind != "paren" && !is_brace && !is_extglob {
-                let prev_output_len = self.tokens[self.prev].output.as_deref().unwrap_or("").chars().count();
+                let prev_output_len = self.tokens[self.prev]
+                    .output
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .count();
                 drop_chars(&mut self.output, prev_output_len);
                 let star = self.star.clone();
                 let prev = &mut self.tokens[self.prev];
@@ -822,7 +956,12 @@ impl<'a> Parser<'a> {
     }
 
     fn extglob_open(&mut self, kind: &str, value: &str) {
-        let table = extglob_chars(value.chars().next().unwrap_or(' '), &self.glob).unwrap_or(ExtglobChars { open: String::new(), close: String::new() });
+        let table = extglob_chars(value.chars().next().unwrap_or(' '), &self.glob).unwrap_or(
+            ExtglobChars {
+                open: String::new(),
+                close: String::new(),
+            },
+        );
         let token = ExtglobToken {
             kind: kind.to_string(),
             open: table.open,
@@ -834,26 +973,58 @@ impl<'a> Parser<'a> {
             start_index: self.index,
             tokens_index: self.tokens.len(),
         };
-        let output = format!("{}{}", if self.options.capture { "(" } else { "" }, token.open);
+        let output = format!(
+            "{}{}",
+            if self.options.capture { "(" } else { "" },
+            token.open
+        );
         self.increment("parens");
-        let first_output = if self.output.is_empty() { Some(self.glob.one_char.clone()) } else { Some(String::new()) };
-        self.push(Token { kind: kind.to_string(), value: value.to_string(), output: first_output, ..Token::default() });
+        let first_output = if self.output.is_empty() {
+            Some(self.glob.one_char.clone())
+        } else {
+            Some(String::new())
+        };
+        self.push(Token {
+            kind: kind.to_string(),
+            value: value.to_string(),
+            output: first_output,
+            ..Token::default()
+        });
         let advance = self.advance();
-        self.push(Token { kind: "paren".into(), extglob: true, value: advance, output: Some(output), ..Token::default() });
+        self.push(Token {
+            kind: "paren".into(),
+            extglob: true,
+            value: advance,
+            output: Some(output),
+            ..Token::default()
+        });
         self.extglobs.push(token);
     }
 
     fn extglob_close(&mut self, token: ExtglobToken, close_value: &str) {
         let start = token.start_index.max(0) as usize;
         let end = (self.index.max(0) as usize + 1).min(self.input.len());
-        let literal: String = self.input[start.min(self.input.len())..end].iter().collect();
-        let body: String = self.input[(start + 2).min(self.input.len())..(self.index.max(0) as usize).min(self.input.len())].iter().collect();
+        let literal: String = self.input[start.min(self.input.len())..end]
+            .iter()
+            .collect();
+        let body: String = self.input
+            [(start + 2).min(self.input.len())..(self.index.max(0) as usize).min(self.input.len())]
+            .iter()
+            .collect();
         let analysis = analyze_repeated_extglob(&body, self.options);
 
         if (token.kind == "plus" || token.kind == "star") && analysis.risky {
             let safe_output = analysis.safe_output.as_ref().map(|safe| {
-                let prefix = if token.output.is_empty() { self.glob.one_char.clone() } else { String::new() };
-                let inner = if self.options.capture { format!("({safe})") } else { safe.clone() };
+                let prefix = if token.output.is_empty() {
+                    self.glob.one_char.clone()
+                } else {
+                    String::new()
+                };
+                let inner = if self.options.capture {
+                    format!("({safe})")
+                } else {
+                    safe.clone()
+                };
                 format!("{prefix}{inner}")
             });
             let open_output = safe_output.unwrap_or_else(|| escape_regex(&literal));
@@ -871,12 +1042,22 @@ impl<'a> Parser<'a> {
             }
             self.output = format!("{}{open_output}", token.output);
             self.backtrack = true;
-            self.push(Token { kind: "paren".into(), extglob: true, value: close_value.to_string(), output: Some(String::new()), ..Token::default() });
+            self.push(Token {
+                kind: "paren".into(),
+                extglob: true,
+                value: close_value.to_string(),
+                output: Some(String::new()),
+                ..Token::default()
+            });
             self.decrement("parens");
             return;
         }
 
-        let mut output = format!("{}{}", token.close, if self.options.capture { ")" } else { "" });
+        let mut output = format!(
+            "{}{}",
+            token.close,
+            if self.options.capture { ")" } else { "" }
+        );
 
         if token.kind == "negate" {
             let mut extglob_star = self.star.clone();
@@ -888,10 +1069,11 @@ impl<'a> Parser<'a> {
             if extglob_star != self.star || self.eos() || all_close {
                 output = format!(")$)){extglob_star}");
             }
-            if token.inner.contains('*')
-                && is_dot_suffix(&remaining)
-            {
-                let sub = Options { fastpaths: Some(false), ..self.options.clone() };
+            if token.inner.contains('*') && is_dot_suffix(&remaining) {
+                let sub = Options {
+                    fastpaths: Some(false),
+                    ..self.options.clone()
+                };
                 if let Ok(parsed) = parse(&remaining, &sub) {
                     output = format!("){}){extglob_star})", parsed.output);
                 }
@@ -901,7 +1083,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.push(Token { kind: "paren".into(), extglob: true, value: close_value.to_string(), output: Some(output), ..Token::default() });
+        self.push(Token {
+            kind: "paren".into(),
+            extglob: true,
+            value: close_value.to_string(),
+            output: Some(output),
+            ..Token::default()
+        });
         self.decrement("parens");
     }
 
@@ -911,12 +1099,19 @@ impl<'a> Parser<'a> {
         }
         let input: String = self.input.iter().collect();
         let starts_special = input.starts_with('*') || input.starts_with('!');
-        let has_group = input.chars().any(|ch| matches!(ch, '/' | '(' | ')' | '[' | ']' | '{' | '}' | '"'));
+        let has_group = input
+            .chars()
+            .any(|ch| matches!(ch, '/' | '(' | ')' | '[' | ']' | '{' | '}' | '"'));
         if starts_special || has_group {
             return None;
         }
-        let qmark_no_dot = if self.options.dot { self.glob.qmark.clone() } else { self.glob.qmark_no_dot.clone() };
-        let (mut output, backslashes) = fastpath_replace(&input, &self.glob, &self.star, &qmark_no_dot);
+        let qmark_no_dot = if self.options.dot {
+            self.glob.qmark.clone()
+        } else {
+            self.glob.qmark_no_dot.clone()
+        };
+        let (mut output, backslashes) =
+            fastpath_replace(&input, &self.glob, &self.star, &qmark_no_dot);
         if backslashes {
             if self.options.unescape {
                 output = output.replace('\\', "");
@@ -956,7 +1151,11 @@ impl<'a> Parser<'a> {
                 }
                 if next.is_empty() {
                     value.push('\\');
-                    self.push(Token { kind: "text".into(), value, ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value,
+                        ..Token::default()
+                    });
                     continue;
                 }
                 let remaining = self.remaining();
@@ -974,12 +1173,20 @@ impl<'a> Parser<'a> {
                     value.push_str(&next);
                 }
                 if self.brackets == 0 {
-                    self.push(Token { kind: "text".into(), value, ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value,
+                        ..Token::default()
+                    });
                     continue;
                 }
             }
 
-            if self.brackets > 0 && (value != "]" || self.tokens[self.prev].value == "[" || self.tokens[self.prev].value == "[^") {
+            if self.brackets > 0
+                && (value != "]"
+                    || self.tokens[self.prev].value == "["
+                    || self.tokens[self.prev].value == "[^")
+            {
                 if self.options.posix != Some(false) && value == ":" {
                     let prev_value = self.tokens[self.prev].value.clone();
                     let inner: String = prev_value.chars().skip(1).collect();
@@ -994,7 +1201,9 @@ impl<'a> Parser<'a> {
                                 self.tokens[self.prev].value = format!("{pre}{posix}");
                                 self.backtrack = true;
                                 self.advance();
-                                if self.tokens[0].output.as_deref().unwrap_or("").is_empty() && self.prev == 1 {
+                                if self.tokens[0].output.as_deref().unwrap_or("").is_empty()
+                                    && self.prev == 1
+                                {
                                     self.tokens[0].output = Some(self.glob.one_char.clone());
                                 }
                                 continue;
@@ -1005,10 +1214,15 @@ impl<'a> Parser<'a> {
                 if (value == "[" && self.peek(1) != ":") || (value == "-" && self.peek(1) == "]") {
                     value = format!("\\{value}");
                 }
-                if value == "]" && (self.tokens[self.prev].value == "[" || self.tokens[self.prev].value == "[^") {
+                if value == "]"
+                    && (self.tokens[self.prev].value == "[" || self.tokens[self.prev].value == "[^")
+                {
                     value = format!("\\{value}");
                 }
-                if self.options.posix == Some(true) && value == "!" && self.tokens[self.prev].value == "[" {
+                if self.options.posix == Some(true)
+                    && value == "!"
+                    && self.tokens[self.prev].value == "["
+                {
                     value = "^".into();
                 }
                 self.tokens[self.prev].value.push_str(&value);
@@ -1026,14 +1240,22 @@ impl<'a> Parser<'a> {
             if value == "\"" {
                 self.quotes = if self.quotes == 1 { 0 } else { 1 };
                 if self.options.keep_quotes {
-                    self.push(Token { kind: "text".into(), value, ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value,
+                        ..Token::default()
+                    });
                 }
                 continue;
             }
 
             if value == "(" {
                 self.increment("parens");
-                self.push(Token { kind: "paren".into(), value, ..Token::default() });
+                self.push(Token {
+                    kind: "paren".into(),
+                    value,
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1049,8 +1271,17 @@ impl<'a> Parser<'a> {
                     self.extglob_close(token, &value);
                     continue;
                 }
-                let output = if self.parens != 0 { ")".to_string() } else { "\\)".to_string() };
-                self.push(Token { kind: "paren".into(), value, output: Some(output), ..Token::default() });
+                let output = if self.parens != 0 {
+                    ")".to_string()
+                } else {
+                    "\\)".to_string()
+                };
+                self.push(Token {
+                    kind: "paren".into(),
+                    value,
+                    output: Some(output),
+                    ..Token::default()
+                });
                 self.decrement("parens");
                 continue;
             }
@@ -1064,25 +1295,45 @@ impl<'a> Parser<'a> {
                 } else {
                     self.increment("brackets");
                 }
-                self.push(Token { kind: "bracket".into(), value, ..Token::default() });
+                self.push(Token {
+                    kind: "bracket".into(),
+                    value,
+                    ..Token::default()
+                });
                 continue;
             }
 
             if value == "]" {
-                if self.options.nobracket || (self.tokens[self.prev].kind == "bracket" && self.tokens[self.prev].value.chars().count() == 1) {
-                    self.push(Token { kind: "text".into(), value: value.clone(), output: Some(format!("\\{value}")), ..Token::default() });
+                if self.options.nobracket
+                    || (self.tokens[self.prev].kind == "bracket"
+                        && self.tokens[self.prev].value.chars().count() == 1)
+                {
+                    self.push(Token {
+                        kind: "text".into(),
+                        value: value.clone(),
+                        output: Some(format!("\\{value}")),
+                        ..Token::default()
+                    });
                     continue;
                 }
                 if self.brackets == 0 {
                     if self.options.strict_brackets {
                         return Err(PicomatchError::Syntax(syntax_error("opening", '[')));
                     }
-                    self.push(Token { kind: "text".into(), value: value.clone(), output: Some(format!("\\{value}")), ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value: value.clone(),
+                        output: Some(format!("\\{value}")),
+                        ..Token::default()
+                    });
                     continue;
                 }
                 self.decrement("brackets");
                 let prev_value: String = self.tokens[self.prev].value.chars().skip(1).collect();
-                if !self.tokens[self.prev].posix && prev_value.starts_with('^') && !prev_value.contains('/') {
+                if !self.tokens[self.prev].posix
+                    && prev_value.starts_with('^')
+                    && !prev_value.contains('/')
+                {
                     value = format!("/{value}");
                 }
                 self.tokens[self.prev].value.push_str(&value);
@@ -1092,13 +1343,19 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 let escaped = escape_regex(&self.tokens[self.prev].value.clone());
-                drop_chars(&mut self.output, self.tokens[self.prev].value.chars().count());
+                drop_chars(
+                    &mut self.output,
+                    self.tokens[self.prev].value.chars().count(),
+                );
                 if self.options.literal_brackets == Some(true) {
                     self.output.push_str(&escaped);
                     self.tokens[self.prev].value = escaped;
                     continue;
                 }
-                let combined = format!("({}{escaped}|{})", self.capture, self.tokens[self.prev].value);
+                let combined = format!(
+                    "({}{escaped}|{})",
+                    self.capture, self.tokens[self.prev].value
+                );
                 self.tokens[self.prev].value = combined.clone();
                 self.output.push_str(&combined);
                 continue;
@@ -1112,14 +1369,24 @@ impl<'a> Parser<'a> {
                     ..BraceToken::default()
                 };
                 self.brace_stack.push(open);
-                self.push(Token { kind: "brace".into(), value, output: Some("(".into()), ..Token::default() });
+                self.push(Token {
+                    kind: "brace".into(),
+                    value,
+                    output: Some("(".into()),
+                    ..Token::default()
+                });
                 continue;
             }
 
             if value == "}" {
                 let brace = self.brace_stack.last().cloned();
                 if self.options.nobrace || brace.is_none() {
-                    self.push(Token { kind: "text".into(), value: value.clone(), output: Some(value), ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value: value.clone(),
+                        output: Some(value),
+                        ..Token::default()
+                    });
                     continue;
                 }
                 let brace = brace.unwrap_or_default();
@@ -1151,17 +1418,27 @@ impl<'a> Parser<'a> {
                     value = "\\}".to_string();
                     self.output = out;
                     for token in &toks {
-                        self.output.push_str(token.output.as_deref().unwrap_or(&token.value));
+                        self.output
+                            .push_str(token.output.as_deref().unwrap_or(&token.value));
                     }
                 }
-                self.push(Token { kind: "brace".into(), value, output: Some(output), ..Token::default() });
+                self.push(Token {
+                    kind: "brace".into(),
+                    value,
+                    output: Some(output),
+                    ..Token::default()
+                });
                 self.decrement("braces");
                 self.brace_stack.pop();
                 continue;
             }
 
             if value == "|" {
-                self.push(Token { kind: "text".into(), value, ..Token::default() });
+                self.push(Token {
+                    kind: "text".into(),
+                    value,
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1173,7 +1450,12 @@ impl<'a> Parser<'a> {
                     brace.comma = true;
                     output = "|".into();
                 }
-                self.push(Token { kind: "comma".into(), value, output: Some(output), ..Token::default() });
+                self.push(Token {
+                    kind: "comma".into(),
+                    value,
+                    output: Some(output),
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1185,7 +1467,12 @@ impl<'a> Parser<'a> {
                     self.prev = 0;
                     continue;
                 }
-                self.push(Token { kind: "slash".into(), value, output: Some(self.glob.slash_literal.clone()), ..Token::default() });
+                self.push(Token {
+                    kind: "slash".into(),
+                    value,
+                    output: Some(self.glob.slash_literal.clone()),
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1204,17 +1491,34 @@ impl<'a> Parser<'a> {
                     }
                     continue;
                 }
-                if self.braces + self.parens == 0 && self.tokens[self.prev].kind != "bos" && self.tokens[self.prev].kind != "slash" {
-                    self.push(Token { kind: "text".into(), value, output: Some(self.glob.dot_literal.clone()), ..Token::default() });
+                if self.braces + self.parens == 0
+                    && self.tokens[self.prev].kind != "bos"
+                    && self.tokens[self.prev].kind != "slash"
+                {
+                    self.push(Token {
+                        kind: "text".into(),
+                        value,
+                        output: Some(self.glob.dot_literal.clone()),
+                        ..Token::default()
+                    });
                     continue;
                 }
-                self.push(Token { kind: "dot".into(), value, output: Some(self.glob.dot_literal.clone()), ..Token::default() });
+                self.push(Token {
+                    kind: "dot".into(),
+                    value,
+                    output: Some(self.glob.dot_literal.clone()),
+                    ..Token::default()
+                });
                 continue;
             }
 
             if value == "?" {
                 let is_group = self.tokens[self.prev].value == "(";
-                if !is_group && !self.options.effective_noextglob() && self.peek(1) == "(" && self.peek(2) != "?" {
+                if !is_group
+                    && !self.options.effective_noextglob()
+                    && self.peek(1) == "("
+                    && self.peek(2) != "?"
+                {
                     self.extglob_open("qmark", &value);
                     continue;
                 }
@@ -1222,20 +1526,36 @@ impl<'a> Parser<'a> {
                     let next = self.peek(1);
                     let mut output = value.clone();
                     let remaining = self.remaining();
-                    let next_special = next.chars().next().is_some_and(|ch| matches!(ch, '!' | '=' | '<' | ':'));
+                    let next_special = next
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| matches!(ch, '!' | '=' | '<' | ':'));
                     let angle_ok = next == "<" && !has_angle_group(&remaining);
                     if (self.tokens[self.prev].value == "(" && !next_special) || angle_ok {
                         output = format!("\\{value}");
                     }
-                    self.push(Token { kind: "text".into(), value, output: Some(output), ..Token::default() });
+                    self.push(Token {
+                        kind: "text".into(),
+                        value,
+                        output: Some(output),
+                        ..Token::default()
+                    });
                     continue;
                 }
-                let output = if !self.options.dot && (self.tokens[self.prev].kind == "slash" || self.tokens[self.prev].kind == "bos") {
+                let output = if !self.options.dot
+                    && (self.tokens[self.prev].kind == "slash"
+                        || self.tokens[self.prev].kind == "bos")
+                {
                     self.glob.qmark_no_dot.clone()
                 } else {
                     self.glob.qmark.clone()
                 };
-                self.push(Token { kind: "qmark".into(), value, output: Some(output), ..Token::default() });
+                self.push(Token {
+                    kind: "qmark".into(),
+                    value,
+                    output: Some(output),
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1243,7 +1563,10 @@ impl<'a> Parser<'a> {
                 if !self.options.effective_noextglob() && self.peek(1) == "(" {
                     let peek2 = self.peek(2);
                     let peek3 = self.peek(3);
-                    let peek3_special = peek3.chars().next().is_some_and(|ch| matches!(ch, '!' | '=' | '<' | ':'));
+                    let peek3_special = peek3
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| matches!(ch, '!' | '=' | '<' | ':'));
                     if peek2 != "?" || !peek3_special {
                         self.extglob_open("negate", &value);
                         continue;
@@ -1256,28 +1579,57 @@ impl<'a> Parser<'a> {
             }
 
             if value == "+" {
-                if !self.options.effective_noextglob() && self.peek(1) == "(" && self.peek(2) != "?" {
+                if !self.options.effective_noextglob() && self.peek(1) == "(" && self.peek(2) != "?"
+                {
                     self.extglob_open("plus", &value);
                     continue;
                 }
                 if self.tokens[self.prev].value == "(" || self.options.regex == Some(false) {
-                    self.push(Token { kind: "plus".into(), value, output: Some(self.glob.plus_literal.clone()), ..Token::default() });
+                    self.push(Token {
+                        kind: "plus".into(),
+                        value,
+                        output: Some(self.glob.plus_literal.clone()),
+                        ..Token::default()
+                    });
                     continue;
                 }
-                if matches!(self.tokens[self.prev].kind.as_str(), "bracket" | "paren" | "brace") || self.parens > 0 {
-                    self.push(Token { kind: "plus".into(), value, ..Token::default() });
+                if matches!(
+                    self.tokens[self.prev].kind.as_str(),
+                    "bracket" | "paren" | "brace"
+                ) || self.parens > 0
+                {
+                    self.push(Token {
+                        kind: "plus".into(),
+                        value,
+                        ..Token::default()
+                    });
                     continue;
                 }
-                self.push(Token { kind: "plus".into(), value: self.glob.plus_literal.clone(), ..Token::default() });
+                self.push(Token {
+                    kind: "plus".into(),
+                    value: self.glob.plus_literal.clone(),
+                    ..Token::default()
+                });
                 continue;
             }
 
             if value == "@" {
-                if !self.options.effective_noextglob() && self.peek(1) == "(" && self.peek(2) != "?" {
-                    self.push(Token { kind: "at".into(), extglob: true, value, output: Some(String::new()), ..Token::default() });
+                if !self.options.effective_noextglob() && self.peek(1) == "(" && self.peek(2) != "?"
+                {
+                    self.push(Token {
+                        kind: "at".into(),
+                        extglob: true,
+                        value,
+                        output: Some(String::new()),
+                        ..Token::default()
+                    });
                     continue;
                 }
-                self.push(Token { kind: "text".into(), value, ..Token::default() });
+                self.push(Token {
+                    kind: "text".into(),
+                    value,
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1292,7 +1644,11 @@ impl<'a> Parser<'a> {
                     value.push_str(&matched);
                     self.index += matched_len as isize;
                 }
-                self.push(Token { kind: "text".into(), value, ..Token::default() });
+                self.push(Token {
+                    kind: "text".into(),
+                    value,
+                    ..Token::default()
+                });
                 continue;
             }
 
@@ -1321,18 +1677,35 @@ impl<'a> Parser<'a> {
                 }
                 let prior = self.tokens[self.prev].prev.unwrap_or(0);
                 let before = self.tokens[prior].prev;
-                let is_start = self.tokens[prior].kind == "slash" || self.tokens[prior].kind == "bos";
-                let after_star = before.is_some_and(|idx| self.tokens[idx].kind == "star" || self.tokens[idx].kind == "globstar");
+                let is_start =
+                    self.tokens[prior].kind == "slash" || self.tokens[prior].kind == "bos";
+                let after_star = before.is_some_and(|idx| {
+                    self.tokens[idx].kind == "star" || self.tokens[idx].kind == "globstar"
+                });
 
-                if self.options.bash && (!is_start || (rest.chars().next().is_some() && !rest.starts_with('/'))) {
-                    self.push(Token { kind: "star".into(), value, output: Some(String::new()), ..Token::default() });
+                if self.options.bash
+                    && (!is_start || (rest.chars().next().is_some() && !rest.starts_with('/')))
+                {
+                    self.push(Token {
+                        kind: "star".into(),
+                        value,
+                        output: Some(String::new()),
+                        ..Token::default()
+                    });
                     continue;
                 }
 
-                let is_brace = self.braces > 0 && (self.tokens[prior].kind == "comma" || self.tokens[prior].kind == "brace");
-                let is_extglob = !self.extglobs.is_empty() && (self.tokens[prior].kind == "pipe" || self.tokens[prior].kind == "paren");
+                let is_brace = self.braces > 0
+                    && (self.tokens[prior].kind == "comma" || self.tokens[prior].kind == "brace");
+                let is_extglob = !self.extglobs.is_empty()
+                    && (self.tokens[prior].kind == "pipe" || self.tokens[prior].kind == "paren");
                 if !is_start && self.tokens[prior].kind != "paren" && !is_brace && !is_extglob {
-                    self.push(Token { kind: "star".into(), value, output: Some(String::new()), ..Token::default() });
+                    self.push(Token {
+                        kind: "star".into(),
+                        value,
+                        output: Some(String::new()),
+                        ..Token::default()
+                    });
                     continue;
                 }
 
@@ -1358,14 +1731,33 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                if self.tokens[prior].kind == "slash" && self.tokens[self.tokens[prior].prev.unwrap_or(0)].kind != "bos" && !after_star && self.eos() {
-                    let prior_output_len = self.tokens[prior].output.as_deref().unwrap_or("").chars().count();
-                    let prev_output_len = self.tokens[self.prev].output.as_deref().unwrap_or("").chars().count();
+                if self.tokens[prior].kind == "slash"
+                    && self.tokens[self.tokens[prior].prev.unwrap_or(0)].kind != "bos"
+                    && !after_star
+                    && self.eos()
+                {
+                    let prior_output_len = self.tokens[prior]
+                        .output
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .count();
+                    let prev_output_len = self.tokens[self.prev]
+                        .output
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .count();
                     drop_chars(&mut self.output, prior_output_len + prev_output_len);
-                    let prior_output = format!("(?:{}", self.tokens[prior].output.as_deref().unwrap_or(""));
+                    let prior_output =
+                        format!("(?:{}", self.tokens[prior].output.as_deref().unwrap_or(""));
                     self.tokens[prior].output = Some(prior_output);
                     let globstar = self.globstar();
-                    let tail = if self.options.strict_slashes == Some(true) { ")".to_string() } else { "|$)".to_string() };
+                    let tail = if self.options.strict_slashes == Some(true) {
+                        ")".to_string()
+                    } else {
+                        "|$)".to_string()
+                    };
                     let prev = &mut self.tokens[self.prev];
                     prev.kind = "globstar".into();
                     prev.output = Some(format!("{globstar}{tail}"));
@@ -1379,12 +1771,26 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                if self.tokens[prior].kind == "slash" && self.tokens[self.tokens[prior].prev.unwrap_or(0)].kind != "bos" && rest.starts_with('/') {
+                if self.tokens[prior].kind == "slash"
+                    && self.tokens[self.tokens[prior].prev.unwrap_or(0)].kind != "bos"
+                    && rest.starts_with('/')
+                {
                     let end = if rest.chars().count() > 1 { "|$" } else { "" };
-                    let prior_output_len = self.tokens[prior].output.as_deref().unwrap_or("").chars().count();
-                    let prev_output_len = self.tokens[self.prev].output.as_deref().unwrap_or("").chars().count();
+                    let prior_output_len = self.tokens[prior]
+                        .output
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .count();
+                    let prev_output_len = self.tokens[self.prev]
+                        .output
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .count();
                     drop_chars(&mut self.output, prior_output_len + prev_output_len);
-                    let prior_output = format!("(?:{}", self.tokens[prior].output.as_deref().unwrap_or(""));
+                    let prior_output =
+                        format!("(?:{}", self.tokens[prior].output.as_deref().unwrap_or(""));
                     self.tokens[prior].output = Some(prior_output);
                     let globstar = self.globstar();
                     let slash = self.glob.slash_literal.clone();
@@ -1399,7 +1805,12 @@ impl<'a> Parser<'a> {
                     self.output.push_str(&prev_output);
                     let advance = self.advance();
                     self.consume(&format!("{value}{advance}"), 0);
-                    self.push(Token { kind: "slash".into(), value: "/".into(), output: Some(String::new()), ..Token::default() });
+                    self.push(Token {
+                        kind: "slash".into(),
+                        value: "/".into(),
+                        output: Some(String::new()),
+                        ..Token::default()
+                    });
                     continue;
                 }
 
@@ -1415,11 +1826,21 @@ impl<'a> Parser<'a> {
                     self.globstar = true;
                     let advance = self.advance();
                     self.consume(&format!("{value}{advance}"), 0);
-                    self.push(Token { kind: "slash".into(), value: "/".into(), output: Some(String::new()), ..Token::default() });
+                    self.push(Token {
+                        kind: "slash".into(),
+                        value: "/".into(),
+                        output: Some(String::new()),
+                        ..Token::default()
+                    });
                     continue;
                 }
 
-                let prev_output_len = self.tokens[self.prev].output.as_deref().unwrap_or("").chars().count();
+                let prev_output_len = self.tokens[self.prev]
+                    .output
+                    .as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .count();
                 drop_chars(&mut self.output, prev_output_len);
                 let globstar = self.globstar();
                 let prev = &mut self.tokens[self.prev];
@@ -1432,25 +1853,39 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            let mut token = Token { kind: "star".into(), value: value.clone(), output: Some(self.star.clone()), ..Token::default() };
+            let mut token = Token {
+                kind: "star".into(),
+                value: value.clone(),
+                output: Some(self.star.clone()),
+                ..Token::default()
+            };
 
             if self.options.bash {
                 token.output = Some(".*?".into());
                 if self.tokens[self.prev].kind == "bos" || self.tokens[self.prev].kind == "slash" {
-                    let nodot = if self.options.dot { String::new() } else { self.glob.no_dot.clone() };
+                    let nodot = if self.options.dot {
+                        String::new()
+                    } else {
+                        self.glob.no_dot.clone()
+                    };
                     token.output = Some(format!("{nodot}.*?"));
                 }
                 self.push(token);
                 continue;
             }
 
-            if matches!(self.tokens[self.prev].kind.as_str(), "bracket" | "paren") && self.options.regex == Some(true) {
+            if matches!(self.tokens[self.prev].kind.as_str(), "bracket" | "paren")
+                && self.options.regex == Some(true)
+            {
                 token.output = Some(value.clone());
                 self.push(token);
                 continue;
             }
 
-            if self.index == self.start as isize || self.tokens[self.prev].kind == "slash" || self.tokens[self.prev].kind == "dot" {
+            if self.index == self.start as isize
+                || self.tokens[self.prev].kind == "slash"
+                || self.tokens[self.prev].kind == "dot"
+            {
                 let prev_kind = self.tokens[self.prev].kind.clone();
                 let addition = if prev_kind == "dot" {
                     self.glob.no_dot_slash.clone()
@@ -1500,16 +1935,24 @@ impl<'a> Parser<'a> {
             self.decrement("braces");
         }
 
-        if self.options.strict_slashes != Some(true) && (self.tokens[self.prev].kind == "star" || self.tokens[self.prev].kind == "bracket") {
+        if self.options.strict_slashes != Some(true)
+            && (self.tokens[self.prev].kind == "star" || self.tokens[self.prev].kind == "bracket")
+        {
             let slash = self.glob.slash_literal.clone();
-            self.push(Token { kind: "maybe_slash".into(), value: String::new(), output: Some(format!("{slash}?")), ..Token::default() });
+            self.push(Token {
+                kind: "maybe_slash".into(),
+                value: String::new(),
+                output: Some(format!("{slash}?")),
+                ..Token::default()
+            });
         }
 
         if self.backtrack {
             self.output.clear();
             let tokens = self.tokens.clone();
             for token in &tokens {
-                self.output.push_str(token.output.as_deref().unwrap_or(&token.value));
+                self.output
+                    .push_str(token.output.as_deref().unwrap_or(&token.value));
                 if let Some(suffix) = &token.suffix {
                     self.output.push_str(suffix);
                 }
@@ -1532,7 +1975,11 @@ impl<'a> Parser<'a> {
 }
 
 fn globstar_source(glob: &super::constants::GlobChars, capture: &str, dot: bool) -> String {
-    let dots = if dot { glob.dots_slash.clone() } else { glob.dot_literal.clone() };
+    let dots = if dot {
+        glob.dots_slash.clone()
+    } else {
+        glob.dot_literal.clone()
+    };
     format!("({capture}(?:(?!{}{dots}).)*?)", glob.start_anchor)
 }
 
@@ -1602,7 +2049,9 @@ fn syntax_error(kind: &str, ch: char) -> String {
 
 #[must_use]
 pub fn fastpaths(input: &str, options: &Options) -> Option<String> {
-    let max = options.max_length.map_or(MAX_LENGTH, |value| value.min(MAX_LENGTH));
+    let max = options
+        .max_length
+        .map_or(MAX_LENGTH, |value| value.min(MAX_LENGTH));
     if js_length(input) > max {
         return None;
     }
@@ -1610,37 +2059,92 @@ pub fn fastpaths(input: &str, options: &Options) -> Option<String> {
     let mapped = js_units(input);
     let input = mapped.as_str();
     let glob = glob_chars(options.windows);
-    let nodot = if options.dot { glob.no_dots.clone() } else { glob.no_dot.clone() };
-    let slash_dot = if options.dot { glob.no_dots_slash.clone() } else { glob.no_dot_slash.clone() };
-    let capture = if options.capture { String::new() } else { "?:".into() };
-    let mut star = if options.bash { ".*?".to_string() } else { glob.star.clone() };
+    let nodot = if options.dot {
+        glob.no_dots.clone()
+    } else {
+        glob.no_dot.clone()
+    };
+    let slash_dot = if options.dot {
+        glob.no_dots_slash.clone()
+    } else {
+        glob.no_dot_slash.clone()
+    };
+    let capture = if options.capture {
+        String::new()
+    } else {
+        "?:".into()
+    };
+    let mut star = if options.bash {
+        ".*?".to_string()
+    } else {
+        glob.star.clone()
+    };
     if options.capture {
         star = format!("({star})");
     }
 
-    fn create(str_value: &str, glob: &super::constants::GlobChars, nodot: &str, slash_dot: &str, star: &str, capture: &str, options: &Options) -> Option<String> {
+    fn create(
+        str_value: &str,
+        glob: &super::constants::GlobChars,
+        nodot: &str,
+        slash_dot: &str,
+        star: &str,
+        capture: &str,
+        options: &Options,
+    ) -> Option<String> {
         let globstar = |options: &Options| {
             if options.noglobstar {
                 return star.to_string();
             }
-            let dots = if options.dot { glob.dots_slash.clone() } else { glob.dot_literal.clone() };
+            let dots = if options.dot {
+                glob.dots_slash.clone()
+            } else {
+                glob.dot_literal.clone()
+            };
             format!("({capture}(?:(?!{}{dots}).)*?)", glob.start_anchor)
         };
         match str_value {
             "*" => Some(format!("{nodot}{}{star}", glob.one_char)),
             ".*" => Some(format!("{}{}{star}", glob.dot_literal, glob.one_char)),
-            "*.*" => Some(format!("{nodot}{star}{}{}{star}", glob.dot_literal, glob.one_char)),
-            "*/*" => Some(format!("{nodot}{star}{}{}{slash_dot}{star}", glob.slash_literal, glob.one_char)),
+            "*.*" => Some(format!(
+                "{nodot}{star}{}{}{star}",
+                glob.dot_literal, glob.one_char
+            )),
+            "*/*" => Some(format!(
+                "{nodot}{star}{}{}{slash_dot}{star}",
+                glob.slash_literal, glob.one_char
+            )),
             "**" => Some(format!("{nodot}{}", globstar(options))),
-            "**/*" => Some(format!("(?:{nodot}{}{})?{slash_dot}{}{star}", globstar(options), glob.slash_literal, glob.one_char)),
-            "**/*.*" => Some(format!("(?:{nodot}{}{})?{slash_dot}{star}{}{}{star}", globstar(options), glob.slash_literal, glob.dot_literal, glob.one_char)),
-            "**/.*" => Some(format!("(?:{nodot}{}{})?{}{}{star}", globstar(options), glob.slash_literal, glob.dot_literal, glob.one_char)),
+            "**/*" => Some(format!(
+                "(?:{nodot}{}{})?{slash_dot}{}{star}",
+                globstar(options),
+                glob.slash_literal,
+                glob.one_char
+            )),
+            "**/*.*" => Some(format!(
+                "(?:{nodot}{}{})?{slash_dot}{star}{}{}{star}",
+                globstar(options),
+                glob.slash_literal,
+                glob.dot_literal,
+                glob.one_char
+            )),
+            "**/.*" => Some(format!(
+                "(?:{nodot}{}{})?{}{}{star}",
+                globstar(options),
+                glob.slash_literal,
+                glob.dot_literal,
+                glob.one_char
+            )),
             _ => {
                 let (head, ext) = match str_value.rfind('.') {
                     Some(index) => (&str_value[..index], &str_value[index + 1..]),
                     None => return None,
                 };
-                if ext.is_empty() || !ext.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+                if ext.is_empty()
+                    || !ext
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                {
                     return None;
                 }
                 let source = create(head, glob, nodot, slash_dot, star, capture, options)?;

@@ -79,7 +79,11 @@ impl DagStoreConfig {
 /// Resolves the task state directory: explicit `task.state_dir` (relative to the project) or the
 /// default project-local directory.
 pub fn resolve_dag_state_dir(config: &DagStoreConfig) -> PathBuf {
-    match config.task.as_ref().and_then(|task| task.state_dir.as_ref()) {
+    match config
+        .task
+        .as_ref()
+        .and_then(|task| task.state_dir.as_ref())
+    {
         Some(dir) if dir.is_absolute() => dir.clone(),
         Some(dir) => config.project_dir.join(dir),
         None => config.project_dir.join(DEFAULT_STATE_DIR),
@@ -277,9 +281,13 @@ impl DagStorePaths {
         if relative.is_none_or(|path| {
             path.is_absolute()
                 || path == Path::new("..")
-                || path.components().any(|component| component == std::path::Component::ParentDir)
+                || path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
         }) {
-            panic!("Unsafe dag result path: node id \"{node_id}\" escapes the run results directory");
+            panic!(
+                "Unsafe dag result path: node id \"{node_id}\" escapes the run results directory"
+            );
         }
         if !crate::dag::types::is_safe_dag_path_segment(node_id) {
             panic!("Unsafe dag result path: node id \"{node_id}\" is not a safe path segment");
@@ -538,7 +546,14 @@ impl DagFileStore {
             // large) for lines inside the requested window.
             let seq = parse_event_envelope(&value, &path, run_id, self.clock())?
                 .as_u64()
-                .ok_or_else(|| corrupt(&path, Some(run_id), "invalid DAG event envelope", self.clock()))?;
+                .ok_or_else(|| {
+                    corrupt(
+                        &path,
+                        Some(run_id),
+                        "invalid DAG event envelope",
+                        self.clock(),
+                    )
+                })?;
             head_seq = head_seq.max(seq);
             if seq <= since_seq_exclusive {
                 return Ok(());
@@ -589,7 +604,9 @@ impl DagFileStore {
         assert_supported_schema(&value, &self.paths.run(run_id), Some(run_id), self.clock())?;
         self.write_checkpoint_within_session_limit(run_id, &value)?;
         let listener = guard(&self.checkpoint_listener).clone();
-        if let Some(listener) = listener { listener(); }
+        if let Some(listener) = listener {
+            listener();
+        }
         Ok(())
     }
 
@@ -642,7 +659,11 @@ impl DagFileStore {
         Ok(path)
     }
 
-    pub fn read_result(&self, run_id: &str, node_id: &str) -> Result<Option<String>, DagStoreError> {
+    pub fn read_result(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<Option<String>, DagStoreError> {
         assert_safe_segment(run_id, "run id")?;
         assert_safe_segment(node_id, "node id")?;
         match fs::read(self.paths.result(run_id, node_id)) {
@@ -680,7 +701,11 @@ impl DagFileStore {
         run_id: &str,
         operation: impl FnOnce() -> T,
     ) -> Result<T, DagStoreError> {
-        self.with_lock(&self.paths.task_owner_lock(task_owner), Some(run_id), operation)
+        self.with_lock(
+            &self.paths.task_owner_lock(task_owner),
+            Some(run_id),
+            operation,
+        )
     }
 
     pub fn prune_expired(&self, prune_now: Option<i64>) -> Result<Vec<DagRunId>, DagStoreError> {
@@ -697,7 +722,8 @@ impl DagFileStore {
             let Some(checkpoint) = read_json_file(&path, Some(stem), self.clock())? else {
                 continue;
             };
-            let run_id = read_optional_string(&checkpoint, "runId").unwrap_or_else(|| stem.to_string());
+            let run_id =
+                read_optional_string(&checkpoint, "runId").unwrap_or_else(|| stem.to_string());
             assert_supported_schema(&checkpoint, &path, Some(&run_id), self.clock())?;
             let terminal = read_optional_string(&checkpoint, "status")
                 .is_some_and(|status| TERMINAL_STATUSES.contains(&status.as_str()));
@@ -789,7 +815,13 @@ impl DagFileStore {
                 }
             }
             if run_count >= self.max_runs_per_session {
-                remove_force(&self.paths.root.join("skills").join(format!("{run_id}.json")))?;
+                remove_force(
+                    &self
+                        .paths
+                        .root
+                        .join("skills")
+                        .join(format!("{run_id}.json")),
+                )?;
                 return Err(DagStoreError::Message(format!(
                     "DAG session run limit reached: {}",
                     self.max_runs_per_session
@@ -813,7 +845,12 @@ impl DagFileStore {
         result
     }
 
-    fn publish_atomic(&self, tmp_path: &Path, path: &Path, content: &str) -> Result<(), DagStoreError> {
+    fn publish_atomic(
+        &self,
+        tmp_path: &Path,
+        path: &Path,
+        content: &str,
+    ) -> Result<(), DagStoreError> {
         let mut file = self.fs.create_new(tmp_path)?;
         file.write_all(content.as_bytes())?;
         if self.fsync_writes {
@@ -841,7 +878,11 @@ impl DagFileStore {
         Ok(())
     }
 
-    fn event_log_tail_seq(&self, path: &Path, run_id: &str) -> Result<serde_json::Number, DagStoreError> {
+    fn event_log_tail_seq(
+        &self,
+        path: &Path,
+        run_id: &str,
+    ) -> Result<serde_json::Number, DagStoreError> {
         let mut tail = serde_json::Number::from(0u64);
         for_each_json_line(path, |value| {
             tail = parse_event_envelope(&value, path, run_id, self.clock())?;
@@ -853,7 +894,11 @@ impl DagFileStore {
     /// Seq of the last complete line, read backwards from the end so large leading lines (the DAG
     /// definition) are not re-parsed. Falls back to the full scan when the log does not end in a
     /// newline, preserving its fragment handling.
-    fn event_log_last_seq(&self, path: &Path, run_id: &str) -> Result<serde_json::Number, DagStoreError> {
+    fn event_log_last_seq(
+        &self,
+        path: &Path,
+        run_id: &str,
+    ) -> Result<serde_json::Number, DagStoreError> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = match File::open(path) {
             Ok(file) => file,
@@ -890,7 +935,12 @@ impl DagFileStore {
         }
     }
 
-    fn parse_tail_line(&self, line: &[u8], path: &Path, run_id: &str) -> Result<serde_json::Number, DagStoreError> {
+    fn parse_tail_line(
+        &self,
+        line: &[u8],
+        path: &Path,
+        run_id: &str,
+    ) -> Result<serde_json::Number, DagStoreError> {
         let value = parse_json(&String::from_utf8_lossy(line), path, None, &system_now)?;
         Ok(parse_event_envelope(&value, path, run_id, self.clock())?)
     }
@@ -918,7 +968,12 @@ impl DagFileStore {
         let Some(trailing) = trailing.filter(|fragment| !fragment.is_empty()) else {
             return Ok(());
         };
-        match parse_event_json(&String::from_utf8_lossy(&trailing), path, run_id, self.clock()) {
+        match parse_event_json(
+            &String::from_utf8_lossy(&trailing),
+            path,
+            run_id,
+            self.clock(),
+        ) {
             Ok(()) => Ok(()),
             Err(error) if error.diagnostic.message().contains("schemaVersion") => Err(error.into()),
             Err(_) => {
@@ -982,14 +1037,13 @@ impl DagFileStore {
                 stalled_since = (self.now)();
                 observed_holder_changed = true;
             }
-            if observed.pid.is_none_or(|pid| !self.alive(pid))
-                {
-                    if let Some(reclaimed) = self.reclaim_observed_lock(path, &observed, run_id)? {
-                        break reclaimed;
-                    }
-                    if observed_holder_changed {
-                        stalled_since = (self.now)();
-                    }
+            if observed.pid.is_none_or(|pid| !self.alive(pid)) {
+                if let Some(reclaimed) = self.reclaim_observed_lock(path, &observed, run_id)? {
+                    break reclaimed;
+                }
+                if observed_holder_changed {
+                    stalled_since = (self.now)();
+                }
             }
             observed_holder_changed = false;
             if (self.now)() - stalled_since >= LOCK_WAIT_TIMEOUT_MS {
@@ -1052,8 +1106,10 @@ impl DagFileStore {
             return Ok(None);
         };
         let content = self.lock_content(run_id);
-        let successor_path =
-            suffixed(path, &format!(".{}.{}.successor", host_pid(), random_uuid()));
+        let successor_path = suffixed(
+            path,
+            &format!(".{}.{}.successor", host_pid(), random_uuid()),
+        );
         let result = self.publish_successor(path, observed, &successor_path, content);
         remove_force(&successor_path)?;
         self.remove_observed_lock(&reclaim_path, Some(&reclaim_holder), |_| true)?;
@@ -1120,7 +1176,10 @@ impl DagFileStore {
             match self.fs.rename(path, &quarantine_path) {
                 Ok(()) => break,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-                Err(error) if self.is_windows_cleanup_error(&error) && attempts < WINDOWS_CLEANUP_RETRIES => {
+                Err(error)
+                    if self.is_windows_cleanup_error(&error)
+                        && attempts < WINDOWS_CLEANUP_RETRIES =>
+                {
                     attempts += 1;
                     std::thread::sleep(Duration::from_millis(WINDOWS_CLEANUP_RETRY_MS));
                 }
@@ -1136,7 +1195,11 @@ impl DagFileStore {
         Ok(true)
     }
 
-    fn restore_quarantined_lock(&self, path: &Path, quarantine_path: &Path) -> Result<(), DagStoreError> {
+    fn restore_quarantined_lock(
+        &self,
+        path: &Path,
+        quarantine_path: &Path,
+    ) -> Result<(), DagStoreError> {
         match self.fs.hard_link(quarantine_path, path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1156,7 +1219,10 @@ impl DagFileStore {
         loop {
             match remove_force(path) {
                 Ok(()) => return Ok(()),
-                Err(error) if self.is_windows_cleanup_error(&error) && attempts < WINDOWS_CLEANUP_RETRIES => {
+                Err(error)
+                    if self.is_windows_cleanup_error(&error)
+                        && attempts < WINDOWS_CLEANUP_RETRIES =>
+                {
                     attempts += 1;
                     std::thread::sleep(Duration::from_millis(WINDOWS_CLEANUP_RETRY_MS));
                 }
@@ -1172,7 +1238,10 @@ impl DagFileStore {
             if let Some(value) = read_json_file(&path, None, &system_now)?
                 && let Some(run_id) = value.get("runId").and_then(Value::as_str)
             {
-                key_files_by_run.entry(run_id.to_string()).or_default().push(name);
+                key_files_by_run
+                    .entry(run_id.to_string())
+                    .or_default()
+                    .push(name);
             }
         }
         let mut lock_files_by_run: HashMap<String, Vec<String>> = HashMap::new();
@@ -1182,20 +1251,37 @@ impl DagFileStore {
                     if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                         && let Some(run_id) = value.get("runId").and_then(Value::as_str)
                     {
-                        lock_files_by_run.entry(run_id.to_string()).or_default().push(name);
+                        lock_files_by_run
+                            .entry(run_id.to_string())
+                            .or_default()
+                            .push(name);
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(RunArtifactIndex { key_files_by_run, lock_files_by_run })
+        Ok(RunArtifactIndex {
+            key_files_by_run,
+            lock_files_by_run,
+        })
     }
 
-    fn prune_run_artifacts(&self, checkpoint: &Value, run_id: &str, artifacts: &RunArtifactIndex) -> Result<(), DagStoreError> {
+    fn prune_run_artifacts(
+        &self,
+        checkpoint: &Value,
+        run_id: &str,
+        artifacts: &RunArtifactIndex,
+    ) -> Result<(), DagStoreError> {
         remove_force(&self.paths.event(run_id))?;
         remove_dir_force(&self.paths.results.join(run_id))?;
-        remove_force(&self.paths.root.join("skills").join(format!("{run_id}.json")))?;
+        remove_force(
+            &self
+                .paths
+                .root
+                .join("skills")
+                .join(format!("{run_id}.json")),
+        )?;
         remove_force(&self.paths.run_lock(run_id))?;
         for name in artifacts.key_files_by_run.get(run_id).into_iter().flatten() {
             remove_force(&self.paths.keys.join(name))?;
@@ -1209,7 +1295,12 @@ impl DagFileStore {
                 }
             }
         }
-        for name in artifacts.lock_files_by_run.get(run_id).into_iter().flatten() {
+        for name in artifacts
+            .lock_files_by_run
+            .get(run_id)
+            .into_iter()
+            .flatten()
+        {
             remove_force(&self.paths.locks.join(name))?;
         }
         remove_force(&self.paths.run(run_id))?;
@@ -1289,7 +1380,12 @@ fn for_each_json_line(
         if !complete && line.is_empty() {
             return Ok(());
         }
-        visit(parse_json(&String::from_utf8_lossy(line), path, None, &system_now)?)
+        visit(parse_json(
+            &String::from_utf8_lossy(line),
+            path,
+            None,
+            &system_now,
+        )?)
     })
 }
 
@@ -1317,7 +1413,12 @@ fn parse_event_envelope(
     let has_type = value.get("type").is_some_and(Value::is_string);
     match seq {
         Some(seq) if has_type => Ok(seq),
-        _ => Err(corrupt(path, Some(run_id), "invalid DAG event envelope", now)),
+        _ => Err(corrupt(
+            path,
+            Some(run_id),
+            "invalid DAG event envelope",
+            now,
+        )),
     }
 }
 
@@ -1337,10 +1438,11 @@ pub fn encode_paused_nodes(checkpoint: &mut Value) {
     if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
         for node in nodes {
             if let Some(obj) = node.as_object_mut()
-                && obj.get("state").and_then(Value::as_str) == Some("paused") {
-                    obj.insert("state".to_string(), Value::String("running".to_string()));
-                    obj.insert("paused".to_string(), Value::Bool(true));
-                }
+                && obj.get("state").and_then(Value::as_str) == Some("paused")
+            {
+                obj.insert("state".to_string(), Value::String("running".to_string()));
+                obj.insert("paused".to_string(), Value::Bool(true));
+            }
         }
     }
 }
@@ -1349,16 +1451,19 @@ pub fn decode_paused_nodes(checkpoint: &mut Value) {
     if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
         for node in nodes {
             if let Some(obj) = node.as_object_mut()
-                && obj.get("paused").and_then(Value::as_bool) == Some(true) {
-                    obj.remove("paused");
-                    obj.insert("state".to_string(), Value::String("paused".to_string()));
-                }
+                && obj.get("paused").and_then(Value::as_bool) == Some(true)
+            {
+                obj.remove("paused");
+                obj.insert("state".to_string(), Value::String("paused".to_string()));
+            }
         }
     }
 }
 
 pub fn encode_paused_transition(event: &mut Value) {
-    let Some(obj) = event.as_object_mut() else { return };
+    let Some(obj) = event.as_object_mut() else {
+        return;
+    };
     if obj.get("type").and_then(Value::as_str) != Some("dag.node.transitioned") {
         return;
     }
@@ -1378,7 +1483,9 @@ pub fn encode_paused_transition(event: &mut Value) {
 }
 
 pub fn decode_paused_transition(event: &mut Value) {
-    let Some(obj) = event.as_object_mut() else { return };
+    let Some(obj) = event.as_object_mut() else {
+        return;
+    };
     if obj.get("type").and_then(Value::as_str) != Some("dag.node.transitioned") {
         return;
     }
@@ -1429,7 +1536,12 @@ fn read_json_file(
     now: &dyn Fn() -> i64,
 ) -> Result<Option<Value>, DagStoreError> {
     match fs::read(path) {
-        Ok(bytes) => Ok(Some(parse_json(&String::from_utf8_lossy(&bytes), path, run_id, now)?)),
+        Ok(bytes) => Ok(Some(parse_json(
+            &String::from_utf8_lossy(&bytes),
+            path,
+            run_id,
+            now,
+        )?)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -1548,13 +1660,10 @@ fn system_now() -> i64 {
 
 /// `new Date(ms).toISOString()`.
 fn iso(ms: i64) -> String {
-    chrono::Utc
-        .timestamp_millis_opt(ms)
-        .single()
-        .map_or_else(
-            || "1970-01-01T00:00:00.000Z".to_string(),
-            |at| at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-        )
+    chrono::Utc.timestamp_millis_opt(ms).single().map_or_else(
+        || "1970-01-01T00:00:00.000Z".to_string(),
+        |at| at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+    )
 }
 
 /// `Date.parse` for ISO timestamps; `None` stands for NaN.

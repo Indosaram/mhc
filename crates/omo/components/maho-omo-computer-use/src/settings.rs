@@ -1,5 +1,5 @@
 use senpi_desktop_tool::settings::{
-    resolve_computer_settings, ComputerSettings, ComputerSettingsError,
+    ComputerSettings, ComputerSettingsError, resolve_computer_settings,
 };
 use serde_json::{Map, Value};
 

@@ -35,7 +35,8 @@ pub const CURSOR_COMPOSER_PROMPT: &str = "You are running in this client, not in
 /// name keeps them out.
 fn composer_model_id_pattern() -> &'static Regex {
     static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)(?:^|[/:._-])composer(?:[/:._-]|\d|$)").unwrap_or_else(|error| panic!("static composer pattern: {error}"))
+        Regex::new(r"(?i)(?:^|[/:._-])composer(?:[/:._-]|\d|$)")
+            .unwrap_or_else(|error| panic!("static composer pattern: {error}"))
     });
     &PATTERN
 }
@@ -63,9 +64,15 @@ mod tests {
 
     #[test]
     fn matches_every_composer_id_the_live_catalog_capture_serves() {
-        let composer_ids: Vec<String> = catalog_ids().into_iter().filter(|id| id.to_lowercase().contains("composer")).collect();
+        let composer_ids: Vec<String> = catalog_ids()
+            .into_iter()
+            .filter(|id| id.to_lowercase().contains("composer"))
+            .collect();
         assert!(!composer_ids.is_empty());
-        let unmatched: Vec<String> = composer_ids.into_iter().filter(|id| !is_cursor_composer_model(id)).collect();
+        let unmatched: Vec<String> = composer_ids
+            .into_iter()
+            .filter(|id| !is_cursor_composer_model(id))
+            .collect();
         assert_eq!(unmatched, Vec::<String>::new());
     }
 
@@ -82,14 +89,24 @@ mod tests {
     #[test]
     fn keeps_cursors_resold_first_party_kimi_models_out_of_the_composer_family() {
         for id in ["kimi-k2.7-code", "kimi-k3-high", "kimi-k3-low"] {
-            assert!(!is_cursor_composer_model(id), "{id} must not be treated as composer");
+            assert!(
+                !is_cursor_composer_model(id),
+                "{id} must not be treated as composer"
+            );
         }
     }
 
     #[test]
     fn matches_provider_qualified_and_future_composer_ids() {
-        for id in ["cursor/composer-2.5", "composer-3", "composer-2.7-thinking-max"] {
-            assert!(is_cursor_composer_model(id), "{id} must be treated as composer");
+        for id in [
+            "cursor/composer-2.5",
+            "composer-3",
+            "composer-2.7-thinking-max",
+        ] {
+            assert!(
+                is_cursor_composer_model(id),
+                "{id} must be treated as composer"
+            );
         }
     }
 }

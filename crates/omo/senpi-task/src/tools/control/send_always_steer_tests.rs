@@ -9,7 +9,8 @@ use crate::tools::control::renderers::render_task_send_call;
 use crate::tools::control::send::{TaskSendDeps, create_task_send_tool, run_task_send};
 use crate::tools::control::send_schema::{TaskSendInput, TaskSendMessage};
 use crate::tools::control::types::{
-    ControlListScope, ControlSendInput, ControlTaskRecord, SendManager, SendOutcome, SendResultDetails,
+    ControlListScope, ControlSendInput, ControlTaskRecord, SendManager, SendOutcome,
+    SendResultDetails,
 };
 use crate::tools::render::{LinesComponent, RendererTheme, ThemeColor};
 
@@ -69,7 +70,8 @@ fn plain_input(to: &str, message: &str) -> TaskSendInput {
 }
 
 #[test]
-fn given_the_lead_task_send_tool_when_its_public_contract_is_inspected_then_delivery_mode_is_absent() {
+fn given_the_lead_task_send_tool_when_its_public_contract_is_inspected_then_delivery_mode_is_absent()
+ {
     let tool = create_task_send_tool(TaskSendDeps {
         manager: Arc::new(UnusedManager),
         team_routing: None,
@@ -94,8 +96,13 @@ fn given_a_plain_child_message_when_task_send_routes_it_then_it_requests_steer_u
         send_calls: Mutex::new(Vec::new()),
     };
 
-    let result = run_task_send(&manager, &plain_input("st_1", "new direction"), Some("parent-1"), None)
-        .expect("task_send succeeds");
+    let result = run_task_send(
+        &manager,
+        &plain_input("st_1", "new direction"),
+        Some("parent-1"),
+        None,
+    )
+    .expect("task_send succeeds");
 
     assert_eq!(result.details.kind(), "steered");
     match &result.details {

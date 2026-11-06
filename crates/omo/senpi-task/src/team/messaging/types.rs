@@ -28,8 +28,13 @@ pub struct MessagingEngineDeps {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendTeamMessageResult {
-    ToLead { message_id: String },
-    ToMembers { message_id: String, recipients: Vec<String> },
+    ToLead {
+        message_id: String,
+    },
+    ToMembers {
+        message_id: String,
+        recipients: Vec<String>,
+    },
 }
 
 impl SendTeamMessageResult {

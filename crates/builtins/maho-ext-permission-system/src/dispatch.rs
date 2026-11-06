@@ -106,8 +106,7 @@ struct Approval {
 static AUTHORIZERS: LazyLock<Mutex<HashMap<String, Arc<Registration>>>> =
     LazyLock::new(Default::default);
 type ApprovalMap = Mutex<HashMap<usize, (WeakInvocationInput, Arc<Approval>)>>;
-static APPROVALS: LazyLock<ApprovalMap> =
-    LazyLock::new(Default::default);
+static APPROVALS: LazyLock<ApprovalMap> = LazyLock::new(Default::default);
 
 fn registration_for(session: &Arc<dyn SessionManager>) -> Option<Arc<Registration>> {
     AUTHORIZERS

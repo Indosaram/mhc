@@ -4,12 +4,13 @@
 //! shape: messages are serde_json::Value objects and unknown fields survive every transformation.
 //! The typed maho_ai::types::Message conversion happens at the provider boundary.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const COMPACTION_SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
-pub const BRANCH_SUMMARY_PREFIX: &str = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
+pub const BRANCH_SUMMARY_PREFIX: &str =
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 pub const BRANCH_SUMMARY_SUFFIX: &str = "</summary>";
 pub const GOAL_CONTINUATION_MESSAGE_TYPE: &str = "goal-continuation";
 
@@ -32,9 +33,15 @@ fn backticks(count: usize) -> String {
 }
 
 pub fn bash_execution_to_text(msg: &Value) -> String {
-    let command = msg.get("command").and_then(Value::as_str).unwrap_or_default();
+    let command = msg
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let mut text = format!("Ran {t}{command}{t}\n", t = BACKTICK);
-    let output = msg.get("output").and_then(Value::as_str).unwrap_or_default();
+    let output = msg
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !output.is_empty() {
         text.push_str(&format!("{f}\n{output}\n{f}", f = backticks(3)));
     } else {
@@ -43,13 +50,15 @@ pub fn bash_execution_to_text(msg: &Value) -> String {
     if msg.get("cancelled").and_then(Value::as_bool) == Some(true) {
         text.push_str("\n\n(command cancelled)");
     } else if let Some(exit_code) = msg.get("exitCode").and_then(Value::as_i64)
-        && exit_code != 0 {
-            text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
-        }
+        && exit_code != 0
+    {
+        text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
+    }
     if msg.get("truncated").and_then(Value::as_bool) == Some(true)
-        && let Some(path) = msg.get("fullOutputPath").and_then(Value::as_str) {
-            text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
-        }
+        && let Some(path) = msg.get("fullOutputPath").and_then(Value::as_str)
+    {
+        text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
+    }
     text
 }
 
@@ -62,7 +71,12 @@ pub fn create_branch_summary_message(summary: &str, from_id: &str, timestamp: &s
     })
 }
 
-pub fn create_compaction_summary_message(summary: &str, tokens_before: i64, timestamp: &str, details: Option<Value>) -> Value {
+pub fn create_compaction_summary_message(
+    summary: &str,
+    tokens_before: i64,
+    timestamp: &str,
+    details: Option<Value>,
+) -> Value {
     let mut message = Map::new();
     message.insert("role".to_owned(), Value::from("compactionSummary"));
     message.insert("summary".to_owned(), Value::from(summary));
@@ -70,11 +84,20 @@ pub fn create_compaction_summary_message(summary: &str, tokens_before: i64, time
     if let Some(details) = details {
         message.insert("details".to_owned(), details);
     }
-    message.insert("timestamp".to_owned(), Value::from(parse_timestamp(timestamp)));
+    message.insert(
+        "timestamp".to_owned(),
+        Value::from(parse_timestamp(timestamp)),
+    );
     Value::Object(message)
 }
 
-pub fn create_custom_message(custom_type: &str, content: Value, display: bool, details: Option<Value>, timestamp: &str) -> Value {
+pub fn create_custom_message(
+    custom_type: &str,
+    content: Value,
+    display: bool,
+    details: Option<Value>,
+    timestamp: &str,
+) -> Value {
     let mut message = Map::new();
     message.insert("role".to_owned(), Value::from("custom"));
     message.insert("customType".to_owned(), Value::from(custom_type));
@@ -83,12 +106,17 @@ pub fn create_custom_message(custom_type: &str, content: Value, display: bool, d
     if let Some(details) = details {
         message.insert("details".to_owned(), details);
     }
-    message.insert("timestamp".to_owned(), Value::from(parse_timestamp(timestamp)));
+    message.insert(
+        "timestamp".to_owned(),
+        Value::from(parse_timestamp(timestamp)),
+    );
     Value::Object(message)
 }
 
 fn parse_timestamp(timestamp: &str) -> i64 {
-    chrono::DateTime::parse_from_rfc3339(timestamp).map(|value| value.timestamp_millis()).unwrap_or(0)
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| value.timestamp_millis())
+        .unwrap_or(0)
 }
 
 fn text_block(text: String) -> Value {
@@ -108,7 +136,9 @@ fn user_message(content: Vec<Value>, timestamp: Option<i64>) -> Value {
 /// copyContextProvenance: carry the request-local provenance across the role projection.
 fn with_context_provenance(source: &Value, target: Value) -> Value {
     match target {
-        Value::Object(target) => Value::Object(maho_ai::context_provenance::copy_context_provenance(source, target)),
+        Value::Object(target) => Value::Object(
+            maho_ai::context_provenance::copy_context_provenance(source, target),
+        ),
         other => other,
     }
 }
@@ -116,17 +146,26 @@ fn with_context_provenance(source: &Value, target: Value) -> Value {
 pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
     let mut converted: Vec<Value> = Vec::with_capacity(messages.len());
     for message in messages {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or_default();
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let timestamp = message.get("timestamp").and_then(Value::as_i64);
         match role {
             "bashExecution" => {
                 if message.get("excludeFromContext").and_then(Value::as_bool) == Some(true) {
                     continue;
                 }
-                converted.push(with_context_provenance(message, user_message(vec![text_block(bash_execution_to_text(message))], timestamp)));
+                converted.push(with_context_provenance(
+                    message,
+                    user_message(vec![text_block(bash_execution_to_text(message))], timestamp),
+                ));
             }
             "custom" => {
-                let custom_type = message.get("customType").and_then(Value::as_str).unwrap_or_default();
+                let custom_type = message
+                    .get("customType")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if is_context_excluded_custom_message(custom_type) {
                     continue;
                 }
@@ -135,21 +174,40 @@ pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
                     Some(Value::Array(blocks)) => blocks.clone(),
                     _ => Vec::new(),
                 };
-                converted.push(with_context_provenance(message, user_message(content, timestamp)));
+                converted.push(with_context_provenance(
+                    message,
+                    user_message(content, timestamp),
+                ));
             }
             "branchSummary" => {
-                let summary = message.get("summary").and_then(Value::as_str).unwrap_or_default();
-                converted.push(with_context_provenance(message, user_message(
-                    vec![text_block(format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"))],
-                    timestamp,
-                )));
+                let summary = message
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                converted.push(with_context_provenance(
+                    message,
+                    user_message(
+                        vec![text_block(format!(
+                            "{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"
+                        ))],
+                        timestamp,
+                    ),
+                ));
             }
             "compactionSummary" => {
-                let summary = message.get("summary").and_then(Value::as_str).unwrap_or_default();
-                converted.push(with_context_provenance(message, user_message(
-                    vec![text_block(format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"))],
-                    timestamp,
-                )));
+                let summary = message
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                converted.push(with_context_provenance(
+                    message,
+                    user_message(
+                        vec![text_block(format!(
+                            "{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"
+                        ))],
+                        timestamp,
+                    ),
+                ));
             }
             _ => converted.push(message.clone()),
         }
@@ -176,9 +234,10 @@ pub fn drop_failed_assistant_turns(messages: Vec<Value>) -> Vec<Value> {
         if let Some(Value::Array(blocks)) = message.get("content") {
             for block in blocks {
                 if block.get("type").and_then(Value::as_str) == Some("toolCall")
-                    && let Some(id) = block.get("id").and_then(Value::as_str) {
-                        target.insert(id.to_owned());
-                    }
+                    && let Some(id) = block.get("id").and_then(Value::as_str)
+                {
+                    target.insert(id.to_owned());
+                }
             }
         }
     }
@@ -187,15 +246,19 @@ pub fn drop_failed_assistant_turns(messages: Vec<Value>) -> Vec<Value> {
     }
     messages
         .into_iter()
-        .filter(|message| match message.get("role").and_then(Value::as_str) {
-            Some("assistant") => !is_failed_stop(message.get("stopReason").and_then(Value::as_str)),
-            Some("toolResult") => message
-                .get("toolCallId")
-                .and_then(Value::as_str)
-                .map(|id| !failed_ids.contains(id))
-                .unwrap_or(true),
-            _ => true,
-        })
+        .filter(
+            |message| match message.get("role").and_then(Value::as_str) {
+                Some("assistant") => {
+                    !is_failed_stop(message.get("stopReason").and_then(Value::as_str))
+                }
+                Some("toolResult") => message
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .map(|id| !failed_ids.contains(id))
+                    .unwrap_or(true),
+                _ => true,
+            },
+        )
         .collect()
 }
 
@@ -238,7 +301,10 @@ fn image_content_id(data: &str) -> String {
 
 fn elision_placeholder(ids: &[String]) -> Value {
     let label = if ids.len() == 1 { "id" } else { "ids" };
-    text_block(format!("{IMAGE_ELISION_PLACEHOLDER} (image {label}: {})", ids.join(", ")))
+    text_block(format!(
+        "{IMAGE_ELISION_PLACEHOLDER} (image {label}: {})",
+        ids.join(", ")
+    ))
 }
 
 pub fn replace_elided_images(content: &[Value], is_elided: impl Fn(usize) -> bool) -> Vec<Value> {
@@ -257,7 +323,9 @@ pub fn replace_elided_images(content: &[Value], is_elided: impl Fn(usize) -> boo
         }
         replaced.push(block.clone());
     }
-    if !pending.is_empty() { replaced.push(elision_placeholder(&pending)); }
+    if !pending.is_empty() {
+        replaced.push(elision_placeholder(&pending));
+    }
     replaced
 }
 
@@ -266,7 +334,11 @@ fn block_is_image(block: &Value) -> bool {
 }
 
 fn block_data_len(block: &Value) -> usize {
-    block.get("data").and_then(Value::as_str).map(|data| data.len()).unwrap_or(0)
+    block
+        .get("data")
+        .and_then(Value::as_str)
+        .map(|data| data.len())
+        .unwrap_or(0)
 }
 
 pub fn elide_old_images(messages: &[Value], options: &ElideOldImagesOptions) -> Vec<Value> {
@@ -295,7 +367,9 @@ pub fn elide_old_images(messages: &[Value], options: &ElideOldImagesOptions) -> 
         if role != Some("user") && role != Some("toolResult") {
             continue;
         }
-        let Some(Value::Array(content)) = message.get("content") else { continue };
+        let Some(Value::Array(content)) = message.get("content") else {
+            continue;
+        };
         for block_index in (0..content.len()).rev() {
             let block = &content[block_index];
             if !block_is_image(block) {
@@ -304,14 +378,22 @@ pub fn elide_old_images(messages: &[Value], options: &ElideOldImagesOptions) -> 
             let is_current_turn = limit_history && (message_index as i64) > last_assistant_index;
             let is_protected_history = limit_history
                 && !is_current_turn
-                && max_historical_images.map(|limit| kept_historical_images < limit).unwrap_or(false);
+                && max_historical_images
+                    .map(|limit| kept_historical_images < limit)
+                    .unwrap_or(false);
             let exceeds_history_limit = limit_history && !is_current_turn && !is_protected_history;
 
-            if exceeds_history_limit || (cutoff_reached && !is_current_turn && !is_protected_history) {
+            if exceeds_history_limit
+                || (cutoff_reached && !is_current_turn && !is_protected_history)
+            {
                 to_elide.insert((message_index, block_index));
                 continue;
             }
-            if is_current_turn || is_protected_history || kept_images < always_keep_newest || image_bytes + block_data_len(block) <= budget_bytes {
+            if is_current_turn
+                || is_protected_history
+                || kept_images < always_keep_newest
+                || image_bytes + block_data_len(block) <= budget_bytes
+            {
                 kept_images += 1;
                 if !is_current_turn {
                     kept_historical_images += 1;
@@ -336,19 +418,33 @@ pub fn elide_old_images(messages: &[Value], options: &ElideOldImagesOptions) -> 
             if role != Some("user") && role != Some("toolResult") {
                 return message.clone();
             }
-            let Some(Value::Array(content)) = message.get("content") else { return message.clone() };
-            if !content.iter().enumerate().any(|(block_index, _)| to_elide.contains(&(message_index, block_index))) {
+            let Some(Value::Array(content)) = message.get("content") else {
+                return message.clone();
+            };
+            if !content
+                .iter()
+                .enumerate()
+                .any(|(block_index, _)| to_elide.contains(&(message_index, block_index)))
+            {
                 return message.clone();
             }
-            let replaced = replace_elided_images(content, |block_index| to_elide.contains(&(message_index, block_index)));
+            let replaced = replace_elided_images(content, |block_index| {
+                to_elide.contains(&(message_index, block_index))
+            });
             let mut updated = message.clone();
-            updated["content"] = Value::Array(dedupe_consecutive_placeholder(&replaced, IMAGE_ELISION_PLACEHOLDER));
+            updated["content"] = Value::Array(dedupe_consecutive_placeholder(
+                &replaced,
+                IMAGE_ELISION_PLACEHOLDER,
+            ));
             updated
         })
         .collect()
 }
 
-pub fn convert_to_llm_for_transport(messages: &[Value], options: &TransportConvertOptions) -> Vec<Value> {
+pub fn convert_to_llm_for_transport(
+    messages: &[Value],
+    options: &TransportConvertOptions,
+) -> Vec<Value> {
     let converted = convert_to_llm(messages);
     if !options.block_images {
         return elide_old_images(&converted, &options.elide);
@@ -360,7 +456,9 @@ pub fn convert_to_llm_for_transport(messages: &[Value], options: &TransportConve
             if role != Some("user") && role != Some("toolResult") {
                 return message;
             }
-            let Some(Value::Array(content)) = message.get("content") else { return message };
+            let Some(Value::Array(content)) = message.get("content") else {
+                return message;
+            };
             if !content.iter().any(block_is_image) {
                 return message;
             }
@@ -375,7 +473,10 @@ pub fn convert_to_llm_for_transport(messages: &[Value], options: &TransportConve
                 })
                 .collect();
             let mut updated = message.clone();
-            updated["content"] = Value::Array(dedupe_consecutive_placeholder(&replaced, BLOCKED_IMAGE_PLACEHOLDER));
+            updated["content"] = Value::Array(dedupe_consecutive_placeholder(
+                &replaced,
+                BLOCKED_IMAGE_PLACEHOLDER,
+            ));
             updated
         })
         .collect()
@@ -398,7 +499,10 @@ mod tests {
             "truncated": false,
             "timestamp": 1,
         });
-        assert_eq!(bash_execution_to_text(&message), format!("Ran {BT}ls{BT}\n{BT}{BT}{BT}\na\nb\n{BT}{BT}{BT}"));
+        assert_eq!(
+            bash_execution_to_text(&message),
+            format!("Ran {BT}ls{BT}\n{BT}{BT}{BT}\na\nb\n{BT}{BT}{BT}")
+        );
     }
 
     #[test]
@@ -415,10 +519,15 @@ mod tests {
         });
         assert_eq!(
             bash_execution_to_text(&message),
-            format!("Ran {BT}x{BT}\n(no output)\n\nCommand exited with code 2\n\n[Output truncated. Full output: /tmp/full.txt]")
+            format!(
+                "Ran {BT}x{BT}\n(no output)\n\nCommand exited with code 2\n\n[Output truncated. Full output: /tmp/full.txt]"
+            )
         );
         let cancelled = json!({ "command": "y", "output": "", "cancelled": true, "truncated": false, "timestamp": 1 });
-        assert_eq!(bash_execution_to_text(&cancelled), format!("Ran {BT}y{BT}\n(no output)\n\n(command cancelled)"));
+        assert_eq!(
+            bash_execution_to_text(&cancelled),
+            format!("Ran {BT}y{BT}\n(no output)\n\n(command cancelled)")
+        );
     }
 
     #[test]
@@ -434,10 +543,19 @@ mod tests {
         assert_eq!(converted.len(), 5);
         assert_eq!(converted[0]["role"], "user");
         assert_eq!(converted[1]["role"], "user");
-        assert_eq!(converted[1]["content"][0]["text"], format!("Ran {BT}ls{BT}\n{BT}{BT}{BT}\no\n{BT}{BT}{BT}"));
+        assert_eq!(
+            converted[1]["content"][0]["text"],
+            format!("Ran {BT}ls{BT}\n{BT}{BT}{BT}\no\n{BT}{BT}{BT}")
+        );
         assert_eq!(converted[2]["content"][0]["text"], "c");
-        assert_eq!(converted[3]["content"][0]["text"], format!("{BRANCH_SUMMARY_PREFIX}s{BRANCH_SUMMARY_SUFFIX}"));
-        assert_eq!(converted[4]["content"][0]["text"], format!("{COMPACTION_SUMMARY_PREFIX}c{COMPACTION_SUMMARY_SUFFIX}"));
+        assert_eq!(
+            converted[3]["content"][0]["text"],
+            format!("{BRANCH_SUMMARY_PREFIX}s{BRANCH_SUMMARY_SUFFIX}")
+        );
+        assert_eq!(
+            converted[4]["content"][0]["text"],
+            format!("{COMPACTION_SUMMARY_PREFIX}c{COMPACTION_SUMMARY_SUFFIX}")
+        );
     }
 
     #[test]
@@ -452,16 +570,27 @@ mod tests {
         ];
         let converted = convert_to_llm(&messages);
         for message in &converted[..4] {
-            assert_eq!(message[maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD], provenance);
+            assert_eq!(
+                message[maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD],
+                provenance
+            );
         }
-        assert!(converted[4].get(maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD).is_none());
+        assert!(
+            converted[4]
+                .get(maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD)
+                .is_none()
+        );
     }
 
     #[test]
     fn convert_to_llm_drops_excluded_bash_messages() {
-        let messages = vec![json!({ "role": "bashExecution", "command": "x", "output": "", "excludeFromContext": true, "timestamp": 1 })];
+        let messages = vec![
+            json!({ "role": "bashExecution", "command": "x", "output": "", "excludeFromContext": true, "timestamp": 1 }),
+        ];
         assert!(convert_to_llm(&messages).is_empty());
-        assert!(!is_context_excluded_custom_message(GOAL_CONTINUATION_MESSAGE_TYPE));
+        assert!(!is_context_excluded_custom_message(
+            GOAL_CONTINUATION_MESSAGE_TYPE
+        ));
         let kept = vec![json!({ "role": "user", "content": "x", "timestamp": 1 })];
         assert_eq!(filter_context_excluded_messages(kept.clone()), kept);
     }
@@ -476,9 +605,21 @@ mod tests {
         ];
         let replaced = replace_elided_images(&content, |index| index != 2);
         assert_eq!(replaced.len(), 3);
-        assert_eq!(replaced[0]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image ids: {})", [image_content_id("first"), image_content_id("second")].join(", ")));
+        assert_eq!(
+            replaced[0]["text"],
+            format!(
+                "{IMAGE_ELISION_PLACEHOLDER} (image ids: {})",
+                [image_content_id("first"), image_content_id("second")].join(", ")
+            )
+        );
         assert_eq!(replaced[1]["text"], "keep");
-        assert_eq!(replaced[2]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image id: {})", image_content_id("third")));
+        assert_eq!(
+            replaced[2]["text"],
+            format!(
+                "{IMAGE_ELISION_PLACEHOLDER} (image id: {})",
+                image_content_id("third")
+            )
+        );
     }
 
     #[test]
@@ -513,10 +654,21 @@ mod tests {
         assert_eq!(message["timestamp"], 1790214555521i64);
         assert_eq!(message["role"], "branchSummary");
         assert_eq!(message["fromId"], "id");
-        let message = create_compaction_summary_message("s", 10, "2026-09-24T01:49:15.521Z", Some(json!({ "k": 1 })));
+        let message = create_compaction_summary_message(
+            "s",
+            10,
+            "2026-09-24T01:49:15.521Z",
+            Some(json!({ "k": 1 })),
+        );
         assert_eq!(message["details"]["k"], 1);
         assert_eq!(message["tokensBefore"], 10);
-        let message = create_custom_message("t", Value::from("body"), true, None, "2026-09-24T01:49:15.521Z");
+        let message = create_custom_message(
+            "t",
+            Value::from("body"),
+            true,
+            None,
+            "2026-09-24T01:49:15.521Z",
+        );
         assert_eq!(message["display"], true);
         assert!(message.get("details").is_none());
     }
@@ -553,13 +705,27 @@ mod tests {
 
     #[test]
     fn elide_old_images_keeps_the_newest_and_replaces_the_rest_over_budget() {
-        let messages = vec![image_message(10, 1), image_message(10, 2), image_message(10, 3)];
-        let options = ElideOldImagesOptions { budget_bytes: Some(20), always_keep_newest: Some(1), ..Default::default() };
+        let messages = vec![
+            image_message(10, 1),
+            image_message(10, 2),
+            image_message(10, 3),
+        ];
+        let options = ElideOldImagesOptions {
+            budget_bytes: Some(20),
+            always_keep_newest: Some(1),
+            ..Default::default()
+        };
         let elided = elide_old_images(&messages, &options);
         assert_eq!(elided[2]["content"][0]["type"], "image");
         assert_eq!(elided[1]["content"][0]["type"], "image");
         assert_eq!(elided[0]["content"][0]["type"], "text");
-        assert_eq!(elided[0]["content"][0]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image id: {})", image_content_id(&"x".repeat(10))));
+        assert_eq!(
+            elided[0]["content"][0]["text"],
+            format!(
+                "{IMAGE_ELISION_PLACEHOLDER} (image id: {})",
+                image_content_id(&"x".repeat(10))
+            )
+        );
     }
 
     #[test]
@@ -572,9 +738,15 @@ mod tests {
     #[test]
     fn block_images_replaces_every_image() {
         let messages = vec![image_message(1, 1)];
-        let options = TransportConvertOptions { block_images: true, ..Default::default() };
+        let options = TransportConvertOptions {
+            block_images: true,
+            ..Default::default()
+        };
         let converted = convert_to_llm_for_transport(&messages, &options);
         assert_eq!(converted[0]["content"][0]["type"], "text");
-        assert_eq!(converted[0]["content"][0]["text"], BLOCKED_IMAGE_PLACEHOLDER);
+        assert_eq!(
+            converted[0]["content"][0]["text"],
+            BLOCKED_IMAGE_PLACEHOLDER
+        );
     }
 }

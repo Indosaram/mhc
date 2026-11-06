@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    is_at_or_below, IsolationBackend, IsolationContext, LoadReflink, ReflinkBackend,
+    IsolationBackend, IsolationContext, LoadReflink, ReflinkBackend, is_at_or_below,
 };
 
 use crate::fake::FakeRuntime;
@@ -48,10 +48,12 @@ fn reflink_probing_writes_only_inside_the_supplied_context_base_directory() {
     };
     let load: LoadReflink = Arc::new(|| None);
     let backend = ReflinkBackend::new(Arc::new(io), load);
-    assert!(backend
-        .probe(&f.repo_root, Some(&ctx))
-        .expect("probe")
-        .available);
+    assert!(
+        backend
+            .probe(&f.repo_root, Some(&ctx))
+            .expect("probe")
+            .available
+    );
     let guard = seen.lock().unwrap_or_else(|poison| poison.into_inner());
     let violations: Vec<PathBuf> = guard
         .0
@@ -81,8 +83,10 @@ fn reflink_probing_without_a_context_stays_read_only_instead_of_writing_into_the
     let backend = ReflinkBackend::new(Arc::new(io), load);
     let probe = backend.probe(&f.repo_root, None).expect("probe");
     assert!(!probe.available);
-    assert!(calls
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .is_empty());
+    assert!(
+        calls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_empty()
+    );
 }

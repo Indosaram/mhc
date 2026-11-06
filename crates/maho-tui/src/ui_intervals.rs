@@ -29,7 +29,14 @@ pub fn set_ui_interval(period: Duration, callback: Rc<dyn Fn()>) -> UiIntervalId
         next.set(id.wrapping_add(1));
         id
     }));
-    INTERVALS.with(|intervals| intervals.borrow_mut().push(UiInterval { id, period, next_due: Instant::now() + period, callback }));
+    INTERVALS.with(|intervals| {
+        intervals.borrow_mut().push(UiInterval {
+            id,
+            period,
+            next_due: Instant::now() + period,
+            callback,
+        })
+    });
     id
 }
 
@@ -72,7 +79,10 @@ mod tests {
     fn interval_fires_once_per_due_frame_until_cleared() {
         let count = Rc::new(Cell::new(0));
         let counter = Rc::clone(&count);
-        let id = set_ui_interval(Duration::from_secs(1), Rc::new(move || counter.set(counter.get() + 1)));
+        let id = set_ui_interval(
+            Duration::from_secs(1),
+            Rc::new(move || counter.set(counter.get() + 1)),
+        );
         let start = Instant::now();
         assert!(!run_due_ui_intervals(start));
         assert!(run_due_ui_intervals(start + Duration::from_secs(5)));

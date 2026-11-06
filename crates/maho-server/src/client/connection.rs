@@ -7,8 +7,8 @@ use crate::protocol::{
     codec::{MessageDecoder, MessageKind, encode_client_message},
     messages::PROTOCOL_VERSION,
 };
-use maho_chord::types::JsonValue as Value;
 use crate::transport_json as json;
+use maho_chord::types::JsonValue as Value;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -327,7 +327,9 @@ impl Connection {
                 Ok(())
             }
             ConnectionState::Connected => {
-                if message["type"].as_str() == Some("hello") || message["type"].as_str() == Some("hello_error") {
+                if message["type"].as_str() == Some("hello")
+                    || message["type"].as_str() == Some("hello_error")
+                {
                     return Err(ClientError::Protocol("Unexpected handshake message".into()));
                 }
                 (self.options.on_message)(message)

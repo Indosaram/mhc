@@ -484,7 +484,8 @@ mod tests {
         let server = server(complete).await;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
-            .build().unwrap();
+            .build()
+            .unwrap();
         let url = format!("{}?state=expected&code=first", server.redirect_uri);
         let request_client = client.clone();
         let request_url = url.clone();
@@ -492,14 +493,21 @@ mod tests {
 
         // When
         let claimed = tokio::time::timeout(Duration::from_secs(5), claimed_rx)
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         let duplicate = client.get(url).send().await.unwrap();
         server.cancel();
         finish_tx.send("completed".to_owned()).unwrap();
         let response = tokio::time::timeout(Duration::from_secs(5), first)
-            .await.unwrap().unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         let outcome = tokio::time::timeout(Duration::from_secs(5), server.wait())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
 
         // Then
         assert_eq!(claimed, "first");

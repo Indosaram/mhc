@@ -1,17 +1,17 @@
+use maho_ai::providers::faux::faux_provider;
 use maho_core::{
     model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
-    sdk::{create_agent_session, CreateAgentSessionOptions, NoToolsMode},
+    sdk::{CreateAgentSessionOptions, NoToolsMode, create_agent_session},
     session_manager::SessionManager,
     settings_manager::{InMemorySettingsStorage, SettingsManager},
 };
-use maho_ai::providers::faux::faux_provider;
+use maho_ext_api::mcp_wire::{
+    MCP_CONTROL_INVENTORY_REQUEST_EVENT, McpWireAuthStatus, McpWireStatusServer,
+    McpWireStatusSnapshot,
+};
 use maho_ext_host::loader::NativeAsyncExtensionFactory;
 use maho_rpc::connection_handler::RpcConnectionHandler;
-use maho_ext_api::mcp_wire::{
-    McpWireAuthStatus, McpWireStatusServer, McpWireStatusSnapshot,
-    MCP_CONTROL_INVENTORY_REQUEST_EVENT,
-};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -41,16 +41,17 @@ async fn session(root: &std::path::Path) -> maho_core::agent_session::AgentSessi
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         providers: Some(vec![provider.provider]),
         ..Default::default()
-    }).expect("valid model runtime");
+    })
+    .expect("valid model runtime");
     let inventory_factory = NativeAsyncExtensionFactory {
         path: "<test:loaded-surfaces-inventory>".into(),
         source_info: Default::default(),
         factory: Arc::new(|api| {
             Box::pin(async move {
                 let initial = snapshot("fixture-mcp");
-                let request_subscription = api.events.on_native::<
-                    maho_ext_api::mcp_wire::McpControlInventoryRequest,
-                >(
+                let request_subscription = api
+                    .events
+                    .on_native::<maho_ext_api::mcp_wire::McpControlInventoryRequest>(
                     MCP_CONTROL_INVENTORY_REQUEST_EVENT,
                     Arc::new(move |request| {
                         if let Some(respond) = request
@@ -65,11 +66,15 @@ async fn session(root: &std::path::Path) -> maho_core::agent_session::AgentSessi
                         }
                     }),
                 );
-                let request_subscription = Arc::new(std::sync::Mutex::new(Some(request_subscription)));
+                let request_subscription =
+                    Arc::new(std::sync::Mutex::new(Some(request_subscription)));
                 api.on(
                     maho_ext_api::EventKind::SessionShutdown,
                     Arc::new(move |_, _| {
-                        request_subscription.lock().expect("inventory subscription").take();
+                        request_subscription
+                            .lock()
+                            .expect("inventory subscription")
+                            .take();
                         Box::pin(async { Ok(maho_ext_api::EventResult::None) })
                     }),
                 );
@@ -121,7 +126,10 @@ async fn request_projects_fresh_native_inventory() {
         response["data"]["mcpServers"],
         json!([{"name":"fixture-mcp","toolCount":0,"status":"needs_auth","authStatus":"notLoggedIn"}])
     );
-    assert_eq!(response["data"]["extensions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        response["data"]["extensions"].as_array().map(Vec::len),
+        Some(1)
+    );
     session.dispose().await;
 }
 
@@ -149,13 +157,10 @@ async fn live_changed_snapshot_emits_one_change_and_dispose_releases_subscriptio
     let baseline = snapshot("fixture-mcp");
     assert!(session.publish_mcp_wire_status(&baseline).await);
     assert_eq!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            baseline_receive.recv(),
-        )
-        .await
-        .expect("baseline snapshot publication arrives")
-        .expect("baseline observer remains open"),
+        tokio::time::timeout(std::time::Duration::from_secs(5), baseline_receive.recv(),)
+            .await
+            .expect("baseline snapshot publication arrives")
+            .expect("baseline observer remains open"),
         baseline
     );
     drop(baseline_subscription);
@@ -172,9 +177,20 @@ async fn live_changed_snapshot_emits_one_change_and_dispose_releases_subscriptio
     let fence_event = next_record(&mut receive).await;
     assert_eq!(fence_event["type"], "loaded_surfaces_changed");
     assert_eq!(fence_event, json!({"type":"loaded_surfaces_changed"}));
-    assert!(receive.try_recv().is_err(), "unchanged snapshot emits no duplicate event");
+    assert!(
+        receive.try_recv().is_err(),
+        "unchanged snapshot emits no duplicate event"
+    );
 
     Box::pin(handler.dispose()).await;
-    assert!(session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(|_| {})).await.is_none());
-    assert!(receive.try_recv().is_err(), "disposed handler emits no inventory event");
+    assert!(
+        session
+            .bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(|_| {}))
+            .await
+            .is_none()
+    );
+    assert!(
+        receive.try_recv().is_err(),
+        "disposed handler emits no inventory event"
+    );
 }

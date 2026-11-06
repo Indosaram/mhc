@@ -52,9 +52,8 @@ pub struct GoalLifecycleFacts {
     pub input: Option<TurnEndLivenessInput>,
     pub todo_outcome: Option<String>,
 }
-pub type Collector = Arc<
-    dyn Fn(Option<&AgentEndEvent>, Option<Option<&Goal>>) -> GoalLifecycleFacts + Send + Sync,
->;
+pub type Collector =
+    Arc<dyn Fn(Option<&AgentEndEvent>, Option<Option<&Goal>>) -> GoalLifecycleFacts + Send + Sync>;
 pub type Observer = Arc<dyn Fn(Option<&Goal>) + Send + Sync>;
 #[derive(Default)]
 pub struct GoalLifecycleCollector {
@@ -166,10 +165,12 @@ mod tests {
         owner.on_goal_lifecycle_change(Arc::new(move |_| {
             capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }));
-        owner.register_goal_lifecycle_collector(Arc::new(|_restored_end, _goal| GoalLifecycleFacts {
-            goal: None,
-            input: None,
-            todo_outcome: None,
+        owner.register_goal_lifecycle_collector(Arc::new(|_restored_end, _goal| {
+            GoalLifecycleFacts {
+                goal: None,
+                input: None,
+                todo_outcome: None,
+            }
         }));
         assert!(owner.collect_goal_lifecycle_facts(None, None).is_some());
         owner.goal_lifecycle_changed(None);
@@ -191,32 +192,34 @@ mod tests {
         let test_goal: Goal = serde_json::from_value(serde_json::json!({
             "id":"override-goal", "threadId":"s", "objective":"work", "status":"active",
             "tokensUsed":0, "timeUsedSeconds":0, "createdAt":0, "updatedAt":0
-        })).expect("goal fixture");
+        }))
+        .expect("goal fixture");
         let passed_restored = Arc::new(Mutex::new(None));
         let passed_goal = Arc::new(Mutex::new(None));
         let pr = passed_restored.clone();
         let pg = passed_goal.clone();
-        owner.register_goal_lifecycle_collector(Arc::new(
-            move |restored_end, goal| {
-                *pr.lock().unwrap() = restored_end.cloned();
-                *pg.lock().unwrap() = goal.map(|inner| inner.cloned());
-                GoalLifecycleFacts {
-                    goal: goal.and_then(|g| g.cloned()),
-                    input: None,
-                    todo_outcome: Some("delivered".into()),
-                }
-            },
-        ));
+        owner.register_goal_lifecycle_collector(Arc::new(move |restored_end, goal| {
+            *pr.lock().unwrap() = restored_end.cloned();
+            *pg.lock().unwrap() = goal.map(|inner| inner.cloned());
+            GoalLifecycleFacts {
+                goal: goal.and_then(|g| g.cloned()),
+                input: None,
+                todo_outcome: Some("delivered".into()),
+            }
+        }));
         let facts = owner
             .collect_goal_lifecycle_facts(Some(&restored_event), Some(Some(&test_goal)))
             .unwrap();
-        assert_eq!(facts.goal.as_ref().map(|g| g.id.as_str()), Some("override-goal"));
-        assert_eq!(facts.todo_outcome.as_deref(), Some("delivered"));
-        assert_eq!(*passed_restored.lock().unwrap(), Some(restored_event.clone()));
         assert_eq!(
-            *passed_goal.lock().unwrap(),
-            Some(Some(test_goal.clone()))
+            facts.goal.as_ref().map(|g| g.id.as_str()),
+            Some("override-goal")
         );
+        assert_eq!(facts.todo_outcome.as_deref(), Some("delivered"));
+        assert_eq!(
+            *passed_restored.lock().unwrap(),
+            Some(restored_event.clone())
+        );
+        assert_eq!(*passed_goal.lock().unwrap(), Some(Some(test_goal.clone())));
 
         let facts_null = owner
             .collect_goal_lifecycle_facts(Some(&restored_event), Some(None))

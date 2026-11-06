@@ -11,7 +11,9 @@ use crate::manager::execution_mode::ExecutionMode;
 use crate::state::{ResidencyState, ResolvedModelRecord, TaskStatus};
 use crate::store::StateDirConfig;
 use crate::team::member_map::MemberTaskMap;
-use crate::team::member_projection::{MemberStatusPort, MemberTaskStatusView, ResidentSessionRef, RuntimeMemberStatus};
+use crate::team::member_projection::{
+    MemberStatusPort, MemberTaskStatusView, ResidentSessionRef, RuntimeMemberStatus,
+};
 use crate::team::runtime_config::TeamTaskBounds;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +49,11 @@ pub struct SenpiTeamRuntimeError {
 }
 
 impl SenpiTeamRuntimeError {
-    pub fn new(message: impl Into<String>, code: SenpiTeamRuntimeErrorCode, team_ref: impl Into<String>) -> Self {
+    pub fn new(
+        message: impl Into<String>,
+        code: SenpiTeamRuntimeErrorCode,
+        team_ref: impl Into<String>,
+    ) -> Self {
         Self {
             message: message.into(),
             code,
@@ -83,12 +89,21 @@ pub struct TeamMemberStartSpec {
 impl From<&TeamMemberStartSpec> for crate::manager::types::ManagerStartSpec {
     fn from(spec: &TeamMemberStartSpec) -> Self {
         Self {
-            name: spec.name.clone(), description: spec.description.clone(), prompt: spec.prompt.clone(),
-            parent_session_id: spec.parent_session_id.clone(), root_session_id: spec.root_session_id.clone(),
-            depth: spec.depth, execution_mode: spec.execution_mode, model: spec.model.clone(),
-            category: spec.category.clone(), subagent_type: spec.subagent_type.clone(),
-            task_summary: spec.task_summary.clone(), cwd: spec.cwd.clone(), extensions: spec.extensions.clone(),
-            member_env: spec.member_env.clone(), run_in_background: spec.run_in_background,
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            prompt: spec.prompt.clone(),
+            parent_session_id: spec.parent_session_id.clone(),
+            root_session_id: spec.root_session_id.clone(),
+            depth: spec.depth,
+            execution_mode: spec.execution_mode,
+            model: spec.model.clone(),
+            category: spec.category.clone(),
+            subagent_type: spec.subagent_type.clone(),
+            task_summary: spec.task_summary.clone(),
+            cwd: spec.cwd.clone(),
+            extensions: spec.extensions.clone(),
+            member_env: spec.member_env.clone(),
+            run_in_background: spec.run_in_background,
             ..Self::default()
         }
     }
@@ -126,7 +141,10 @@ pub struct TeamStartedMember {
 pub enum TeamStartResult {
     Started(TeamStartedMember),
     /// Any non-started manager result (`kind` is the manager result kind, e.g. `error`).
-    Rejected { kind: String, reason: String },
+    Rejected {
+        kind: String,
+        reason: String,
+    },
 }
 
 impl TeamStartResult {

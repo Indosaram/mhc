@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use maho_server::transport_json as json;
 use maho_server::{
     client::{
         Client,
@@ -11,7 +12,6 @@ use maho_server::{
         framing::DEFAULT_MAX_FRAME_LENGTH as MAX,
     },
 };
-use maho_server::transport_json as json;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -151,7 +151,10 @@ async fn rejects_missing_socket() {
     .unwrap();
     assert!(matches!(
         client.connect().await,
-        Err(ClientError::Io { kind:std::io::ErrorKind::NotFound, .. })
+        Err(ClientError::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        })
     ));
     client.dispose();
 }
@@ -202,9 +205,11 @@ async fn discovery_propagates_filesystem_errors() {
     let path = dir.path().join("file");
     tokio::fs::write(&path, "content").await.unwrap();
     assert!(matches!(
-        discover_unix_servers(&path, Duration::from_secs(1))
-            .await,
-        Err(ClientError::Io { kind:std::io::ErrorKind::NotADirectory, .. })
+        discover_unix_servers(&path, Duration::from_secs(1)).await,
+        Err(ClientError::Io {
+            kind: std::io::ErrorKind::NotADirectory,
+            ..
+        })
     ));
 }
 

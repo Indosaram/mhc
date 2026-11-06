@@ -111,15 +111,20 @@ fn t1_argument_parsing() {
 async fn t1_mcp_and_no_argument_serve() {
     for argv in [&[][..], &["mcp"][..]] {
         let server = server(FakeHost::windows_with_git_bash());
-        let (code, stderr) = run_with(&server, argv, std::future::pending(), |mut client| async move {
-            client
-                .send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
-                .await;
-            let reply = client.reply().await;
-            assert_eq!(reply["id"], 1);
-            assert_eq!(reply["result"]["serverInfo"]["name"], "git_bash");
-            client.close_stdin();
-        })
+        let (code, stderr) = run_with(
+            &server,
+            argv,
+            std::future::pending(),
+            |mut client| async move {
+                client
+                    .send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+                    .await;
+                let reply = client.reply().await;
+                assert_eq!(reply["id"], 1);
+                assert_eq!(reply["result"]["serverInfo"]["name"], "git_bash");
+                client.close_stdin();
+            },
+        )
         .await;
         assert_eq!(code, 0, "{argv:?}");
         assert_eq!(stderr, "");
@@ -129,15 +134,20 @@ async fn t1_mcp_and_no_argument_serve() {
 #[tokio::test]
 async fn t1_unknown_argument_prints_usage_and_exits_2() {
     let server = server(FakeHost::windows_with_git_bash());
-    let (code, stderr) = run_with(&server, &["foo"], std::future::pending(), |mut client| async move {
-        let mut rest = String::new();
-        client
-            .from_server
-            .read_to_string(&mut rest)
-            .await
-            .expect("read stdout");
-        assert_eq!(rest, "", "nothing on stdout");
-    })
+    let (code, stderr) = run_with(
+        &server,
+        &["foo"],
+        std::future::pending(),
+        |mut client| async move {
+            let mut rest = String::new();
+            client
+                .from_server
+                .read_to_string(&mut rest)
+                .await
+                .expect("read stdout");
+            assert_eq!(rest, "", "nothing on stdout");
+        },
+    )
     .await;
     assert_eq!(code, 2);
     assert_eq!(stderr, format!("{USAGE}\n"));
@@ -166,16 +176,21 @@ async fn t1_binary_rejects_unknown_argument() {
 #[tokio::test]
 async fn t2_unavailable_server_exits_0_without_reading_or_writing() {
     let server = server(FakeHost::new("linux"));
-    let (code, stderr) = run_with(&server, &["mcp"], std::future::pending(), |mut client| async move {
-        // Stdin stays open: the server must not wait for it.
-        let mut rest = String::new();
-        client
-            .from_server
-            .read_to_string(&mut rest)
-            .await
-            .expect("read stdout");
-        assert_eq!(rest, "");
-    })
+    let (code, stderr) = run_with(
+        &server,
+        &["mcp"],
+        std::future::pending(),
+        |mut client| async move {
+            // Stdin stays open: the server must not wait for it.
+            let mut rest = String::new();
+            client
+                .from_server
+                .read_to_string(&mut rest)
+                .await
+                .expect("read stdout");
+            assert_eq!(rest, "");
+        },
+    )
     .await;
     assert_eq!(code, 0);
     assert_eq!(stderr, "");
@@ -213,42 +228,52 @@ async fn t2_binary_exits_at_once_off_windows() {
 #[tokio::test(start_paused = true)]
 async fn t3_tool_order_idle_gap_and_eof() {
     let server = server(FakeHost::windows_with_git_bash());
-    let (code, _) = run_unbounded(&server, &["mcp"], std::future::pending(), |mut client| async move {
-        client
-            .send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
-            .await;
-        let reply = client.reply().await;
-        let names: Vec<_> = reply["result"]["tools"]
-            .as_array()
-            .expect("tools")
-            .iter()
-            .map(|tool| tool["name"].clone())
-            .collect();
-        assert_eq!(names, [json!("run"), json!("which_bash"), json!("diagnose")]);
+    let (code, _) = run_unbounded(
+        &server,
+        &["mcp"],
+        std::future::pending(),
+        |mut client| async move {
+            client
+                .send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+                .await;
+            let reply = client.reply().await;
+            let names: Vec<_> = reply["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .map(|tool| tool["name"].clone())
+                .collect();
+            assert_eq!(
+                names,
+                [json!("run"), json!("which_bash"), json!("diagnose")]
+            );
 
-        // A day without requests: the (paused) clock jumps; nothing may end the server.
-        tokio::time::advance(Duration::from_secs(24 * 60 * 60)).await;
-        client
+            // A day without requests: the (paused) clock jumps; nothing may end the server.
+            tokio::time::advance(Duration::from_secs(24 * 60 * 60)).await;
+            client
             .send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"diagnose"}}"#)
             .await;
-        let reply = client.reply().await;
-        assert_eq!(reply["id"], 2);
-        assert_eq!(reply["result"]["isError"], false);
-        let text = reply["result"]["content"][0]["text"].as_str().expect("text");
-        let report: Value = serde_json::from_str(text).expect("diagnose JSON");
-        assert_eq!(report["status"], "ready");
-        assert_eq!(report["enabled"], true);
-        assert_eq!(report["resolution"]["source"], "program-files");
+            let reply = client.reply().await;
+            assert_eq!(reply["id"], 2);
+            assert_eq!(reply["result"]["isError"], false);
+            let text = reply["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text");
+            let report: Value = serde_json::from_str(text).expect("diagnose JSON");
+            assert_eq!(report["status"], "ready");
+            assert_eq!(report["enabled"], true);
+            assert_eq!(report["resolution"]["source"], "program-files");
 
-        client.close_stdin();
-        let mut rest = String::new();
-        client
-            .from_server
-            .read_to_string(&mut rest)
-            .await
-            .expect("read until close");
-        assert_eq!(rest, "");
-    })
+            client.close_stdin();
+            let mut rest = String::new();
+            client
+                .from_server
+                .read_to_string(&mut rest)
+                .await
+                .expect("read until close");
+            assert_eq!(rest, "");
+        },
+    )
     .await;
     assert_eq!(code, 0);
 }
@@ -294,7 +319,10 @@ async fn t9_initialize_echoes_or_defaults_protocol_version() {
     .expect("reply");
     assert_eq!(reply["id"], "a");
     assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(reply["result"]["capabilities"]["tools"]["listChanged"], false);
+    assert_eq!(
+        reply["result"]["capabilities"]["tools"]["listChanged"],
+        false
+    );
     assert_eq!(reply["result"]["serverInfo"]["name"], "git_bash");
     assert!(reply["result"]["serverInfo"]["version"].is_string());
 

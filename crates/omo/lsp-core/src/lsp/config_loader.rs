@@ -125,8 +125,8 @@ pub fn get_merged_servers() -> Result<Vec<ServerWithSource>, LspRequestContextUn
 
 /// Merged servers plus disabled ids from a single config load.
 // PERF-DIVERGENCE(omo lsp config-loader): upstream calls getMergedServers and getDisabledServerIds back to back, reading and parsing each config file twice; this port loads the configs once and derives both lists. Results are identical (and the two lists now share one consistent snapshot).
-pub(crate) fn get_merged_servers_and_disabled_ids(
-) -> Result<(Vec<ServerWithSource>, Vec<String>), LspRequestContextUnavailableError> {
+pub(crate) fn get_merged_servers_and_disabled_ids()
+-> Result<(Vec<ServerWithSource>, Vec<String>), LspRequestContextUnavailableError> {
     let configs = load_all_configs()?;
     Ok((merge_servers(&configs), disabled_server_ids(&configs)))
 }

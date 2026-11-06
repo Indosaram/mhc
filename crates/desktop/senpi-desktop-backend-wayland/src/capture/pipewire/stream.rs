@@ -3,20 +3,20 @@
 //! Everything PipeWire calls back into lives in one heap `Grab` that
 //! outlives the main loop run.
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::ptr;
 
 use image::RgbaImage;
 
 use super::ffi::{
-    PW_STREAM_FLAG_AUTOCONNECT, PW_STREAM_FLAG_MAP_BUFFERS, PW_STREAM_STATE_ERROR,
-    PW_VERSION_STREAM_EVENTS, PwBuffer, PwMainLoop, PwStream, PwStreamEvents, SPA_DIRECTION_INPUT,
-    SPA_PARAM_FORMAT, SpaHook, SpaPod,
+    PwBuffer, PwMainLoop, PwStream, PwStreamEvents, SpaHook, SpaPod, PW_STREAM_FLAG_AUTOCONNECT,
+    PW_STREAM_FLAG_MAP_BUFFERS, PW_STREAM_STATE_ERROR, PW_VERSION_STREAM_EVENTS,
+    SPA_DIRECTION_INPUT, SPA_PARAM_FORMAT,
 };
 use super::lib::PipeWire;
 use super::pixels::to_rgba;
-use super::pod::{Negotiated, enum_format, parse_format};
+use super::pod::{enum_format, parse_format, Negotiated};
 
 const STREAM_PROPERTIES: &CStr = c"media.type=Video media.category=Capture media.role=Screen";
 

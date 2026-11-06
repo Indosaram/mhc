@@ -417,7 +417,8 @@ pub(super) mod tests {
             ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
                 auth_path: Some(path),
                 ..Default::default()
-            }).expect("model runtime");
+            })
+            .expect("model runtime");
         let result = check_provider_auth(
             &Args {
                 provider: Some("openai".into()),

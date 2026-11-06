@@ -1,6 +1,6 @@
 //! Unit-level checks of the pattern preflight (spec §4), without any program.
 
-use maho_ast_grep::hints::{findings, preflight, Severity};
+use maho_ast_grep::hints::{Severity, findings, preflight};
 
 #[test]
 fn metavariable_misuse_is_a_hint() {
@@ -35,8 +35,16 @@ fn bodiless_heads_are_hints_in_the_listed_languages() {
 fn single_pipe_warns_without_rejecting() {
     let warnings = preflight("a | b", "javascript", None, false).expect("accepted");
     assert_eq!(warnings.len(), 1);
-    assert!(preflight("a || b", "javascript", None, false).expect("accepted").is_empty());
-    assert!(preflight("f(\"a|b\")", "javascript", None, false).expect("accepted").is_empty());
+    assert!(
+        preflight("a || b", "javascript", None, false)
+            .expect("accepted")
+            .is_empty()
+    );
+    assert!(
+        preflight("f(\"a|b\")", "javascript", None, false)
+            .expect("accepted")
+            .is_empty()
+    );
     let all = findings("a | b", "javascript", None);
     assert!(all.iter().all(|f| f.severity == Severity::Warning));
 }
@@ -48,9 +56,25 @@ fn rewrite_findings_reject_even_with_force_and_the_first_finding_is_the_message(
     let error = preflight("old($$$X)", "javascript", Some("new($X)"), true).expect_err("rejected");
     assert_eq!(error.code, "REWRITE_METAVARIABLE_KIND_MISMATCH");
     assert!(preflight("old($X)", "javascript", Some(""), false).is_ok());
-    assert!(preflight("old($X, $$$REST)", "javascript", Some("new($X, $$$REST)"), false).is_ok());
+    assert!(
+        preflight(
+            "old($X, $$$REST)",
+            "javascript",
+            Some("new($X, $$$REST)"),
+            false
+        )
+        .is_ok()
+    );
     let error = preflight("\\bx $$A", "javascript", None, false).expect_err("rejected");
-    let listed = error.details["findings"].as_array().expect("findings").len();
+    let listed = error.details["findings"]
+        .as_array()
+        .expect("findings")
+        .len();
     assert!(listed >= 2);
-    assert_eq!(error.message, error.details["findings"][0]["message"].as_str().unwrap_or_default());
+    assert_eq!(
+        error.message,
+        error.details["findings"][0]["message"]
+            .as_str()
+            .unwrap_or_default()
+    );
 }

@@ -9,7 +9,8 @@ use maho_ai::utils::config_reference_error::ConfigReferenceError;
 use regex::Regex;
 
 use crate::config_reference_resolver::{
-    ConfigReferenceContext, ConfigValue, assert_config_reference_authority, resolve_config_reference,
+    ConfigReferenceContext, ConfigValue, assert_config_reference_authority,
+    resolve_config_reference,
 };
 
 pub const COMMAND_EXECUTION_MAX_ATTEMPTS: usize = 3;
@@ -61,7 +62,10 @@ pub fn parse_config_value_template(config: &str) -> Vec<TemplatePart> {
             break;
         };
         let dollar_index = index + offset;
-        append_literal(&mut parts, &bytes[index..dollar_index].iter().collect::<String>());
+        append_literal(
+            &mut parts,
+            &bytes[index..dollar_index].iter().collect::<String>(),
+        );
         let next_char = bytes.get(dollar_index + 1).copied();
 
         if next_char == Some('$') || next_char == Some('!') {
@@ -71,7 +75,10 @@ pub fn parse_config_value_template(config: &str) -> Vec<TemplatePart> {
         }
 
         if next_char == Some('{') {
-            let end_index = bytes[dollar_index + 2..].iter().position(|c| *c == '}').map(|offset| dollar_index + 2 + offset);
+            let end_index = bytes[dollar_index + 2..]
+                .iter()
+                .position(|c| *c == '}')
+                .map(|offset| dollar_index + 2 + offset);
             let Some(end_index) = end_index else {
                 append_literal(&mut parts, "$");
                 index = dollar_index + 1;
@@ -81,7 +88,10 @@ pub fn parse_config_value_template(config: &str) -> Vec<TemplatePart> {
             if env_var_name_re().is_match(&name) {
                 parts.push(TemplatePart::Env(name));
             } else {
-                append_literal(&mut parts, &bytes[dollar_index..=end_index].iter().collect::<String>());
+                append_literal(
+                    &mut parts,
+                    &bytes[dollar_index..=end_index].iter().collect::<String>(),
+                );
             }
             index = end_index + 1;
             continue;
@@ -123,14 +133,18 @@ fn template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for part in parts {
         if let TemplatePart::Env(name) = part
-            && !names.contains(name) {
-                names.push(name.clone());
-            }
+            && !names.contains(name)
+        {
+            names.push(name.clone());
+        }
     }
     names
 }
 
-fn resolve_template(parts: &[TemplatePart], env: Option<&HashMap<String, String>>) -> Option<String> {
+fn resolve_template(
+    parts: &[TemplatePart],
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     let mut resolved = String::new();
     for part in parts {
         match part {
@@ -164,7 +178,10 @@ pub fn get_config_value_env_var_names(config: &str) -> Vec<String> {
     }
 }
 
-pub fn get_missing_config_value_env_var_names(config: &str, env: Option<&HashMap<String, String>>) -> Vec<String> {
+pub fn get_missing_config_value_env_var_names(
+    config: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Vec<String> {
     get_config_value_env_var_names(config)
         .into_iter()
         .filter(|name| resolve_env_config_value(name, env).is_none())
@@ -172,7 +189,10 @@ pub fn get_missing_config_value_env_var_names(config: &str, env: Option<&HashMap
 }
 
 pub fn is_command_config_value(config: &str) -> bool {
-    matches!(parse_config_value_reference(config), ConfigValueReference::Command(_))
+    matches!(
+        parse_config_value_reference(config),
+        ConfigValueReference::Command(_)
+    )
 }
 
 pub fn is_config_value_configured(config: &str, env: Option<&HashMap<String, String>>) -> bool {
@@ -185,7 +205,10 @@ fn command_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 }
 
 /// Resolve a config value: `!command`, `$ENV`/`${ENV}` templates, or a literal.
-pub async fn resolve_config_value(config: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
+pub async fn resolve_config_value(
+    config: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     match parse_config_value_reference(config) {
         ConfigValueReference::Command(command) => match env {
             None => execute_command(&command).await,
@@ -195,7 +218,10 @@ pub async fn resolve_config_value(config: &str, env: Option<&HashMap<String, Str
     }
 }
 
-pub async fn resolve_config_value_uncached(config: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
+pub async fn resolve_config_value_uncached(
+    config: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     match parse_config_value_reference(config) {
         ConfigValueReference::Command(command) => run_config_command(&command, env).await,
         ConfigValueReference::Template(parts) => resolve_template(&parts, env),
@@ -203,11 +229,19 @@ pub async fn resolve_config_value_uncached(config: &str, env: Option<&HashMap<St
 }
 
 async fn execute_command(command_config: &str) -> Option<String> {
-    if let Some(cached) = command_cache().lock().expect("config cache lock").get(command_config).cloned() {
+    if let Some(cached) = command_cache()
+        .lock()
+        .expect("config cache lock")
+        .get(command_config)
+        .cloned()
+    {
         return cached;
     }
     let result = run_config_command(command_config, None).await;
-    command_cache().lock().expect("config cache lock").insert(command_config.to_owned(), result.clone());
+    command_cache()
+        .lock()
+        .expect("config cache lock")
+        .insert(command_config.to_owned(), result.clone());
     result
 }
 
@@ -220,14 +254,21 @@ pub async fn resolve_config_value_or_throw(
         return Ok(resolved);
     }
     match parse_config_value_reference(config) {
-        ConfigValueReference::Command(command) => {
-            Err(format!("Failed to resolve {description} from shell command: {}", command.trim_start_matches('!')))
-        }
+        ConfigValueReference::Command(command) => Err(format!(
+            "Failed to resolve {description} from shell command: {}",
+            command.trim_start_matches('!')
+        )),
         ConfigValueReference::Template(_) => {
             let missing = get_missing_config_value_env_var_names(config, env);
             match missing.len() {
-                1 => Err(format!("Failed to resolve {description} from environment variable: {}", missing[0])),
-                count if count > 1 => Err(format!("Failed to resolve {description} from environment variables: {}", missing.join(", "))),
+                1 => Err(format!(
+                    "Failed to resolve {description} from environment variable: {}",
+                    missing[0]
+                )),
+                count if count > 1 => Err(format!(
+                    "Failed to resolve {description} from environment variables: {}",
+                    missing.join(", ")
+                )),
                 _ => Err(format!("Failed to resolve {description}")),
             }
         }
@@ -239,13 +280,21 @@ pub async fn resolve_headers_or_throw(
     description: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<Option<HashMap<String, String>>, String> {
-    let Some(headers) = headers else { return Ok(None) };
+    let Some(headers) = headers else {
+        return Ok(None);
+    };
     let mut resolved = HashMap::new();
     for (key, value) in headers {
-        let resolved_value = resolve_config_value_or_throw(value, &format!("{description} header \"{key}\""), env).await?;
+        let resolved_value =
+            resolve_config_value_or_throw(value, &format!("{description} header \"{key}\""), env)
+                .await?;
         resolved.insert(key.clone(), resolved_value);
     }
-    if resolved.is_empty() { Ok(None) } else { Ok(Some(resolved)) }
+    if resolved.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(resolved))
+    }
 }
 
 // ---- ConfigValue (string or reference) forms (senpi#3858). The `&str` functions above keep the string
@@ -254,7 +303,10 @@ pub async fn resolve_headers_or_throw(
 pub fn get_config_value_env_var_name_of(config: &ConfigValue) -> Option<String> {
     match config {
         ConfigValue::String(value) => get_config_value_env_var_name(value),
-        ConfigValue::Reference { reference: ConfigReference::Env(name), .. } => Some(name.clone()),
+        ConfigValue::Reference {
+            reference: ConfigReference::Env(name),
+            ..
+        } => Some(name.clone()),
         ConfigValue::Reference { .. } => None,
     }
 }
@@ -262,8 +314,14 @@ pub fn get_config_value_env_var_name_of(config: &ConfigValue) -> Option<String> 
 pub fn get_config_value_env_var_names_of(config: &ConfigValue) -> Vec<String> {
     match config {
         ConfigValue::String(value) => get_config_value_env_var_names(value),
-        ConfigValue::Reference { reference: ConfigReference::Env(name), .. } => vec![name.clone()],
-        ConfigValue::Reference { reference: ConfigReference::Concat(parts), .. } => {
+        ConfigValue::Reference {
+            reference: ConfigReference::Env(name),
+            ..
+        } => vec![name.clone()],
+        ConfigValue::Reference {
+            reference: ConfigReference::Concat(parts),
+            ..
+        } => {
             let mut names: Vec<String> = Vec::new();
             for part in parts {
                 if let ConfigConcatPart::Env(name) = part
@@ -293,7 +351,10 @@ pub fn is_command_config_value_of(config: &ConfigValue) -> bool {
 }
 
 /// A reference counts as configured; it is resolved (and may fail) only at use.
-pub fn is_config_value_configured_of(config: &ConfigValue, env: Option<&HashMap<String, String>>) -> bool {
+pub fn is_config_value_configured_of(
+    config: &ConfigValue,
+    env: Option<&HashMap<String, String>>,
+) -> bool {
     match config {
         ConfigValue::String(value) => is_config_value_configured(value, env),
         ConfigValue::Reference { .. } => true,
@@ -332,7 +393,9 @@ pub async fn resolve_config_value_or_throw_of(
 ) -> Result<String, String> {
     match config {
         ConfigValue::String(value) => resolve_config_value_or_throw(value, description, env).await,
-        reference => resolve_config_reference(reference, context, env).map_err(|error| error.to_string()),
+        reference => {
+            resolve_config_reference(reference, context, env).map_err(|error| error.to_string())
+        }
     }
 }
 
@@ -343,17 +406,28 @@ pub async fn resolve_config_headers_or_throw(
     description: &str,
     env: Option<&HashMap<String, String>>,
 ) -> Result<Option<HashMap<String, String>>, String> {
-    let Some(headers) = headers else { return Ok(None) };
+    let Some(headers) = headers else {
+        return Ok(None);
+    };
     for value in headers.values() {
         assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
     }
     let mut resolved = HashMap::new();
     for (key, value) in headers {
-        let resolved_value =
-            resolve_config_value_or_throw_of(value, &format!("{description} header \"{key}\""), env, None).await?;
+        let resolved_value = resolve_config_value_or_throw_of(
+            value,
+            &format!("{description} header \"{key}\""),
+            env,
+            None,
+        )
+        .await?;
         resolved.insert(key.clone(), resolved_value);
     }
-    if resolved.is_empty() { Ok(None) } else { Ok(Some(resolved)) }
+    if resolved.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(resolved))
+    }
 }
 
 pub fn clear_config_value_cache() {
@@ -361,7 +435,10 @@ pub fn clear_config_value_cache() {
 }
 
 /// Execute a `!command` config value, retrying a transient failure with an awaited backoff.
-pub async fn run_config_command(command_config: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
+pub async fn run_config_command(
+    command_config: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     let command = command_config.trim_start_matches('!');
     for attempt in 0..COMMAND_EXECUTION_MAX_ATTEMPTS {
         if let Some(value) = execute_command_once(command, env).await {
@@ -374,14 +451,18 @@ pub async fn run_config_command(command_config: &str, env: Option<&HashMap<Strin
     None
 }
 
-async fn execute_command_once(command: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
+async fn execute_command_once(
+    command: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     // Node `execSync(command, { shell: true })`: `/bin/sh -c` on Unix, and on Windows
     // `cmd.exe /d /s /c "<command>"` passed verbatim (cmd does not understand `\"` escapes).
     #[cfg(windows)]
     let mut process = {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
         let mut cmd = tokio::process::Command::new(comspec);
-        cmd.args(["/d", "/s", "/c"]).raw_arg(format!("\"{command}\""));
+        cmd.args(["/d", "/s", "/c"])
+            .raw_arg(format!("\"{command}\""));
         cmd
     };
     #[cfg(not(windows))]
@@ -401,13 +482,22 @@ async fn execute_command_once(command: &str, env: Option<&HashMap<String, String
     process.env_remove("__PI_INTERNAL_SPAWN");
     process.kill_on_drop(true);
     let child = process.spawn().ok()?;
-    match tokio::time::timeout(Duration::from_millis(COMMAND_TIMEOUT_MS), child.wait_with_output()).await {
+    match tokio::time::timeout(
+        Duration::from_millis(COMMAND_TIMEOUT_MS),
+        child.wait_with_output(),
+    )
+    .await
+    {
         Ok(Ok(output)) => {
             if output.stdout.len() > COMMAND_MAX_OUTPUT_BYTES {
                 return None;
             }
             let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if output.status.success() && !text.is_empty() { Some(text) } else { None }
+            if output.status.success() && !text.is_empty() {
+                Some(text)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -418,33 +508,99 @@ mod tests {
     use super::*;
 
     fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
     }
 
     #[tokio::test]
     async fn resolves_literals_environment_templates_and_escapes() {
         let env = env_map(&[("TEST_CONFIG_LEFT", "left"), ("TEST_CONFIG_RIGHT", "right")]);
-        assert_eq!(resolve_config_value("literal-key", Some(&env)).await.as_deref(), Some("literal-key"));
-        assert_eq!(resolve_config_value("$TEST_CONFIG_LEFT", Some(&env)).await.as_deref(), Some("left"));
-        assert_eq!(resolve_config_value("${TEST_CONFIG_LEFT}_$TEST_CONFIG_RIGHT", Some(&env)).await.as_deref(), Some("left_right"));
-        assert_eq!(resolve_config_value("$$TEST_CONFIG_LEFT", Some(&env)).await.as_deref(), Some("$TEST_CONFIG_LEFT"));
-        assert_eq!(resolve_config_value("$!literal-$TEST_CONFIG_RIGHT", Some(&env)).await.as_deref(), Some("!literal-right"));
-        assert_eq!(resolve_config_value("${NOT-A-NAME}", Some(&env)).await.as_deref(), Some("${NOT-A-NAME}"));
-        assert_eq!(resolve_config_value("${UNSET_NAME}", Some(&env)).await, None);
-        assert_eq!(resolve_config_value("trailing$", Some(&env)).await.as_deref(), Some("trailing$"));
-        assert_eq!(resolve_config_value("${UNCLOSED", Some(&env)).await.as_deref(), Some("${UNCLOSED"));
+        assert_eq!(
+            resolve_config_value("literal-key", Some(&env))
+                .await
+                .as_deref(),
+            Some("literal-key")
+        );
+        assert_eq!(
+            resolve_config_value("$TEST_CONFIG_LEFT", Some(&env))
+                .await
+                .as_deref(),
+            Some("left")
+        );
+        assert_eq!(
+            resolve_config_value("${TEST_CONFIG_LEFT}_$TEST_CONFIG_RIGHT", Some(&env))
+                .await
+                .as_deref(),
+            Some("left_right")
+        );
+        assert_eq!(
+            resolve_config_value("$$TEST_CONFIG_LEFT", Some(&env))
+                .await
+                .as_deref(),
+            Some("$TEST_CONFIG_LEFT")
+        );
+        assert_eq!(
+            resolve_config_value("$!literal-$TEST_CONFIG_RIGHT", Some(&env))
+                .await
+                .as_deref(),
+            Some("!literal-right")
+        );
+        assert_eq!(
+            resolve_config_value("${NOT-A-NAME}", Some(&env))
+                .await
+                .as_deref(),
+            Some("${NOT-A-NAME}")
+        );
+        assert_eq!(
+            resolve_config_value("${UNSET_NAME}", Some(&env)).await,
+            None
+        );
+        assert_eq!(
+            resolve_config_value("trailing$", Some(&env))
+                .await
+                .as_deref(),
+            Some("trailing$")
+        );
+        assert_eq!(
+            resolve_config_value("${UNCLOSED", Some(&env))
+                .await
+                .as_deref(),
+            Some("${UNCLOSED")
+        );
     }
 
     #[tokio::test]
     async fn uses_credential_scoped_environment_before_the_process_environment() {
         let scoped = env_map(&[("MAHO_CORE_TEST_SCOPED", "credential")]);
-        assert_eq!(resolve_config_value("$MAHO_CORE_TEST_SCOPED", Some(&scoped)).await.as_deref(), Some("credential"));
-        assert_eq!(resolve_config_value("$MAHO_CORE_TEST_SCOPED", None).await, None);
+        assert_eq!(
+            resolve_config_value("$MAHO_CORE_TEST_SCOPED", Some(&scoped))
+                .await
+                .as_deref(),
+            Some("credential")
+        );
+        assert_eq!(
+            resolve_config_value("$MAHO_CORE_TEST_SCOPED", None).await,
+            None
+        );
         let empty = env_map(&[("MAHO_CORE_TEST_SCOPED", "")]);
-        assert_eq!(resolve_config_value("$MAHO_CORE_TEST_SCOPED", Some(&empty)).await, None);
+        assert_eq!(
+            resolve_config_value("$MAHO_CORE_TEST_SCOPED", Some(&empty)).await,
+            None
+        );
         let process_visible = env_map(&[("HOME", "scoped-home")]);
-        assert_eq!(resolve_config_value("$HOME", Some(&process_visible)).await.as_deref(), Some("scoped-home"));
-        let home_var = if cfg!(windows) { "$USERPROFILE" } else { "$HOME" };
+        assert_eq!(
+            resolve_config_value("$HOME", Some(&process_visible))
+                .await
+                .as_deref(),
+            Some("scoped-home")
+        );
+        let home_var = if cfg!(windows) {
+            "$USERPROFILE"
+        } else {
+            "$HOME"
+        };
         assert!(resolve_config_value(home_var, None).await.is_some());
     }
 
@@ -452,13 +608,46 @@ mod tests {
     async fn executes_shell_commands_and_trims_their_output() {
         clear_config_value_cache();
         if cfg!(windows) {
-            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('  spaced-key  ')\"", None).await.as_deref(), Some("spaced-key"));
-            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('line1\\nline2')\"", None).await.as_deref(), Some("line1\nline2"));
-            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('hello world'.replace(/ /g, '-'))\"", None).await.as_deref(), Some("hello-world"));
+            assert_eq!(
+                resolve_config_value("!node -e \"process.stdout.write('  spaced-key  ')\"", None)
+                    .await
+                    .as_deref(),
+                Some("spaced-key")
+            );
+            assert_eq!(
+                resolve_config_value("!node -e \"process.stdout.write('line1\\nline2')\"", None)
+                    .await
+                    .as_deref(),
+                Some("line1\nline2")
+            );
+            assert_eq!(
+                resolve_config_value(
+                    "!node -e \"process.stdout.write('hello world'.replace(/ /g, '-'))\"",
+                    None
+                )
+                .await
+                .as_deref(),
+                Some("hello-world")
+            );
         } else {
-            assert_eq!(resolve_config_value("!echo '  spaced-key  '", None).await.as_deref(), Some("spaced-key"));
-            assert_eq!(resolve_config_value("!printf 'line1\nline2'", None).await.as_deref(), Some("line1\nline2"));
-            assert_eq!(resolve_config_value("!echo 'hello world' | tr ' ' '-'", None).await.as_deref(), Some("hello-world"));
+            assert_eq!(
+                resolve_config_value("!echo '  spaced-key  '", None)
+                    .await
+                    .as_deref(),
+                Some("spaced-key")
+            );
+            assert_eq!(
+                resolve_config_value("!printf 'line1\nline2'", None)
+                    .await
+                    .as_deref(),
+                Some("line1\nline2")
+            );
+            assert_eq!(
+                resolve_config_value("!echo 'hello world' | tr ' ' '-'", None)
+                    .await
+                    .as_deref(),
+                Some("hello-world")
+            );
         }
         clear_config_value_cache();
     }
@@ -476,17 +665,41 @@ mod tests {
         let counter = dir.path().join("counter");
         let script = if cfg!(windows) {
             let c = counter.to_string_lossy().replace('\\', "/");
-            format!("!node -e \"const fs=require('fs'); let n=0; try{{n=parseInt(fs.readFileSync('{c}','utf8'))||0}}catch(e){{}} n++; fs.writeFileSync('{c}',String(n)); console.log(n);\"")
+            format!(
+                "!node -e \"const fs=require('fs'); let n=0; try{{n=parseInt(fs.readFileSync('{c}','utf8'))||0}}catch(e){{}} n++; fs.writeFileSync('{c}',String(n)); console.log(n);\""
+            )
         } else {
-            format!("!n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo $n", c = counter.display())
+            format!(
+                "!n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo $n",
+                c = counter.display()
+            )
         };
-        assert_eq!(resolve_config_value(&script, None).await.as_deref(), Some("1"));
-        assert_eq!(resolve_config_value(&script, None).await.as_deref(), Some("1"));
-        assert_eq!(resolve_config_value_uncached(&script, None).await.as_deref(), Some("2"));
+        assert_eq!(
+            resolve_config_value(&script, None).await.as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            resolve_config_value(&script, None).await.as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            resolve_config_value_uncached(&script, None)
+                .await
+                .as_deref(),
+            Some("2")
+        );
         let scoped = env_map(&[("UNUSED", "x")]);
-        assert_eq!(resolve_config_value(&script, Some(&scoped)).await.as_deref(), Some("3"));
+        assert_eq!(
+            resolve_config_value(&script, Some(&scoped))
+                .await
+                .as_deref(),
+            Some("3")
+        );
         clear_config_value_cache();
-        assert_eq!(resolve_config_value(&script, None).await.as_deref(), Some("4"));
+        assert_eq!(
+            resolve_config_value(&script, None).await.as_deref(),
+            Some("4")
+        );
         clear_config_value_cache();
     }
 
@@ -495,12 +708,24 @@ mod tests {
         let env = env_map(&[("PRESENT", "1")]);
         assert!(is_command_config_value("!echo hi"));
         assert!(!is_command_config_value("$PRESENT"));
-        assert_eq!(get_config_value_env_var_name("$PRESENT").as_deref(), Some("PRESENT"));
-        assert_eq!(get_config_value_env_var_name("${PRESENT}").as_deref(), Some("PRESENT"));
+        assert_eq!(
+            get_config_value_env_var_name("$PRESENT").as_deref(),
+            Some("PRESENT")
+        );
+        assert_eq!(
+            get_config_value_env_var_name("${PRESENT}").as_deref(),
+            Some("PRESENT")
+        );
         assert_eq!(get_config_value_env_var_name("$PRESENT-suffix"), None);
         assert_eq!(get_config_value_env_var_names("$A-$B-$A"), vec!["A", "B"]);
-        assert_eq!(get_config_value_env_var_names("!echo $A"), Vec::<String>::new());
-        assert_eq!(get_missing_config_value_env_var_names("$PRESENT-$MISSING", Some(&env)), vec!["MISSING"]);
+        assert_eq!(
+            get_config_value_env_var_names("!echo $A"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            get_missing_config_value_env_var_names("$PRESENT-$MISSING", Some(&env)),
+            vec!["MISSING"]
+        );
         assert!(is_config_value_configured("$PRESENT", Some(&env)));
         assert!(!is_config_value_configured("$MISSING", Some(&env)));
     }
@@ -508,37 +733,85 @@ mod tests {
     #[tokio::test]
     async fn throws_the_exact_unresolved_messages() {
         let env = env_map(&[]);
-        let error = resolve_config_value_or_throw("!exit 1", "Anthropic API key", None).await.expect_err("error");
-        assert_eq!(error, "Failed to resolve Anthropic API key from shell command: exit 1");
-        let error = resolve_config_value_or_throw("$MISSING_ONE", "Anthropic API key", Some(&env)).await.expect_err("error");
-        assert_eq!(error, "Failed to resolve Anthropic API key from environment variable: MISSING_ONE");
-        let error = resolve_config_value_or_throw("$MISSING_ONE-$MISSING_TWO", "Anthropic API key", Some(&env)).await.expect_err("error");
-        assert_eq!(error, "Failed to resolve Anthropic API key from environment variables: MISSING_ONE, MISSING_TWO");
-        assert_eq!(resolve_config_value_or_throw("$PRESENT", "key", Some(&env_map(&[("PRESENT", "v")]))).await.as_deref(), Ok("v"));
+        let error = resolve_config_value_or_throw("!exit 1", "Anthropic API key", None)
+            .await
+            .expect_err("error");
+        assert_eq!(
+            error,
+            "Failed to resolve Anthropic API key from shell command: exit 1"
+        );
+        let error = resolve_config_value_or_throw("$MISSING_ONE", "Anthropic API key", Some(&env))
+            .await
+            .expect_err("error");
+        assert_eq!(
+            error,
+            "Failed to resolve Anthropic API key from environment variable: MISSING_ONE"
+        );
+        let error = resolve_config_value_or_throw(
+            "$MISSING_ONE-$MISSING_TWO",
+            "Anthropic API key",
+            Some(&env),
+        )
+        .await
+        .expect_err("error");
+        assert_eq!(
+            error,
+            "Failed to resolve Anthropic API key from environment variables: MISSING_ONE, MISSING_TWO"
+        );
+        assert_eq!(
+            resolve_config_value_or_throw("$PRESENT", "key", Some(&env_map(&[("PRESENT", "v")])))
+                .await
+                .as_deref(),
+            Ok("v")
+        );
     }
 
     #[tokio::test]
     async fn resolves_headers_and_reports_the_header_name() {
         let env = env_map(&[("HEADER_VALUE", "v")]);
-        assert!(resolve_headers_or_throw(None, "provider", None).await.expect("none").is_none());
+        assert!(
+            resolve_headers_or_throw(None, "provider", None)
+                .await
+                .expect("none")
+                .is_none()
+        );
         let headers = env_map(&[("x-key", "$HEADER_VALUE")]);
-        let resolved = resolve_headers_or_throw(Some(&headers), "provider", Some(&env)).await.expect("resolved");
-        assert_eq!(resolved.and_then(|headers| headers.get("x-key").cloned()).as_deref(), Some("v"));
+        let resolved = resolve_headers_or_throw(Some(&headers), "provider", Some(&env))
+            .await
+            .expect("resolved");
+        assert_eq!(
+            resolved
+                .and_then(|headers| headers.get("x-key").cloned())
+                .as_deref(),
+            Some("v")
+        );
         let headers = env_map(&[("x-key", "$MISSING")]);
-        let error = resolve_headers_or_throw(Some(&headers), "provider", Some(&env)).await.expect_err("error");
-        assert_eq!(error, "Failed to resolve provider header \"x-key\" from environment variable: MISSING");
+        let error = resolve_headers_or_throw(Some(&headers), "provider", Some(&env))
+            .await
+            .expect_err("error");
+        assert_eq!(
+            error,
+            "Failed to resolve provider header \"x-key\" from environment variable: MISSING"
+        );
     }
 
     #[test]
     fn template_parts_merge_adjacent_literals() {
-        assert_eq!(parse_config_value_template("abc"), vec![TemplatePart::Literal("abc".to_owned())]);
+        assert_eq!(
+            parse_config_value_template("abc"),
+            vec![TemplatePart::Literal("abc".to_owned())]
+        );
         assert_eq!(
             parse_config_value_template("a$$b"),
             vec![TemplatePart::Literal("a$b".to_owned())]
         );
         assert_eq!(
             parse_config_value_template("a$X b"),
-            vec![TemplatePart::Literal("a".to_owned()), TemplatePart::Env("X".to_owned()), TemplatePart::Literal(" b".to_owned())]
+            vec![
+                TemplatePart::Literal("a".to_owned()),
+                TemplatePart::Env("X".to_owned()),
+                TemplatePart::Literal(" b".to_owned())
+            ]
         );
         assert_eq!(parse_config_value_template(""), Vec::<TemplatePart>::new());
     }

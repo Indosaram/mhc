@@ -2,10 +2,10 @@
 
 mod support;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use rusqlite::Connection;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 
 use maho_ext_api::{
@@ -13,10 +13,10 @@ use maho_ext_api::{
     ExtensionEvent,
 };
 use maho_omo_gateway::{
-    apply_gateway_rules_migrations, gateway_database_path, rules_committed, GatewayComponent,
-    GatewayComponentOptions, GatewayRulesPromptHandler, GatewayRulesPromptOptions,
+    DeliverySummary, EnqueueDeliveryRequest, GatewayComponent, GatewayComponentOptions,
+    GatewayDeliveryEnqueueSeam, GatewayRulesPromptHandler, GatewayRulesPromptOptions,
     GatewayRulesStore, RulesCommittedArgs, RulesCommittedTarget, SqliteGatewayRulesStore,
-    DeliverySummary, EnqueueDeliveryRequest, GatewayDeliveryEnqueueSeam,
+    apply_gateway_rules_migrations, gateway_database_path, rules_committed,
 };
 
 use support::{make_test_api, test_context};
@@ -62,7 +62,8 @@ async fn given_a_session_with_no_committed_rules_when_the_handler_runs_then_it_r
 }
 
 #[tokio::test]
-async fn given_a_session_with_committed_rules_when_the_handler_runs_then_prompt_gains_operating_rules_block() {
+async fn given_a_session_with_committed_rules_when_the_handler_runs_then_prompt_gains_operating_rules_block()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     let seam = MockEnqueueSeam;
@@ -91,7 +92,10 @@ async fn given_a_session_with_committed_rules_when_the_handler_runs_then_prompt_
 
     let res = handler.handle("BASE PROMPT", "sess-1").unwrap();
     assert!(res.system_prompt.starts_with("BASE PROMPT\n\n"));
-    assert!(res.system_prompt.contains(r#"<operating-rules version="v1">"#));
+    assert!(
+        res.system_prompt
+            .contains(r#"<operating-rules version="v1">"#)
+    );
     assert!(res.system_prompt.contains("- answer in bullet points"));
 }
 
@@ -124,11 +128,15 @@ async fn given_an_empty_system_prompt_when_the_handler_runs_then_it_composes_rul
     });
 
     let res = handler.handle("", "sess-1").unwrap();
-    assert!(res.system_prompt.contains(r#"<operating-rules version="v1">"#));
+    assert!(
+        res.system_prompt
+            .contains(r#"<operating-rules version="v1">"#)
+    );
 }
 
 #[tokio::test]
-async fn given_committed_rules_when_the_handler_runs_twice_on_same_version_then_both_prompts_are_byte_identical() {
+async fn given_committed_rules_when_the_handler_runs_twice_on_same_version_then_both_prompts_are_byte_identical()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     let seam = MockEnqueueSeam;
@@ -162,7 +170,8 @@ async fn given_committed_rules_when_the_handler_runs_twice_on_same_version_then_
 }
 
 #[tokio::test]
-async fn given_a_new_rules_version_when_the_handler_runs_again_then_the_block_is_replaced_not_appended() {
+async fn given_a_new_rules_version_when_the_handler_runs_again_then_the_block_is_replaced_not_appended()
+ {
     let mut conn = Connection::open_in_memory().unwrap();
     apply_gateway_rules_migrations(&mut conn).unwrap();
     let seam = MockEnqueueSeam;
@@ -188,7 +197,10 @@ async fn given_a_new_rules_version_when_the_handler_runs_again_then_the_block_is
 
     struct SharedConnStore(Arc<std::sync::Mutex<Connection>>);
     impl GatewayRulesStore for SharedConnStore {
-        fn block_for_session(&self, id: &str) -> Result<Option<maho_omo_gateway::SessionRulesBlock>, String> {
+        fn block_for_session(
+            &self,
+            id: &str,
+        ) -> Result<Option<maho_omo_gateway::SessionRulesBlock>, String> {
             let guard = self.0.lock().map_err(|e| e.to_string())?;
             maho_omo_gateway::block_for_session(&guard, id).map_err(|e| e.to_string())
         }
@@ -226,7 +238,10 @@ async fn given_a_new_rules_version_when_the_handler_runs_again_then_the_block_is
     assert!(second.system_prompt.contains(r#"version="v2""#));
     assert!(!second.system_prompt.contains(r#"version="v1""#));
     assert_eq!(
-        second.system_prompt.matches("<!-- omo-gateway:rules:begin -->").count(),
+        second
+            .system_prompt
+            .matches("<!-- omo-gateway:rules:begin -->")
+            .count(),
         1
     );
 }
@@ -245,7 +260,10 @@ async fn given_no_gateway_store_when_the_handler_runs_then_it_returns_none() {
 async fn given_a_lookup_failure_when_the_handler_runs_then_it_passes_through_and_warns_once() {
     struct FailingStore;
     impl GatewayRulesStore for FailingStore {
-        fn block_for_session(&self, _id: &str) -> Result<Option<maho_omo_gateway::SessionRulesBlock>, String> {
+        fn block_for_session(
+            &self,
+            _id: &str,
+        ) -> Result<Option<maho_omo_gateway::SessionRulesBlock>, String> {
             Err("worker died".to_string())
         }
     }
@@ -270,7 +288,8 @@ async fn given_a_lookup_failure_when_the_handler_runs_then_it_passes_through_and
 }
 
 #[tokio::test]
-async fn given_no_gateway_config_when_registered_component_receives_before_agent_start_then_it_returns_none_and_never_opens_store() {
+async fn given_no_gateway_config_when_registered_component_receives_before_agent_start_then_it_returns_none_and_never_opens_store()
+ {
     let dir = tempdir().unwrap();
     let agent_dir = dir.path().to_path_buf();
     let store_creations = Arc::new(AtomicUsize::new(0));
@@ -302,7 +321,8 @@ async fn given_no_gateway_config_when_registered_component_receives_before_agent
 }
 
 #[tokio::test]
-async fn given_gateway_scopes_but_no_store_database_when_registered_component_receives_before_agent_start_then_it_returns_none_and_never_opens_store() {
+async fn given_gateway_scopes_but_no_store_database_when_registered_component_receives_before_agent_start_then_it_returns_none_and_never_opens_store()
+ {
     let empty_dir = tempdir().unwrap();
     let agent_dir = empty_dir.path().to_path_buf();
     let store_creations = Arc::new(AtomicUsize::new(0));
@@ -334,7 +354,8 @@ async fn given_gateway_scopes_but_no_store_database_when_registered_component_re
 }
 
 #[tokio::test]
-async fn given_configured_gateway_and_existing_db_when_component_runs_then_rules_block_injected_for_bound_and_none_for_unbound() {
+async fn given_configured_gateway_and_existing_db_when_component_runs_then_rules_block_injected_for_bound_and_none_for_unbound()
+ {
     let dir = tempdir().unwrap();
     let agent_dir = dir.path().to_path_buf();
     let db_path = gateway_database_path(&agent_dir);
@@ -398,7 +419,8 @@ async fn given_configured_gateway_and_existing_db_when_component_runs_then_rules
 }
 
 #[tokio::test]
-async fn given_default_component_lifecycle_across_restarts_then_populated_database_is_read_successfully() {
+async fn given_default_component_lifecycle_across_restarts_then_populated_database_is_read_successfully()
+ {
     let dir = tempdir().unwrap();
     let agent_dir = dir.path().to_path_buf();
     let db_path = gateway_database_path(&agent_dir);

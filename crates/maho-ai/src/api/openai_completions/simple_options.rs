@@ -3,9 +3,13 @@
 //! Node-private copy: `src/api/simple_options.rs` is owned by node 12-misc. Kept here so this lane
 //! compiles standalone; delete it once 12-misc merges.
 
-use super::context_room::{clamp_max_tokens_to_context, ContextWindowExhaustedError, MIN_ANSWER_TOKENS};
+use super::context_room::{
+    ContextWindowExhaustedError, MIN_ANSWER_TOKENS, clamp_max_tokens_to_context,
+};
 use crate::model::Model;
-use crate::types::{Context, ModelThinkingLevel, SimpleStreamOptions, StreamOptions, ThinkingBudgets};
+use crate::types::{
+    Context, ModelThinkingLevel, SimpleStreamOptions, StreamOptions, ThinkingBudgets,
+};
 use serde_json::{Map, Value};
 
 pub fn apply_extra_body(
@@ -49,7 +53,8 @@ pub fn build_base_options(
     options: Option<&SimpleStreamOptions>,
     api_key: Option<&str>,
 ) -> Result<StreamOptions, ContextWindowExhaustedError> {
-    let sampling_params = if model.sampling_params.is_some() || options.is_some_and(|o| o.stream.sampling_params.is_some())
+    let sampling_params = if model.sampling_params.is_some()
+        || options.is_some_and(|o| o.stream.sampling_params.is_some())
     {
         let mut merged = model.sampling_params.clone().unwrap_or_default();
         if let Some(extra) = options.and_then(|options| options.stream.sampling_params.as_ref()) {
@@ -62,23 +67,30 @@ pub fn build_base_options(
         None
     };
 
-    let max_tokens = options.and_then(|options| options.stream.max_tokens).unwrap_or(model.max_tokens);
+    let max_tokens = options
+        .and_then(|options| options.stream.max_tokens)
+        .unwrap_or(model.max_tokens);
     let mut stream = StreamOptions {
         temperature: options.and_then(|options| options.stream.temperature),
         sampling_params,
         max_tokens: Some(clamp_max_tokens_to_context(model, context, max_tokens)?),
         transport: options.and_then(|options| options.stream.transport),
-        cache_retention: options.and_then(|options| options.stream.cache_retention).or(model.cache_retention),
+        cache_retention: options
+            .and_then(|options| options.stream.cache_retention)
+            .or(model.cache_retention),
         session_id: options.and_then(|options| options.stream.session_id.clone()),
         extra_body: options.and_then(|options| options.stream.extra_body.clone()),
-        websocket_connect_timeout_ms: options.and_then(|options| options.stream.websocket_connect_timeout_ms),
+        websocket_connect_timeout_ms: options
+            .and_then(|options| options.stream.websocket_connect_timeout_ms),
         metadata: options.and_then(|options| options.stream.metadata.clone()),
         ..StreamOptions::default()
     };
     let request = &mut stream.request;
     request.signal = options.and_then(|options| options.stream.request.signal.clone());
-    request.abort_server_side_fallback = options.and_then(|options| options.stream.request.abort_server_side_fallback);
-    request.telemetry_context = options.and_then(|options| options.stream.request.telemetry_context.clone());
+    request.abort_server_side_fallback =
+        options.and_then(|options| options.stream.request.abort_server_side_fallback);
+    request.telemetry_context =
+        options.and_then(|options| options.stream.request.telemetry_context.clone());
     request.api_key = api_key
         .filter(|key| !key.is_empty())
         .map(str::to_owned)
@@ -87,17 +99,25 @@ pub fn build_base_options(
     request.headers = options.and_then(|options| options.stream.request.headers.clone());
     request.on_payload = options.and_then(|options| options.stream.request.on_payload.clone());
     request.on_response = options.and_then(|options| options.stream.request.on_response.clone());
-    request.async_on_payload = options.and_then(|options| options.stream.request.async_on_payload.clone());
-    request.async_on_response = options.and_then(|options| options.stream.request.async_on_response.clone());
+    request.async_on_payload =
+        options.and_then(|options| options.stream.request.async_on_payload.clone());
+    request.async_on_response =
+        options.and_then(|options| options.stream.request.async_on_response.clone());
     request.timeout_ms = options.and_then(|options| options.stream.request.timeout_ms);
     request.max_retries = options.and_then(|options| options.stream.request.max_retries);
-    request.max_retry_delay_ms = options.and_then(|options| options.stream.request.max_retry_delay_ms);
+    request.max_retry_delay_ms =
+        options.and_then(|options| options.stream.request.max_retry_delay_ms);
     request.env = options.and_then(|options| options.stream.request.env.clone());
     Ok(stream)
 }
 
-pub const DEFAULT_THINKING_BUDGETS: ThinkingBudgets =
-    ThinkingBudgets { minimal: Some(1024), low: Some(2048), medium: Some(8192), high: Some(16384), max: None };
+pub const DEFAULT_THINKING_BUDGETS: ThinkingBudgets = ThinkingBudgets {
+    minimal: Some(1024),
+    low: Some(2048),
+    medium: Some(8192),
+    high: Some(16384),
+    max: None,
+};
 
 fn clamp_reasoning(effort: ModelThinkingLevel) -> ModelThinkingLevel {
     match effort {
@@ -106,7 +126,10 @@ fn clamp_reasoning(effort: ModelThinkingLevel) -> ModelThinkingLevel {
     }
 }
 
-pub fn clamp_max_for_openai(effort: ModelThinkingLevel, xhigh_supported: bool) -> ModelThinkingLevel {
+pub fn clamp_max_for_openai(
+    effort: ModelThinkingLevel,
+    xhigh_supported: bool,
+) -> ModelThinkingLevel {
     match effort {
         ModelThinkingLevel::Max => {
             if xhigh_supported {

@@ -5,9 +5,9 @@
 
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_PER_MONITOR_AWARE,
     GetAwarenessFromDpiAwarenessContext, GetDpiAwarenessContextForProcess,
-    SetProcessDpiAwarenessContext,
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_PER_MONITOR_AWARE,
 };
 
 /// Puts the process in the per-monitor-v2 regime. The awareness is fixed once

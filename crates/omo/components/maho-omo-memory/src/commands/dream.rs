@@ -6,12 +6,12 @@ use std::{path::Path, sync::Arc};
 use maho_ext_api::ExtensionApi;
 use memory_core::memfs::{ValidateMemoryPathOptions, validate_memory_path};
 
-use super::args::{ParseCommandArgsOptions, FlagValue, parse_command_args_full};
+use super::args::{FlagValue, ParseCommandArgsOptions, parse_command_args_full};
 use super::dream_staging::stage_dream_transcript;
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    DreamCommandOutcome, ManualDreamCommandRequest, MemoryCommandDeps, MemoryCommandIdentity,
-    NotifyLevel,
+    CommandContext, CommandResponse, DreamCommandOutcome, ManualDreamCommandRequest,
+    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
 const MODE_FLAGS: [&str; 4] = ["auto", "recent", "conversation", "from"];
@@ -33,7 +33,12 @@ pub async fn handle_dream(
         );
     };
 
-    let parsed = parse_command_args_full(args, ParseCommandArgsOptions { booleans: &["auto"] });
+    let parsed = parse_command_args_full(
+        args,
+        ParseCommandArgsOptions {
+            booleans: &["auto"],
+        },
+    );
     let selected_modes: Vec<&str> = MODE_FLAGS
         .iter()
         .copied()
@@ -48,12 +53,13 @@ pub async fn handle_dream(
     }
 
     let focus = parsed.positionals.join(" ").trim().to_owned();
-    let focus = if focus.is_empty() { None } else { Some(focus.clone()) };
+    let focus = if focus.is_empty() {
+        None
+    } else {
+        Some(focus.clone())
+    };
 
-    let target_doc = match resolve_target_doc(
-        &identity.identity_paths.repo,
-        parsed.flag("to"),
-    ) {
+    let target_doc = match resolve_target_doc(&identity.identity_paths.repo, parsed.flag("to")) {
         Ok(target) => target,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
@@ -125,16 +131,16 @@ async fn select_conversations(
     if parsed.has_flag("from") {
         let source = required_value(parsed.flag("from"), "--from")?;
         let Some(path) = source.strip_prefix("transcript:") else {
-            return Err("--from expects transcript:<path> to a senpi session JSONL file".to_owned());
+            return Err(
+                "--from expects transcript:<path> to a senpi session JSONL file".to_owned(),
+            );
         };
         if path.is_empty() {
-            return Err("--from expects transcript:<path> to a senpi session JSONL file".to_owned());
+            return Err(
+                "--from expects transcript:<path> to a senpi session JSONL file".to_owned(),
+            );
         }
-        let staged = stage_dream_transcript(
-            path,
-            &identity.identity_paths.transcripts,
-            &ctx.cwd,
-        )?;
+        let staged = stage_dream_transcript(path, &identity.identity_paths.transcripts, &ctx.cwd)?;
         return Ok(Some(vec![staged.conversation_id]));
     }
     Ok(None)
@@ -154,7 +160,10 @@ fn resolve_target_doc(
     let absolute = validate_memory_path(
         repo_dir,
         &raw,
-        ValidateMemoryPathOptions { tool_path: false, field_name: "--to" },
+        ValidateMemoryPathOptions {
+            tool_path: false,
+            field_name: "--to",
+        },
     )
     .map_err(|_| {
         "--to must be a memory-repo-relative document path without traversal".to_owned()
@@ -174,7 +183,9 @@ fn is_absolute(value: &str) -> bool {
     bytes.len() >= 2
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
-        && bytes.get(2).is_some_and(|separator| *separator == b'\\' || *separator == b'/')
+        && bytes
+            .get(2)
+            .is_some_and(|separator| *separator == b'\\' || *separator == b'/')
 }
 
 fn relative_to(base: &Path, target: &Path) -> String {
@@ -268,7 +279,10 @@ mod tests {
         let (root, identity) = temp_identity();
         let fake = fake_deps(
             Some(identity.clone()),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
         (root, identity, fake)
     }
@@ -294,7 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn given_the_fixed_letta_parity_scoring_vector_when_scored_then_the_exact_operands_and_total_are_reproduced() {
+    fn given_the_fixed_letta_parity_scoring_vector_when_scored_then_the_exact_operands_and_total_are_reproduced()
+     {
         let input = crate::dream_scoring::DreamScoreInput {
             search_match_count: 3.0,
             steps_since_last_successful_reflection: 25.0,
@@ -318,7 +333,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_auto_and_focus_when_invoked_then_manual_dream_selection_is_delegated_without_explicit_ids() {
+    async fn given_auto_and_focus_when_invoked_then_manual_dream_selection_is_delegated_without_explicit_ids()
+     {
         let (_root, _identity, fake) = harness();
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -332,11 +348,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_three_conversations_when_recent_two_is_invoked_then_two_conversations_are_chosen_by_last_activity() {
+    async fn given_three_conversations_when_recent_two_is_invoked_then_two_conversations_are_chosen_by_last_activity()
+     {
         let (_root, identity, fake) = harness();
-        write_conversation(&identity.identity_paths.transcripts, "older", "old", "2026-08-08T12:00:00.000Z");
-        write_conversation(&identity.identity_paths.transcripts, "newest", "new", "2026-08-10T11:00:00.000Z");
-        write_conversation(&identity.identity_paths.transcripts, "middle", "mid", "2026-08-09T12:00:00.000Z");
+        write_conversation(
+            &identity.identity_paths.transcripts,
+            "older",
+            "old",
+            "2026-08-08T12:00:00.000Z",
+        );
+        write_conversation(
+            &identity.identity_paths.transcripts,
+            "newest",
+            "new",
+            "2026-08-10T11:00:00.000Z",
+        );
+        write_conversation(
+            &identity.identity_paths.transcripts,
+            "middle",
+            "mid",
+            "2026-08-09T12:00:00.000Z",
+        );
         let context = fake_command_context(FakeContextOptions::default());
 
         handle_dream(&fake.deps, &context.ctx, "--recent 2").await;
@@ -349,7 +381,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_explicit_conversation_ids_when_invoked_then_their_parsed_selection_is_submitted_unchanged() {
+    async fn given_explicit_conversation_ids_when_invoked_then_their_parsed_selection_is_submitted_unchanged()
+     {
         let (_root, _identity, fake) = harness();
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -363,35 +396,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_valid_and_escaping_to_paths_when_invoked_then_only_the_memory_relative_document_is_accepted() {
+    async fn given_valid_and_escaping_to_paths_when_invoked_then_only_the_memory_relative_document_is_accepted()
+     {
         let (_root, identity, fake) = harness();
         seeded_repo(
             &identity,
-            vec![seed("reference/style.md", "---\ndescription: Style\n---\nOriginal.\n")],
+            vec![seed(
+                "reference/style.md",
+                "---\ndescription: Style\n---\nOriginal.\n",
+            )],
         );
         let context = fake_command_context(FakeContextOptions::default());
 
-        handle_dream(&fake.deps, &context.ctx, "--conversation sess-a --to reference/style.md").await;
-        let traversal =
-            handle_dream(&fake.deps, &context.ctx, "--conversation sess-a --to ../escape").await;
-        let absolute = handle_dream(&fake.deps, &context.ctx, "--conversation sess-a --to /abs").await;
+        handle_dream(
+            &fake.deps,
+            &context.ctx,
+            "--conversation sess-a --to reference/style.md",
+        )
+        .await;
+        let traversal = handle_dream(
+            &fake.deps,
+            &context.ctx,
+            "--conversation sess-a --to ../escape",
+        )
+        .await;
+        let absolute =
+            handle_dream(&fake.deps, &context.ctx, "--conversation sess-a --to /abs").await;
 
         let requests = dream_requests(&fake);
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].conversation_ids, Some(vec!["sess-a".to_owned()]));
-        assert_eq!(requests[0].target_doc.as_deref(), Some("reference/style.md"));
+        assert_eq!(
+            requests[0].conversation_ids,
+            Some(vec!["sess-a".to_owned()])
+        );
+        assert_eq!(
+            requests[0].target_doc.as_deref(),
+            Some("reference/style.md")
+        );
         assert!(traversal.text.contains("memory-repo-relative"));
         assert!(absolute.text.contains("memory-repo-relative"));
     }
 
     #[tokio::test]
-    async fn given_non_session_jsonl_when_imported_then_it_is_rejected_without_submitting_a_dream() {
+    async fn given_non_session_jsonl_when_imported_then_it_is_rejected_without_submitting_a_dream()
+    {
         let (_root, identity, fake) = harness();
-        let transcript = identity.identity_paths.transcripts.join("not-session.jsonl");
+        let transcript = identity
+            .identity_paths
+            .transcripts
+            .join("not-session.jsonl");
         std::fs::create_dir_all(&identity.identity_paths.transcripts).expect("transcripts");
         std::fs::write(
             &transcript,
-            format!("{}\n", serde_json::json!({ "kind": "user", "text": "not senpi" })),
+            format!(
+                "{}\n",
+                serde_json::json!({ "kind": "user", "text": "not senpi" })
+            ),
         )
         .expect("write");
         let context = fake_command_context(FakeContextOptions::default());
@@ -416,9 +476,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_senpi_jsonl_transcript_with_a_malformed_line_when_imported_twice_then_message_ids_are_staged_once() {
+    async fn given_a_senpi_jsonl_transcript_with_a_malformed_line_when_imported_twice_then_message_ids_are_staged_once()
+     {
         let (_root, identity, fake) = harness();
-        let agent_dir = identity.identity_paths.transcripts.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let agent_dir = identity
+            .identity_paths
+            .transcripts
+            .parent()
+            .unwrap_or(Path::new("/"))
+            .to_path_buf();
         let transcript = agent_dir.join("source.jsonl");
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
         let file_mtime = "2026-08-10T10:02:00.000Z";
@@ -454,7 +520,10 @@ mod tests {
         )
         .await;
         let rows = TranscriptJournal::new(TranscriptJournalOptions::new(
-            identity.identity_paths.transcripts.join(&first.conversation_id),
+            identity
+                .identity_paths
+                .transcripts
+                .join(&first.conversation_id),
         ))
         .read_entries()
         .expect("rows");
@@ -479,9 +548,14 @@ mod tests {
         let skipped: std::collections::BTreeSet<String> =
             second.skipped_message_ids.iter().cloned().collect();
         assert_eq!(skipped, staged);
-        assert_eq!(dream_requests(&fake)[0].conversation_ids, Some(vec![first.conversation_id.clone()]));
-        let unique_rows: std::collections::BTreeSet<String> =
-            rows.iter().map(|row| row.source_message_id().to_owned()).collect();
+        assert_eq!(
+            dream_requests(&fake)[0].conversation_ids,
+            Some(vec![first.conversation_id.clone()])
+        );
+        let unique_rows: std::collections::BTreeSet<String> = rows
+            .iter()
+            .map(|row| row.source_message_id().to_owned())
+            .collect();
         assert_eq!(unique_rows.len(), 2);
         let _ = file_mtime;
     }

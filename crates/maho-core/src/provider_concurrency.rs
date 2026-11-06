@@ -22,12 +22,16 @@ struct ProviderSemaphore {
 type Semaphores = Arc<Mutex<HashMap<String, ProviderSemaphore>>>;
 
 fn lock(providers: &Semaphores) -> std::sync::MutexGuard<'_, HashMap<String, ProviderSemaphore>> {
-    providers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    providers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn drain(semaphore: &mut ProviderSemaphore) {
     while semaphore.limit.is_none_or(|limit| semaphore.active < limit) {
-        let Some(waiter) = semaphore.waiters.pop_front() else { break };
+        let Some(waiter) = semaphore.waiters.pop_front() else {
+            break;
+        };
         // A waiter whose receiver is gone (aborted) never takes the slot.
         if waiter.grant.send(()).is_ok() {
             semaphore.active += 1;
@@ -36,7 +40,11 @@ fn drain(semaphore: &mut ProviderSemaphore) {
 }
 
 fn normalize_limit(limit: i64) -> Option<usize> {
-    if limit > 0 { usize::try_from(limit).ok() } else { None }
+    if limit > 0 {
+        usize::try_from(limit).ok()
+    } else {
+        None
+    }
 }
 
 /// A granted provider slot; dropping it releases the slot and admits the next waiter.
@@ -63,13 +71,18 @@ pub struct ProviderSemaphores {
 
 impl ProviderSemaphores {
     pub fn new(get_limit: impl Fn(&str) -> i64 + Send + Sync + 'static) -> Self {
-        Self { providers: Arc::new(Mutex::new(HashMap::new())), get_limit: Arc::new(get_limit) }
+        Self {
+            providers: Arc::new(Mutex::new(HashMap::new())),
+            get_limit: Arc::new(get_limit),
+        }
     }
 
     /// senpi `resize`: apply a new limit to an existing semaphore and admit waiters it now fits.
     pub fn resize(&self, provider_id: &str, limit: i64) {
         let mut providers = lock(&self.providers);
-        let Some(semaphore) = providers.get_mut(provider_id) else { return };
+        let Some(semaphore) = providers.get_mut(provider_id) else {
+            return;
+        };
         semaphore.limit = normalize_limit(limit);
         drain(semaphore);
     }
@@ -77,10 +90,16 @@ impl ProviderSemaphores {
     /// senpi `setSettingsManager`'s resize pass: re-read the limit of every existing semaphore.
     pub fn resize_all(&self) {
         let ids: Vec<String> = lock(&self.providers).keys().cloned().collect();
-        for id in ids { self.resize(&id, (self.get_limit)(&id)); }
+        for id in ids {
+            self.resize(&id, (self.get_limit)(&id));
+        }
     }
 
-    async fn acquire(&self, provider_id: &str, signal: Option<&AbortSignal>) -> Result<ProviderPermit, AbortReason> {
+    async fn acquire(
+        &self,
+        provider_id: &str,
+        signal: Option<&AbortSignal>,
+    ) -> Result<ProviderPermit, AbortReason> {
         if let Some(signal) = signal {
             signal.throw_if_aborted()?;
         }
@@ -88,7 +107,10 @@ impl ProviderSemaphores {
         let waiter_id = {
             let mut providers = lock(&self.providers);
             let Some(semaphore) = providers.get_mut(provider_id) else {
-                return Ok(ProviderPermit { providers: self.providers.clone(), provider_id: provider_id.to_owned() });
+                return Ok(ProviderPermit {
+                    providers: self.providers.clone(),
+                    provider_id: provider_id.to_owned(),
+                });
             };
             let id = semaphore.next_waiter;
             semaphore.next_waiter += 1;
@@ -96,9 +118,14 @@ impl ProviderSemaphores {
             drain(semaphore);
             id
         };
-        let permit = || ProviderPermit { providers: self.providers.clone(), provider_id: provider_id.to_owned() };
+        let permit = || ProviderPermit {
+            providers: self.providers.clone(),
+            provider_id: provider_id.to_owned(),
+        };
         let outcome = match signal {
-            Some(signal) => maho_ai::utils::abort::race_with_abort_signal(&mut granted, signal).await,
+            Some(signal) => {
+                maho_ai::utils::abort::race_with_abort_signal(&mut granted, signal).await
+            }
             None => Ok((&mut granted).await),
         };
         match outcome {
@@ -113,7 +140,9 @@ impl ProviderSemaphores {
                 }
                 let was_granted = granted.try_recv().is_ok();
                 drop(providers);
-                if was_granted { drop(permit()); }
+                if was_granted {
+                    drop(permit());
+                }
                 Err(reason)
             }
         }
@@ -129,10 +158,17 @@ impl ProviderSemaphores {
     ) -> Result<(T, Option<ProviderPermit>), AbortReason> {
         let limit = normalize_limit((self.get_limit)(provider_id));
         self.resize(provider_id, (self.get_limit)(provider_id));
-        let Some(limit) = limit else { return Ok((run(), None)) };
-        lock(&self.providers).entry(provider_id.to_owned()).or_insert_with(|| ProviderSemaphore {
-            limit: Some(limit), active: 0, waiters: VecDeque::new(), next_waiter: 0,
-        });
+        let Some(limit) = limit else {
+            return Ok((run(), None));
+        };
+        lock(&self.providers)
+            .entry(provider_id.to_owned())
+            .or_insert_with(|| ProviderSemaphore {
+                limit: Some(limit),
+                active: 0,
+                waiters: VecDeque::new(),
+                next_waiter: 0,
+            });
         let permit = self.acquire(provider_id, signal).await?;
         if let Some(signal) = signal {
             signal.throw_if_aborted()?;
@@ -151,12 +187,24 @@ mod tests {
         let limit = Arc::new(AtomicI64::new(1));
         let source = Arc::clone(&limit);
         let semaphores = ProviderSemaphores::new(move |_| source.load(Ordering::SeqCst));
-        let (_, _held) = semaphores.bracket("p", None, || ()).await.expect("first slot");
+        let (_, _held) = semaphores
+            .bracket("p", None, || ())
+            .await
+            .expect("first slot");
         limit.store(2, Ordering::SeqCst);
-        let (_, second) = tokio::time::timeout(std::time::Duration::from_secs(5), semaphores.bracket("p", None, || ())).await.expect("resized slot").expect("bracket");
+        let (_, second) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            semaphores.bracket("p", None, || ()),
+        )
+        .await
+        .expect("resized slot")
+        .expect("bracket");
         assert!(second.is_some());
         limit.store(0, Ordering::SeqCst);
-        let (_, unlimited) = semaphores.bracket("p", None, || ()).await.expect("unlimited");
+        let (_, unlimited) = semaphores
+            .bracket("p", None, || ())
+            .await
+            .expect("unlimited");
         assert!(unlimited.is_none());
     }
 
@@ -174,7 +222,12 @@ mod tests {
         let (_, first) = semaphores.bracket("p", None, || ()).await.expect("first");
         let waiting = {
             let semaphores = semaphores.clone();
-            tokio::spawn(async move { semaphores.bracket("p", None, || ()).await.map(|(_, permit)| permit.is_some()) })
+            tokio::spawn(async move {
+                semaphores
+                    .bracket("p", None, || ())
+                    .await
+                    .map(|(_, permit)| permit.is_some())
+            })
         };
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
@@ -186,7 +239,9 @@ mod tests {
     async fn resizing_up_admits_waiters() {
         let limit = Arc::new(AtomicI64::new(1));
         let reader = limit.clone();
-        let semaphores = Arc::new(ProviderSemaphores::new(move |_| reader.load(Ordering::SeqCst)));
+        let semaphores = Arc::new(ProviderSemaphores::new(move |_| {
+            reader.load(Ordering::SeqCst)
+        }));
         let (_, _held) = semaphores.bracket("p", None, || ()).await.expect("first");
         let (granted_tx, granted_rx) = oneshot::channel();
         let waiter = {
@@ -200,7 +255,10 @@ mod tests {
         tokio::task::yield_now().await;
         limit.store(2, Ordering::SeqCst);
         semaphores.resize("p", 2);
-        tokio::time::timeout(std::time::Duration::from_secs(5), granted_rx).await.expect("granted in time").expect("grant");
+        tokio::time::timeout(std::time::Duration::from_secs(5), granted_rx)
+            .await
+            .expect("granted in time")
+            .expect("grant");
         drop(waiter.await.expect("join"));
     }
 
@@ -210,15 +268,25 @@ mod tests {
         let (_, held) = semaphores.bracket("p", None, || ()).await.expect("first");
         let controller = maho_ai::utils::abort::AbortController::new();
         controller.abort(None);
-        assert!(semaphores.bracket("p", Some(&controller.signal()), || ()).await.is_err());
+        assert!(
+            semaphores
+                .bracket("p", Some(&controller.signal()), || ())
+                .await
+                .is_err()
+        );
         drop(held);
-        let (_, next) = semaphores.bracket("p", None, || ()).await.expect("slot freed");
+        let (_, next) = semaphores
+            .bracket("p", None, || ())
+            .await
+            .expect("slot freed");
         assert!(next.is_some());
     }
 
     impl ProviderSemaphores {
         async fn acquire_for_test(&self, provider_id: &str) -> ((), Option<ProviderPermit>) {
-            self.bracket(provider_id, None, || ()).await.expect("acquire")
+            self.bracket(provider_id, None, || ())
+                .await
+                .expect("acquire")
         }
     }
 }

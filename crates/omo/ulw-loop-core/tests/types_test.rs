@@ -1,6 +1,6 @@
-use ulw_loop_core::constants::*;
-use ulw_loop_core::runtime::{iso, UlwLoopError};
 use std::sync::Arc;
+use ulw_loop_core::constants::*;
+use ulw_loop_core::runtime::{UlwLoopError, iso};
 
 #[test]
 fn ulw_loop_dir_points_to_omo_workspace() {
@@ -52,16 +52,18 @@ fn error_carries_code_and_message() {
 
 #[test]
 fn error_accepts_optional_details() {
-    let details = std::collections::BTreeMap::from([(
-        "goalId".to_string(),
-        serde_json::json!("G001"),
-    )]);
-    let cause: Arc<dyn std::error::Error + Send + Sync> = Arc::new(std::io::Error::other("upstream"));
+    let details =
+        std::collections::BTreeMap::from([("goalId".to_string(), serde_json::json!("G001"))]);
+    let cause: Arc<dyn std::error::Error + Send + Sync> =
+        Arc::new(std::io::Error::other("upstream"));
     let err = UlwLoopError::with_cause_and_details("wrap", "WRAP", cause.clone(), details);
 
     assert!(Arc::ptr_eq(err.cause.as_ref().expect("cause"), &cause));
     assert_eq!(err.code, "WRAP");
-    assert_eq!(err.details.as_ref().and_then(|d| d.get("goalId")), Some(&serde_json::json!("G001")));
+    assert_eq!(
+        err.details.as_ref().and_then(|d| d.get("goalId")),
+        Some(&serde_json::json!("G001"))
+    );
 }
 
 #[test]

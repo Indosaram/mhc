@@ -1571,10 +1571,13 @@ async fn leaves_suspended_state_unchanged_when_the_fresh_intent_is_discarded() {
 
 #[test]
 fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options() {
-    on_large_stack(waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body);
+    on_large_stack(
+        waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body,
+    );
 }
 
-async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body() {
+async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_captured_options_body()
+{
     let fixture = deferred_fixture(FixtureOptions {
         pending_fetches: 1,
         ..Default::default()

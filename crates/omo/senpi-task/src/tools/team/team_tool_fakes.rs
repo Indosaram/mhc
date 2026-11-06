@@ -7,13 +7,15 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use team_core::types::{MemberStatus, RuntimeState, Task};
 
-use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
 use crate::team::member_map::MemberTaskMap;
-use crate::team::runtime_types::{CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamResult};
+use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
+use crate::team::runtime_types::{
+    CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamResult,
+};
 use crate::tools::team::types::{
-    ActiveTeamScope, ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput,
-    DiscoveredTeamSpec, TeamServiceResult, TeamStatus, TeamTaskListFilter, TeamToolServiceError,
-    TeamToolsService, UpdateTeamTaskServiceInput,
+    ActiveTeamScope, ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput,
+    DeleteTeamToolInput, DiscoveredTeamSpec, TeamServiceResult, TeamStatus, TeamTaskListFilter,
+    TeamToolServiceError, TeamToolsService, UpdateTeamTaskServiceInput,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,21 +24,29 @@ pub(crate) struct ServiceCall {
     pub(crate) args: Vec<Value>,
 }
 
-pub(crate) type CreateTeamStub = Box<dyn Fn(&CreateTeamToolInput) -> TeamServiceResult<CreateTeamResult> + Send + Sync>;
-pub(crate) type DeleteTeamStub = Box<dyn Fn(&DeleteTeamToolInput) -> TeamServiceResult<DeleteTeamResult> + Send + Sync>;
-pub(crate) type SendMessageStub =
-    Box<dyn Fn(&str, &SendTeamMessageInput) -> TeamServiceResult<SendTeamMessageResult> + Send + Sync>;
+pub(crate) type CreateTeamStub =
+    Box<dyn Fn(&CreateTeamToolInput) -> TeamServiceResult<CreateTeamResult> + Send + Sync>;
+pub(crate) type DeleteTeamStub =
+    Box<dyn Fn(&DeleteTeamToolInput) -> TeamServiceResult<DeleteTeamResult> + Send + Sync>;
+pub(crate) type SendMessageStub = Box<
+    dyn Fn(&str, &SendTeamMessageInput) -> TeamServiceResult<SendTeamMessageResult> + Send + Sync,
+>;
 pub(crate) type StatusStub = Box<dyn Fn(&str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
-pub(crate) type ListTeamsStub = Box<dyn Fn() -> TeamServiceResult<Vec<ActiveTeamSummary>> + Send + Sync>;
+pub(crate) type ListTeamsStub =
+    Box<dyn Fn() -> TeamServiceResult<Vec<ActiveTeamSummary>> + Send + Sync>;
 pub(crate) type CreateTaskStub =
     Box<dyn Fn(&str, &CreateTeamTaskServiceInput) -> TeamServiceResult<Task> + Send + Sync>;
 pub(crate) type ListTasksStub =
     Box<dyn Fn(&str, Option<&TeamTaskListFilter>) -> TeamServiceResult<Vec<Task>> + Send + Sync>;
-pub(crate) type UpdateTaskStub = Box<dyn Fn(&UpdateTeamTaskServiceInput) -> TeamServiceResult<Task> + Send + Sync>;
+pub(crate) type UpdateTaskStub =
+    Box<dyn Fn(&UpdateTeamTaskServiceInput) -> TeamServiceResult<Task> + Send + Sync>;
 pub(crate) type GetTaskStub = Box<dyn Fn(&str, &str) -> TeamServiceResult<Task> + Send + Sync>;
-pub(crate) type ShutdownStub = Box<dyn Fn(&str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
-pub(crate) type RejectShutdownStub = Box<dyn Fn(&str, &str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
-pub(crate) type AggregateStatusStub = Box<dyn Fn(&str) -> TeamServiceResult<TeamStatus> + Send + Sync>;
+pub(crate) type ShutdownStub =
+    Box<dyn Fn(&str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
+pub(crate) type RejectShutdownStub =
+    Box<dyn Fn(&str, &str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
+pub(crate) type AggregateStatusStub =
+    Box<dyn Fn(&str) -> TeamServiceResult<TeamStatus> + Send + Sync>;
 pub(crate) type DiscoverSpecsStub =
     Box<dyn Fn(&Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> + Send + Sync>;
 pub(crate) type LoadSpecCountStub =
@@ -98,7 +108,10 @@ fn not_stubbed(method: &str) -> TeamToolServiceError {
 
 impl FakeTeamService {
     pub(crate) fn calls(&self) -> Vec<ServiceCall> {
-        self.calls.lock().expect("fake team service calls lock").clone()
+        self.calls
+            .lock()
+            .expect("fake team service calls lock")
+            .clone()
     }
 
     fn record(&self, method: &str, args: Vec<Value>) {
@@ -134,7 +147,10 @@ impl TeamToolsService for FakeTeamService {
         team_run_id: &str,
         input: &SendTeamMessageInput,
     ) -> TeamServiceResult<SendTeamMessageResult> {
-        self.record("sendMessage", vec![json!(team_run_id), send_input_arg(input)]);
+        self.record(
+            "sendMessage",
+            vec![json!(team_run_id), send_input_arg(input)],
+        );
         match &self.overrides.send_message {
             Some(stub) => stub(team_run_id, input),
             None => Err(not_stubbed("sendMessage")),
@@ -157,7 +173,11 @@ impl TeamToolsService for FakeTeamService {
         }
     }
 
-    fn create_task(&self, team_run_id: &str, input: &CreateTeamTaskServiceInput) -> TeamServiceResult<Task> {
+    fn create_task(
+        &self,
+        team_run_id: &str,
+        input: &CreateTeamTaskServiceInput,
+    ) -> TeamServiceResult<Task> {
         self.record("createTask", vec![json!(team_run_id), to_arg(input)]);
         match &self.overrides.create_task {
             Some(stub) => stub(team_run_id, input),
@@ -165,7 +185,11 @@ impl TeamToolsService for FakeTeamService {
         }
     }
 
-    fn list_tasks(&self, team_run_id: &str, filter: Option<&TeamTaskListFilter>) -> TeamServiceResult<Vec<Task>> {
+    fn list_tasks(
+        &self,
+        team_run_id: &str,
+        filter: Option<&TeamTaskListFilter>,
+    ) -> TeamServiceResult<Vec<Task>> {
         let filter_arg = filter.map_or(Value::Null, to_arg);
         self.record("listTasks", vec![json!(team_run_id), filter_arg]);
         match &self.overrides.list_tasks {
@@ -206,8 +230,16 @@ impl TeamToolsService for FakeTeamService {
         }
     }
 
-    fn reject_shutdown(&self, team_run_id: &str, member: &str, reason: &str) -> TeamServiceResult<RuntimeState> {
-        self.record("rejectShutdown", vec![json!(team_run_id), json!(member), json!(reason)]);
+    fn reject_shutdown(
+        &self,
+        team_run_id: &str,
+        member: &str,
+        reason: &str,
+    ) -> TeamServiceResult<RuntimeState> {
+        self.record(
+            "rejectShutdown",
+            vec![json!(team_run_id), json!(member), json!(reason)],
+        );
         match &self.overrides.reject_shutdown {
             Some(stub) => stub(team_run_id, member, reason),
             None => Err(not_stubbed("rejectShutdown")),
@@ -222,16 +254,29 @@ impl TeamToolsService for FakeTeamService {
         }
     }
 
-    fn discover_team_specs(&self, project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
-        self.record("discoverTeamSpecs", vec![json!(project_root.display().to_string())]);
+    fn discover_team_specs(
+        &self,
+        project_root: &Path,
+    ) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
+        self.record(
+            "discoverTeamSpecs",
+            vec![json!(project_root.display().to_string())],
+        );
         match &self.overrides.discover_team_specs {
             Some(stub) => stub(project_root),
             None => Err(not_stubbed("discoverTeamSpecs")),
         }
     }
 
-    fn load_team_spec_member_count(&self, name: &str, project_root: &Path) -> TeamServiceResult<usize> {
-        self.record("loadTeamSpec", vec![json!(name), json!(project_root.display().to_string())]);
+    fn load_team_spec_member_count(
+        &self,
+        name: &str,
+        project_root: &Path,
+    ) -> TeamServiceResult<usize> {
+        self.record(
+            "loadTeamSpec",
+            vec![json!(name), json!(project_root.display().to_string())],
+        );
         match &self.overrides.load_team_spec_member_count {
             Some(stub) => stub(name, project_root),
             None => Err(not_stubbed("loadTeamSpec")),

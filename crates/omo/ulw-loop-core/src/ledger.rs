@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::domain_types::UlwLoopLedgerEntry;
-use crate::paths::{ulw_loop_dir, UlwLoopScope};
-use crate::plan_log::{read_optional, read_records, reconcile_plan, PlanCommitRecord};
+use crate::paths::{UlwLoopScope, ulw_loop_dir};
+use crate::plan_log::{PlanCommitRecord, read_optional, read_records, reconcile_plan};
 
 pub fn read_ledger_at(dir: impl AsRef<Path>) -> Vec<UlwLoopLedgerEntry> {
     let records = read_records(&dir);
@@ -46,7 +46,9 @@ pub(crate) fn read_ledger_from_records(
 
     for record in records {
         for (seq, mut entry) in record.ledger.into_iter().enumerate() {
-            let id = entry.id.unwrap_or_else(|| format!("{}-{}", record.revision, seq));
+            let id = entry
+                .id
+                .unwrap_or_else(|| format!("{}-{}", record.revision, seq));
             entry.revision = Some(record.revision);
             entry.id = Some(id.clone());
             entries.insert(id, entry);
@@ -79,6 +81,9 @@ pub(crate) fn read_ledger_from_records(
     result
 }
 
-pub fn read_ledger(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopScope>) -> Vec<UlwLoopLedgerEntry> {
+pub fn read_ledger(
+    repo_root: impl AsRef<Path>,
+    scope: Option<&UlwLoopScope>,
+) -> Vec<UlwLoopLedgerEntry> {
     read_ledger_at(ulw_loop_dir(repo_root, scope))
 }

@@ -161,11 +161,7 @@ impl TaskLifecycle {
         &self,
         task_id: &str,
     ) -> Result<super::host_session_revive::HostSessionParkOutcome, LifecycleError> {
-        super::host_session_revive::park_host_session_on_daemon_loss(
-            &self.context,
-            task_id,
-            None,
-        )
+        super::host_session_revive::park_host_session_on_daemon_loss(&self.context, task_id, None)
     }
 
     pub fn park_host_session_on_daemon_loss_with_options(

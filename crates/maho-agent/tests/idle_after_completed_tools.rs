@@ -49,13 +49,21 @@ fn finalizes_when_exec_results_are_already_buffered() {
         maho_ai::types::StopReason::Stop,
     );
     let results = vec![buffered_result("t1")];
-    assert!(should_finalize_idle_as_stop(Some(&message), &results, |_| false));
+    assert!(should_finalize_idle_as_stop(
+        Some(&message),
+        &results,
+        |_| false
+    ));
 }
 
 #[test]
 fn recognizes_the_idle_timeout_error() {
-    assert!(is_stream_idle_timeout_error(&AgentStreamError::IdleTimeout { timeout_ms: 40 }));
-    assert!(!is_stream_idle_timeout_error(&AgentStreamError::Other { message: "other".to_owned() }));
+    assert!(is_stream_idle_timeout_error(
+        &AgentStreamError::IdleTimeout { timeout_ms: 40 }
+    ));
+    assert!(!is_stream_idle_timeout_error(&AgentStreamError::Other {
+        message: "other".to_owned()
+    }));
     assert_eq!(
         AgentStreamError::IdleTimeout { timeout_ms: 40 }.message(),
         "Idle timeout waiting for provider stream after 40ms"
@@ -73,5 +81,7 @@ fn an_unresolved_tool_call_never_finalizes() {
         vec![tool_call("t1", "bash", serde_json::json!({}))],
         maho_ai::types::StopReason::Stop,
     );
-    assert!(!should_finalize_idle_as_stop(Some(&message), &[], |_| false));
+    assert!(!should_finalize_idle_as_stop(Some(&message), &[], |_| {
+        false
+    }));
 }

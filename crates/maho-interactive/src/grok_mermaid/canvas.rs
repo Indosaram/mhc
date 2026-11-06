@@ -534,10 +534,13 @@ mod tests {
         c.finalize_mask();
         let lines = c.to_lines();
         assert_eq!(lines.plain, vec!["─────"]);
-        assert_eq!(lines.styled, vec![vec![Span {
-            text: "─────".to_owned(),
-            cls: Cls::Edge,
-        }]]);
+        assert_eq!(
+            lines.styled,
+            vec![vec![Span {
+                text: "─────".to_owned(),
+                cls: Cls::Edge,
+            }]]
+        );
         assert_eq!(lines.width, 5);
 
         let mut c2 = Canvas::new(5, 4);
@@ -604,26 +607,34 @@ mod tests {
         c.set(2, 1, "b", Cls::Edge);
         let lines = c.to_lines();
         assert_eq!(lines.plain, vec![" ab"]);
-        assert_eq!(lines.styled, vec![vec![
-            Span {
-                text: " ".to_owned(),
-                cls: Cls::None,
-            },
-            Span {
-                text: "a".to_owned(),
-                cls: Cls::Text,
-            },
-            Span {
-                text: "b".to_owned(),
-                cls: Cls::Edge,
-            },
-        ]]);
+        assert_eq!(
+            lines.styled,
+            vec![vec![
+                Span {
+                    text: " ".to_owned(),
+                    cls: Cls::None,
+                },
+                Span {
+                    text: "a".to_owned(),
+                    cls: Cls::Text,
+                },
+                Span {
+                    text: "b".to_owned(),
+                    cls: Cls::Edge,
+                },
+            ]]
+        );
         assert_eq!(lines.width, 3);
     }
 
     #[test]
     fn test_reverse_slice() {
-        let mut arr = vec!["a".to_owned(), "b".to_owned(), "c".to_owned(), "d".to_owned()];
+        let mut arr = vec![
+            "a".to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+            "d".to_owned(),
+        ];
         reverse_slice(&mut arr, 1, 3);
         assert_eq!(arr, vec!["a", "c", "b", "d"]);
     }
@@ -645,20 +656,23 @@ mod tests {
         c.finalize_mask();
         let lines = c.to_lines();
         assert_eq!(lines.plain, vec!["───mid────"]);
-        assert_eq!(lines.styled, vec![vec![
-            Span {
-                text: "───".to_owned(),
-                cls: Cls::Edge,
-            },
-            Span {
-                text: "mid".to_owned(),
-                cls: Cls::Text,
-            },
-            Span {
-                text: "────".to_owned(),
-                cls: Cls::Edge,
-            },
-        ]]);
+        assert_eq!(
+            lines.styled,
+            vec![vec![
+                Span {
+                    text: "───".to_owned(),
+                    cls: Cls::Edge,
+                },
+                Span {
+                    text: "mid".to_owned(),
+                    cls: Cls::Text,
+                },
+                Span {
+                    text: "────".to_owned(),
+                    cls: Cls::Edge,
+                },
+            ]]
+        );
         assert_eq!(lines.width, 10);
     }
 

@@ -1083,7 +1083,9 @@ impl TaskDagEngine {
         let owned = lock(&self.schedulers)
             .get(run)
             .map(|owned| owned.scheduler.clone());
-        if result.status.is_terminal() && let Some(scheduler) = owned {
+        if result.status.is_terminal()
+            && let Some(scheduler) = owned
+        {
             scheduler.when_idle();
         }
         Ok(serde_json::json!({

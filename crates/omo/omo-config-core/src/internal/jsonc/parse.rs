@@ -88,7 +88,11 @@ struct Reader<'a> {
 pub fn parse_errors(text: &str) -> Vec<JsoncParseError> {
     let mut parser = RecoveryReader {
         scanner: Scanner::new(text),
-        current: Token { kind: TokenKind::Eof, offset: 0, length: 0 },
+        current: Token {
+            kind: TokenKind::Eof,
+            offset: 0,
+            length: 0,
+        },
         errors: Vec::new(),
     };
     parser.next();
@@ -112,7 +116,9 @@ impl RecoveryReader<'_> {
         self.errors.push(JsoncParseError::new(
             message,
             text[..self.current.offset].encode_utf16().count(),
-            text[self.current.offset..self.current.end()].encode_utf16().count(),
+            text[self.current.offset..self.current.end()]
+                .encode_utf16()
+                .count(),
         ));
     }
 
@@ -124,7 +130,10 @@ impl RecoveryReader<'_> {
             }
             match self.current.kind {
                 TokenKind::Unknown => self.error("InvalidSymbol"),
-                TokenKind::Trivia | TokenKind::LineBreak | TokenKind::LineComment | TokenKind::BlockComment => {}
+                TokenKind::Trivia
+                | TokenKind::LineBreak
+                | TokenKind::LineComment
+                | TokenKind::BlockComment => {}
                 _ => break,
             }
         }
@@ -143,7 +152,11 @@ impl RecoveryReader<'_> {
         match self.current.kind {
             TokenKind::OpenBrace => self.container(true),
             TokenKind::OpenBracket => self.container(false),
-            TokenKind::String | TokenKind::Number | TokenKind::True | TokenKind::False | TokenKind::Null => {
+            TokenKind::String
+            | TokenKind::Number
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Null => {
                 self.next();
                 true
             }
@@ -152,7 +165,11 @@ impl RecoveryReader<'_> {
     }
 
     fn container(&mut self, object: bool) -> bool {
-        let close = if object { TokenKind::CloseBrace } else { TokenKind::CloseBracket };
+        let close = if object {
+            TokenKind::CloseBrace
+        } else {
+            TokenKind::CloseBracket
+        };
         self.next();
         let mut needs_comma = false;
         while self.current.kind != close && self.current.kind != TokenKind::Eof {
@@ -190,7 +207,11 @@ impl RecoveryReader<'_> {
         if self.current.kind == close {
             self.next();
         } else {
-            self.error(if object { "CloseBraceExpected" } else { "CloseBracketExpected" });
+            self.error(if object {
+                "CloseBraceExpected"
+            } else {
+                "CloseBracketExpected"
+            });
         }
         true
     }

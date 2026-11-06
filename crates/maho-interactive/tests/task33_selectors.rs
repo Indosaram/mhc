@@ -3,44 +3,48 @@
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use maho_core::session_manager::SessionTreeNode;
 use maho_interactive::components::config_selector::{
-    ConfigWriteScope, build_groups, ConfigSelectorComponent, ResourceItem,
+    ConfigSelectorComponent, ConfigWriteScope, ResourceItem, build_groups,
 };
-use maho_interactive::components::extension_input::{ExtensionInputComponent, ExtensionInputOptions};
+use maho_interactive::components::extension_input::{
+    ExtensionInputComponent, ExtensionInputOptions,
+};
 use maho_interactive::components::extension_selector::{
     ExtensionSelectorComponent, ExtensionSelectorOptions,
-};
-use maho_interactive::components::favorite_models_selector::{
-    FavoriteModelsCallbacks, FavoriteModelsConfig, FavoriteModelsSelectorComponent,
 };
 use maho_interactive::components::favorite_model_ids::{
     clear_favorite_models, favorite_models, get_sorted_favorite_model_ids, move_favorite_model,
     toggle_favorite_model,
 };
+use maho_interactive::components::favorite_models_selector::{
+    FavoriteModelsCallbacks, FavoriteModelsConfig, FavoriteModelsSelectorComponent,
+};
 use maho_interactive::components::keybinding_hints::{format_key_text, key_hint, raw_key_hint};
-use maho_interactive::components::model_selector::{ModelEntry, ModelSelectorComponent, ModelSelectorFavoriteOptions};
+use maho_interactive::components::model_selector::{
+    ModelEntry, ModelSelectorComponent, ModelSelectorFavoriteOptions,
+};
 use maho_interactive::components::oauth_selector::{
     AuthSelectorAuthType, AuthSelectorMode, AuthSelectorProvider, OAuthSelectorComponent,
     format_auth_selector_provider_type,
 };
 use maho_interactive::components::session_selector::{
-    arm_session_load_finished, build_session_tree, build_tree_prefix, flatten_session_tree,
-    format_session_date, SessionList, SessionScope, SessionSelectorComponent,
+    SessionList, SessionScope, SessionSelectorComponent, arm_session_load_finished,
+    build_session_tree, build_tree_prefix, flatten_session_tree, format_session_date,
 };
 use maho_interactive::components::session_selector_search::{
-    filter_and_sort_sessions, has_session_name, match_session, parse_search_query, NameFilter,
-    SessionInfo, SortMode,
+    NameFilter, SessionInfo, SortMode, filter_and_sort_sessions, has_session_name, match_session,
+    parse_search_query,
 };
 use maho_interactive::components::settings_selector::{
-    format_http_idle_timeout_ms, SettingsConfig, SettingsSelectorComponent,
+    SettingsConfig, SettingsSelectorComponent, format_http_idle_timeout_ms,
 };
 use maho_interactive::components::theme_selector::ThemeSelectorComponent;
 use maho_interactive::components::tree_selector::{FilterMode, TreeSelectorComponent};
-use maho_interactive::theme::{ColorMode, Theme};
 use maho_interactive::theme::theme::ThemeColor;
+use maho_interactive::theme::{ColorMode, Theme};
 use maho_tui::keybindings::KeybindingsManager;
 use maho_tui::tui::Component;
 use serde_json::Value;
@@ -87,8 +91,14 @@ fn sessions_from_golden(value: &Value) -> Vec<SessionInfo> {
             parent_session_path: None,
             modified_ms: session["modifiedMs"].as_i64().unwrap_or_default(),
             message_count: session["messageCount"].as_u64().unwrap_or_default() as usize,
-            first_message: session["firstMessage"].as_str().unwrap_or_default().to_owned(),
-            all_messages_text: session["allMessagesText"].as_str().unwrap_or_default().to_owned(),
+            first_message: session["firstMessage"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            all_messages_text: session["allMessagesText"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
         })
         .collect()
 }
@@ -174,7 +184,10 @@ fn model_selector_renders_senpi_row_chrome() {
     assert!(rendered.contains("[openai]"), "{rendered}");
     assert!(rendered.contains("✓"), "{rendered}");
     assert!(rendered.contains("→ "), "{rendered}");
-    assert!(rendered.contains("Only showing models from configured providers"), "{rendered}");
+    assert!(
+        rendered.contains("Only showing models from configured providers"),
+        "{rendered}"
+    );
 }
 
 /// Every pinned session-search case keeps senpi's order for all three sort modes.
@@ -190,17 +203,22 @@ fn session_search_matches_pinned_senpi() {
             !case["parsedError"].is_null(),
             "error presence for {query:?}"
         );
-        for (key, mode) in [("recent", SortMode::Recent), ("relevance", SortMode::Relevance)] {
-            let ids: Vec<String> = filter_and_sort_sessions(&sessions, query, mode, NameFilter::All)
+        for (key, mode) in [
+            ("recent", SortMode::Recent),
+            ("relevance", SortMode::Relevance),
+        ] {
+            let ids: Vec<String> =
+                filter_and_sort_sessions(&sessions, query, mode, NameFilter::All)
+                    .into_iter()
+                    .map(|session| session.id)
+                    .collect();
+            assert_eq!(ids, expected_ids(&case[key]), "{key} for {query:?}");
+        }
+        let named: Vec<String> =
+            filter_and_sort_sessions(&sessions, query, SortMode::Recent, NameFilter::Named)
                 .into_iter()
                 .map(|session| session.id)
                 .collect();
-            assert_eq!(ids, expected_ids(&case[key]), "{key} for {query:?}");
-        }
-        let named: Vec<String> = filter_and_sort_sessions(&sessions, query, SortMode::Recent, NameFilter::Named)
-            .into_iter()
-            .map(|session| session.id)
-            .collect();
         assert_eq!(named, expected_ids(&case["named"]), "named for {query:?}");
     }
 }
@@ -210,10 +228,17 @@ fn session_search_matches_pinned_senpi() {
 fn session_name_detection_matches_senpi() {
     let golden = golden();
     let sessions = sessions_from_golden(&golden);
-    for case in golden["helpers"]["hasSessionName"].as_array().expect("hasSessionName") {
+    for case in golden["helpers"]["hasSessionName"]
+        .as_array()
+        .expect("hasSessionName")
+    {
         let id = case[0].as_str().unwrap_or_default();
         let expected = case[1].as_bool().unwrap_or_default();
-        let mut session = sessions.iter().find(|session| session.id == id).cloned().expect("session");
+        let mut session = sessions
+            .iter()
+            .find(|session| session.id == id)
+            .cloned()
+            .expect("session");
         if case[0].as_str() == Some("s1") && !expected {
             session.name = Some("   ".to_owned());
         }
@@ -242,7 +267,9 @@ fn session_search_parser_modes_match_senpi() {
 
     let broken = parse_search_query("re:[");
     assert!(broken.error.is_some());
-    assert!(filter_and_sort_sessions(&sessions, "re:[", SortMode::Recent, NameFilter::All).is_empty());
+    assert!(
+        filter_and_sort_sessions(&sessions, "re:[", SortMode::Recent, NameFilter::All).is_empty()
+    );
 }
 
 /// The favorite-model id helpers match the pinned senpi results.
@@ -270,7 +297,11 @@ fn favorite_model_helpers_match_pinned_senpi() {
     );
     assert_eq!(favorite_models(&Some(Vec::new()), &all_ids, None), None);
     assert_eq!(
-        clear_favorite_models(&Some(favorite_ids.clone()), &all_ids, Some(&["openai/gpt-5.2".to_owned()])),
+        clear_favorite_models(
+            &Some(favorite_ids.clone()),
+            &all_ids,
+            Some(&["openai/gpt-5.2".to_owned()])
+        ),
         Some(expected_ids(&expected["clearFiltered"]))
     );
     assert_eq!(
@@ -278,7 +309,11 @@ fn favorite_model_helpers_match_pinned_senpi() {
         Some(expected_ids(&expected["clearAll"]))
     );
     assert_eq!(
-        move_favorite_model(&Some(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]), "b", -1),
+        move_favorite_model(
+            &Some(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]),
+            "b",
+            -1
+        ),
         Some(expected_ids(&expected["moveUp"]))
     );
     assert_eq!(
@@ -345,7 +380,10 @@ fn tree_selector_renders_senpi_branch_glyphs() {
     );
     let rendered = selector.render(80).join("\n");
     assert!(rendered.contains("Session Tree"), "{rendered}");
-    assert!(rendered.contains("├─ ") || rendered.contains("└─ "), "{rendered}");
+    assert!(
+        rendered.contains("├─ ") || rendered.contains("└─ "),
+        "{rendered}"
+    );
     assert!(rendered.contains("│"), "{rendered}");
     assert!(rendered.contains("• "), "{rendered}");
     assert!(rendered.contains("assistant: "), "{rendered}");
@@ -381,7 +419,10 @@ fn tree_selector_filter_modes_narrow_entries() {
     selector.tree_list().borrow_mut().handle_input("\u{15}");
     let user_only = selector.tree_list().borrow().filtered_entry_ids();
     assert_eq!(user_only, vec!["root".to_owned(), "branch-c".to_owned()]);
-    assert_eq!(selector.tree_list().borrow().filter_mode(), FilterMode::UserOnly);
+    assert_eq!(
+        selector.tree_list().borrow().filter_mode(),
+        FilterMode::UserOnly
+    );
 
     // ctrl+d returns to the default view.
     selector.tree_list().borrow_mut().handle_input("\u{4}");
@@ -394,7 +435,12 @@ fn session_selector_builds_and_flattens_the_session_tree() {
     let sessions = vec![
         session("root", "/s/root.jsonl", None, 3_000),
         session("child", "/s/child.jsonl", Some("/s/root.jsonl"), 2_000),
-        session("grandchild", "/s/grandchild.jsonl", Some("/s/child.jsonl"), 1_000),
+        session(
+            "grandchild",
+            "/s/grandchild.jsonl",
+            Some("/s/child.jsonl"),
+            1_000,
+        ),
         session("sibling", "/s/sibling.jsonl", Some("/s/root.jsonl"), 500),
     ];
     let roots = build_session_tree(&sessions);
@@ -441,7 +487,10 @@ fn session_list_renders_tree_rows_and_empty_state() {
         None,
     );
     let rendered = list.render(100).join("\n");
-    assert!(rendered.contains("├─ ") || rendered.contains("└─ "), "{rendered}");
+    assert!(
+        rendered.contains("├─ ") || rendered.contains("└─ "),
+        "{rendered}"
+    );
     assert!(rendered.contains("› "), "{rendered}");
 
     let mut empty = SessionList::new(
@@ -454,7 +503,12 @@ fn session_list_renders_tree_rows_and_empty_state() {
         None,
         None,
     );
-    assert!(empty.render(100).join("\n").contains("No sessions in current folder"));
+    assert!(
+        empty
+            .render(100)
+            .join("\n")
+            .contains("No sessions in current folder")
+    );
 }
 
 /// The session selector header shows the scope, sort and name-filter state.
@@ -490,9 +544,16 @@ fn session_selector_header_and_scope_toggle() {
         None,
     );
     assert_eq!(component.scope(), SessionScope::Current);
-    assert_eq!(loaded.load(Ordering::SeqCst), 0, "loader has not finished inside new()");
+    assert_eq!(
+        loaded.load(Ordering::SeqCst),
+        0,
+        "loader has not finished inside new()"
+    );
     let loading = component.render(120).join("\n");
-    assert!(loading.contains("Resume Session (Current Folder)"), "{loading}");
+    assert!(
+        loading.contains("Resume Session (Current Folder)"),
+        "{loading}"
+    );
     assert!(loading.contains("Loading"), "{loading}");
     assert!(
         !loading.contains("◉ Current Folder"),
@@ -500,9 +561,16 @@ fn session_selector_header_and_scope_toggle() {
     );
     release_tx.send(()).expect("release loader");
     current_done_rx.recv().expect("current scope load queued");
-    assert_eq!(loaded.load(Ordering::SeqCst), 1, "the current-folder loader ran once");
+    assert_eq!(
+        loaded.load(Ordering::SeqCst),
+        1,
+        "the current-folder loader ran once"
+    );
     let current = component.render(120).join("\n");
-    assert!(current.contains("Resume Session (Current Folder)"), "{current}");
+    assert!(
+        current.contains("Resume Session (Current Folder)"),
+        "{current}"
+    );
     assert!(current.contains("◉ Current Folder"), "{current}");
     assert!(!current.contains("Loading"), "{current}");
 
@@ -548,7 +616,11 @@ fn session_selector_loader_progress_requests_renders() {
             seen.store(true, Ordering::SeqCst);
             step_tx.send("ready").expect("step");
             go_rx.recv().expect("go");
-            progress(1, 2, Some(vec![session("early", "/s/early.jsonl", None, 2_000)]));
+            progress(
+                1,
+                2,
+                Some(vec![session("early", "/s/early.jsonl", None, 2_000)]),
+            );
             step_tx.send("p1").expect("step");
             go_rx.recv().expect("go");
             progress(2, 2, None);
@@ -569,22 +641,40 @@ fn session_selector_loader_progress_requests_renders() {
         None,
     );
     // Loading start is requested inside `new`, before the worker applies progress.
-    assert_eq!(renders.load(Ordering::SeqCst), 1, "loading start requests one render");
+    assert_eq!(
+        renders.load(Ordering::SeqCst),
+        1,
+        "loading start requests one render"
+    );
     assert_eq!(step_rx.recv().expect("step"), "ready");
-    assert!(progress_seen.load(Ordering::SeqCst), "loader received the progress callback");
+    assert!(
+        progress_seen.load(Ordering::SeqCst),
+        "loader received the progress callback"
+    );
 
     go_tx.send(()).expect("go");
     assert_eq!(step_rx.recv().expect("step"), "p1");
     let first = component.render(120).join("\n");
     assert!(first.contains("Loading 1/2"), "{first}");
-    assert!(first.contains("message from early"), "a published partial row paints before the load finishes: {first}");
-    assert_eq!(renders.load(Ordering::SeqCst), 2, "first progress update requests a render");
+    assert!(
+        first.contains("message from early"),
+        "a published partial row paints before the load finishes: {first}"
+    );
+    assert_eq!(
+        renders.load(Ordering::SeqCst),
+        2,
+        "first progress update requests a render"
+    );
 
     go_tx.send(()).expect("go");
     assert_eq!(step_rx.recv().expect("step"), "p2");
     let second = component.render(120).join("\n");
     assert!(second.contains("Loading 2/2"), "{second}");
-    assert_eq!(renders.load(Ordering::SeqCst), 3, "second progress update requests a render");
+    assert_eq!(
+        renders.load(Ordering::SeqCst),
+        3,
+        "second progress update requests a render"
+    );
 
     go_tx.send(()).expect("go");
     done_rx.recv().expect("loader result queued");
@@ -610,7 +700,8 @@ fn session_selector_rename_mode_round_trip() {
         Box::new(|| {}),
         Box::new(|| {}),
         Some(Box::new(move |path, name| {
-            sink.borrow_mut().push((path.to_owned(), name.unwrap_or_default().to_owned()));
+            sink.borrow_mut()
+                .push((path.to_owned(), name.unwrap_or_default().to_owned()));
         })),
         None,
         None,
@@ -622,7 +713,10 @@ fn session_selector_rename_mode_round_trip() {
     component.rename_input_mut().set_value("new name");
     let value = component.rename_input().get_value().to_owned();
     component.confirm_rename(&value);
-    assert_eq!(*renamed.borrow(), vec![("/s/a.jsonl".to_owned(), "new name".to_owned())]);
+    assert_eq!(
+        *renamed.borrow(),
+        vec![("/s/a.jsonl".to_owned(), "new name".to_owned())]
+    );
     assert!(component.render(80).join("\n").contains("Resume Session"));
 }
 
@@ -665,7 +759,8 @@ fn settings_selector_dispatches_scalar_changes() {
         })),
         ..Default::default()
     };
-    let mut selector = SettingsSelectorComponent::new(&theme, SettingsConfig::default(), callbacks, true);
+    let mut selector =
+        SettingsSelectorComponent::new(&theme, SettingsConfig::default(), callbacks, true);
     let rendered = selector.render(200).join("\n");
     assert!(rendered.contains("Show images"), "{rendered}");
     assert!(rendered.contains("Image width"), "{rendered}");
@@ -674,7 +769,11 @@ fn settings_selector_dispatches_scalar_changes() {
     // Enter on the first row (Auto-compact) cycles the value and reports it.
     selector.handle_input("\r");
     assert_eq!(seen.borrow().len(), 1, "{:?}", seen.borrow());
-    assert!(seen.borrow()[0].starts_with("autocompact="), "{:?}", seen.borrow());
+    assert!(
+        seen.borrow()[0].starts_with("autocompact="),
+        "{:?}",
+        seen.borrow()
+    );
 }
 
 /// The config selector groups resources by origin/scope and toggles a top-level resource.
@@ -688,7 +787,8 @@ fn config_selector_groups_resources_and_toggles_them() {
             ResolvedResource {
                 path: "/home/u/.omo/agent/skills/alpha/SKILL.md".to_owned(),
                 enabled: true,
-                metadata: PathMetadata { skill_provenance: None,
+                metadata: PathMetadata {
+                    skill_provenance: None,
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,
@@ -698,7 +798,8 @@ fn config_selector_groups_resources_and_toggles_them() {
             ResolvedResource {
                 path: "/home/u/.omo/agent/skills/beta/SKILL.md".to_owned(),
                 enabled: false,
-                metadata: PathMetadata { skill_provenance: None,
+                metadata: PathMetadata {
+                    skill_provenance: None,
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,
@@ -752,7 +853,9 @@ fn config_selector_groups_resources_and_toggles_them() {
         .filtered_items()
         .iter()
         .find_map(|entry| match entry {
-            maho_interactive::components::config_selector::FlatEntry::Item(item) => Some(item.clone()),
+            maho_interactive::components::config_selector::FlatEntry::Item(item) => {
+                Some(item.clone())
+            }
             _ => None,
         })
         .expect("at least one resource item");
@@ -795,25 +898,33 @@ impl maho_interactive::components::config_selector::ConfigSettingsHost for Recor
     fn set_project_packages(&mut self, _packages: &[Value]) {}
 
     fn set_extension_paths(&mut self, paths: &[String]) {
-        self.state.borrow_mut().insert("extensions".to_owned(), paths.to_vec());
+        self.state
+            .borrow_mut()
+            .insert("extensions".to_owned(), paths.to_vec());
     }
     fn set_project_extension_paths(&mut self, paths: &[String]) {
         self.set_extension_paths(paths);
     }
     fn set_skill_paths(&mut self, paths: &[String]) {
-        self.state.borrow_mut().insert("skills".to_owned(), paths.to_vec());
+        self.state
+            .borrow_mut()
+            .insert("skills".to_owned(), paths.to_vec());
     }
     fn set_project_skill_paths(&mut self, paths: &[String]) {
         self.set_skill_paths(paths);
     }
     fn set_prompt_template_paths(&mut self, paths: &[String]) {
-        self.state.borrow_mut().insert("prompts".to_owned(), paths.to_vec());
+        self.state
+            .borrow_mut()
+            .insert("prompts".to_owned(), paths.to_vec());
     }
     fn set_project_prompt_template_paths(&mut self, paths: &[String]) {
         self.set_prompt_template_paths(paths);
     }
     fn set_theme_paths(&mut self, paths: &[String]) {
-        self.state.borrow_mut().insert("themes".to_owned(), paths.to_vec());
+        self.state
+            .borrow_mut()
+            .insert("themes".to_owned(), paths.to_vec());
     }
     fn set_project_theme_paths(&mut self, paths: &[String]) {
         self.set_theme_paths(paths);
@@ -949,8 +1060,14 @@ fn oauth_selector_labels_and_filters_providers() {
             status: None,
         },
     ];
-    assert_eq!(format_auth_selector_provider_type(AuthSelectorAuthType::OAuth), "subscription");
-    assert_eq!(format_auth_selector_provider_type(AuthSelectorAuthType::ApiKey), "API key");
+    assert_eq!(
+        format_auth_selector_provider_type(AuthSelectorAuthType::OAuth),
+        "subscription"
+    );
+    assert_eq!(
+        format_auth_selector_provider_type(AuthSelectorAuthType::ApiKey),
+        "API key"
+    );
 
     let picked = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
     let sink = Rc::clone(&picked);
@@ -959,13 +1076,19 @@ fn oauth_selector_labels_and_filters_providers() {
         AuthSelectorMode::Login,
         providers,
         Box::new(move |id, auth_type| {
-            sink.borrow_mut().push(format!("{id}:{}", format_auth_selector_provider_type(auth_type)))
+            sink.borrow_mut().push(format!(
+                "{id}:{}",
+                format_auth_selector_provider_type(auth_type)
+            ))
         }),
         Box::new(|| {}),
         None,
     );
     let rendered = selector.render(80).join("\n");
-    assert!(rendered.contains("Select provider to configure:"), "{rendered}");
+    assert!(
+        rendered.contains("Select provider to configure:"),
+        "{rendered}"
+    );
     assert!(rendered.contains("[subscription]"), "{rendered}");
     assert!(rendered.contains("unconfigured"), "{rendered}");
 
@@ -982,7 +1105,10 @@ fn oauth_selector_labels_and_filters_providers() {
 #[test]
 fn keybinding_hints_format_like_senpi() {
     let golden = golden();
-    for case in golden["helpers"]["formatKeyText"].as_array().expect("formatKeyText") {
+    for case in golden["helpers"]["formatKeyText"]
+        .as_array()
+        .expect("formatKeyText")
+    {
         let key = case[0].as_str().unwrap_or_default();
         let expected = |output: &str| {
             if !cfg!(target_os = "macos") {
@@ -1004,8 +1130,16 @@ fn keybinding_hints_format_like_senpi() {
                 .collect::<Vec<_>>()
                 .join("/")
         };
-        assert_eq!(format_key_text(key, false), expected(case[1].as_str().unwrap_or_default()), "{key}");
-        assert_eq!(format_key_text(key, true), expected(case[2].as_str().unwrap_or_default()), "{key}");
+        assert_eq!(
+            format_key_text(key, false),
+            expected(case[1].as_str().unwrap_or_default()),
+            "{key}"
+        );
+        assert_eq!(
+            format_key_text(key, true),
+            expected(case[2].as_str().unwrap_or_default()),
+            "{key}"
+        );
     }
     let theme = theme();
     assert_eq!(
@@ -1049,7 +1183,10 @@ fn provider_type_and_idle_timeout_labels_match_senpi() {
         .expect("formatHttpIdleTimeoutMs")
     {
         let timeout_ms = case[0].as_u64().expect("timeout ms");
-        assert_eq!(format_http_idle_timeout_ms(timeout_ms), case[1].as_str().unwrap_or_default());
+        assert_eq!(
+            format_http_idle_timeout_ms(timeout_ms),
+            case[1].as_str().unwrap_or_default()
+        );
     }
 }
 
@@ -1086,8 +1223,18 @@ fn three_branch_tree() -> Vec<SessionTreeNode> {
     let root = entry("root", None, "user", "root question");
     let mut branch_a = entry("branch-a", Some("root"), "assistant", "assistant: answer a");
     branch_a.children = vec![
-        entry("leaf-a", Some("branch-a"), "assistant", "assistant: answer a1"),
-        entry("leaf-b", Some("branch-a"), "assistant", "assistant: answer b1"),
+        entry(
+            "leaf-a",
+            Some("branch-a"),
+            "assistant",
+            "assistant: answer a1",
+        ),
+        entry(
+            "leaf-b",
+            Some("branch-a"),
+            "assistant",
+            "assistant: answer b1",
+        ),
     ];
     let branch_c = entry("branch-c", Some("root"), "user", "user: follow up");
     vec![SessionTreeNode {

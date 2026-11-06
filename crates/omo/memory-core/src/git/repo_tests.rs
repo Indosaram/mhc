@@ -450,7 +450,10 @@ pub(crate) struct RecordingExec {
 
 impl RecordingExec {
     pub(crate) fn system() -> Arc<Self> {
-        Arc::new(Self { inner: super::exec::system_git_exec(), calls: Default::default() })
+        Arc::new(Self {
+            inner: super::exec::system_git_exec(),
+            calls: Default::default(),
+        })
     }
 
     /// The recorded call whose argv contains `command`, with its timeout.
@@ -465,8 +468,15 @@ impl RecordingExec {
 }
 
 impl super::exec::GitExec for RecordingExec {
-    fn run(&self, argv: &[String], options: &super::exec::GitExecOptions) -> std::io::Result<super::exec::GitExecResult> {
-        self.calls.lock().unwrap().push((argv.to_vec(), options.timeout_ms));
+    fn run(
+        &self,
+        argv: &[String],
+        options: &super::exec::GitExecOptions,
+    ) -> std::io::Result<super::exec::GitExecResult> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((argv.to_vec(), options.timeout_ms));
         self.inner.run(argv, options)
     }
 }
@@ -476,7 +486,10 @@ impl super::exec::GitExec for RecordingExec {
 #[test]
 fn commits_and_merges_get_the_commit_budget_without_auto_maintenance() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let exec = Arc::new(RecordingExec { inner: super::exec::system_git_exec(), calls: Default::default() });
+    let exec = Arc::new(RecordingExec {
+        inner: super::exec::system_git_exec(),
+        calls: Default::default(),
+    });
     let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
         dir: temp.path().to_path_buf(),
         agent_id: "agent-one".to_string(),
@@ -485,22 +498,40 @@ fn commits_and_merges_get_the_commit_budget_without_auto_maintenance() {
     })
     .expect("repo");
     repo.init(Some(InitializeGitRepoOptions {
-        seed_files: vec![GitSeedFile { relative_path: "seed.md".into(), content: "seed\n".into() }],
+        seed_files: vec![GitSeedFile {
+            relative_path: "seed.md".into(),
+            content: "seed\n".into(),
+        }],
         ..Default::default()
     }))
     .expect("init");
     fs::write(temp.path().join("fact.md"), "fact\n").expect("write");
-    let author = GitCommitAuthor { agent_id: "agent-one".into(), author_name: "Agent One".into(), author_email: None };
-    repo.commit_write(&["fact.md"], "record fact", &author).expect("commit");
+    let author = GitCommitAuthor {
+        agent_id: "agent-one".into(),
+        author_name: "Agent One".into(),
+        author_email: None,
+    };
+    repo.commit_write(&["fact.md"], "record fact", &author)
+        .expect("commit");
 
     let calls = exec.calls.lock().unwrap().clone();
-    let commits: Vec<&(Vec<String>, u64)> = calls.iter().filter(|(argv, _)| argv.iter().any(|arg| arg == "commit")).collect();
+    let commits: Vec<&(Vec<String>, u64)> = calls
+        .iter()
+        .filter(|(argv, _)| argv.iter().any(|arg| arg == "commit"))
+        .collect();
     assert_eq!(commits.len(), 2, "the seed commit and the write: {calls:?}");
     for (argv, timeout) in commits {
-        assert_eq!(&argv[..4], &super::repo::NO_AUTO_MAINTENANCE.map(str::to_string)[..], "{argv:?}");
+        assert_eq!(
+            &argv[..4],
+            &super::repo::NO_AUTO_MAINTENANCE.map(str::to_string)[..],
+            "{argv:?}"
+        );
         assert_eq!(*timeout, super::repo::COMMIT_TIMEOUT_MS, "{argv:?}");
     }
-    let status = calls.iter().find(|(argv, _)| argv.iter().any(|arg| arg == "status")).expect("a status read");
+    let status = calls
+        .iter()
+        .find(|(argv, _)| argv.iter().any(|arg| arg == "status"))
+        .expect("a status read");
     assert_eq!(status.1, 30_000, "reads keep the git budget");
 }
 
@@ -511,11 +542,16 @@ fn recording_hooks() -> super::repo_types::GitHookInstaller {
         fs::create_dir_all(&hooks).map_err(GitError::Io)?;
         for stage in ["pre-commit", "commit-msg"] {
             let path = hooks.join(stage);
-            fs::write(&path, format!("#!/bin/sh\necho {stage} >> .git/hook-runs\n")).map_err(GitError::Io)?;
+            fs::write(
+                &path,
+                format!("#!/bin/sh\necho {stage} >> .git/hook-runs\n"),
+            )
+            .map_err(GitError::Io)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(GitError::Io)?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                    .map_err(GitError::Io)?;
             }
         }
         Ok(())
@@ -530,7 +566,13 @@ fn hook_runs(dir: &std::path::Path) -> String {
 /// starts no checker process; the first write after it runs every check.
 #[test]
 fn the_initial_commit_runs_no_commit_checks_and_later_commits_run_them_all() {
-    for seed_files in [vec![GitSeedFile { relative_path: "system/persona.md".into(), content: "---\ndescription: Persona\n---\nbody\n".into() }], Vec::new()] {
+    for seed_files in [
+        vec![GitSeedFile {
+            relative_path: "system/persona.md".into(),
+            content: "---\ndescription: Persona\n---\nbody\n".into(),
+        }],
+        Vec::new(),
+    ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
             dir: temp.path().to_path_buf(),
@@ -540,13 +582,26 @@ fn the_initial_commit_runs_no_commit_checks_and_later_commits_run_them_all() {
         })
         .expect("repo");
         let seeded = !seed_files.is_empty();
-        repo.init(Some(InitializeGitRepoOptions { seed_files, ..Default::default() })).expect("init");
+        repo.init(Some(InitializeGitRepoOptions {
+            seed_files,
+            ..Default::default()
+        }))
+        .expect("init");
         assert!(repo.head().expect("head").is_some(), "seeded={seeded}");
         assert_eq!(hook_runs(temp.path()), "", "seeded={seeded}");
 
         fs::write(temp.path().join("fact.md"), "fact\n").expect("write");
-        let author = GitCommitAuthor { agent_id: "agent-one".into(), author_name: "Agent One".into(), author_email: None };
-        repo.commit_write(&["fact.md"], "record fact", &author).expect("commit");
-        assert_eq!(hook_runs(temp.path()), "pre-commit\ncommit-msg\n", "seeded={seeded}");
+        let author = GitCommitAuthor {
+            agent_id: "agent-one".into(),
+            author_name: "Agent One".into(),
+            author_email: None,
+        };
+        repo.commit_write(&["fact.md"], "record fact", &author)
+            .expect("commit");
+        assert_eq!(
+            hook_runs(temp.path()),
+            "pre-commit\ncommit-msg\n",
+            "seeded={seeded}"
+        );
     }
 }

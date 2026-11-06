@@ -42,7 +42,11 @@ pub struct EditorBorderContext {
 pub trait InteractiveChrome {
     fn tool_presentation(&self) -> &'static str;
     fn get_editor_theme(&self) -> EditorTheme;
-    fn create_footer(&self, session: Rc<dyn GrokFooterSession>, theme: Theme) -> Box<dyn InteractiveFooter>;
+    fn create_footer(
+        &self,
+        session: Rc<dyn GrokFooterSession>,
+        theme: Theme,
+    ) -> Box<dyn InteractiveFooter>;
     fn create_welcome_content(&self, app_name: &str, version: &str) -> Box<dyn Component>;
     fn create_working_indicator(
         &self,
@@ -50,7 +54,11 @@ pub trait InteractiveChrome {
         indicator: Option<LoaderIndicatorOptions>,
     ) -> StatusIndicator;
     fn get_editor_border_color(&self, context: &EditorBorderContext) -> Rc<dyn Fn(&str) -> String>;
-    fn arrange_root(&self, children: Vec<Rc<RefCell<dyn Component>>>, rows: usize) -> Vec<Rc<RefCell<dyn Component>>>;
+    fn arrange_root(
+        &self,
+        children: Vec<Rc<RefCell<dyn Component>>>,
+        rows: usize,
+    ) -> Vec<Rc<RefCell<dyn Component>>>;
 }
 
 struct GrokFooterSurface {
@@ -65,7 +73,12 @@ impl Component for GrokFooterSurface {
 
     fn render(&mut self, width: usize) -> Vec<String> {
         let surface = get_grok_chrome_tokens(&self.theme).surface;
-        self.content.borrow_mut().render(width).into_iter().map(|line| surface(&line)).collect()
+        self.content
+            .borrow_mut()
+            .render(width)
+            .into_iter()
+            .map(|line| surface(&line))
+            .collect()
     }
     fn dispose(&mut self) {
         self.content.borrow_mut().dispose();
@@ -143,7 +156,8 @@ impl InteractiveChrome for GrokChrome {
         let tokens4 = get_grok_chrome_tokens(&self.theme);
         let tokens5 = get_grok_chrome_tokens(&self.theme);
         EditorTheme {
-            keyword_highlight: crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(&self.theme),
+            keyword_highlight:
+                crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(&self.theme),
             border_color: Rc::new(move |text: &str| (tokens.input_border)(text)),
             mention: None,
             select_list: maho_tui::components::select_list::SelectListTheme {
@@ -160,7 +174,11 @@ impl InteractiveChrome for GrokChrome {
         }
     }
 
-    fn create_footer(&self, session: Rc<dyn GrokFooterSession>, theme: Theme) -> Box<dyn InteractiveFooter> {
+    fn create_footer(
+        &self,
+        session: Rc<dyn GrokFooterSession>,
+        theme: Theme,
+    ) -> Box<dyn InteractiveFooter> {
         Box::new(GrokFooterHandle {
             footer: GrokFooter::new(session, theme),
         })
@@ -191,7 +209,10 @@ impl InteractiveChrome for GrokChrome {
         )
     }
 
-    fn get_editor_border_color(&self, _context: &EditorBorderContext) -> Rc<dyn Fn(&str) -> String> {
+    fn get_editor_border_color(
+        &self,
+        _context: &EditorBorderContext,
+    ) -> Rc<dyn Fn(&str) -> String> {
         let tokens = get_grok_chrome_tokens(&self.theme);
         Rc::new(move |text: &str| (tokens.input_border)(text))
     }
@@ -212,8 +233,11 @@ impl InteractiveChrome for GrokChrome {
                 theme: self.theme.clone(),
             })));
         }
-        let arranged: Vec<Rc<RefCell<dyn Component>>> =
-            content.iter().cloned().chain(tail.iter().cloned()).collect();
+        let arranged: Vec<Rc<RefCell<dyn Component>>> = content
+            .iter()
+            .cloned()
+            .chain(tail.iter().cloned())
+            .collect();
         let mut result = content;
         result.push(Rc::new(RefCell::new(GrokRootSpacer {
             rows,

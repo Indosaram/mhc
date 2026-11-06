@@ -224,9 +224,9 @@ pub fn reclaim_orphaned_resident(
             && fresh.host_pid == observed.host_pid
             && fresh.residency_claim == observed.residency_claim
             && fresh.notification.run_epoch == observed.notification.run_epoch
-            && fresh.host_pid.is_none_or(|pid| {
-                pid == context.host_pid || !context.signaller.is_alive(pid)
-            })
+            && fresh
+                .host_pid
+                .is_none_or(|pid| pid == context.host_pid || !context.signaller.is_alive(pid))
             && fresh.updated_at == observed.updated_at
     })
 }

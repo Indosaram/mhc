@@ -34,7 +34,14 @@ pub fn random_uuid() -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// Builds a `kind: "message"` team-core `Message` for a team send. `messageId`/`timestamp` are
@@ -87,21 +94,37 @@ pub fn build_peer_message_envelope(message: &Message) -> String {
 
     let mut attributes = vec![
         format!("from=\"{}\"", escape_attribute_value(&get("from"))),
-        format!("timestamp=\"{}\"", escape_attribute_value(&get("timestamp"))),
-        format!("messageId=\"{}\"", escape_attribute_value(&get("messageId"))),
+        format!(
+            "timestamp=\"{}\"",
+            escape_attribute_value(&get("timestamp"))
+        ),
+        format!(
+            "messageId=\"{}\"",
+            escape_attribute_value(&get("messageId"))
+        ),
         format!("kind=\"{}\"", escape_attribute_value(&get("kind"))),
-        format!("correlationId=\"{}\"", escape_attribute_value(&get("correlationId"))),
+        format!(
+            "correlationId=\"{}\"",
+            escape_attribute_value(&get("correlationId"))
+        ),
     ];
     if let Some(summary) = string_field(&record, "summary") {
         attributes.push(format!("summary=\"{}\"", escape_attribute_value(&summary)));
     }
-    if let Some(references) = record.get("references").filter(|references| !references.is_null()) {
+    if let Some(references) = record
+        .get("references")
+        .filter(|references| !references.is_null())
+    {
         attributes.push(format!(
             "references=\"{}\"",
             escape_attribute_value(&references.to_string())
         ));
     }
-    format!("<peer_message {}>\n{}\n</peer_message>", attributes.join(" "), get("body"))
+    format!(
+        "<peer_message {}>\n{}\n</peer_message>",
+        attributes.join(" "),
+        get("body")
+    )
 }
 
 fn escape_attribute_value(value: &str) -> String {

@@ -45,7 +45,10 @@ pub fn dependency_map(definition: &WorkflowDefinition) -> BTreeMap<String, BTree
 }
 
 /// Every node that depends on one of `roots`, directly or transitively (roots excluded).
-pub fn downstream(deps: &BTreeMap<String, BTreeSet<String>>, roots: &BTreeSet<String>) -> BTreeSet<String> {
+pub fn downstream(
+    deps: &BTreeMap<String, BTreeSet<String>>,
+    roots: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut found: BTreeSet<String> = BTreeSet::new();
     let mut frontier: Vec<String> = roots.iter().cloned().collect();
     while let Some(current) = frontier.pop() {
@@ -69,7 +72,13 @@ pub fn wave_numbers(deps: &BTreeMap<String, BTreeSet<String>>) -> BTreeMap<Strin
                 continue;
             }
             if node_deps.iter().all(|dep| waves.contains_key(dep)) {
-                let wave = node_deps.iter().filter_map(|dep| waves.get(dep)).max().copied().unwrap_or(0) + 1;
+                let wave = node_deps
+                    .iter()
+                    .filter_map(|dep| waves.get(dep))
+                    .max()
+                    .copied()
+                    .unwrap_or(0)
+                    + 1;
                 waves.insert(id.clone(), wave);
                 changed = true;
             }
@@ -169,11 +178,21 @@ mod tests {
         let info = GraphInfo::of(&d);
         assert_eq!(
             info.waves,
-            vec![vec!["a".to_owned(), "solo".into()], vec!["b1".into(), "b2".into(), "b3".into()], vec!["d".into()]]
+            vec![
+                vec!["a".to_owned(), "solo".into()],
+                vec!["b1".into(), "b2".into(), "b3".into()],
+                vec!["d".into()]
+            ]
         );
         assert_eq!(info.edges.len(), 6);
         assert_eq!(info.critical_path, ["a", "b1", "d"]);
-        assert_eq!(info.bottlenecks[0], Bottleneck { id: "a".into(), dependents: 4 });
+        assert_eq!(
+            info.bottlenecks[0],
+            Bottleneck {
+                id: "a".into(),
+                dependents: 4
+            }
+        );
         assert_eq!(info.bottlenecks[1].id, "b1");
         assert_eq!(info.bottlenecks.last().map(|b| b.id.as_str()), Some("solo"));
     }

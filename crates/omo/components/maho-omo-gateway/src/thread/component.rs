@@ -3,10 +3,10 @@
 //! Upstream counterpart: `thread/component.ts`.
 
 pub type LocateCallback = Arc<
-        dyn Fn(&str) -> super::adapter::BoxFuture<Option<super::adapter::GatewayEndpointRef>>
-            + Send
-            + Sync,
-    >;
+    dyn Fn(&str) -> super::adapter::BoxFuture<Option<super::adapter::GatewayEndpointRef>>
+        + Send
+        + Sync,
+>;
 pub type NotifyCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::sync::Arc;
 

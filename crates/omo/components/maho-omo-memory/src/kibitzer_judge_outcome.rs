@@ -14,31 +14,50 @@ pub const GATE_REASON_MAX_CHARS: usize = 160;
 pub enum JudgeTurnClassification {
     Completed,
     Empty,
-    Failed { cause: JudgeFailureCause, reason: Option<String> },
-    Dropped { cause: JudgeDropCause },
+    Failed {
+        cause: JudgeFailureCause,
+        reason: Option<String>,
+    },
+    Dropped {
+        cause: JudgeDropCause,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JudgeFailureCause { ChildFailed, ChildFailedUpstream }
+pub enum JudgeFailureCause {
+    ChildFailed,
+    ChildFailedUpstream,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JudgeDropCause { Cancelled }
+pub enum JudgeDropCause {
+    Cancelled,
+}
 
 /// senpi's empty-assistant recovery settles the second silent stop as this message; for THIS child
 /// it describes a completed turn, not a failure (issue #7963).
 const EMPTY_RESPONSE_TWICE: &str = "Model returned an empty response twice";
 
 /// `classifyJudgeTurn(outcome, accepted)`. `settle` is the child's structured `JudgeSettle`.
-pub fn classify_judge_turn(settle: &crate::kibitzer_child::JudgeSettle, accepted: &[RecallNudge]) -> JudgeTurnClassification {
+pub fn classify_judge_turn(
+    settle: &crate::kibitzer_child::JudgeSettle,
+    accepted: &[RecallNudge],
+) -> JudgeTurnClassification {
     if settle.completed {
         return JudgeTurnClassification::Completed;
     }
     if settle.cancelled {
-        return JudgeTurnClassification::Dropped { cause: JudgeDropCause::Cancelled };
+        return JudgeTurnClassification::Dropped {
+            cause: JudgeDropCause::Cancelled,
+        };
     }
     let reason = normalize_gate_reason(settle.failure_message.as_deref());
     if reason.as_deref() == Some(EMPTY_RESPONSE_TWICE) {
-        return if accepted.is_empty() { JudgeTurnClassification::Empty } else { JudgeTurnClassification::Completed };
+        return if accepted.is_empty() {
+            JudgeTurnClassification::Empty
+        } else {
+            JudgeTurnClassification::Completed
+        };
     }
     let cause = match &reason {
         Some(reason) if is_upstream_failure(reason) => JudgeFailureCause::ChildFailedUpstream,
@@ -59,7 +78,8 @@ fn has_bounded_503(text: &str) -> bool {
         let at = from + relative;
         let after = at + 3;
         let before_ok = at == 0 || !text[..at].chars().next_back().is_some_and(is_word_char);
-        let after_ok = after >= bytes.len() || !text[after..].chars().next().is_some_and(is_word_char);
+        let after_ok =
+            after >= bytes.len() || !text[after..].chars().next().is_some_and(is_word_char);
         if before_ok && after_ok {
             return true;
         }
@@ -75,7 +95,11 @@ fn has_auth_unavailable(text: &str) -> bool {
         let at = from + relative;
         let rest = &text[at + 4..];
         let matched = rest.strip_prefix("unavailable").is_some()
-            || ["_", " ", "-"].iter().any(|separator| rest.strip_prefix(separator).and_then(|r| r.strip_prefix("unavailable")).is_some());
+            || ["_", " ", "-"].iter().any(|separator| {
+                rest.strip_prefix(separator)
+                    .and_then(|r| r.strip_prefix("unavailable"))
+                    .is_some()
+            });
         if matched {
             return true;
         }
@@ -109,7 +133,10 @@ fn utf16_head(text: &str, n: usize) -> String {
 /// `normalizeGateReason`: strip control chars, collapse whitespace, redact secrets, cap the length.
 pub fn normalize_gate_reason(message: Option<&str>) -> Option<String> {
     let message = message?;
-    let stripped: String = message.chars().filter(|ch| !matches!(ch, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}')).collect();
+    let stripped: String = message
+        .chars()
+        .filter(|ch| !matches!(ch, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}'))
+        .collect();
     let collapsed = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;
@@ -118,7 +145,10 @@ pub fn normalize_gate_reason(message: Option<&str>) -> Option<String> {
         return Some("redacted".to_string());
     }
     if utf16_len(&collapsed) > GATE_REASON_MAX_CHARS {
-        Some(format!("{}\u{2026}", utf16_head(&collapsed, GATE_REASON_MAX_CHARS - 1)))
+        Some(format!(
+            "{}\u{2026}",
+            utf16_head(&collapsed, GATE_REASON_MAX_CHARS - 1)
+        ))
     } else {
         Some(collapsed)
     }
@@ -157,4 +187,3 @@ mod tests {
         assert!(normalized.ends_with('\u{2026}'));
     }
 }
-

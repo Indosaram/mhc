@@ -8,8 +8,9 @@ use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::DesktopWindow;
 
 use super::cgevent::{
-    LOCAL_EVENT_FILTER, REMOTE_MOUSE_DRAG, SUPPRESSION_INTERVAL, event_source,
-    get_local_events_filter_during_suppression_state, get_local_events_suppression_interval,
+    event_source, get_local_events_filter_during_suppression_state,
+    get_local_events_suppression_interval, LOCAL_EVENT_FILTER, REMOTE_MOUSE_DRAG,
+    SUPPRESSION_INTERVAL,
 };
 use super::guard;
 use super::held::{ButtonRoute, Held, HeldButton, HeldKey, KeyRoute};
@@ -52,11 +53,9 @@ fn guard_refuses_chromium_right_clicks_and_canvas_stacks_only() {
     let chrome = window("1", "Google Chrome");
     let error = guard::guard(&chrome, "click", Some(MouseButton::Right)).unwrap_err();
     assert_eq!(error.code, ErrorCode::BackgroundUnavailable);
-    assert!(
-        error
-            .message
-            .contains("coerces synthetic background right-click")
-    );
+    assert!(error
+        .message
+        .contains("coerces synthetic background right-click"));
     assert_eq!(
         guard::guard(&chrome, "click", Some(MouseButton::Left)),
         Ok(())

@@ -201,7 +201,9 @@ async fn the_co_author_flag_without_the_footer_appends_a_trailer_directive() {
     });
     let mut event = read_result(SKILL_PATH, false);
     let appended = appended_text(&dispatch(&api, &mut event).await);
-    assert!(appended.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(appended.contains(
+        "--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""
+    ));
     assert!(!appended.contains(BUILTIN_FOOTER));
 }
 
@@ -291,7 +293,9 @@ async fn the_real_config_consumer_appends_the_project_configured_footer() {
         "the project git_master.commit_footer reaches the directive: {appended}"
     );
     assert!(!appended.contains("Ultraworked with"));
-    assert!(appended.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(appended.contains(
+        "--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""
+    ));
 }
 
 #[tokio::test]
@@ -313,10 +317,15 @@ async fn the_real_config_consumer_defaults_to_a_co_author_without_a_footer() {
     };
     assert!(text.contains("GIT_MASTER=1 git"));
     assert!(!text.contains("Ultraworked with"));
-    let Some(ToolContent::Text { text: attribution, .. }) = content.last() else {
+    let Some(ToolContent::Text {
+        text: attribution, ..
+    }) = content.last()
+    else {
         panic!("expected attribution text");
     };
-    assert!(attribution.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(attribution.contains(
+        "--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""
+    ));
     assert!(!attribution.contains(BUILTIN_FOOTER));
 }
 

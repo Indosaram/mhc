@@ -31,6 +31,9 @@ fn main() {
     config.btree_map(["."]);
 
     config
-        .compile_protos(&["proto/agent.proto", "proto/devin/cascade.proto"], &["proto"])
+        .compile_protos(
+            &["proto/agent.proto", "proto/devin/cascade.proto"],
+            &["proto"],
+        )
         .expect("failed to compile the vendored protobuf schemas under crates/maho-ai/proto");
 }

@@ -106,23 +106,38 @@ pub async fn ensure_daemon_running(
     let signal = options.signal;
     throw_if_aborted(signal.as_ref())?;
     if await_with_signal((deps.probe)(paths.clone(), signal.clone()), signal.as_ref()).await? {
-        FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner).remove(&paths.socket);
+        FAILED_SPAWN_UNTIL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&paths.socket);
         return Ok(());
     }
     throw_if_aborted(signal.as_ref())?;
     {
-        let mut failed = FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
-        if failed.get(&paths.socket).is_some_and(|retry_at| (deps.now)() < *retry_at) {
-            return Err(EnsureDaemonError::Unreachable { socket: paths.socket.clone() });
+        let mut failed = FAILED_SPAWN_UNTIL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if failed
+            .get(&paths.socket)
+            .is_some_and(|retry_at| (deps.now)() < *retry_at)
+        {
+            return Err(EnsureDaemonError::Unreachable {
+                socket: paths.socket.clone(),
+            });
         }
         failed.remove(&paths.socket);
     }
     (deps.spawn_daemon)(paths).map_err(|error| EnsureDaemonError::Spawn(error.to_string()))?;
-    let result = wait_until_reachable(paths, deps, ready_timeout_ms, poll_interval_ms, signal).await;
+    let result =
+        wait_until_reachable(paths, deps, ready_timeout_ms, poll_interval_ms, signal).await;
     if result.is_err() {
-        FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner).insert(
-            paths.socket.clone(), (deps.now)().saturating_add(FAILED_SPAWN_COOLDOWN_MS),
-        );
+        FAILED_SPAWN_UNTIL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                paths.socket.clone(),
+                (deps.now)().saturating_add(FAILED_SPAWN_COOLDOWN_MS),
+            );
     }
     result
 }

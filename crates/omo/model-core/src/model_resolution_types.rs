@@ -11,7 +11,11 @@ pub struct DelegatedModelConfig {
     pub variant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
-    #[serde(rename = "reasoningEffort", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "reasoningEffort",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
@@ -29,7 +33,11 @@ pub struct DelegatedModelConfig {
 pub struct DelegatedModelThinking {
     #[serde(rename = "type")]
     pub thinking_type: DelegatedModelThinkingType,
-    #[serde(rename = "budgetTokens", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "budgetTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub budget_tokens: Option<f64>,
 }
 
@@ -41,5 +49,5 @@ pub enum DelegatedModelThinkingType {
 }
 
 pub use crate::model_resolution_pipeline::{
-    ModelResolutionRequest, ModelResolutionProvenance, ModelResolutionResult,
+    ModelResolutionProvenance, ModelResolutionRequest, ModelResolutionResult,
 };

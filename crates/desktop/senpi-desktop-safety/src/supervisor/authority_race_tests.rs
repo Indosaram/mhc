@@ -1,7 +1,7 @@
-use super::StopSource;
 use super::authority_test_support::{backend, input, proof, supervisor};
+use super::StopSource;
 use crate::{AuthorityResetError, GateError};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 

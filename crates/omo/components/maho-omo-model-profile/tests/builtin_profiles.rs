@@ -2,8 +2,8 @@ use crate::support;
 
 use indexmap::IndexMap;
 use maho_omo_model_profile::builtin_profiles::{
-    BuiltinModelProfile, DEFAULT_MODEL_PROFILE_ID, DEFAULT_MODEL_PROFILE_ORDER, RETIRED_MODEL_PROFILE_IDS,
-    builtin_model_profiles,
+    BuiltinModelProfile, DEFAULT_MODEL_PROFILE_ID, DEFAULT_MODEL_PROFILE_ORDER,
+    RETIRED_MODEL_PROFILE_IDS, builtin_model_profiles,
 };
 
 const LANE_IDS: [&str; 4] = ["daily-normal", "daily-heavy", "geeky-normal", "geeky-heavy"];
@@ -49,11 +49,23 @@ fn labels_each_profile_by_lane_and_gives_every_profile_a_distinct_family_tier_pa
     assert_eq!(profiles["geeky-heavy"].display_name, "Obsessive · Heavy");
     let pairs: Vec<String> = LANE_IDS
         .iter()
-        .map(|id| format!("{}:{}", profiles[*id].family.as_str(), profiles[*id].tier.as_str()))
+        .map(|id| {
+            format!(
+                "{}:{}",
+                profiles[*id].family.as_str(),
+                profiles[*id].tier.as_str()
+            )
+        })
         .collect();
-    assert_eq!(pairs, ["daily:normal", "daily:heavy", "geeky:normal", "geeky:heavy"]);
+    assert_eq!(
+        pairs,
+        ["daily:normal", "daily:heavy", "geeky:normal", "geeky:heavy"]
+    );
     for id in EXPECTED_IDS {
-        assert!(!profiles[id].description.is_empty(), "{id} carries a description");
+        assert!(
+            !profiles[id].description.is_empty(),
+            "{id} carries a description"
+        );
     }
 }
 
@@ -77,9 +89,18 @@ fn starts_unset_on_daily_normal_and_retires_recommended() {
 
 #[test]
 fn never_lists_a_gateway_aggregator_on_a_builtin_rung() {
-    let gateways = ["opengateway", "openrouter", "vercel-ai-gateway", "cloudflare-ai-gateway"];
+    let gateways = [
+        "opengateway",
+        "openrouter",
+        "vercel-ai-gateway",
+        "cloudflare-ai-gateway",
+    ];
     for (_, providers, _) in rungs() {
-        assert!(providers.iter().all(|provider| !gateways.contains(provider)));
+        assert!(
+            providers
+                .iter()
+                .all(|provider| !gateways.contains(provider))
+        );
     }
 }
 
@@ -114,7 +135,11 @@ fn names_no_banned_vendor() {
     let offenders: Vec<String> = rungs()
         .iter()
         .flat_map(|(_, providers, model)| providers.iter().copied().chain(std::iter::once(*model)))
-        .filter(|token| BANNED_VENDOR_TOKENS.iter().any(|banned| token.to_lowercase().contains(banned)))
+        .filter(|token| {
+            BANNED_VENDOR_TOKENS
+                .iter()
+                .any(|banned| token.to_lowercase().contains(banned))
+        })
         .map(str::to_owned)
         .collect();
     assert_eq!(offenders, Vec::<String>::new());
@@ -129,7 +154,10 @@ fn ranks_the_chatgpt_subscription_ahead_of_the_openai_api_lane_on_every_gpt_rung
     assert!(!gpt.is_empty());
     let misordered: Vec<String> = gpt
         .iter()
-        .filter(|(_, providers, _)| providers.first() != Some(&"chatgpt-subscription") || providers.get(1) != Some(&"openai"))
+        .filter(|(_, providers, _)| {
+            providers.first() != Some(&"chatgpt-subscription")
+                || providers.get(1) != Some(&"openai")
+        })
         .map(|(profile, providers, model)| format!("{profile}: {}/{model}", providers.join("|")))
         .collect();
     assert_eq!(misordered, Vec::<String>::new());
@@ -144,7 +172,9 @@ fn heads_every_glm_rung_with_engine_zai_then_zai_coding_cn() {
     assert!(!glm.is_empty());
     let misordered: Vec<String> = glm
         .iter()
-        .filter(|(_, providers, _)| providers.first() != Some(&"zai") || providers.get(1) != Some(&"zai-coding-cn"))
+        .filter(|(_, providers, _)| {
+            providers.first() != Some(&"zai") || providers.get(1) != Some(&"zai-coding-cn")
+        })
         .map(|(profile, providers, model)| format!("{profile}: {}/{model}", providers.join("|")))
         .collect();
     assert_eq!(misordered, Vec::<String>::new());
@@ -167,7 +197,10 @@ fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
 
 #[test]
 fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
-    assert_eq!(chain_of("daily-normal"), ["claude-opus-5-5 medium", "kimi-k3.1-pro max", "glm-5.3 max"]);
+    assert_eq!(
+        chain_of("daily-normal"),
+        ["claude-opus-5-5 medium", "kimi-k3.1-pro max", "glm-5.3 max"]
+    );
 }
 
 #[test]
@@ -180,7 +213,13 @@ fn runs_daily_heavy_as_fable_xhigh_only() {
     assert_eq!(
         models,
         [(
-            vec!["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"],
+            vec![
+                "anthropic-subscription",
+                "anthropic",
+                "anthropic-api",
+                "github-copilot",
+                "opencode"
+            ],
             "claude-fable-5-1",
             Some("xhigh")
         )]
@@ -198,13 +237,35 @@ fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lan
         models,
         [
             (
-                vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"],
+                vec![
+                    "chatgpt-subscription",
+                    "openai",
+                    "github-copilot",
+                    "opencode"
+                ],
                 "gpt-6-astra",
                 Some("medium")
             ),
-            (vec!["chatgpt-subscription", "openai"], "gpt-6.1-sol-fast", Some("medium")),
-            (vec!["chatgpt-subscription", "openai"], "gpt-6.1-sol", Some("medium")),
-            (vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"], "gpt-5.6-sol", Some("medium")),
+            (
+                vec!["chatgpt-subscription", "openai"],
+                "gpt-6.1-sol-fast",
+                Some("medium")
+            ),
+            (
+                vec!["chatgpt-subscription", "openai"],
+                "gpt-6.1-sol",
+                Some("medium")
+            ),
+            (
+                vec![
+                    "chatgpt-subscription",
+                    "openai",
+                    "github-copilot",
+                    "opencode"
+                ],
+                "gpt-5.6-sol",
+                Some("medium")
+            ),
         ]
     );
 }
@@ -218,6 +279,15 @@ fn runs_geeky_heavy_as_astra_high_with_the_same_provider_ranking_as_deep_high() 
         .collect();
     assert_eq!(
         models,
-        [(vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"], "gpt-6-astra", Some("high"))]
+        [(
+            vec![
+                "chatgpt-subscription",
+                "openai",
+                "github-copilot",
+                "opencode"
+            ],
+            "gpt-6-astra",
+            Some("high")
+        )]
     );
 }

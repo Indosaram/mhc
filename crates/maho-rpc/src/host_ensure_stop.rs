@@ -16,7 +16,7 @@ use std::path::PathBuf;
 pub fn default_stop_timeout_ms(env: &HashMap<String, String>) -> u64 {
     CHILD_STOP_TIMEOUT_MS.max(child_stalled_stop_max_ms(env)) + CHILD_KILL_EXIT_TIMEOUT_MS + 5_000
 }
-pub const SIGKILL_GRACE_MS: u64 = 2_000;
+pub use crate::deadline::SIGKILL_GRACE_MS;
 /// A stop-progress report older than this is a supervisor that stopped reporting, not one still waiting.
 const STOP_PROGRESS_FRESH_MS: u64 = 10_000;
 /// After a reported stall wait ends, the supervisor still escalates, records and exits: one more window.
@@ -270,13 +270,10 @@ async fn wait_for_gone(
     read_start_time: impl Fn(u32) -> Option<String> + Copy,
 ) -> bool {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    while tokio::time::Instant::now() <= deadline {
-        if resolve_pid_file_ownership(pid_file, read_start_time) == PidFileOwnership::Gone {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    resolve_pid_file_ownership(pid_file, read_start_time) == PidFileOwnership::Gone
+    crate::deadline::wait_until(deadline, crate::deadline::POLL_INTERVAL, || {
+        resolve_pid_file_ownership(pid_file, read_start_time) == PidFileOwnership::Gone
+    })
+    .await
 }
 
 /// ESRCH means the process is already gone, which is what every caller here wants.
@@ -324,7 +321,9 @@ mod tests {
         }
     }
     fn dead_pid() -> u32 {
-        let mut child = std::process::Command::new("true").spawn().expect("spawn dead child");
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn dead child");
         let pid = child.id();
         child.wait().expect("wait for dead child");
         pid

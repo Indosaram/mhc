@@ -14,7 +14,9 @@ pub fn migrate_legacy_provider_keys(
     let mut next: Option<Map<String, Value>> = None;
     for (legacy_id, canonical_id) in legacy_provider_ids {
         let legacy = data.get(legacy_id);
-        let Some(Value::Object(legacy_object)) = legacy else { continue };
+        let Some(Value::Object(legacy_object)) = legacy else {
+            continue;
+        };
         let working = next.get_or_insert_with(|| data.clone());
         working.remove(legacy_id);
         if !working.contains_key(canonical_id) {
@@ -35,7 +37,10 @@ mod tests {
     fn legacy() -> BTreeMap<String, String> {
         BTreeMap::from([
             ("openai-codex".to_owned(), "chatgpt-subscription".to_owned()),
-            ("claude-sdk-oauth".to_owned(), "anthropic-subscription".to_owned()),
+            (
+                "claude-sdk-oauth".to_owned(),
+                "anthropic-subscription".to_owned(),
+            ),
         ])
     }
 
@@ -49,7 +54,10 @@ mod tests {
         let (next, migrated) = migrate_legacy_provider_keys(&input, &legacy());
         assert!(migrated);
         assert!(!next.contains_key("openai-codex"));
-        assert_eq!(next["chatgpt-subscription"], json!({ "type": "oauth", "accounts": ["a"] }));
+        assert_eq!(
+            next["chatgpt-subscription"],
+            json!({ "type": "oauth", "accounts": ["a"] })
+        );
     }
 
     #[test]
@@ -61,7 +69,10 @@ mod tests {
         let (next, migrated) = migrate_legacy_provider_keys(&input, &legacy());
         assert!(migrated);
         assert!(!next.contains_key("openai-codex"));
-        assert_eq!(next["chatgpt-subscription"], json!({ "type": "oauth", "accounts": ["canonical"] }));
+        assert_eq!(
+            next["chatgpt-subscription"],
+            json!({ "type": "oauth", "accounts": ["canonical"] })
+        );
     }
 
     #[test]

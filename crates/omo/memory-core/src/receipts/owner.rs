@@ -106,7 +106,9 @@ fn strip_line_prefix(text: &str) -> &str {
         }
     }
     let digits = text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    if (1..=9).contains(&digits) && (text[digits..].starts_with(". ") || text[digits..].starts_with(") ")) {
+    if (1..=9).contains(&digits)
+        && (text[digits..].starts_with(". ") || text[digits..].starts_with(") "))
+    {
         return &text[digits + 2..];
     }
     if text.starts_with('[')
@@ -120,9 +122,18 @@ fn strip_line_prefix(text: &str) -> &str {
 
 /// The text inside one pair of wrapping emphasis, code or quote marks.
 fn strip_wrapping(text: &str) -> &str {
-    for (open, close) in [("**", "**"), ("*", "*"), ("`", "`"), ("\"", "\""), ("'", "'"), ("\u{201c}", "\u{201d}")] {
+    for (open, close) in [
+        ("**", "**"),
+        ("*", "*"),
+        ("`", "`"),
+        ("\"", "\""),
+        ("'", "'"),
+        ("\u{201c}", "\u{201d}"),
+    ] {
         if text.len() >= open.len() + close.len()
-            && let Some(inner) = text.strip_prefix(open).and_then(|rest| rest.strip_suffix(close))
+            && let Some(inner) = text
+                .strip_prefix(open)
+                .and_then(|rest| rest.strip_suffix(close))
         {
             return inner;
         }
@@ -136,13 +147,22 @@ fn strip_wrapping(text: &str) -> &str {
 pub fn normalize_memory_text(text: &str) -> String {
     let mut rest = text.trim();
     loop {
-        let next = strip_wrapping(strip_line_prefix(rest).trim().trim_end_matches(TRAILING_PUNCTUATION).trim_end()).trim();
+        let next = strip_wrapping(
+            strip_line_prefix(rest)
+                .trim()
+                .trim_end_matches(TRAILING_PUNCTUATION)
+                .trim_end(),
+        )
+        .trim();
         if next == rest {
             break;
         }
         rest = next;
     }
-    rest.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    rest.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// The normalized non-blank body lines (frontmatter excluded) of markdown files: what a tree
@@ -158,7 +178,9 @@ pub fn markdown_body_lines<'a>(files: impl IntoIterator<Item = &'a str>) -> BTre
 
 /// [`markdown_body_lines`] plus the normalized frontmatter `description`s: all the content a tree
 /// already holds, in one set (a description moved into a body, or back, stays existing content).
-pub fn markdown_content_lines<'a>(files: impl IntoIterator<Item = &'a str> + Clone) -> BTreeSet<String> {
+pub fn markdown_content_lines<'a>(
+    files: impl IntoIterator<Item = &'a str> + Clone,
+) -> BTreeSet<String> {
     let mut lines = markdown_body_lines(files.clone());
     lines.extend(
         files
@@ -254,13 +276,22 @@ pub struct OwnerReceiptEvent {
 
 impl OwnerReceiptEvent {
     pub fn new(receipt_id: &str, event: &str) -> Self {
-        Self { v: 1, receipt_id: receipt_id.to_owned(), event: event.to_owned(), ..Default::default() }
+        Self {
+            v: 1,
+            receipt_id: receipt_id.to_owned(),
+            event: event.to_owned(),
+            ..Default::default()
+        }
     }
 
     /// At most one line per key: one `applied` per session, one closing event per receipt.
     fn key(&self) -> String {
         match self.event.as_str() {
-            RECEIPT_APPLIED => format!("{}\u{0}{RECEIPT_APPLIED}\u{0}{}", self.receipt_id, self.session_id.as_deref().unwrap_or_default()),
+            RECEIPT_APPLIED => format!(
+                "{}\u{0}{RECEIPT_APPLIED}\u{0}{}",
+                self.receipt_id,
+                self.session_id.as_deref().unwrap_or_default()
+            ),
             RECEIPT_FORGOTTEN | RECEIPT_CORRECTED => format!("{}\u{0}closed", self.receipt_id),
             event => format!("{}\u{0}{event}", self.receipt_id),
         }
@@ -358,13 +389,21 @@ pub fn fold_owner_receipts(events: &[OwnerReceiptEvent]) -> Vec<OwnerReceiptView
                 view.supersedes = event.supersedes.clone();
             }
             RECEIPT_PERSISTED if view.persisted.is_none() => {
-                view.persisted = Some(PersistedMark { commit: event.commit.clone().unwrap_or_default(), path: event.path.clone(), at: event.at.clone() });
+                view.persisted = Some(PersistedMark {
+                    commit: event.commit.clone().unwrap_or_default(),
+                    path: event.path.clone(),
+                    at: event.at.clone(),
+                });
             }
             RECEIPT_APPLIED => {
                 if let Some(session) = &event.session_id
                     && !view.applied.iter().any(|mark| &mark.session_id == session)
                 {
-                    view.applied.push(AppliedMark { session_id: session.clone(), commit: event.commit.clone(), at: event.at.clone() });
+                    view.applied.push(AppliedMark {
+                        session_id: session.clone(),
+                        commit: event.commit.clone(),
+                        at: event.at.clone(),
+                    });
                 }
             }
             RECEIPT_FORGOTTEN | RECEIPT_CORRECTED if view.closed.is_none() => {
@@ -394,7 +433,10 @@ pub fn fold_owner_receipts(events: &[OwnerReceiptEvent]) -> Vec<OwnerReceiptView
             (None, true, None) => RECEIPT_ACCEPTED.to_owned(),
         };
     }
-    order.into_iter().filter_map(|id| views.remove(&id)).collect()
+    order
+        .into_iter()
+        .filter_map(|id| views.remove(&id))
+        .collect()
 }
 
 /// The owner receipt log of one identity.
@@ -405,7 +447,9 @@ pub struct OwnerReceiptStore {
 
 impl OwnerReceiptStore {
     pub fn new(runtime_dir: &Path) -> Self {
-        Self { runtime_dir: runtime_dir.to_path_buf() }
+        Self {
+            runtime_dir: runtime_dir.to_path_buf(),
+        }
     }
 
     pub fn path(&self) -> PathBuf {
@@ -422,7 +466,10 @@ impl OwnerReceiptStore {
     }
 
     pub fn view(&self, receipt_id: &str) -> Result<Option<OwnerReceiptView>, String> {
-        Ok(self.views()?.into_iter().find(|view| view.receipt_id == receipt_id))
+        Ok(self
+            .views()?
+            .into_iter()
+            .find(|view| view.receipt_id == receipt_id))
     }
 
     /// Appends unless an event with the same identity is recorded; the check and the append run
@@ -484,18 +531,31 @@ fn suppressions_path(runtime_dir: &Path) -> PathBuf {
 }
 
 fn short_digest(prefix: &str, parts: &[&str]) -> String {
-    format!("{prefix}{}", &sha256_hex(parts.join("\u{0}").as_bytes())[..24])
+    format!(
+        "{prefix}{}",
+        &sha256_hex(parts.join("\u{0}").as_bytes())[..24]
+    )
 }
 
 /// Records one suppression per line of `text` (idempotent per request source and line). Returns
 /// the active records for this request.
-pub fn append_suppressions(runtime_dir: &Path, kind: &str, text: &str, receipt_id: Option<&str>, source_id: &str) -> Result<Vec<SuppressionRecord>, String> {
+pub fn append_suppressions(
+    runtime_dir: &Path,
+    kind: &str,
+    text: &str,
+    receipt_id: Option<&str>,
+    source_id: &str,
+) -> Result<Vec<SuppressionRecord>, String> {
     let lines = suppression_lines(text);
     if lines.is_empty() {
         return Err("nothing to suppress: the text has no content line".into());
     }
     under_receipts_lock(runtime_dir, || {
-        let existing: BTreeSet<String> = read_jsonl::<SuppressionRecord>(&suppressions_path(runtime_dir))?.into_iter().map(|record| record.id).collect();
+        let existing: BTreeSet<String> =
+            read_jsonl::<SuppressionRecord>(&suppressions_path(runtime_dir))?
+                .into_iter()
+                .map(|record| record.id)
+                .collect();
         let mut written = Vec::new();
         for line in &lines {
             let record = SuppressionRecord {
@@ -522,7 +582,12 @@ pub fn append_suppressions(runtime_dir: &Path, kind: &str, text: &str, receipt_i
 /// active record whose line equals one of its normalized lines exactly. A superstring never lifts
 /// ("Never use X" does not lift a forget of "Use X"), and a record closing `receipt_id` itself is
 /// never lifted by that receipt's own (possibly replayed) teach. Returns the lifted record ids.
-pub fn lift_suppressions(runtime_dir: &Path, text: &str, source_id: &str, receipt_id: &str) -> Result<Vec<String>, String> {
+pub fn lift_suppressions(
+    runtime_dir: &Path,
+    text: &str,
+    source_id: &str,
+    receipt_id: &str,
+) -> Result<Vec<String>, String> {
     let lines = suppression_lines(text);
     under_receipts_lock(runtime_dir, || {
         let set = SuppressionSet::load(runtime_dir)?;
@@ -551,7 +616,11 @@ pub fn lift_suppressions(runtime_dir: &Path, text: &str, source_id: &str, receip
 
 /// Records that a forget or correct finished removing content from the memory repository and
 /// returns the new suppression generation. Every session pinned under an older generation repins.
-pub fn record_purge(runtime_dir: &Path, receipt_id: &str, source_id: &str) -> Result<String, String> {
+pub fn record_purge(
+    runtime_dir: &Path,
+    receipt_id: &str,
+    source_id: &str,
+) -> Result<String, String> {
     under_receipts_lock(runtime_dir, || {
         let record = purge_record(receipt_id, source_id, None);
         append_line(&suppressions_path(runtime_dir), &record)?;
@@ -563,13 +632,23 @@ pub fn record_purge(runtime_dir: &Path, receipt_id: &str, source_id: &str) -> Re
 /// receipt's last purge: it did not commit (`committed` false) and leaves exactly the same
 /// `retained` paths. A repin then would land on the same content, so retrying a retained forget
 /// never repins every session again. Returns the new generation, `None` when skipped.
-pub fn record_purge_if_changed(runtime_dir: &Path, receipt_id: &str, source_id: &str, committed: bool, retained: &[String]) -> Result<Option<String>, String> {
+pub fn record_purge_if_changed(
+    runtime_dir: &Path,
+    receipt_id: &str,
+    source_id: &str,
+    committed: bool,
+    retained: &[String],
+) -> Result<Option<String>, String> {
     let digest = sha256_hex(retained.join("\u{0}").as_bytes());
     under_receipts_lock(runtime_dir, || {
         if !committed {
             let all: Vec<SuppressionRecord> = read_jsonl(&suppressions_path(runtime_dir))?;
-            let last = all.iter().rev().find(|record| record.kind == SUPPRESSION_PURGED && record.receipt_id.as_deref() == Some(receipt_id));
-            if last.is_some_and(|record| record.retained_digest.as_deref() == Some(digest.as_str())) {
+            let last = all.iter().rev().find(|record| {
+                record.kind == SUPPRESSION_PURGED
+                    && record.receipt_id.as_deref() == Some(receipt_id)
+            });
+            if last.is_some_and(|record| record.retained_digest.as_deref() == Some(digest.as_str()))
+            {
                 return Ok(None);
             }
         }
@@ -579,7 +658,11 @@ pub fn record_purge_if_changed(runtime_dir: &Path, receipt_id: &str, source_id: 
     })
 }
 
-fn purge_record(receipt_id: &str, source_id: &str, retained_digest: Option<String>) -> SuppressionRecord {
+fn purge_record(
+    receipt_id: &str,
+    source_id: &str,
+    retained_digest: Option<String>,
+) -> SuppressionRecord {
     SuppressionRecord {
         v: 1,
         at: now_iso(),
@@ -597,7 +680,11 @@ fn purge_record(receipt_id: &str, source_id: &str, retained_digest: Option<Strin
 /// store is an error, so a caller can fail closed.
 pub fn suppression_generation(runtime_dir: &Path) -> Result<Option<String>, String> {
     let all: Vec<SuppressionRecord> = read_jsonl(&suppressions_path(runtime_dir))?;
-    Ok(all.into_iter().rev().find(|record| record.kind == SUPPRESSION_PURGED).map(|record| record.id))
+    Ok(all
+        .into_iter()
+        .rev()
+        .find(|record| record.kind == SUPPRESSION_PURGED)
+        .map(|record| record.id))
 }
 
 /// [`suppression_generation`] of the identity whose memory repository is `repo_dir`.
@@ -613,7 +700,11 @@ pub fn render_do_not_record(lines: &[String]) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    let listed = lines.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n");
+    let listed = lines
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         "\n\nThe owner retracted the statements below (forgotten or corrected). Never record, restate or paraphrase any of them, and never record anything that implies one of them, even when the input repeats it:\n{listed}"
     )
@@ -629,7 +720,11 @@ impl SuppressionSet {
     /// A missing file is an empty set; an unreadable one is an error, so callers fail closed.
     pub fn load(runtime_dir: &Path) -> Result<Self, String> {
         let all: Vec<SuppressionRecord> = read_jsonl(&suppressions_path(runtime_dir))?;
-        let lifted: BTreeSet<String> = all.iter().filter(|record| record.kind == SUPPRESSION_LIFT).filter_map(|record| record.lifts.clone()).collect();
+        let lifted: BTreeSet<String> = all
+            .iter()
+            .filter(|record| record.kind == SUPPRESSION_LIFT)
+            .filter_map(|record| record.lifts.clone())
+            .collect();
         // Re-normalized, so a line recorded under an older normalizer still matches.
         let records = all
             .into_iter()
@@ -670,7 +765,9 @@ impl SuppressionSet {
 
     /// Whether `candidate` normalizes to exactly a suppressed line.
     pub fn suppresses_exactly(&self, candidate: &str) -> bool {
-        self.records.iter().any(|record| record.matches_exactly(candidate))
+        self.records
+            .iter()
+            .any(|record| record.matches_exactly(candidate))
     }
 
     /// The distinct suppressed lines, for a child's do-not-record constraint.
@@ -700,7 +797,12 @@ impl SuppressionSet {
     ///   description or line of the tree before the run) is rewritten only on an exact match, a new
     ///   one on containment too: back to the base description unless that one restates a record
     ///   exactly, else to [`NEUTRAL_DESCRIPTION`]. Every other frontmatter byte is kept.
-    pub fn scrub_tip(&self, content: &str, base: Option<&str>, existing: &BTreeSet<String>) -> TipScrub {
+    pub fn scrub_tip(
+        &self,
+        content: &str,
+        base: Option<&str>,
+        existing: &BTreeSet<String>,
+    ) -> TipScrub {
         if self.records.is_empty() {
             return TipScrub::Clean;
         }
@@ -723,7 +825,12 @@ impl SuppressionSet {
     }
 
     /// [`Self::scrub_tip`] as the file's resulting text; `None` when nothing matched.
-    pub fn scrub_markdown(&self, content: &str, base: Option<&str>, existing: &BTreeSet<String>) -> Option<String> {
+    pub fn scrub_markdown(
+        &self,
+        content: &str,
+        base: Option<&str>,
+        existing: &BTreeSet<String>,
+    ) -> Option<String> {
         match self.scrub_tip(content, base, existing) {
             TipScrub::Clean => None,
             TipScrub::Edited(text) | TipScrub::Reverted(Some(text)) => Some(text),
@@ -731,7 +838,12 @@ impl SuppressionSet {
         }
     }
 
-    fn scrub_file(&self, content: &str, base: Option<&str>, existing: &BTreeSet<String>) -> Scrubbed {
+    fn scrub_file(
+        &self,
+        content: &str,
+        base: Option<&str>,
+        existing: &BTreeSet<String>,
+    ) -> Scrubbed {
         let (head, body) = split_frontmatter(content);
         let (base_head, base_body) = base.map(split_frontmatter).unwrap_or_default();
         let base_descriptions = description_values(base_head);
@@ -741,15 +853,28 @@ impl SuppressionSet {
         let head_lines: Vec<String> = head
             .split('\n')
             .map(|line| {
-                let Some((key, value)) = line.split_once(':').filter(|(key, _)| key.trim() == "description") else { return line.to_owned() };
+                let Some((key, value)) = line
+                    .split_once(':')
+                    .filter(|(key, _)| key.trim() == "description")
+                else {
+                    return line.to_owned();
+                };
                 let value = value.trim();
                 let normalized = normalize_memory_text(value);
-                let hit = if base_descriptions.contains(&value) || existing.contains(&normalized) { exact(normalized.as_str()) } else { self.suppresses(value) };
+                let hit = if base_descriptions.contains(&value) || existing.contains(&normalized) {
+                    exact(normalized.as_str())
+                } else {
+                    self.suppresses(value)
+                };
                 if !hit {
                     return line.to_owned();
                 }
                 edited = true;
-                let replacement = base_descriptions.iter().copied().find(|kept| !kept.is_empty() && !exact(normalize_memory_text(kept).as_str())).unwrap_or(NEUTRAL_DESCRIPTION);
+                let replacement = base_descriptions
+                    .iter()
+                    .copied()
+                    .find(|kept| !kept.is_empty() && !exact(normalize_memory_text(kept).as_str()))
+                    .unwrap_or(NEUTRAL_DESCRIPTION);
                 let ending = if line.ends_with('\r') { "\r" } else { "" };
                 format!("{key}: {replacement}{ending}")
             })
@@ -766,7 +891,10 @@ impl SuppressionSet {
                     edited = true;
                     return false;
                 }
-                if !self.suppresses(line) || existing.contains(&normalized) || own.contains(&normalized) {
+                if !self.suppresses(line)
+                    || existing.contains(&normalized)
+                    || own.contains(&normalized)
+                {
                     return true;
                 }
                 if base.is_some() {
@@ -831,7 +959,11 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    Ok(text.lines().filter(|line| !line.trim().is_empty()).filter_map(|line| serde_json::from_str(line).ok()).collect())
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
 }
 
 fn append_line(path: &Path, value: &impl Serialize) -> Result<(), String> {
@@ -848,7 +980,8 @@ fn append_line(path: &Path, value: &impl Serialize) -> Result<(), String> {
         options.mode(0o600);
     }
     let mut file = options.open(path).map_err(|error| error.to_string())?;
-    file.write_all(json.as_bytes()).map_err(|error| error.to_string())?;
+    file.write_all(json.as_bytes())
+        .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())
 }
 
@@ -858,8 +991,14 @@ mod tests {
 
     #[test]
     fn receipt_ids_are_stable_per_source() {
-        assert_eq!(owner_receipt_id("slack:C1:1.2"), owner_receipt_id("slack:C1:1.2"));
-        assert_ne!(owner_receipt_id("slack:C1:1.2"), owner_receipt_id("slack:C1:1.3"));
+        assert_eq!(
+            owner_receipt_id("slack:C1:1.2"),
+            owner_receipt_id("slack:C1:1.2")
+        );
+        assert_ne!(
+            owner_receipt_id("slack:C1:1.2"),
+            owner_receipt_id("slack:C1:1.3")
+        );
         assert!(owner_receipt_id("x").starts_with("rcpt_"));
     }
 
@@ -873,11 +1012,17 @@ mod tests {
         accepted.text = Some("Use the QA host".into());
         assert!(store.append_once(accepted.clone()).expect("accept"));
         assert!(!store.append_once(accepted).expect("repeat"));
-        assert_eq!(store.view(&id).expect("read").expect("view").state, RECEIPT_ACCEPTED);
+        assert_eq!(
+            store.view(&id).expect("read").expect("view").state,
+            RECEIPT_ACCEPTED
+        );
         let mut persisted = OwnerReceiptEvent::new(&id, RECEIPT_PERSISTED);
         persisted.commit = Some("abc".into());
         assert!(store.append_once(persisted).expect("persist"));
-        assert_eq!(store.view(&id).expect("read").expect("view").state, RECEIPT_PERSISTED);
+        assert_eq!(
+            store.view(&id).expect("read").expect("view").state,
+            RECEIPT_PERSISTED
+        );
         for session in ["s1", "s1", "s2"] {
             let mut applied = OwnerReceiptEvent::new(&id, RECEIPT_APPLIED);
             applied.session_id = Some(session.into());
@@ -885,23 +1030,54 @@ mod tests {
         }
         let view = store.view(&id).expect("read").expect("view");
         assert_eq!(view.state, RECEIPT_APPLIED);
-        assert_eq!(view.applied.iter().map(|mark| mark.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
-        assert!(store.append_once(OwnerReceiptEvent::new(&id, RECEIPT_FORGOTTEN)).expect("forget"));
-        assert!(!store.append_once(OwnerReceiptEvent::new(&id, RECEIPT_CORRECTED)).expect("closed once"));
+        assert_eq!(
+            view.applied
+                .iter()
+                .map(|mark| mark.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["s1", "s2"]
+        );
+        assert!(
+            store
+                .append_once(OwnerReceiptEvent::new(&id, RECEIPT_FORGOTTEN))
+                .expect("forget")
+        );
+        assert!(
+            !store
+                .append_once(OwnerReceiptEvent::new(&id, RECEIPT_CORRECTED))
+                .expect("closed once")
+        );
         let view = store.view(&id).expect("read").expect("view");
         assert_eq!(view.state, RECEIPT_FORGOTTEN);
         assert_eq!(view.persisted.expect("persisted").commit, "abc");
-        assert!(serde_json::to_value(store.view(&id).expect("read").expect("view")).expect("json").get("text").is_none());
+        assert!(
+            serde_json::to_value(store.view(&id).expect("read").expect("view"))
+                .expect("json")
+                .get("text")
+                .is_none()
+        );
     }
 
     #[test]
     fn normalization_and_restatement() {
-        assert_eq!(normalize_memory_text("- [2026-10-25]   Use  the QA host."), "use the qa host");
-        assert!(restates("use the qa remote host", "The owner said: use the QA remote host always"));
+        assert_eq!(
+            normalize_memory_text("- [2026-10-25]   Use  the QA host."),
+            "use the qa host"
+        );
+        assert!(restates(
+            "use the qa remote host",
+            "The owner said: use the QA remote host always"
+        ));
         assert!(!restates("tabs", "prefers tabs over spaces"));
         assert!(restates("tabs", "- Tabs."));
-        assert!(restates_exactly("use the qa remote host", "- [2026-10-27] Use the  QA remote host."));
-        assert!(!restates_exactly("use the qa remote host", "Never use the QA remote host for prod deploys."));
+        assert!(restates_exactly(
+            "use the qa remote host",
+            "- [2026-10-27] Use the  QA remote host."
+        ));
+        assert!(!restates_exactly(
+            "use the qa remote host",
+            "Never use the QA remote host for prod deploys."
+        ));
         assert!(!restates_exactly("", ""));
     }
 
@@ -922,138 +1098,316 @@ mod tests {
             "Use the QA remote host?",
             "Use the QA remote host:",
         ] {
-            assert!(restates_exactly("use the qa remote host", variant), "{variant}");
+            assert!(
+                restates_exactly("use the qa remote host", variant),
+                "{variant}"
+            );
         }
         assert_eq!(normalize_memory_text("# Builds"), "builds");
         assert_eq!(normalize_memory_text("#hashtag stays"), "#hashtag stays");
-        assert!(!restates_exactly("use the qa remote host", "> Owner said: use the QA remote host."));
+        assert!(!restates_exactly(
+            "use the qa remote host",
+            "> Owner said: use the QA remote host."
+        ));
     }
 
     #[test]
     fn suppressions_are_idempotent_scrub_bodies_and_can_be_lifted() {
         let root = tempfile::tempdir().expect("runtime");
-        let first = append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.\n\nok", None, "forget-1").expect("append");
+        let first = append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.\n\nok",
+            None,
+            "forget-1",
+        )
+        .expect("append");
         assert_eq!(first.len(), 1, "short lines are not suppressed");
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", None, "forget-1").expect("repeat");
-        assert_eq!(read_jsonl::<SuppressionRecord>(&suppressions_path(root.path())).expect("read").len(), 1);
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-1",
+        )
+        .expect("repeat");
+        assert_eq!(
+            read_jsonl::<SuppressionRecord>(&suppressions_path(root.path()))
+                .expect("read")
+                .len(),
+            1
+        );
         let set = SuppressionSet::load(root.path()).expect("load");
         let file = "---\ndescription: use the qa remote host\n---\n# Builds\n- [2026-10-27] Use the QA remote host.\n- keep tests deterministic\n";
         let none = BTreeSet::new();
         // The description is content: a restating one is rewritten, new or unchanged.
         let clean = "---\ndescription: Memory notes\n---\n# Builds\n- keep tests deterministic\n";
-        assert_eq!(set.scrub_markdown(file, None, &none).as_deref(), Some(clean));
-        assert_eq!(set.scrub_markdown(file, Some(file), &markdown_content_lines([file])).as_deref(), Some(clean));
+        assert_eq!(
+            set.scrub_markdown(file, None, &none).as_deref(),
+            Some(clean)
+        );
+        assert_eq!(
+            set.scrub_markdown(file, Some(file), &markdown_content_lines([file]))
+                .as_deref(),
+            Some(clean)
+        );
         assert!(set.scrub_markdown("- other\n", None, &none).is_none());
-        assert_eq!(lift_suppressions(root.path(), "use the QA remote host", "teach-2", "rcpt_other").expect("lift").len(), 1);
+        assert_eq!(
+            lift_suppressions(
+                root.path(),
+                "use the QA remote host",
+                "teach-2",
+                "rcpt_other"
+            )
+            .expect("lift")
+            .len(),
+            1
+        );
         assert!(SuppressionSet::load(root.path()).expect("load").is_empty());
     }
 
     #[test]
     fn a_description_is_scrubbed_exactly_when_unchanged_and_on_containment_when_the_run_wrote_it() {
         let root = tempfile::tempdir().expect("runtime");
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", None, "forget-1").expect("append");
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-1",
+        )
+        .expect("append");
         let set = SuppressionSet::load(root.path()).expect("load");
         let none = BTreeSet::new();
         let base = "---\ndescription: Rules\nkind: notes\n---\n- keep\n";
         let existing = markdown_content_lines([base]);
         // A changed description that restates goes back to the clean base one; other keys stay.
         let tip = "---\ndescription: Rules: use the QA remote host\nkind: notes\n---\n- keep\n- also new\n";
-        assert_eq!(set.scrub_markdown(tip, Some(base), &existing).as_deref(), Some("---\ndescription: Rules\nkind: notes\n---\n- keep\n- also new\n"));
+        assert_eq!(
+            set.scrub_markdown(tip, Some(base), &existing).as_deref(),
+            Some("---\ndescription: Rules\nkind: notes\n---\n- keep\n- also new\n")
+        );
         // A new file's restating description becomes the neutral one.
         let created = "---\ndescription: Always use the QA remote host\n---\n- unrelated\n";
-        assert_eq!(set.scrub_markdown(created, None, &existing).as_deref(), Some("---\ndescription: Memory notes\n---\n- unrelated\n"));
+        assert_eq!(
+            set.scrub_markdown(created, None, &existing).as_deref(),
+            Some("---\ndescription: Memory notes\n---\n- unrelated\n")
+        );
         // An unchanged description that only contains the line is existing memory.
-        let never = "---\ndescription: Never use the QA remote host for prod deploys\n---\n- keep\n";
+        let never =
+            "---\ndescription: Never use the QA remote host for prod deploys\n---\n- keep\n";
         let tree = markdown_content_lines([never]);
         assert!(set.scrub_markdown(never, Some(never), &tree).is_none());
         // So is the same description in a renamed or new file (equal to a description of the tree).
-        assert!(set.scrub_markdown("---\ndescription: Never use the QA remote host for prod deploys\n---\n- moved\n", None, &tree).is_none());
+        assert!(
+            set.scrub_markdown(
+                "---\ndescription: Never use the QA remote host for prod deploys\n---\n- moved\n",
+                None,
+                &tree
+            )
+            .is_none()
+        );
         // A changed description that restates goes back to an existing superstring base description.
-        let changed = "---\ndescription: Never use the QA remote host for prod deploys, ever\n---\n- keep\n";
-        assert_eq!(set.scrub_markdown(changed, Some(never), &tree).as_deref(), Some(never));
+        let changed =
+            "---\ndescription: Never use the QA remote host for prod deploys, ever\n---\n- keep\n";
+        assert_eq!(
+            set.scrub_markdown(changed, Some(never), &tree).as_deref(),
+            Some(never)
+        );
         assert!(set.scrub_markdown("- plain\n", None, &none).is_none());
     }
 
     #[test]
     fn a_superstring_is_never_scrubbed_from_existing_content_nor_lifts() {
         let root = tempfile::tempdir().expect("runtime");
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", Some("rcpt_a"), "forget-a").expect("append");
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            Some("rcpt_a"),
+            "forget-a",
+        )
+        .expect("append");
         let set = SuppressionSet::load(root.path()).expect("load");
-        let base = "---\ndescription: Rules\n---\n- Never use the QA remote host for prod deploys.\n";
+        let base =
+            "---\ndescription: Rules\n---\n- Never use the QA remote host for prod deploys.\n";
         let existing = markdown_content_lines([base]);
         // Existing memory keeps the superstring; a line the run added is withheld on containment
         // (the file existed, so it keeps its base version).
-        let tip = format!("{base}- The owner said: use the QA remote host.\n- Use the QA remote host.\n");
-        assert_eq!(set.scrub_tip(&tip, Some(base), &existing), TipScrub::Reverted(None));
+        let tip =
+            format!("{base}- The owner said: use the QA remote host.\n- Use the QA remote host.\n");
+        assert_eq!(
+            set.scrub_tip(&tip, Some(base), &existing),
+            TipScrub::Reverted(None)
+        );
         assert!(set.scrub_markdown(base, Some(base), &existing).is_none());
         assert!(set.scrub_base(base, &existing).is_none());
         assert!(!set.suppresses_exactly("Never use the QA remote host for prod deploys."));
         // Moved to a new file: still existing memory.
-        let moved = "---\ndescription: Deploys\n---\n- Never use the QA remote host for prod deploys.\n";
+        let moved =
+            "---\ndescription: Deploys\n---\n- Never use the QA remote host for prod deploys.\n";
         assert!(set.scrub_markdown(moved, None, &existing).is_none());
         // Reworded in place: the file keeps its base version instead of losing the rule.
         let reworded = "---\ndescription: Rules\n---\n- Never use the QA remote host for production deploys.\n- New unrelated line.\n";
-        assert_eq!(set.scrub_markdown(reworded, Some(base), &existing).as_deref(), Some(base));
+        assert_eq!(
+            set.scrub_markdown(reworded, Some(base), &existing)
+                .as_deref(),
+            Some(base)
+        );
         // Reworded and moved to a new file: always withheld (the finalize restores the original).
         let reworded_moved = "---\ndescription: Deploys\n---\n- Never use the QA remote host for production deploys.\n";
-        assert_eq!(set.scrub_tip(reworded_moved, None, &existing), TipScrub::Edited("---\ndescription: Deploys\n---\n".into()));
+        assert_eq!(
+            set.scrub_tip(reworded_moved, None, &existing),
+            TipScrub::Edited("---\ndescription: Deploys\n---\n".into())
+        );
         // A base with an exact restatement reverts to that base without it.
         let restating = format!("{base}- Use the QA remote host.\n");
-        assert_eq!(set.scrub_base(&restating, &markdown_content_lines([restating.as_str()])).as_deref(), Some(base));
+        assert_eq!(
+            set.scrub_base(&restating, &markdown_content_lines([restating.as_str()]))
+                .as_deref(),
+            Some(base)
+        );
         // Teaching the superstring, or the forgotten receipt replaying its own teach, lifts nothing.
-        assert!(lift_suppressions(root.path(), "Never use the QA remote host for prod deploys.", "teach-b", "rcpt_b").expect("lift").is_empty());
-        assert!(lift_suppressions(root.path(), "Use the QA remote host.", "source-a", "rcpt_a").expect("lift").is_empty());
-        assert_eq!(SuppressionSet::load(root.path()).expect("load").records().len(), 1);
+        assert!(
+            lift_suppressions(
+                root.path(),
+                "Never use the QA remote host for prod deploys.",
+                "teach-b",
+                "rcpt_b"
+            )
+            .expect("lift")
+            .is_empty()
+        );
+        assert!(
+            lift_suppressions(root.path(), "Use the QA remote host.", "source-a", "rcpt_a")
+                .expect("lift")
+                .is_empty()
+        );
+        assert_eq!(
+            SuppressionSet::load(root.path())
+                .expect("load")
+                .records()
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn crlf_frontmatter_is_kept_verbatim() {
         let content = "---\r\ndescription: use the qa remote host\r\n---\r\n- Use the QA remote host.\r\n- keep\r\n";
-        assert_eq!(split_frontmatter(content), ("---\r\ndescription: use the qa remote host\r\n---\r\n", "- Use the QA remote host.\r\n- keep\r\n"));
+        assert_eq!(
+            split_frontmatter(content),
+            (
+                "---\r\ndescription: use the qa remote host\r\n---\r\n",
+                "- Use the QA remote host.\r\n- keep\r\n"
+            )
+        );
         let root = tempfile::tempdir().expect("runtime");
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", None, "forget-1").expect("append");
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-1",
+        )
+        .expect("append");
         let set = SuppressionSet::load(root.path()).expect("load");
         let none = BTreeSet::new();
-        assert_eq!(set.scrub_markdown(content, None, &none).as_deref(), Some("---\r\ndescription: Memory notes\r\n---\r\n- keep\r\n"));
+        assert_eq!(
+            set.scrub_markdown(content, None, &none).as_deref(),
+            Some("---\r\ndescription: Memory notes\r\n---\r\n- keep\r\n")
+        );
     }
 
     #[test]
     fn purges_advance_the_generation_without_adding_a_suppression() {
         let root = tempfile::tempdir().expect("runtime");
         assert_eq!(suppression_generation(root.path()).expect("read"), None);
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", Some("rcpt_a"), "forget-a").expect("append");
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            Some("rcpt_a"),
+            "forget-a",
+        )
+        .expect("append");
         assert_eq!(suppression_generation(root.path()).expect("read"), None);
         let first = record_purge(root.path(), "rcpt_a", "forget-a").expect("purge");
-        assert_eq!(suppression_generation(root.path()).expect("read").as_deref(), Some(first.as_str()));
+        assert_eq!(
+            suppression_generation(root.path())
+                .expect("read")
+                .as_deref(),
+            Some(first.as_str())
+        );
         let second = record_purge(root.path(), "rcpt_a", "forget-a").expect("purge");
         assert_ne!(first, second);
-        assert_eq!(suppression_generation(root.path()).expect("read"), Some(second));
-        assert_eq!(SuppressionSet::load(root.path()).expect("load").do_not_record(), ["use the qa remote host"]);
+        assert_eq!(
+            suppression_generation(root.path()).expect("read"),
+            Some(second)
+        );
+        assert_eq!(
+            SuppressionSet::load(root.path())
+                .expect("load")
+                .do_not_record(),
+            ["use the qa remote host"]
+        );
     }
 
     #[test]
     fn a_purge_that_changed_nothing_since_the_last_one_is_skipped() {
         let root = tempfile::tempdir().expect("runtime");
         let retained = vec!["notes/raw.md".to_owned()];
-        let first = record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &retained).expect("purge").expect("first purge");
-        assert_eq!(record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &retained).expect("purge"), None, "same retained set, no commit");
-        assert_eq!(suppression_generation(root.path()).expect("read").as_deref(), Some(first.as_str()));
+        let first = record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &retained)
+            .expect("purge")
+            .expect("first purge");
+        assert_eq!(
+            record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &retained)
+                .expect("purge"),
+            None,
+            "same retained set, no commit"
+        );
+        assert_eq!(
+            suppression_generation(root.path())
+                .expect("read")
+                .as_deref(),
+            Some(first.as_str())
+        );
         // Another receipt's purge never stands in for this one's.
-        assert!(record_purge_if_changed(root.path(), "rcpt_b", "forget-b", false, &retained).expect("purge").is_some());
-        let committed = record_purge_if_changed(root.path(), "rcpt_a", "forget-a", true, &retained).expect("purge");
+        assert!(
+            record_purge_if_changed(root.path(), "rcpt_b", "forget-b", false, &retained)
+                .expect("purge")
+                .is_some()
+        );
+        let committed = record_purge_if_changed(root.path(), "rcpt_a", "forget-a", true, &retained)
+            .expect("purge");
         assert!(committed.is_some(), "a commit always purges");
-        let changed = record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &[]).expect("purge");
+        let changed =
+            record_purge_if_changed(root.path(), "rcpt_a", "forget-a", false, &[]).expect("purge");
         assert!(changed.is_some(), "a changed retained set purges");
         assert_eq!(suppression_generation(root.path()).expect("read"), changed);
-        assert!(SuppressionSet::load(root.path()).expect("load").is_empty(), "a purge is no suppression");
+        assert!(
+            SuppressionSet::load(root.path()).expect("load").is_empty(),
+            "a purge is no suppression"
+        );
     }
 
     #[test]
     fn transcript_text_loses_restating_lines_and_the_constraint_lists_them() {
         let root = tempfile::tempdir().expect("runtime");
-        append_suppressions(root.path(), SUPPRESSION_FORGET, "Use the QA remote host.", None, "forget-1").expect("append");
+        append_suppressions(
+            root.path(),
+            SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-1",
+        )
+        .expect("append");
         let set = SuppressionSet::load(root.path()).expect("load");
-        assert_eq!(set.scrub_transcript_text("Remember: use the QA remote host!\nShip on Fridays.").as_deref(), Some("Ship on Fridays."));
+        assert_eq!(
+            set.scrub_transcript_text("Remember: use the QA remote host!\nShip on Fridays.")
+                .as_deref(),
+            Some("Ship on Fridays.")
+        );
         assert!(set.scrub_transcript_text("Ship on Fridays.").is_none());
         assert!(render_do_not_record(&[]).is_empty());
         assert!(render_do_not_record(&set.do_not_record()).ends_with("\n- use the qa remote host"));
@@ -1062,7 +1416,8 @@ mod tests {
     #[test]
     fn unreadable_suppressions_fail_closed() {
         let root = tempfile::tempdir().expect("runtime");
-        std::fs::create_dir(suppressions_path(root.path())).expect("directory in place of the file");
+        std::fs::create_dir(suppressions_path(root.path()))
+            .expect("directory in place of the file");
         assert!(SuppressionSet::load(root.path()).is_err());
         assert!(suppression_generation(root.path()).is_err());
     }

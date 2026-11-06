@@ -5,13 +5,9 @@ use maho_task::{
     CancelToken, ModelChoice, Notifier, RunOutcome, RunSpec, SpawnRequest, StateDir, TaskManager,
     TaskManagerOptions, TaskObserver, TaskRunner, TaskSettings, TaskStatus, bundled_agents,
 };
-use maho_team::{
-    MemberSpec, Team, TeamLimits, TeamStatus,
-};
+use maho_team::{MemberSpec, Team, TeamLimits, TeamStatus};
 #[cfg(unix)]
-use maho_team::{
-    PaneMode, PaneObserver, PaneSettings, Placement, TmuxBackend,
-};
+use maho_team::{PaneMode, PaneObserver, PaneSettings, Placement, TmuxBackend};
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;

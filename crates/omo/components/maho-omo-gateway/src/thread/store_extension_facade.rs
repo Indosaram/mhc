@@ -9,8 +9,10 @@ use serde_json::Value;
 
 use super::extension_registrations::is_await_request_id;
 use super::extension_session_await::{SessionAwait, await_session_request};
+use super::store_extensions::{
+    StoreExtensionRefusalCode, StoreExtensionRegistration, StoreExtensionResult,
+};
 use crate::paths::gateway_database_path;
-use super::store_extensions::{StoreExtensionRefusalCode, StoreExtensionRegistration, StoreExtensionResult};
 
 /// The worker's registration reply: the caller's result, and whether calls for that name now use it.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,11 +45,17 @@ pub fn clone_args(args: &Value) -> StoreExtensionResult<Value> {
 }
 
 /// The await file a session op's request id names, under the store's own directory.
-pub fn await_file(agent_dir: &Path, wake_dir: &str, await_request_id: &str) -> Option<std::path::PathBuf> {
+pub fn await_file(
+    agent_dir: &Path,
+    wake_dir: &str,
+    await_request_id: &str,
+) -> Option<std::path::PathBuf> {
     if !is_await_request_id(await_request_id) {
         return None;
     }
-    gateway_database_path(agent_dir).parent().map(|parent| parent.join(wake_dir).join(await_request_id))
+    gateway_database_path(agent_dir)
+        .parent()
+        .map(|parent| parent.join(wake_dir).join(await_request_id))
 }
 
 /// The facade's await: the op's declared status and expire phases, bounded by its timeout.
@@ -60,9 +68,18 @@ pub fn session_await(
     expire: &dyn Fn() -> StoreExtensionResult<Value>,
 ) -> StoreExtensionResult<Value> {
     let Some(file) = await_file(agent_dir, wake_dir, await_request_id) else {
-        return StoreExtensionResult::refused(StoreExtensionRefusalCode::InvalidArguments, "await_request_id must match ^tor_[a-f0-9]{32}$.");
+        return StoreExtensionResult::refused(
+            StoreExtensionRefusalCode::InvalidArguments,
+            "await_request_id must match ^tor_[a-f0-9]{32}$.",
+        );
     };
-    await_session_request(SessionAwait { file, timeout_ms, status, expire, on_armed: None })
+    await_session_request(SessionAwait {
+        file,
+        timeout_ms,
+        status,
+        expire,
+        on_armed: None,
+    })
 }
 
 #[cfg(test)]
@@ -72,12 +89,25 @@ mod tests {
     #[test]
     fn a_traversal_request_id_never_names_a_file() {
         assert!(await_file(Path::new("/tmp/agent"), "alpha", "../secret").is_none());
-        assert!(await_file(Path::new("/tmp/agent"), "alpha", "tor_0123456789abcdef0123456789abcdef").is_some());
+        assert!(
+            await_file(
+                Path::new("/tmp/agent"),
+                "alpha",
+                "tor_0123456789abcdef0123456789abcdef"
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn schema_refusals_are_data() {
         let refused = schema_too_new("Gateway schema 11 is newer");
-        assert!(matches!(refused, StoreExtensionResult::Refused { code: StoreExtensionRefusalCode::GatewaySchemaTooNew, .. }));
+        assert!(matches!(
+            refused,
+            StoreExtensionResult::Refused {
+                code: StoreExtensionRefusalCode::GatewaySchemaTooNew,
+                ..
+            }
+        ));
     }
 }

@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-use senpi_desktop_prelude::{COMPUTER_EXPORTS, ComputerPreludeAssets};
+use senpi_desktop_prelude::{ComputerPreludeAssets, COMPUTER_EXPORTS};
 
 const FIXTURE_JSON: &str = include_str!("../test/assets.sha256.json");
 

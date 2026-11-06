@@ -16,7 +16,7 @@ use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopSessionOptions, DesktopWindow, Target,
 };
 use senpi_desktop_session::{BackendFactory, Op, Session, SessionTimeouts};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Scenario `capture_size`: one 7680x4320 display.
 const CAPTURE_SIZE: &str = r#"{

@@ -4,13 +4,11 @@
 
 pub const STOP_RESUME_CUSTOM_TYPE: &str = "session-resumed";
 
-pub const STOP_RESUME_DIRECTIVE_TEXT: &str =
-    "<system-reminder>The user stopped the previous turn and has now resumed. Tool calls that the Stop interrupted show \
+pub const STOP_RESUME_DIRECTIVE_TEXT: &str = "<system-reminder>The user stopped the previous turn and has now resumed. Tool calls that the Stop interrupted show \
     an aborted result; they were not re-run and their side effects may be partial. Check their effects before repeating \
     any of them, then continue the work.</system-reminder>";
 
-pub const INTERRUPTED_RESUME_DIRECTIVE_TEXT: &str =
-    "<system-reminder>The previous run was interrupted and has now resumed. Interrupted tool calls may have \
+pub const INTERRUPTED_RESUME_DIRECTIVE_TEXT: &str = "<system-reminder>The previous run was interrupted and has now resumed. Interrupted tool calls may have \
     partial side effects and were not re-run. Check their effects before repeating any of them, then continue \
     the work.</system-reminder>";
 
@@ -67,7 +65,11 @@ mod tests {
         let directive = stop_resume_directive(ResumeCause::Stop);
         assert_eq!(directive.custom_type, "session-resumed");
         assert!(!directive.display);
-        assert!(directive.content.contains("The user stopped the previous turn"));
+        assert!(
+            directive
+                .content
+                .contains("The user stopped the previous turn")
+        );
         assert!(directive.details.is_none());
     }
 
@@ -78,7 +80,14 @@ mod tests {
         let directive = stop_resume_directive(ResumeCause::Interrupted);
         assert_eq!(directive.custom_type, STOP_RESUME_CUSTOM_TYPE);
         assert!(!directive.display);
-        assert!(directive.content.contains("The previous run was interrupted and has now resumed"));
-        assert_eq!(directive.details, Some(serde_json::json!({"resumeCause": "interrupted"})));
+        assert!(
+            directive
+                .content
+                .contains("The previous run was interrupted and has now resumed")
+        );
+        assert_eq!(
+            directive.details,
+            Some(serde_json::json!({"resumeCause": "interrupted"}))
+        );
     }
 }

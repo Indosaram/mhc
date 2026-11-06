@@ -30,11 +30,17 @@ pub fn create_context_reduction_state() -> ContextReductionState {
 
 /// The persisted form: `compactionRequired` is request-local and never saved.
 pub fn snapshot_reduction_state(state: &ContextReductionState) -> Value {
-    let mut snapshot = json!({"engaged":state.engaged,"cutIndex":state.cut_index,"prefixHash":state.prefix_hash});
+    let mut snapshot =
+        json!({"engaged":state.engaged,"cutIndex":state.cut_index,"prefixHash":state.prefix_hash});
     if let Some(cut) = state.checkpoint_cut {
         snapshot["checkpointCut"] = json!(cut);
     }
-    if let (Some(count), Some(cut), Some(hash), Some(tokens)) = (state.anchor_count, state.anchor_cut, state.anchor_hash.as_ref(), state.anchor_tokens) {
+    if let (Some(count), Some(cut), Some(hash), Some(tokens)) = (
+        state.anchor_count,
+        state.anchor_cut,
+        state.anchor_hash.as_ref(),
+        state.anchor_tokens,
+    ) {
         snapshot["anchorCount"] = json!(count);
         snapshot["anchorCut"] = json!(cut);
         snapshot["anchorHash"] = json!(hash);
@@ -50,8 +56,18 @@ pub fn clear_reduction_anchor(state: &mut ContextReductionState) {
     state.anchor_tokens = None;
 }
 
-pub fn record_reduction_usage(state: &mut ContextReductionState, request: &ContextReductionRequest, tokens: f64) {
-    if !state.engaged || !tokens.is_finite() || tokens <= 0. || state.compaction_required || request.cut != state.cut_index || request.hash != state.prefix_hash {
+pub fn record_reduction_usage(
+    state: &mut ContextReductionState,
+    request: &ContextReductionRequest,
+    tokens: f64,
+) {
+    if !state.engaged
+        || !tokens.is_finite()
+        || tokens <= 0.
+        || state.compaction_required
+        || request.cut != state.cut_index
+        || request.hash != state.prefix_hash
+    {
         return;
     }
     state.anchor_count = Some(request.count);
@@ -68,7 +84,12 @@ pub fn read_context_reduction_state(data: &Value) -> Option<ContextReductionStat
     let engaged = data.get("engaged")?.as_bool()?;
     let cut_index = safe_index(data, "cutIndex")?;
     let prefix_hash = data.get("prefixHash")?.as_str()?.to_owned();
-    let mut state = ContextReductionState { engaged, cut_index, prefix_hash, ..Default::default() };
+    let mut state = ContextReductionState {
+        engaged,
+        cut_index,
+        prefix_hash,
+        ..Default::default()
+    };
     if data.get("checkpointCut").is_some() {
         let checkpoint_cut = safe_index(data, "checkpointCut")?;
         if checkpoint_cut >= cut_index {
@@ -76,11 +97,17 @@ pub fn read_context_reduction_state(data: &Value) -> Option<ContextReductionStat
         }
         state.checkpoint_cut = Some(checkpoint_cut);
     }
-    if ["anchorCount", "anchorCut", "anchorHash", "anchorTokens"].iter().any(|key| data.get(key).is_some()) {
+    if ["anchorCount", "anchorCut", "anchorHash", "anchorTokens"]
+        .iter()
+        .any(|key| data.get(key).is_some())
+    {
         let count = safe_index(data, "anchorCount")?;
         let cut = safe_index(data, "anchorCut")?;
         let hash = data.get("anchorHash")?.as_str()?.to_owned();
-        let tokens = data.get("anchorTokens")?.as_f64().filter(|tokens| tokens.is_finite() && *tokens >= 0.)?;
+        let tokens = data
+            .get("anchorTokens")?
+            .as_f64()
+            .filter(|tokens| tokens.is_finite() && *tokens >= 0.)?;
         if cut > count {
             return None;
         }
@@ -97,22 +124,42 @@ mod tests {
     use super::*;
 
     fn engaged() -> ContextReductionState {
-        ContextReductionState { engaged: true, cut_index: 4, prefix_hash: "h".into(), ..Default::default() }
+        ContextReductionState {
+            engaged: true,
+            cut_index: 4,
+            prefix_hash: "h".into(),
+            ..Default::default()
+        }
     }
     fn request(cut: usize, hash: &str) -> ContextReductionRequest {
-        ContextReductionRequest { count: 9, cut, hash: hash.into() }
+        ContextReductionRequest {
+            count: 9,
+            cut,
+            hash: hash.into(),
+        }
     }
 
     #[test]
     fn snapshot_never_persists_compaction_required_and_round_trips() {
-        let mut state = ContextReductionState { checkpoint_cut: Some(2), compaction_required: true, ..engaged() };
+        let mut state = ContextReductionState {
+            checkpoint_cut: Some(2),
+            compaction_required: true,
+            ..engaged()
+        };
         state.compaction_required = false;
         record_reduction_usage(&mut state, &request(4, "h"), 123.2);
         state.compaction_required = true;
         let snapshot = snapshot_reduction_state(&state);
         assert!(snapshot.get("compactionRequired").is_none());
         let restored = read_context_reduction_state(&snapshot).expect("valid snapshot");
-        assert_eq!(restored, ContextReductionState { compaction_required: false, anchor_tokens: Some(124), ..state });
+        assert_eq!(
+            restored,
+            ContextReductionState {
+                compaction_required: false,
+                anchor_tokens: Some(124),
+                ..state
+            }
+        );
     }
 
     #[test]
@@ -120,8 +167,20 @@ mod tests {
         for (mut state, request) in [
             (engaged(), request(3, "h")),
             (engaged(), request(4, "other")),
-            (ContextReductionState { engaged: false, ..engaged() }, request(4, "h")),
-            (ContextReductionState { compaction_required: true, ..engaged() }, request(4, "h")),
+            (
+                ContextReductionState {
+                    engaged: false,
+                    ..engaged()
+                },
+                request(4, "h"),
+            ),
+            (
+                ContextReductionState {
+                    compaction_required: true,
+                    ..engaged()
+                },
+                request(4, "h"),
+            ),
         ] {
             record_reduction_usage(&mut state, &request, 50.);
             assert_eq!(state.anchor_tokens, None);
@@ -133,7 +192,15 @@ mod tests {
         }
         let mut state = engaged();
         record_reduction_usage(&mut state, &request(4, "h"), 50.);
-        assert_eq!((state.anchor_count, state.anchor_cut, state.anchor_hash.as_deref(), state.anchor_tokens), (Some(9), Some(4), Some("h"), Some(50)));
+        assert_eq!(
+            (
+                state.anchor_count,
+                state.anchor_cut,
+                state.anchor_hash.as_deref(),
+                state.anchor_tokens
+            ),
+            (Some(9), Some(4), Some("h"), Some(50))
+        );
         clear_reduction_anchor(&mut state);
         assert_eq!(state.anchor_tokens, None);
     }
@@ -143,8 +210,12 @@ mod tests {
         let base = json!({"engaged":true,"cutIndex":4,"prefixHash":"h"});
         assert!(read_context_reduction_state(&base).is_some());
         for patch in [
-            json!({"engaged":"yes"}), json!({"cutIndex":-1}), json!({"cutIndex":1.5}), json!({"prefixHash":3}),
-            json!({"checkpointCut":4}), json!({"checkpointCut":"1"}),
+            json!({"engaged":"yes"}),
+            json!({"cutIndex":-1}),
+            json!({"cutIndex":1.5}),
+            json!({"prefixHash":3}),
+            json!({"checkpointCut":4}),
+            json!({"checkpointCut":"1"}),
             json!({"anchorCount":5}),
             json!({"anchorCount":3,"anchorCut":4,"anchorHash":"h","anchorTokens":1}),
             json!({"anchorCount":5,"anchorCut":4,"anchorHash":"h","anchorTokens":-1}),

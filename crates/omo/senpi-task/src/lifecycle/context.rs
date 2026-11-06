@@ -8,12 +8,12 @@ use utils::process_sweep::{create_default_process_killer, default_is_process_ali
 
 use isolation_core::OwnerProbe;
 
+use super::deferred_owner_reconcile::DeferredOwnerRetries;
+use super::deferred_revival::ScopedRetries;
 use super::host_session::{
     HostEndpointPort, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
     default_host_session_retry_policy,
 };
-use super::deferred_owner_reconcile::DeferredOwnerRetries;
-use super::deferred_revival::ScopedRetries;
 use super::host_session_close::HostSessionCloser;
 use super::host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,

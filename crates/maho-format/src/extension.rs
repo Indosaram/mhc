@@ -2,11 +2,11 @@
 //!
 //! Register this extension before the LSP extension: handlers run in registration order, so the
 //! diagnostics hook then sees the formatted text.
+use crate::MUTATION_TOOLS;
 use crate::engine::{FormatEngine, FormatRequest};
 use crate::lsp::{LspFormat, LspPoolFormatter, NoLsp};
 use crate::run::Host;
 use crate::settings::Settings;
-use crate::MUTATION_TOOLS;
 use maho_ext_api::{
     EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ToolContent,
     ToolResultEventResult,

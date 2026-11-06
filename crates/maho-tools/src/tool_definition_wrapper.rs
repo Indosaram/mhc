@@ -24,7 +24,11 @@ fn into_agent_result(result: ToolResult) -> AgentToolResult {
                 }
             })
             .collect(),
-        terminate: result.details.as_ref().and_then(|details| details.get("terminate")).and_then(serde_json::Value::as_bool),
+        terminate: result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("terminate"))
+            .and_then(serde_json::Value::as_bool),
         details: result.details.unwrap_or(serde_json::Value::Null),
         structured_content: result.structured_content,
         usage: None,
@@ -301,7 +305,8 @@ mod tests {
         let factory: ContextFactory = Arc::new(|_, _| Arc::new(Context { session: Session }));
         let wrapped = wrap_tool_definition(definition, Some(factory), Some(dispatcher));
         // When: the agent runtime executes the wrapped tool.
-        let result = (wrapped.execute)("call-7".into(), serde_json::json!({"n": 1}), None, None).await;
+        let result =
+            (wrapped.execute)("call-7".into(), serde_json::json!({"n": 1}), None, None).await;
         // Then: the dispatcher ran it, with the definition, call id, params and context.
         assert_eq!(
             maho_ai::utils::text::content_text(&result.content, ""),
@@ -309,7 +314,12 @@ mod tests {
         );
         assert_eq!(
             *seen.lock().expect("dispatch lock"),
-            vec![("probe".to_owned(), "call-7".to_owned(), serde_json::json!({"n": 1}), true)]
+            vec![(
+                "probe".to_owned(),
+                "call-7".to_owned(),
+                serde_json::json!({"n": 1}),
+                true
+            )]
         );
     }
 

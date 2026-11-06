@@ -7,10 +7,10 @@ use crate::backend::{
     StartDetail,
 };
 use crate::backend_marker::mark_started;
+use crate::backends::NativeLoadError;
 use crate::backends::btrfs::remove_dir_all_force;
 use crate::backends::copy_tree::copy_tree;
-use crate::backends::runtime::{existing_parent, BackendRuntime, SystemRuntime};
-use crate::backends::NativeLoadError;
+use crate::backends::runtime::{BackendRuntime, SystemRuntime, existing_parent};
 use crate::git::command::exists;
 use crate::util::{dirname, lock};
 
@@ -199,7 +199,9 @@ pub fn duplicate_extents(
         input_file.seek(SeekFrom::Start(aligned))?;
         let read = input_file.read(&mut tail)?;
         if read != tail_length {
-            return Err(IsolationError::other("Source changed during ReFS tail copy"));
+            return Err(IsolationError::other(
+                "Source changed during ReFS tail copy",
+            ));
         }
         output_file.seek(SeekFrom::Start(aligned))?;
         let mut written = 0usize;
@@ -512,6 +514,8 @@ impl IsolationBackend for BlockCloneBackend {
     }
 
     fn stop(&self, merged: &Path) -> Result<()> {
-        remove_dir_all_force(&PathBuf::from(to_namespaced_path(&merged.to_string_lossy())))
+        remove_dir_all_force(&PathBuf::from(to_namespaced_path(
+            &merged.to_string_lossy(),
+        )))
     }
 }

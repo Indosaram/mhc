@@ -43,7 +43,9 @@ impl ComponentLogger for StderrLogger {
 
 fn write(level: LogLevel, message: &str, details: Option<&JsonValue>) {
     match details {
-        Some(details) => maho_ext_api::diagnostic(&format!("maho-omo {}: {message} {details}", level.as_str())),
+        Some(details) => {
+            maho_ext_api::diagnostic(&format!("maho-omo {}: {message} {details}", level.as_str()))
+        }
         None => maho_ext_api::diagnostic(&format!("maho-omo {}: {message}", level.as_str())),
     }
 }
@@ -96,7 +98,10 @@ impl RecordingLogger {
     }
 
     pub fn entries(&self) -> Vec<LogEntry> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -116,10 +121,13 @@ impl ComponentLogger for RecordingLogger {
 
 impl RecordingLogger {
     fn push(&self, level: LogLevel, message: &str, details: Option<&JsonValue>) {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner).push(LogEntry {
-            level,
-            message: message.to_owned(),
-            details: details.cloned(),
-        });
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(LogEntry {
+                level,
+                message: message.to_owned(),
+                details: details.cloned(),
+            });
     }
 }

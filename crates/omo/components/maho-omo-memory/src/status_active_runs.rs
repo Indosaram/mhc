@@ -26,7 +26,10 @@ impl ActiveReflectionRuns {
         if let Some(run) = runs.iter_mut().find(|run| run.run_id == run_id) {
             run.details = details;
         } else {
-            runs.push(ActiveReflectionRun { run_id: run_id.to_owned(), details });
+            runs.push(ActiveReflectionRun {
+                run_id: run_id.to_owned(),
+                details,
+            });
         }
     }
 
@@ -56,7 +59,12 @@ impl ActiveReflectionRuns {
 mod tests {
     use super::*;
     fn details() -> ActiveReflectionRunDetails {
-        ActiveReflectionRunDetails { trigger: "step_count".into(), category: "quick".into(), model: None, started_at: "2026-08-12T00:00:00.000Z".into() }
+        ActiveReflectionRunDetails {
+            trigger: "step_count".into(),
+            category: "quick".into(),
+            model: None,
+            started_at: "2026-08-12T00:00:00.000Z".into(),
+        }
     }
     fn started() -> ActiveReflectionRuns {
         let mut runs = ActiveReflectionRuns::default();
@@ -64,25 +72,77 @@ mod tests {
         runs
     }
     #[test]
-    fn initially_idle() { assert!(!ActiveReflectionRuns::default().is_active("agent-test")); }
+    fn initially_idle() {
+        assert!(!ActiveReflectionRuns::default().is_active("agent-test"));
+    }
     #[test]
-    fn launch_is_active() { assert!(started().is_active("agent-test")); }
+    fn launch_is_active() {
+        assert!(started().is_active("agent-test"));
+    }
     #[test]
-    fn settle_returns_to_idle() { let mut runs = started(); runs.settle("agent-test", "run-1"); assert!(!runs.is_active("agent-test")); }
+    fn settle_returns_to_idle() {
+        let mut runs = started();
+        runs.settle("agent-test", "run-1");
+        assert!(!runs.is_active("agent-test"));
+    }
     #[test]
-    fn overlapping_runs_remain_active() { let mut runs = started(); runs.start("agent-test", "run-2", details()); runs.settle("agent-test", "run-1"); assert!(runs.is_active("agent-test")); runs.settle("agent-test", "run-2"); assert!(!runs.is_active("agent-test")); }
+    fn overlapping_runs_remain_active() {
+        let mut runs = started();
+        runs.start("agent-test", "run-2", details());
+        runs.settle("agent-test", "run-1");
+        assert!(runs.is_active("agent-test"));
+        runs.settle("agent-test", "run-2");
+        assert!(!runs.is_active("agent-test"));
+    }
     #[test]
-    fn identities_are_independent() { let mut runs = started(); runs.start("agent-b", "run-2", details()); runs.settle("agent-test", "run-1"); assert!(!runs.is_active("agent-test")); assert!(runs.is_active("agent-b")); }
+    fn identities_are_independent() {
+        let mut runs = started();
+        runs.start("agent-b", "run-2", details());
+        runs.settle("agent-test", "run-1");
+        assert!(!runs.is_active("agent-test"));
+        assert!(runs.is_active("agent-b"));
+    }
     #[test]
-    fn duplicate_launch_replaces_details() { let mut runs = started(); runs.start("agent-test", "run-1", details()); runs.settle("agent-test", "run-1"); assert!(!runs.is_active("agent-test")); }
+    fn duplicate_launch_replaces_details() {
+        let mut runs = started();
+        runs.start("agent-test", "run-1", details());
+        runs.settle("agent-test", "run-1");
+        assert!(!runs.is_active("agent-test"));
+    }
     #[test]
-    fn unknown_settle_stays_idle() { let mut runs = ActiveReflectionRuns::default(); runs.settle("agent-test", "ghost-run"); assert!(!runs.is_active("agent-test")); }
+    fn unknown_settle_stays_idle() {
+        let mut runs = ActiveReflectionRuns::default();
+        runs.settle("agent-test", "ghost-run");
+        assert!(!runs.is_active("agent-test"));
+    }
     #[test]
-    fn current_returns_launch_facts() { assert_eq!(started().current("agent-test"), Some(&ActiveReflectionRun { run_id: "run-1".into(), details: details() })); }
+    fn current_returns_launch_facts() {
+        assert_eq!(
+            started().current("agent-test"),
+            Some(&ActiveReflectionRun {
+                run_id: "run-1".into(),
+                details: details()
+            })
+        );
+    }
     #[test]
-    fn settled_current_is_absent() { let mut runs = started(); runs.settle("agent-test", "run-1"); assert!(runs.current("agent-test").is_none()); }
+    fn settled_current_is_absent() {
+        let mut runs = started();
+        runs.settle("agent-test", "run-1");
+        assert!(runs.current("agent-test").is_none());
+    }
     #[test]
-    fn clear_for_shutdown() { let mut runs = started(); runs.start("agent-test", "run-2", details()); runs.clear("agent-test"); assert!(!runs.is_active("agent-test")); }
+    fn clear_for_shutdown() {
+        let mut runs = started();
+        runs.start("agent-test", "run-2", details());
+        runs.clear("agent-test");
+        assert!(!runs.is_active("agent-test"));
+    }
     #[test]
-    fn current_preserves_insertion_order() { let mut runs = started(); runs.start("agent-test", "run-0", details()); runs.start("agent-test", "run-1", details()); assert_eq!(runs.current("agent-test").unwrap().run_id, "run-1"); }
+    fn current_preserves_insertion_order() {
+        let mut runs = started();
+        runs.start("agent-test", "run-0", details());
+        runs.start("agent-test", "run-1", details());
+        assert_eq!(runs.current("agent-test").unwrap().run_id, "run-1");
+    }
 }

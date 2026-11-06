@@ -17,8 +17,8 @@ use senpi_desktop_core::backend::DeliveryMode;
 use senpi_desktop_core::error::{CoreResult, DesktopError, ErrorCode};
 use senpi_desktop_core::protocol_results::AuditEvent;
 use senpi_desktop_safety::{
-    FrameContext, FrameId, GateError, LockState, MonotonicClock, MutatingAction, PermissionGate,
-    StopPolicy, Supervisor, gate,
+    gate, FrameContext, FrameId, GateError, LockState, MonotonicClock, MutatingAction,
+    PermissionGate, StopPolicy, Supervisor,
 };
 
 use crate::audit::audit_event;

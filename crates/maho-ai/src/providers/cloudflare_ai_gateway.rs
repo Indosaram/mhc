@@ -12,18 +12,26 @@ const WORKERS_AI_GATEWAY_BASE_URL: &str =
 
 fn gateway_models() -> Vec<Model> {
     let mut models = super::cloudflare_ai_gateway_models::cloudflare_ai_gateway_models();
-    models.extend(super::cloudflare_workers_ai_models::cloudflare_workers_ai_models().into_iter().map(|model| Model {
-        provider: "cloudflare-ai-gateway".into(),
-        id: format!("workers-ai/{}", model.id),
-        base_url: WORKERS_AI_GATEWAY_BASE_URL.to_owned(),
-        ..model
-    }));
+    models.extend(
+        super::cloudflare_workers_ai_models::cloudflare_workers_ai_models()
+            .into_iter()
+            .map(|model| Model {
+                provider: "cloudflare-ai-gateway".into(),
+                id: format!("workers-ai/{}", model.id),
+                base_url: WORKERS_AI_GATEWAY_BASE_URL.to_owned(),
+                ..model
+            }),
+    );
     models
 }
 
 pub fn cloudflare_ai_gateway_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
-    for id in ["anthropic-messages", "openai-completions", "openai-responses"] {
+    for id in [
+        "anthropic-messages",
+        "openai-completions",
+        "openai-responses",
+    ] {
         api.insert(id.to_owned(), cloudflare_streams(builtin_api_streams(id)));
     }
     create_provider(CreateProviderOptions {
@@ -31,7 +39,12 @@ pub fn cloudflare_ai_gateway_provider() -> Result<Arc<dyn Provider>, crate::mode
         name: Some("Cloudflare AI Gateway".into()),
         base_url: None,
         headers: None,
-        auth: Some(ProviderAuth { api_key: Some(Arc::new(super::cloudflare_auth::cloudflare_ai_gateway_auth())), oauth: None }),
+        auth: Some(ProviderAuth {
+            api_key: Some(Arc::new(
+                super::cloudflare_auth::cloudflare_ai_gateway_auth(),
+            )),
+            oauth: None,
+        }),
         models: gateway_models(),
         fetch_models: None,
         restore_models: None,

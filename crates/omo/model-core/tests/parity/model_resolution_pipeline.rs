@@ -74,7 +74,10 @@ fn strips_matching_provider_prefix_before_transforming_fallback_model() {
     let result = resolve_model_pipeline(&request).expect("resolved");
 
     assert_eq!(result.model, "openrouter/qwen3.5-plus");
-    assert_eq!(result.provenance, ModelResolutionProvenance::ProviderFallback);
+    assert_eq!(
+        result.provenance,
+        ModelResolutionProvenance::ProviderFallback
+    );
 }
 
 fn user_model_request(user_model: &str) -> ModelResolutionRequest {
@@ -144,7 +147,11 @@ fn launch_gated_metis_and_prometheus_resolve_past_the_launch_rung() {
             ..Default::default()
         });
 
-        assert_eq!(result.map(|result| result.model), Some(launch_expected()), "{agent}");
+        assert_eq!(
+            result.map(|result| result.model),
+            Some(launch_expected()),
+            "{agent}"
+        );
     }
 }
 
@@ -157,7 +164,11 @@ fn launch_gated_artistry_category_default_falls_through_to_its_chain() {
         },
         constraints: cold_anthropic(),
         policy: ResolutionPolicy {
-            fallback_chain: Some(CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain.clone()),
+            fallback_chain: Some(
+                CATEGORY_MODEL_REQUIREMENTS["artistry"]
+                    .fallback_chain
+                    .clone(),
+            ),
             system_default_model: None,
         },
     });
@@ -179,8 +190,5 @@ fn launch_gated_chain_entries_are_skipped_on_a_cold_cache() {
         ..Default::default()
     });
 
-    assert_eq!(
-        result.map(|result| result.model),
-        Some(launch_expected())
-    );
+    assert_eq!(result.map(|result| result.model), Some(launch_expected()));
 }

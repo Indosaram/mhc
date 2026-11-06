@@ -1,4 +1,4 @@
-use maho_chord::{delta::*, JsonValue};
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
 fn v(value: serde_json::Value) -> JsonValue {
     value.into()

@@ -12,9 +12,26 @@ pub fn resolve_cloudflare_model(model: &Model, env: Option<&ProviderEnv>) -> Mod
     let gateway = env.get(CLOUDFLARE_GATEWAY_ID).cloned();
     let base_url = model
         .base_url
-        .replace(&format!("{{{CLOUDFLARE_ACCOUNT_ID}}}"), account.as_deref().unwrap_or(&format!("{{{CLOUDFLARE_ACCOUNT_ID}}}")))
-        .replace(&format!("{{{CLOUDFLARE_GATEWAY_ID}}}"), gateway.as_deref().unwrap_or(&format!("{{{CLOUDFLARE_GATEWAY_ID}}}")));
-    if base_url == model.base_url { model.clone() } else { Model { base_url, ..model.clone() } }
+        .replace(
+            &format!("{{{CLOUDFLARE_ACCOUNT_ID}}}"),
+            account
+                .as_deref()
+                .unwrap_or(&format!("{{{CLOUDFLARE_ACCOUNT_ID}}}")),
+        )
+        .replace(
+            &format!("{{{CLOUDFLARE_GATEWAY_ID}}}"),
+            gateway
+                .as_deref()
+                .unwrap_or(&format!("{{{CLOUDFLARE_GATEWAY_ID}}}")),
+        );
+    if base_url == model.base_url {
+        model.clone()
+    } else {
+        Model {
+            base_url,
+            ..model.clone()
+        }
+    }
 }
 
 struct CloudflareStreams {
@@ -22,13 +39,27 @@ struct CloudflareStreams {
 }
 
 impl ProviderStreams for CloudflareStreams {
-    fn stream(&self, model: &Model, context: &crate::types::Context, options: Option<StreamOptions>) -> crate::types::AssistantMessageEventStream {
-        let resolved = resolve_cloudflare_model(model, options.as_ref().and_then(|o| o.request.env.as_ref()));
+    fn stream(
+        &self,
+        model: &Model,
+        context: &crate::types::Context,
+        options: Option<StreamOptions>,
+    ) -> crate::types::AssistantMessageEventStream {
+        let resolved =
+            resolve_cloudflare_model(model, options.as_ref().and_then(|o| o.request.env.as_ref()));
         self.inner.stream(&resolved, context, options)
     }
 
-    fn stream_simple(&self, model: &Model, context: &crate::types::Context, options: Option<SimpleStreamOptions>) -> crate::types::AssistantMessageEventStream {
-        let resolved = resolve_cloudflare_model(model, options.as_ref().and_then(|o| o.stream.request.env.as_ref()));
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &crate::types::Context,
+        options: Option<SimpleStreamOptions>,
+    ) -> crate::types::AssistantMessageEventStream {
+        let resolved = resolve_cloudflare_model(
+            model,
+            options.as_ref().and_then(|o| o.stream.request.env.as_ref()),
+        );
         self.inner.stream_simple(&resolved, context, options)
     }
 }

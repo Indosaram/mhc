@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::Result;
-use crate::git::command::{run_git, run_git_with_input, str_args, GitOptions};
+use crate::git::command::{GitOptions, run_git, run_git_with_input, str_args};
 use crate::util::mkdtemp;
 
 pub fn write_synthetic_tree(
@@ -13,9 +13,10 @@ pub fn write_synthetic_tree(
     let dir = mkdtemp("isolation-index-")?;
     let index_file = dir.join("index");
     let mut options = GitOptions::new(object_repo_dir.to_path_buf());
-    options
-        .env
-        .push(("GIT_INDEX_FILE".to_string(), index_file.to_string_lossy().into_owned()));
+    options.env.push((
+        "GIT_INDEX_FILE".to_string(),
+        index_file.to_string_lossy().into_owned(),
+    ));
     let result = (|| {
         let head = if head_commit.is_empty() {
             "--empty"
@@ -30,13 +31,7 @@ pub fn write_synthetic_tree(
             }
             let input: Arc<[u8]> = Arc::from(patch.as_bytes());
             run_git_with_input(
-                &str_args(&[
-                    "apply",
-                    "--cached",
-                    "--binary",
-                    "--whitespace=nowarn",
-                    "-",
-                ]),
+                &str_args(&["apply", "--cached", "--binary", "--whitespace=nowarn", "-"]),
                 &options,
                 Some(input),
             )?;

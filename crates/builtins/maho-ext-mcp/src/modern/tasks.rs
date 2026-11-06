@@ -75,14 +75,20 @@ fn parse_task(
 }
 
 pub type McpTaskSend<'a> = dyn Fn(
-    &'static str,
-    Value,
-    Option<AbortSignal>,
-) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>> + Send + Sync + 'a;
+        &'static str,
+        Value,
+        Option<AbortSignal>,
+    ) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>>
+    + Send
+    + Sync
+    + 'a;
 pub type McpTaskInputs<'a> = dyn Fn(
-    Map<String, Value>,
-    AbortSignal,
-) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>> + Send + Sync + 'a;
+        Map<String, Value>,
+        AbortSignal,
+    ) -> BoxFuture<'static, Result<Map<String, Value>, McpMrtrError>>
+    + Send
+    + Sync
+    + 'a;
 pub type McpTaskProgress<'a> =
     dyn Fn(&str, &str, Option<&str>) -> Result<(), McpMrtrError> + Send + Sync + 'a;
 

@@ -19,8 +19,8 @@ pub fn build_favorite_cycle_status_message(kind: FavoriteCycleStatusKind) -> Str
         FavoriteCycleStatusKind::Single => {
             format!("Only one favorite model available. {setup_hint}")
         }
-        FavoriteCycleStatusKind::Empty => format!(
-            "No favorite models configured. {setup_hint} See /help for the full reference."
-        ),
+        FavoriteCycleStatusKind::Empty => {
+            format!("No favorite models configured. {setup_hint} See /help for the full reference.")
+        }
     }
 }

@@ -170,7 +170,10 @@ fn committed_deletion_gate_preserves_known_facts_or_retains_source_with_reason()
             if malformed {
                 assert!(lines.contains(&extra.as_str()));
             } else {
-                assert_eq!(item::active_registers(&doc)["k"], std::slice::from_ref(&value));
+                assert_eq!(
+                    item::active_registers(&doc)["k"],
+                    std::slice::from_ref(&value)
+                );
             }
             assert_eq!(item::active_registers(&doc)["shared"], [value]);
             let tags = split_item(&rendered)

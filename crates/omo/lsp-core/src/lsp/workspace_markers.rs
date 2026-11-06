@@ -18,5 +18,3 @@ pub const WORKSPACE_MARKERS: &[&str] = &[
     "pom.xml",
     "build.gradle",
 ];
-
-

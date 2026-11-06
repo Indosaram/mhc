@@ -72,14 +72,28 @@ fn entry_lines(entry: &Value) -> Vec<String> {
             }
             lines
         }
-        Some("branch_summary") => vec!["[branch summary]".to_owned(), entry["summary"].as_str().unwrap_or_default().to_owned()],
-        Some("custom") => vec![format!("[{}]", entry["customType"].as_str().unwrap_or_default())],
+        Some("branch_summary") => vec![
+            "[branch summary]".to_owned(),
+            entry["summary"].as_str().unwrap_or_default().to_owned(),
+        ],
+        Some("custom") => vec![format!(
+            "[{}]",
+            entry["customType"].as_str().unwrap_or_default()
+        )],
         _ => {
             let message = &entry["message"];
             match message["role"].as_str() {
                 Some("user") => vec![user_message_text(message)],
                 Some("assistant") => vec![message_text(message)],
-                Some("toolResult") => vec![format!("[tool {}] {}", message["toolName"].as_str().unwrap_or_default(), if message["isError"].as_bool() == Some(true) { "error" } else { "ok" })],
+                Some("toolResult") => vec![format!(
+                    "[tool {}] {}",
+                    message["toolName"].as_str().unwrap_or_default(),
+                    if message["isError"].as_bool() == Some(true) {
+                        "error"
+                    } else {
+                        "ok"
+                    }
+                )],
                 _ => Vec::new(),
             }
         }
@@ -112,29 +126,46 @@ pub fn project_lane_snapshot(lane: &Value) -> MiniViewState {
     if let Some(items) = lane["queues"].as_array() {
         for item in items {
             let text = if item["type"] == "message" {
-                user_message_text(&item["message"]).split_whitespace().collect::<Vec<_>>().join(" ")
+                user_message_text(&item["message"])
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             } else {
                 format!("<{}>", item["customType"].as_str().unwrap_or_default())
             };
-            queues.push(format!("[{}] {}", item["kind"].as_str().unwrap_or_default(), text));
+            queues.push(format!(
+                "[{}] {}",
+                item["kind"].as_str().unwrap_or_default(),
+                text
+            ));
         }
     }
     let working = !lane["operation"].is_null();
     MiniViewState {
         transcript,
         queues,
-        status: if working { "Working... (esc to abort)".to_owned() } else { String::new() },
+        status: if working {
+            "Working... (esc to abort)".to_owned()
+        } else {
+            String::new()
+        },
         footer: footer(lane),
     }
 }
 
 fn footer(lane: &Value) -> String {
     let configuration = &lane["configuration"];
-    let provider = configuration["model"]["provider"].as_str().unwrap_or_default();
-    let model_id = configuration["model"]["modelId"].as_str().unwrap_or_default();
+    let provider = configuration["model"]["provider"]
+        .as_str()
+        .unwrap_or_default();
+    let model_id = configuration["model"]["modelId"]
+        .as_str()
+        .unwrap_or_default();
     let thinking = configuration["thinkingLevel"].as_str().unwrap_or_default();
     let messages = lane["stats"]["messageCount"].as_u64().unwrap_or_default();
-    format!("{provider}/{model_id} · thinking:{thinking} · {messages} messages · /model · /thinking · /compact · /reload")
+    format!(
+        "{provider}/{model_id} · thinking:{thinking} · {messages} messages · /model · /thinking · /compact · /reload"
+    )
 }
 
 pub struct MiniView {
@@ -155,7 +186,11 @@ impl MiniView {
         let footer = Rc::new(RefCell::new(Text::with_padding("", 1, 0)));
         let submitted = Rc::new(RefCell::new(VecDeque::new()));
         let exit = Rc::new(RefCell::new(false));
-        let mut editor = Input::new(InputOptions { prompt: Some("› ".to_owned()), placeholder: None, placeholder_style: None });
+        let mut editor = Input::new(InputOptions {
+            prompt: Some("› ".to_owned()),
+            placeholder: None,
+            placeholder_style: None,
+        });
         {
             let submitted = submitted.clone();
             editor.on_submit = Some(Box::new(move |text| {
@@ -169,7 +204,15 @@ impl MiniView {
             editor.on_escape = Some(Box::new(move || *exit.borrow_mut() = true));
         }
         editor.set_focused(true);
-        Self { transcript, queues, status, footer, editor: Rc::new(RefCell::new(editor)), submitted, exit }
+        Self {
+            transcript,
+            queues,
+            status,
+            footer,
+            editor: Rc::new(RefCell::new(editor)),
+            submitted,
+            exit,
+        }
     }
 
     pub fn set_state(&mut self, state: MiniViewState) {
@@ -177,7 +220,11 @@ impl MiniView {
             let mut container = self.transcript.borrow_mut();
             container.clear();
             for line in &state.transcript {
-                container.add_child(Rc::new(RefCell::new(Text::with_padding(line.clone(), 1, 0))));
+                container.add_child(Rc::new(RefCell::new(Text::with_padding(
+                    line.clone(),
+                    1,
+                    0,
+                ))));
             }
         }
         {
@@ -191,7 +238,11 @@ impl MiniView {
             let mut container = self.status.borrow_mut();
             container.clear();
             if !state.status.is_empty() {
-                container.add_child(Rc::new(RefCell::new(Text::with_padding(state.status.clone(), 1, 0))));
+                container.add_child(Rc::new(RefCell::new(Text::with_padding(
+                    state.status.clone(),
+                    1,
+                    0,
+                ))));
             }
         }
         self.footer.borrow_mut().set_text(state.footer.clone());
@@ -280,7 +331,8 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
             last_revision = Some(revision);
             let snapshot = client.state();
             if last_lane.as_ref() != Some(&snapshot.lane) {
-                view.borrow_mut().set_state(project_lane_snapshot(&snapshot.lane));
+                view.borrow_mut()
+                    .set_state(project_lane_snapshot(&snapshot.lane));
                 last_lane = Some(snapshot.lane);
                 dirty = true;
             }
@@ -331,7 +383,17 @@ mod tests {
             "stats": {"messageCount": 3}
         });
         let state = project_lane_snapshot(&lane);
-        assert_eq!(state.transcript, vec!["hello", "hi", "[compaction] compacted from 10 tokens", "kept", "partial", "[tool read] running"]);
+        assert_eq!(
+            state.transcript,
+            vec![
+                "hello",
+                "hi",
+                "[compaction] compacted from 10 tokens",
+                "kept",
+                "partial",
+                "[tool read] running"
+            ]
+        );
         assert_eq!(state.queues, vec!["[steer] later"]);
         assert_eq!(state.status, "Working... (esc to abort)");
         assert!(state.footer.starts_with("p/m · thinking:off · 3 messages"));

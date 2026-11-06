@@ -9,9 +9,9 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::Window;
 
 use super::held::{HeldButton, Route};
-use super::keys::{Stroke, modifier_keys};
+use super::keys::{modifier_keys, Stroke};
 use super::server::{FakeInput, InputServer};
-use super::{X11Input, root_spot};
+use super::{root_spot, X11Input};
 
 /// Between a button's press and release, and between repeated clicks.
 pub const CLICK_DELAY: Duration = Duration::from_millis(12);

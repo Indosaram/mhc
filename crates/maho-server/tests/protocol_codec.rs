@@ -1,16 +1,25 @@
+use maho_chord::types::JsonValue as Value;
 use maho_server::protocol::{
     cbor::{CborOptions, CborValue, encode_cbor},
     codec::*,
     framing::{DEFAULT_MAX_FRAME_LENGTH as MAX, FrameDecoder, encode_frame},
     messages::{PROTOCOL_VERSION, is_server_id},
 };
-use maho_chord::types::JsonValue as Value;
 use maho_server::transport_json as json;
 
 fn put(value: &mut Value, key: &str, replacement: Value) {
-    let Value::Object(fields) = value else { panic!("fixture object"); };
+    let Value::Object(fields) = value else {
+        panic!("fixture object");
+    };
     let fields = std::sync::Arc::make_mut(fields);
-    if let Some((_, value)) = fields.iter_mut().find(|(name, _)| name.as_str() == Some(key)) { *value = replacement; } else { fields.push((key.into(), replacement)); }
+    if let Some((_, value)) = fields
+        .iter_mut()
+        .find(|(name, _)| name.as_str() == Some(key))
+    {
+        *value = replacement;
+    } else {
+        fields.push((key.into(), replacement));
+    }
 }
 
 const ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -172,7 +181,9 @@ fn opaque_native_payloads_roundtrip_without_scalar_value_intermediates() {
     let encoded = encode_client_message(&message, MAX).unwrap();
     let decoded = MessageDecoder::client().push(&encoded).unwrap().remove(0);
     assert_eq!(decoded, message);
-    let Value::Number(number) = &decoded["call"][2] else { panic!("negative zero"); };
+    let Value::Number(number) = &decoded["call"][2] else {
+        panic!("negative zero");
+    };
     assert_eq!(number.as_f64().unwrap().to_bits(), (-0.0f64).to_bits());
 }
 
@@ -182,7 +193,12 @@ fn native_surrogate_payloads_are_accepted_before_strict_cbor_encoding() {
         let value: Value = serde_json::from_str(payload).unwrap();
         let message = json!({"type":"response","id":"native","ok":true,"result":value});
         assert!(parse_server_message(&message).is_ok());
-        assert!(encode_server_message(&message, MAX).unwrap_err().to_string().contains("CBOR text strings must contain valid Unicode scalar values"));
+        assert!(
+            encode_server_message(&message, MAX)
+                .unwrap_err()
+                .to_string()
+                .contains("CBOR text strings must contain valid Unicode scalar values")
+        );
         assert_eq!(serde_json::to_string(&message["result"]).unwrap(), payload);
     }
 }

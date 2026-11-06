@@ -12,7 +12,7 @@ use senpi_desktop_core::types::Target;
 use super::WaylandBackend;
 use crate::capture::Probe;
 use crate::test_support::fake_eis::{EisConfig, FakeEis};
-use crate::test_support::{LibeiSocketEnv, env_lock};
+use crate::test_support::{env_lock, LibeiSocketEnv};
 
 pub const FR: &str = include_str!("../../testdata/fr.xkb");
 

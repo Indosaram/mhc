@@ -106,9 +106,9 @@ impl PanelReaders for NativeReaders {
         crate::git::repo::read_git_branch(Path::new(root))
     }
     fn git<'a>(&'a self, root: &'a str) -> PanelFuture<'a, Option<PanelGitStatus>> {
-        Box::pin(async move {
-            crate::git::read::read_git_status(self.exec.as_deref()?, root).await
-        })
+        Box::pin(
+            async move { crate::git::read::read_git_status(self.exec.as_deref()?, root).await },
+        )
     }
     fn children<'a>(
         &'a self,

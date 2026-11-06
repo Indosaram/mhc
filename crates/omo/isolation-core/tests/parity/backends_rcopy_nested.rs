@@ -3,9 +3,9 @@ use std::path::Path;
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    capture_baseline, capture_delta_patch, cleanup_isolation, ensure_isolation, merge_isolated_changes,
-    BackendRef, EnsureIsolationOptions, IsolationBackend, IsolationContext, IsolationMergeOptions,
-    MergeMode, RcopyBackend, ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+    BackendRef, EnsureIsolationOptions, ISOLATION_BASELINE_MAX_CONTENT_BYTES, IsolationBackend,
+    IsolationContext, IsolationMergeOptions, MergeMode, RcopyBackend, capture_baseline,
+    capture_delta_patch, cleanup_isolation, ensure_isolation, merge_isolated_changes,
 };
 
 fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -58,20 +58,25 @@ fn rcopy_seeds_an_untracked_embedded_repository_including_its_git_metadata() {
         std::fs::read_to_string(merged.join("vendor/inner/inner-file")).expect("inner"),
         "inner\n"
     );
-    assert!(std::fs::read_to_string(merged.join("vendor/inner/.git/HEAD"))
-        .expect("HEAD")
-        .contains("ref:"));
+    assert!(
+        std::fs::read_to_string(merged.join("vendor/inner/.git/HEAD"))
+            .expect("HEAD")
+            .contains("ref:")
+    );
 }
 
 #[test]
 fn delta_capture_refuses_a_baseline_nested_repository_missing_from_the_isolation() {
     let f = repo();
     nested_repo_at(&f.repo_root.join("vendor/inner"));
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
-    assert!(baseline
-        .nested
-        .iter()
-        .any(|nested| nested.relative_path == "vendor/inner"));
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    assert!(
+        baseline
+            .nested
+            .iter()
+            .any(|nested| nested.relative_path == "vendor/inner")
+    );
     let isolation_dir = f.root.join("child");
     copy_dir_all(&f.repo_root, &isolation_dir).expect("copy");
     // The state the unseeded rcopy used to publish: the nested repository never arrived.
@@ -84,7 +89,8 @@ fn delta_capture_refuses_a_baseline_nested_repository_missing_from_the_isolation
 fn rcopy_isolation_round_trips_edits_to_an_untracked_embedded_repository() {
     let f = repo();
     nested_repo_at(&f.repo_root.join("vendor/inner"));
-    let baseline = capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
+    let baseline =
+        capture_baseline(&f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES).expect("baseline");
     let handle = ensure_isolation(EnsureIsolationOptions {
         repo_root: f.repo_root.clone(),
         id: "roundtrip".to_string(),
@@ -96,7 +102,11 @@ fn rcopy_isolation_round_trips_edits_to_an_untracked_embedded_repository() {
         max_copy_bytes: None,
     })
     .expect("handle");
-    std::fs::write(handle.merged_dir.join("vendor/inner/inner-file"), "edited\n").expect("edit");
+    std::fs::write(
+        handle.merged_dir.join("vendor/inner/inner-file"),
+        "edited\n",
+    )
+    .expect("edit");
     let result = merge_isolated_changes(IsolationMergeOptions {
         id: "roundtrip".to_string(),
         artifacts_dir: f.root.join("artifacts"),
@@ -132,7 +142,13 @@ fn rcopy_teardown_fails_closed_when_worktree_removal_fails_for_a_live_registrati
     let merged = f.root.join("merged");
     git(
         &f.repo_root,
-        &["worktree", "add", "--detach", &merged.to_string_lossy(), "HEAD"],
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &merged.to_string_lossy(),
+            "HEAD",
+        ],
     )
     .expect("worktree");
     // Corrupt the registration back-pointer: removal fails while the admin directory is live.
@@ -148,7 +164,13 @@ fn rcopy_teardown_proceeds_when_the_registration_is_already_gone() {
     let merged = f.root.join("merged");
     git(
         &f.repo_root,
-        &["worktree", "add", "--detach", &merged.to_string_lossy(), "HEAD"],
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &merged.to_string_lossy(),
+            "HEAD",
+        ],
     )
     .expect("worktree");
     std::fs::remove_dir_all(f.repo_root.join(".git/worktrees/merged")).expect("remove");

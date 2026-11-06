@@ -2,9 +2,7 @@
 
 use crate::host::{Host, RunRequest};
 use crate::lookup::resolve;
-use crate::settings::{
-    MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, default_timeout_ms, parse_timeout_arg,
-};
+use crate::settings::{MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, default_timeout_ms, parse_timeout_arg};
 use serde_json::{Map, Value, json};
 
 /// Settings supplied by the embedding host.

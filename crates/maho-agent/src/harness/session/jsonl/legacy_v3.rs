@@ -10,16 +10,14 @@ use serde_json::Value as JsonValue;
 
 use crate::harness::context::Context;
 use crate::harness::messages::{
-    create_branch_summary_message, create_compaction_summary_message, CustomMessage,
-    CustomMessageContent,
+    CustomMessage, CustomMessageContent, create_branch_summary_message,
+    create_compaction_summary_message,
 };
 use crate::harness::session::commit::{
     CommittedEntryWrite, CommittedValueSetWrite, CommittedWrite, WriteKind,
 };
 use crate::harness::session::session::{SessionError, SessionErrorKind};
-use crate::harness::session::types::{
-    EntryKind, LaneConfiguration, LaneModelRef, LaneState,
-};
+use crate::harness::session::types::{EntryKind, LaneConfiguration, LaneModelRef, LaneState};
 use crate::harness::session::values::{
     branch_tip, entry_label, lane_config, lane_state, session_name, set_value,
 };
@@ -27,10 +25,10 @@ use crate::harness::types::{FileSystem, TextLineReader};
 use crate::harness::utils::usage::{add_usage, empty_usage};
 use crate::types::{AgentMessage, CustomAgentMessage};
 
-use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader, LegacyV3SessionHeader};
+use super::codec::{JsonlParsedSessionHeader, LegacyV3SessionHeader, parse_jsonl_session_header};
 use super::io::{file_value, read_jsonl_header};
 use super::types::{
-    JsonlSessionMetadata, JsonlStorageHeader, JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION,
+    JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION, JsonlSessionMetadata, JsonlStorageHeader,
 };
 
 type EntrySelection = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -223,15 +221,29 @@ enum LegacyV3IndexKind {
     Custom,
     CustomMessage,
     BranchSummary {
-        #[allow(dead_code)] // Preserved from the pinned legacy branch_summary entry's fromId field.
+        #[allow(dead_code)]
+        // Preserved from the pinned legacy branch_summary entry's fromId field.
         from_id: String,
         from_hook: bool,
     },
-    Compaction { first_kept_entry_id: String, from_hook: bool },
-    Label { target_id: String, label: Option<String> },
-    ModelChange { provider: String, model_id: String },
-    ThinkingLevelChange { thinking_level: ThinkingLevel },
-    ActiveToolsChange { active_tool_names: Vec<String> },
+    Compaction {
+        first_kept_entry_id: String,
+        from_hook: bool,
+    },
+    Label {
+        target_id: String,
+        label: Option<String>,
+    },
+    ModelChange {
+        provider: String,
+        model_id: String,
+    },
+    ThinkingLevelChange {
+        thinking_level: ThinkingLevel,
+    },
+    ActiveToolsChange {
+        active_tool_names: Vec<String>,
+    },
     SessionInfo,
 }
 
@@ -353,7 +365,9 @@ pub async fn metadata_from_legacy_v3_header(
         legacy_parent_session_path: None,
     };
     if let Some(parent) = &header.parent_session {
-        if let Some(parent_id) = resolve_legacy_v3_parent_session_id(file_system, parent, context).await {
+        if let Some(parent_id) =
+            resolve_legacy_v3_parent_session_id(file_system, parent, context).await
+        {
             metadata.parent_session_id = Some(parent_id);
         } else {
             metadata.legacy_parent_session_path = Some(parent.clone());
@@ -393,11 +407,21 @@ fn parse_legacy_v3_entry(line: &str) -> Result<LegacyV3Entry, SessionError> {
         .and_then(JsonValue::as_str)
         .unwrap_or("")
         .to_owned();
-    let from_hook = val.get("fromHook").and_then(JsonValue::as_bool).unwrap_or(false);
+    let from_hook = val
+        .get("fromHook")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
     match record_type.as_str() {
-        "message" | "custom" | "custom_message" | "branch_summary" | "compaction"
-        | "model_change" | "thinking_level_change" | "active_tools_change"
-        | "session_info" | "label" => {
+        "message"
+        | "custom"
+        | "custom_message"
+        | "branch_summary"
+        | "compaction"
+        | "model_change"
+        | "thinking_level_change"
+        | "active_tools_change"
+        | "session_info"
+        | "label" => {
             let mut val = val;
             if matches!(record_type.as_str(), "branch_summary" | "compaction") {
                 val["fromHook"] = JsonValue::Bool(from_hook);
@@ -573,9 +597,13 @@ fn project_context_message(
             } else {
                 let resolved_from_id = resolve_branch_summary_from_id(entries, from_id)?;
                 let ts = parse_iso_millis(timestamp);
-                Ok(Some(AgentMessage::Custom(CustomAgentMessage::BranchSummary(
-                    create_branch_summary_message(summary.clone(), resolved_from_id, ts),
-                ))))
+                Ok(Some(AgentMessage::Custom(
+                    CustomAgentMessage::BranchSummary(create_branch_summary_message(
+                        summary.clone(),
+                        resolved_from_id,
+                        ts,
+                    )),
+                )))
             }
         }
         LegacyV3Entry::Compaction {
@@ -585,9 +613,13 @@ fn project_context_message(
             ..
         } => {
             let ts = parse_iso_millis(timestamp);
-            Ok(Some(AgentMessage::Custom(CustomAgentMessage::CompactionSummary(
-                create_compaction_summary_message(summary.clone(), *tokens_before, ts),
-            ))))
+            Ok(Some(AgentMessage::Custom(
+                CustomAgentMessage::CompactionSummary(create_compaction_summary_message(
+                    summary.clone(),
+                    *tokens_before,
+                    ts,
+                )),
+            )))
         }
         LegacyV3Entry::Custom { .. }
         | LegacyV3Entry::ModelChange { .. }
@@ -633,9 +665,10 @@ fn normalize_retained_entry(
     retained_tail: Vec<AgentMessage>,
     entries: &HashMap<String, LegacyV3IndexEntry>,
 ) -> Result<CommittedEntryWrite, SessionError> {
-    let mapped_id = indexed.mapped_id.clone().ok_or_else(|| {
-        SessionError::new(SessionErrorKind::Io, "Unmapped retained entry")
-    })?;
+    let mapped_id = indexed
+        .mapped_id
+        .clone()
+        .ok_or_else(|| SessionError::new(SessionErrorKind::Io, "Unmapped retained entry"))?;
     let parent_id = if matches!(entry, LegacyV3Entry::BranchSummary { .. }) {
         resolve_branch_summary_parent_id(entries, indexed.parent_id.as_deref())?
     } else {
@@ -677,7 +710,13 @@ fn normalize_retained_entry(
             ),
             terminate: None,
         },
-        LegacyV3Entry::BranchSummary { summary, from_id, details, usage, .. } => EntryKind::BranchSummary {
+        LegacyV3Entry::BranchSummary {
+            summary,
+            from_id,
+            details,
+            usage,
+            ..
+        } => EntryKind::BranchSummary {
             from_id: resolve_branch_summary_from_id(entries, from_id)?,
             summary: summary.clone(),
             details: details.clone(),
@@ -687,7 +726,13 @@ fn normalize_retained_entry(
                 _ => false,
             },
         },
-        LegacyV3Entry::Compaction { summary, tokens_before, details, usage, .. } => EntryKind::Compaction {
+        LegacyV3Entry::Compaction {
+            summary,
+            tokens_before,
+            details,
+            usage,
+            ..
+        } => EntryKind::Compaction {
             summary: summary.clone(),
             retained_tail,
             tokens_before: *tokens_before,
@@ -699,9 +744,7 @@ fn normalize_retained_entry(
             },
         },
         LegacyV3Entry::Custom {
-            custom_type,
-            data,
-            ..
+            custom_type, data, ..
         } => EntryKind::Custom {
             custom_type: custom_type.clone(),
             data: data.clone(),
@@ -744,7 +787,9 @@ fn selected_configuration(
         }
         let entry = entries_by_id.get(cid)?;
         match &entry.kind {
-            LegacyV3IndexKind::ModelChange { provider, model_id } if remaining.remove("model_change") => {
+            LegacyV3IndexKind::ModelChange { provider, model_id }
+                if remaining.remove("model_change") =>
+            {
                 model = Some(LaneModelRef {
                     provider: provider.clone(),
                     model_id: model_id.clone(),
@@ -755,9 +800,9 @@ fn selected_configuration(
             {
                 thinking_level = Some(*tl);
             }
-            LegacyV3IndexKind::ActiveToolsChange { active_tool_names: atn }
-                if remaining.remove("active_tools_change") =>
-            {
+            LegacyV3IndexKind::ActiveToolsChange {
+                active_tool_names: atn,
+            } if remaining.remove("active_tools_change") => {
                 active_tool_names = Some(atn.clone());
             }
             _ => {}
@@ -808,26 +853,28 @@ fn index_legacy_v3_entry(
 
     if !entry.is_retained() {
         let kind = match entry {
-            LegacyV3Entry::Label { target_id, label, .. } => LegacyV3IndexKind::Label {
+            LegacyV3Entry::Label {
+                target_id, label, ..
+            } => LegacyV3IndexKind::Label {
                 target_id: target_id.clone(),
                 label: label.clone(),
             },
-            LegacyV3Entry::ModelChange { provider, model_id, .. } => {
-                LegacyV3IndexKind::ModelChange {
-                    provider: provider.clone(),
-                    model_id: model_id.clone(),
-                }
-            }
+            LegacyV3Entry::ModelChange {
+                provider, model_id, ..
+            } => LegacyV3IndexKind::ModelChange {
+                provider: provider.clone(),
+                model_id: model_id.clone(),
+            },
             LegacyV3Entry::ThinkingLevelChange { thinking_level, .. } => {
                 LegacyV3IndexKind::ThinkingLevelChange {
                     thinking_level: *thinking_level,
                 }
             }
-            LegacyV3Entry::ActiveToolsChange { active_tool_names, .. } => {
-                LegacyV3IndexKind::ActiveToolsChange {
-                    active_tool_names: active_tool_names.clone(),
-                }
-            }
+            LegacyV3Entry::ActiveToolsChange {
+                active_tool_names, ..
+            } => LegacyV3IndexKind::ActiveToolsChange {
+                active_tool_names: active_tool_names.clone(),
+            },
             LegacyV3Entry::SessionInfo { .. } => LegacyV3IndexKind::SessionInfo,
             _ => unreachable!(),
         };
@@ -849,15 +896,24 @@ fn index_legacy_v3_entry(
         _ => "",
     });
     let mapped_id = uuidv7(Some(ts_millis as f64)).map_err(|e| {
-        SessionError::new(SessionErrorKind::Io, format!("UUIDv7 generation failed: {e}"))
+        SessionError::new(
+            SessionErrorKind::Io,
+            format!("UUIDv7 generation failed: {e}"),
+        )
     })?;
 
     let kind = match entry {
-        LegacyV3Entry::BranchSummary { from_id, from_hook, .. } => LegacyV3IndexKind::BranchSummary {
+        LegacyV3Entry::BranchSummary {
+            from_id, from_hook, ..
+        } => LegacyV3IndexKind::BranchSummary {
             from_id: from_id.clone(),
             from_hook: *from_hook,
         },
-        LegacyV3Entry::Compaction { first_kept_entry_id, from_hook, .. } => LegacyV3IndexKind::Compaction {
+        LegacyV3Entry::Compaction {
+            first_kept_entry_id,
+            from_hook,
+            ..
+        } => LegacyV3IndexKind::Compaction {
             first_kept_entry_id: first_kept_entry_id.clone(),
             from_hook: *from_hook,
         },
@@ -879,12 +935,15 @@ fn index_legacy_v3_entry(
 fn legacy_entry_usage(entry: &LegacyV3Entry) -> Option<Usage> {
     match entry {
         LegacyV3Entry::Message { message, .. } => match message {
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) => Some(assistant.usage),
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) => {
+                Some(assistant.usage)
+            }
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(tr)) => tr.usage,
             _ => None,
         },
-        LegacyV3Entry::Compaction { usage, .. } | LegacyV3Entry::BranchSummary { usage, .. } =>
-            usage.as_ref().copied(),
+        LegacyV3Entry::Compaction { usage, .. } | LegacyV3Entry::BranchSummary { usage, .. } => {
+            usage.as_ref().copied()
+        }
         _ => None,
     }
 }
@@ -910,7 +969,10 @@ async fn read_legacy_v3_inventory(
     let mut final_id = None;
 
     loop {
-        let line = file_value(reader.read_line(context).await, "Failed to read legacy v3 source")?;
+        let line = file_value(
+            reader.read_line(context).await,
+            "Failed to read legacy v3 source",
+        )?;
         let Some(line) = line else { break };
         if !line.terminated {
             break;
@@ -929,7 +991,10 @@ async fn read_legacy_v3_inventory(
             next_seq += 1;
         }
         final_id = Some(eid.clone());
-        if let LegacyV3Entry::SessionInfo { name: entry_name, .. } = &entry {
+        if let LegacyV3Entry::SessionInfo {
+            name: entry_name, ..
+        } = &entry
+        {
             name = entry_name.clone().filter(|name| !name.is_empty());
         }
         if let Some(usage) = legacy_entry_usage(&entry) {
@@ -1137,8 +1202,11 @@ impl LegacyV3Source {
             if !entry.is_retained() {
                 continue;
             }
-            let Some(mapped_id) = &entry.mapped_id else { continue };
-            let parent_id = resolve_legacy_id(&self.entries, entry.parent_id.as_deref()).unwrap_or(None);
+            let Some(mapped_id) = &entry.mapped_id else {
+                continue;
+            };
+            let parent_id =
+                resolve_legacy_id(&self.entries, entry.parent_id.as_deref()).unwrap_or(None);
             let entry_type = match &entry.kind {
                 LegacyV3IndexKind::Message | LegacyV3IndexKind::CustomMessage => {
                     crate::harness::session::types::EntryType::Message
@@ -1177,9 +1245,10 @@ impl LegacyV3Source {
                 format!("Legacy v3 fork entry is not a retained entry: {legacy_id}"),
             ));
         }
-        entry.mapped_id.clone().ok_or_else(|| {
-            SessionError::new(SessionErrorKind::Io, "Unmapped retained entry")
-        })
+        entry
+            .mapped_id
+            .clone()
+            .ok_or_else(|| SessionError::new(SessionErrorKind::Io, "Unmapped retained entry"))
     }
 
     fn collect_required_tail_message_ids(
@@ -1189,7 +1258,11 @@ impl LegacyV3Source {
         let mut required_ids = HashSet::new();
         for eid in &self.entry_order {
             let entry = &self.entries[eid];
-                if let LegacyV3IndexKind::Compaction { first_kept_entry_id, .. } = &entry.kind {
+            if let LegacyV3IndexKind::Compaction {
+                first_kept_entry_id,
+                ..
+            } = &entry.kind
+            {
                 let mapped_id = entry.mapped_id.as_deref().unwrap_or("");
                 let compaction_is_selected = is_entry_selected.is_none_or(|f| f(mapped_id));
                 if !compaction_is_selected {
@@ -1202,8 +1275,8 @@ impl LegacyV3Source {
                     &self.entries,
                 )?;
                 for tail_entry in tail {
-                    let can_produce_context_message =
-                        tail_entry.is_retained() && !matches!(tail_entry.kind, LegacyV3IndexKind::Custom);
+                    let can_produce_context_message = tail_entry.is_retained()
+                        && !matches!(tail_entry.kind, LegacyV3IndexKind::Custom);
                     if can_produce_context_message {
                         required_ids.insert(tail_entry.id.clone());
                     }
@@ -1218,28 +1291,42 @@ impl LegacyV3Source {
         context: Context,
         is_entry_selected: Option<EntrySelection>,
     ) -> Result<Vec<CommittedWrite>, SessionError> {
-        let required_tail_ids = self.collect_required_tail_message_ids(is_entry_selected.as_ref())?;
+        let required_tail_ids =
+            self.collect_required_tail_message_ids(is_entry_selected.as_ref())?;
         let mut tail_messages = HashMap::new();
 
         let reader = file_value(
-            self.file_system.open_text_line_reader(&self.path, &context).await,
+            self.file_system
+                .open_text_line_reader(&self.path, &context)
+                .await,
             &format!("Failed to reopen legacy v3 source {}", self.path),
         )?;
         let result = async {
             let parsed = read_jsonl_header(reader.as_ref(), &self.path, &context).await?;
             let v3_header = match parsed {
                 JsonlParsedSessionHeader::V3Legacy(header) => header,
-                _ => return Err(SessionError::new(SessionErrorKind::Io, "Legacy v3 source header changed")),
+                _ => {
+                    return Err(SessionError::new(
+                        SessionErrorKind::Io,
+                        "Legacy v3 source header changed",
+                    ));
+                }
             };
             if v3_header.id != self.header.id || v3_header.cwd != self.header.cwd {
-                return Err(SessionError::new(SessionErrorKind::Io, "Legacy v3 source header changed"));
+                return Err(SessionError::new(
+                    SessionErrorKind::Io,
+                    "Legacy v3 source header changed",
+                ));
             }
 
             let mut out_writes = Vec::new();
 
             for eid in &self.entry_order {
                 let indexed = &self.entries[eid];
-                let line = file_value(reader.read_line(&context).await, "Failed to reread legacy v3 source")?;
+                let line = file_value(
+                    reader.read_line(&context).await,
+                    "Failed to reread legacy v3 source",
+                )?;
                 let Some(line) = line else {
                     return Err(SessionError::new(
                         SessionErrorKind::Io,
@@ -1253,8 +1340,13 @@ impl LegacyV3Source {
                     ));
                 }
                 let raw_entry = parse_legacy_v3_entry(&line.text)?;
-                if raw_entry.id() != indexed.id || raw_entry.entry_type_str() != indexed.kind.entry_type_str() {
-                    return Err(SessionError::new(SessionErrorKind::Io, "Legacy v3 source changed"));
+                if raw_entry.id() != indexed.id
+                    || raw_entry.entry_type_str() != indexed.kind.entry_type_str()
+                {
+                    return Err(SessionError::new(
+                        SessionErrorKind::Io,
+                        "Legacy v3 source changed",
+                    ));
                 }
 
                 if required_tail_ids.contains(raw_entry.id())
@@ -1274,7 +1366,11 @@ impl LegacyV3Source {
                 }
 
                 let mut retained_tail = Vec::new();
-                if let LegacyV3IndexKind::Compaction { first_kept_entry_id, .. } = &indexed.kind {
+                if let LegacyV3IndexKind::Compaction {
+                    first_kept_entry_id,
+                    ..
+                } = &indexed.kind
+                {
                     let ancestors = retained_tail_structure(
                         &indexed.id,
                         first_kept_entry_id,
@@ -1289,7 +1385,8 @@ impl LegacyV3Source {
                     retained_tail.reverse();
                 }
 
-                let write = normalize_retained_entry(&raw_entry, indexed, retained_tail, &self.entries)?;
+                let write =
+                    normalize_retained_entry(&raw_entry, indexed, retained_tail, &self.entries)?;
                 out_writes.push(CommittedWrite::Entry(write));
             }
 
@@ -1323,5 +1420,3 @@ impl LegacyV3IndexKind {
         }
     }
 }
-
-

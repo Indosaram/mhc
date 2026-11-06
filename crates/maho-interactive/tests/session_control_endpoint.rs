@@ -5,10 +5,10 @@
 //! Each test binds a real endpoint on a real Unix socket over a real session and speaks to it the way
 //! a client does: the 32-byte secret first, then one JSONL request per connection.
 
+use maho_ai::types::{ContentBlock, Model, ModelThinkingLevel, StopReason, ToolCall};
 use maho_core::extensions::session_control_types::{
     RegisterControlEndpointOptions, SessionControlRegistration,
 };
-use maho_ai::types::{ContentBlock, Model, ModelThinkingLevel, StopReason, ToolCall};
 use maho_ext_api::QuestionResponse;
 use maho_interactive::session_control_commands::TuiControlSurface;
 use maho_interactive::session_control_endpoint::{
@@ -71,10 +71,7 @@ impl TuiSessionControls for TestSurface {
                     .into_iter()
                     .collect();
                     let _ = session.with_settings_manager_mut(|settings| {
-                        settings.set(
-                            maho_core::settings_manager::SettingsScope::Global,
-                            &values,
-                        )
+                        settings.set(maho_core::settings_manager::SettingsScope::Global, &values)
                     });
                 }
             } else {
@@ -637,55 +634,77 @@ async fn a_stop_needs_the_interactive_user_role() {
 #[tokio::test]
 async fn attached_terminal_stream_delivers_activity_revisions_in_order() {
     let fixture = start_endpoint(None).await;
-    let secret_path = maho_rpc::socket_transport::socket_secret_path(&fixture.socket)
-        .expect("secret path");
+    let secret_path =
+        maho_rpc::socket_transport::socket_secret_path(&fixture.socket).expect("secret path");
     let secret = std::fs::read(secret_path).expect("secret");
-    let socket = tokio::net::UnixStream::connect(&fixture.socket).await.expect("connect");
+    let socket = tokio::net::UnixStream::connect(&fixture.socket)
+        .await
+        .expect("connect");
     let (read, mut write) = socket.into_split();
     let mut lines = tokio::io::BufReader::new(read).lines();
     let handle = fixture.session.session_id();
     write.write_all(&secret).await.expect("authenticate");
     let request = json!({"id":"activity-attach", "type":"attach_session",
         "sessionId":handle,"durableSessionId":handle});
-    write.write_all(format!("{request}\n").as_bytes()).await.expect("attach request");
+    write
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .expect("attach request");
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let line = lines.next_line().await.expect("read attach").expect("open socket");
+            let line = lines
+                .next_line()
+                .await
+                .expect("read attach")
+                .expect("open socket");
             let record: Value = serde_json::from_str(&line).expect("attach record");
             if record["id"] == "activity-attach" {
                 assert_eq!(record["success"], true, "{record}");
                 break;
             }
         }
-    }).await.expect("attach deadline");
+    })
+    .await
+    .expect("attach deadline");
     for (revision, count) in [(1, 1), (2, 2), (3, 1)] {
-        fixture.session.emit_extension_event("session_lifecycle", &json!({
-            "type":"session_lifecycle", "sessionId":handle,
-            "lifecycle":{"state":"running", "seq":100,
-                "activity":{"kind":"tool", "toolName":"bash", "toolCallId":"a",
-                    "since":"2026-10-27T00:00:00.000Z", "outstanding":count},
-                "activityRevision":{"instanceId":"activity-owner", "revision":revision}}
-        }));
+        fixture.session.emit_extension_event(
+            "session_lifecycle",
+            &json!({
+                "type":"session_lifecycle", "sessionId":handle,
+                "lifecycle":{"state":"running", "seq":100,
+                    "activity":{"kind":"tool", "toolName":"bash", "toolCallId":"a",
+                        "since":"2026-10-27T00:00:00.000Z", "outstanding":count},
+                    "activityRevision":{"instanceId":"activity-owner", "revision":revision}}
+            }),
+        );
     }
     let records = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut records = Vec::new();
         while records.len() < 3 {
-            let line = lines.next_line().await.expect("read activity").expect("open socket");
+            let line = lines
+                .next_line()
+                .await
+                .expect("read activity")
+                .expect("open socket");
             let record: Value = serde_json::from_str(&line).expect("activity record");
             if record["type"] == "session_lifecycle" {
                 records.push(record);
             }
         }
         records
-    }).await.expect("activity delivery deadline");
+    })
+    .await
+    .expect("activity delivery deadline");
     for (record, (revision, count)) in records.iter().zip([(1, 1), (2, 2), (3, 1)]) {
         assert_eq!(record["sessionId"], handle);
         let lifecycle = &record["lifecycle"];
         assert_eq!(lifecycle["seq"], 100);
         assert_eq!(lifecycle["activity"]["outstanding"], count);
         assert_eq!(lifecycle["activity"]["since"], "2026-10-27T00:00:00.000Z");
-        assert_eq!(lifecycle["activityRevision"],
-            json!({"instanceId":"activity-owner", "revision":revision}));
+        assert_eq!(
+            lifecycle["activityRevision"],
+            json!({"instanceId":"activity-owner", "revision":revision})
+        );
         assert!(lifecycle["observedAt"].is_string());
     }
     drop(write);
@@ -887,11 +906,7 @@ async fn a_wake_is_emitted_into_the_sessions_extensions_before_the_drain() {
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
     control_data(&fixture.socket, json!({"type": "wake"})).await;
     assert_eq!(requested().len(), 2);
-    assert_eq!(
-        drained(),
-        2,
-        "a failing handler does not skip the drain"
-    );
+    assert_eq!(drained(), 2, "a failing handler does not skip the drain");
     assert!(
         lock(&fixture.surface.notices)
             .iter()
@@ -1003,8 +1018,8 @@ struct SocketClient {
 
 impl SocketClient {
     async fn connect(socket_path: &str) -> Self {
-        let secret_path = maho_rpc::socket_transport::socket_secret_path(socket_path)
-            .expect("secret path");
+        let secret_path =
+            maho_rpc::socket_transport::socket_secret_path(socket_path).expect("secret path");
         let secret = std::fs::read(secret_path).expect("secret");
         let stream = tokio::net::UnixStream::connect(socket_path)
             .await
@@ -1029,8 +1044,7 @@ impl SocketClient {
             .await
             .expect("write command");
         let target_id = id.clone();
-        self.wait_for(move |record| record["id"] == target_id)
-            .await
+        self.wait_for(move |record| record["id"] == target_id).await
     }
 
     async fn wait_for<F>(&mut self, predicate: F) -> Value
@@ -1338,9 +1352,8 @@ async fn delivers_overlapping_activity_counts_1_2_1_through_tui_attachment_write
     fixture.session.agent().set_stream_function(stream_fn);
 
     let session = fixture.session.clone();
-    let prompt_task = tokio::spawn(async move {
-        session.prompt("Run both.", Default::default()).await
-    });
+    let prompt_task =
+        tokio::spawn(async move { session.prompt("Run both.", Default::default()).await });
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         started_a_rx.recv().await.expect("tool a started");
@@ -1356,8 +1369,7 @@ async fn delivers_overlapping_activity_counts_1_2_1_through_tui_attachment_write
         while activity_records.len() < 3 {
             let record = client
                 .wait_for(|r| {
-                    r["type"] == "session_lifecycle"
-                        && r["lifecycle"]["activity"]["kind"] == "tool"
+                    r["type"] == "session_lifecycle" && r["lifecycle"]["activity"]["kind"] == "tool"
                 })
                 .await;
             activity_records.push(record);
@@ -1368,11 +1380,18 @@ async fn delivers_overlapping_activity_counts_1_2_1_through_tui_attachment_write
     .expect("collected 3 activity records");
 
     gate_a_tx.send(()).expect("release a");
-    prompt_task.await.expect("prompt task ok").expect("prompt ok");
+    prompt_task
+        .await
+        .expect("prompt task ok")
+        .expect("prompt ok");
 
     let outstandings: Vec<i64> = records
         .iter()
-        .map(|r| r["lifecycle"]["activity"]["outstanding"].as_i64().unwrap_or(0))
+        .map(|r| {
+            r["lifecycle"]["activity"]["outstanding"]
+                .as_i64()
+                .unwrap_or(0)
+        })
         .collect();
     assert_eq!(outstandings, vec![1, 2, 1]);
 
@@ -1423,14 +1442,23 @@ async fn session_control_advertises_controls_and_lists_models_and_levels() {
     let info = control_data(&fixture.socket, json!({"type": "get_protocol_info"})).await;
     assert_eq!(info["mode"], "tui");
     let commands = info["commands"].as_array().expect("commands array");
-    for cmd in ["set_model", "set_thinking_level", "interrupt", "set_session_name"] {
+    for cmd in [
+        "set_model",
+        "set_thinking_level",
+        "interrupt",
+        "set_session_name",
+    ] {
         assert!(commands.iter().any(|c| c == cmd), "missing command {cmd}");
     }
     let listing = control_data(&fixture.socket, json!({"type": "get_available_models"})).await;
     let models = listing["models"].as_array().expect("models array");
     assert!(models.iter().any(|m| m["id"] == "faux-reasoner"));
     assert!(models.iter().any(|m| m["id"] == "faux-plain"));
-    let levels = control_data(&fixture.socket, json!({"type": "get_available_thinking_levels"})).await;
+    let levels = control_data(
+        &fixture.socket,
+        json!({"type": "get_available_thinking_levels"}),
+    )
+    .await;
     let expected: Vec<String> = fixture
         .session
         .get_available_thinking_levels()
@@ -1489,7 +1517,10 @@ async fn session_control_set_model_switches_model_and_records_control_source() {
         .iter()
         .filter(|e| e["type"] == "model_change")
         .collect();
-    assert!(!model_changes.is_empty(), "a model_change entry was recorded");
+    assert!(
+        !model_changes.is_empty(),
+        "a model_change entry was recorded"
+    );
     fixture.endpoint.dispose().await;
 }
 
@@ -1563,14 +1594,12 @@ async fn session_control_set_thinking_level_validates_against_active_model() {
 #[tokio::test]
 async fn session_control_set_thinking_level_remembers_level_without_turn_scope() {
     use maho_ai::providers::faux::FauxModelDefinition;
-    let fixture = start_endpoint_with_provider_models(vec![
-        FauxModelDefinition {
-            id: "faux-reasoner".into(),
-            name: Some("Faux Reasoner".into()),
-            reasoning: Some(true),
-            ..Default::default()
-        },
-    ])
+    let fixture = start_endpoint_with_provider_models(vec![FauxModelDefinition {
+        id: "faux-reasoner".into(),
+        name: Some("Faux Reasoner".into()),
+        reasoning: Some(true),
+        ..Default::default()
+    }])
     .await;
     let levels: Vec<_> = fixture
         .session
@@ -1710,12 +1739,13 @@ async fn session_control_interrupt_running_turn_and_stale_turn_id() {
     fixture.session.agent().set_stream_function(stream_fn);
 
     let session = fixture.session.clone();
-    let prompt_task = tokio::spawn(async move {
-        session.prompt("keep going", Default::default()).await
-    });
+    let prompt_task =
+        tokio::spawn(async move { session.prompt("keep going", Default::default()).await });
 
     tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
-        .await.expect("tool start deadline").expect("hold tool started");
+        .await
+        .expect("tool start deadline")
+        .expect("hold tool started");
     assert!(fixture.session.is_streaming());
 
     let state = control_data(&fixture.socket, json!({"type": "get_state"})).await;
@@ -1738,14 +1768,14 @@ async fn session_control_interrupt_running_turn_and_stale_turn_id() {
         json!({"type": "interrupt", "turnId": turn_id}),
     )
     .await;
-    assert_eq!(
-        interrupted,
-        json!({"interrupted": true, "turnId": turn_id})
-    );
+    assert_eq!(interrupted, json!({"interrupted": true, "turnId": turn_id}));
 
     let _ = released_tx.send(());
     tokio::time::timeout(std::time::Duration::from_secs(10), prompt_task)
-        .await.expect("interrupted prompt deadline").expect("prompt task").expect("prompt result");
+        .await
+        .expect("interrupted prompt deadline")
+        .expect("prompt task")
+        .expect("prompt result");
 
     assert!(!fixture.session.is_streaming());
     let renamed = control_data(
@@ -1793,20 +1823,15 @@ async fn session_status_subscription_and_mirror_content_routing() {
         .await
         .expect("prompt ok");
 
-    let delta = mirrored
-        .wait_for(|r| r["type"] == "message_update")
-        .await;
+    let delta = mirrored.wait_for(|r| r["type"] == "message_update").await;
     assert_eq!(delta["type"], "message_update");
 
     let rows = plain
         .request(json!({"type": "subscribe_sessions", "sessions": "all"}))
         .await;
     assert!(
-        plain
-            .records
-            .iter()
-            .any(|r| r["type"] == "session_status"
-                && (r["status"] == "running" || r["status"] == "idle")),
+        plain.records.iter().any(|r| r["type"] == "session_status"
+            && (r["status"] == "running" || r["status"] == "idle")),
         "plain subscriber should receive actual status transitions"
     );
     assert!(
@@ -1838,8 +1863,9 @@ async fn live_prompt_and_steer_admission_under_turn_and_idle() {
     assert_eq!(started["data"]["disposition"], "started");
 
     tokio::time::timeout(std::time::Duration::from_secs(5), settled_rx.recv())
-    .await
-    .expect("prompt turn deadline").expect("prompt turn finished");
+        .await
+        .expect("prompt turn deadline")
+        .expect("prompt turn finished");
 
     let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let (released_tx, released_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -1915,11 +1941,12 @@ async fn live_prompt_and_steer_admission_under_turn_and_idle() {
     fixture.session.agent().set_stream_function(stream_fn);
 
     let session = fixture.session.clone();
-    let prompt_task = tokio::spawn(async move {
-        session.prompt("run turn", Default::default()).await
-    });
+    let prompt_task =
+        tokio::spawn(async move { session.prompt("run turn", Default::default()).await });
     tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
-        .await.expect("tool start deadline").expect("tool started");
+        .await
+        .expect("tool start deadline")
+        .expect("tool started");
     assert!(fixture.session.is_streaming());
 
     let busy = client
@@ -1942,7 +1969,10 @@ async fn live_prompt_and_steer_admission_under_turn_and_idle() {
 
     let _ = released_tx.send(());
     tokio::time::timeout(std::time::Duration::from_secs(10), prompt_task)
-        .await.expect("queued prompt deadline").expect("prompt task").expect("prompt result");
+        .await
+        .expect("queued prompt deadline")
+        .expect("prompt task")
+        .expect("prompt result");
 
     *lock(&fixture.surface.draft) = Some("active-draft".into());
     let held = client

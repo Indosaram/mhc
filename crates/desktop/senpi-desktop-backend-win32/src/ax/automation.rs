@@ -39,7 +39,9 @@ impl Automation {
             .parse::<u32>()
             .ok()
             .and_then(|id| isize::try_from(id).ok())
-            .ok_or_else(|| DesktopError::ax_failed(format!("invalid Win32 window id '{}'", window.id)))?;
+            .ok_or_else(|| {
+                DesktopError::ax_failed(format!("invalid Win32 window id '{}'", window.id))
+            })?;
         self.client()?
             .element_from_handle(Handle::from(hwnd))
             .map_err(uia_error)

@@ -1,6 +1,6 @@
 //! `ax.snapshot`: the filtered tree rendered as an indented ref'd outline.
 
-use super::walk::{WalkNode, WalkState, filter_node, label, walk_raw};
+use super::walk::{filter_node, label, walk_raw, WalkNode, WalkState};
 use super::{AxBackend, AxRegistry};
 use crate::error::CoreResult;
 use crate::types::{AxSnapshot, AxSnapshotOptions, DesktopWindow};

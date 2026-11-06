@@ -22,8 +22,8 @@ use crate::tools::task::types::{
     ResolvedSpawnItem, SpawnTarget, TaskSkillSummary, TaskToolDetails, TaskToolMode,
 };
 use crate::tools::task::validation::{
-    BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_run_in_background, resolve_spawn_items,
-    validate_batch_shape, validate_task_target,
+    BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_run_in_background,
+    resolve_spawn_items, validate_batch_shape, validate_task_target,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

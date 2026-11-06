@@ -135,7 +135,8 @@ pub trait IntervalHandle: Send + Sync {
 
 /// Models `setInterval`.
 pub trait IntervalScheduler: Send + Sync {
-    fn set_interval(&self, interval_ms: u64, callback: IntervalCallback) -> Box<dyn IntervalHandle>;
+    fn set_interval(&self, interval_ms: u64, callback: IntervalCallback)
+    -> Box<dyn IntervalHandle>;
 }
 
 /// Default scheduler: one background thread per interval, stoppable via a condvar.
@@ -157,7 +158,11 @@ impl IntervalHandle for ThreadIntervalHandle {
 }
 
 impl IntervalScheduler for ThreadIntervalScheduler {
-    fn set_interval(&self, interval_ms: u64, callback: IntervalCallback) -> Box<dyn IntervalHandle> {
+    fn set_interval(
+        &self,
+        interval_ms: u64,
+        callback: IntervalCallback,
+    ) -> Box<dyn IntervalHandle> {
         let stop: StopSignal = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_stop = Arc::clone(&stop);
         let interval = Duration::from_millis(interval_ms);
@@ -234,7 +239,9 @@ type RuntimeRegistry = Vec<(Weak<dyn ExtensionApi>, Arc<ActiveRuntime>)>;
 static ACTIVE_RUNTIMES: Mutex<RuntimeRegistry> = Mutex::new(Vec::new());
 
 fn registry() -> MutexGuard<'static, RuntimeRegistry> {
-    let mut guard = ACTIVE_RUNTIMES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = ACTIVE_RUNTIMES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     guard.retain(|(key, _)| key.strong_count() > 0);
     guard
 }
@@ -251,7 +258,9 @@ pub fn has_active_member_runtime(pi: &Arc<dyn ExtensionApi>) -> bool {
 
 /// Resolves `./omo-member.js` relative to the given extension file URL or path.
 pub fn resolve_member_extension_entry_path(extension_url: &str) -> String {
-    let path = extension_url.strip_prefix("file://").unwrap_or(extension_url);
+    let path = extension_url
+        .strip_prefix("file://")
+        .unwrap_or(extension_url);
     let dir = match path.rfind('/') {
         Some(index) => &path[..=index],
         None => "",

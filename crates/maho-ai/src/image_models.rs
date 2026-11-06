@@ -6,19 +6,22 @@ use crate::types::InputModality;
 use indexmap::IndexMap;
 use std::sync::LazyLock;
 
-static IMAGE_MODELS: LazyLock<IndexMap<String, IndexMap<String, ImagesModel>>> = LazyLock::new(|| {
-    let mut catalogs = GENERATED_IMAGE_MODELS.clone();
-    for model in catalogs.values_mut().flat_map(IndexMap::values_mut) {
-        apply_image_input_metadata(model);
-    }
-    catalogs
-});
+static IMAGE_MODELS: LazyLock<IndexMap<String, IndexMap<String, ImagesModel>>> =
+    LazyLock::new(|| {
+        let mut catalogs = GENERATED_IMAGE_MODELS.clone();
+        for model in catalogs.values_mut().flat_map(IndexMap::values_mut) {
+            apply_image_input_metadata(model);
+        }
+        catalogs
+    });
 
 fn apply_image_input_metadata(model: &mut ImagesModel) {
     if !model.input.contains(&InputModality::Image) {
         return;
     }
-    let limits = model.input_limits.get_or_insert_with(ModelInputLimits::default);
+    let limits = model
+        .input_limits
+        .get_or_insert_with(ModelInputLimits::default);
     let (request_bytes, per_message, per_request) = match model.provider.as_str() {
         "anthropic" => (Some(32 * 1024 * 1024), None, Some(600)),
         "amazon-bedrock" => (None, Some(20), None),
@@ -27,10 +30,14 @@ fn apply_image_input_metadata(model: &mut ImagesModel) {
         _ => (None, None, None),
     };
     limits.max_request_bytes = limits.max_request_bytes.or(request_bytes);
-    let images = limits.images.get_or_insert_with(ModelImageInputLimits::default);
+    let images = limits
+        .images
+        .get_or_insert_with(ModelImageInputLimits::default);
     images.max_per_message = images.max_per_message.or(per_message);
     images.max_per_request = images.max_per_request.or(per_request);
-    let resize = images.resize.get_or_insert_with(ModelImageResizeOptions::default);
+    let resize = images
+        .resize
+        .get_or_insert_with(ModelImageResizeOptions::default);
     resize.max_width = resize.max_width.or(Some(2000));
     resize.max_height = resize.max_height.or(Some(2000));
     resize.max_bytes = resize.max_bytes.or(Some(4_718_592));
@@ -47,7 +54,10 @@ pub fn get_image_providers() -> Vec<&'static str> {
 }
 
 pub fn get_image_models(provider: &str) -> Vec<&'static ImagesModel> {
-    IMAGE_MODELS.get(provider).map(|models| models.values().collect()).unwrap_or_default()
+    IMAGE_MODELS
+        .get(provider)
+        .map(|models| models.values().collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -57,11 +67,19 @@ mod tests {
 
     fn registers_with_editing_and_pricing(id: &str) {
         let model = get_image_model("openai", id).expect("image model");
-        assert_eq!((model.id.as_str(), model.api.as_str()), (id, "openai-images"));
+        assert_eq!(
+            (model.id.as_str(), model.api.as_str()),
+            (id, "openai-images")
+        );
         assert_eq!(model.input, vec![InputModality::Text, InputModality::Image]);
         assert_eq!(model.output, vec![ImagesOutputModality::Image]);
         assert_eq!(
-            (model.cost.input, model.cost.output, model.cost.cache_read, model.cost.cache_write),
+            (
+                model.cost.input,
+                model.cost.output,
+                model.cost.cache_read,
+                model.cost.cache_write
+            ),
             (5.0, 30.0, 1.25, 0.0)
         );
     }
@@ -103,14 +121,19 @@ mod tests {
     #[test]
     fn explicit_image_metadata_takes_precedence_over_provider_defaults() {
         // Given independently configured resize and request metadata.
-        let mut model = get_image_model("openai", "gpt-image-2.5-sunburst").expect("model").clone();
+        let mut model = get_image_model("openai", "gpt-image-2.5-sunburst")
+            .expect("model")
+            .clone();
         model.input_limits = Some(ModelInputLimits {
             max_request_bytes: Some(1234),
             images: Some(ModelImageInputLimits {
-                max_per_message: Some(2), max_per_request: Some(3),
+                max_per_message: Some(2),
+                max_per_request: Some(3),
                 resize: Some(ModelImageResizeOptions {
-                    max_width: None, max_height: Some(480),
-                    max_bytes: Some(4096), jpeg_quality: Some(90),
+                    max_width: None,
+                    max_height: Some(480),
+                    max_bytes: Some(4096),
+                    jpeg_quality: Some(90),
                 }),
             }),
         });
@@ -122,9 +145,14 @@ mod tests {
         assert_eq!(limits.max_request_bytes, Some(1234));
         assert_eq!(images.max_per_message, Some(2));
         assert_eq!(images.max_per_request, Some(3));
-        assert_eq!(images.resize, Some(ModelImageResizeOptions {
-            max_width: Some(2000), max_height: Some(480),
-            max_bytes: Some(4096), jpeg_quality: Some(90),
-        }));
+        assert_eq!(
+            images.resize,
+            Some(ModelImageResizeOptions {
+                max_width: Some(2000),
+                max_height: Some(480),
+                max_bytes: Some(4096),
+                jpeg_quality: Some(90),
+            })
+        );
     }
 }

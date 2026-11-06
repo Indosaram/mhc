@@ -469,7 +469,8 @@ mod tests {
         let observer = signal.clone();
         signal.abort_with_reason(Some("timed_out".into()));
         tokio::time::timeout(std::time::Duration::from_secs(1), observer.cancelled())
-            .await.expect("late subscriber observes abort");
+            .await
+            .expect("late subscriber observes abort");
         signal.abort();
         assert!(signal_timed_out(&observer));
         let cancelled = maho_ext_api::AbortSignal::default();

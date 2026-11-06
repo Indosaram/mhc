@@ -1549,7 +1549,8 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
     )
     .map(|count| count.max(0.0) as u64);
 
-    let mut usage = Usage { context_usage: None,
+    let mut usage = Usage {
+        context_usage: None,
         input,
         output: output_tokens,
         cache_read: cache_read_tokens,
@@ -2501,11 +2502,16 @@ pub fn stream_with_transport(
 
 /// The next SSE chunk, raced against the turn's abort signal: an abort wins (it is polled first) and
 /// answers the aborted error, so the caller returns and drops the stream with its HTTP response.
-async fn next_chunk_or_abort<S>(chunks: &mut S, signal: Option<&AbortSignal>) -> Result<Option<S::Item>, OpenAiCompletionsError>
+async fn next_chunk_or_abort<S>(
+    chunks: &mut S,
+    signal: Option<&AbortSignal>,
+) -> Result<Option<S::Item>, OpenAiCompletionsError>
 where
     S: futures::Stream + Unpin,
 {
-    let Some(signal) = signal else { return Ok(chunks.next().await) };
+    let Some(signal) = signal else {
+        return Ok(chunks.next().await);
+    };
     tokio::select! {
         biased;
         () = signal.cancelled() => Err(OpenAiCompletionsError::protocol("Request was aborted")),

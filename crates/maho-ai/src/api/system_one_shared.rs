@@ -120,7 +120,10 @@ pub(crate) async fn post(
     ])
     .unwrap_or_default();
     // PERF-DIVERGENCE(senpi system-one-shared.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let client = request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let client = request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let (body, response) = retry_provider_request(|| {
         let mut builder = client.post(url).json(&payload);
         for (name, value) in &headers { builder = builder.header(name, value); }

@@ -2,17 +2,17 @@
 //!
 //! Input targets, window handles, and accessibility element handles.
 
-use std::collections::HashMap;
 use senpi_desktop_protocol::{ELEMENT_METHODS, WINDOW_METHODS};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 
-use crate::context::{guard_run, DesktopRunError, MethodTiers, RunScope};
+use crate::context::{DesktopRunError, MethodTiers, RunScope, guard_run};
 use crate::engine_results::{
-    expect_ax_node, expect_ax_nodes, expect_optional_ax_node, expect_result, AxNode, DesktopWindow,
-    TextResult,
+    AxNode, DesktopWindow, TextResult, expect_ax_node, expect_ax_nodes, expect_optional_ax_node,
+    expect_result,
 };
-use crate::screenshot::{capture_screenshot, ScreenshotOptions, ScreenshotResult};
+use crate::screenshot::{ScreenshotOptions, ScreenshotResult, capture_screenshot};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeliveryOptions {
@@ -121,7 +121,12 @@ impl InputTarget {
             .map_err(DesktopRunError::Engine)
     }
 
-    pub async fn click(&self, x: i64, y: i64, options: ClickOptions) -> Result<(), DesktopRunError> {
+    pub async fn click(
+        &self,
+        x: i64,
+        y: i64,
+        options: ClickOptions,
+    ) -> Result<(), DesktopRunError> {
         guard_run(&self.scope.context, self.tiers, "click").await?;
         let opts = pointer_options(options);
         (self.scope.call)(
@@ -300,7 +305,12 @@ impl WindowHandle {
         self.input.screenshot(options).await
     }
 
-    pub async fn click(&self, x: i64, y: i64, options: ClickOptions) -> Result<(), DesktopRunError> {
+    pub async fn click(
+        &self,
+        x: i64,
+        y: i64,
+        options: ClickOptions,
+    ) -> Result<(), DesktopRunError> {
         self.input.click(x, y, options).await
     }
 
@@ -323,12 +333,10 @@ impl WindowHandle {
 
     pub async fn ax(&self, options: AxOptions) -> Result<String, DesktopRunError> {
         guard_run(&self.input.scope.context, WINDOW_METHODS, "ax").await?;
-        let res = (self.input.scope.call)(
-            "ax.snapshot",
-            json!({ "target": self.id, "opts": options }),
-        )
-        .await
-        .map_err(DesktopRunError::Engine)?;
+        let res =
+            (self.input.scope.call)("ax.snapshot", json!({ "target": self.id, "opts": options }))
+                .await
+                .map_err(DesktopRunError::Engine)?;
         let text: TextResult =
             expect_result("ax.snapshot", res).map_err(DesktopRunError::Engine)?;
         Ok(text.text)
@@ -336,14 +344,10 @@ impl WindowHandle {
 
     pub async fn find(&self, query: AxQuery) -> Result<Vec<ElementHandle>, DesktopRunError> {
         guard_run(&self.input.scope.context, WINDOW_METHODS, "find").await?;
-        let res = (self.input.scope.call)(
-            "ax.query",
-            json!({ "target": self.id, "query": query }),
-        )
-        .await
-        .map_err(DesktopRunError::Engine)?;
-        let nodes = expect_ax_nodes("ax.query", res)
+        let res = (self.input.scope.call)("ax.query", json!({ "target": self.id, "query": query }))
+            .await
             .map_err(DesktopRunError::Engine)?;
+        let nodes = expect_ax_nodes("ax.query", res).map_err(DesktopRunError::Engine)?;
         Ok(nodes
             .into_iter()
             .map(|n| ElementHandle::new(self.input.scope.clone(), n))
@@ -356,12 +360,14 @@ impl WindowHandle {
     }
 }
 
-pub async fn resolve_element(scope: &RunScope, ref_id: &str) -> Result<ElementHandle, DesktopRunError> {
+pub async fn resolve_element(
+    scope: &RunScope,
+    ref_id: &str,
+) -> Result<ElementHandle, DesktopRunError> {
     let res = (scope.call)("ax.node", json!({ "ref": ref_id }))
         .await
         .map_err(DesktopRunError::Engine)?;
-    let node = expect_ax_node("ax.node", res)
-        .map_err(DesktopRunError::Engine)?;
+    let node = expect_ax_node("ax.node", res).map_err(DesktopRunError::Engine)?;
     Ok(ElementHandle::new(scope.clone(), node))
 }
 
@@ -408,19 +414,21 @@ impl ElementHandle {
 
     pub async fn set_value(&self, value: &str) -> Result<(), DesktopRunError> {
         guard_run(&self.scope.context, ELEMENT_METHODS, "setValue").await?;
-        (self.scope.call)(
-            "ax.setValue",
-            json!({ "ref": self.ref_id, "value": value }),
-        )
-        .await
-        .map(|_| ())
-        .map_err(DesktopRunError::Engine)
+        (self.scope.call)("ax.setValue", json!({ "ref": self.ref_id, "value": value }))
+            .await
+            .map(|_| ())
+            .map_err(DesktopRunError::Engine)
     }
 
     pub async fn bounds(&self) -> Result<Option<Bounds>, DesktopRunError> {
         let n = self.node("bounds").await?;
         if let (Some(x), Some(y), Some(width), Some(height)) = (n.x, n.y, n.width, n.height) {
-            Ok(Some(Bounds { x, y, width, height }))
+            Ok(Some(Bounds {
+                x,
+                y,
+                width,
+                height,
+            }))
         } else {
             Ok(None)
         }
@@ -487,8 +495,7 @@ impl ElementHandle {
         let res = (self.scope.call)("ax.parent", json!({ "ref": self.ref_id }))
             .await
             .map_err(DesktopRunError::Engine)?;
-        let node = expect_optional_ax_node("ax.parent", res)
-            .map_err(DesktopRunError::Engine)?;
+        let node = expect_optional_ax_node("ax.parent", res).map_err(DesktopRunError::Engine)?;
         Ok(node.map(|n| ElementHandle::new(self.scope.clone(), n)))
     }
 
@@ -497,8 +504,7 @@ impl ElementHandle {
         let res = (self.scope.call)("ax.children", json!({ "ref": self.ref_id }))
             .await
             .map_err(DesktopRunError::Engine)?;
-        let nodes = expect_ax_nodes("ax.children", res)
-            .map_err(DesktopRunError::Engine)?;
+        let nodes = expect_ax_nodes("ax.children", res).map_err(DesktopRunError::Engine)?;
         Ok(nodes
             .into_iter()
             .map(|n| ElementHandle::new(self.scope.clone(), n))

@@ -62,12 +62,18 @@ fn server_running(tools: &LspTools, cwd: &Path, path: &Path) -> bool {
         return false;
     };
     let root = maho_lsp::tools::find_workspace_root(path);
-    tools.manager.snapshot().iter().any(|row| {
-        row.root == root && row.server_id == server.id && row.alive && !row.initializing
-    })
+    tools
+        .manager
+        .snapshot()
+        .iter()
+        .any(|row| row.root == root && row.server_id == server.id && row.alive && !row.initializing)
 }
 
-async fn request_format(tools: &LspTools, cwd: &Path, path: &Path) -> Result<Vec<TextEdit>, LspError> {
+async fn request_format(
+    tools: &LspTools,
+    cwd: &Path,
+    path: &Path,
+) -> Result<Vec<TextEdit>, LspError> {
     tools
         .with_client(path, cwd, "formatting", |client| async move {
             let uri = client.open_file(path).await?;

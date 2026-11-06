@@ -383,10 +383,7 @@ fn test_parse_queue_header_and_entry_reject_invalid_second_entry() {
     .to_string();
 
     assert_eq!(parse_queue_entry(&invalid_tool_call_json), None);
-    assert_eq!(
-        parse_queue_header(invalid_tool_call_json.as_bytes()),
-        None
-    );
+    assert_eq!(parse_queue_header(invalid_tool_call_json.as_bytes()), None);
 }
 
 #[test]
@@ -511,8 +508,7 @@ fn test_parse_queue_header_large_synthetic_file() {
         "payload must be at least 20 MB, got {total_mb:.2} MB"
     );
 
-    let header =
-        parse_queue_header(Cursor::new(payload)).expect("accepted large synthetic file");
+    let header = parse_queue_header(Cursor::new(payload)).expect("accepted large synthetic file");
     assert_eq!(header.version, 1);
     assert_eq!(header.identity, "agent-perf");
     assert_eq!(header.session_id, "sess-perf");

@@ -28,8 +28,7 @@ pub struct SkillDiscovery {
 }
 
 /// Seam for the host's `loadSkillsFromDir`.
-pub type DiscoverSkills =
-    Arc<dyn Fn(&SkillDiscoveryOptions<'_>) -> SkillDiscovery + Send + Sync>;
+pub type DiscoverSkills = Arc<dyn Fn(&SkillDiscoveryOptions<'_>) -> SkillDiscovery + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct FsSkillLoaderOptions {
@@ -284,7 +283,10 @@ fn read_skill(
     cwd: &Path,
     dirs: &[PathBuf],
     discover: &DiscoverSkills,
-    caches: (&mut HashMap<PathBuf, SkillDiscovery>, &mut HashMap<PathBuf, CheckedProjectSkills>),
+    caches: (
+        &mut HashMap<PathBuf, SkillDiscovery>,
+        &mut HashMap<PathBuf, CheckedProjectSkills>,
+    ),
     user_dirs: &[PathBuf],
     rejected: &mut Vec<SkillRejection>,
 ) -> Option<LoadedSkill> {

@@ -189,7 +189,7 @@ fn params(prompt: &str) -> SpawnParamsInput {
 
 #[test]
 fn given_a_real_manager_when_the_task_tool_executes_in_two_sessions_then_both_calls_spawn_children()
- {
+{
     let dir = tempfile::tempdir().expect("tempdir");
     let (manager, in_process) = make_manager(&dir);
     let tool = tool_deps();

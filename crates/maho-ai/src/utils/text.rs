@@ -21,7 +21,10 @@ pub fn user_content_text(content: &UserContent, separator: &str) -> String {
     }
 }
 
-pub fn get_system_message_text(content: &UserContent, sections: &indexmap::IndexMap<String, Option<String>>) -> String {
+pub fn get_system_message_text(
+    content: &UserContent,
+    sections: &indexmap::IndexMap<String, Option<String>>,
+) -> String {
     let text = user_content_text(content, "\n");
     std::iter::once(text.as_str())
         .chain(sections.values().filter_map(Option::as_deref))
@@ -30,10 +33,15 @@ pub fn get_system_message_text(content: &UserContent, sections: &indexmap::Index
         .join("\n\n")
 }
 
-pub fn render_system_message_update(content: &UserContent, sections: &indexmap::IndexMap<String, Option<String>>) -> String {
+pub fn render_system_message_update(
+    content: &UserContent,
+    sections: &indexmap::IndexMap<String, Option<String>>,
+) -> String {
     let text = user_content_text(content, "\n");
     let mut parts = Vec::new();
-    if !text.is_empty() { parts.push(text); }
+    if !text.is_empty() {
+        parts.push(text);
+    }
     for (name, value) in sections {
         parts.push(match value {
             Some(value) => format!("Updated system prompt section \"{name}\":\n\n{value}"),
@@ -66,9 +74,16 @@ mod tests {
     /// a tool call, and provider-native blocks).
     fn content() -> Vec<ContentBlock> {
         vec![
-            ContentBlock::Thinking(crate::types::ThinkingContent { thinking: "reasoning".into(), ..Default::default() }),
+            ContentBlock::Thinking(crate::types::ThinkingContent {
+                thinking: "reasoning".into(),
+                ..Default::default()
+            }),
             ContentBlock::text("first"),
-            ContentBlock::ToolCall(crate::types::ToolCall { id: "1".into(), name: "read".into(), ..Default::default() }),
+            ContentBlock::ToolCall(crate::types::ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                ..Default::default()
+            }),
             ContentBlock::ProviderNative(crate::types::ProviderNativeContent {
                 subtype: "web_search_call".into(),
                 raw: serde_json::json!({ "id": "ws_1" }),
@@ -89,14 +104,20 @@ mod tests {
 
     #[test]
     fn passes_string_content_through() {
-        assert_eq!(user_content_text(&UserContent::Text("hello".into()), "\n"), "hello");
+        assert_eq!(
+            user_content_text(&UserContent::Text("hello".into()), "\n"),
+            "hello"
+        );
     }
 
     #[test]
     fn extracts_text_from_tool_result_content() {
         let tool_result_content = vec![
             ContentBlock::text("first"),
-            ContentBlock::Image(crate::types::ImageContent { data: "...".into(), mime_type: "image/png".into() }),
+            ContentBlock::Image(crate::types::ImageContent {
+                data: "...".into(),
+                mime_type: "image/png".into(),
+            }),
             ContentBlock::text("second"),
         ];
         assert_eq!(content_text(&tool_result_content, ""), "firstsecond");
@@ -117,17 +138,23 @@ mod tests {
             ("empty".into(), Some(String::new())),
             ("a".into(), Some("last section".into())),
         ]);
-        assert_eq!(get_system_message_text(&UserContent::Text("base".into()), &sections), "base\n\nfirst section\n\nlast section");
-        assert_eq!(get_system_message_text(&UserContent::Blocks(content()), &Default::default()), "first\nsecond");
+        assert_eq!(
+            get_system_message_text(&UserContent::Text("base".into()), &sections),
+            "base\n\nfirst section\n\nlast section"
+        );
+        assert_eq!(
+            get_system_message_text(&UserContent::Blocks(content()), &Default::default()),
+            "first\nsecond"
+        );
     }
 
     #[test]
     fn system_update_preserves_empty_updates_and_removal_frames() {
-        let sections = indexmap::IndexMap::from([
-            ("z".into(), Some(String::new())),
-            ("a".into(), None),
-        ]);
-        assert_eq!(render_system_message_update(&UserContent::Text(String::new()), &sections),
-            "Updated system prompt section \"z\":\n\n\n\nRemoved system prompt section \"a\".");
+        let sections =
+            indexmap::IndexMap::from([("z".into(), Some(String::new())), ("a".into(), None)]);
+        assert_eq!(
+            render_system_message_update(&UserContent::Text(String::new()), &sections),
+            "Updated system prompt section \"z\":\n\n\n\nRemoved system prompt section \"a\"."
+        );
     }
 }

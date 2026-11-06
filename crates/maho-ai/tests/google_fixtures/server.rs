@@ -42,13 +42,17 @@ pub struct RecordingServer {
 impl RecordingServer {
     /// Serves `body` with `content_type` for every request, recording each request.
     pub async fn start(body: Vec<u8>, content_type: &'static str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind recording server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind recording server");
         let addr = listener.local_addr().expect("recording server addr");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&requests);
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let body = body.clone();
                 let recorder = Arc::clone(&recorder);
                 tokio::spawn(async move {
@@ -59,7 +63,9 @@ impl RecordingServer {
                             Ok(0) | Err(_) => break None,
                             Ok(read) => {
                                 buffer.extend_from_slice(&chunk[..read]);
-                                if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                                if let Some(index) =
+                                    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+                                {
                                     break Some(index + 4);
                                 }
                             }
@@ -86,11 +92,14 @@ impl RecordingServer {
                             Ok(read) => body_bytes.extend_from_slice(&chunk[..read]),
                         }
                     }
-                    recorder.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(RecordedRequest {
-                        request_line,
-                        headers,
-                        body: String::from_utf8_lossy(&body_bytes).into_owned(),
-                    });
+                    recorder
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(RecordedRequest {
+                            request_line,
+                            headers,
+                            body: String::from_utf8_lossy(&body_bytes).into_owned(),
+                        });
                     let response = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                         body.len()
@@ -102,7 +111,11 @@ impl RecordingServer {
                 });
             }
         });
-        Self { addr, requests, handle }
+        Self {
+            addr,
+            requests,
+            handle,
+        }
     }
 
     pub fn base_url(&self) -> String {
@@ -110,7 +123,10 @@ impl RecordingServer {
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
-        self.requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn last_request(&self) -> RecordedRequest {

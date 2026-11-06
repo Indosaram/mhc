@@ -15,7 +15,9 @@ pub fn read_text() -> CoreResult<String> {
     with_clipboard(|clipboard| match clipboard.get_text() {
         Ok(text) => Ok(text),
         Err(ClipboardError::ContentNotAvailable) => Ok(String::new()),
-        Err(error) => Err(DesktopError::internal(format!("reading the clipboard failed: {error}"))),
+        Err(error) => Err(DesktopError::internal(format!(
+            "reading the clipboard failed: {error}"
+        ))),
     })
 }
 
@@ -25,14 +27,15 @@ pub fn read_text() -> CoreResult<String> {
 /// `Internal` when the platform clipboard cannot be opened or written.
 pub fn write_text(text: &str) -> CoreResult<()> {
     with_clipboard(|clipboard| {
-        clipboard
-            .set_text(text)
-            .map_err(|error| DesktopError::internal(format!("writing the clipboard failed: {error}")))
+        clipboard.set_text(text).map_err(|error| {
+            DesktopError::internal(format!("writing the clipboard failed: {error}"))
+        })
     })
 }
 
 fn open() -> CoreResult<Clipboard> {
-    Clipboard::new().map_err(|error| DesktopError::internal(format!("opening the clipboard failed: {error}")))
+    Clipboard::new()
+        .map_err(|error| DesktopError::internal(format!("opening the clipboard failed: {error}")))
 }
 
 /// X11 selections are owner-based: the text a process set is served only while
@@ -47,8 +50,10 @@ fn with_clipboard<T>(act: impl FnOnce(&mut Clipboard) -> CoreResult<T>) -> CoreR
     if slot.is_none() {
         *slot = Some(open()?);
     }
-    slot.as_mut()
-        .map_or_else(|| Err(DesktopError::internal("the clipboard could not be opened")), act)
+    slot.as_mut().map_or_else(
+        || Err(DesktopError::internal("the clipboard could not be opened")),
+        act,
+    )
 }
 
 /// macOS and Windows keep clipboard contents after the writer is gone, so a

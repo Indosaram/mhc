@@ -496,7 +496,10 @@ impl TaskManager {
         // highest id; this reads the id off each cached record and keeps none. Same floor.
         let mut max_id: Option<String> = None;
         match options.store.list_matching(|record| {
-            if max_id.as_deref().is_none_or(|max| record.task_id.as_str() > max) {
+            if max_id
+                .as_deref()
+                .is_none_or(|max| record.task_id.as_str() > max)
+            {
                 max_id = Some(record.task_id.clone());
             }
             false
@@ -4951,10 +4954,23 @@ impl OutcomeTrackerPorts for Inner {
         (self.now)()
     }
 
-    fn wait_exit_confirmation(&self, remaining_ms: u64) {
+    fn exit_confirmation_mark(&self, task_id: &str) -> u64 {
+        self.store.task_change_seq(task_id)
+    }
+
+    fn wait_exit_confirmation(&self, task_id: &str, since: u64, remaining_ms: u64) {
         match &self.exit_confirmation_wait {
-            Some(wait) => wait(remaining_ms),
-            None => std::thread::sleep(std::time::Duration::from_millis(remaining_ms)),
+            Some(wait) => wait(task_id, remaining_ms),
+            // Park on THIS task's commits instead of sleeping out the window: a record change (a
+            // settling outcome, a replacement run) ends the wait immediately, so the caller re-reads
+            // at once. With no change we still stop exactly at the confirmation deadline.
+            None => {
+                self.store.wait_task_change(
+                    task_id,
+                    since,
+                    std::time::Duration::from_millis(remaining_ms),
+                );
+            }
         }
     }
 
@@ -5072,11 +5088,19 @@ mod claim_mark_tests {
             taken: vec!["st_00000001", "st_00000002"],
             accept: Some("st_00000003"),
         };
-        let claimed = claim_marked(&state, &saver, &draft("st_00000001"), &ClaimOptions::default())
-            .expect("claimed");
+        let claimed = claim_marked(
+            &state,
+            &saver,
+            &draft("st_00000001"),
+            &ClaimOptions::default(),
+        )
+        .expect("claimed");
         assert_eq!(claimed.task_id, "st_00000003");
         let marks = lock(&state).claiming.clone();
-        assert!(marks.contains("st_00000002"), "start B lost its mark: {marks:?}");
+        assert!(
+            marks.contains("st_00000002"),
+            "start B lost its mark: {marks:?}"
+        );
         assert!(marks.contains("st_00000003"));
         assert!(!marks.contains("st_00000001"));
     }
@@ -5090,13 +5114,26 @@ mod claim_mark_tests {
             accept: None,
         };
         // The first save is refused outright: no mark of A's may survive, and B's stays.
-        let refused = claim_marked(&state, &saver, &draft("st_00000001"), &ClaimOptions::default());
+        let refused = claim_marked(
+            &state,
+            &saver,
+            &draft("st_00000001"),
+            &ClaimOptions::default(),
+        );
         assert!(matches!(refused, Err(ClaimError::Store(_))));
         // A draft starting on B's id collides, then is refused: B's mark still survives.
-        let collided = claim_marked(&state, &saver, &draft("st_00000002"), &ClaimOptions::default());
+        let collided = claim_marked(
+            &state,
+            &saver,
+            &draft("st_00000002"),
+            &ClaimOptions::default(),
+        );
         assert!(collided.is_err());
         let marks = lock(&state).claiming.clone();
-        assert_eq!(marks.into_iter().collect::<Vec<_>>(), vec!["st_00000002".to_string()]);
+        assert_eq!(
+            marks.into_iter().collect::<Vec<_>>(),
+            vec!["st_00000002".to_string()]
+        );
     }
 
     #[test]

@@ -262,7 +262,8 @@ impl TuiMainScreen {
                             !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
                         })
                 });
-            let report = matches!(data, "\x1b[I" | "\x1b[O") || data.starts_with("\x1b[?")
+            let report = matches!(data, "\x1b[I" | "\x1b[O")
+                || data.starts_with("\x1b[?")
                 || cell_report
                 || data.len() > 2
                     && (data.starts_with("\x1b]")

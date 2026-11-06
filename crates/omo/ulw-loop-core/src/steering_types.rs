@@ -30,7 +30,11 @@ pub struct UlwLoopSteeringAfterPayload {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
-    #[serde(rename = "pendingGoalIds", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pendingGoalIds",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pending_goal_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<UlwLoopSteeringChildGoal>>,
@@ -43,15 +47,31 @@ pub struct UlwLoopSteeringProposal {
     pub source: String,
     #[serde(rename = "goalId", default, skip_serializing_if = "Option::is_none")]
     pub goal_id: Option<String>,
-    #[serde(rename = "targetGoalId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "targetGoalId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub target_goal_id: Option<String>,
-    #[serde(rename = "targetGoalIds", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "targetGoalIds",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub target_goal_ids: Option<Vec<String>>,
-    #[serde(rename = "criterionId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "criterionId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub criterion_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario: Option<String>,
-    #[serde(rename = "expectedEvidence", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "expectedEvidence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expected_evidence: Option<String>,
     #[serde(rename = "userModel", default, skip_serializing_if = "Option::is_none")]
     pub user_model: Option<String>,
@@ -63,23 +83,55 @@ pub struct UlwLoopSteeringProposal {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
-    #[serde(rename = "childGoals", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "childGoals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub child_goals: Option<Vec<UlwLoopSteeringChildGoal>>,
-    #[serde(rename = "revisedTitle", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "revisedTitle",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub revised_title: Option<String>,
-    #[serde(rename = "revisedObjective", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "revisedObjective",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub revised_objective: Option<String>,
-    #[serde(rename = "pendingOrder", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pendingOrder",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pending_order: Option<Vec<String>>,
-    #[serde(rename = "blockedReason", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "blockedReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub blocked_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<UlwLoopSteeringAfterPayload>,
-    #[serde(rename = "directiveText", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "directiveText",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub directive_text: Option<String>,
-    #[serde(rename = "promptSignature", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "promptSignature",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub prompt_signature: Option<String>,
-    #[serde(rename = "idempotencyKey", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "idempotencyKey",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub idempotency_key: Option<String>,
     #[serde(skip)]
     pub raw_proposal: Option<Value>,
@@ -97,7 +149,11 @@ fn default_source() -> String {
 pub struct UlwLoopSteeringPlanSnapshot {
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
-    #[serde(rename = "activeGoalId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "activeGoalId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub active_goal_id: Option<String>,
     #[serde(rename = "goalCount")]
     pub goal_count: usize,
@@ -112,7 +168,11 @@ pub struct UlwLoopSteeringAudit {
     pub source: String,
     #[serde(rename = "targetGoalIds")]
     pub target_goal_ids: Vec<String>,
-    #[serde(rename = "criterionId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "criterionId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub criterion_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<UlwLoopSteeringPlanSnapshot>,
@@ -121,11 +181,23 @@ pub struct UlwLoopSteeringAudit {
     pub evidence: String,
     pub rationale: String,
     pub invariant: UlwLoopSteeringInvariantResult,
-    #[serde(rename = "directiveText", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "directiveText",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub directive_text: Option<String>,
-    #[serde(rename = "promptSignature", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "promptSignature",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub prompt_signature: Option<String>,
-    #[serde(rename = "idempotencyKey", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "idempotencyKey",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deduped: Option<bool>,

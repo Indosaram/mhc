@@ -69,16 +69,20 @@ fn syntax_set() -> &'static SyntaxSet {
     SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
 }
 const PRIMITIVE_TYPES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
-    "f32", "f64", "bool", "char", "str", "int", "long", "short", "float", "double", "void",
-    "unsigned", "signed", "byte", "boolean", "string", "auto", "size_t", "wchar_t", "uint",
-    "rune", "error",
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool", "char", "str", "int", "long", "short", "float", "double", "void", "unsigned",
+    "signed", "byte", "boolean", "string", "auto", "size_t", "wchar_t", "uint", "rune", "error",
 ];
 /// highlight.js `meta` spans (attributes, decorators, annotations, preprocessor lines).
 fn is_meta(scope: &str) -> bool {
-    ["meta.annotation", "meta.decorator", "meta.attribute", "meta.preprocessor"]
-        .iter()
-        .any(|prefix| scope.starts_with(prefix))
+    [
+        "meta.annotation",
+        "meta.decorator",
+        "meta.attribute",
+        "meta.preprocessor",
+    ]
+    .iter()
+    .any(|prefix| scope.starts_with(prefix))
 }
 /// Maps one TextMate scope onto the highlight.js class it stands for. `None` lets the enclosing
 /// scope decide.
@@ -102,7 +106,10 @@ fn scope_class(scope: &str, text: &str, lang: &str) -> Option<&'static str> {
         Some("comment")
     } else if starts("string") || starts("storage.type.string") {
         Some("string")
-    } else if starts("constant.numeric") || starts("constant.language") || starts("storage.type.numeric") {
+    } else if starts("constant.numeric")
+        || starts("constant.language")
+        || starts("storage.type.numeric")
+    {
         Some("number")
     } else if starts("keyword.operator") {
         // Word operators (`as`, `new`, `typeof`) are keywords in highlight.js; symbolic operators
@@ -119,9 +126,13 @@ fn scope_class(scope: &str, text: &str, lang: &str) -> Option<&'static str> {
     } else if !is_word && starts("storage.type") {
         None
     } else if starts("storage.type") {
-        let primitive = ["storage.type.primitive", "storage.type.void", "storage.type.buildin"]
-            .iter()
-            .any(|prefix| scope.starts_with(prefix));
+        let primitive = [
+            "storage.type.primitive",
+            "storage.type.void",
+            "storage.type.buildin",
+        ]
+        .iter()
+        .any(|prefix| scope.starts_with(prefix));
         if primitive || PRIMITIVE_TYPES.contains(&word) || word.starts_with(char::is_uppercase) {
             Some("type")
         } else {
@@ -185,14 +196,23 @@ fn class_color(class: &str) -> Option<ThemeColor> {
 /// `scopes` is the stack innermost-first, stringified once per stack change; `in_meta` is whether
 /// any of them is a `meta` span.
 fn token_class(scopes: &[String], in_meta: bool, text: &str, lang: &str) -> Option<&'static str> {
-    if lang == "json" && scopes.iter().any(|scope| scope.starts_with("meta.mapping.key")) {
+    if lang == "json"
+        && scopes
+            .iter()
+            .any(|scope| scope.starts_with("meta.mapping.key"))
+    {
         return Some("attr");
     }
     // highlight.js draws a regex literal (flags and quantifiers included) as one `regexp` span.
-    if scopes.iter().any(|scope| scope.starts_with("string.regexp")) {
+    if scopes
+        .iter()
+        .any(|scope| scope.starts_with("string.regexp"))
+    {
         return Some("regexp");
     }
-    let class = scopes.iter().find_map(|scope| scope_class(scope, text, lang));
+    let class = scopes
+        .iter()
+        .find_map(|scope| scope_class(scope, text, lang));
     let keeps_class = matches!(
         class.and_then(class_color),
         Some(
@@ -229,13 +249,19 @@ fn tokenize(
     let mut scopes: Vec<String> = Vec::new();
     let mut in_meta = false;
     let mut scopes_stale = false;
-    let refresh = |stack: &ScopeStack, scopes: &mut Vec<String>, in_meta: &mut bool, stale: &mut bool| {
-        if *stale {
-            *scopes = stack.as_slice().iter().rev().map(|s| s.to_string()).collect();
-            *in_meta = scopes.iter().any(|scope| is_meta(scope));
-            *stale = false;
-        }
-    };
+    let refresh =
+        |stack: &ScopeStack, scopes: &mut Vec<String>, in_meta: &mut bool, stale: &mut bool| {
+            if *stale {
+                *scopes = stack
+                    .as_slice()
+                    .iter()
+                    .rev()
+                    .map(|s| s.to_string())
+                    .collect();
+                *in_meta = scopes.iter().any(|scope| is_meta(scope));
+                *stale = false;
+            }
+        };
     for line in LinesWithEndings::from(code) {
         let ops = parser.parse_line(line, syntax_set).ok()?;
         let mut previous = 0;
@@ -243,7 +269,11 @@ fn tokenize(
             if index > previous {
                 let text = &line[previous..index];
                 refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
-                append_run(&mut runs, token_class(&scopes, in_meta, text, language), text);
+                append_run(
+                    &mut runs,
+                    token_class(&scopes, in_meta, text, language),
+                    text,
+                );
             }
             stack.apply(&op).ok()?;
             scopes_stale = true;
@@ -252,13 +282,22 @@ fn tokenize(
         if previous < line.len() {
             let text = &line[previous..];
             refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
-            append_run(&mut runs, token_class(&scopes, in_meta, text, language), text);
+            append_run(
+                &mut runs,
+                token_class(&scopes, in_meta, text, language),
+                text,
+            );
         }
     }
     Some(runs)
 }
 pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<String> {
-    highlight_code_with(theme, code, lang, ALL_LANGUAGES_LOADED.load(Ordering::Relaxed))
+    highlight_code_with(
+        theme,
+        code,
+        lang,
+        ALL_LANGUAGES_LOADED.load(Ordering::Relaxed),
+    )
 }
 fn highlight_code_with(
     theme: &Theme,
@@ -291,8 +330,9 @@ fn highlight_code_with(
     }
     // highlight.js's Rust grammar marks the binding after `let` as a variable; the TextMate
     // grammar has no scope for it.
-    static LET_BINDING: LazyLock<Option<regex::Regex>> =
-        LazyLock::new(|| regex::Regex::new(r"let(?:\x1b\[[0-9;]*m)*\s+([a-zA-Z_][a-zA-Z0-9_]*)").ok());
+    static LET_BINDING: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+        regex::Regex::new(r"let(?:\x1b\[[0-9;]*m)*\s+([a-zA-Z_][a-zA-Z0-9_]*)").ok()
+    });
     if language == "rust"
         && let Some(re) = LET_BINDING.as_ref()
     {
@@ -394,8 +434,26 @@ mod tests {
     use crate::theme::ColorMode;
 
     const EAGER_LANGUAGES: &[&str] = &[
-        "python", "java", "go", "javascript", "cpp", "typescript", "php", "ruby", "c", "csharp",
-        "nix", "bash", "rust", "scala", "kotlin", "swift", "dart", "groovy", "perl", "lua",
+        "python",
+        "java",
+        "go",
+        "javascript",
+        "cpp",
+        "typescript",
+        "php",
+        "ruby",
+        "c",
+        "csharp",
+        "nix",
+        "bash",
+        "rust",
+        "scala",
+        "kotlin",
+        "swift",
+        "dart",
+        "groovy",
+        "perl",
+        "lua",
     ];
 
     fn theme() -> Theme {
@@ -440,6 +498,9 @@ mod tests {
         );
         let html = highlight_code_with(&theme, "<div></div>", Some("html"), true);
         let keyword = theme.get_fg_ansi(ThemeColor::SyntaxKeyword);
-        assert!(html[0].contains(&format!("{keyword}div\x1b[39m")), "{html:?}");
+        assert!(
+            html[0].contains(&format!("{keyword}div\x1b[39m")),
+            "{html:?}"
+        );
     }
 }

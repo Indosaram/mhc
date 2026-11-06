@@ -1,118 +1,546 @@
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use sha2::{Digest,Sha256};
-#[derive(Clone,Default)]
+#[derive(Clone, Default)]
 pub struct Snapshot {
-    pub sdk_session_id:String,pub account_name:String,pub model_id:String,pub system_prompt_hash:String,pub toolset_hash:String,
-    pub sent_count:usize,pub sent_hashes:Vec<String>,pub last_assistant_uuid:Option<String>,pub assistant_uuid_by_index:BTreeMap<usize,String>,
-    pub pending_fork_reason:Option<String>,pub tainted_reason:Option<String>,pub sent_prefix_hash:Option<String>,pub unanswered_turn_digest:Option<String>,pub sdk_session_id_confirmed:Option<bool>,pub credential_digest:Option<String>,
+    pub sdk_session_id: String,
+    pub account_name: String,
+    pub model_id: String,
+    pub system_prompt_hash: String,
+    pub toolset_hash: String,
+    pub sent_count: usize,
+    pub sent_hashes: Vec<String>,
+    pub last_assistant_uuid: Option<String>,
+    pub assistant_uuid_by_index: BTreeMap<usize, String>,
+    pub pending_fork_reason: Option<String>,
+    pub tainted_reason: Option<String>,
+    pub sent_prefix_hash: Option<String>,
+    pub unanswered_turn_digest: Option<String>,
+    pub sdk_session_id_confirmed: Option<bool>,
+    pub credential_digest: Option<String>,
 }
 pub struct ContinuityInput<'a> {
-    pub entry:Option<&'a Snapshot>,pub binding:Option<&'a Snapshot>,pub current_hashes:&'a [String],pub account_name:&'a str,pub model_id:&'a str,
-    pub system_prompt_hash:&'a str,pub toolset_hash:&'a str,pub transcript_available:bool,pub cross_account_resume_supported:bool,pub idle_expired:bool,pub invalidation_reason:Option<&'a str>,pub credential_digest:Option<&'a str>,
+    pub entry: Option<&'a Snapshot>,
+    pub binding: Option<&'a Snapshot>,
+    pub current_hashes: &'a [String],
+    pub account_name: &'a str,
+    pub model_id: &'a str,
+    pub system_prompt_hash: &'a str,
+    pub toolset_hash: &'a str,
+    pub transcript_available: bool,
+    pub cross_account_resume_supported: bool,
+    pub idle_expired: bool,
+    pub invalidation_reason: Option<&'a str>,
+    pub credential_digest: Option<&'a str>,
 }
-#[derive(Debug,PartialEq,Eq)]
-pub enum Decision {Bootstrap {reason:Option<String>},Delta {from:usize},Reattach {sdk_session_id:String,from:usize,reason:String},Fork {sdk_session_id:String,at_uuid:String,from:usize,reason:String},Flatten {reason:String}}
-pub fn prefix_digest(hashes:&[String],count:usize)->String {format!("{:x}",Sha256::digest(serde_json::to_vec(&hashes[..count.min(hashes.len())]).expect("string array serialization")))}
-fn common_prefix(left:&[String],right:&[String])->usize {left.iter().zip(right).take_while(|(l,r)|l==r).count()}
-fn flatten(reason:&str)->Decision {Decision::Flatten {reason:reason.into()}}
-fn reattach(entry:&Snapshot,reason:&str)->Decision {Decision::Reattach {sdk_session_id:entry.sdk_session_id.clone(),from:entry.sent_count,reason:reason.into()}}
-fn fork(entry:&Snapshot,count:usize,reason:&str)->Decision {
-    if count<=1 {return flatten(reason);}
-    let boundary=entry.assistant_uuid_by_index.range(1..count).next_back();
-    match boundary {Some((index,uuid))=>Decision::Fork {sdk_session_id:entry.sdk_session_id.clone(),at_uuid:uuid.clone(),from:*index,reason:reason.into()},None=>flatten(reason)}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Decision {
+    Bootstrap {
+        reason: Option<String>,
+    },
+    Delta {
+        from: usize,
+    },
+    Reattach {
+        sdk_session_id: String,
+        from: usize,
+        reason: String,
+    },
+    Fork {
+        sdk_session_id: String,
+        at_uuid: String,
+        from: usize,
+        reason: String,
+    },
+    Flatten {
+        reason: String,
+    },
 }
-fn drift(input:&ContinuityInput<'_>,entry:&Snapshot)->Option<&'static str> {
-    if entry.account_name!=input.account_name {Some("account_changed")}else if entry.model_id!=input.model_id {Some("model_changed")}else if entry.system_prompt_hash!=input.system_prompt_hash {Some("system_prompt_changed")}else if entry.toolset_hash!=input.toolset_hash {Some("toolset_changed")}else {None}
+pub fn prefix_digest(hashes: &[String], count: usize) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&hashes[..count.min(hashes.len())])
+                .expect("string array serialization")
+        )
+    )
 }
-fn from_binding(input:&ContinuityInput<'_>,binding:&Snapshot)->Decision {
-    if !input.transcript_available {return flatten("transcript_missing");}
-    let reason=drift(input,binding);
-    if reason==Some("model_changed") {return flatten("model_changed");}
-    if reason==Some("account_changed")&&!input.cross_account_resume_supported {return flatten("cross_root_unsupported");}
-    let shared=common_prefix(&binding.sent_hashes,input.current_hashes);
-    let matches_prefix=||binding.sent_prefix_hash.as_ref().map_or(shared==binding.sent_count,|hash|prefix_digest(input.current_hashes,binding.sent_count)==*hash);
-    if binding.unanswered_turn_digest.as_ref().is_some_and(|hash|prefix_digest(input.current_hashes,input.current_hashes.len())==*hash)&&input.current_hashes.len()>=binding.sent_count&&matches_prefix() {
+fn common_prefix(left: &[String], right: &[String]) -> usize {
+    left.iter().zip(right).take_while(|(l, r)| l == r).count()
+}
+fn flatten(reason: &str) -> Decision {
+    Decision::Flatten {
+        reason: reason.into(),
+    }
+}
+fn reattach(entry: &Snapshot, reason: &str) -> Decision {
+    Decision::Reattach {
+        sdk_session_id: entry.sdk_session_id.clone(),
+        from: entry.sent_count,
+        reason: reason.into(),
+    }
+}
+fn fork(entry: &Snapshot, count: usize, reason: &str) -> Decision {
+    if count <= 1 {
+        return flatten(reason);
+    }
+    let boundary = entry.assistant_uuid_by_index.range(1..count).next_back();
+    match boundary {
+        Some((index, uuid)) => Decision::Fork {
+            sdk_session_id: entry.sdk_session_id.clone(),
+            at_uuid: uuid.clone(),
+            from: *index,
+            reason: reason.into(),
+        },
+        None => flatten(reason),
+    }
+}
+fn drift(input: &ContinuityInput<'_>, entry: &Snapshot) -> Option<&'static str> {
+    if entry.account_name != input.account_name {
+        Some("account_changed")
+    } else if entry.model_id != input.model_id {
+        Some("model_changed")
+    } else if entry.system_prompt_hash != input.system_prompt_hash {
+        Some("system_prompt_changed")
+    } else if entry.toolset_hash != input.toolset_hash {
+        Some("toolset_changed")
+    } else {
+        None
+    }
+}
+fn from_binding(input: &ContinuityInput<'_>, binding: &Snapshot) -> Decision {
+    if !input.transcript_available {
+        return flatten("transcript_missing");
+    }
+    let reason = drift(input, binding);
+    if reason == Some("model_changed") {
+        return flatten("model_changed");
+    }
+    if reason == Some("account_changed") && !input.cross_account_resume_supported {
+        return flatten("cross_root_unsupported");
+    }
+    let shared = common_prefix(&binding.sent_hashes, input.current_hashes);
+    let matches_prefix = || {
+        binding
+            .sent_prefix_hash
+            .as_ref()
+            .map_or(shared == binding.sent_count, |hash| {
+                prefix_digest(input.current_hashes, binding.sent_count) == *hash
+            })
+    };
+    if binding.unanswered_turn_digest.as_ref().is_some_and(|hash| {
+        prefix_digest(input.current_hashes, input.current_hashes.len()) == *hash
+    }) && input.current_hashes.len() >= binding.sent_count
+        && matches_prefix()
+    {
         // The pre-turn boundary may be unmapped (Claude Code rejected it, senpi#1958); any earlier mapped
         // boundary still lies inside the prefix just proven, so fork there (senpi#1973).
-        let boundary=match &binding.last_assistant_uuid {Some(uuid)=>Some((binding.sent_count,uuid)),None=>binding.assistant_uuid_by_index.range(1..=binding.sent_count).next_back().map(|(index,uuid)|(*index,uuid))};
-        return match boundary {Some((from,uuid))=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from,reason:"timeout_retry".into()},None=>flatten("timeout_retry")};
+        let boundary = match &binding.last_assistant_uuid {
+            Some(uuid) => Some((binding.sent_count, uuid)),
+            None => binding
+                .assistant_uuid_by_index
+                .range(1..=binding.sent_count)
+                .next_back()
+                .map(|(index, uuid)| (*index, uuid)),
+        };
+        return match boundary {
+            Some((from, uuid)) => Decision::Fork {
+                sdk_session_id: binding.sdk_session_id.clone(),
+                at_uuid: uuid.clone(),
+                from,
+                reason: "timeout_retry".into(),
+            },
+            None => flatten("timeout_retry"),
+        };
     }
     if binding.sent_prefix_hash.is_some() {
-        if input.current_hashes.len()>=binding.sent_count&&matches_prefix() {return reattach(binding,reason.unwrap_or("registry_miss"));}
-        return flatten(if input.current_hashes.len()<binding.sent_count {"history_rolled_back"}else {"sent_stream_diverged"});
-    }
-    if shared==binding.sent_count {return reattach(binding,reason.unwrap_or("registry_miss"));}
-    let reason=if shared<binding.sent_count {"history_rolled_back"}else {"sent_stream_diverged"};
-    match binding.assistant_uuid_by_index.range(1..=shared).next_back() {Some((index,uuid))=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from:*index,reason:reason.into()},None=>flatten(if binding.last_assistant_uuid.is_some() {reason}else {"registry_miss"})}
-}
-pub fn decide(input:&ContinuityInput<'_>)->Decision {
-    let mut decision=if let Some(entry)=input.entry {
-        if !input.cross_account_resume_supported&&entry.account_name!=input.account_name {flatten("cross_root_unsupported")}
-        else if let Some(divergence)=entry.pending_fork_reason.as_deref().or(entry.tainted_reason.as_deref()) {if divergence=="compaction" {flatten("tainted_compaction")}else {fork(entry,entry.sent_count,match divergence {"assistant_rewritten"=>"assistant_rewritten",_=>"other"})}}
-        else {let shared=common_prefix(&entry.sent_hashes,input.current_hashes);
-            if shared<entry.sent_count {let rolled_back=input.current_hashes.len()<entry.sent_count&&shared==input.current_hashes.len();fork(entry,if rolled_back {input.current_hashes.len()}else {shared+1},if rolled_back {"history_rolled_back"}else {"sent_stream_diverged"})}
-            else if input.idle_expired {reattach(entry,"idle_ttl")}
-            else if let Some(reason)=drift(input,entry) {reattach(entry,reason)}else if input.credential_digest.is_some_and(|digest|entry.credential_digest.as_deref().is_some_and(|old|old!=digest)) {reattach(entry,"credential_refreshed")}else {Decision::Delta {from:entry.sent_count}}
+        if input.current_hashes.len() >= binding.sent_count && matches_prefix() {
+            return reattach(binding, reason.unwrap_or("registry_miss"));
         }
-    } else if let Some(binding)=input.binding {let decision=from_binding(input,binding);if binding.sdk_session_id_confirmed==Some(false)&&matches!(decision,Decision::Reattach {..}|Decision::Fork {..}) {flatten("session_unconfirmed")}else {decision}}
-    else {Decision::Bootstrap {reason:None}};
-    if let Some(reason)=input.invalidation_reason {let cause=match reason {"compaction"=>"tainted_compaction".into(),"tree_changed"=>"branch_diverged".into(),"fork"=>"tainted_fork".into(),other=>sanitize_reason(other)};
-        match &mut decision {Decision::Bootstrap {reason}=>*reason=Some(cause),Decision::Flatten {reason} if reason=="registry_miss"=>*reason=cause,_=>{}}
+        return flatten(if input.current_hashes.len() < binding.sent_count {
+            "history_rolled_back"
+        } else {
+            "sent_stream_diverged"
+        });
+    }
+    if shared == binding.sent_count {
+        return reattach(binding, reason.unwrap_or("registry_miss"));
+    }
+    let reason = if shared < binding.sent_count {
+        "history_rolled_back"
+    } else {
+        "sent_stream_diverged"
+    };
+    match binding
+        .assistant_uuid_by_index
+        .range(1..=shared)
+        .next_back()
+    {
+        Some((index, uuid)) => Decision::Fork {
+            sdk_session_id: binding.sdk_session_id.clone(),
+            at_uuid: uuid.clone(),
+            from: *index,
+            reason: reason.into(),
+        },
+        None => flatten(if binding.last_assistant_uuid.is_some() {
+            reason
+        } else {
+            "registry_miss"
+        }),
+    }
+}
+pub fn decide(input: &ContinuityInput<'_>) -> Decision {
+    let mut decision = if let Some(entry) = input.entry {
+        if !input.cross_account_resume_supported && entry.account_name != input.account_name {
+            flatten("cross_root_unsupported")
+        } else if let Some(divergence) = entry
+            .pending_fork_reason
+            .as_deref()
+            .or(entry.tainted_reason.as_deref())
+        {
+            if divergence == "compaction" {
+                flatten("tainted_compaction")
+            } else {
+                fork(
+                    entry,
+                    entry.sent_count,
+                    match divergence {
+                        "assistant_rewritten" => "assistant_rewritten",
+                        _ => "other",
+                    },
+                )
+            }
+        } else {
+            let shared = common_prefix(&entry.sent_hashes, input.current_hashes);
+            if shared < entry.sent_count {
+                let rolled_back = input.current_hashes.len() < entry.sent_count
+                    && shared == input.current_hashes.len();
+                fork(
+                    entry,
+                    if rolled_back {
+                        input.current_hashes.len()
+                    } else {
+                        shared + 1
+                    },
+                    if rolled_back {
+                        "history_rolled_back"
+                    } else {
+                        "sent_stream_diverged"
+                    },
+                )
+            } else if input.idle_expired {
+                reattach(entry, "idle_ttl")
+            } else if let Some(reason) = drift(input, entry) {
+                reattach(entry, reason)
+            } else if input.credential_digest.is_some_and(|digest| {
+                entry
+                    .credential_digest
+                    .as_deref()
+                    .is_some_and(|old| old != digest)
+            }) {
+                reattach(entry, "credential_refreshed")
+            } else {
+                Decision::Delta {
+                    from: entry.sent_count,
+                }
+            }
+        }
+    } else if let Some(binding) = input.binding {
+        let decision = from_binding(input, binding);
+        if binding.sdk_session_id_confirmed == Some(false)
+            && matches!(decision, Decision::Reattach { .. } | Decision::Fork { .. })
+        {
+            flatten("session_unconfirmed")
+        } else {
+            decision
+        }
+    } else {
+        Decision::Bootstrap { reason: None }
+    };
+    if let Some(reason) = input.invalidation_reason {
+        let cause = match reason {
+            "compaction" => "tainted_compaction".into(),
+            "tree_changed" => "branch_diverged".into(),
+            "fork" => "tainted_fork".into(),
+            other => sanitize_reason(other),
+        };
+        match &mut decision {
+            Decision::Bootstrap { reason } => *reason = Some(cause),
+            Decision::Flatten { reason } if reason == "registry_miss" => *reason = cause,
+            _ => {}
+        }
     }
     decision
 }
-pub fn sanitize_reason(reason:&str)->String {
-    if let Some(suffix)=reason.strip_prefix("tainted:") {
-        let mapped=format!("tainted_{suffix}");
-        if ["compaction","fork","abort","assistant_provenance_unverified"].contains(&suffix) {return mapped;}
+pub fn sanitize_reason(reason: &str) -> String {
+    if let Some(suffix) = reason.strip_prefix("tainted:") {
+        let mapped = format!("tainted_{suffix}");
+        if [
+            "compaction",
+            "fork",
+            "abort",
+            "assistant_provenance_unverified",
+        ]
+        .contains(&suffix)
+        {
+            return mapped;
+        }
     }
     match reason {
-        "prefix_matched"|"registry_miss"|"idle_ttl"|"capacity"|"model_selected"|"thinking_level_selected"|"bound_account_token_expiring"|"account_changed"|"model_changed"|"toolset_changed"|"system_prompt_changed"|"credential_refreshed"|"assistant_stream_diverged"|"options_changed"|"history_rolled_back"|"assistant_rewritten"|"transcript_missing"|"cross_root_unsupported"|"sent_stream_diverged"|"branch_diverged"|"branch_boundary_unavailable"|"branch_resume"|"tainted_compaction"|"tainted_fork"|"tainted_abort"|"tainted_assistant_provenance_unverified"|"resume_initialization_failed"|"resume_initialization_aborted"|"resume_mode_off"|"query_failed"|"turn_attribution_failed"|"session_unconfirmed"|"abort_timeout"|"extensions_removed"|"session_shutdown"|"timeout_retry"|"other"=>reason,
-        _=>{
-            let text=reason.to_lowercase();
-            return if ["did not terminate","interrupt failed"].iter().any(|s|text.contains(s)) {"abort_timeout"}
-            else if ["user_message_uuid did not match","result arrived before replay claim","pre-replay buffer overflow"].iter().any(|s|text.contains(s)) {"turn_attribution_failed"}
-            else if ["query ended before","claude sdk oauth query","anthropic subscription query","claude code"].iter().any(|s|text.contains(s)) {"query_failed"}else {"other"}.into();
-        },
-    }.into()
+        "prefix_matched"
+        | "registry_miss"
+        | "idle_ttl"
+        | "capacity"
+        | "model_selected"
+        | "thinking_level_selected"
+        | "bound_account_token_expiring"
+        | "account_changed"
+        | "model_changed"
+        | "toolset_changed"
+        | "system_prompt_changed"
+        | "credential_refreshed"
+        | "assistant_stream_diverged"
+        | "options_changed"
+        | "history_rolled_back"
+        | "assistant_rewritten"
+        | "transcript_missing"
+        | "cross_root_unsupported"
+        | "sent_stream_diverged"
+        | "branch_diverged"
+        | "branch_boundary_unavailable"
+        | "branch_resume"
+        | "tainted_compaction"
+        | "tainted_fork"
+        | "tainted_abort"
+        | "tainted_assistant_provenance_unverified"
+        | "resume_initialization_failed"
+        | "resume_initialization_aborted"
+        | "resume_mode_off"
+        | "query_failed"
+        | "turn_attribution_failed"
+        | "session_unconfirmed"
+        | "abort_timeout"
+        | "extensions_removed"
+        | "session_shutdown"
+        | "timeout_retry"
+        | "other" => reason,
+        _ => {
+            let text = reason.to_lowercase();
+            return if ["did not terminate", "interrupt failed"]
+                .iter()
+                .any(|s| text.contains(s))
+            {
+                "abort_timeout"
+            } else if [
+                "user_message_uuid did not match",
+                "result arrived before replay claim",
+                "pre-replay buffer overflow",
+            ]
+            .iter()
+            .any(|s| text.contains(s))
+            {
+                "turn_attribution_failed"
+            } else if [
+                "query ended before",
+                "claude sdk oauth query",
+                "anthropic subscription query",
+                "claude code",
+            ]
+            .iter()
+            .any(|s| text.contains(s))
+            {
+                "query_failed"
+            } else {
+                "other"
+            }
+            .into();
+        }
+    }
+    .into()
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn snapshot()->Snapshot {Snapshot {sdk_session_id:"sdk".into(),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],last_assistant_uuid:Some("a2".into()),assistant_uuid_by_index:[(1,"a1".into()),(2,"a2".into())].into(),..Default::default()}}
-    fn input<'a>(hashes:&'a [String])->ContinuityInput<'a> {ContinuityInput {entry:None,binding:None,current_hashes:hashes,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None}}
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            sdk_session_id: "sdk".into(),
+            account_name: "primary".into(),
+            model_id: "model".into(),
+            system_prompt_hash: "prompt".into(),
+            toolset_hash: "tools".into(),
+            sent_count: 2,
+            sent_hashes: vec!["h1".into(), "h2".into()],
+            last_assistant_uuid: Some("a2".into()),
+            assistant_uuid_by_index: [(1, "a1".into()), (2, "a2".into())].into(),
+            ..Default::default()
+        }
+    }
+    fn input<'a>(hashes: &'a [String]) -> ContinuityInput<'a> {
+        ContinuityInput {
+            entry: None,
+            binding: None,
+            current_hashes: hashes,
+            account_name: "primary",
+            model_id: "model",
+            system_prompt_hash: "prompt",
+            toolset_hash: "tools",
+            transcript_available: true,
+            cross_account_resume_supported: true,
+            idle_expired: false,
+            invalidation_reason: None,
+            credential_digest: None,
+        }
+    }
     #[test]
     fn live_delta_drift_and_strict_boundary() {
-        let mut entry=snapshot();let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut request=input(&hashes);request.entry=Some(&entry);assert_eq!(decide(&request),Decision::Delta {from:2});request.model_id="other";assert_eq!(decide(&request),reattach(&entry,"model_changed"));
-        entry.pending_fork_reason=Some("assistant_rewritten".into());let mut request=input(&hashes);request.entry=Some(&entry);assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a1".into(),from:1,reason:"assistant_rewritten".into()});assert_eq!(fork(&entry,0,"history_rolled_back"),flatten("history_rolled_back"));
+        let mut entry = snapshot();
+        let hashes = vec!["h1".into(), "h2".into(), "h3".into()];
+        let mut request = input(&hashes);
+        request.entry = Some(&entry);
+        assert_eq!(decide(&request), Decision::Delta { from: 2 });
+        request.model_id = "other";
+        assert_eq!(decide(&request), reattach(&entry, "model_changed"));
+        entry.pending_fork_reason = Some("assistant_rewritten".into());
+        let mut request = input(&hashes);
+        request.entry = Some(&entry);
+        assert_eq!(
+            decide(&request),
+            Decision::Fork {
+                sdk_session_id: "sdk".into(),
+                at_uuid: "a1".into(),
+                from: 1,
+                reason: "assistant_rewritten".into()
+            }
+        );
+        assert_eq!(
+            fork(&entry, 0, "history_rolled_back"),
+            flatten("history_rolled_back")
+        );
     }
     #[test]
     fn restored_retry_checkpoint_and_confirmation() {
-        let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut binding=snapshot();binding.sent_prefix_hash=Some(prefix_digest(&hashes,2));binding.unanswered_turn_digest=Some(prefix_digest(&hashes,3));let mut request=input(&hashes);request.binding=Some(&binding);
-        assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a2".into(),from:2,reason:"timeout_retry".into()});binding.sdk_session_id_confirmed=Some(false);let mut request=input(&hashes);request.binding=Some(&binding);assert_eq!(decide(&request),flatten("session_unconfirmed"));request.transcript_available=false;assert_eq!(decide(&request),flatten("transcript_missing"));
+        let hashes = vec!["h1".into(), "h2".into(), "h3".into()];
+        let mut binding = snapshot();
+        binding.sent_prefix_hash = Some(prefix_digest(&hashes, 2));
+        binding.unanswered_turn_digest = Some(prefix_digest(&hashes, 3));
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(
+            decide(&request),
+            Decision::Fork {
+                sdk_session_id: "sdk".into(),
+                at_uuid: "a2".into(),
+                from: 2,
+                reason: "timeout_retry".into()
+            }
+        );
+        binding.sdk_session_id_confirmed = Some(false);
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(decide(&request), flatten("session_unconfirmed"));
+        request.transcript_available = false;
+        assert_eq!(decide(&request), flatten("transcript_missing"));
     }
     #[test]
     fn retry_checkpoint_without_a_pre_turn_anchor_forks_at_an_earlier_boundary_issue_1973() {
-        let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut binding=snapshot();
-        binding.sent_prefix_hash=Some(prefix_digest(&hashes,2));binding.unanswered_turn_digest=Some(prefix_digest(&hashes,3));
-        binding.last_assistant_uuid=None;binding.assistant_uuid_by_index=BTreeMap::from([(1,"a1".into())]);
-        let mut request=input(&hashes);request.binding=Some(&binding);
-        assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a1".into(),from:1,reason:"timeout_retry".into()});
-        binding.assistant_uuid_by_index.clear();let mut request=input(&hashes);request.binding=Some(&binding);
-        assert_eq!(decide(&request),flatten("timeout_retry"));
+        let hashes = vec!["h1".into(), "h2".into(), "h3".into()];
+        let mut binding = snapshot();
+        binding.sent_prefix_hash = Some(prefix_digest(&hashes, 2));
+        binding.unanswered_turn_digest = Some(prefix_digest(&hashes, 3));
+        binding.last_assistant_uuid = None;
+        binding.assistant_uuid_by_index = BTreeMap::from([(1, "a1".into())]);
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(
+            decide(&request),
+            Decision::Fork {
+                sdk_session_id: "sdk".into(),
+                at_uuid: "a1".into(),
+                from: 1,
+                reason: "timeout_retry".into()
+            }
+        );
+        binding.assistant_uuid_by_index.clear();
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(decide(&request), flatten("timeout_retry"));
     }
     #[test]
     fn restored_prefix_fails_closed_and_invalidations_are_sanitized() {
-        for (text,expected) in [("tainted:abort","tainted_abort"),("interrupt failed","abort_timeout"),("result arrived before replay claim","turn_attribution_failed"),("Claude Code query ended before init","query_failed")] {assert_eq!(sanitize_reason(text),expected);}
-        let hashes=vec!["h1".into(),"different".into(),"h3".into()];let mut binding=snapshot();binding.sent_prefix_hash=Some(prefix_digest(&binding.sent_hashes,2));let mut request=input(&hashes);request.binding=Some(&binding);assert_eq!(decide(&request),flatten("sent_stream_diverged"));request.binding=None;request.invalidation_reason=Some("arbitrary credential text");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("other".into())});request.invalidation_reason=Some("compaction");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("tainted_compaction".into())});
+        for (text, expected) in [
+            ("tainted:abort", "tainted_abort"),
+            ("interrupt failed", "abort_timeout"),
+            (
+                "result arrived before replay claim",
+                "turn_attribution_failed",
+            ),
+            ("Claude Code query ended before init", "query_failed"),
+        ] {
+            assert_eq!(sanitize_reason(text), expected);
+        }
+        let hashes = vec!["h1".into(), "different".into(), "h3".into()];
+        let mut binding = snapshot();
+        binding.sent_prefix_hash = Some(prefix_digest(&binding.sent_hashes, 2));
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(decide(&request), flatten("sent_stream_diverged"));
+        request.binding = None;
+        request.invalidation_reason = Some("arbitrary credential text");
+        assert_eq!(
+            decide(&request),
+            Decision::Bootstrap {
+                reason: Some("other".into())
+            }
+        );
+        request.invalidation_reason = Some("compaction");
+        assert_eq!(
+            decide(&request),
+            Decision::Bootstrap {
+                reason: Some("tainted_compaction".into())
+            }
+        );
     }
     #[test]
     fn restored_fork_uses_newest_mapped_boundary_inside_shared_prefix() {
-        let hashes=vec!["h1".into(),"changed".into()];let mut binding=snapshot();binding.sent_count=2;binding.sent_hashes=vec!["h1".into(),"h2".into()];binding.last_assistant_uuid=Some("a2".into());binding.assistant_uuid_by_index=[(1,"a1".into()),(2,"a2".into())].into();let mut request=input(&hashes);request.binding=Some(&binding);
-        assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a1".into(),from:1,reason:"history_rolled_back".into()});
+        let hashes = vec!["h1".into(), "changed".into()];
+        let mut binding = snapshot();
+        binding.sent_count = 2;
+        binding.sent_hashes = vec!["h1".into(), "h2".into()];
+        binding.last_assistant_uuid = Some("a2".into());
+        binding.assistant_uuid_by_index = [(1, "a1".into()), (2, "a2".into())].into();
+        let mut request = input(&hashes);
+        request.binding = Some(&binding);
+        assert_eq!(
+            decide(&request),
+            Decision::Fork {
+                sdk_session_id: "sdk".into(),
+                at_uuid: "a1".into(),
+                from: 1,
+                reason: "history_rolled_back".into()
+            }
+        );
     }
     #[test]
     fn live_compaction_and_cross_account_roots_flatten_but_shared_root_refresh_reattaches() {
-        let hashes=vec!["h1".into(),"h2".into()];let mut compacted=snapshot();compacted.pending_fork_reason=Some("compaction".into());let mut request=input(&hashes);request.entry=Some(&compacted);assert_eq!(decide(&request),flatten("tainted_compaction"));let entry=snapshot();request.entry=Some(&entry);request.account_name="secondary";request.cross_account_resume_supported=false;assert_eq!(decide(&request),flatten("cross_root_unsupported"));let mut refreshed=snapshot();refreshed.credential_digest=Some("old".into());request.entry=Some(&refreshed);request.cross_account_resume_supported=true;request.account_name="primary";request.credential_digest=Some("new");assert_eq!(decide(&request),reattach(&refreshed,"credential_refreshed"));
+        let hashes = vec!["h1".into(), "h2".into()];
+        let mut compacted = snapshot();
+        compacted.pending_fork_reason = Some("compaction".into());
+        let mut request = input(&hashes);
+        request.entry = Some(&compacted);
+        assert_eq!(decide(&request), flatten("tainted_compaction"));
+        let entry = snapshot();
+        request.entry = Some(&entry);
+        request.account_name = "secondary";
+        request.cross_account_resume_supported = false;
+        assert_eq!(decide(&request), flatten("cross_root_unsupported"));
+        let mut refreshed = snapshot();
+        refreshed.credential_digest = Some("old".into());
+        request.entry = Some(&refreshed);
+        request.cross_account_resume_supported = true;
+        request.account_name = "primary";
+        request.credential_digest = Some("new");
+        assert_eq!(
+            decide(&request),
+            reattach(&refreshed, "credential_refreshed")
+        );
     }
 }

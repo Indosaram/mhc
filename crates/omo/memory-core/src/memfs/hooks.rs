@@ -38,10 +38,16 @@ pub fn install_hooks_with_options(
     let hooks_dir = resolve_hooks_dir(repo_path);
     fs::create_dir_all(&hooks_dir)?;
 
-    let pre_commit_script =
-        with_memory_hook_checker(PRE_COMMIT_HOOK_SCRIPT, "pre-commit", options.checker.as_ref());
-    let commit_msg_script =
-        with_memory_hook_checker(COMMIT_MSG_HOOK_SCRIPT, "commit-msg", options.checker.as_ref());
+    let pre_commit_script = with_memory_hook_checker(
+        PRE_COMMIT_HOOK_SCRIPT,
+        "pre-commit",
+        options.checker.as_ref(),
+    );
+    let commit_msg_script = with_memory_hook_checker(
+        COMMIT_MSG_HOOK_SCRIPT,
+        "commit-msg",
+        options.checker.as_ref(),
+    );
 
     let hooks = [
         ("pre-commit", pre_commit_script),

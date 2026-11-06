@@ -16,8 +16,8 @@ use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopWindow, DisplaySelector, Target,
 };
 
-use crate::capture::PortalCapture;
 use crate::capture::layout::EisRegion;
+use crate::capture::PortalCapture;
 use crate::input::Libei;
 use crate::portal::{portal_runtime, remote_desktop, token_cleanup};
 
@@ -112,7 +112,8 @@ impl WaylandBackend {
     }
 }
 
-const LAYOUT_CHANGED: &str = "the Wayland display layout changed since the last capture, whose pixels were \
+const LAYOUT_CHANGED: &str =
+    "the Wayland display layout changed since the last capture, whose pixels were \
      mapped through the old libei layout; capture again before coordinate input";
 
 impl Backend for WaylandBackend {

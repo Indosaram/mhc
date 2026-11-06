@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use maho_tools::definition::ToolDefinition;
 use senpi_desktop_core::error::PermissionDeniedData;
 use senpi_desktop_run::runtime::ExecuteTool;
@@ -7,7 +6,8 @@ use senpi_desktop_service::service::DesktopServiceOptions;
 use senpi_desktop_tool::activation::ComputerHandle;
 use senpi_desktop_tool::cua_adapter::create_computer_actions_tool;
 use senpi_desktop_tool::settings::ComputerSettings;
-use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
+use senpi_desktop_tool::tool::{ComputerToolDeps, create_computer_tool};
+use std::sync::Arc;
 
 use crate::engine_status::{TrackedDesktopService, TrackedDesktopServiceOptions};
 
@@ -37,7 +37,9 @@ pub fn create_computer_use_runtime(options: ComputerUseRuntimeOptions) -> Comput
     let child_factory = match options.engine_child {
         Some(factory) => Some(factory(engine_path.as_deref())),
         None => {
-            let config = engine_path.map(|p| senpi_desktop_service::child::EngineSpawnConfig::new(std::path::PathBuf::from(p)));
+            let config = engine_path.map(|p| {
+                senpi_desktop_service::child::EngineSpawnConfig::new(std::path::PathBuf::from(p))
+            });
             Some(senpi_desktop_service::child::engine_child_factory(config))
         }
     };
@@ -54,10 +56,9 @@ pub fn create_computer_use_runtime(options: ComputerUseRuntimeOptions) -> Comput
 
     let handle_service = service.service();
     let settings_for_handle = settings.clone();
-    let handle = Arc::new(ComputerHandle::new(
-        handle_service,
-        move || settings_for_handle.clone(),
-    ));
+    let handle = Arc::new(ComputerHandle::new(handle_service, move || {
+        settings_for_handle.clone()
+    }));
 
     let deps = ComputerToolDeps {
         handle: Arc::clone(&handle),

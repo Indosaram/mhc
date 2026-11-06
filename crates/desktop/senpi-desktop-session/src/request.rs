@@ -1,9 +1,9 @@
 //! The requests the session thread serves and the replies it produces.
 
 use senpi_desktop_core::protocol_params::{
-    AxClickParams, AxElementAtParams, AxPerformParams, AxQueryParams, AxRefParams, AxSetValueParams,
-    AxSnapshotParams, CaptureParams, ClipboardText, DragParams, KeyChordParams, PointParams, RaiseWindowParams,
-    ScrollParams, TypeTextParams,
+    AxClickParams, AxElementAtParams, AxPerformParams, AxQueryParams, AxRefParams,
+    AxSetValueParams, AxSnapshotParams, CaptureParams, ClipboardText, DragParams, KeyChordParams,
+    PointParams, RaiseWindowParams, ScrollParams, TypeTextParams,
 };
 use senpi_desktop_core::types::{
     AxNode, AxSnapshot, CaptureResult, DesktopCapabilities, DesktopDisplay, DesktopWindow,

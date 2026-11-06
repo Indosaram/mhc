@@ -361,8 +361,8 @@ impl PasteMarkerRegistry {
         for id in ids {
             let entry = self.entries.get(&id).expect("entry present");
             let marker = entry.marker.clone();
-            let was_authorized = previous_text
-                .is_none_or(|previous| count_occurrences(previous, &marker) == 1);
+            let was_authorized =
+                previous_text.is_none_or(|previous| count_occurrences(previous, &marker) == 1);
             if !was_authorized || count_occurrences(text, &marker) != 1 {
                 self.entries.remove(&id);
             }

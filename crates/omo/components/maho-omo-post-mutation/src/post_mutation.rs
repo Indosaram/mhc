@@ -1,12 +1,12 @@
 //! File-for-file native Rust port of upstream `post-mutation.ts`.
 
+use comment_checker_core::extract_apply_patch_edits;
+use maho_ext_api::ToolResultEvent;
+use serde_json::Value;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
-use comment_checker_core::extract_apply_patch_edits;
-use maho_ext_api::ToolResultEvent;
-use serde_json::Value;
 use tokio::sync::watch;
 
 /// Names of tools that perform filesystem mutations.
@@ -125,7 +125,10 @@ struct LeaderGuard<T: Clone + Send + Sync + 'static> {
 
 impl<T: Clone + Send + Sync + 'static> Drop for LeaderGuard<T> {
     fn drop(&mut self) {
-        let mut lock = self.flights.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lock = self
+            .flights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         lock.remove(&self.key);
     }
 }
@@ -162,7 +165,10 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
 
         loop {
             let state = {
-                let mut lock = self.flights.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut lock = self
+                    .flights
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(rx) = lock.get(key) {
                     State::Follower(rx.clone())
                 } else {
@@ -216,7 +222,9 @@ where
     Fut: Future<Output = T> + Send,
 {
     let result = FLIGHTS
-        .run(path, || async { Arc::new(work().await) as Arc<dyn Any + Send + Sync> })
+        .run(path, || async {
+            Arc::new(work().await) as Arc<dyn Any + Send + Sync>
+        })
         .await;
     match result.downcast_ref::<T>() {
         Some(value) => value.clone(),
@@ -237,7 +245,10 @@ impl PostMutationSessionState {
 
     pub fn should_notice(&self, key: &str, session_id: Option<&str>) -> bool {
         let sid = session_id.unwrap_or("anonymous");
-        let mut lock = self.notices.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lock = self
+            .notices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let set = lock.entry(sid.to_string()).or_default();
         set.insert(key.to_string())
     }
@@ -248,7 +259,10 @@ impl PostMutationSessionState {
         if let Some(sid) = session_id
             && !sid.is_empty()
         {
-            let mut lock = self.notices.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut lock = self
+                .notices
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             lock.remove(sid);
         }
     }
@@ -261,7 +275,7 @@ pub fn create_post_mutation_session_state() -> PostMutationSessionState {
 #[cfg(test)]
 mod tests {
     use super::run_single_flight;
-    use std::future::{poll_fn, Future};
+    use std::future::{Future, poll_fn};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Poll;
     use std::time::Duration;
@@ -299,7 +313,10 @@ mod tests {
         // Then: only the leader ran, and the path can be used again.
         assert_eq!(results, (42, 42));
         assert_eq!(runs.load(Ordering::SeqCst), 1);
-        assert_eq!(run_single_flight("global-coalescing.ts", || async { 9 }).await, 9);
+        assert_eq!(
+            run_single_flight("global-coalescing.ts", || async { 9 }).await,
+            9
+        );
     }
 
     #[tokio::test]
@@ -329,6 +346,9 @@ mod tests {
             Ok(42)
         );
         drop(blocked);
-        assert_eq!(run_single_flight("global-blocked.ts", || async { 7 }).await, 7);
+        assert_eq!(
+            run_single_flight("global-blocked.ts", || async { 7 }).await,
+            7
+        );
     }
 }

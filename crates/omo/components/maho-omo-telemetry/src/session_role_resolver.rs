@@ -75,7 +75,8 @@ pub fn read_session_traceparent(
             .filter(|value| !value.is_empty())
             .cloned();
     }
-    if !is_team_member_process(env) && env.get(OMO_SENPI_TASK_RPC_CHILD).map(String::as_str) != Some("1")
+    if !is_team_member_process(env)
+        && env.get(OMO_SENPI_TASK_RPC_CHILD).map(String::as_str) != Some("1")
     {
         return None;
     }
@@ -189,11 +190,17 @@ mod tests {
     #[test]
     fn env_fallback_names_the_role() {
         assert_eq!(
-            resolve_telemetry_session_role(none_or_empty(), &env(&[("OMO_SENPI_TASK_RPC_CHILD", "1")])),
+            resolve_telemetry_session_role(
+                none_or_empty(),
+                &env(&[("OMO_SENPI_TASK_RPC_CHILD", "1")])
+            ),
             TelemetrySessionRole::Child
         );
         assert_eq!(
-            resolve_telemetry_session_role(none_or_empty(), &env(&[("SENPI_TASK_MEMBER", "team-a")])),
+            resolve_telemetry_session_role(
+                none_or_empty(),
+                &env(&[("SENPI_TASK_MEMBER", "team-a")])
+            ),
             TelemetrySessionRole::Child
         );
         assert_eq!(
@@ -209,12 +216,16 @@ mod tests {
     #[test]
     fn warmup_sessions_are_excluded_and_unreadable_hosts_are_not_warmups() {
         assert!(is_telemetry_host_warmup(Some(&profile(&[(
-            "host_warmup", "1"
+            "host_warmup",
+            "1"
         )]))));
         assert!(!is_telemetry_host_warmup(Some(&profile(&[(
-            "host_warmup", "0"
+            "host_warmup",
+            "0"
         )]))));
-        assert!(!is_telemetry_host_warmup(Some(&profile(&[("role", "child")]))));
+        assert!(!is_telemetry_host_warmup(Some(&profile(&[(
+            "role", "child"
+        )]))));
         assert!(!is_telemetry_host_warmup(None));
         assert!(!is_host_warmup_session(None));
     }

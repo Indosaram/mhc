@@ -70,7 +70,9 @@ fn renewing_holder_is_not_reclaimed_after_several_stale_windows() {
     let stale_ms = 300;
     let overrides = timing(20, Some(stale_ms), Some(0), Some(10));
     let holder = acquired(acquire(dir.path(), &overrides));
-    let first = body(holder.path())["renewed_at"].as_i64().expect("renewed_at");
+    let first = body(holder.path())["renewed_at"]
+        .as_i64()
+        .expect("renewed_at");
     // Wait for the holder's own renewals to carry the lease past two stale windows of its
     // first write; an unrenewed lease would be reclaimable by then. A read racing the renewal's
     // rename (Windows) is retried; the poll interval only paces reads and never decides the result.
@@ -83,7 +85,10 @@ fn renewing_holder_is_not_reclaimed_after_several_stale_windows() {
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while renewed_at(holder.path()).is_none_or(|at| at < target) {
-        assert!(std::time::Instant::now() < deadline, "holder stopped renewing");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "holder stopped renewing"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     let waiter = acquire(dir.path(), &overrides);

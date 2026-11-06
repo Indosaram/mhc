@@ -156,7 +156,9 @@ impl EnabledEventClient {
         let timestamp = options
             .and_then(|options| {
                 options.timestamp.or_else(|| {
-                    options.timestamp_ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+                    options
+                        .timestamp_ms
+                        .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
                 })
             })
             .map_or_else(
@@ -252,8 +254,12 @@ impl EventTelemetryClient {
             return false;
         };
         if let Some((uuid, timestamp)) = delivery {
-            payload.properties.insert("$insert_id".into(), Value::String(uuid.into()));
-            payload.properties.insert("$time".into(), serde_json::json!(timestamp / 1000.0));
+            payload
+                .properties
+                .insert("$insert_id".into(), Value::String(uuid.into()));
+            payload
+                .properties
+                .insert("$time".into(), serde_json::json!(timestamp / 1000.0));
         }
         let delivered = if delivery.is_some() {
             // A dedicated runtime also works when the recorder runs inside a current-thread runtime.
@@ -309,8 +315,9 @@ impl EventTelemetryClient {
         name: &str,
         properties: &EventTelemetryProperties,
         options: &EventTelemetryCaptureOptions,
-    ) -> Option<BoxFuture<'static, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>>
-    {
+    ) -> Option<
+        BoxFuture<'static, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>,
+    > {
         let client = self.inner.as_ref()?;
         let payload = client.build_payload(name, properties, Some(options))?;
         let transport = Arc::clone(&client.transport);

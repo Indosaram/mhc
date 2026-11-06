@@ -1,10 +1,10 @@
 //! Argument parsing for ulw-loop CLI.
 
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
-use serde_json::Value;
 
 use crate::runtime::UlwLoopError;
 
@@ -17,16 +17,42 @@ pub struct RecordEvidenceCliArgs {
 }
 
 const VALUE_FLAGS: [&str; 24] = [
-    "--brief", "--brief-file", "--session-id", "--codex-goal-mode", "--validation-batch-json",
-    "--goal", "--goal-id", "--criterion-id", "--status", "--evidence", "--notes",
-    "--codex-goal-json", "--quality-gate-json", "--kind", "--rationale", "--title",
-    "--objective", "--target-goal-id", "--source", "--after-json", "--directive-json",
-    "--directive-file", "--idempotency-key", "--proposals-json",
+    "--brief",
+    "--brief-file",
+    "--session-id",
+    "--codex-goal-mode",
+    "--validation-batch-json",
+    "--goal",
+    "--goal-id",
+    "--criterion-id",
+    "--status",
+    "--evidence",
+    "--notes",
+    "--codex-goal-json",
+    "--quality-gate-json",
+    "--kind",
+    "--rationale",
+    "--title",
+    "--objective",
+    "--target-goal-id",
+    "--source",
+    "--after-json",
+    "--directive-json",
+    "--directive-file",
+    "--idempotency-key",
+    "--proposals-json",
 ];
 
 const SUBCOMMANDS: [&str; 9] = [
-    "create-goals", "status", "complete-goals", "criteria", "record-evidence",
-    "checkpoint", "steer", "add-goal", "record-review-blockers",
+    "create-goals",
+    "status",
+    "complete-goals",
+    "criteria",
+    "record-evidence",
+    "checkpoint",
+    "steer",
+    "add-goal",
+    "record-review-blockers",
 ];
 
 pub fn has_flag(argv: &[String], flag: &str) -> bool {
@@ -81,7 +107,10 @@ pub fn read_stdin() -> io::Result<String> {
 
 pub fn positional_text(argv: &[String]) -> String {
     let mut words = Vec::new();
-    let start = if argv.first().is_some_and(|s| SUBCOMMANDS.contains(&s.as_str())) {
+    let start = if argv
+        .first()
+        .is_some_and(|s| SUBCOMMANDS.contains(&s.as_str()))
+    {
         1
     } else {
         0
@@ -185,7 +214,9 @@ pub fn parse_record_evidence_args(argv: &[String]) -> Result<RecordEvidenceCliAr
     let raw_status = required(argv, "--status", "ULW_LOOP_EVIDENCE_STATUS_REQUIRED")?;
     let status = evidence_status(&raw_status)?;
     let evidence = required(argv, "--evidence", "ULW_LOOP_EVIDENCE_REQUIRED")?;
-    let notes = read_value(argv, "--notes").map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let notes = read_value(argv, "--notes")
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
 
     Ok(RecordEvidenceCliArgs {
         goal_id,

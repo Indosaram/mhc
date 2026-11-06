@@ -7,13 +7,20 @@ pub const INPUT_TIPS: &[TipDefinition] = &[
         id: "click-pending-question",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Click a pending question's option to answer. Use the displayed selection-bypass modifier to select terminal text, or disable terminal.mouse in /settings.".to_string(),
+        render: |_keys| {
+            "Click a pending question's option to answer. Use the displayed selection-bypass modifier to select terminal text, or disable terminal.mouse in /settings.".to_string()
+        },
     },
     TipDefinition {
         id: "queue-follow-up",
         bindings: &["app.message.followUp"],
         requires_command: None,
-        render: |keys| format!("While the agent is working, use {} to queue a follow-up for after it finishes.", keys("app.message.followUp")),
+        render: |keys| {
+            format!(
+                "While the agent is working, use {} to queue a follow-up for after it finishes.",
+                keys("app.message.followUp")
+            )
+        },
     },
     TipDefinition {
         id: "steering-message",
@@ -31,25 +38,42 @@ pub const INPUT_TIPS: &[TipDefinition] = &[
         id: "edit-queued-message",
         bindings: &["app.message.dequeue"],
         requires_command: None,
-        render: |keys| format!("Use {} to bring queued messages back for editing.", keys("app.message.dequeue")),
+        render: |keys| {
+            format!(
+                "Use {} to bring queued messages back for editing.",
+                keys("app.message.dequeue")
+            )
+        },
     },
     TipDefinition {
         id: "interrupt-restores-queue",
         bindings: &["app.interrupt"],
         requires_command: None,
-        render: |keys| format!("Press {} to abort the current turn and restore queued messages to the editor.", keys("app.interrupt")),
+        render: |keys| {
+            format!(
+                "Press {} to abort the current turn and restore queued messages to the editor.",
+                keys("app.interrupt")
+            )
+        },
     },
     TipDefinition {
         id: "file-reference",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Type @ in the editor to fuzzy-search project files and insert their paths.".to_string(),
+        render: |_keys| {
+            "Type @ in the editor to fuzzy-search project files and insert their paths.".to_string()
+        },
     },
     TipDefinition {
         id: "path-completion",
         bindings: &["tui.input.tab"],
         requires_command: None,
-        render: |keys| format!("Press {} to complete file paths while typing.", keys("tui.input.tab")),
+        render: |keys| {
+            format!(
+                "Press {} to complete file paths while typing.",
+                keys("tui.input.tab")
+            )
+        },
     },
     TipDefinition {
         id: "shortcut-overlay",
@@ -61,61 +85,102 @@ pub const INPUT_TIPS: &[TipDefinition] = &[
         id: "prompt-history",
         bindings: &["app.history.search"],
         requires_command: Some("history"),
-        render: |keys| format!("Search prompt history across sessions with {}.", keys("app.history.search")),
+        render: |keys| {
+            format!(
+                "Search prompt history across sessions with {}.",
+                keys("app.history.search")
+            )
+        },
     },
     TipDefinition {
         id: "external-editor",
         bindings: &["app.editor.external"],
         requires_command: None,
-        render: |keys| format!("Open the current prompt in your external editor with {}.", keys("app.editor.external")),
+        render: |keys| {
+            format!(
+                "Open the current prompt in your external editor with {}.",
+                keys("app.editor.external")
+            )
+        },
     },
     TipDefinition {
         id: "expand-tool-output",
         bindings: &["app.tools.expand"],
         requires_command: None,
-        render: |keys| format!("Collapse or expand tool output with {}.", keys("app.tools.expand")),
+        render: |keys| {
+            format!(
+                "Collapse or expand tool output with {}.",
+                keys("app.tools.expand")
+            )
+        },
     },
     TipDefinition {
         id: "thinking-blocks",
         bindings: &["app.thinking.toggle"],
         requires_command: None,
-        render: |keys| format!("Collapse or expand thinking blocks with {}.", keys("app.thinking.toggle")),
+        render: |keys| {
+            format!(
+                "Collapse or expand thinking blocks with {}.",
+                keys("app.thinking.toggle")
+            )
+        },
     },
     TipDefinition {
         id: "paste-image",
         bindings: &["app.clipboard.pasteImage"],
         requires_command: None,
-        render: |keys| format!("Paste an image from the clipboard with {}.", keys("app.clipboard.pasteImage")),
+        render: |keys| {
+            format!(
+                "Paste an image from the clipboard with {}.",
+                keys("app.clipboard.pasteImage")
+            )
+        },
     },
     TipDefinition {
         id: "copy-message",
         bindings: &["app.message.copy"],
         requires_command: None,
-        render: |keys| format!("Copy the latest assistant message with {}.", keys("app.message.copy")),
+        render: |keys| {
+            format!(
+                "Copy the latest assistant message with {}.",
+                keys("app.message.copy")
+            )
+        },
     },
     TipDefinition {
         id: "input-newline",
         bindings: &["tui.input.newLine"],
         requires_command: None,
-        render: |keys| format!("Insert a newline without sending with {}.", keys("tui.input.newLine")),
+        render: |keys| {
+            format!(
+                "Insert a newline without sending with {}.",
+                keys("tui.input.newLine")
+            )
+        },
     },
     TipDefinition {
         id: "bash-prefixes",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Prefix a prompt with ! to run bash, or !! to run bash without adding its output to model context.".to_string(),
+        render: |_keys| {
+            "Prefix a prompt with ! to run bash, or !! to run bash without adding its output to model context.".to_string()
+        },
     },
     TipDefinition {
         id: "drag-drop-files",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Drag and drop files into the terminal to add their paths to your prompt.".to_string(),
+        render: |_keys| {
+            "Drag and drop files into the terminal to add their paths to your prompt.".to_string()
+        },
     },
     TipDefinition {
         id: "answer-agent-question",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "When the agent asks you a question, pick options with digits or arrows, press Enter to advance, and use the final Submit tab for a comment or partial answers; anything unanswered is reported back as unanswered.".to_string(),
+        render: |_keys| {
+            "When the agent asks you a question, pick options with digits or arrows, press Enter to advance, and use the final Submit tab for a comment or partial answers; anything unanswered is reported back as unanswered.".to_string()
+        },
     },
     TipDefinition {
         id: "open-pending-question",

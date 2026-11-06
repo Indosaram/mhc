@@ -133,8 +133,12 @@ impl Worker {
             Op::AxAttributes(params) => self.ax_attributes(&params.ref_),
             Op::AxChildren(params) => self.ax_children(&params.ref_),
             Op::AxParent(params) => self.ax_parent(&params.ref_),
-            Op::AxPerform(params) => served(self.ax_perform(&params.ref_, &params.action, cancelled)),
-            Op::AxSetValue(params) => served(self.ax_set_value(&params.ref_, &params.value, cancelled)),
+            Op::AxPerform(params) => {
+                served(self.ax_perform(&params.ref_, &params.action, cancelled))
+            }
+            Op::AxSetValue(params) => {
+                served(self.ax_set_value(&params.ref_, &params.value, cancelled))
+            }
             Op::AxFocus(params) => served(self.ax_focus(&params.ref_, cancelled)),
             Op::AxClick(params) => served(self.ax_click(&params, cancelled)),
             Op::ClipboardRead => self.clipboard_read(),
@@ -166,7 +170,9 @@ impl Worker {
             Target::Window(id) => windows
                 .into_iter()
                 .find(|window| window.id == *id)
-                .ok_or_else(|| DesktopError::window_not_found(format!("window '{id}' was not found"))),
+                .ok_or_else(|| {
+                    DesktopError::window_not_found(format!("window '{id}' was not found"))
+                }),
             Target::Desktop => windows
                 .into_iter()
                 .find(|window| window.focused)

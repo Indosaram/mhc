@@ -19,7 +19,7 @@ fn input(from: &str, to: &str, body: &str, summary: Option<&str>) -> SendTeamMes
 
 #[test]
 fn build_team_message_given_from_to_body_when_built_then_a_well_formed_message_kind_message_is_produced()
-{
+ {
     // given
     let now = || 1_700_000_000_000_i64;
     let new_message_id = || "11111111-1111-4111-8111-111111111111".to_string();
@@ -62,7 +62,10 @@ fn build_team_message_given_a_summary_when_built_then_the_summary_is_carried_and
 
     // then
     let value = serde_json::to_value(&message).unwrap();
-    assert_eq!(value.get("summary"), Some(&Value::String("greeting".to_string())));
+    assert_eq!(
+        value.get("summary"),
+        Some(&Value::String("greeting".to_string()))
+    );
     assert_eq!(value.get("to"), Some(&Value::String("*".to_string())));
 }
 

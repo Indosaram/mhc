@@ -459,7 +459,15 @@ impl Theme {
         let cache: std::collections::HashMap<String, [String; 2]> = theme
             .colors
             .keys()
-            .map(|key| (key.clone(), [theme.ansi_uncached(key, false), theme.ansi_uncached(key, true)]))
+            .map(|key| {
+                (
+                    key.clone(),
+                    [
+                        theme.ansi_uncached(key, false),
+                        theme.ansi_uncached(key, true),
+                    ],
+                )
+            })
             .collect();
         theme.ansi_cache = std::sync::Arc::new(cache);
         Ok(theme)

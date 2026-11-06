@@ -42,7 +42,10 @@ pub struct IdleTimeout {
 impl IdleTimeout {
     pub fn new(options: IdleTimeoutOptions) -> Self {
         let timeout_ms = options.timeout_ms.max(1);
-        let max_pause_grace_ms = options.max_pause_grace_ms.unwrap_or(DEFAULT_MAX_PAUSE_GRACE_MS).max(timeout_ms);
+        let max_pause_grace_ms = options
+            .max_pause_grace_ms
+            .unwrap_or(DEFAULT_MAX_PAUSE_GRACE_MS)
+            .max(timeout_ms);
         let state = Arc::new(Mutex::new(State {
             deadline: Instant::now() + Duration::from_millis(timeout_ms),
             paused_deadline: None,
@@ -60,34 +63,58 @@ impl IdleTimeout {
                 notified.as_mut().enable();
                 let deadline = {
                     let state = worker_state.lock().expect("timeout state lock poisoned");
-                    if state.settled { return; }
+                    if state.settled {
+                        return;
+                    }
                     let deadline = state.paused_deadline.unwrap_or(state.deadline);
-                    options.deadline.map_or(deadline, |absolute| absolute.min(deadline))
+                    options
+                        .deadline
+                        .map_or(deadline, |absolute| absolute.min(deadline))
                 };
                 tokio::select! {
                     () = &mut notified => continue,
                     () = tokio::time::sleep_until(deadline) => {}
                 }
                 let mut state = worker_state.lock().expect("timeout state lock poisoned");
-                if state.settled { return; }
+                if state.settled {
+                    return;
+                }
                 let deadline = state.paused_deadline.unwrap_or(state.deadline);
-                let deadline = options.deadline.map_or(deadline, |absolute| absolute.min(deadline));
-                if Instant::now() < deadline { continue; }
+                let deadline = options
+                    .deadline
+                    .map_or(deadline, |absolute| absolute.min(deadline));
+                if Instant::now() < deadline {
+                    continue;
+                }
                 let error = if state.paused_deadline.is_some() {
-                    format!("Cell timed out after {max_pause_grace_ms}ms waiting on a host tool call")
+                    format!(
+                        "Cell timed out after {max_pause_grace_ms}ms waiting on a host tool call"
+                    )
                 } else {
                     format!("Cell timed out after {timeout_ms}ms")
                 };
                 state.settled = true;
                 state.paused_deadline = None;
-                sender.send_replace(Some(IdleTimeoutEvent { cell_id: options.cell_id, error }));
+                sender.send_replace(Some(IdleTimeoutEvent {
+                    cell_id: options.cell_id,
+                    error,
+                }));
                 return;
             }
         });
-        Self { timeout_ms, max_pause_grace_ms, state, changed, signal, task }
+        Self {
+            timeout_ms,
+            max_pause_grace_ms,
+            state,
+            changed,
+            signal,
+            task,
+        }
     }
 
-    pub fn signal(&self) -> watch::Receiver<Option<IdleTimeoutEvent>> { self.signal.clone() }
+    pub fn signal(&self) -> watch::Receiver<Option<IdleTimeoutEvent>> {
+        self.signal.clone()
+    }
 
     pub fn dispose(&self) {
         let mut state = self.state.lock().expect("timeout state lock poisoned");
@@ -100,17 +127,22 @@ impl IdleTimeout {
 impl TimeoutPauseHandle for IdleTimeout {
     fn pause(&self) {
         let mut state = self.state.lock().expect("timeout state lock poisoned");
-        if state.settled { return; }
+        if state.settled {
+            return;
+        }
         state.pause_depth += 1;
         if state.pause_depth == 1 {
-            state.paused_deadline = Some(Instant::now() + Duration::from_millis(self.max_pause_grace_ms));
+            state.paused_deadline =
+                Some(Instant::now() + Duration::from_millis(self.max_pause_grace_ms));
             self.changed.notify_one();
         }
     }
 
     fn resume(&self) {
         let mut state = self.state.lock().expect("timeout state lock poisoned");
-        if state.settled || state.pause_depth == 0 { return; }
+        if state.settled || state.pause_depth == 0 {
+            return;
+        }
         state.pause_depth -= 1;
         if state.pause_depth == 0 {
             state.paused_deadline = None;
@@ -121,5 +153,7 @@ impl TimeoutPauseHandle for IdleTimeout {
 }
 
 impl Drop for IdleTimeout {
-    fn drop(&mut self) { self.task.abort(); }
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }

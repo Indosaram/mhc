@@ -32,7 +32,10 @@ fn captures_root_window() {
         displays.len(),
         windows.len()
     );
-    assert_eq!((image.width(), image.height()), (screen.width, screen.height));
+    assert_eq!(
+        (image.width(), image.height()),
+        (screen.width, screen.height)
+    );
 }
 
 #[test]
@@ -67,9 +70,14 @@ fn captures_a_partially_offscreen_window_in_a_targetable_full_frame() {
         image.width(),
         image.height()
     );
-    assert_eq!((image.width(), image.height()), (window.width, window.height));
     assert_eq!(
-        frame.map_point(visible_x, visible_y, Some(&window)).unwrap(),
+        (image.width(), image.height()),
+        (window.width, window.height)
+    );
+    assert_eq!(
+        frame
+            .map_point(visible_x, visible_y, Some(&window))
+            .unwrap(),
         (0.0, 0.0)
     );
 }

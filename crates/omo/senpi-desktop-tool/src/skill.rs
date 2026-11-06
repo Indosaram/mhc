@@ -1,14 +1,13 @@
 //! Computer skill markdown generator and materializer matching upstream `src/skill.ts`.
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use senpi_desktop_prelude::ComputerPreludeAssets;
 use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const COMPUTER_SKILL_NAME: &str = "computer-use";
 
-pub const COMPUTER_SKILL_DESCRIPTION: &str =
-    "Experimental computer use. MUST read before driving the desktop with the computer tool: every helper, coordinate frames, accessibility refs, background vs foreground delivery, the stop and resume rules, and the safety rules for consequential actions.";
+pub const COMPUTER_SKILL_DESCRIPTION: &str = "Experimental computer use. MUST read before driving the desktop with the computer tool: every helper, coordinate frames, accessibility refs, background vs foreground delivery, the stop and resume rules, and the safety rules for consequential actions.";
 
 pub fn computer_skill_markdown() -> String {
     format!(

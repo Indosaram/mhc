@@ -19,7 +19,9 @@ pub struct DagExecutionModeSources<'a> {
 
 /// `agentDef.executionMode ?? task.default_execution_mode ?? "in-process"`. There is no
 /// `dag.default_execution_mode` knob. Curated read-only agents are forced in-process.
-pub fn resolve_dag_node_execution_mode(sources: &DagExecutionModeSources<'_>) -> Option<ExecutionMode> {
+pub fn resolve_dag_node_execution_mode(
+    sources: &DagExecutionModeSources<'_>,
+) -> Option<ExecutionMode> {
     let agent_name = match sources.route {
         DagRoute::Agent { agent, .. } => Some(agent.as_str()),
         DagRoute::Category { .. } => None,
@@ -38,11 +40,15 @@ pub fn resolve_dag_node_execution_mode(sources: &DagExecutionModeSources<'_>) ->
     if sources.config_is_auto && agent_mode.is_none() && sources.auto_mode.is_none() {
         return None;
     }
-    Some(agent_mode.or(if sources.config_is_auto {
-        sources.auto_mode
-    } else {
-        sources.config_mode
-    }).unwrap_or(ExecutionMode::InProcess))
+    Some(
+        agent_mode
+            .or(if sources.config_is_auto {
+                sources.auto_mode
+            } else {
+                sources.config_mode
+            })
+            .unwrap_or(ExecutionMode::InProcess),
+    )
 }
 
 #[cfg(test)]

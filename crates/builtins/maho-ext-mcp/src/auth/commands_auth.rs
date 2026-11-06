@@ -394,7 +394,9 @@ pub async fn run_logout_command(deps: &AuthCommandDeps) -> Result<(), OAuthReque
         name,
         deps.config.url.as_deref().unwrap_or(""),
     ));
-    logout(&provider)?;
+    tokio::task::spawn_blocking(move || logout(&provider))
+        .await
+        .map_err(|error| OAuthRequestError::Invalid(error.to_string()))??;
     pending(deps).remove(name);
     (deps.on_reconnect)().await;
     (deps.notify)(

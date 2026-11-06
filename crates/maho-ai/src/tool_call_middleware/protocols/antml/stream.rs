@@ -5,7 +5,10 @@ use crate::tool_call_middleware::protocols::anthropic_xml::stream::create_invoke
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser};
 use crate::types::Tool;
 
-pub fn create_antml_stream_parser(tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn StreamParser + Send> {
+pub fn create_antml_stream_parser(
+    tools: Vec<Tool>,
+    options: Option<ParserOptions>,
+) -> Box<dyn StreamParser + Send> {
     create_invoke_stream_parser(tools, &ANTML_INVOKE_CONFIG, options)
 }
 
@@ -13,7 +16,7 @@ pub fn create_antml_stream_parser(tools: Vec<Tool>, options: Option<ParserOption
 mod tests {
     use super::*;
     use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn tool(name: &str) -> Tool {
         Tool {
@@ -32,11 +35,20 @@ mod tests {
         let mut parser = create_antml_stream_parser(tools, None);
         let events =
             parser.feed(r#"<function_calls><invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke></function_calls>"#);
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart { name, .. } if name == "get_weather")));
+        assert!(events.iter().any(
+            |e| matches!(e, StreamParserEvent::ToolcallStart { name, .. } if name == "get_weather")
+        ));
         assert!(parser.finish().is_empty());
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "Bash".into(),
+            description: "Run a shell command".into(),
+            parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn edit_tool() -> Tool {
@@ -52,35 +64,84 @@ mod tests {
 
     fn fixture_tools() -> Vec<Tool> {
         vec![
-            Tool { name: "get_weather".into(), description: "Get weather".into(), parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}), output_schema: None, freeform: None, constrained_sampling: None },
-            Tool { name: "todowrite".into(), description: "Write todos".into(), parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}), output_schema: None, freeform: None, constrained_sampling: None },
-            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None },
+            Tool {
+                name: "get_weather".into(),
+                description: "Get weather".into(),
+                parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+            Tool {
+                name: "todowrite".into(),
+                description: "Write todos".into(),
+                parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+            Tool {
+                name: "get_location".into(),
+                description: "Get location".into(),
+                parameters: json!({"type": "object", "properties": {}}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
         ]
     }
 
-    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, crate::tool_call_middleware::types::ParserErrorHandler) {
+    fn error_sink() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        crate::tool_call_middleware::types::ParserErrorHandler,
+    ) {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let handler: crate::tool_call_middleware::types::ParserErrorHandler = std::sync::Arc::new(move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
-            sink.lock().expect("error sink").push(message.to_string());
-        });
+        let handler: crate::tool_call_middleware::types::ParserErrorHandler = std::sync::Arc::new(
+            move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
+                sink.lock().expect("error sink").push(message.to_string());
+            },
+        );
         (seen, handler)
     }
 
-    fn options_with(emit_raw: bool, handler: crate::tool_call_middleware::types::ParserErrorHandler) -> ParserOptions {
-        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(handler) }
+    fn options_with(
+        emit_raw: bool,
+        handler: crate::tool_call_middleware::types::ParserErrorHandler,
+    ) -> ParserOptions {
+        ParserOptions {
+            emit_raw_tool_call_text_on_error: emit_raw,
+            on_error: Some(handler),
+        }
     }
 
     fn text_output(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn tool_call_ends(events: &[StreamParserEvent]) -> Vec<&StreamParserEvent> {
-        events.iter().filter(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. })).collect()
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+            .collect()
     }
 
     fn is_toolcall_event(event: &StreamParserEvent) -> bool {
-        matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+        matches!(
+            event,
+            StreamParserEvent::ToolcallStart { .. }
+                | StreamParserEvent::ToolcallDelta { .. }
+                | StreamParserEvent::ToolcallEnd { .. }
+        )
     }
 
     fn feed_all(parser: &mut Box<dyn StreamParser + Send>, input: &str) -> Vec<StreamParserEvent> {
@@ -93,15 +154,28 @@ mod tests {
     fn emits_a_complete_invoke_as_one_tool_call_with_antml_ids() {
         let mut parser = create_antml_stream_parser(vec![bash_tool()], None);
         assert_eq!(
-            feed_all(&mut parser, r#"<invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>"#),
+            feed_all(
+                &mut parser,
+                r#"<invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>"#
+            ),
             vec![
-                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "antml-tool-0".into() },
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo hi"}"#.into() },
+                StreamParserEvent::ToolcallStart {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "antml-tool-0".into()
+                },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#"{"command":"echo hi"}"#.into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "Bash".into(),
                     id: "antml-tool-0".into(),
-                    arguments: json!({"command": "echo hi"}).as_object().expect("object").clone(),
+                    arguments: json!({"command": "echo hi"})
+                        .as_object()
+                        .expect("object")
+                        .clone(),
                     incomplete: false,
                     error_message: None,
                 },
@@ -165,57 +239,115 @@ mod tests {
         let events = feed_all(&mut parser, input);
         let ends = tool_call_ends(&events);
         assert_eq!(ends.len(), 1);
-        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = ends[0] else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name, arguments, ..
+        } = ends[0]
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "Edit");
         assert_eq!(arguments.get("file_path"), Some(&json!("f.py")));
-        assert_eq!(arguments.get("edits"), Some(&json!([{"oldText": "a", "newText": "b"}])));
+        assert_eq!(
+            arguments.get("edits"),
+            Some(&json!([{"oldText": "a", "newText": "b"}]))
+        );
     }
 
     #[test]
     fn suppresses_an_unrecoverably_malformed_known_invoke_and_reports_it() {
         let (seen, handler) = error_sink();
-        let count_tool = Tool { name: "Count".into(), description: "Count".into(), parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}), output_schema: None, freeform: None, constrained_sampling: None };
-        let mut parser = create_antml_stream_parser(vec![count_tool], Some(options_with(false, handler)));
-        let call = r#"<invoke name="Count"><parameter name="count">not-a-number</parameter></invoke>"#;
+        let count_tool = Tool {
+            name: "Count".into(),
+            description: "Count".into(),
+            parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        };
+        let mut parser =
+            create_antml_stream_parser(vec![count_tool], Some(options_with(false, handler)));
+        let call =
+            r#"<invoke name="Count"><parameter name="count">not-a-number</parameter></invoke>"#;
         let events = feed_all(&mut parser, &format!("Before {call} after"));
         assert!(tool_call_ends(&events).is_empty());
         assert_eq!(text_output(&events), "Before  after");
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not process streaming antml tool call, keeping original text."]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not process streaming antml tool call, keeping original text."]
+        );
     }
 
     #[test]
     fn flags_an_incomplete_known_invoke_at_finish() {
         let (seen, handler) = error_sink();
-        let mut parser = create_antml_stream_parser(vec![bash_tool()], Some(options_with(false, handler)));
-        let events = feed_all(&mut parser, r#"<invoke name="Bash"><parameter name="command">ls"#);
+        let mut parser =
+            create_antml_stream_parser(vec![bash_tool()], Some(options_with(false, handler)));
+        let events = feed_all(
+            &mut parser,
+            r#"<invoke name="Bash"><parameter name="command">ls"#,
+        );
         let ends = tool_call_ends(&events);
         assert_eq!(ends.len(), 1);
-        let StreamParserEvent::ToolcallEnd { incomplete, error_message, .. } = ends[0] else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            incomplete,
+            error_message,
+            ..
+        } = ends[0]
+        else {
+            unreachable!()
+        };
         assert!(*incomplete);
-        assert_eq!(error_message.as_deref(), Some("Tool call was truncated mid-arguments"));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["antml tool call truncated at finish"]);
+        assert_eq!(
+            error_message.as_deref(),
+            Some("Tool call was truncated mid-arguments")
+        );
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["antml tool call truncated at finish"]
+        );
     }
 
     fn assert_antml_fixture(input: &str, expect: FixtureExpectation) {
         let (seen, handler) = error_sink();
-        let mut parser = create_antml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let mut parser =
+            create_antml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
         let events = feed_all(&mut parser, input);
         let ends = tool_call_ends(&events);
         match expect {
             FixtureExpectation::Recovered { tool, arguments } => {
                 assert_eq!(ends.len(), 1, "{input}");
-                let StreamParserEvent::ToolcallEnd { name, arguments: observed, incomplete, .. } = ends[0] else { unreachable!() };
+                let StreamParserEvent::ToolcallEnd {
+                    name,
+                    arguments: observed,
+                    incomplete,
+                    ..
+                } = ends[0]
+                else {
+                    unreachable!()
+                };
                 assert_eq!(name, tool);
                 assert_eq!(observed, &arguments);
                 assert!(!*incomplete, "{input}");
             }
             FixtureExpectation::Incomplete { tool } => {
                 assert_eq!(ends.len(), 1, "{input}");
-                let StreamParserEvent::ToolcallEnd { name, incomplete, .. } = ends[0] else { unreachable!() };
+                let StreamParserEvent::ToolcallEnd {
+                    name, incomplete, ..
+                } = ends[0]
+                else {
+                    unreachable!()
+                };
                 assert_eq!(name, tool);
                 assert!(*incomplete);
                 assert!(!text_output(&events).contains("<invoke"), "{input}");
-                assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(input)), "{input}");
+                assert!(
+                    !seen
+                        .lock()
+                        .expect("errors")
+                        .iter()
+                        .any(|message| message.contains(input)),
+                    "{input}"
+                );
             }
             FixtureExpectation::Dropped => {
                 assert!(ends.is_empty(), "{input}");
@@ -231,8 +363,13 @@ mod tests {
     }
 
     enum FixtureExpectation {
-        Recovered { tool: &'static str, arguments: serde_json::Map<String, Value> },
-        Incomplete { tool: &'static str },
+        Recovered {
+            tool: &'static str,
+            arguments: serde_json::Map<String, Value>,
+        },
+        Incomplete {
+            tool: &'static str,
+        },
         Dropped,
         Text,
     }
@@ -241,7 +378,13 @@ mod tests {
     fn handles_a_truncation_fixture_with_a_closed_parameter_and_only_the_invoke_close_missing() {
         assert_antml_fixture(
             r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter>"#,
-            FixtureExpectation::Recovered { tool: "get_weather", arguments: json!({"city": "Seoul"}).as_object().expect("object").clone() },
+            FixtureExpectation::Recovered {
+                tool: "get_weather",
+                arguments: json!({"city": "Seoul"})
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            },
         );
     }
 
@@ -249,18 +392,32 @@ mod tests {
     fn handles_a_truncation_fixture_with_a_proper_invoke_close_prefix_after_complete_parameters() {
         assert_antml_fixture(
             r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></inv"#,
-            FixtureExpectation::Recovered { tool: "get_weather", arguments: json!({"city": "Seoul"}).as_object().expect("object").clone() },
+            FixtureExpectation::Recovered {
+                tool: "get_weather",
+                arguments: json!({"city": "Seoul"})
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            },
         );
     }
 
     #[test]
     fn handles_a_truncation_fixture_where_a_mid_value_cut_leaves_the_parameter_unclosed() {
-        assert_antml_fixture(r#"<invoke name="get_weather"><parameter name="city">Seo"#, FixtureExpectation::Incomplete { tool: "get_weather" });
+        assert_antml_fixture(
+            r#"<invoke name="get_weather"><parameter name="city">Seo"#,
+            FixtureExpectation::Incomplete {
+                tool: "get_weather",
+            },
+        );
     }
 
     #[test]
     fn handles_a_truncation_fixture_where_closed_parameters_violate_todowrite_min_items() {
-        assert_antml_fixture(r#"<invoke name="todowrite"><parameter name="todos">[]</parameter>"#, FixtureExpectation::Incomplete { tool: "todowrite" });
+        assert_antml_fixture(
+            r#"<invoke name="todowrite"><parameter name="todos">[]</parameter>"#,
+            FixtureExpectation::Incomplete { tool: "todowrite" },
+        );
     }
 
     #[test]
@@ -270,7 +427,9 @@ mod tests {
 
     #[test]
     fn handles_a_truncation_fixture_where_an_unknown_invoke_remains_ordinary_text() {
-        assert_antml_fixture(r#"<invoke name="unknown_tool"><parameter name="city">Seoul</parameter>"#, FixtureExpectation::Text);
+        assert_antml_fixture(
+            r#"<invoke name="unknown_tool"><parameter name="city">Seoul</parameter>"#,
+            FixtureExpectation::Text,
+        );
     }
-
 }

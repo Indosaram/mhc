@@ -8,8 +8,12 @@ pub struct ModelSearchItem {
 }
 
 pub fn get_model_search_text(item: &ModelSearchItem) -> String {
-    let name = item.name.as_deref().filter(|name| !name.is_empty())
-        .map(|name| format!(" {name}")).unwrap_or_default();
+    let name = item
+        .name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(" {name}"))
+        .unwrap_or_default();
     let ModelSearchItem { id, provider, .. } = item;
     format!("{id} {provider} {provider}/{id} {provider} {id}{name}")
 }

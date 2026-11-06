@@ -11,7 +11,8 @@ fn theme() -> Theme {
 }
 
 fn fixtures() -> Vec<Value> {
-    serde_json::from_str(include_str!("golden/components32-descriptors.json")).expect("pinned fixture")
+    serde_json::from_str(include_str!("golden/components32-descriptors.json"))
+        .expect("pinned fixture")
 }
 
 fn kind_name(kind: DescriptorKind) -> &'static str {
@@ -39,16 +40,25 @@ fn assistant_render_descriptors_match_pinned_senpi_for_every_branch() {
             .iter()
             .map(|pair| {
                 let pair = pair.as_array().expect("pair");
-                (pair[0].as_u64().expect("run") as usize, pair[1].as_bool().expect("hidden"))
+                (
+                    pair[0].as_u64().expect("run") as usize,
+                    pair[1].as_bool().expect("hidden"),
+                )
             })
             .collect();
         let descriptors = create_assistant_render_descriptors(
             message,
             &AssistantRenderDescriptorOptions {
                 expanded: options["expanded"].as_bool().expect("expanded"),
-                provider_error_owned: options["providerErrorOwned"].as_bool().expect("providerErrorOwned"),
-                hidden_thinking_label: options["hiddenThinkingLabel"].as_str().expect("hiddenThinkingLabel"),
-                hide_thinking_block: options["hideThinkingBlock"].as_bool().expect("hideThinkingBlock"),
+                provider_error_owned: options["providerErrorOwned"]
+                    .as_bool()
+                    .expect("providerErrorOwned"),
+                hidden_thinking_label: options["hiddenThinkingLabel"]
+                    .as_str()
+                    .expect("hiddenThinkingLabel"),
+                hide_thinking_block: options["hideThinkingBlock"]
+                    .as_bool()
+                    .expect("hideThinkingBlock"),
                 thinking_visibility_overrides: &overrides,
                 has_tool_calls: options["hasToolCalls"].as_bool().expect("hasToolCalls"),
             },
