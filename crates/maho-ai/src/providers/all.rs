@@ -3,7 +3,7 @@
 use crate::images_models::{
     CreateImagesModelsOptions, ImagesModels, ImagesProvider, create_images_models,
 };
-use crate::models::{CreateModelsOptions, Models, Provider, create_models};
+use crate::models::{CreateModelsOptions, Models, Provider, create_models, typesafe_provider};
 use crate::models_generated::MODELS;
 use crate::types::{Model, ModelThinkingLevel};
 use indexmap::IndexMap;
@@ -14,7 +14,7 @@ const MODEL_DATA_MANIFEST_JSON: &str = include_str!("data/model_data_manifest.js
 
 /// Catalogs the fork owns by hand because models.dev does not describe them; a generation run emits
 /// neither their shard nor their data file, so they can never appear in MODELS.
-static FORK_OWNED_CATALOGS: LazyLock<IndexMap<String, IndexMap<String, Model>>> =
+pub(crate) static FORK_OWNED_CATALOGS: LazyLock<IndexMap<String, IndexMap<String, Model>>> =
     LazyLock::new(|| {
         let mut catalogs = IndexMap::new();
         catalogs.insert(
@@ -136,6 +136,7 @@ pub fn builtin_providers() -> Result<Vec<Arc<dyn Provider>>, crate::models::Mode
         groq::groq_provider()?,
         huggingface::huggingface_provider()?,
         kimi_coding::kimi_coding_provider()?,
+        meta_provider()?,
         minimax::minimax_provider()?,
         minimax_cn::minimax_cn_provider()?,
         mistral::mistral_provider()?,
@@ -154,6 +155,7 @@ pub fn builtin_providers() -> Result<Vec<Arc<dyn Provider>>, crate::models::Mode
         qwen_token_plan_individual::qwen_token_plan_individual_provider()?,
         radius::radius_provider(None),
         together::together_provider()?,
+        typesafe_provider()?,
         venice::venice_provider()?,
         vercel_ai_gateway::vercel_ai_gateway_provider()?,
         xai::xai_provider()?,
@@ -193,4 +195,4 @@ pub fn builtin_images_models(options: Option<CreateImagesModelsOptions>) -> Imag
     models
 }
 
-pub use super::{ollama::ollama_provider, radius::radius_provider};
+pub use super::{meta::meta_provider, ollama::ollama_provider, radius::radius_provider};
