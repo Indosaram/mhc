@@ -42,9 +42,16 @@ pub fn compute_structural_yield(
 pub fn recorded_yield(entry: &maho_ext_api::SessionEntry) -> Option<StructuralYield> {
     let recorded = entry.data.get("details")?.get("structuralYield")?;
     Some(StructuralYield {
-        saved_tokens: recorded.get("savedTokens").and_then(serde_json::Value::as_f64)?,
-        savings_ratio: recorded.get("savingsRatio").and_then(serde_json::Value::as_f64)?,
-        tokens_before: entry.data.get("tokensBefore").and_then(serde_json::Value::as_f64)?,
+        saved_tokens: recorded
+            .get("savedTokens")
+            .and_then(serde_json::Value::as_f64)?,
+        savings_ratio: recorded
+            .get("savingsRatio")
+            .and_then(serde_json::Value::as_f64)?,
+        tokens_before: entry
+            .data
+            .get("tokensBefore")
+            .and_then(serde_json::Value::as_f64)?,
     })
 }
 pub fn is_ineffective_compaction(value: StructuralYield) -> bool {
