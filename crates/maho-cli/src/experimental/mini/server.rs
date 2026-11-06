@@ -30,8 +30,10 @@ pub fn process_worker_factory(executable: PathBuf, prefix_args: Vec<String>, ses
             // The worker boots `mhc <sessionsRoot> <cwd> [sessionId]`; the role env var is what makes
             // the binary dispatch it to the session-worker entry (pinned `worker/entry.ts`).
             command.env(crate::experimental::process::INTERNAL_PROCESS_ENV, "session-worker");
+            let stderr = crate::utils::child_stderr::ChildStderrRelay::attach(&mut command);
             let mut child = command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|error| error.to_string())?;
+                .kill_on_drop(true).spawn().map_err(|error| error.to_string())?;
+            stderr.start(&mut child);
             let input = child.stdout.take().ok_or("Worker stdout is not piped")?;
             let output = child.stdin.take().ok_or("Worker stdin is not piped")?;
             let peer = Arc::new(create_peer(input, output, PeerOptions::default()));

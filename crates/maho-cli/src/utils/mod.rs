@@ -28,6 +28,7 @@ pub mod tools_manager;
 pub use maho_core::utils::image_process;
 pub use maho_core::utils::tool_result_images;
 pub mod child_process;
+pub mod child_stderr;
 pub mod piped_stdin;
 pub mod version_check;
 // ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
