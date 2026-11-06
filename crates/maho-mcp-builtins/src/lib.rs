@@ -49,7 +49,7 @@ pub struct BuiltinSettings {
     pub config_enabled: bool,
     /// `mcp.disabled_builtins`, union over layers.
     pub disabled: Vec<String>,
-    /// Token variables that are set (non-empty) in the environment.
+    /// Token variables that hold a real (non-placeholder) value in the environment.
     pub tokens_present: Vec<String>,
 }
 
@@ -63,6 +63,38 @@ impl Default for BuiltinSettings {
             tokens_present: Vec::new(),
         }
     }
+}
+
+/// Whether `CONTEXT7_API_KEY` carries a key the user supplied rather than a placeholder copied
+/// from a `.env` template (`<YOUR_API_KEY>`, `your_api_key`, ...).
+///
+/// Derived from upstream `context7.ts` at `354bcf9f`: trim, lowercase, drop wrapper characters,
+/// fold each run of whitespace, `_` and `-` into one space, then reject the empty result and the
+/// phrase `your api key`. A folded run at the very end still leaves one trailing space, so
+/// `your_api_key_` is a real key and not the placeholder.
+pub fn has_context7_api_key(value: Option<&str>) -> bool {
+    let Some(raw) = value else { return false };
+    let lowered = raw.trim().to_lowercase();
+    let folded: String = lowered
+        .chars()
+        .filter(|character| !matches!(character, '<' | '>' | '"' | '\'' | '`'))
+        .map(|character| {
+            if character.is_whitespace() || character == '_' || character == '-' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let mut normalized = folded
+        .split(' ')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if folded.ends_with(' ') {
+        normalized.push(' ');
+    }
+    !normalized.is_empty() && normalized != "your api key"
 }
 
 fn falsy(value: &str) -> bool {
@@ -102,7 +134,7 @@ impl BuiltinSettings {
             tokens_present: BUILTIN_SERVERS
                 .iter()
                 .filter_map(|server| server.token_env)
-                .filter(|name| !get(name).trim().is_empty())
+                .filter(|name| has_context7_api_key(Some(get(name))))
                 .map(str::to_owned)
                 .collect(),
         }
