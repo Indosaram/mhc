@@ -16,10 +16,7 @@ fn workpool_respawn_refuses_non_terminal_worker() {
     let project = Project::new();
     let manager = manager(&project, FakeRunner::new());
     let record = record();
-    let pool = pool(&record, WorkpoolWorkerStatus::Busy);
-    WorkpoolStore::new(project.store().state_dir())
-        .save(&pool)
-        .expect("save pool");
+    seed_pool(&project, &record, WorkpoolWorkerStatus::Busy);
     let result = manager.respawn(&record, Some(std::path::Path::new("/session")));
     assert!(matches!(
         result,
@@ -38,10 +35,7 @@ fn workpool_respawn_injects_worker_tool() {
     let mut record = record();
     // Terminal record is required to pass the worker-resume guard and reach tool injection.
     record.status = TaskStatus::Completed;
-    let pool = pool(&record, WorkpoolWorkerStatus::Idle);
-    WorkpoolStore::new(project.store().state_dir())
-        .save(&pool)
-        .expect("save pool");
+    seed_pool(&project, &record, WorkpoolWorkerStatus::Idle);
     let manager = manager(&project, runner.clone());
     let result = manager.respawn(&record, Some(std::path::Path::new("/session")));
     assert!(!matches!(result, RespawnResult::Failed { .. }));
@@ -54,6 +48,57 @@ fn workpool_respawn_injects_worker_tool() {
             .iter()
             .any(|tool| tool.name() == "workpool")
     );
+}
+
+fn seed_pool(project: &Project, record: &TaskRecord, status: WorkpoolWorkerStatus) {
+    let store = WorkpoolStore::new(project.store().state_dir());
+    let created = store
+        .create(
+            &caller(),
+            &input(),
+            WorkpoolMode::KeepAlive,
+            WorkpoolSpec {
+                start: ManagerStartSpec::default(),
+                plan: ResolvedChildPlan::default(),
+            },
+        )
+        .expect("create pool");
+    let task_id = record.task_id.clone();
+    store
+        .mutate(&created.pool_id, move |pool| {
+            let mut next = pool.clone();
+            next.workers.push(WorkpoolWorker {
+                task_id,
+                run_epoch: 0,
+                status,
+                completed_turns: 1,
+                idle_since: 0,
+            });
+            next
+        })
+        .expect("add worker");
+}
+
+fn caller() -> WorkpoolCaller {
+    WorkpoolCaller {
+        session_id: "parent".into(),
+        root_session_id: "parent".into(),
+        depth: 0,
+        cwd: "/tmp".into(),
+    }
+}
+
+fn input() -> WorkpoolCreate {
+    WorkpoolCreate {
+        name: "respawn-test".into(),
+        agent: WorkpoolAgent::Category {
+            prompt: "run".into(),
+            model: None,
+            category: "quick".into(),
+        },
+        mode: None,
+        tools: None,
+    }
 }
 
 fn manager(project: &Project, runner: Arc<FakeRunner>) -> TaskManager {
@@ -87,40 +132,6 @@ fn record() -> TaskRecord {
     let mut record = create_task_record(input, None).expect("record");
     record.task_id = "st_workpool_respawn".into();
     record.status = TaskStatus::Running;
-    record.residency_state = ResidencyState::Orphaned;
+    record.residency_state = ResidencyState::Resident;
     record
-}
-
-fn pool(record: &TaskRecord, status: WorkpoolWorkerStatus) -> WorkpoolRecord {
-    WorkpoolRecord {
-        version: 1,
-        pool_id: "pool_respawn".into(),
-        name: "pool".into(),
-        parent_session_id: record.parent_session_id.clone(),
-        root_session_id: record.root_session_id.clone(),
-        generation: 0,
-        revision: 0,
-        mode: WorkpoolMode::KeepAlive,
-        agent: WorkpoolAgent::Category {
-            prompt: "p".into(),
-            model: None,
-            category: "x".into(),
-        },
-        worker_spec: WorkpoolSpec {
-            start: ManagerStartSpec::default(),
-            plan: ResolvedChildPlan::default(),
-        },
-        status: WorkpoolStatus::Open,
-        kernel_tool_names: None,
-        items: vec![],
-        workers: vec![WorkpoolWorker {
-            task_id: record.task_id.clone(),
-            run_epoch: 0,
-            status,
-            completed_turns: 1,
-            idle_since: 0,
-        }],
-        hold: None,
-        aggregate: None,
-    }
 }
