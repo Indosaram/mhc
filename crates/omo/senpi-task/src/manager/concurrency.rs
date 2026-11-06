@@ -13,6 +13,7 @@ pub struct TaskConcurrencyConfig {
     pub default_concurrency: Option<usize>,
     pub provider_concurrency: Option<BTreeMap<String, usize>>,
     pub model_concurrency: Option<BTreeMap<String, usize>>,
+    pub global_concurrency: Option<usize>,
 }
 
 const DEFAULT_LIMIT: usize = 5;
@@ -58,6 +59,7 @@ pub struct TaskConcurrency {
     counts: HashMap<String, usize>,
     queues: HashMap<String, VecDeque<Waiter>>,
     leases: HashMap<(String, i64), QueuedTaskAdmission>,
+    active_global: usize,
     parked: HashMap<(String, i64), ParkedEntry>,
     sequence: u64,
     legacy_epoch: i64,
@@ -86,11 +88,13 @@ impl TaskConcurrency {
         if let Some(limit) = own(self.config.model_concurrency.as_ref(), model) {
             return unlimited_if_zero(limit);
         }
-        if let Some(limit) = own(
-            self.config.provider_concurrency.as_ref(),
-            provider_of(model),
-        ) {
+        let provider = provider_of(model);
+        if let Some(limit) = own(self.config.provider_concurrency.as_ref(), provider) {
             return unlimited_if_zero(limit);
+        }
+        // `concurrency-routing.ts:13`: opengateway is implicitly unbounded.
+        if provider == "opengateway" {
+            return None;
         }
         unlimited_if_zero(self.config.default_concurrency.unwrap_or(DEFAULT_LIMIT))
     }
@@ -111,9 +115,19 @@ impl TaskConcurrency {
         self.get_limit(model)
             .is_none_or(|limit| self.counts.get(lane).copied().unwrap_or(0) < limit)
     }
+    fn global_limit(&self) -> Limit {
+        self.config.global_concurrency.and_then(unlimited_if_zero)
+    }
+    /// `concurrency.ts:259-263 #globalHasRoom`: `undefined || 0` means unlimited.
+    fn global_has_room(&self) -> bool {
+        self.global_limit()
+            .is_none_or(|limit| self.active_global < limit)
+    }
     pub fn has_free_slot(&self, model: &str) -> bool {
         let lane = self.key_of(model);
-        self.queues.get(lane).is_none_or(VecDeque::is_empty) && self.lane_has_room(model, lane)
+        self.queues.get(lane).is_none_or(VecDeque::is_empty)
+            && self.lane_has_room(model, lane)
+            && self.global_has_room()
     }
     fn next_legacy_epoch(&mut self) -> i64 {
         self.legacy_epoch -= 1;
@@ -128,14 +142,25 @@ impl TaskConcurrency {
         if self.get_limit(&admission.model).is_some() {
             *self.counts.entry(admission.lane_key.clone()).or_default() += 1;
         }
-        self.leases.insert(
-            lease_key(&admission.task_id, admission.run_epoch),
-            admission,
-        );
+        let inserted = self
+            .leases
+            .insert(
+                lease_key(&admission.task_id, admission.run_epoch),
+                admission,
+            )
+            .is_none();
+        if inserted {
+            self.active_global += 1;
+        }
     }
     fn drop_lease(&mut self, admission: &QueuedTaskAdmission) {
-        self.leases
-            .remove(&lease_key(&admission.task_id, admission.run_epoch));
+        if self
+            .leases
+            .remove(&lease_key(&admission.task_id, admission.run_epoch))
+            .is_some()
+        {
+            self.active_global = self.active_global.saturating_sub(1);
+        }
         if let Some(count) = self.counts.get_mut(&admission.lane_key) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -267,8 +292,12 @@ impl TaskConcurrency {
         }
     }
     /// Grants are always returned for execution outside the manager's allocator mutex.
-    pub fn park(&mut self, task_id: &str, epoch: i64) -> Option<ParkedLease> {
-        let lease = self.leases.get(&lease_key(task_id, epoch))?.clone();
+    /// `concurrency.ts:118 park`: gives the slot back and dispatches eligible lanes. Grants are
+    /// returned rather than run so callers can execute them outside the allocator mutex.
+    pub fn park(&mut self, task_id: &str, epoch: i64) -> (Option<ParkedLease>, Vec<Grant>) {
+        let Some(lease) = self.leases.get(&lease_key(task_id, epoch)).cloned() else {
+            return (None, Vec::new());
+        };
         self.drop_lease(&lease);
         let lease = Arc::new(lease);
         self.parked.insert(
@@ -279,7 +308,7 @@ impl TaskConcurrency {
                 resumed: Vec::new(),
             },
         );
-        Some(lease)
+        (Some(lease), self.drain())
     }
     pub fn unpark(&mut self, lease: &ParkedLease) -> Receiver<()> {
         let (tx, rx) = mpsc::channel();
@@ -375,6 +404,10 @@ impl TaskConcurrency {
     pub fn drain(&mut self) -> Vec<Grant> {
         let mut grants = Vec::new();
         loop {
+            // `concurrency.ts:204 #drainEligible`: no global permit, no admission.
+            if !self.global_has_room() {
+                break;
+            }
             let resume = self
                 .parked
                 .iter()
@@ -502,7 +535,9 @@ mod custody_tests {
         });
         assert!(c.try_acquire("p/m", "child", 1));
         let saved = c.admission("child", 1).expect("lease").0;
-        let lease = c.park("child", 1).expect("park");
+        let (lease, grants) = c.park("child", 1);
+        assert!(grants.is_empty());
+        let lease = lease.expect("park");
         assert!(c.try_acquire("p/m", "other", 2));
         let resumed = c.unpark(&lease);
         c.suspend_unpark(&lease);
@@ -526,5 +561,117 @@ mod custody_tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("stale token settles");
         assert_eq!(c.get_count("p/m"), 0);
+    }
+
+    #[test]
+    fn global_cap_limits_total_leases() {
+        let mut c = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(5),
+            global_concurrency: Some(2),
+            ..Default::default()
+        });
+        assert!(c.try_acquire("a/one", "st_1", 1));
+        assert!(c.try_acquire("b/two", "st_2", 1));
+        // Both lanes still have room, but the global permit budget is spent (N+1 refused).
+        assert!(!c.has_free_slot("a/one"));
+        assert!(!c.has_free_slot("c/three"));
+        assert!(!c.try_acquire("c/three", "st_3", 1));
+        assert_eq!(c.lease_state("st_3", 1), None);
+        // Releasing one lease returns exactly one permit to the global budget.
+        c.release_lease("st_1", 1);
+        assert!(c.has_free_slot("c/three"));
+        assert!(c.try_acquire("c/three", "st_3", 1));
+        assert_eq!(c.lease_state("st_3", 1), Some("held"));
+        assert!(!c.try_acquire("d/four", "st_4", 1));
+    }
+
+    #[test]
+    fn global_cap_zero_is_unlimited() {
+        let mut c = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(1),
+            global_concurrency: Some(0),
+            ..Default::default()
+        });
+        for index in 0..20 {
+            let model = format!("p{index}/model");
+            assert!(c.has_free_slot(&model), "{model} should have a permit");
+            assert!(c.try_acquire(&model, &format!("st_{index}"), 1));
+        }
+    }
+
+    #[test]
+    fn opengateway_is_unbounded_by_default() {
+        assert_eq!(
+            TaskConcurrency::new(TaskConcurrencyConfig {
+                default_concurrency: Some(1),
+                ..Default::default()
+            })
+            .get_limit("opengateway/glm-5.2-ultrafast"),
+            None
+        );
+        let mut c = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(1),
+            ..Default::default()
+        });
+        for index in 0..5 {
+            let model = format!("opengateway/model-{index}");
+            assert!(c.has_free_slot(&model));
+            assert!(c.try_acquire(&model, &format!("og_{index}"), 1));
+        }
+        // No per-lane count either: a second lease on the same unlimited lane is admitted.
+        assert!(c.try_acquire("opengateway/model-0", "og_same_lane", 1));
+        // An explicit provider override still wins over the implicit opengateway default.
+        let capped = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(1),
+            provider_concurrency: Some(BTreeMap::from([("opengateway".to_string(), 2)])),
+            ..Default::default()
+        });
+        assert_eq!(capped.get_limit("opengateway/model-0"), Some(2));
+    }
+
+    #[test]
+    fn park_drains_eligible_lanes() {
+        let mut c = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(5),
+            global_concurrency: Some(1),
+            ..Default::default()
+        });
+        assert!(c.try_acquire("a/one", "holder", 1));
+        let (send, receive) = mpsc::channel();
+        c.enqueue_epoch(
+            "b/two",
+            "waiter",
+            2,
+            Box::new(move || {
+                send.send(()).unwrap();
+            }),
+        );
+        // The waiter is queued: the single global permit is held by the other lane.
+        assert_eq!(
+            c.admission("waiter", 2).map(|(_, phase)| phase),
+            Some(AdmissionPhase::PreGrant)
+        );
+        let (lease, grants) = c.park("holder", 1);
+        assert!(lease.is_some());
+        assert_eq!(grants.len(), 1);
+        // park drops the lease before draining, so the parked lane holds no global budget while
+        // its waiter is still queued: the permit is free until the grant actually runs.
+        assert_eq!(c.active_global, 0, "park must release the global permit before draining");
+        for grant in grants {
+            grant();
+        }
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("park drains the eligible lane");
+        assert_eq!(
+            c.admission("waiter", 2).map(|(_, phase)| phase),
+            Some(AdmissionPhase::PostGrant)
+        );
+        assert_eq!(c.lease_state("holder", 1), Some("parked"));
+        // The permit was transferred, not duplicated: a third lane stays blocked.
+        assert!(!c.has_free_slot("c/three"));
+        assert!(!c.try_acquire("c/three", "other", 1));
+        c.release_lease("waiter", 2);
+        assert!(c.has_free_slot("c/three"));
     }
 }

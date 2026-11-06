@@ -1589,13 +1589,12 @@ impl TaskManager {
                 });
                 let persisted = self.inner.store.replace(&fresh).map_err(|e| e.to_string());
                 if persisted.is_ok() {
-                    if let Some(lease) =
-                        lock(&self.inner.concurrency).park(task_id, record.notification.run_epoch)
-                    {
+                    let (lease, parked_grants) =
+                        lock(&self.inner.concurrency).park(task_id, record.notification.run_epoch);
+                    if let Some(lease) = lease {
                         lock(&self.inner.parked).insert(task_id.into(), lease);
                     }
-                    let grants = lock(&self.inner.concurrency).drain();
-                    for grant in grants {
+                    for grant in parked_grants {
                         spawn_grant(grant);
                     }
                 }
@@ -1750,10 +1749,13 @@ impl TaskManager {
                     ),
                     false,
                 );
-                if let Some(lease) =
-                    lock(&self.inner.concurrency).park(task_id, record.notification.run_epoch)
-                {
+                let (lease, grants) =
+                    lock(&self.inner.concurrency).park(task_id, record.notification.run_epoch);
+                if let Some(lease) = lease {
                     lock(&self.inner.parked).insert(task_id.into(), lease);
+                }
+                for grant in grants {
+                    spawn_grant(grant);
                 }
                 lock(&self.inner.state).resume_attempts.remove(task_id);
                 Ok(false)
@@ -2319,8 +2321,12 @@ impl TaskManager {
     }
 
     pub fn park_run_capacity(&self, task_id: &str, epoch: i64) {
-        if let Some(lease) = lock(&self.inner.concurrency).park(task_id, epoch) {
+        let (lease, grants) = lock(&self.inner.concurrency).park(task_id, epoch);
+        if let Some(lease) = lease {
             lock(&self.inner.parked).insert(task_id.into(), lease);
+        }
+        for grant in grants {
+            spawn_grant(grant);
         }
     }
 
@@ -2490,11 +2496,11 @@ impl TaskManager {
                 .map_err(|error| error.to_string());
             if result.is_ok() && changed {
                 self.inner.next_tracking_generation(task_id);
-                if let Some(lease) = lock(&self.inner.concurrency).park(task_id, epoch) {
+                let (lease, parked_grants) = lock(&self.inner.concurrency).park(task_id, epoch);
+                if let Some(lease) = lease {
                     lock(&self.inner.parked).insert(task_id.into(), lease);
                 }
-                let grants = lock(&self.inner.concurrency).drain();
-                for grant in grants {
+                for grant in parked_grants {
                     spawn_grant(grant);
                 }
             }
@@ -2724,10 +2730,13 @@ impl TaskManager {
                 task_id,
                 context.record.notification.run_epoch,
             );
-            if let Some(lease) =
+            if let (Some(lease), grants) =
                 lock(&self.inner.concurrency).park(task_id, context.record.notification.run_epoch)
             {
                 lock(&self.inner.parked).insert(task_id.clone(), lease);
+                for grant in grants {
+                    spawn_grant(grant);
+                }
             }
             if let Some(admission) = &context.managed_spec.admission {
                 admission.leave();
@@ -3422,8 +3431,12 @@ impl Inner {
             lock(&self.state)
                 .held_launches
                 .insert(record.task_id.clone(), context.clone());
-            if let Some(lease) = lock(&self.concurrency).park(&record.task_id, epoch) {
+            let (lease, grants) = lock(&self.concurrency).park(&record.task_id, epoch);
+            if let Some(lease) = lease {
                 lock(&self.parked).insert(record.task_id.clone(), lease);
+            }
+            for grant in grants {
+                spawn_grant(grant);
             }
             return Ok(());
         }
@@ -3606,11 +3619,15 @@ impl Inner {
                                 .replace(&record)
                                 .map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
                         }
-                        if let Some(lease) = lock(&self.concurrency).park(
+                        let (lease, grants) = lock(&self.concurrency).park(
                             &context.record.task_id,
                             context.record.notification.run_epoch,
-                        ) {
+                        );
+                        if let Some(lease) = lease {
                             lock(&self.parked).insert(context.record.task_id.clone(), lease);
+                        }
+                        for grant in grants {
+                            spawn_grant(grant);
                         }
                     }
                     Ok(staged.child)
@@ -4851,11 +4868,15 @@ impl Inner {
                     &fresh.task_id,
                     fresh.notification.run_epoch,
                 );
-                if acquired
-                    && let Some(lease) =
-                        lock(&self.concurrency).park(&fresh.task_id, fresh.notification.run_epoch)
-                {
-                    lock(&self.parked).insert(fresh.task_id.clone(), lease);
+                if acquired {
+                    let (lease, grants) =
+                        lock(&self.concurrency).park(&fresh.task_id, fresh.notification.run_epoch);
+                    if let Some(lease) = lease {
+                        lock(&self.parked).insert(fresh.task_id.clone(), lease);
+                    }
+                    for grant in grants {
+                        spawn_grant(grant);
+                    }
                 }
             }
             let updated = TaskRecord {
