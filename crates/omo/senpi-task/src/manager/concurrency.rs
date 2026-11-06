@@ -654,9 +654,10 @@ mod custody_tests {
         let (lease, grants) = c.park("holder", 1);
         assert!(lease.is_some());
         assert_eq!(grants.len(), 1);
-        // park drops the lease before draining, so the parked lane holds no global budget while
-        // its waiter is still queued: the permit is free until the grant actually runs.
-        assert_eq!(c.active_global, 0, "park must release the global permit before draining");
+        // The permit is transferred, not freed: drain promotes the waiter and records its lease
+        // before returning the grant, so the global slot is already accounted for the promoted
+        // lane. Nothing else may admit into that slot (asserted below via the third lane).
+        assert_eq!(c.active_global, 1, "park must hand the global permit to the drained lane");
         for grant in grants {
             grant();
         }
