@@ -9,8 +9,8 @@ fn fixture() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 fn legacy(project: &Path, content: &str) {
     let path = project.join(".omo/permissions-approved.jsonl");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, content).unwrap();
+    fs::create_dir_all(path.parent().expect("legacy parent")).expect("legacy dir");
+    fs::write(path, content).expect("legacy file");
 }
 
 #[test]
