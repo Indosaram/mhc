@@ -224,6 +224,13 @@ mod tests {
         }
     }
 
+    /// Name the plan's IS-2 row cites. It runs the same assertions as
+    /// `settings_context_files_limits_reach_the_loader`, which owns the body.
+    #[test]
+    fn context_file_limits_bound_the_live_loader() {
+        settings_context_files_limits_reach_the_loader();
+    }
+
     #[test]
     fn settings_context_files_limits_reach_the_loader() {
         let dir = crate::test_support::isolated_tempdir();
