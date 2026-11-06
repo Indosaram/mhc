@@ -89,7 +89,11 @@ impl FakeEis {
     }
 
     /// Serves one client whose absolute pointer covers `regions`.
-    pub fn listen_with_regions(listener: UnixListener, config: EisConfig, regions: Vec<EisRegion>) -> Self {
+    pub fn listen_with_regions(
+        listener: UnixListener,
+        config: EisConfig,
+        regions: Vec<EisRegion>,
+    ) -> Self {
         Self::spawn(config, DeviceTopology::BothSameSeat, regions, move || {
             listener.accept().map(|(stream, _)| stream)
         })
@@ -97,7 +101,12 @@ impl FakeEis {
 
     /// Serves `stream` (the server end of a `ConnectToEIS` socket pair).
     pub fn serve(stream: UnixStream, config: EisConfig) -> Self {
-        Self::spawn(config, DeviceTopology::BothSameSeat, vec![DEFAULT_REGION], move || Ok(stream))
+        Self::spawn(
+            config,
+            DeviceTopology::BothSameSeat,
+            vec![DEFAULT_REGION],
+            move || Ok(stream),
+        )
     }
 
     fn spawn(
@@ -119,7 +128,14 @@ impl FakeEis {
                         .enable_all()
                         .build()
                         .map_err(|error| error.to_string())?
-                        .block_on(serve(stream, config, topology, &regions, &served, &controlled))
+                        .block_on(serve(
+                            stream,
+                            config,
+                            topology,
+                            &regions,
+                            &served,
+                            &controlled,
+                        ))
                 });
             if let Err(error) = outcome {
                 update(&served, |log| log.error = Some(error));

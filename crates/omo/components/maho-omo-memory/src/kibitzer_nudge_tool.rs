@@ -34,8 +34,7 @@ pub const KIBITZER_NUDGE_TOOL_NAME: &str = "nudge";
 pub const KIBITZER_NUDGE_TOOL_LABEL: &str = "Kibitzer";
 
 /// The tool description, verbatim from upstream.
-pub const KIBITZER_NUDGE_DESCRIPTION: &str =
-    "Surface one stored memory to the primary agent as a read-only hint. Call it only when the memory would change what the agent does next.";
+pub const KIBITZER_NUDGE_DESCRIPTION: &str = "Surface one stored memory to the primary agent as a read-only hint. Call it only when the memory would change what the agent does next.";
 
 /// The `nudge` parameters (`Static<typeof KibitzerNudgeParams>`): a memory path copied from the
 /// candidates plus the single-sentence hint about it.
@@ -93,7 +92,11 @@ pub fn execute_nudge(
             terminate: cap_reached(&input),
         };
     }
-    input.accepted.push(RecallNudge { path: params.path.clone(), hint: params.hint.clone(), source: None });
+    input.accepted.push(RecallNudge {
+        path: params.path.clone(),
+        hint: params.hint.clone(),
+        source: None,
+    });
     let capped = cap_reached(&input);
     let text = if capped {
         format!(
@@ -103,7 +106,11 @@ pub fn execute_nudge(
     } else {
         format!("Nudge recorded for {}.", params.path)
     };
-    KibitzerToolResult { text, is_error: false, terminate: capped }
+    KibitzerToolResult {
+        text,
+        is_error: false,
+        terminate: capped,
+    }
 }
 
 /// Once `accepted` reaches `max_items` nothing more can be recorded this run.
@@ -116,13 +123,22 @@ fn cap_reached(input: &KibitzerNudgeInput<'_>) -> bool {
 /// parent's `validate_nudges` deduplicates the collected set later.
 fn reject_nudge(params: &KibitzerNudgeParams, input: &KibitzerNudgeInput<'_>) -> Option<String> {
     if !input.candidates.contains(&params.path) {
-        return Some(format!("\"{}\" is not one of the offered candidates.", params.path));
+        return Some(format!(
+            "\"{}\" is not one of the offered candidates.",
+            params.path
+        ));
     }
     if input.surfaced.contains(&params.path) {
-        return Some(format!("\"{}\" was already surfaced in this session.", params.path));
+        return Some(format!(
+            "\"{}\" was already surfaced in this session.",
+            params.path
+        ));
     }
     if params.path == "system/" || params.path.starts_with("system/") {
-        return Some(format!("\"{}\" is a system/ path and cannot be nudged.", params.path));
+        return Some(format!(
+            "\"{}\" is a system/ path and cannot be nudged.",
+            params.path
+        ));
     }
     // Secret-bearing material is named first: it is the more urgent correction when a hint breaks
     // both rules at once.
@@ -170,7 +186,11 @@ mod tests {
     }
 
     fn recorded(path: &str, hint: &str) -> RecallNudge {
-        RecallNudge { path: path.to_string(), hint: hint.to_string(), source: None }
+        RecallNudge {
+            path: path.to_string(),
+            hint: hint.to_string(),
+            source: None,
+        }
     }
 
     fn call(
@@ -181,8 +201,19 @@ mod tests {
         path: &str,
         hint: &str,
     ) -> KibitzerToolResult {
-        let params = KibitzerNudgeParams { path: path.to_string(), hint: hint.to_string() };
-        execute_nudge(KibitzerNudgeInput { candidates, surfaced, max_items, accepted }, &params)
+        let params = KibitzerNudgeParams {
+            path: path.to_string(),
+            hint: hint.to_string(),
+        };
+        execute_nudge(
+            KibitzerNudgeInput {
+                candidates,
+                surfaced,
+                max_items,
+                accepted,
+            },
+            &params,
+        )
     }
 
     #[test]
@@ -191,7 +222,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
 
         assert!(!result.is_error);
         assert!(!result.terminate);
@@ -200,13 +238,20 @@ mod tests {
     }
 
     #[test]
-    fn given_a_path_outside_the_candidate_set_when_nudged_then_it_is_rejected_and_nothing_is_recorded() {
+    fn given_a_path_outside_the_candidate_set_when_nudged_then_it_is_rejected_and_nothing_is_recorded()
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result =
-            call(&candidates, &surfaced, 2, &mut accepted, "notes/never-offered.md", OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            "notes/never-offered.md",
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -218,7 +263,14 @@ mod tests {
         let surfaced = surfaced_set(&[SURFACED_PATH]);
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, SURFACED_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            SURFACED_PATH,
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -226,12 +278,19 @@ mod tests {
 
     #[test]
     fn given_a_system_path_among_the_candidates_when_nudged_then_it_is_rejected_and_nothing_is_recorded()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, SYSTEM_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            SYSTEM_PATH,
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -250,20 +309,29 @@ mod tests {
     }
 
     #[test]
-    fn given_a_hint_over_the_character_budget_when_nudged_then_it_is_rejected_and_nothing_is_recorded() {
+    fn given_a_hint_over_the_character_budget_when_nudged_then_it_is_rejected_and_nothing_is_recorded()
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
         let over = "x".repeat(NUDGE_HINT_MAX_CHARS + 1);
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, &over);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            &over,
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
     }
 
     #[test]
-    fn given_a_secret_bearing_hint_when_nudged_then_the_secret_rule_precedes_the_invalid_hint_rule() {
+    fn given_a_secret_bearing_hint_when_nudged_then_the_secret_rule_precedes_the_invalid_hint_rule()
+    {
         // The hint is both secret-bearing and imperative-opening; the secret reason must win.
         let candidates = candidates();
         let surfaced = BTreeSet::new();
@@ -289,8 +357,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result =
-            call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, "password=hunter2");
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            "password=hunter2",
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -321,8 +395,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result =
-            call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, "sk-proj-AAAABBBBCCCCDDDD");
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            "sk-proj-AAAABBBBCCCCDDDD",
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -334,8 +414,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result =
-            call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, "line one\nline two");
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            "line one\nline two",
+        );
 
         assert!(result.is_error);
         assert!(accepted.is_empty());
@@ -343,56 +429,99 @@ mod tests {
 
     #[test]
     fn given_the_first_meta_hint_when_nudged_then_it_is_rejected_and_a_factual_correction_still_uses_the_cap()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
         let meta = "No stored memory clears the bar for this planning step; the transcript already contains the full methodology, QA approach, and rollout.";
 
-        let rejected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, meta);
+        let rejected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            meta,
+        );
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
 
     #[test]
     fn given_the_second_meta_hint_when_nudged_then_it_is_rejected_and_a_factual_correction_still_uses_the_cap()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
         let meta = "This memory covers OAuth login prompts and remote-test helpers, not the goal continuation timer delay.";
 
-        let rejected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, meta);
+        let rejected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            meta,
+        );
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
 
     #[test]
-    fn given_the_first_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands() {
+    fn given_the_first_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands()
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let rejected =
-            call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, "Verify these before continuing.");
+        let rejected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            "Verify these before continuing.",
+        );
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
 
     #[test]
-    fn given_the_second_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands() {
+    fn given_the_second_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands()
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
@@ -408,13 +537,21 @@ mod tests {
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
 
     #[test]
-    fn given_the_third_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands() {
+    fn given_the_third_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands()
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
@@ -430,13 +567,21 @@ mod tests {
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
 
     #[test]
-    fn given_the_korean_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands() {
+    fn given_the_korean_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands()
+     {
         // Upstream fixture: "머지 전에 그린 메인 가드를 확인하십시오." (Korean request ending).
         let candidates = candidates();
         let surfaced = BTreeSet::new();
@@ -453,7 +598,14 @@ mod tests {
         assert!(rejected.is_error);
         assert!(accepted.is_empty());
 
-        let corrected = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let corrected = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!corrected.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
     }
@@ -465,7 +617,14 @@ mod tests {
         let mut accepted = Vec::new();
         let hint = "The fix is on senpi main, not the extension.";
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, hint);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            hint,
+        );
 
         assert!(!result.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, hint)]);
@@ -476,9 +635,17 @@ mod tests {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
-        let hint = "senpi monitors have a verified two-flag desync where registry.paused can remain set.";
+        let hint =
+            "senpi monitors have a verified two-flag desync where registry.paused can remain set.";
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, hint);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            hint,
+        );
 
         assert!(!result.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, hint)]);
@@ -491,7 +658,14 @@ mod tests {
         let mut accepted = Vec::new();
         let hint = "The regression test does not cover Windows process cleanup.";
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, hint);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            hint,
+        );
 
         assert!(!result.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, hint)]);
@@ -504,7 +678,14 @@ mod tests {
         let mut accepted = Vec::new();
         let hint = "The outage is unrelated to the database migration.";
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, hint);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            hint,
+        );
 
         assert!(!result.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, hint)]);
@@ -512,15 +693,29 @@ mod tests {
 
     #[test]
     fn given_the_budget_already_spent_when_nudged_again_then_it_is_rejected_and_the_accepted_set_is_unchanged()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let first = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let first = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!first.is_error);
 
-        let second = call(&candidates, &surfaced, 1, &mut accepted, SURFACED_PATH, OBSERVATION);
+        let second = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            SURFACED_PATH,
+            OBSERVATION,
+        );
 
         assert!(second.is_error);
         assert_eq!(accepted, vec![recorded(CANDIDATE_PATH, OBSERVATION)]);
@@ -532,7 +727,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
 
         assert!(!result.is_error);
         assert!(!result.terminate);
@@ -544,7 +746,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
 
         assert!(!result.is_error);
         assert!(result.terminate);
@@ -553,13 +762,27 @@ mod tests {
 
     #[test]
     fn given_the_cap_already_reached_when_a_further_nudge_is_rejected_then_the_rejection_also_terminates()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
-        let _ = call(&candidates, &surfaced, 1, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let _ = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
 
-        let result = call(&candidates, &surfaced, 1, &mut accepted, SURFACED_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            1,
+            &mut accepted,
+            SURFACED_PATH,
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(result.terminate);
@@ -571,8 +794,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result =
-            call(&candidates, &surfaced, 2, &mut accepted, "notes/never-offered.md", OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            "notes/never-offered.md",
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(!result.terminate);
@@ -580,7 +809,7 @@ mod tests {
 
     #[test]
     fn given_the_tool_definition_when_inspected_then_the_name_and_required_parameters_are_machine_consumed()
-    {
+     {
         assert_eq!(KIBITZER_NUDGE_TOOL_NAME, "nudge");
 
         let schema = kibitzer_nudge_parameters();
@@ -598,11 +827,16 @@ mod tests {
 
     #[test]
     fn given_nudge_params_when_serialized_then_only_path_and_hint_are_emitted() {
-        let params =
-            KibitzerNudgeParams { path: CANDIDATE_PATH.to_string(), hint: OBSERVATION.to_string() };
+        let params = KibitzerNudgeParams {
+            path: CANDIDATE_PATH.to_string(),
+            hint: OBSERVATION.to_string(),
+        };
 
         let value = serde_json::to_value(&params).unwrap();
-        assert_eq!(value, serde_json::json!({ "path": CANDIDATE_PATH, "hint": OBSERVATION }));
+        assert_eq!(
+            value,
+            serde_json::json!({ "path": CANDIDATE_PATH, "hint": OBSERVATION })
+        );
 
         let round_tripped: KibitzerNudgeParams = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, params);
@@ -614,7 +848,14 @@ mod tests {
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let result = call(&candidates, &surfaced, 0, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let result = call(
+            &candidates,
+            &surfaced,
+            0,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
 
         assert!(result.is_error);
         assert!(result.terminate);
@@ -623,20 +864,37 @@ mod tests {
 
     #[test]
     fn given_a_duplicate_path_below_the_cap_when_nudged_then_the_base_records_both_without_a_duplicate_policy()
-    {
+     {
         let candidates = candidates();
         let surfaced = BTreeSet::new();
         let mut accepted = Vec::new();
 
-        let first = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let first = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!first.is_error);
 
-        let second = call(&candidates, &surfaced, 2, &mut accepted, CANDIDATE_PATH, OBSERVATION);
+        let second = call(
+            &candidates,
+            &surfaced,
+            2,
+            &mut accepted,
+            CANDIDATE_PATH,
+            OBSERVATION,
+        );
         assert!(!second.is_error);
         assert!(second.terminate);
         assert_eq!(
             accepted,
-            vec![recorded(CANDIDATE_PATH, OBSERVATION), recorded(CANDIDATE_PATH, OBSERVATION)]
+            vec![
+                recorded(CANDIDATE_PATH, OBSERVATION),
+                recorded(CANDIDATE_PATH, OBSERVATION)
+            ]
         );
     }
 }

@@ -11,7 +11,9 @@ pub fn normalize_driver_objective(value: &str) -> String {
 }
 
 pub fn acknowledged_driver_objectives(plan: &UlwLoopPlan) -> &[String] {
-    plan.acknowledged_driver_objectives.as_deref().unwrap_or(&[])
+    plan.acknowledged_driver_objectives
+        .as_deref()
+        .unwrap_or(&[])
 }
 
 pub fn acknowledge_driver_objective(plan: &mut UlwLoopPlan, objective: Option<&str>) -> bool {

@@ -8,7 +8,12 @@ static WIRE_IDENTITY: RwLock<Option<String>> = RwLock::new(None);
 
 /// Sets the product identity sent on the wire; blank values are ignored.
 pub fn set_wire_identity(identity: Option<&str>) {
-    let Some(trimmed) = identity.map(crate::utils::js::trim).filter(|v| !v.is_empty()) else { return };
+    let Some(trimmed) = identity
+        .map(crate::utils::js::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return;
+    };
     *WIRE_IDENTITY.write().unwrap_or_else(|p| p.into_inner()) = Some(trimmed.to_owned());
 }
 

@@ -183,7 +183,11 @@ pub fn observe_store_write(
 /// Runs the same terminal-idempotence and notify-commit observation [`ObservingStore::replace`]
 /// performs, for a caller that had to write through the manager- or lifecycle-owned concrete
 /// `TaskRecordStore` directly.
-pub fn observe_store_replace(observations: &SharedObservations, previous: &TaskRecord, record: &TaskRecord) {
+pub fn observe_store_replace(
+    observations: &SharedObservations,
+    previous: &TaskRecord,
+    record: &TaskRecord,
+) {
     observe_replace(&mut lock_observations(observations), previous, record);
 }
 
@@ -200,7 +204,11 @@ pub fn observe_store_replace_with_write(
     observe_store_write(backing, observations, Some(previous), Some(record));
 }
 
-fn observe_replace(observations: &mut StoreObservations, previous: &TaskRecord, record: &TaskRecord) {
+fn observe_replace(
+    observations: &mut StoreObservations,
+    previous: &TaskRecord,
+    record: &TaskRecord,
+) {
     let next_notified = record.notification.notified_epoch;
     if next_notified > previous.notification.notified_epoch {
         let key = format!("{}:{}", record.task_id, next_notified);
@@ -253,16 +261,19 @@ fn observe_lifecycle_write(
         }
     }
     if after.status.as_str() == "lost" && has_recovery_artifact(backing, after) {
-        observations
-            .lifecycle_breaches
-            .push(format!("recoverable task {} transitioned to lost", after.task_id));
+        observations.lifecycle_breaches.push(format!(
+            "recoverable task {} transitioned to lost",
+            after.task_id
+        ));
     }
     if is_killed(after)
         || after.status.as_str() == "cancelled"
         || residency == "evicted"
         || residency == "disposed"
     {
-        observations.forbidden_residency.insert(after.task_id.clone());
+        observations
+            .forbidden_residency
+            .insert(after.task_id.clone());
     } else if residency == "resident" && observations.forbidden_residency.contains(&after.task_id) {
         observations.lifecycle_breaches.push(format!(
             "deliberately stopped task {} regained residency",
@@ -300,7 +311,10 @@ fn observe_resident_counts(backing: &TaskRecordStore, observations: &mut StoreOb
         *counts.entry(record.parent_session_id.clone()).or_insert(0) += 1;
     }
     for (parent, count) in counts {
-        let entry = observations.max_residents_by_parent.entry(parent).or_insert(0);
+        let entry = observations
+            .max_residents_by_parent
+            .entry(parent)
+            .or_insert(0);
         *entry = (*entry).max(count);
     }
 }
@@ -328,7 +342,11 @@ fn observe_transition(
                 transition_type,
                 before.status.as_str(),
                 before.task_id,
-                if result.applied { "applied" } else { "not logged as late" },
+                if result.applied {
+                    "applied"
+                } else {
+                    "not logged as late"
+                },
                 audit_type
             ),
         });
@@ -387,6 +405,10 @@ mod tests {
         let _transition = ObservingStore::transition_with::<
             fn(&TaskRecordStore) -> Result<TaskTransitionResult, StoreError>,
         >;
-        assert!(lock_observations(&observing.observations).breaches.is_empty());
+        assert!(
+            lock_observations(&observing.observations)
+                .breaches
+                .is_empty()
+        );
     }
 }

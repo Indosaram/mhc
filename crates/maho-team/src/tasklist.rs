@@ -75,11 +75,26 @@ pub struct Item {
 /// Why an update was refused (a result, not a tool error).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    AlreadyClaimed { id: u64, owner: Option<String> },
-    BlockedBy { id: u64, open: Vec<u64> },
-    InvalidTransition { from: ItemStatus, to: ItemStatus },
-    CrossOwner { id: u64, owner: Option<String>, caller: String },
-    NotFound { id: u64 },
+    AlreadyClaimed {
+        id: u64,
+        owner: Option<String>,
+    },
+    BlockedBy {
+        id: u64,
+        open: Vec<u64>,
+    },
+    InvalidTransition {
+        from: ItemStatus,
+        to: ItemStatus,
+    },
+    CrossOwner {
+        id: u64,
+        owner: Option<String>,
+        caller: String,
+    },
+    NotFound {
+        id: u64,
+    },
 }
 
 impl Refusal {
@@ -101,7 +116,10 @@ impl Refusal {
             },
             Self::BlockedBy { id, open } => format!(
                 "Item {id} is blocked by open items: {}.",
-                open.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+                open.iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::InvalidTransition { from, to } => format!(
                 "Cannot move an item from {} to {}.",
@@ -110,7 +128,9 @@ impl Refusal {
             ),
             Self::CrossOwner { id, owner, caller } => format!(
                 "Item {id} belongs to {}, not {}.",
-                owner.as_deref().map_or_else(|| "nobody".to_owned(), shorten),
+                owner
+                    .as_deref()
+                    .map_or_else(|| "nobody".to_owned(), shorten),
                 shorten(caller)
             ),
             Self::NotFound { id } => format!("No item {id} in this tasklist."),
@@ -159,11 +179,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("path has no parent"))?;
-    let temp = dir.join(format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        uuid_like()
-    ));
+    let temp = dir.join(format!(".tmp-{}-{}", std::process::id(), uuid_like()));
     let result = (|| {
         let mut file = fs::File::create(&temp)?;
         file.write_all(bytes)?;
@@ -197,7 +213,11 @@ fn older_than(path: &Path, age: Duration) -> bool {
 
 /// Creates `path` exclusively. `Ok(false)` when it exists.
 fn create_exclusive(path: &Path, contents: &str) -> std::io::Result<bool> {
-    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
         Ok(mut file) => {
             file.write_all(contents.as_bytes())?;
             Ok(true)
@@ -223,7 +243,8 @@ impl DirLock {
                 // On Windows a lock file the previous holder just removed stays "delete pending"
                 // until its last handle closes, and creating it again in that window fails with
                 // PermissionDenied: the lock is still being released, so wait like for a held one.
-                Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(error)
+                    if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {}
                 Err(error) => return Err(error),
             }
             if older_than(&path, STALE_LOCK) {
@@ -305,14 +326,23 @@ impl Tasklist {
     ///
     /// # Errors
     /// Storage errors.
-    pub fn create(&self, subject: &str, description: &str, blocked_by: Vec<u64>) -> Result<Item, String> {
+    pub fn create(
+        &self,
+        subject: &str,
+        description: &str,
+        blocked_by: Vec<u64>,
+    ) -> Result<Item, String> {
         let io = |error: std::io::Error| format!("tasklist {}: {error}", self.dir.display());
         self.ensure_dir().map_err(io)?;
         let _lock = DirLock::acquire(&self.dir).map_err(io)?;
         let next_path = self.dir.join("next-id");
         let last: u64 = match fs::read_to_string(&next_path) {
             Ok(text) => text.trim().parse().map_err(|_| {
-                format!("tasklist {}: next-id holds {:?}", self.dir.display(), text.trim())
+                format!(
+                    "tasklist {}: next-id holds {:?}",
+                    self.dir.display(),
+                    text.trim()
+                )
             })?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => return Err(io(error)),
@@ -414,9 +444,16 @@ impl Tasklist {
             );
             if owned && item.owner.as_deref() != Some(caller) {
                 return Ok(Err(if status == ItemStatus::Claimed {
-                    Refusal::AlreadyClaimed { id, owner: item.owner }
+                    Refusal::AlreadyClaimed {
+                        id,
+                        owner: item.owner,
+                    }
                 } else {
-                    Refusal::CrossOwner { id, owner: item.owner, caller: caller.to_owned() }
+                    Refusal::CrossOwner {
+                        id,
+                        owner: item.owner,
+                        caller: caller.to_owned(),
+                    }
                 }));
             }
             return Ok(Ok(item));
@@ -500,7 +537,12 @@ impl Tasklist {
 
 /// One line of the text listing.
 pub fn item_line(item: &Item) -> String {
-    let mut line = format!("#{} [{}] {}", item.id, item.status.as_str(), shorten(&item.subject));
+    let mut line = format!(
+        "#{} [{}] {}",
+        item.id,
+        item.status.as_str(),
+        shorten(&item.subject)
+    );
     if let Some(owner) = &item.owner {
         line.push_str(&format!(" (owner {})", shorten(owner)));
     }
@@ -535,7 +577,9 @@ pub fn item_text(item: &Item) -> String {
         format!("status: {}", item.status.as_str()),
         format!(
             "owner: {}",
-            item.owner.as_deref().map_or_else(|| "(none)".to_owned(), shorten)
+            item.owner
+                .as_deref()
+                .map_or_else(|| "(none)".to_owned(), shorten)
         ),
         format!(
             "blocked_by: {}",
@@ -580,12 +624,26 @@ mod tests {
     fn ids_are_sequential_never_reused_and_distinct_under_concurrency() {
         let (_dir, list) = list();
         let ids: Vec<u64> = (0..3)
-            .map(|i| list.create(&format!("s{i}"), "d", Vec::new()).expect("create").id)
+            .map(|i| {
+                list.create(&format!("s{i}"), "d", Vec::new())
+                    .expect("create")
+                    .id
+            })
             .collect();
         assert_eq!(ids, [1, 2, 3]);
-        assert_eq!(status(&list, 2, ItemStatus::Deleted, LEAD).expect("delete").status, ItemStatus::Deleted);
+        assert_eq!(
+            status(&list, 2, ItemStatus::Deleted, LEAD)
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
         assert_eq!(list.create("s", "d", Vec::new()).expect("create").id, 4);
-        assert_eq!(fs::read_to_string(list.dir().join("next-id")).expect("next").trim(), "4");
+        assert_eq!(
+            fs::read_to_string(list.dir().join("next-id"))
+                .expect("next")
+                .trim(),
+            "4"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -600,11 +658,16 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    list.create(&format!("c{i}"), "d", Vec::new()).expect("create").id
+                    list.create(&format!("c{i}"), "d", Vec::new())
+                        .expect("create")
+                        .id
                 })
             })
             .collect();
-        let mut ids: Vec<u64> = handles.into_iter().map(|h| h.join().expect("thread")).collect();
+        let mut ids: Vec<u64> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect();
         ids.sort_unstable();
         assert_eq!(ids, (5..=14).collect::<Vec<_>>());
     }
@@ -614,36 +677,105 @@ mod tests {
     fn transitions() {
         let (_dir, list) = list();
         let a = list.create("a", "", Vec::new()).expect("create").id;
-        assert_eq!(status(&list, a, ItemStatus::Claimed, "m1").expect("claim").status, ItemStatus::Claimed);
+        assert_eq!(
+            status(&list, a, ItemStatus::Claimed, "m1")
+                .expect("claim")
+                .status,
+            ItemStatus::Claimed
+        );
         assert_eq!(
             status(&list, a, ItemStatus::Pending, "m1"),
-            Err(Refusal::InvalidTransition { from: ItemStatus::Claimed, to: ItemStatus::Pending })
+            Err(Refusal::InvalidTransition {
+                from: ItemStatus::Claimed,
+                to: ItemStatus::Pending
+            })
         );
-        assert_eq!(status(&list, a, ItemStatus::Claimed, "m1").expect("repeat").status, ItemStatus::Claimed);
-        assert_eq!(status(&list, a, ItemStatus::InProgress, "m1").expect("start").status, ItemStatus::InProgress);
-        assert_eq!(status(&list, a, ItemStatus::InProgress, "m1").expect("repeat").status, ItemStatus::InProgress);
-        assert_eq!(status(&list, a, ItemStatus::Completed, "m1").expect("finish").status, ItemStatus::Completed);
+        assert_eq!(
+            status(&list, a, ItemStatus::Claimed, "m1")
+                .expect("repeat")
+                .status,
+            ItemStatus::Claimed
+        );
+        assert_eq!(
+            status(&list, a, ItemStatus::InProgress, "m1")
+                .expect("start")
+                .status,
+            ItemStatus::InProgress
+        );
+        assert_eq!(
+            status(&list, a, ItemStatus::InProgress, "m1")
+                .expect("repeat")
+                .status,
+            ItemStatus::InProgress
+        );
+        assert_eq!(
+            status(&list, a, ItemStatus::Completed, "m1")
+                .expect("finish")
+                .status,
+            ItemStatus::Completed
+        );
         let refusal = status(&list, a, ItemStatus::InProgress, "m1").expect_err("back");
         assert_eq!(refusal.kind(), "invalid_transition");
         assert!(refusal.reason().contains("completed") && refusal.reason().contains("in_progress"));
-        assert_eq!(status(&list, a, ItemStatus::Completed, "m1").expect("repeat").status, ItemStatus::Completed);
-        assert_eq!(status(&list, a, ItemStatus::Deleted, "m1").expect("delete").status, ItemStatus::Deleted);
-        assert_eq!(status(&list, a, ItemStatus::Deleted, "m1").expect("repeat").status, ItemStatus::Deleted);
+        assert_eq!(
+            status(&list, a, ItemStatus::Completed, "m1")
+                .expect("repeat")
+                .status,
+            ItemStatus::Completed
+        );
+        assert_eq!(
+            status(&list, a, ItemStatus::Deleted, "m1")
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
+        assert_eq!(
+            status(&list, a, ItemStatus::Deleted, "m1")
+                .expect("repeat")
+                .status,
+            ItemStatus::Deleted
+        );
 
         let b = list.create("b", "", Vec::new()).expect("create").id;
         assert_eq!(
             status(&list, b, ItemStatus::Completed, "m1"),
-            Err(Refusal::InvalidTransition { from: ItemStatus::Pending, to: ItemStatus::Completed })
+            Err(Refusal::InvalidTransition {
+                from: ItemStatus::Pending,
+                to: ItemStatus::Completed
+            })
         );
-        assert_eq!(status(&list, b, ItemStatus::Pending, "m1").expect("repeat").status, ItemStatus::Pending);
-        assert_eq!(status(&list, b, ItemStatus::Deleted, "m1").expect("delete").status, ItemStatus::Deleted);
+        assert_eq!(
+            status(&list, b, ItemStatus::Pending, "m1")
+                .expect("repeat")
+                .status,
+            ItemStatus::Pending
+        );
+        assert_eq!(
+            status(&list, b, ItemStatus::Deleted, "m1")
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
         let c = list.create("c", "", Vec::new()).expect("create").id;
         status(&list, c, ItemStatus::Claimed, "m1").expect("claim");
-        assert_eq!(status(&list, c, ItemStatus::Deleted, "m1").expect("delete").status, ItemStatus::Deleted);
+        assert_eq!(
+            status(&list, c, ItemStatus::Deleted, "m1")
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
         let d = list.create("d", "", Vec::new()).expect("create").id;
         status(&list, d, ItemStatus::InProgress, "m1").expect("start");
-        assert_eq!(status(&list, d, ItemStatus::Deleted, "m2").expect("delete").status, ItemStatus::Deleted);
-        assert_eq!(status(&list, 99, ItemStatus::Claimed, "m1"), Err(Refusal::NotFound { id: 99 }));
+        assert_eq!(
+            status(&list, d, ItemStatus::Deleted, "m2")
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
+        assert_eq!(
+            status(&list, 99, ItemStatus::Claimed, "m1"),
+            Err(Refusal::NotFound { id: 99 })
+        );
     }
 
     /// Acceptance test 12.
@@ -664,9 +796,18 @@ mod tests {
     fn blockers() {
         let (_dir, list) = list();
         let blocker = list.create("first", "", Vec::new()).expect("create").id;
-        let blocked = list.create("second", "", vec![blocker, 77]).expect("create").id;
+        let blocked = list
+            .create("second", "", vec![blocker, 77])
+            .expect("create")
+            .id;
         let refusal = status(&list, blocked, ItemStatus::Claimed, "m1").expect_err("blocked");
-        assert_eq!(refusal, Refusal::BlockedBy { id: blocked, open: vec![blocker] });
+        assert_eq!(
+            refusal,
+            Refusal::BlockedBy {
+                id: blocked,
+                open: vec![blocker]
+            }
+        );
         assert_eq!(refusal.details()["open"], json!([blocker]));
         assert_eq!(list.get(blocked).expect("item").status, ItemStatus::Pending);
         status(&list, blocker, ItemStatus::InProgress, "m2").expect("start");
@@ -691,11 +832,15 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    list.update(id, ItemStatus::Claimed, member).expect("storage")
+                    list.update(id, ItemStatus::Claimed, member)
+                        .expect("storage")
                 })
             })
             .collect();
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().expect("thread")).collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect();
         let wins = results.iter().filter(|r| r.is_ok()).count();
         assert_eq!(wins, 1, "{results:?}");
         let loser = results.iter().find_map(|r| r.clone().err()).expect("loser");
@@ -704,7 +849,12 @@ mod tests {
         // A fresh marker held by someone else blocks; an old one does not.
         let other = list.create("b", "", Vec::new()).expect("create").id;
         fs::write(list.claim_path(other), "m9").expect("marker");
-        assert_eq!(status(&list, other, ItemStatus::Claimed, "m1").expect_err("held").kind(), "already_claimed");
+        assert_eq!(
+            status(&list, other, ItemStatus::Claimed, "m1")
+                .expect_err("held")
+                .kind(),
+            "already_claimed"
+        );
         let old = SystemTime::now() - Duration::from_secs(6 * 60);
         fs::File::options()
             .write(true)
@@ -725,7 +875,12 @@ mod tests {
         let refusal = status(&list, id, ItemStatus::InProgress, "m2").expect_err("cross");
         assert_eq!(refusal.kind(), "cross_owner");
         assert_eq!(list.get(id).expect("item").status, ItemStatus::Claimed);
-        assert_eq!(status(&list, id, ItemStatus::Deleted, "m2").expect("delete").status, ItemStatus::Deleted);
+        assert_eq!(
+            status(&list, id, ItemStatus::Deleted, "m2")
+                .expect("delete")
+                .status,
+            ItemStatus::Deleted
+        );
     }
 
     /// Acceptance test 16 (storage half; the tool half is in `tools.rs`).
@@ -741,9 +896,19 @@ mod tests {
         let (all, skipped) = list.list(&Filter::default());
         assert_eq!(all.iter().map(|i| i.id).collect::<Vec<_>>(), [1, 2, 3]);
         assert_eq!(skipped, vec![list.item_path(10)]);
-        let claimed = list.list(&Filter { status: Some(ItemStatus::Claimed), owner: None }).0;
+        let claimed = list
+            .list(&Filter {
+                status: Some(ItemStatus::Claimed),
+                owner: None,
+            })
+            .0;
         assert_eq!(claimed.len(), 2);
-        let mine = list.list(&Filter { status: Some(ItemStatus::Claimed), owner: Some("m2".into()) }).0;
+        let mine = list
+            .list(&Filter {
+                status: Some(ItemStatus::Claimed),
+                owner: Some("m2".into()),
+            })
+            .0;
         assert_eq!(mine.iter().map(|i| i.id).collect::<Vec<_>>(), [b]);
         assert!(list_text(&mine).starts_with("1 item\n#2 [claimed] beta (owner m2)"));
         assert!(list.get(42).is_none());

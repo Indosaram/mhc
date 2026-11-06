@@ -2,17 +2,18 @@
 //! senpi host-watchdog.ts / multi-session-host.ts lifetime bindings, ported at the behaviour level.
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use maho_core::agent_session_runtime::{AgentSessionLaunchProfile, AgentSessionRuntime};
 use maho_rpc::host_watchdog::{
-    arm_host_watchdog, read_host_watchdog_config_from_brand_env, HostWatchdogConfig, HOST_WATCH_FD_ENV,
-    HOST_WATCH_PPID_ENV,
+    HOST_WATCH_FD_ENV, HOST_WATCH_PPID_ENV, HostWatchdogConfig, arm_host_watchdog,
+    read_host_watchdog_config_from_brand_env,
 };
 use maho_rpc::multi_session_host::{
-    run_multi_session_host_with_signals, HostCore, HostCoreOptions, HostRuntimeFactory, HostShutdownSignals,
+    HostCore, HostCoreOptions, HostRuntimeFactory, HostShutdownSignals,
+    run_multi_session_host_with_signals,
 };
 use maho_rpc::session_event_writer::SessionWriterActor;
 use maho_rpc::session_registry::RpcSessionLaunchProfile;
@@ -72,7 +73,10 @@ async fn inherited_pipe_eof_fires_before_the_private_directory_is_removed() {
         .expect("a reason was delivered");
     armed.await.unwrap();
     assert!(reason.contains("closed"), "unexpected reason {reason}");
-    assert!(capture_saw_directory.load(Ordering::SeqCst), "the capture must run before cleanup");
+    assert!(
+        capture_saw_directory.load(Ordering::SeqCst),
+        "the capture must run before cleanup"
+    );
     assert!(!scratch.exists(), "the private directory is removed");
 }
 
@@ -91,9 +95,13 @@ async fn a_gone_supervisor_pid_fires_the_watchdog_on_the_next_tick() {
         ..Default::default()
     };
     let (reason_tx, mut reason_rx) = tokio::sync::mpsc::unbounded_channel();
-    let armed = tokio::spawn(arm_host_watchdog(Some(config), async { Ok(()) }, move |reason| {
-        let _ = reason_tx.send(reason);
-    }));
+    let armed = tokio::spawn(arm_host_watchdog(
+        Some(config),
+        async { Ok(()) },
+        move |reason| {
+            let _ = reason_tx.send(reason);
+        },
+    ));
     let reason = tokio::time::timeout(Duration::from_secs(60), reason_rx.recv())
         .await
         .expect("the watchdog fired")
@@ -121,12 +129,21 @@ async fn a_shared_host_answers_the_protocol_then_exits_on_its_empty_window() {
     let socket = temp.path().join("host.sock");
     let socket_text = socket.to_string_lossy().into_owned();
     let core = idle_host_core(temp.path());
-    let signals = HostShutdownSignals { watchdog: None, empty_exit_ms: Some(2_000.0) };
-    let served = tokio::spawn(run_multi_session_host_with_signals(core, Some(socket_text.clone()), signals));
+    let signals = HostShutdownSignals {
+        watchdog: None,
+        empty_exit_ms: Some(2_000.0),
+    };
+    let served = tokio::spawn(run_multi_session_host_with_signals(
+        core,
+        Some(socket_text.clone()),
+        signals,
+    ));
     // Subscribe to the host's answer, then to its exit.
     let protocol = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if let Some(protocol) = maho_rpc::host_probe::probe_protocol_info(&socket_text, 2_000).await {
+            if let Some(protocol) =
+                maho_rpc::host_probe::probe_protocol_info(&socket_text, 2_000).await
+            {
                 return protocol;
             }
             tokio::task::yield_now().await;
@@ -136,14 +153,18 @@ async fn a_shared_host_answers_the_protocol_then_exits_on_its_empty_window() {
     .expect("the shared host answered the protocol probe");
     assert_eq!(protocol.protocol_version, 1.0);
     assert!(!protocol.server_version.is_empty());
-    let result = tokio::time::timeout(Duration::from_secs(20), served).await.expect("the host exited").unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(20), served)
+        .await
+        .expect("the host exited")
+        .unwrap();
     assert!(result.is_ok());
     assert!(!socket.exists(), "the host removes the endpoint it bound");
 }
 
 #[test]
 fn a_launch_profile_carries_the_session_cwd() {
-    let profile = AgentSessionLaunchProfile { prompt_size_inventory: None,
+    let profile = AgentSessionLaunchProfile {
+        prompt_size_inventory: None,
         cwd: "/tmp/host-session".to_owned(),
         permission_preset: None,
         creation_model: None,

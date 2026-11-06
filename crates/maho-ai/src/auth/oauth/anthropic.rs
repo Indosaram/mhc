@@ -364,8 +364,9 @@ impl AnthropicOAuth {
 }
 
 pub fn anthropic_oauth() -> Arc<dyn OAuthAuth> {
-    static INSTANCE: LazyLock<Arc<dyn OAuthAuth>> =
-        LazyLock::new(|| -> Arc<dyn OAuthAuth> { Arc::new(AnthropicOAuth::new(default_transport())) });
+    static INSTANCE: LazyLock<Arc<dyn OAuthAuth>> = LazyLock::new(|| -> Arc<dyn OAuthAuth> {
+        Arc::new(AnthropicOAuth::new(default_transport()))
+    });
     INSTANCE.clone()
 }
 
@@ -749,11 +750,8 @@ mod tests {
         let opened = harness.opened.clone();
         let prompt_signal = harness.prompt_signal.clone();
 
-        let login = tokio::spawn(async move {
-            AnthropicOAuth::new(transport)
-                .login(&interaction)
-                .await
-        });
+        let login =
+            tokio::spawn(async move { AnthropicOAuth::new(transport).login(&interaction).await });
 
         tokio::time::timeout(Duration::from_secs(10), opened.notified())
             .await
@@ -985,11 +983,8 @@ mod tests {
         let harness = harness(AbortController::new().signal(), Answer::WaitForAbort);
         let events = harness.events.clone();
         let interaction = harness.interaction;
-        let login = tokio::spawn(async move {
-            AnthropicOAuth::new(transport)
-                .login(&interaction)
-                .await
-        });
+        let login =
+            tokio::spawn(async move { AnthropicOAuth::new(transport).login(&interaction).await });
 
         // The outer bound is longer than the flow's 10-minute idle timer, so a broken timeout
         // fails the test instead of hanging it; the paused clock advances the timer itself.

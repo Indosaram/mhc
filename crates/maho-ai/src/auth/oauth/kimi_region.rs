@@ -105,7 +105,11 @@ fn endpoints_for_region(region: KimiCodeRegion) -> KimiCodeEndpoints {
     KimiCodeEndpoints {
         region: Some(region),
         oauth_host: profile.oauth_host.to_string(),
-        api_base_url: if region == DEFAULT_KIMI_CODE_REGION { None } else { Some(profile.api_base_url.to_string()) },
+        api_base_url: if region == DEFAULT_KIMI_CODE_REGION {
+            None
+        } else {
+            Some(profile.api_base_url.to_string())
+        },
         env: Some(env),
     }
 }
@@ -117,26 +121,52 @@ fn endpoints_for_host(host: &str) -> KimiCodeEndpoints {
     let normalized = normalize_host(host);
     let mut env = ProviderEnv::new();
     env.insert(KIMI_CODE_OAUTH_HOST_ENV.to_string(), normalized.clone());
-    KimiCodeEndpoints { region: None, oauth_host: normalized, api_base_url: None, env: Some(env) }
+    KimiCodeEndpoints {
+        region: None,
+        oauth_host: normalized,
+        api_base_url: None,
+        env: Some(env),
+    }
 }
 
 pub fn resolve_kimi_code_endpoints(input: KimiCodeEndpointInput) -> KimiCodeEndpoints {
-    if let Some(host) = input.stored_oauth_host.as_deref().filter(|host| !host.trim().is_empty()) {
+    if let Some(host) = input
+        .stored_oauth_host
+        .as_deref()
+        .filter(|host| !host.trim().is_empty())
+    {
         return endpoints_for_host(host);
     }
-    if let Some(region) = input.stored_region.as_deref().and_then(KimiCodeRegion::from_id) {
+    if let Some(region) = input
+        .stored_region
+        .as_deref()
+        .and_then(KimiCodeRegion::from_id)
+    {
         return endpoints_for_region(region);
     }
-    if let Some(host) = input.env_oauth_host.as_deref().filter(|host| !host.trim().is_empty()) {
+    if let Some(host) = input
+        .env_oauth_host
+        .as_deref()
+        .filter(|host| !host.trim().is_empty())
+    {
         return endpoints_for_host(host);
     }
-    if let Some(region) = input.env_region.as_deref().and_then(KimiCodeRegion::from_id) {
+    if let Some(region) = input
+        .env_region
+        .as_deref()
+        .and_then(KimiCodeRegion::from_id)
+    {
         return endpoints_for_region(region);
     }
-    KimiCodeEndpoints { env: None, ..endpoints_for_region(DEFAULT_KIMI_CODE_REGION) }
+    KimiCodeEndpoints {
+        env: None,
+        ..endpoints_for_region(DEFAULT_KIMI_CODE_REGION)
+    }
 }
 
-pub fn kimi_code_credential_env(credential: &serde_json::Map<String, serde_json::Value>) -> Option<ProviderEnv> {
+pub fn kimi_code_credential_env(
+    credential: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ProviderEnv> {
     let value = credential.get("env")?;
     let serde_json::Value::Object(entries) = value else {
         return None;
@@ -150,11 +180,17 @@ pub fn kimi_code_credential_env(credential: &serde_json::Map<String, serde_json:
     Some(env)
 }
 
-pub fn kimi_code_endpoints_for_credential(credential: &serde_json::Map<String, serde_json::Value>) -> KimiCodeEndpoints {
+pub fn kimi_code_endpoints_for_credential(
+    credential: &serde_json::Map<String, serde_json::Value>,
+) -> KimiCodeEndpoints {
     let env = kimi_code_credential_env(credential);
     resolve_kimi_code_endpoints(KimiCodeEndpointInput {
-        stored_region: env.as_ref().and_then(|env| env.get(KIMI_CODE_REGION_ENV).cloned()),
-        stored_oauth_host: env.as_ref().and_then(|env| env.get(KIMI_CODE_OAUTH_HOST_ENV).cloned()),
+        stored_region: env
+            .as_ref()
+            .and_then(|env| env.get(KIMI_CODE_REGION_ENV).cloned()),
+        stored_oauth_host: env
+            .as_ref()
+            .and_then(|env| env.get(KIMI_CODE_OAUTH_HOST_ENV).cloned()),
         env_oauth_host: get_provider_env_value(KIMI_CODE_OAUTH_HOST_ENV, None)
             .or_else(|| get_provider_env_value(KIMI_OAUTH_HOST_ENV, None)),
         env_region: get_provider_env_value(KIMI_CODE_REGION_ENV, None),
@@ -225,7 +261,12 @@ mod tests {
         Some(env)
     }
 
-    fn endpoints(region: Option<KimiCodeRegion>, oauth_host: &str, api_base_url: Option<&str>, env: Option<ProviderEnv>) -> KimiCodeEndpoints {
+    fn endpoints(
+        region: Option<KimiCodeRegion>,
+        oauth_host: &str,
+        api_base_url: Option<&str>,
+        env: Option<ProviderEnv>,
+    ) -> KimiCodeEndpoints {
         KimiCodeEndpoints {
             region,
             oauth_host: oauth_host.to_string(),
@@ -238,7 +279,12 @@ mod tests {
     fn defaults_to_kimi_com_with_no_stored_or_env_facts_and_keeps_the_catalog_base() {
         assert_eq!(
             resolve_kimi_code_endpoints(KimiCodeEndpointInput::default()),
-            endpoints(Some(KimiCodeRegion::MainlandCn), MAINLAND_OAUTH_HOST, None, None)
+            endpoints(
+                Some(KimiCodeRegion::MainlandCn),
+                MAINLAND_OAUTH_HOST,
+                None,
+                None
+            )
         );
     }
 
@@ -294,7 +340,12 @@ mod tests {
         });
         assert_eq!(
             resolved,
-            endpoints(None, "https://auth.example.com", None, env_of(&[(KIMI_CODE_OAUTH_HOST_ENV, "https://auth.example.com")]))
+            endpoints(
+                None,
+                "https://auth.example.com",
+                None,
+                env_of(&[(KIMI_CODE_OAUTH_HOST_ENV, "https://auth.example.com")])
+            )
         );
     }
 
@@ -312,7 +363,10 @@ mod tests {
             env_region: Some("global".into()),
             ..Default::default()
         });
-        assert_eq!(unknown_stored_falls_through.region, Some(KimiCodeRegion::Global));
+        assert_eq!(
+            unknown_stored_falls_through.region,
+            Some(KimiCodeRegion::Global)
+        );
 
         let unknown_env = resolve_kimi_code_endpoints(KimiCodeEndpointInput {
             env_region: Some("mars".into()),
@@ -323,9 +377,18 @@ mod tests {
 
     #[test]
     fn recognizes_both_official_hosts_regardless_of_trailing_slashes() {
-        assert_eq!(kimi_code_region_for_oauth_host(&format!("{MAINLAND_OAUTH_HOST}/")), Some(KimiCodeRegion::MainlandCn));
-        assert_eq!(kimi_code_region_for_oauth_host(GLOBAL_OAUTH_HOST), Some(KimiCodeRegion::Global));
-        assert_eq!(kimi_code_region_for_oauth_host("https://auth.example.com"), None);
+        assert_eq!(
+            kimi_code_region_for_oauth_host(&format!("{MAINLAND_OAUTH_HOST}/")),
+            Some(KimiCodeRegion::MainlandCn)
+        );
+        assert_eq!(
+            kimi_code_region_for_oauth_host(GLOBAL_OAUTH_HOST),
+            Some(KimiCodeRegion::Global)
+        );
+        assert_eq!(
+            kimi_code_region_for_oauth_host("https://auth.example.com"),
+            None
+        );
     }
 
     #[test]

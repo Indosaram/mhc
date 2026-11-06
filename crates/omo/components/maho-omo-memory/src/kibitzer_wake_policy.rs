@@ -24,12 +24,26 @@ pub struct AcceptedNudgeCooldown {
 impl AcceptedNudgeCooldown {
     /// The default band (`ACCEPTED_NUDGE_COOLDOWN_LIMIT` / `_WINDOW_MS`).
     pub fn new(now: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Self { limit: ACCEPTED_NUDGE_COOLDOWN_LIMIT, window_ms: ACCEPTED_NUDGE_COOLDOWN_WINDOW_MS, now, charged_at: Vec::new() }
+        Self {
+            limit: ACCEPTED_NUDGE_COOLDOWN_LIMIT,
+            window_ms: ACCEPTED_NUDGE_COOLDOWN_WINDOW_MS,
+            now,
+            charged_at: Vec::new(),
+        }
     }
 
     /// An explicit limit/window (tests and non-default config).
-    pub fn with_options(now: Arc<dyn Fn() -> i64 + Send + Sync>, limit: usize, window_ms: i64) -> Self {
-        Self { limit, window_ms, now, charged_at: Vec::new() }
+    pub fn with_options(
+        now: Arc<dyn Fn() -> i64 + Send + Sync>,
+        limit: usize,
+        window_ms: i64,
+    ) -> Self {
+        Self {
+            limit,
+            window_ms,
+            now,
+            charged_at: Vec::new(),
+        }
     }
 
     /// True while the window already holds `limit` charges: a fresh candidate buffers instead.
@@ -91,7 +105,11 @@ pub fn decide_wake(
     let mut seen = BTreeSet::new();
     for candidate in candidates {
         let path = &candidate.path;
-        if seen.contains(path) || offered.contains(path) || surfaced.contains(path) || is_system_memory_path(path) {
+        if seen.contains(path)
+            || offered.contains(path)
+            || surfaced.contains(path)
+            || is_system_memory_path(path)
+        {
             continue;
         }
         seen.insert(path.clone());

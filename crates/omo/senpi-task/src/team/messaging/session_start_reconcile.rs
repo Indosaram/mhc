@@ -1,8 +1,8 @@
 //! Component `session_start` reclaim of dangling mailbox delivery reservations.
 
 use serde_json::json;
-use utils::logger::log;
 use team_core::team_state_store::list_active_teams;
+use utils::logger::log;
 
 use crate::store::StateDirConfig;
 use crate::team::member_map::read_member_task_map;
@@ -46,7 +46,9 @@ fn reclaim_one_team(
 /// Best-effort per team: a single team's read/reclaim failure is logged and skipped so a stale
 /// corner can never abort the sweep or block session start.
 pub fn reconcile_team_mailbox_on_session_start(deps: &ReconcileTeamMailboxDeps) {
-    let stale_ttl_ms = deps.stale_ttl_ms.unwrap_or(DEFAULT_STALE_RESERVATION_TTL_MS);
+    let stale_ttl_ms = deps
+        .stale_ttl_ms
+        .unwrap_or(DEFAULT_STALE_RESERVATION_TTL_MS);
 
     let teams = match list_active_teams(&deps.config) {
         Ok(teams) => teams,

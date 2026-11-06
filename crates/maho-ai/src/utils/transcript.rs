@@ -394,11 +394,39 @@ mod tests {
             timestamp: 1,
         });
         let contexts = [
-            (Some("prompt"), Some(vec![tool("a", 1)]), vec![user.clone(), system(vec![tool("b", 1)], &[])]),
-            (Some("prompt"), Some(vec![tool("a", 1)]), vec![user.clone(), system(vec![tool("a", 2)], &["a"])]),
-            (None, None, vec![system(vec![tool("a", 1)], &[]), user.clone(), system(vec![tool("b", 1)], &[])]),
-            (None, None, vec![user.clone(), system(vec![tool("b", 1)], &[])]),
-            (None, None, vec![user.clone(), system(vec![tool("b", 1)], &[]), system(Vec::new(), &["b"])]),
+            (
+                Some("prompt"),
+                Some(vec![tool("a", 1)]),
+                vec![user.clone(), system(vec![tool("b", 1)], &[])],
+            ),
+            (
+                Some("prompt"),
+                Some(vec![tool("a", 1)]),
+                vec![user.clone(), system(vec![tool("a", 2)], &["a"])],
+            ),
+            (
+                None,
+                None,
+                vec![
+                    system(vec![tool("a", 1)], &[]),
+                    user.clone(),
+                    system(vec![tool("b", 1)], &[]),
+                ],
+            ),
+            (
+                None,
+                None,
+                vec![user.clone(), system(vec![tool("b", 1)], &[])],
+            ),
+            (
+                None,
+                None,
+                vec![
+                    user.clone(),
+                    system(vec![tool("b", 1)], &[]),
+                    system(Vec::new(), &["b"]),
+                ],
+            ),
             (None, None, vec![user]),
         ];
         for (prompt, tools, messages) in contexts {
@@ -411,7 +439,10 @@ mod tests {
             for supports_additions in [true, false] {
                 assert_eq!(
                     resolve_context_transcript_tools(&context, supports_additions),
-                    resolve_transcript_tools(&normalize_context(&context).messages, supports_additions),
+                    resolve_transcript_tools(
+                        &normalize_context(&context).messages,
+                        supports_additions
+                    ),
                 );
             }
         }

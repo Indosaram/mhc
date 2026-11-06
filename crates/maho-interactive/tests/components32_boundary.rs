@@ -38,11 +38,19 @@ fn fixtures() -> Value {
 }
 
 fn expected(case: &Value) -> Vec<String> {
-    case["lines"].as_array().expect("lines").iter().map(|line| line.as_str().expect("line").to_owned()).collect()
+    case["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line.as_str().expect("line").to_owned())
+        .collect()
 }
 
 fn trim(lines: Vec<String>) -> Vec<String> {
-    lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 #[test]
@@ -54,7 +62,9 @@ fn tool_renderer_boundary_matches_pinned_senpi_failure_and_recovery_paths() {
         let counter = Rc::clone(&failures);
         let mut boundary = if name == "healthy" {
             ToolRendererBoundary::new(
-                Rc::new(RefCell::new(Counting { renders: Rc::new(RefCell::new(0)) })),
+                Rc::new(RefCell::new(Counting {
+                    renders: Rc::new(RefCell::new(0)),
+                })),
                 None,
                 Box::new(move || *counter.borrow_mut() += 1),
             )
@@ -67,7 +77,11 @@ fn tool_renderer_boundary_matches_pinned_senpi_failure_and_recovery_paths() {
         };
         let first = trim(boundary.render(width));
         assert_eq!(first, expected(case), "boundary {name} at {width}");
-        assert_eq!(*failures.borrow(), case["failures"].as_u64().expect("failures") as usize, "boundary {name} failures");
+        assert_eq!(
+            *failures.borrow(),
+            case["failures"].as_u64().expect("failures") as usize,
+            "boundary {name} failures"
+        );
     }
 }
 
@@ -96,12 +110,29 @@ fn progressive_transcript_paints_only_the_tail_and_hydrates_on_demand() {
             request_render: Rc::new(|| {}),
         });
         for index in 0..count {
-            container.add_child(Rc::new(RefCell::new(Text::with_padding(format!("child-{index}"), 0, 0))));
+            container.add_child(Rc::new(RefCell::new(Text::with_padding(
+                format!("child-{index}"),
+                0,
+                0,
+            ))));
         }
-        for (frame, wanted) in case["frames"].as_array().expect("frames").iter().enumerate() {
-            let expected_lines: Vec<String> =
-                wanted.as_array().expect("frame").iter().map(|line| line.as_str().expect("line").to_owned()).collect();
-            assert_eq!(trim(container.render(40)), expected_lines, "progressive count={count} frame={frame}");
+        for (frame, wanted) in case["frames"]
+            .as_array()
+            .expect("frames")
+            .iter()
+            .enumerate()
+        {
+            let expected_lines: Vec<String> = wanted
+                .as_array()
+                .expect("frame")
+                .iter()
+                .map(|line| line.as_str().expect("line").to_owned())
+                .collect();
+            assert_eq!(
+                trim(container.render(40)),
+                expected_lines,
+                "progressive count={count} frame={frame}"
+            );
         }
     }
 }
@@ -114,7 +145,11 @@ fn progressive_transcript_reaches_the_full_history_after_enough_hydration_steps(
         request_render: Rc::new(|| {}),
     });
     for index in 0..5 {
-        container.add_child(Rc::new(RefCell::new(Text::with_padding(format!("child-{index}"), 0, 0))));
+        container.add_child(Rc::new(RefCell::new(Text::with_padding(
+            format!("child-{index}"),
+            0,
+            0,
+        ))));
     }
     assert_eq!(trim(container.render(40)), vec!["child-3", "child-4"]);
     assert!(!container.is_fully_hydrated());

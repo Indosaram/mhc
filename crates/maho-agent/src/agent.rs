@@ -125,7 +125,8 @@ pub(crate) fn default_model() -> Model {
         default_thinking_level: None,
         thinking_level_map: None,
         input: Vec::new(),
-        cost: maho_ai::types::ModelCost { unknown: None,
+        cost: maho_ai::types::ModelCost {
+            unknown: None,
             effective_rates: None,
             input: 0.0,
             output: 0.0,

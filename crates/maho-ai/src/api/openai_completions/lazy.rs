@@ -7,8 +7,7 @@
 
 use crate::model::Model;
 use crate::types::{
-    AssistantMessageEventStream, Context, ProviderStreams,
-    SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, Context, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use std::sync::Arc;
 

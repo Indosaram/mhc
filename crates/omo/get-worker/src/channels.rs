@@ -3,12 +3,12 @@
 
 use crate::bindings::{CacheKey, CachePopulation, FetchError, FetchRequest, HttpFetcher};
 use crate::datapoint::{
-    is_qa_install, record_download, request_country, DownloadEvent, RequestKind, ServedFrom,
+    DownloadEvent, RequestKind, ServedFrom, is_qa_install, record_download, request_country,
 };
 use crate::env::RequestContext;
 use crate::http::{Body, Method, Request, Response};
 use crate::release_names::{
-    channel_pointer_key, is_release_version, release_version_of_npm_version, Channel,
+    Channel, channel_pointer_key, is_release_version, release_version_of_npm_version,
 };
 
 pub const POINTER_TTL_SECONDS: u64 = 60;
@@ -40,9 +40,8 @@ fn from_r2(ctx: &RequestContext<'_>, channel: Channel) -> Option<String> {
 /// absent, so the channel falls back to the npm dist-tag, which carries the same
 /// latest/beta meaning.
 fn from_npm(fetcher: &dyn HttpFetcher, channel: Channel) -> Result<Option<String>, FetchError> {
-    let response = fetcher.fetch(
-        FetchRequest::get(NPM_DIST_TAGS).with_header("Accept", "application/json"),
-    )?;
+    let response = fetcher
+        .fetch(FetchRequest::get(NPM_DIST_TAGS).with_header("Accept", "application/json"))?;
     if !response.ok() {
         return Ok(None);
     }
@@ -84,10 +83,11 @@ pub fn serve_channel(
         Some(cached) => cached,
         None => {
             let Some(resolved) = resolve_channel(ctx, channel)? else {
-                return Ok(
-                    Response::new(503, Some(Body::Text("channel unavailable\n".to_string())))
-                        .with_header("Cache-Control", "no-store"),
-                );
+                return Ok(Response::new(
+                    503,
+                    Some(Body::Text("channel unavailable\n".to_string())),
+                )
+                .with_header("Cache-Control", "no-store"));
             };
             let fresh = Response::new(200, Some(Body::Text(format!("{}\n", resolved.version))))
                 .with_header("Content-Type", "text/plain; charset=utf-8")

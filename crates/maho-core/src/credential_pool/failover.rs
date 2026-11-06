@@ -66,20 +66,33 @@ pub fn is_available(slot: &RunSlot, now: u64) -> bool {
 }
 
 pub fn no_slots_message(slots: &[RunSlot], now: u64) -> String {
-    let blocked: Vec<String> = slots.iter().map(|slot| {
-        let reason = slot.block_reason.as_deref().unwrap_or("blocked");
-        if let Some(until) = slot.blocked_until.filter(|until| *until > now)
-            && let Some(date) = i64::try_from(until).ok().and_then(chrono::DateTime::from_timestamp_millis) {
-                return format!("{} ({reason} until {})", slot.name, date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let blocked: Vec<String> = slots
+        .iter()
+        .map(|slot| {
+            let reason = slot.block_reason.as_deref().unwrap_or("blocked");
+            if let Some(until) = slot.blocked_until.filter(|until| *until > now)
+                && let Some(date) = i64::try_from(until)
+                    .ok()
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+            {
+                return format!(
+                    "{} ({reason} until {})",
+                    slot.name,
+                    date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                );
             }
-        if reason == "account_disabled" {
-            format!("{} (account_disabled until re-login)", slot.name)
-        } else {
-            format!("{} ({reason})", slot.name)
-        }
-    }).collect();
-    if blocked.is_empty() { "No credential slots available".to_owned() }
-    else { format!("No credential slots available: {}", blocked.join(", ")) }
+            if reason == "account_disabled" {
+                format!("{} (account_disabled until re-login)", slot.name)
+            } else {
+                format!("{} ({reason})", slot.name)
+            }
+        })
+        .collect();
+    if blocked.is_empty() {
+        "No credential slots available".to_owned()
+    } else {
+        format!("No credential slots available: {}", blocked.join(", "))
+    }
 }
 
 pub fn soonest_retry_at(slots: &[RunSlot], now: u64) -> Option<u64> {
@@ -233,10 +246,7 @@ pub async fn run_credential_failover<H: FailoverHost>(
             let (action, detail) = match (last_error, last_original) {
                 (Some(error), _) => (error.action, error.detail),
                 (None, Some(original)) => (CredentialAction::FailRequest, original.to_string()),
-                (None, None) => (
-                    CredentialAction::FailRequest,
-                    no_slots_message(&slots, now),
-                ),
+                (None, None) => (CredentialAction::FailRequest, no_slots_message(&slots, now)),
             };
             return Err(CredentialFailoverError {
                 action,
@@ -368,17 +378,19 @@ pub async fn run_credential_failover<H: FailoverHost>(
                             obj.insert("message".to_string(), Value::String(appended));
                         }
                     } else if let Some(s) = detail_value.as_str() {
-                        detail_value = Value::String(crate::provider_consent::append_rotation_notice(
-                            s,
-                            provider,
-                            slots.len(),
-                        ));
+                        detail_value =
+                            Value::String(crate::provider_consent::append_rotation_notice(
+                                s,
+                                provider,
+                                slots.len(),
+                            ));
                     } else {
-                        detail_value = Value::String(crate::provider_consent::append_rotation_notice(
-                            &detail_value.to_string(),
-                            provider,
-                            slots.len(),
-                        ));
+                        detail_value =
+                            Value::String(crate::provider_consent::append_rotation_notice(
+                                &detail_value.to_string(),
+                                provider,
+                                slots.len(),
+                            ));
                     }
                     detail_value.to_string()
                 } else {
@@ -656,14 +668,19 @@ mod tests {
         };
         let error = run_credential_failover(&mut host).await.expect_err("error");
         assert_eq!(error.retry_at, Some(500));
-        assert_eq!(error.detail, "No credential slots available: a (blocked until 1970-01-01T00:00:00.500Z)");
+        assert_eq!(
+            error.detail,
+            "No credential slots available: a (blocked until 1970-01-01T00:00:00.500Z)"
+        );
     }
 
     #[tokio::test]
     async fn rotation_consent_gates_generic_failover_loop() {
         let dir = tempfile::tempdir().expect("tempdir");
         let agent_dir = dir.path().to_string_lossy().into_owned();
-        let mut settings = crate::settings_manager::SettingsManager::create(&agent_dir, &agent_dir, &agent_dir, false);
+        let mut settings = crate::settings_manager::SettingsManager::create(
+            &agent_dir, &agent_dir, &agent_dir, false,
+        );
         let provider = "chatgpt-subscription";
 
         // (1) Two accounts and no consent -> exact attempt sequence [a1] and error text with notice
@@ -672,12 +689,16 @@ mod tests {
             consented: Some(false),
             slots: vec![slot("a1"), slot("a2")],
             attempts: vec![
-                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![failed(
+                    json!({ "status": 429, "message": "rate limit reached" }),
+                )],
                 vec![ok(vec!["delta"])],
             ],
             ..FakeHost::default()
         };
-        let error = run_credential_failover(&mut host_no_consent).await.expect_err("failover gated");
+        let error = run_credential_failover(&mut host_no_consent)
+            .await
+            .expect_err("failover gated");
         assert_eq!(host_no_consent.attempted_slots, vec!["a1"]);
         assert!(error.detail.contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent chatgpt-subscription --rotation`."));
 
@@ -688,12 +709,16 @@ mod tests {
             consented: Some(true),
             slots: vec![slot("a1"), slot("a2")],
             attempts: vec![
-                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![failed(
+                    json!({ "status": 429, "message": "rate limit reached" }),
+                )],
                 vec![ok(vec!["delta"])],
             ],
             ..FakeHost::default()
         };
-        run_credential_failover(&mut host_with_consent).await.expect("failover succeeded");
+        run_credential_failover(&mut host_with_consent)
+            .await
+            .expect("failover succeeded");
         assert_eq!(host_with_consent.attempted_slots, vec!["a1", "a2"]);
         assert_eq!(host_with_consent.successes, vec!["a2"]);
 
@@ -704,12 +729,16 @@ mod tests {
             consented: Some(false),
             slots: vec![slot("a1"), slot("a2")],
             attempts: vec![
-                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![failed(
+                    json!({ "status": 429, "message": "rate limit reached" }),
+                )],
                 vec![ok(vec!["delta"])],
             ],
             ..FakeHost::default()
         };
-        let error_revoked = run_credential_failover(&mut host_after_revoke).await.expect_err("failover gated after revoke");
+        let error_revoked = run_credential_failover(&mut host_after_revoke)
+            .await
+            .expect_err("failover gated after revoke");
         assert_eq!(host_after_revoke.attempted_slots, vec!["a1"]);
         assert!(error_revoked.detail.contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent chatgpt-subscription --rotation`."));
     }

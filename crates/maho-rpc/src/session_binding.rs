@@ -55,9 +55,27 @@ pub fn session_event_record(
         };
     }
     Ok(match event {
-        E::SessionPaused { pause_seq, kind, at, notice_count, persisted } => json!({"type":"session_paused","pauseSeq":pause_seq,"kind":kind,"at":at,"noticeCount":notice_count,"persisted":persisted}),
-        E::SessionResumed { pause_seq, cause, at } => json!({"type":"session_resumed","pauseSeq":pause_seq,"cause":cause,"at":at}),
-        E::SessionNotice { notice_ids, notice_count, disposition } => json!({"type":"session_notice","noticeIds":notice_ids,"noticeCount":notice_count,"disposition":disposition}),
+        E::SessionPaused {
+            pause_seq,
+            kind,
+            at,
+            notice_count,
+            persisted,
+        } => {
+            json!({"type":"session_paused","pauseSeq":pause_seq,"kind":kind,"at":at,"noticeCount":notice_count,"persisted":persisted})
+        }
+        E::SessionResumed {
+            pause_seq,
+            cause,
+            at,
+        } => json!({"type":"session_resumed","pauseSeq":pause_seq,"cause":cause,"at":at}),
+        E::SessionNotice {
+            notice_ids,
+            notice_count,
+            disposition,
+        } => {
+            json!({"type":"session_notice","noticeIds":notice_ids,"noticeCount":notice_count,"disposition":disposition})
+        }
         E::Agent(event) => serde_json::to_value(event)?,
         // senpi agent-session.ts: subscribers get `{ ...agent_end, willRetry }`; abort provenance is RPC enrichment.
         E::AgentEnd {
@@ -727,12 +745,13 @@ impl RpcSessionBinding {
                 record["sessionId"] = tag.clone().into();
                 lanes.accept(&tag, &record);
             });
-        let subscription = crate::structured_session_records::subscribe_structured_session_records_routed(
-            session,
-            output,
-            Some(&self.session_id),
-            Some(self.handler.last_abort_source.clone()),
-        )?;
+        let subscription =
+            crate::structured_session_records::subscribe_structured_session_records_routed(
+                session,
+                output,
+                Some(&self.session_id),
+                Some(self.handler.last_abort_source.clone()),
+            )?;
         *self
             .structured_subscription
             .lock()
@@ -855,17 +874,16 @@ impl RpcSessionBinding {
             });
         let send_fanout = fanout;
         let tag = self.session_id.clone();
-        let send: SendCallback =
-            std::sync::Arc::new(move |id, mut record| {
-                record["sessionId"] = tag.clone().into();
-                if let Err(error) = send_fanout
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .enqueue_control(id, &record)
-                {
-                    eprintln!("relocation delivery failed: {error}");
-                }
-            });
+        let send: SendCallback = std::sync::Arc::new(move |id, mut record| {
+            record["sessionId"] = tag.clone().into();
+            if let Err(error) = send_fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .enqueue_control(id, &record)
+            {
+                eprintln!("relocation delivery failed: {error}");
+            }
+        });
         session.set_relocation_host(Some(std::sync::Arc::new(
             crate::session_relocation_adapter::SessionRelocationAdapter {
                 relocation: self.handler.relocation().clone(),
@@ -970,9 +988,11 @@ mod tests {
                     'static,
                     Result<crate::client_admission_record::AdmissionDisposition, String>,
                 > {
-                    assert!(hooks
-                        .accepted(crate::client_admission_record::AdmissionDisposition::Started)
-                        .is_some());
+                    assert!(
+                        hooks
+                            .accepted(crate::client_admission_record::AdmissionDisposition::Started)
+                            .is_some()
+                    );
                     Box::pin(async {
                         Ok(crate::client_admission_record::AdmissionDisposition::Started)
                     })
@@ -1009,7 +1029,10 @@ mod tests {
         scope.close();
         sink(serde_json::json!({"type":"agent_end"}));
         sink(serde_json::json!({"type":"agent_end"}));
-        assert_eq!(*written.lock().unwrap(), vec![serde_json::json!({"type":"agent_start"})]);
+        assert_eq!(
+            *written.lock().unwrap(),
+            vec![serde_json::json!({"type":"agent_start"})]
+        );
     }
     #[test]
     fn malformed_record_stops_stream_before_later_publication() {
@@ -1092,7 +1115,9 @@ mod tests {
         let records = std::mem::take(&mut *seen.lock().unwrap());
         assert!(records.iter().all(|record| record["sessionId"] == "routed"));
         assert!(
-            records.iter().any(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant"),
+            records
+                .iter()
+                .any(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant"),
             "assistant message_start on the lane"
         );
         let start = records

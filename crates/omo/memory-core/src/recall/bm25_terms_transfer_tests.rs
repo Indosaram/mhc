@@ -41,6 +41,9 @@ fn a_seeded_document_snapshots_with_compact_ascending_ids() {
 #[test]
 fn a_document_without_current_terms_has_no_snapshot() {
     let document = doc("zzunseenonly body text");
-    assert!(snapshot_recall_document_terms(&RECALL_TERM_ACCESS, std::slice::from_ref(&document)).is_none());
+    assert!(
+        snapshot_recall_document_terms(&RECALL_TERM_ACCESS, std::slice::from_ref(&document))
+            .is_none()
+    );
     assert!(!recall_document_terms(&document).terms.is_empty());
 }

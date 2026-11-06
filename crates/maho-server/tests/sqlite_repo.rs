@@ -5,18 +5,38 @@ use std::sync::Arc;
 #[cfg(unix)]
 #[tokio::test]
 async fn active_source_fork_uses_storage_connection_after_path_is_renamed() {
-    let directory=tempfile::tempdir().unwrap();
-    let repo=SqliteSessionRepo::new(directory.path().into(),None,Arc::new(||123));
-    let context=background_context();
-    let source=repo.create(SessionCreateOptions {id:Some("source".into()),..Default::default()},&context).await.unwrap();
-    source.set_name(Some("live".into()),&context).await.unwrap();
-    let path=directory.path().join("source.sqlite");
-    let moved=directory.path().join("preserved.sqlite");
-    std::fs::rename(&path,&moved).unwrap();
-    let result=repo.fork(source.metadata().clone(),ForkOptions::Tree {id:Some("copy".into())},&context).await;
-    std::fs::rename(&moved,&path).unwrap();
-    let fork=result.unwrap();
-    assert_eq!(fork.get_name(&context).await.unwrap(),Some("live".into()));
+    let directory = tempfile::tempdir().unwrap();
+    let repo = SqliteSessionRepo::new(directory.path().into(), None, Arc::new(|| 123));
+    let context = background_context();
+    let source = repo
+        .create(
+            SessionCreateOptions {
+                id: Some("source".into()),
+                ..Default::default()
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+    source
+        .set_name(Some("live".into()), &context)
+        .await
+        .unwrap();
+    let path = directory.path().join("source.sqlite");
+    let moved = directory.path().join("preserved.sqlite");
+    std::fs::rename(&path, &moved).unwrap();
+    let result = repo
+        .fork(
+            source.metadata().clone(),
+            ForkOptions::Tree {
+                id: Some("copy".into()),
+            },
+            &context,
+        )
+        .await;
+    std::fs::rename(&moved, &path).unwrap();
+    let fork = result.unwrap();
+    assert_eq!(fork.get_name(&context).await.unwrap(), Some("live".into()));
     fork.close(&context).await;
     source.close(&context).await;
     repo.close(&context).await;
@@ -81,17 +101,55 @@ async fn repository_creates_reopens_forks_and_deletes_unicode_sessions() {
 async fn failed_fork_initialization_rolls_back_destination_and_allows_retry() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("shared.sqlite");
-    let repo = SqliteSessionRepo::new(directory.path().into(),Some(path.clone()),Arc::new(||123));
+    let repo = SqliteSessionRepo::new(
+        directory.path().into(),
+        Some(path.clone()),
+        Arc::new(|| 123),
+    );
     let context = background_context();
-    let source = repo.create(SessionCreateOptions {id:Some("source".into()),..Default::default()},&context).await.unwrap();
+    let source = repo
+        .create(
+            SessionCreateOptions {
+                id: Some("source".into()),
+                ..Default::default()
+            },
+            &context,
+        )
+        .await
+        .unwrap();
     let metadata = source.metadata().clone();
     source.close(&context).await;
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_fork BEFORE INSERT ON scalar_values WHEN NEW.session_id='copy' BEGIN SELECT RAISE(ABORT,'faux copy failure'); END;").unwrap();
-    assert!(repo.fork(metadata.clone(),ForkOptions::Tree {id:Some("copy".into())},&context).await.is_err());
-    assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE id='copy'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    assert!(
+        repo.fork(
+            metadata.clone(),
+            ForkOptions::Tree {
+                id: Some("copy".into())
+            },
+            &context
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sessions WHERE id='copy'", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
     db.execute_batch("DROP TRIGGER reject_fork").unwrap();
-    let fork = repo.fork(metadata,ForkOptions::Tree {id:Some("copy".into())},&context).await.unwrap();
+    let fork = repo
+        .fork(
+            metadata,
+            ForkOptions::Tree {
+                id: Some("copy".into()),
+            },
+            &context,
+        )
+        .await
+        .unwrap();
     fork.close(&context).await;
     repo.close(&context).await;
 }
@@ -101,10 +159,30 @@ async fn opened_sessions_use_the_admitted_read_facade_and_reject_reads_after_clo
     let directory = tempfile::tempdir().unwrap();
     let repo = SqliteSessionRepo::new(directory.path().into(), None, Arc::new(|| 123));
     let context = background_context();
-    let session = repo.create(SessionCreateOptions { id: Some("facade".into()), ..Default::default() }, &context).await.unwrap();
-    assert!(session.get_entries(Vec::new(), &context).await.is_ok(), "admitted read through the facade");
+    let session = repo
+        .create(
+            SessionCreateOptions {
+                id: Some("facade".into()),
+                ..Default::default()
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(
+        session.get_entries(Vec::new(), &context).await.is_ok(),
+        "admitted read through the facade"
+    );
     repo.close(&context).await;
-    assert_eq!(session.get_entries(Vec::new(), &context).await.unwrap_err().kind, SessionErrorKind::Closed, "repository close drains the facade and rejects later reads");
+    assert_eq!(
+        session
+            .get_entries(Vec::new(), &context)
+            .await
+            .unwrap_err()
+            .kind,
+        SessionErrorKind::Closed,
+        "repository close drains the facade and rejects later reads"
+    );
 }
 
 #[tokio::test]
@@ -242,7 +320,10 @@ async fn foreign_fork_sources_use_their_own_path_and_foreign_writable_metadata_i
     let left = left_repo.create(create.clone(), &context).await.unwrap();
     let right = right_repo.create(create, &context).await.unwrap();
     left.set_name(Some("left".into()), &context).await.unwrap();
-    right.set_name(Some("right".into()), &context).await.unwrap();
+    right
+        .set_name(Some("right".into()), &context)
+        .await
+        .unwrap();
     let fork = right_repo
         .fork(
             left.metadata().clone(),

@@ -9,9 +9,14 @@
 
 use crate::keybindings::get_keybindings;
 use crate::keys::decode_kitty_printable;
-use crate::tui::{Component, Focusable, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType, CURSOR_MARKER};
-use crate::utils::{graphemes, is_whitespace_char, slice_by_column, truncate_to_width, visible_width};
-use crate::word_navigation::{find_word_backward, find_word_forward, WordNavigationOptions};
+use crate::tui::{
+    CURSOR_MARKER, Component, Focusable, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult,
+    TuiMouseEventType,
+};
+use crate::utils::{
+    graphemes, is_whitespace_char, slice_by_column, truncate_to_width, visible_width,
+};
+use crate::word_navigation::{WordNavigationOptions, find_word_backward, find_word_forward};
 
 #[derive(Clone)]
 struct InputState {
@@ -63,7 +68,9 @@ impl Input {
             cursor: 0,
             prompt: options.prompt.unwrap_or_else(|| "> ".to_string()),
             placeholder: options.placeholder.unwrap_or_default(),
-            placeholder_style: options.placeholder_style.unwrap_or_else(|| std::rc::Rc::new(|s: &str| s.to_string())),
+            placeholder_style: options
+                .placeholder_style
+                .unwrap_or_else(|| std::rc::Rc::new(|s: &str| s.to_string())),
             rendered_start_column: 0,
             on_submit: None,
             on_escape: None,
@@ -89,10 +96,12 @@ impl Input {
         if text.is_empty() {
             return;
         }
-        if accumulate
-            && let Some(last) = self.kill_ring.pop()
-        {
-            self.kill_ring.push(if prepend { format!("{text}{last}") } else { format!("{last}{text}") });
+        if accumulate && let Some(last) = self.kill_ring.pop() {
+            self.kill_ring.push(if prepend {
+                format!("{text}{last}")
+            } else {
+                format!("{last}{text}")
+            });
             return;
         }
         self.kill_ring.push(text.to_string());
@@ -276,7 +285,8 @@ impl Input {
             self.push_undo();
             let before_cursor = &self.value[..self.cursor];
             let grapheme_length = Self::last_grapheme_len(before_cursor);
-            self.value.replace_range(self.cursor - grapheme_length..self.cursor, "");
+            self.value
+                .replace_range(self.cursor - grapheme_length..self.cursor, "");
             self.cursor -= grapheme_length;
         }
     }
@@ -287,7 +297,8 @@ impl Input {
             self.push_undo();
             let after_cursor = &self.value[self.cursor..];
             let grapheme_length = Self::first_grapheme_len(after_cursor);
-            self.value.replace_range(self.cursor..self.cursor + grapheme_length, "");
+            self.value
+                .replace_range(self.cursor..self.cursor + grapheme_length, "");
         }
     }
 
@@ -365,7 +376,8 @@ impl Input {
         }
         self.push_undo();
         let prev_text = self.kill_ring_peek().unwrap_or("").to_string();
-        self.value.replace_range(self.cursor - prev_text.len()..self.cursor, "");
+        self.value
+            .replace_range(self.cursor - prev_text.len()..self.cursor, "");
         self.cursor -= prev_text.len();
         self.kill_ring_rotate();
         let text = self.kill_ring_peek().unwrap_or("").to_string();
@@ -375,7 +387,10 @@ impl Input {
     }
 
     fn push_undo(&mut self) {
-        self.undo_stack.push(InputState { value: self.value.clone(), cursor: self.cursor });
+        self.undo_stack.push(InputState {
+            value: self.value.clone(),
+            cursor: self.cursor,
+        });
     }
 
     fn undo(&mut self) {
@@ -392,7 +407,8 @@ impl Input {
             return;
         }
         self.last_action = None;
-        self.cursor = find_word_backward(&self.value, self.cursor, &WordNavigationOptions::default());
+        self.cursor =
+            find_word_backward(&self.value, self.cursor, &WordNavigationOptions::default());
     }
 
     fn move_word_forwards(&mut self) {
@@ -400,7 +416,8 @@ impl Input {
             return;
         }
         self.last_action = None;
-        self.cursor = find_word_forward(&self.value, self.cursor, &WordNavigationOptions::default());
+        self.cursor =
+            find_word_forward(&self.value, self.cursor, &WordNavigationOptions::default());
     }
 
     fn handle_paste(&mut self, pasted_text: &str) {
@@ -432,7 +449,10 @@ impl Component for Input {
     }
 
     fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {
-        if event.event_type != TuiMouseEventType::Press || event.button != TuiMouseButton::Left || event.y != 0 {
+        if event.event_type != TuiMouseEventType::Press
+            || event.button != TuiMouseButton::Left
+            || event.y != 0
+        {
             return None;
         }
         let visible_column = (event.x - visible_width(&self.prompt) as i64).max(0) as usize;
@@ -449,7 +469,12 @@ impl Component for Input {
             current_column = next_column;
         }
         self.last_action = None;
-        Some(TuiMouseEventResult { handled: true, capture: false, focus: true, render: None })
+        Some(TuiMouseEventResult {
+            handled: true,
+            capture: false,
+            focus: true,
+            render: None,
+        })
     }
 
     fn focusable_get(&self) -> Option<bool> {
@@ -475,8 +500,12 @@ impl Component for Input {
             let after_cursor = placeholder[at_cursor.len()..].to_string();
             let marker = if self.focused { CURSOR_MARKER } else { "" };
             let cursor_char = format!("\x1b[7m{}\x1b[27m", (self.placeholder_style)(&at_cursor));
-            let text_with_cursor = format!("{marker}{cursor_char}{}", (self.placeholder_style)(&after_cursor));
-            let padding = " ".repeat(available_width.saturating_sub(visible_width(&text_with_cursor)));
+            let text_with_cursor = format!(
+                "{marker}{cursor_char}{}",
+                (self.placeholder_style)(&after_cursor)
+            );
+            let padding =
+                " ".repeat(available_width.saturating_sub(visible_width(&text_with_cursor)));
             return vec![format!("{}{text_with_cursor}{padding}", self.prompt)];
         }
 
@@ -489,7 +518,11 @@ impl Component for Input {
             visible_text = self.value.clone();
             cursor_display = self.cursor;
         } else {
-            let scroll_width = if self.cursor == self.value.len() { available_width.saturating_sub(1) } else { available_width };
+            let scroll_width = if self.cursor == self.value.len() {
+                available_width.saturating_sub(1)
+            } else {
+                available_width
+            };
             let cursor_col = visible_width(&self.value[..self.cursor]);
 
             if scroll_width > 0 {
@@ -503,7 +536,12 @@ impl Component for Input {
                 };
                 self.rendered_start_column = start_col;
                 visible_text = slice_by_column(&self.value, start_col, scroll_width, true);
-                let before_cursor = slice_by_column(&self.value, start_col, cursor_col.saturating_sub(start_col), true);
+                let before_cursor = slice_by_column(
+                    &self.value,
+                    start_col,
+                    cursor_col.saturating_sub(start_col),
+                    true,
+                );
                 cursor_display = before_cursor.len();
             } else {
                 visible_text = String::new();
@@ -514,9 +552,13 @@ impl Component for Input {
         if cursor_display > visible_text.len() {
             cursor_display = visible_text.len();
         }
-        let at_cursor = graphemes(&visible_text[cursor_display..]).next().unwrap_or(" ").to_string();
+        let at_cursor = graphemes(&visible_text[cursor_display..])
+            .next()
+            .unwrap_or(" ")
+            .to_string();
         let before_cursor = visible_text[..cursor_display].to_string();
-        let after_cursor = visible_text[(cursor_display + at_cursor.len()).min(visible_text.len())..].to_string();
+        let after_cursor =
+            visible_text[(cursor_display + at_cursor.len()).min(visible_text.len())..].to_string();
         let _ = &mut visible_text;
 
         let marker = if self.focused { CURSOR_MARKER } else { "" };

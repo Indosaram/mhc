@@ -23,12 +23,32 @@ pub const AGGREGATE_MESSAGE_TYPE: &str = "workpool-aggregate";
 /// Observable engine events (used for notices and by tests to await exact state changes).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PoolEvent {
-    Dispatched { pool_id: String, item_id: String, task_id: String, run_epoch: u64 },
-    RunEnded { pool_id: String, task_id: String },
-    AggregateAccepted { pool_id: String, generation: u64 },
-    AggregateDelivered { pool_id: String, generation: u64 },
-    AggregateFailed { pool_id: String, generation: u64, reason: String },
-    Released { session: String },
+    Dispatched {
+        pool_id: String,
+        item_id: String,
+        task_id: String,
+        run_epoch: u64,
+    },
+    RunEnded {
+        pool_id: String,
+        task_id: String,
+    },
+    AggregateAccepted {
+        pool_id: String,
+        generation: u64,
+    },
+    AggregateDelivered {
+        pool_id: String,
+        generation: u64,
+    },
+    AggregateFailed {
+        pool_id: String,
+        generation: u64,
+        reason: String,
+    },
+    Released {
+        session: String,
+    },
 }
 
 /// Validated `create` input.
@@ -76,18 +96,25 @@ pub struct PoolEngine {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn spawn_detached(future: BoxFuture<()>) {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => drop(handle.spawn(future)),
         Err(_) => {
-            let spawned = std::thread::Builder::new().name("workpool-watch".into()).spawn(move || {
-                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    runtime.block_on(future);
-                }
-            });
+            let spawned = std::thread::Builder::new()
+                .name("workpool-watch".into())
+                .spawn(move || {
+                    if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        runtime.block_on(future);
+                    }
+                });
             if let Err(error) = spawned {
                 maho_ext_api::diagnostic(&format!("workpool: cannot watch a worker run: {error}"));
             }
@@ -102,7 +129,10 @@ fn not_found(pool_id: &str) -> PoolError {
 fn nonblank(value: &str, what: &str) -> Result<String, PoolError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        Err(PoolError::new(codes::INVALID_INPUT, format!("{what} must not be blank")))
+        Err(PoolError::new(
+            codes::INVALID_INPUT,
+            format!("{what} must not be blank"),
+        ))
     } else {
         Ok(trimmed.to_owned())
     }
@@ -115,12 +145,20 @@ fn nonblank(value: &str, what: &str) -> Result<String, PoolError> {
 pub fn normalize_agent(agent: &AgentSpec) -> Result<AgentSpec, PoolError> {
     let model = |m: &Option<String>| m.as_deref().map(|m| nonblank(m, "agent.model")).transpose();
     Ok(match agent {
-        AgentSpec::Category { category, prompt, model: m } => AgentSpec::Category {
+        AgentSpec::Category {
+            category,
+            prompt,
+            model: m,
+        } => AgentSpec::Category {
             category: nonblank(category, "agent.category")?,
             prompt: nonblank(prompt, "agent.prompt")?,
             model: model(m)?,
         },
-        AgentSpec::Subagent { subagent_type, prompt, model: m } => AgentSpec::Subagent {
+        AgentSpec::Subagent {
+            subagent_type,
+            prompt,
+            model: m,
+        } => AgentSpec::Subagent {
             subagent_type: nonblank(subagent_type, "agent.subagent_type")?,
             prompt: nonblank(prompt, "agent.prompt")?,
             model: model(m)?,
@@ -136,7 +174,11 @@ pub fn choose_idle(workers: &[PoolWorker]) -> Option<usize> {
         .enumerate()
         .filter(|(_, w)| w.status == WorkerStatus::Idle && !w.retired)
         .min_by(|(_, a), (_, b)| {
-            (a.completed_turns, a.idle_since, &a.task_id).cmp(&(b.completed_turns, b.idle_since, &b.task_id))
+            (a.completed_turns, a.idle_since, &a.task_id).cmp(&(
+                b.completed_turns,
+                b.idle_since,
+                &b.task_id,
+            ))
         })
         .map(|(index, _)| index)
 }
@@ -164,11 +206,20 @@ pub fn aggregate_results(record: &PoolRecord) -> Vec<Value> {
 /// A validated yield entry: `(key, {data} | {error})`.
 fn parse_result(entry: &Value) -> Result<(String, Value), (Option<String>, String)> {
     let key_of = |entry: &Value| {
-        entry.get("key").and_then(Value::as_str).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned)
+        entry
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_owned)
     };
     let fail = |message: &str| Err((key_of(entry), message.to_owned()));
-    let Some(object) = entry.as_object() else { return fail("a result must be an object") };
-    let Some(key) = key_of(entry) else { return fail("result.key must be a non-blank string") };
+    let Some(object) = entry.as_object() else {
+        return fail("a result must be an object");
+    };
+    let Some(key) = key_of(entry) else {
+        return fail("result.key must be a non-blank string");
+    };
     if object.len() != 2 {
         return fail("a result has exactly two fields: key and data, or key and error");
     }
@@ -179,10 +230,17 @@ fn parse_result(entry: &Value) -> Result<(String, Value), (Option<String>, Strin
         return fail("a result has exactly two fields: key and data, or key and error");
     };
     let text = |name: &str| {
-        error.get(name).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+        error
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
     };
     match (error.len(), text("code"), text("message")) {
-        (2, Some(code), Some(message)) => Ok((key, json!({"error": {"code": code, "message": message}}))),
+        (2, Some(code), Some(message)) => {
+            Ok((key, json!({"error": {"code": code, "message": message}})))
+        }
         _ => fail("result.error has exactly two non-blank string fields: code and message"),
     }
 }
@@ -193,15 +251,28 @@ fn apply_result(item: &mut PoolItem, result: &Value) {
         item.data = Some(data.clone());
         item.error = None;
     } else if let Some(error) = result.get("error") {
-        let field = |name: &str| error.get(name).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let field = |name: &str| {
+            error
+                .get(name)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
         item.status = ItemStatus::Error;
         item.data = None;
-        item.error = Some(ItemError { code: field("code"), message: field("message") });
+        item.error = Some(ItemError {
+            code: field("code"),
+            message: field("message"),
+        });
     }
 }
 
 fn is_uncertain(item: &PoolItem) -> bool {
-    item.status == ItemStatus::Error && item.error.as_ref().is_some_and(|e| e.code == codes::DELIVERY_UNCERTAIN)
+    item.status == ItemStatus::Error
+        && item
+            .error
+            .as_ref()
+            .is_some_and(|e| e.code == codes::DELIVERY_UNCERTAIN)
 }
 
 fn receipt(kind: &str, key: &str, item_id: &str) -> Value {
@@ -257,9 +328,16 @@ impl PoolEngine {
     }
 
     fn load_owned(&self, session: &str, pool_id: &str) -> Result<PoolRecord, PoolError> {
-        let record = self.inner.store.load(pool_id)?.ok_or_else(|| not_found(pool_id))?;
+        let record = self
+            .inner
+            .store
+            .load(pool_id)?
+            .ok_or_else(|| not_found(pool_id))?;
         if record.parent_session != session {
-            return Err(PoolError::new(codes::SCOPE_DENIED, "the pool belongs to another session"));
+            return Err(PoolError::new(
+                codes::SCOPE_DENIED,
+                "the pool belongs to another session",
+            ));
         }
         Ok(record)
     }
@@ -285,7 +363,10 @@ impl PoolEngine {
     /// `invalid_input`, `policy_denied`, `admission_refused`, `kernel_tool_missing`,
     /// `tool_name_collision`, `pool_name_conflict`, `store_corrupt`.
     pub fn create(&self, session: &str, request: &CreateRequest) -> Result<PoolRecord, PoolError> {
-        let host = self.inner.host.as_ref().ok_or_else(|| PoolError::new(codes::SCOPE_DENIED, "workers cannot create pools"))?;
+        let host =
+            self.inner.host.as_ref().ok_or_else(|| {
+                PoolError::new(codes::SCOPE_DENIED, "workers cannot create pools")
+            })?;
         let name = nonblank(&request.name, "name")?;
         let agent = normalize_agent(&request.agent)?;
         let mut tools = BTreeSet::new();
@@ -293,19 +374,31 @@ impl PoolEngine {
             tools.insert(nonblank(tool, "tools[]")?);
         }
         let tools: Vec<String> = tools.into_iter().collect();
-        host.check_policy(&agent).map_err(|message| PoolError::new(codes::POLICY_DENIED, message))?;
-        let resolved = host.resolve(&agent).map_err(|message| PoolError::new(codes::ADMISSION_REFUSED, message))?;
+        host.check_policy(&agent)
+            .map_err(|message| PoolError::new(codes::POLICY_DENIED, message))?;
+        let resolved = host
+            .resolve(&agent)
+            .map_err(|message| PoolError::new(codes::ADMISSION_REFUSED, message))?;
         if !tools.is_empty() {
             let catalog = host.tool_catalog(&agent);
             for tool in &tools {
                 if tool == crate::tool::TOOL_NAME || catalog.worker.contains(tool) {
-                    return Err(PoolError::new(codes::TOOL_NAME_COLLISION, format!("the worker already has a tool named {tool}")));
+                    return Err(PoolError::new(
+                        codes::TOOL_NAME_COLLISION,
+                        format!("the worker already has a tool named {tool}"),
+                    ));
                 }
                 if !catalog.parent.contains(tool) {
-                    return Err(PoolError::new(codes::KERNEL_TOOL_MISSING, format!("no tool named {tool} in this session")));
+                    return Err(PoolError::new(
+                        codes::KERNEL_TOOL_MISSING,
+                        format!("no tool named {tool} in this session"),
+                    ));
                 }
                 if catalog.denied.contains(tool) {
-                    return Err(PoolError::new(codes::POLICY_DENIED, format!("the worker's tool policy denies {tool}")));
+                    return Err(PoolError::new(
+                        codes::POLICY_DENIED,
+                        format!("the worker's tool policy denies {tool}"),
+                    ));
                 }
             }
         }
@@ -323,7 +416,12 @@ impl PoolEngine {
             {
                 return Ok(existing);
             }
-            return Err(PoolError::new(codes::POOL_NAME_CONFLICT, format!("a pool named {name} already exists with a different configuration or is no longer open")));
+            return Err(PoolError::new(
+                codes::POOL_NAME_CONFLICT,
+                format!(
+                    "a pool named {name} already exists with a different configuration or is no longer open"
+                ),
+            ));
         }
         let record = PoolRecord {
             pool_id: new_pool_id(),
@@ -349,12 +447,20 @@ impl PoolEngine {
     /// # Errors
     /// `invalid_input`, `pool_not_found`, `scope_denied`, `pool_closed`,
     /// `duplicate_key_conflict`, `store_corrupt`.
-    pub fn push(&self, session: &str, pool_id: &str, items: Vec<(String, Value)>) -> Result<Vec<(String, String)>, PoolError> {
+    pub fn push(
+        &self,
+        session: &str,
+        pool_id: &str,
+        items: Vec<(String, Value)>,
+    ) -> Result<Vec<(String, String)>, PoolError> {
         let ids = {
             let _io = lock(&self.inner.io);
             let mut record = self.load_owned(session, pool_id)?;
             if record.status != PoolStatus::Open {
-                return Err(PoolError::new(codes::POOL_CLOSED, format!("pool {pool_id} is {}", record.status.as_str())));
+                return Err(PoolError::new(
+                    codes::POOL_CLOSED,
+                    format!("pool {pool_id} is {}", record.status.as_str()),
+                ));
             }
             let mut known: HashMap<String, (String, String)> = record
                 .items
@@ -368,7 +474,10 @@ impl PoolEngine {
                 let text = canonical(&input);
                 if let Some((item_id, existing)) = known.get(&key) {
                     if *existing != text {
-                        return Err(PoolError::new(codes::DUPLICATE_KEY_CONFLICT, format!("key {key} is already in the pool with different input")));
+                        return Err(PoolError::new(
+                            codes::DUPLICATE_KEY_CONFLICT,
+                            format!("key {key} is already in the pool with different input"),
+                        ));
                     }
                     ids.push((key, item_id.clone()));
                     continue;
@@ -376,7 +485,15 @@ impl PoolEngine {
                 let item_id = new_item_id();
                 known.insert(key.clone(), (item_id.clone(), text));
                 ids.push((key.clone(), item_id.clone()));
-                added.push(PoolItem { key, input, item_id, status: ItemStatus::Queued, data: None, error: None, binding: None });
+                added.push(PoolItem {
+                    key,
+                    input,
+                    item_id,
+                    status: ItemStatus::Queued,
+                    data: None,
+                    error: None,
+                    binding: None,
+                });
             }
             if !added.is_empty() {
                 record.items.extend(added);
@@ -467,7 +584,11 @@ impl PoolEngine {
     /// Applies logged yields of every worker to items still waiting for them. Returns whether
     /// the record changed.
     fn fold_logs(&self, record: &mut PoolRecord) -> bool {
-        let delivered_gen = record.aggregate.as_ref().filter(|a| a.accepted || a.delivered).map(|a| a.generation);
+        let delivered_gen = record
+            .aggregate
+            .as_ref()
+            .filter(|a| a.accepted || a.delivered)
+            .map(|a| a.generation);
         let mut changed = false;
         let tasks: Vec<String> = record.workers.iter().map(|w| w.task_id.clone()).collect();
         for task_id in tasks {
@@ -475,7 +596,10 @@ impl PoolEngine {
                 if event.pool_id != record.pool_id || event.generation != record.generation {
                     continue;
                 }
-                let Some(item) = record.items.iter_mut().find(|i| i.item_id == event.item_id) else { continue };
+                let Some(item) = record.items.iter_mut().find(|i| i.item_id == event.item_id)
+                else {
+                    continue;
+                };
                 let bound = item.binding.as_ref().is_some_and(|b| {
                     (b.task_id == event.task_id || (b.task_id.is_empty() && b.run_epoch == 1))
                         && b.run_epoch == event.run_epoch
@@ -496,40 +620,85 @@ impl PoolEngine {
     ///
     /// # Errors
     /// `pool_not_found`, `worker_unassigned`, `stale_assignment`, `store_corrupt`.
-    pub fn yield_results(&self, pool_id: &str, task_id: &str, results: &[Value]) -> Result<Vec<Value>, PoolError> {
+    pub fn yield_results(
+        &self,
+        pool_id: &str,
+        task_id: &str,
+        results: &[Value],
+    ) -> Result<Vec<Value>, PoolError> {
         let owner = self.inner.host.is_some();
         let receipts = {
             let _io = lock(&self.inner.io);
-            let mut record = self.inner.store.load(pool_id)?.ok_or_else(|| not_found(pool_id))?;
+            let mut record = self
+                .inner
+                .store
+                .load(pool_id)?
+                .ok_or_else(|| not_found(pool_id))?;
             let mut changed = owner && self.fold_logs(&mut record);
             if record.status == PoolStatus::Cancelled {
                 if changed {
                     self.commit(&mut record)?;
                 }
-                return Err(PoolError::new(codes::STALE_ASSIGNMENT, "the pool was cancelled"));
+                return Err(PoolError::new(
+                    codes::STALE_ASSIGNMENT,
+                    "the pool was cancelled",
+                ));
             }
             // A worker whose start is still being committed by the owner yields against the
             // pending (empty-task) binding of run epoch 1.
             let pending = |b: &Binding| b.task_id.is_empty() && b.run_epoch == 1;
             let run_epoch = match record.worker(task_id) {
                 Some(worker) => worker.run_epoch,
-                None if record.items.iter().any(|i| i.binding.as_ref().is_some_and(pending)) => 1,
-                None => return Err(PoolError::new(codes::WORKER_UNASSIGNED, "this session has no work pool assignment")),
+                None if record
+                    .items
+                    .iter()
+                    .any(|i| i.binding.as_ref().is_some_and(pending)) =>
+                {
+                    1
+                }
+                None => {
+                    return Err(PoolError::new(
+                        codes::WORKER_UNASSIGNED,
+                        "this session has no work pool assignment",
+                    ));
+                }
             };
             let generation = record.generation;
-            let current = |b: &Binding| (b.task_id == task_id || pending(b)) && b.run_epoch == run_epoch && b.generation == generation;
-            if !record.items.iter().any(|i| i.binding.as_ref().is_some_and(|b| b.task_id == task_id || pending(b))) {
-                return Err(PoolError::new(codes::WORKER_UNASSIGNED, "this worker has no assignment"));
+            let current = |b: &Binding| {
+                (b.task_id == task_id || pending(b))
+                    && b.run_epoch == run_epoch
+                    && b.generation == generation
+            };
+            if !record.items.iter().any(|i| {
+                i.binding
+                    .as_ref()
+                    .is_some_and(|b| b.task_id == task_id || pending(b))
+            }) {
+                return Err(PoolError::new(
+                    codes::WORKER_UNASSIGNED,
+                    "this worker has no assignment",
+                ));
             }
-            if !record.items.iter().any(|i| i.binding.as_ref().is_some_and(current)) {
-                return Err(PoolError::new(codes::STALE_ASSIGNMENT, "this worker's assignment belongs to an earlier run or generation"));
+            if !record
+                .items
+                .iter()
+                .any(|i| i.binding.as_ref().is_some_and(current))
+            {
+                return Err(PoolError::new(
+                    codes::STALE_ASSIGNMENT,
+                    "this worker's assignment belongs to an earlier run or generation",
+                ));
             }
             let mut logged: HashMap<String, Value> = self
                 .inner
                 .store
                 .events(task_id)
                 .into_iter()
-                .filter(|e| e.pool_id == record.pool_id && e.generation == generation && e.run_epoch == run_epoch)
+                .filter(|e| {
+                    e.pool_id == record.pool_id
+                        && e.generation == generation
+                        && e.run_epoch == run_epoch
+                })
                 .map(|e| (e.item_id, e.result))
                 .collect();
             let mut receipts = Vec::new();
@@ -542,7 +711,11 @@ impl PoolEngine {
                     }
                 };
                 let Some(index) = record.items.iter().position(|i| i.key == key) else {
-                    receipts.push(refused(Some(&key), codes::STALE_ASSIGNMENT, "this key is not assigned to this run"));
+                    receipts.push(refused(
+                        Some(&key),
+                        codes::STALE_ASSIGNMENT,
+                        "this key is not assigned to this run",
+                    ));
                     continue;
                 };
                 let item_id = record.items[index].item_id.clone();
@@ -551,7 +724,11 @@ impl PoolEngine {
                     if canonical(previous) == canonical(&result) {
                         receipts.push(receipt("duplicate", &key, &item_id));
                     } else {
-                        receipts.push(refused(Some(&key), codes::YIELD_CONFLICT, "this key was already reported with a different result"));
+                        receipts.push(refused(
+                            Some(&key),
+                            codes::YIELD_CONFLICT,
+                            "this key was already reported with a different result",
+                        ));
                     }
                     continue;
                 }
@@ -559,7 +736,11 @@ impl PoolEngine {
                 let assignable = item.binding.as_ref().is_some_and(current)
                     && (item.status == ItemStatus::Assigned || is_uncertain(item));
                 if !assignable {
-                    receipts.push(refused(Some(&key), codes::STALE_ASSIGNMENT, "this key is not assigned to this run"));
+                    receipts.push(refused(
+                        Some(&key),
+                        codes::STALE_ASSIGNMENT,
+                        "this key is not assigned to this run",
+                    ));
                     continue;
                 }
                 let event = YieldEvent {
@@ -597,7 +778,9 @@ impl PoolEngine {
 
     /// Dispatches queued items of `pool_id` while workers or slots are available.
     pub fn pump(&self, pool_id: &str) {
-        let Some(host) = self.inner.host.clone() else { return };
+        let Some(host) = self.inner.host.clone() else {
+            return;
+        };
         loop {
             let mut events = Vec::new();
             let progressed = {
@@ -613,15 +796,28 @@ impl PoolEngine {
     }
 
     /// One dispatch step under the lock; returns whether another step may make progress.
-    fn dispatch_one(&self, host: &Arc<dyn WorkerHost>, pool_id: &str, events: &mut Vec<PoolEvent>) -> bool {
+    fn dispatch_one(
+        &self,
+        host: &Arc<dyn WorkerHost>,
+        pool_id: &str,
+        events: &mut Vec<PoolEvent>,
+    ) -> bool {
         if self.is_stopped() {
             return false;
         }
-        let Ok(Some(mut record)) = self.inner.store.load(pool_id) else { return false };
+        let Ok(Some(mut record)) = self.inner.store.load(pool_id) else {
+            return false;
+        };
         if record.status == PoolStatus::Cancelled || self.is_held(&record.parent_session) {
             return false;
         }
-        let Some(index) = record.items.iter().position(|i| i.status == ItemStatus::Queued) else { return false };
+        let Some(index) = record
+            .items
+            .iter()
+            .position(|i| i.status == ItemStatus::Queued)
+        else {
+            return false;
+        };
         let generation = record.generation;
         if record.mode == PoolMode::KeepAlive
             && let Some(w) = choose_idle(&record.workers)
@@ -631,7 +827,12 @@ impl PoolEngine {
             record.workers[w].run_epoch = run_epoch;
             record.workers[w].status = WorkerStatus::Busy;
             record.items[index].status = ItemStatus::Assigned;
-            record.items[index].binding = Some(Binding { task_id: task_id.clone(), run_epoch, generation, delivered: false });
+            record.items[index].binding = Some(Binding {
+                task_id: task_id.clone(),
+                run_epoch,
+                generation,
+                delivered: false,
+            });
             if self.commit(&mut record).is_err() {
                 return false;
             }
@@ -645,7 +846,12 @@ impl PoolEngine {
                     if self.commit(&mut record).is_err() {
                         return false;
                     }
-                    events.push(PoolEvent::Dispatched { pool_id: pool_id.to_owned(), item_id, task_id: task_id.clone(), run_epoch });
+                    events.push(PoolEvent::Dispatched {
+                        pool_id: pool_id.to_owned(),
+                        item_id,
+                        task_id: task_id.clone(),
+                        run_epoch,
+                    });
                     self.watch(pool_id, &task_id);
                 }
                 Err(error) => {
@@ -663,13 +869,21 @@ impl PoolEngine {
             return false;
         }
         if !record.tools.is_empty() && !host.tools_available(&record.tools) {
-            record.items[index].fail(codes::TOOLS_UNAVAILABLE, "the session that provides this pool's extra tools is gone");
+            record.items[index].fail(
+                codes::TOOLS_UNAVAILABLE,
+                "the session that provides this pool's extra tools is gone",
+            );
             return self.commit(&mut record).is_ok();
         }
         // Persist the intent first: a crash before the host answers leaves an empty binding,
         // which the next reattach marks `delivery_uncertain`.
         record.items[index].status = ItemStatus::Assigned;
-        record.items[index].binding = Some(Binding { task_id: String::new(), run_epoch: 1, generation, delivered: false });
+        record.items[index].binding = Some(Binding {
+            task_id: String::new(),
+            run_epoch: 1,
+            generation,
+            delivered: false,
+        });
         if self.commit(&mut record).is_err() {
             return false;
         }
@@ -692,12 +906,22 @@ impl PoolEngine {
                     session_id: started.session_id,
                     retired: false,
                 });
-                record.items[index].binding = Some(Binding { task_id: started.task_id.clone(), run_epoch: 1, generation, delivered: true });
+                record.items[index].binding = Some(Binding {
+                    task_id: started.task_id.clone(),
+                    run_epoch: 1,
+                    generation,
+                    delivered: true,
+                });
                 let item_id = record.items[index].item_id.clone();
                 if self.commit(&mut record).is_err() {
                     return false;
                 }
-                events.push(PoolEvent::Dispatched { pool_id: pool_id.to_owned(), item_id, task_id: started.task_id.clone(), run_epoch: 1 });
+                events.push(PoolEvent::Dispatched {
+                    pool_id: pool_id.to_owned(),
+                    item_id,
+                    task_id: started.task_id.clone(),
+                    run_epoch: 1,
+                });
                 self.watch(pool_id, &started.task_id);
             }
             Err(error) => {
@@ -713,7 +937,10 @@ impl PoolEngine {
 
     fn watch(&self, pool_id: &str, task_id: &str) {
         let Some(host) = &self.inner.host else { return };
-        if !lock(&self.inner.runtime).watching.insert(task_id.to_owned()) {
+        if !lock(&self.inner.runtime)
+            .watching
+            .insert(task_id.to_owned())
+        {
             return;
         }
         let wait = host.wait_run(task_id);
@@ -742,14 +969,19 @@ impl PoolEngine {
                 }
             }
         }
-        self.emit(vec![PoolEvent::RunEnded { pool_id: pool_id.to_owned(), task_id: task_id.to_owned() }]);
+        self.emit(vec![PoolEvent::RunEnded {
+            pool_id: pool_id.to_owned(),
+            task_id: task_id.to_owned(),
+        }]);
         self.pump(pool_id);
     }
 
     fn end_run(record: &mut PoolRecord, task_id: &str) {
         let generation = record.generation;
         let mode = record.mode;
-        let Some(worker) = record.worker_mut(task_id) else { return };
+        let Some(worker) = record.worker_mut(task_id) else {
+            return;
+        };
         let epoch = worker.run_epoch;
         if worker.status != WorkerStatus::Idle {
             worker.status = WorkerStatus::Idle;
@@ -760,14 +992,26 @@ impl PoolEngine {
             worker.retired = true;
         }
         for item in &mut record.items {
-            let Some(binding) = &item.binding else { continue };
-            if item.status != ItemStatus::Assigned || binding.task_id != task_id || binding.run_epoch != epoch || binding.generation != generation {
+            let Some(binding) = &item.binding else {
+                continue;
+            };
+            if item.status != ItemStatus::Assigned
+                || binding.task_id != task_id
+                || binding.run_epoch != epoch
+                || binding.generation != generation
+            {
                 continue;
             }
             if binding.delivered {
-                item.fail(codes::ITEM_MISSING_YIELD, "the worker's run ended without reporting this key");
+                item.fail(
+                    codes::ITEM_MISSING_YIELD,
+                    "the worker's run ended without reporting this key",
+                );
             } else {
-                item.fail(codes::DELIVERY_UNCERTAIN, "it is unknown whether the assignment reached the worker");
+                item.fail(
+                    codes::DELIVERY_UNCERTAIN,
+                    "it is unknown whether the assignment reached the worker",
+                );
             }
         }
     }
@@ -775,21 +1019,29 @@ impl PoolEngine {
     // ---- aggregate ----------------------------------------------------------------------------
 
     fn maybe_deliver(&self, pool_id: &str, flush: Flush) {
-        let Some(host) = self.inner.host.clone() else { return };
+        let Some(host) = self.inner.host.clone() else {
+            return;
+        };
         let (session, generation, results) = {
             let _io = lock(&self.inner.io);
             if self.is_stopped() {
                 return;
             }
-            let Ok(Some(mut record)) = self.inner.store.load(pool_id) else { return };
+            let Ok(Some(mut record)) = self.inner.store.load(pool_id) else {
+                return;
+            };
             let folded = self.fold_logs(&mut record);
-            let ready = record.status == PoolStatus::Closing && record.all_terminal() && !self.is_held(&record.parent_session);
+            let ready = record.status == PoolStatus::Closing
+                && record.all_terminal()
+                && !self.is_held(&record.parent_session);
             let in_flight = lock(&self.inner.runtime).in_flight.contains(pool_id);
             let send = ready
                 && !in_flight
                 && match &record.aggregate {
                     Some(a) if a.generation == record.generation && a.delivered => false,
-                    Some(a) if a.generation == record.generation && a.accepted => flush == Flush::Start,
+                    Some(a) if a.generation == record.generation && a.accepted => {
+                        flush == Flush::Start
+                    }
                     Some(a) if a.generation == record.generation => flush != Flush::Auto,
                     _ => true,
                 };
@@ -799,14 +1051,27 @@ impl PoolEngine {
                 }
                 return;
             }
-            record.aggregate = Some(AggregateState { generation: record.generation, delivered: false, accepted: true });
+            record.aggregate = Some(AggregateState {
+                generation: record.generation,
+                delivered: false,
+                accepted: true,
+            });
             if self.commit(&mut record).is_err() {
                 return;
             }
-            lock(&self.inner.runtime).in_flight.insert(pool_id.to_owned());
-            (record.parent_session.clone(), record.generation, aggregate_results(&record))
+            lock(&self.inner.runtime)
+                .in_flight
+                .insert(pool_id.to_owned());
+            (
+                record.parent_session.clone(),
+                record.generation,
+                aggregate_results(&record),
+            )
         };
-        self.emit(vec![PoolEvent::AggregateAccepted { pool_id: pool_id.to_owned(), generation }]);
+        self.emit(vec![PoolEvent::AggregateAccepted {
+            pool_id: pool_id.to_owned(),
+            generation,
+        }]);
         let text = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_owned());
         let details = json!({"pool_id": pool_id, "generation": generation, "results": results});
         let weak = Arc::downgrade(&self.inner);
@@ -820,7 +1085,13 @@ impl PoolEngine {
         host.deliver(&session, text, details, done);
     }
 
-    fn delivery_settled(&self, pool_id: &str, session: &str, generation: u64, outcome: Result<(), String>) {
+    fn delivery_settled(
+        &self,
+        pool_id: &str,
+        session: &str,
+        generation: u64,
+        outcome: Result<(), String>,
+    ) {
         lock(&self.inner.runtime).in_flight.remove(pool_id);
         {
             let _io = lock(&self.inner.io);
@@ -838,12 +1109,19 @@ impl PoolEngine {
             }
         }
         let event = match outcome {
-            Ok(()) => PoolEvent::AggregateDelivered { pool_id: pool_id.to_owned(), generation },
+            Ok(()) => PoolEvent::AggregateDelivered {
+                pool_id: pool_id.to_owned(),
+                generation,
+            },
             Err(reason) => {
                 if let Some(host) = &self.inner.host {
                     host.notice(session, &format!("workpool {pool_id}: the aggregate could not be delivered ({reason}); it is retried on the next close or session start"));
                 }
-                PoolEvent::AggregateFailed { pool_id: pool_id.to_owned(), generation, reason }
+                PoolEvent::AggregateFailed {
+                    pool_id: pool_id.to_owned(),
+                    generation,
+                    reason,
+                }
             }
         };
         self.emit(vec![event]);
@@ -853,7 +1131,9 @@ impl PoolEngine {
 
     /// Session start (spec §8): reattaches every pool owned by `session`.
     pub fn reattach(&self, session: &str) {
-        let Some(host) = self.inner.host.clone() else { return };
+        let Some(host) = self.inner.host.clone() else {
+            return;
+        };
         lock(&self.inner.runtime).stopped = false;
         let mut pools = Vec::new();
         for (pool_id, loaded) in self.inner.store.load_all() {
@@ -866,7 +1146,9 @@ impl PoolEngine {
         for pool_id in pools {
             {
                 let _io = lock(&self.inner.io);
-                let Ok(Some(mut record)) = self.inner.store.load(&pool_id) else { continue };
+                let Ok(Some(mut record)) = self.inner.store.load(&pool_id) else {
+                    continue;
+                };
                 let before = record.clone();
                 self.fold_logs(&mut record);
                 self.reconcile(&host, &mut record);
@@ -882,11 +1164,23 @@ impl PoolEngine {
     fn reconcile(&self, host: &Arc<dyn WorkerHost>, record: &mut PoolRecord) {
         let held = self.is_held(&record.parent_session);
         for item in &mut record.items {
-            if item.status == ItemStatus::Assigned && item.binding.as_ref().is_none_or(|b| b.task_id.is_empty() || !b.delivered) {
-                item.fail(codes::DELIVERY_UNCERTAIN, "the host stopped before the assignment was confirmed");
+            if item.status == ItemStatus::Assigned
+                && item
+                    .binding
+                    .as_ref()
+                    .is_none_or(|b| b.task_id.is_empty() || !b.delivered)
+            {
+                item.fail(
+                    codes::DELIVERY_UNCERTAIN,
+                    "the host stopped before the assignment was confirmed",
+                );
             }
         }
-        let tasks: Vec<(String, WorkerStatus)> = record.workers.iter().map(|w| (w.task_id.clone(), w.status)).collect();
+        let tasks: Vec<(String, WorkerStatus)> = record
+            .workers
+            .iter()
+            .map(|w| (w.task_id.clone(), w.status))
+            .collect();
         for (task_id, status) in tasks {
             if status == WorkerStatus::Idle {
                 continue;
@@ -894,7 +1188,11 @@ impl PoolEngine {
             match host.run_active(&task_id) {
                 Some(true) if record.status != PoolStatus::Cancelled => {
                     if let Some(worker) = record.worker_mut(&task_id) {
-                        worker.status = if held { WorkerStatus::Paused } else { WorkerStatus::Busy };
+                        worker.status = if held {
+                            WorkerStatus::Paused
+                        } else {
+                            WorkerStatus::Busy
+                        };
                     }
                     self.watch(&record.pool_id.clone(), &task_id);
                 }
@@ -902,7 +1200,9 @@ impl PoolEngine {
                 Some(false) => Self::end_run(record, &task_id),
                 None => {
                     for item in &mut record.items {
-                        if item.status == ItemStatus::Assigned && item.binding.as_ref().is_some_and(|b| b.task_id == task_id) {
+                        if item.status == ItemStatus::Assigned
+                            && item.binding.as_ref().is_some_and(|b| b.task_id == task_id)
+                        {
                             item.fail(codes::DELIVERY_UNCERTAIN, "the worker task is gone");
                         }
                     }
@@ -938,7 +1238,9 @@ impl PoolEngine {
             }
         }
         let pools = self.set_paused(session, false);
-        self.emit(vec![PoolEvent::Released { session: session.to_owned() }]);
+        self.emit(vec![PoolEvent::Released {
+            session: session.to_owned(),
+        }]);
         for pool_id in pools {
             self.pump(&pool_id);
         }
@@ -946,7 +1248,11 @@ impl PoolEngine {
     }
 
     fn set_paused(&self, session: &str, paused: bool) -> Vec<String> {
-        let (from, to) = if paused { (WorkerStatus::Busy, WorkerStatus::Paused) } else { (WorkerStatus::Paused, WorkerStatus::Busy) };
+        let (from, to) = if paused {
+            (WorkerStatus::Busy, WorkerStatus::Paused)
+        } else {
+            (WorkerStatus::Paused, WorkerStatus::Busy)
+        };
         let _io = lock(&self.inner.io);
         let mut pools = Vec::new();
         for (pool_id, loaded) in self.inner.store.load_all() {

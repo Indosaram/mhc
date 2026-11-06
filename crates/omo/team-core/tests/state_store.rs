@@ -303,7 +303,11 @@ fn detects_a_stale_lock_whose_owner_pid_denies_the_liveness_probe() {
         return;
     }
     let lock_path = root.path().join("lock");
-    fs::write(&lock_path, format!("other-user-owner\n1\n{}\n", now() - 600_000)).expect("lock");
+    fs::write(
+        &lock_path,
+        format!("other-user-owner\n1\n{}\n", now() - 600_000),
+    )
+    .expect("lock");
     assert!(detect_stale_lock(&lock_path, 300_000));
 }
 

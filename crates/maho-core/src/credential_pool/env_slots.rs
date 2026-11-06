@@ -15,7 +15,8 @@ pub struct EnvCredentialSlot {
 /// Anthropic maps to bearer/OAuth token vars ahead of its API-key var; numbered slots must extend
 /// the API-key lane, so the `*_API_KEY` entry wins when the canonical mapping lists several vars.
 pub fn primary_env_var(provider_id: &str) -> Option<String> {
-    if maho_ai::legacy_provider_ids::normalize_provider_id(provider_id) == "anthropic-subscription" {
+    if maho_ai::legacy_provider_ids::normalize_provider_id(provider_id) == "anthropic-subscription"
+    {
         return Some("CLAUDE_CODE_OAUTH_TOKEN".to_owned());
     }
     let env_vars = maho_ai::env_api_keys::get_api_key_env_vars(provider_id)?;
@@ -32,8 +33,13 @@ pub fn primary_env_var(provider_id: &str) -> Option<String> {
 }
 
 /// Discovers numbered env credential slots; discovery is gap-tolerant.
-pub fn discover_env_slots(provider_id: &str, env: &dyn Fn(&str) -> Option<String>) -> Vec<EnvCredentialSlot> {
-    let Some(primary) = primary_env_var(provider_id) else { return Vec::new() };
+pub fn discover_env_slots(
+    provider_id: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Vec<EnvCredentialSlot> {
+    let Some(primary) = primary_env_var(provider_id) else {
+        return Vec::new();
+    };
     let mut slots = Vec::new();
     if let Some(base) = env(&primary).filter(|value| !value.is_empty()) {
         slots.push(EnvCredentialSlot {
@@ -62,22 +68,42 @@ mod tests {
     use super::*;
 
     fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |name: &str| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
     }
 
     #[test]
     fn discovers_the_primary_and_numbered_slots_gap_tolerantly() {
-        let env = env_of(&[("ANTHROPIC_API_KEY", "base"), ("ANTHROPIC_API_KEY_3", "third")]);
+        let env = env_of(&[
+            ("ANTHROPIC_API_KEY", "base"),
+            ("ANTHROPIC_API_KEY_3", "third"),
+        ]);
         let slots = discover_env_slots("anthropic", &env);
-        assert_eq!(slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>(), vec!["env", "env-3"]);
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["env", "env-3"]
+        );
         assert_eq!(slots[1].env_var_name, "ANTHROPIC_API_KEY_3");
         assert_eq!(slots[1].key, "third");
     }
 
     #[test]
     fn prefers_the_api_key_variable_and_maps_the_subscription_provider() {
-        assert_eq!(primary_env_var("anthropic-subscription").as_deref(), Some("CLAUDE_CODE_OAUTH_TOKEN"));
-        assert_eq!(primary_env_var("anthropic").as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            primary_env_var("anthropic-subscription").as_deref(),
+            Some("CLAUDE_CODE_OAUTH_TOKEN")
+        );
+        assert_eq!(
+            primary_env_var("anthropic").as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
         assert!(discover_env_slots("not-a-provider", &env_of(&[])).is_empty());
         assert!(discover_env_slots("anthropic", &env_of(&[])).is_empty());
     }

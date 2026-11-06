@@ -1,7 +1,7 @@
 //! Goal status and completion predicates.
 
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
-use crate::paths::{ulw_loop_goals_relative_path, ulw_loop_ledger_relative_path, UlwLoopScope};
+use crate::paths::{UlwLoopScope, ulw_loop_goals_relative_path, ulw_loop_ledger_relative_path};
 
 pub const ULW_LOOP_AGGREGATE_CODEX_OBJECTIVE: &str = "Complete the durable ulw-loop plan in .omo/ulw-loop/goals.json, including later accepted/appended stories, under the original brief constraints; use .omo/ulw-loop/ledger.jsonl as the audit trail.";
 
@@ -74,21 +74,30 @@ fn is_completion_blocking_for_final_candidate(
 }
 
 pub fn is_ulw_loop_done(plan: &UlwLoopPlan) -> bool {
-    if plan.aggregate_completion.as_ref().is_some_and(|c| c.status == "complete") {
+    if plan
+        .aggregate_completion
+        .as_ref()
+        .is_some_and(|c| c.status == "complete")
+    {
         return true;
     }
-    plan.goals.iter().all(|goal| !is_completion_blocking(goal, plan))
+    plan.goals
+        .iter()
+        .all(|goal| !is_completion_blocking(goal, plan))
 }
 
 pub fn is_final_run_completion_candidate(plan: &UlwLoopPlan, goal: &UlwLoopItem) -> bool {
     is_completion_blocking(goal, plan)
-        && plan.goals.iter().all(|candidate| {
-            !is_completion_blocking_for_final_candidate(candidate, goal, plan)
-        })
+        && plan
+            .goals
+            .iter()
+            .all(|candidate| !is_completion_blocking_for_final_candidate(candidate, goal, plan))
 }
 
 pub fn aggregate_codex_objective(plan: &UlwLoopPlan) -> String {
-    plan.codex_objective.clone().unwrap_or_else(|| aggregate_codex_objective_for_scope(None))
+    plan.codex_objective
+        .clone()
+        .unwrap_or_else(|| aggregate_codex_objective_for_scope(None))
 }
 
 pub fn expected_codex_objective(plan: &UlwLoopPlan, goal: &UlwLoopItem) -> String {
@@ -108,8 +117,7 @@ pub fn compatible_codex_objectives(plan: &UlwLoopPlan) -> Vec<String> {
 }
 
 pub fn has_all_criteria_pass(goal: &UlwLoopItem) -> bool {
-    !goal.success_criteria.is_empty()
-        && goal.success_criteria.iter().all(|c| c.status == "pass")
+    !goal.success_criteria.is_empty() && goal.success_criteria.iter().all(|c| c.status == "pass")
 }
 
 pub fn is_essential_criterion(criterion: &UlwLoopSuccessCriterion) -> bool {
@@ -117,11 +125,19 @@ pub fn is_essential_criterion(criterion: &UlwLoopSuccessCriterion) -> bool {
 }
 
 pub fn essential_criteria_of(goal: &UlwLoopItem) -> Vec<&UlwLoopSuccessCriterion> {
-    let explicit: Vec<_> = goal.success_criteria.iter().filter(|c| is_essential_criterion(c)).collect();
+    let explicit: Vec<_> = goal
+        .success_criteria
+        .iter()
+        .filter(|c| is_essential_criterion(c))
+        .collect();
     if !explicit.is_empty() {
         return explicit;
     }
-    if let Some(happy) = goal.success_criteria.iter().find(|c| c.user_model == "happy") {
+    if let Some(happy) = goal
+        .success_criteria
+        .iter()
+        .find(|c| c.user_model == "happy")
+    {
         vec![happy]
     } else {
         Vec::new()

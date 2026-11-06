@@ -320,7 +320,9 @@ fn align_context_provenance(
     resolved
         .iter()
         .map(|message| {
-            let found = source[cursor..].iter().position(|candidate| candidate == message)?;
+            let found = source[cursor..]
+                .iter()
+                .position(|candidate| candidate == message)?;
             cursor += found + 1;
             provenance.get(cursor - 1).cloned().flatten()
         })
@@ -2138,7 +2140,8 @@ fn finalize_response(
                     .unwrap_or(0)
             })
             .unwrap_or(0);
-        output.usage = Usage { context_usage: None,
+        output.usage = Usage {
+            context_usage: None,
             input: field_u64(usage, "input_tokens")
                 .saturating_sub(cached_tokens)
                 .saturating_sub(cache_write_tokens),
@@ -2350,7 +2353,10 @@ mod tests {
         );
         assert_eq!(items.len(), 3);
         assert_eq!(sealed.len(), 3);
-        assert_eq!(sealed[0], None, "the system prompt item carries no provenance");
+        assert_eq!(
+            sealed[0], None,
+            "the system prompt item carries no provenance"
+        );
         let stamp = sealed[1].clone().expect("sealed provenance");
         assert_eq!(stamp["ordinal"], json!(0));
         assert_eq!(

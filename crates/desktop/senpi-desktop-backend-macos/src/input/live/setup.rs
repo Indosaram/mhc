@@ -130,7 +130,10 @@ pub(crate) fn bring_terminal_front() -> (i32, bool) {
     assert!(status.success());
     let pid = wait_for_pid("com.apple.Terminal").expect("Terminal process");
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid).unwrap();
-    #[expect(deprecated, reason = "the test forces Terminal to be the frontmost app")]
+    #[expect(
+        deprecated,
+        reason = "the test forces Terminal to be the frontmost app"
+    )]
     let options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
     assert!(app.activateWithOptions(options));
     let started = Instant::now();
@@ -146,7 +149,8 @@ pub(crate) fn bring_terminal_front() -> (i32, bool) {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    let opened_new = pid_before.is_none_or(|before| before != pid || ax_window_count(pid) > windows_before);
+    let opened_new =
+        pid_before.is_none_or(|before| before != pid || ax_window_count(pid) > windows_before);
     (pid, opened_new)
 }
 

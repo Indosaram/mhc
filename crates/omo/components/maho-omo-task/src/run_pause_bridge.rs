@@ -55,6 +55,9 @@ pub enum BridgeOutcome {
     Resumed {
         installed: bool,
         failures: usize,
+        /// The participants that stayed outside custody, so the wiring can name them and give them
+        /// an explicit state instead of leaving them silently paused.
+        failed_keys: Vec<String>,
     },
     /// The Resume named a sequence the run is no longer stopped at.
     StaleResume,
@@ -133,18 +136,20 @@ impl EngineRunPauseBridge {
                             &request.resume_id,
                         );
                         // A Resume that installed but never released admission is retried as lost.
-                        let failures = if released {
-                            failures.len()
-                        } else {
-                            failures.len()
-                                + self
-                                    .engine
+                        let mut failed_keys: Vec<String> =
+                            failures.iter().map(|failure| failure.key.clone()).collect();
+                        if !released {
+                            failed_keys.extend(
+                                self.engine
                                     .retry_lost(parent_session_id, request.pause_seq)
-                                    .len()
-                        };
+                                    .into_iter()
+                                    .map(|failure| failure.key),
+                            );
+                        }
                         BridgeOutcome::Resumed {
                             installed: released,
-                            failures,
+                            failures: failed_keys.len(),
+                            failed_keys,
                         }
                     }
                     Ok(senpi_task::pause::run_controller::RunResumeResult::Superseded) => {
@@ -216,7 +221,12 @@ pub fn wire_run_pause_bridge(
 }
 
 /// The credential a resumed run presents; named here so the wiring and the bridge agree.
-pub fn resume_credential(barrier: &senpi_task::pause::admission_barrier::AdmissionBarrier, parent: &str, pause_seq: u64, resume_id: &str) -> Result<ResumeCredential, senpi_task::pause::admission_barrier::AdmissionBarrierError> {
+pub fn resume_credential(
+    barrier: &senpi_task::pause::admission_barrier::AdmissionBarrier,
+    parent: &str,
+    pause_seq: u64,
+    resume_id: &str,
+) -> Result<ResumeCredential, senpi_task::pause::admission_barrier::AdmissionBarrierError> {
     barrier.resume(parent, pause_seq, resume_id)
 }
 

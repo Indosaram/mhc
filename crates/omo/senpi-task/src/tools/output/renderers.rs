@@ -107,7 +107,8 @@ fn task_output_call_line(args: &TaskOutputInput, width: usize) -> String {
     });
     let before_target = "task_output target:";
     let mode_token = format!("mode:{mode}");
-    let after_target = join_renderer_tokens(&[Some(mode_token.as_str()), Some("peek"), tail.as_deref()]);
+    let after_target =
+        join_renderer_tokens(&[Some(mode_token.as_str()), Some("peek"), tail.as_deref()]);
     let available = TARGET_EXCERPT_MAX.min(
         width
             .saturating_sub(renderer_visible_width(before_target))

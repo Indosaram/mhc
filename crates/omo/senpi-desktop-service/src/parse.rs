@@ -4,8 +4,8 @@
 use senpi_desktop_core::error::{ErrorCode, PermissionDeniedData, TccPermission};
 use senpi_desktop_core::protocol::MethodRejection;
 use senpi_desktop_protocol::{
-    AuditEvent, DesktopCapabilities, EngineErrorData, JsonRpcErrorData, MethodRejectionData,
-    StopPathStatus, ENGINE_METHODS, UNKNOWN_AUDIT_VALUE,
+    AuditEvent, DesktopCapabilities, ENGINE_METHODS, EngineErrorData, JsonRpcErrorData,
+    MethodRejectionData, StopPathStatus, UNKNOWN_AUDIT_VALUE,
 };
 use serde_json::Value;
 
@@ -31,7 +31,9 @@ pub fn is_stop_path_status(value: &Value) -> bool {
 
 /// `kind?` from upstream `matches`: absent, `null`, or the given JSON kind.
 fn optional_field(value: &Value, key: &str, kind: fn(&Value) -> bool) -> bool {
-    value.get(key).is_none_or(|field| field.is_null() || kind(field))
+    value
+        .get(key)
+        .is_none_or(|field| field.is_null() || kind(field))
 }
 
 pub fn is_desktop_capabilities(value: &Value) -> bool {
@@ -104,18 +106,22 @@ pub fn parse_error_data(value: &Value) -> Option<JsonRpcErrorData> {
     }
     let obj = value.as_object()?;
     if let Some(code_val) = obj.get("code")
-        && let Ok(code) = serde_json::from_value::<ErrorCode>(code_val.clone()) {
-            let hint = obj.get("hint").and_then(|h| h.as_str().map(|s| s.to_string()));
-            let permission = obj.get("permission").and_then(parse_permission);
-            return Some(JsonRpcErrorData::Engine(EngineErrorData {
-                code,
-                hint,
-                permission,
-            }));
+        && let Ok(code) = serde_json::from_value::<ErrorCode>(code_val.clone())
+    {
+        let hint = obj
+            .get("hint")
+            .and_then(|h| h.as_str().map(|s| s.to_string()));
+        let permission = obj.get("permission").and_then(parse_permission);
+        return Some(JsonRpcErrorData::Engine(EngineErrorData {
+            code,
+            hint,
+            permission,
+        }));
     }
     if let Some(reason_val) = obj.get("reason")
-        && let Ok(reason) = serde_json::from_value::<MethodRejection>(reason_val.clone()) {
-            return Some(JsonRpcErrorData::Rejected(MethodRejectionData { reason }));
+        && let Ok(reason) = serde_json::from_value::<MethodRejection>(reason_val.clone())
+    {
+        return Some(JsonRpcErrorData::Rejected(MethodRejectionData { reason }));
     }
     None
 }

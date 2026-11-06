@@ -49,7 +49,9 @@ async fn listen(engine: &Arc<Engine>, endpoint: &str, idle: Duration) -> io::Res
 async fn listen(engine: &Arc<Engine>, endpoint: &str, idle: Duration) -> io::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let mut server = ServerOptions::new().first_pipe_instance(true).create(endpoint)?;
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(endpoint)?;
     listening(endpoint);
     while let Ok(connected) = tokio::time::timeout(idle, server.connect()).await {
         connected?;

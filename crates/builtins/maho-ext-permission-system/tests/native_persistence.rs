@@ -3,10 +3,14 @@ mod support;
 
 #[tokio::test]
 async fn registered_patch_persists_approval_and_denies_without_mutation() {
-    support::run().await.expect("registered permission persistence scenario");
+    support::run()
+        .await
+        .expect("registered permission persistence scenario");
 }
 
 #[tokio::test]
 async fn registered_headless_modes_preserve_admission_without_ui_or_mutation() {
-    support::mode_matrix().await.expect("registered permission mode matrix");
+    support::mode_matrix()
+        .await
+        .expect("registered permission mode matrix");
 }

@@ -135,7 +135,10 @@ pub async fn run_comment_checker(
         Err(err) => return Err(io::Error::other(err)),
     };
 
-    let input_delivered = match process.write_stdin(&payload).and_then(|()| process.end_stdin()) {
+    let input_delivered = match process
+        .write_stdin(&payload)
+        .and_then(|()| process.end_stdin())
+    {
         Ok(()) => true,
         Err(_) => {
             let _ = process.kill(SpawnSignal::Sigkill);

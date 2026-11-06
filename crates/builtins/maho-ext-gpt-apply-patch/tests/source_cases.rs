@@ -1,4 +1,7 @@
-use maho_ext_gpt_apply_patch::{patch_diff::create_patch_diff, parser::parse_patch, text::strip_heredoc, workspace::resolve_patch_path};
+use maho_ext_gpt_apply_patch::{
+    parser::parse_patch, patch_diff::create_patch_diff, text::strip_heredoc,
+    workspace::resolve_patch_path,
+};
 use std::path::{Path, PathBuf};
 
 #[test]
@@ -15,7 +18,10 @@ fn pinned_diff_line_reordering_and_blank_final_line_match_source() {
 fn pinned_heredoc_regex_whitespace_and_quote_boundaries() {
     for (input, expected) in [
         ("<<PATCH\n\n\nPATCH", ""),
-        ("cat\u{0085}<<PATCH\na\nPATCH", "cat\u{0085}<<PATCH\na\nPATCH"),
+        (
+            "cat\u{0085}<<PATCH\na\nPATCH",
+            "cat\u{0085}<<PATCH\na\nPATCH",
+        ),
         ("<<PATCH\na\nPATCH\u{feff}", "a"),
         ("<<'PATCH\na\nPATCH", "a"),
         ("<<PATCH\na\nOTHER", "<<PATCH\na\nOTHER"),
@@ -26,22 +32,39 @@ fn pinned_heredoc_regex_whitespace_and_quote_boundaries() {
 
 #[test]
 fn workspace_resolves_root_parent_empty_and_absolute_segments() {
-    let root_work = if cfg!(windows) { "C:\\root\\work" } else { "/root/work" };
+    let root_work = if cfg!(windows) {
+        "C:\\root\\work"
+    } else {
+        "/root/work"
+    };
     let file = if cfg!(windows) { "C:\\file" } else { "/file" };
-    let elsewhere_file = if cfg!(windows) { "C:\\elsewhere\\file" } else { "/elsewhere/file" };
-    let elsewhere_input = if cfg!(windows) { "C:\\elsewhere\\.\\child\\..\\file" } else { "/elsewhere/./child/../file" };
+    let elsewhere_file = if cfg!(windows) {
+        "C:\\elsewhere\\file"
+    } else {
+        "/elsewhere/file"
+    };
+    let elsewhere_input = if cfg!(windows) {
+        "C:\\elsewhere\\.\\child\\..\\file"
+    } else {
+        "/elsewhere/./child/../file"
+    };
     for (cwd, path, expected) in [
         (root_work, "../../../../file", file),
         (root_work, "", root_work),
         (root_work, elsewhere_input, elsewhere_file),
     ] {
-        assert_eq!(resolve_patch_path(Path::new(cwd), Path::new(path)), PathBuf::from(expected));
+        assert_eq!(
+            resolve_patch_path(Path::new(cwd), Path::new(path)),
+            PathBuf::from(expected)
+        );
     }
 }
 
 #[test]
 fn parser_preserves_move_only_and_rejects_malformed_body_without_mutation() {
-    assert!(parse_patch("*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** End Patch").is_ok());
+    assert!(
+        parse_patch("*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** End Patch").is_ok()
+    );
     for input in [
         "*** Begin Patch\n*** Add File: a\nmissing-prefix\n*** End Patch",
         "*** Begin Patch\n*** Update File: a\n@@\n*** End Patch",

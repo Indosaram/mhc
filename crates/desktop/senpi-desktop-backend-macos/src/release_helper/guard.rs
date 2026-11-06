@@ -32,7 +32,12 @@ pub(crate) struct Helper {
 
 impl Helper {
     pub(crate) const fn new(child: Option<Child>, socket: UnixStream, ready: bool) -> Self {
-        Self { child, socket, observes: false, ready }
+        Self {
+            child,
+            socket,
+            observes: false,
+            ready,
+        }
     }
 
     pub(crate) fn write(&mut self, record: &Record) -> io::Result<()> {
@@ -76,7 +81,14 @@ pub(crate) struct Ending {
 
 impl Ledger {
     pub(crate) fn with_connect(connect: fn() -> io::Result<Helper>) -> Self {
-        Self { depth: 0, next_id: 0, open: Vec::new(), helper: None, unguarded: false, connect }
+        Self {
+            depth: 0,
+            next_id: 0,
+            open: Vec::new(),
+            helper: None,
+            unguarded: false,
+            connect,
+        }
     }
 
     pub(crate) fn begin(&mut self) {
@@ -108,15 +120,30 @@ impl Ledger {
         }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.open.push(Entry { id, lane: route.lane(), input });
-        self.send(&Record::Press { id, route, input, text: text.map(str::to_owned) });
+        self.open.push(Entry {
+            id,
+            lane: route.lane(),
+            input,
+        });
+        self.send(&Record::Press {
+            id,
+            route,
+            input,
+            text: text.map(str::to_owned),
+        });
     }
 
     /// The release of the latest press of `input` on `route`'s lane moved
     /// where `route` points, as a drag does; told before the move is posted.
     pub(crate) fn moved(&mut self, route: Route, input: Input) {
         let lane = route.lane();
-        if let Some(id) = self.open.iter().rev().find(|entry| entry.lane == lane && entry.input == input).map(|entry| entry.id) {
+        if let Some(id) = self
+            .open
+            .iter()
+            .rev()
+            .find(|entry| entry.lane == lane && entry.input == input)
+            .map(|entry| entry.id)
+        {
             self.send(&Record::Update { id, route });
         }
     }
@@ -183,7 +210,11 @@ impl Ledger {
     /// Stops a helper that missed part of the stream before it sees the
     /// stream end, so it never releases a key this request still holds.
     fn abandon(&mut self) {
-        if let Some(Helper { child: Some(mut child), .. }) = self.helper.take() {
+        if let Some(Helper {
+            child: Some(mut child),
+            ..
+        }) = self.helper.take()
+        {
             stop(&mut child);
         }
         self.helper = None;

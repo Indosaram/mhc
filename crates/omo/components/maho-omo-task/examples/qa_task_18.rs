@@ -1,15 +1,15 @@
 #![allow(clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 use maho_omo_task::dag_tool::{
-    WORKFLOW_TOOL_NAME, create_dag_tool, run_dag_tool,
-    DagToolDeps, DagToolInput, DagToolSendOutcome, DagToolSendDelivery,
+    DagToolDeps, DagToolInput, DagToolSendDelivery, DagToolSendOutcome, WORKFLOW_TOOL_NAME,
+    create_dag_tool, run_dag_tool,
 };
 use senpi_task::dag::{
-    manager::{create_dag_manager, DagManagerOptions},
-    store::{create_dag_file_store, DagStoreConfig, DagStoreOptions},
+    manager::{DagManagerOptions, create_dag_manager},
+    store::{DagStoreConfig, DagStoreOptions, create_dag_file_store},
 };
 
 fn main() {
@@ -17,8 +17,11 @@ fn main() {
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(
-        create_dag_file_store(&DagStoreConfig::new(temp_dir.path()), DagStoreOptions::default())
-            .expect("store"),
+        create_dag_file_store(
+            &DagStoreConfig::new(temp_dir.path()),
+            DagStoreOptions::default(),
+        )
+        .expect("store"),
     );
     let counter = Arc::new(Mutex::new(0));
     let new_run_id = {
@@ -56,15 +59,29 @@ fn main() {
         root_session_id: Arc::new(|| "ses_qa".into()),
         wait: None,
         cancel: Some(Arc::new(move |run: &str, reason: Option<&str>| {
-            cancelled_clone.lock().unwrap().push((run.to_string(), reason.map(String::from)));
+            cancelled_clone
+                .lock()
+                .unwrap()
+                .push((run.to_string(), reason.map(String::from)));
             Ok(())
         })),
-        retry: Some(Arc::new(move |run: &str, node_ids: Option<&[String]>, prompt: Option<&str>| {
-            retried_clone.lock().unwrap().push((run.to_string(), node_ids.map(|n| n.to_vec()), prompt.map(String::from)));
-            manager_for_retry.snapshot(&run.to_string(), "ses_qa").map_err(|e| maho_ext_api::ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |run: &str, node_ids: Option<&[String]>, prompt: Option<&str>| {
+                retried_clone.lock().unwrap().push((
+                    run.to_string(),
+                    node_ids.map(|n| n.to_vec()),
+                    prompt.map(String::from),
+                ));
+                manager_for_retry
+                    .snapshot(&run.to_string(), "ses_qa")
+                    .map_err(|e| maho_ext_api::ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: Some(Arc::new(move |run: &str, node: &str, msg: &str| {
-            sent_clone.lock().unwrap().push((run.to_string(), node.to_string(), msg.to_string()));
+            sent_clone
+                .lock()
+                .unwrap()
+                .push((run.to_string(), node.to_string(), msg.to_string()));
             Ok(DagToolSendOutcome {
                 node_id: node.to_string(),
                 task_id: Some(format!("task-{node}")),
@@ -76,8 +93,13 @@ fn main() {
         })),
         amend: Some(Arc::new(move |run: &str, def| {
             let prompts: Vec<String> = def.nodes.iter().map(|n| n.prompt.clone()).collect();
-            amended_clone.lock().unwrap().push((run.to_string(), prompts));
-            manager_for_amend.snapshot(&run.to_string(), "ses_qa").map_err(|e| maho_ext_api::ToolError::Message(e.to_string()).into())
+            amended_clone
+                .lock()
+                .unwrap()
+                .push((run.to_string(), prompts));
+            manager_for_amend
+                .snapshot(&run.to_string(), "ses_qa")
+                .map_err(|e| maho_ext_api::ToolError::Message(e.to_string()).into())
         })),
         cancel_node: None,
         guide: None,
@@ -130,7 +152,10 @@ fn main() {
         }
     })).unwrap();
     let start_out = run_dag_tool(&deps, start_input).expect("start success");
-    let run_id = start_out.details.as_ref().unwrap()["run_id"].as_str().unwrap().to_string();
+    let run_id = start_out.details.as_ref().unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     println!("  start result: run_id={run_id}");
     assert_eq!(start_out.details.as_ref().unwrap()["kind"], "started");
 
@@ -139,9 +164,13 @@ fn main() {
     let snap_input: DagToolInput = serde_json::from_value(json!({
         "action": "snapshot",
         "run_id": run_id
-    })).unwrap();
+    }))
+    .unwrap();
     let snap_out = run_dag_tool(&deps, snap_input).expect("snap success");
-    println!("  snapshot result: kind={}", snap_out.details.as_ref().unwrap()["kind"]);
+    println!(
+        "  snapshot result: kind={}",
+        snap_out.details.as_ref().unwrap()["kind"]
+    );
     assert_eq!(snap_out.details.as_ref().unwrap()["kind"], "snapshot");
 
     // 3. send
@@ -151,9 +180,14 @@ fn main() {
         "run_id": run_id,
         "node_id": "fetch",
         "message": "steer towards json format"
-    })).unwrap();
+    }))
+    .unwrap();
     let send_out = run_dag_tool(&deps, send_input).expect("send success");
-    println!("  send result: kind={}, delivery={}", send_out.details.as_ref().unwrap()["kind"], send_out.details.as_ref().unwrap()["delivery"]);
+    println!(
+        "  send result: kind={}, delivery={}",
+        send_out.details.as_ref().unwrap()["kind"],
+        send_out.details.as_ref().unwrap()["delivery"]
+    );
     assert_eq!(send_out.details.as_ref().unwrap()["kind"], "sent");
     assert_eq!(send_out.details.as_ref().unwrap()["delivery"], "steer");
 
@@ -164,9 +198,13 @@ fn main() {
         "run_id": run_id,
         "node_id": "fetch",
         "prompt": "TASK: fetch fresh data with retry"
-    })).unwrap();
+    }))
+    .unwrap();
     let retry_out = run_dag_tool(&deps, retry_input).expect("retry success");
-    println!("  retry result: kind={}", retry_out.details.as_ref().unwrap()["kind"]);
+    println!(
+        "  retry result: kind={}",
+        retry_out.details.as_ref().unwrap()["kind"]
+    );
     assert_eq!(retry_out.details.as_ref().unwrap()["kind"], "retried");
 
     // 5. amend
@@ -197,7 +235,10 @@ fn main() {
         }
     })).unwrap();
     let amend_out = run_dag_tool(&deps, amend_input).expect("amend success");
-    println!("  amend result: kind={}", amend_out.details.as_ref().unwrap()["kind"]);
+    println!(
+        "  amend result: kind={}",
+        amend_out.details.as_ref().unwrap()["kind"]
+    );
     assert_eq!(amend_out.details.as_ref().unwrap()["kind"], "amended");
 
     // 6. detach action
@@ -205,9 +246,13 @@ fn main() {
     let detach_input: DagToolInput = serde_json::from_value(json!({
         "action": "detach",
         "run_id": run_id
-    })).unwrap();
+    }))
+    .unwrap();
     let detach_out = run_dag_tool(&deps, detach_input).expect("detach success");
-    println!("  detach result: kind={}", detach_out.details.as_ref().unwrap()["kind"]);
+    println!(
+        "  detach result: kind={}",
+        detach_out.details.as_ref().unwrap()["kind"]
+    );
     assert_eq!(detach_out.details.as_ref().unwrap()["kind"], "detached");
 
     // 7. cancel
@@ -216,11 +261,18 @@ fn main() {
         "action": "cancel",
         "run_id": run_id,
         "reason": "qa test completed"
-    })).unwrap();
+    }))
+    .unwrap();
     let cancel_out = run_dag_tool(&deps, cancel_input).expect("cancel success");
-    println!("  cancel result: kind={}", cancel_out.details.as_ref().unwrap()["kind"]);
+    println!(
+        "  cancel result: kind={}",
+        cancel_out.details.as_ref().unwrap()["kind"]
+    );
     assert_eq!(cancel_out.details.as_ref().unwrap()["kind"], "cancelled");
-    assert_eq!(*cancelled_calls.lock().unwrap(), vec![(run_id.clone(), Some("qa test completed".into()))]);
+    assert_eq!(
+        *cancelled_calls.lock().unwrap(),
+        vec![(run_id.clone(), Some("qa test completed".into()))]
+    );
 
     println!("Happy path successfully executed all workflow actions in order!");
 
@@ -232,10 +284,15 @@ fn main() {
     let unknown_input: DagToolInput = serde_json::from_value(json!({
         "action": "snapshot",
         "run_id": "run-unknown"
-    })).unwrap();
-    let unknown_out = run_dag_tool(&deps, unknown_input).expect("returns ok ToolResult with error detail");
+    }))
+    .unwrap();
+    let unknown_out =
+        run_dag_tool(&deps, unknown_input).expect("returns ok ToolResult with error detail");
     let details = unknown_out.details.as_ref().unwrap();
-    println!("  unknown run_id error: code={}, message={}", details["error"]["code"], details["error"]["message"]);
+    println!(
+        "  unknown run_id error: code={}, message={}",
+        details["error"]["code"], details["error"]["message"]
+    );
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_found");
 
@@ -244,7 +301,8 @@ fn main() {
     let invalid_input: DagToolInput = serde_json::from_value(json!({
         "action": "invalid_action",
         "run_id": run_id
-    })).unwrap();
+    }))
+    .unwrap();
     let invalid_err = run_dag_tool(&deps, invalid_input).expect_err("invalid action returns error");
     println!("  invalid action error: {invalid_err}");
     assert!(invalid_err.to_string().contains("invalid dag action"));

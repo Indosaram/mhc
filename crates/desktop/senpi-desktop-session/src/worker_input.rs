@@ -95,7 +95,11 @@ impl Worker {
         })
     }
 
-    pub(crate) fn drag(&mut self, params: &DragParams, cancelled: &dyn Fn() -> bool) -> CoreResult<Audited> {
+    pub(crate) fn drag(
+        &mut self,
+        params: &DragParams,
+        cancelled: &dyn Fn() -> bool,
+    ) -> CoreResult<Audited> {
         let target = Target::parse(&params.target);
         let mutation = Mutation {
             frame_id: params.frame_id.as_deref(),
@@ -170,9 +174,15 @@ impl Worker {
             let check_stop = || {
                 let is_cancelled = cancelled();
                 if supervisor.is_suspended() {
-                    Err(DesktopError::new(ErrorCode::Suspended, "input was suspended while typing"))
+                    Err(DesktopError::new(
+                        ErrorCode::Suspended,
+                        "input was suspended while typing",
+                    ))
                 } else if is_cancelled {
-                    Err(DesktopError::new(ErrorCode::Cancelled, "the request was cancelled while typing"))
+                    Err(DesktopError::new(
+                        ErrorCode::Cancelled,
+                        "the request was cancelled while typing",
+                    ))
                 } else {
                     Ok(())
                 }
@@ -182,7 +192,11 @@ impl Worker {
                 &params.text,
                 mode,
                 &check_stop,
-                &mut || mutation.text_delivered.set(mutation.text_delivered.get().saturating_add(1)),
+                &mut || {
+                    mutation
+                        .text_delivered
+                        .set(mutation.text_delivered.get().saturating_add(1))
+                },
             )?;
             Ok(Response::Unit)
         })

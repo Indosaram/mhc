@@ -8,7 +8,9 @@ use team_core::types::SchemaIssues;
 use crate::team::member_map::read_member_task_map;
 use crate::team::messaging::lead_poller_types::TeamTaskEvent;
 use crate::team::messaging::message::{BuildTeamMessageOptions, build_team_message};
-use crate::team::messaging::types::{MessagingEngineDeps, SendTeamMessageInput, SendTeamMessageResult};
+use crate::team::messaging::types::{
+    MessagingEngineDeps, SendTeamMessageInput, SendTeamMessageResult,
+};
 use crate::team::normalize::TEAM_LEAD_SENTINEL;
 use crate::team::storage::resolve_team_runtime_dirs;
 

@@ -102,7 +102,14 @@ mod tests {
     #[test]
     fn a_bom_is_stripped() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = write(tmp.path(), "package.json", &format!("\u{feff}{}", r#"{"pi":{"hooks":["h"]}}"#));
-        assert_eq!(read_pi_manifest(&path).expect("manifest").hooks, Some(vec!["h".into()]));
+        let path = write(
+            tmp.path(),
+            "package.json",
+            &format!("\u{feff}{}", r#"{"pi":{"hooks":["h"]}}"#),
+        );
+        assert_eq!(
+            read_pi_manifest(&path).expect("manifest").hooks,
+            Some(vec!["h".into()])
+        );
     }
 }

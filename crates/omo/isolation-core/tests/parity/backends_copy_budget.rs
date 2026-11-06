@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use isolation_core::{copy_budget, SpaceFn};
+use isolation_core::{SpaceFn, copy_budget};
 
 #[test]
 fn copy_budget_enforces_free_space_plus_ten_percent_and_the_default_2_gib_during_traversal() {

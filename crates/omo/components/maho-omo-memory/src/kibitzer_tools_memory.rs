@@ -26,7 +26,7 @@ use crate::kibitzer_tools_result::{
     KibitzerRejectionCode, KibitzerToolResult, bounded_text, ok_json, ok_text, rejection,
 };
 use crate::project_recall_seats::{
-    project_documents_of, select_with_project_seats, ProjectRecallCorpus,
+    ProjectRecallCorpus, project_documents_of, select_with_project_seats,
 };
 
 /// The registered tool name (`memory`).
@@ -68,7 +68,15 @@ pub fn execute_memory(
     searched_paths: &mut BTreeSet<String>,
     params: &Value,
 ) -> Result<KibitzerToolResult, GitError> {
-    execute_memory_with_projects(repo, cache, caps, query_expansion, searched_paths, params, &[])
+    execute_memory_with_projects(
+        repo,
+        cache,
+        caps,
+        query_expansion,
+        searched_paths,
+        params,
+        &[],
+    )
 }
 
 pub fn execute_memory_with_projects(
@@ -94,11 +102,19 @@ pub fn execute_memory_with_projects(
         }
         Some("read") => {
             let corpus = cache.load(repo)?;
-            Ok(read(params.get("path").and_then(Value::as_str), &corpus, caps, projects))
+            Ok(read(
+                params.get("path").and_then(Value::as_str),
+                &corpus,
+                caps,
+                projects,
+            ))
         }
         _ => Ok(rejection(
             KibitzerRejectionCode::UnsupportedOperation,
-            &format!("Unsupported operation; use one of: {}.", MEMORY_TOOL_OPERATIONS.join(", ")),
+            &format!(
+                "Unsupported operation; use one of: {}.",
+                MEMORY_TOOL_OPERATIONS.join(", ")
+            ),
             None,
         )),
     }
@@ -115,7 +131,11 @@ fn search(
     projects: &[ProjectRecallCorpus],
 ) -> KibitzerToolResult {
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
-        return rejection(KibitzerRejectionCode::MissingArgument, "search requires a non-empty query.", None);
+        return rejection(
+            KibitzerRejectionCode::MissingArgument,
+            "search requires a non-empty query.",
+            None,
+        );
     };
     let (expansions, expansion_fallback) = match added.map(read_expansions) {
         None => (None, None),
@@ -158,7 +178,8 @@ fn search(
         // sidecar could have read.
         searched_paths.insert(candidate.path.clone());
     }
-    let mut body = json!({ "revision": corpus.revision, "results": results, "truncated": truncated });
+    let mut body =
+        json!({ "revision": corpus.revision, "results": results, "truncated": truncated });
     if let Some(fallback) = expansion_fallback {
         body["expansion_fallback"] = Value::String(fallback);
     }
@@ -174,7 +195,11 @@ fn read(
     projects: &[ProjectRecallCorpus],
 ) -> KibitzerToolResult {
     let Some(path) = path else {
-        return rejection(KibitzerRejectionCode::MissingArgument, "read requires a path.", None);
+        return rejection(
+            KibitzerRejectionCode::MissingArgument,
+            "read requires a path.",
+            None,
+        );
     };
     let normalized = match normalize_memory_path(path) {
         PathCheck::Ok { path } => path,
@@ -182,8 +207,15 @@ fn read(
         PathCheck::Rejected { code, message } => return rejection(code, &message, Some(path)),
     };
     let project_docs = project_documents_of(projects);
-    let document = corpus.documents.iter().find(|document| document.path == normalized)
-        .or_else(|| project_docs.iter().find(|document| document.path == normalized));
+    let document = corpus
+        .documents
+        .iter()
+        .find(|document| document.path == normalized)
+        .or_else(|| {
+            project_docs
+                .iter()
+                .find(|document| document.path == normalized)
+        });
     let Some(document) = document else {
         return rejection(
             KibitzerRejectionCode::NotCommitted,
@@ -214,13 +246,16 @@ fn read_expansions(params: &Value) -> Result<RecallQueryExpansions, String> {
             return Err(format!("{tier} is a list of terms."));
         };
         if array.len() > MEMORY_EXPANSION_BOUNDS.terms {
-            return Err(format!("{tier} takes at most {} terms.", MEMORY_EXPANSION_BOUNDS.terms));
+            return Err(format!(
+                "{tier} takes at most {} terms.",
+                MEMORY_EXPANSION_BOUNDS.terms
+            ));
         }
         let mut values: Vec<String> = Vec::with_capacity(array.len());
         for term in array {
-            let valid = term
-                .as_str()
-                .filter(|text| !text.is_empty() && text.chars().count() <= MEMORY_EXPANSION_BOUNDS.term_chars);
+            let valid = term.as_str().filter(|text| {
+                !text.is_empty() && text.chars().count() <= MEMORY_EXPANSION_BOUNDS.term_chars
+            });
             let Some(text) = valid else {
                 return Err(format!(
                     "every {tier} term is text of 1-{} characters.",
@@ -233,7 +268,9 @@ fn read_expansions(params: &Value) -> Result<RecallQueryExpansions, String> {
     }
     let note_line = match params.get("note_line") {
         None => None,
-        Some(Value::String(text)) if text.chars().count() <= MEMORY_EXPANSION_BOUNDS.note_line_chars => {
+        Some(Value::String(text))
+            if text.chars().count() <= MEMORY_EXPANSION_BOUNDS.note_line_chars =>
+        {
             Some(text.clone())
         }
         Some(_) => {
@@ -244,7 +281,12 @@ fn read_expansions(params: &Value) -> Result<RecallQueryExpansions, String> {
         }
     };
     let [synonyms, keywords, related] = tiers;
-    Ok(RecallQueryExpansions { synonyms, keywords, related, note_line })
+    Ok(RecallQueryExpansions {
+        synonyms,
+        keywords,
+        related,
+        note_line,
+    })
 }
 
 #[cfg(test)]
@@ -253,7 +295,7 @@ mod tests {
     use crate::kibitzer_tools_caps::DEFAULT_KIBITZER_TOOL_CAPS;
     use memory_core::git::GitCommitAuthor;
     use memory_core::recall::RecallCorpusCacheOptions;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn temp_root() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
@@ -278,14 +320,24 @@ mod tests {
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).expect("create parent");
         }
-        std::fs::write(&full, format!("---\ndescription: {description}\n---\n{body}\n")).expect("write");
-        repo.commit_write(&[path], "save memory", &author()).expect("commit");
+        std::fs::write(
+            &full,
+            format!("---\ndescription: {description}\n---\n{body}\n"),
+        )
+        .expect("write");
+        repo.commit_write(&[path], "save memory", &author())
+            .expect("commit");
     }
 
-    fn call(repo: &GitMemoryRepo, caps: KibitzerToolCaps, params: &Value) -> (KibitzerToolResult, BTreeSet<String>) {
+    fn call(
+        repo: &GitMemoryRepo,
+        caps: KibitzerToolCaps,
+        params: &Value,
+    ) -> (KibitzerToolResult, BTreeSet<String>) {
         let mut cache = RecallCorpusCache::new(RecallCorpusCacheOptions::default());
         let mut searched = BTreeSet::new();
-        let result = execute_memory(repo, &mut cache, caps, false, &mut searched, params).expect("execute_memory returns Ok");
+        let result = execute_memory(repo, &mut cache, caps, false, &mut searched, params)
+            .expect("execute_memory returns Ok");
         (result, searched)
     }
 
@@ -294,18 +346,33 @@ mod tests {
     }
 
     #[test]
-    fn given_a_committed_memory_with_a_dirty_working_tree_when_read_then_the_head_body_is_returned() {
+    fn given_a_committed_memory_with_a_dirty_working_tree_when_read_then_the_head_body_is_returned()
+    {
         let root = temp_root();
         let repo = memory_repo(root.path());
         commit_memory(&repo, "notes/creds.md", "Creds", "committed body from HEAD");
         // A working-tree edit that was never committed must never leak into a read.
-        std::fs::write(repo.dir.join("notes/creds.md"), "---\ndescription: Creds\n---\nworking tree edit that is NOT committed\n").expect("dirty write");
+        std::fs::write(
+            repo.dir.join("notes/creds.md"),
+            "---\ndescription: Creds\n---\nworking tree edit that is NOT committed\n",
+        )
+        .expect("dirty write");
 
-        let (result, _searched) = call(&repo, DEFAULT_KIBITZER_TOOL_CAPS, &json!({ "operation": "read", "path": "notes/creds.md" }));
+        let (result, _searched) = call(
+            &repo,
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            &json!({ "operation": "read", "path": "notes/creds.md" }),
+        );
 
         assert!(!result.is_error, "a committed read is not an error");
-        assert!(result.text.contains("committed body from HEAD"), "the HEAD body is returned");
-        assert!(!result.text.contains("working tree edit"), "the dirty working tree must not leak into a read");
+        assert!(
+            result.text.contains("committed body from HEAD"),
+            "the HEAD body is returned"
+        );
+        assert!(
+            !result.text.contains("working tree edit"),
+            "the dirty working tree must not leak into a read"
+        );
     }
 
     #[test]
@@ -314,7 +381,11 @@ mod tests {
         let repo = memory_repo(root.path());
         commit_memory(&repo, "notes/present.md", "Present", "present body");
 
-        let (result, _searched) = call(&repo, DEFAULT_KIBITZER_TOOL_CAPS, &json!({ "operation": "read", "path": "notes/absent.md" }));
+        let (result, _searched) = call(
+            &repo,
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            &json!({ "operation": "read", "path": "notes/absent.md" }),
+        );
 
         assert!(result.is_error, "a missing HEAD path is a rejection");
         let body = json_of(&result);
@@ -323,25 +394,55 @@ mod tests {
     }
 
     #[test]
-    fn given_more_matching_memories_than_the_cap_when_search_runs_then_the_page_is_bounded_and_only_returned_paths_are_recorded() {
+    fn given_more_matching_memories_than_the_cap_when_search_runs_then_the_page_is_bounded_and_only_returned_paths_are_recorded()
+     {
         let root = temp_root();
         let repo = memory_repo(root.path());
         for index in 0..5 {
-            commit_memory(&repo, &format!("notes/n{index}.md"), "Shared note", &format!("shared topic {index}"));
+            commit_memory(
+                &repo,
+                &format!("notes/n{index}.md"),
+                "Shared note",
+                &format!("shared topic {index}"),
+            );
         }
-        let caps = KibitzerToolCaps { memory_search_results: 2, ..DEFAULT_KIBITZER_TOOL_CAPS };
+        let caps = KibitzerToolCaps {
+            memory_search_results: 2,
+            ..DEFAULT_KIBITZER_TOOL_CAPS
+        };
 
-        let (result, searched) = call(&repo, caps, &json!({ "operation": "search", "query": "shared" }));
+        let (result, searched) = call(
+            &repo,
+            caps,
+            &json!({ "operation": "search", "query": "shared" }),
+        );
 
         assert!(!result.is_error, "a matching search is not an error");
         let body = json_of(&result);
-        assert!(body["revision"].is_string(), "the search reports the corpus revision");
+        assert!(
+            body["revision"].is_string(),
+            "the search reports the corpus revision"
+        );
         let results = body["results"].as_array().expect("results is an array");
-        assert_eq!(results.len(), 2, "the page is bounded by memory_search_results");
-        assert_eq!(body["truncated"], json!(true), "more matches than the cap reports truncated");
+        assert_eq!(
+            results.len(),
+            2,
+            "the page is bounded by memory_search_results"
+        );
+        assert_eq!(
+            body["truncated"],
+            json!(true),
+            "more matches than the cap reports truncated"
+        );
 
-        let returned: BTreeSet<String> = results.iter().map(|hit| hit["path"].as_str().expect("hit path").to_string()).collect();
-        assert_eq!(searched, returned, "only the returned paths are recorded for nudging");
+        let returned: BTreeSet<String> = results
+            .iter()
+            .map(|hit| hit["path"].as_str().expect("hit path").to_string())
+            .collect();
+        assert_eq!(
+            searched, returned,
+            "only the returned paths are recorded for nudging"
+        );
     }
 
     #[test]
@@ -349,10 +450,17 @@ mod tests {
         let root = temp_root();
         let repo = memory_repo(root.path());
 
-        let (result, searched) = call(&repo, DEFAULT_KIBITZER_TOOL_CAPS, &json!({ "operation": "create", "path": "notes/new.md" }));
+        let (result, searched) = call(
+            &repo,
+            DEFAULT_KIBITZER_TOOL_CAPS,
+            &json!({ "operation": "create", "path": "notes/new.md" }),
+        );
 
         assert!(result.is_error, "an unknown operation is a rejection");
         assert_eq!(json_of(&result)["rejected"], json!("unsupported_operation"));
-        assert!(searched.is_empty(), "a rejected call records no searched paths");
+        assert!(
+            searched.is_empty(),
+            "a rejected call records no searched paths"
+        );
     }
 }

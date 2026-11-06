@@ -25,18 +25,24 @@ fn member_statuses() -> Vec<MemberStatus> {
 }
 
 #[test]
-fn given_the_omo_shutdown_helpers_parity_set_when_read_then_it_is_exactly_completed_shutdown_approved_errored() {
+fn given_the_omo_shutdown_helpers_parity_set_when_read_then_it_is_exactly_completed_shutdown_approved_errored()
+ {
     let mut deletable: Vec<String> = DELETABLE_MEMBER_STATUSES.iter().map(status_name).collect();
     deletable.sort();
 
     assert_eq!(
         deletable,
-        vec!["completed".to_string(), "errored".to_string(), "shutdown_approved".to_string()]
+        vec![
+            "completed".to_string(),
+            "errored".to_string(),
+            "shutdown_approved".to_string()
+        ]
     );
 }
 
 #[test]
-fn given_each_member_status_when_is_member_deletable_is_applied_then_only_terminal_safe_statuses_are_deletable() {
+fn given_each_member_status_when_is_member_deletable_is_applied_then_only_terminal_safe_statuses_are_deletable()
+ {
     let verdicts: Vec<(String, bool)> = member_statuses()
         .iter()
         .map(|status| (status_name(status), is_member_deletable(status)))

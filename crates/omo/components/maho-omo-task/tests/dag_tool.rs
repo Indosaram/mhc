@@ -1,17 +1,18 @@
-use std::sync::{Arc, Mutex};
-use std::fs;
 use serde_json::json;
+use std::fs;
+use std::sync::{Arc, Mutex};
 
 use maho_ext_api::{ToolContent, ToolError};
 use maho_omo_task::dag_tool::{
-    WORKFLOW_TOOL_NAME, create_dag_tool, run_dag_tool,
-    DagToolDeps, DagToolInput, DefinitionInput, NodeInput, DagToolSendOutcome, DagToolSendDelivery,
-    DagToolExecutionError,
+    DagToolDeps, DagToolExecutionError, DagToolInput, DagToolSendDelivery, DagToolSendOutcome,
+    DefinitionInput, NodeInput, WORKFLOW_TOOL_NAME, create_dag_tool, run_dag_tool,
 };
 use senpi_task::dag::{
-    manager::{create_dag_manager, DagManager, DagManagerError, DagManagerErrorCode, DagManagerOptions},
+    manager::{
+        DagManager, DagManagerError, DagManagerErrorCode, DagManagerOptions, create_dag_manager,
+    },
     scheduler::{DagNodeControlError, DagNodeControlErrorCode},
-    store::{create_dag_file_store, DagFileStore, DagStoreConfig, DagStoreOptions},
+    store::{DagFileStore, DagStoreConfig, DagStoreOptions, create_dag_file_store},
 };
 
 const PARENT_SESSION_ID: &str = "ses_parent";
@@ -29,90 +30,204 @@ fn given_workflow_schema_when_parameters_are_registered_then_only_latest_actions
     let f = fixture();
     let schema = create_dag_tool(deps(&f.manager)).parameters;
     let properties = schema["properties"].as_object().expect("schema properties");
-    let actions = properties["action"]["anyOf"].as_array().expect("action choices");
+    let actions = properties["action"]["anyOf"]
+        .as_array()
+        .expect("action choices");
     assert_eq!(actions.len(), 11);
     assert!(actions.iter().all(|action| action["const"] != "detach"));
     assert!(properties.get("detach").is_none());
 }
 
 #[test]
-fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_original_message_is_preserved() {
+fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_original_message_is_preserved()
+ {
     let f = fixture();
-    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
-        action: "start".into(), definition: Some(default_definition()), run_id: None,
-        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
-    guidance_id: None,
-    text: None,
-    remove: None,
-    }).expect("start");
-    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    let started = run_dag_tool(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(default_definition()),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("start");
+    let run_id = started.details.expect("details")["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_owned();
     let sent = Arc::new(Mutex::new(String::new()));
     let seen = sent.clone();
     let mut dependencies = deps(&f.manager);
     dependencies.send = Some(Arc::new(move |_, _, message| {
         *seen.lock().expect("sent mutex") = message.to_owned();
-        Ok(DagToolSendOutcome { node_id: "plan".into(), task_id: Some("task-1".into()), delivery: DagToolSendDelivery::Steer, guidance_id: None, effect_id: None, queue_position: None })
+        Ok(DagToolSendOutcome {
+            node_id: "plan".into(),
+            task_id: Some("task-1".into()),
+            delivery: DagToolSendDelivery::Steer,
+            guidance_id: None,
+            effect_id: None,
+            queue_position: None,
+        })
     }));
-    run_dag_tool(&dependencies, DagToolInput {
-        action: "send".into(), definition: None, run_id: Some(run_id), reason: None,
-        detach: None, node_id: Some("plan".into()), node_ids: None, message: Some("  continue  ".into()), prompt: None,
-    guidance_id: None,
-    text: None,
-    remove: None,
-    }).expect("send");
+    run_dag_tool(
+        &dependencies,
+        DagToolInput {
+            action: "send".into(),
+            definition: None,
+            run_id: Some(run_id),
+            reason: None,
+            detach: None,
+            node_id: Some("plan".into()),
+            node_ids: None,
+            message: Some("  continue  ".into()),
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("send");
     assert_eq!(*sent.lock().expect("sent mutex"), "  continue  ");
 }
 
 #[test]
-fn given_the_parent_session_runs_a_model_when_the_workflow_tool_starts_a_run_then_the_run_record_captures_it() {
+fn given_the_parent_session_runs_a_model_when_the_workflow_tool_starts_a_run_then_the_run_record_captures_it()
+ {
     let f = fixture();
     let context = maho_omo_task::dag_tool::DagToolContext {
-        model: Some(maho_omo_task::dag_tool::DagToolModel { provider: "chatgpt-subscription".into(), id: "gpt-6.1-sol".into() }),
+        model: Some(maho_omo_task::dag_tool::DagToolModel {
+            provider: "chatgpt-subscription".into(),
+            id: "gpt-6.1-sol".into(),
+        }),
     };
-    let started = maho_omo_task::dag_tool::run_dag_tool_in_context(&deps(&f.manager), DagToolInput {
-        action: "start".into(), definition: Some(default_definition()), run_id: None,
-        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
-        guidance_id: None, text: None, remove: None,
-    }, Some(&context)).expect("start");
+    let started = maho_omo_task::dag_tool::run_dag_tool_in_context(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(default_definition()),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+        Some(&context),
+    )
+    .expect("start");
     let details = started.details.expect("details");
     assert_eq!(details["kind"], "started");
     let run_id = details["run_id"].as_str().expect("run id").to_owned();
-    let record = f.manager.record(&run_id, PARENT_SESSION_ID).expect("run record");
-    assert_eq!(record.parent_model.as_deref(), Some("chatgpt-subscription/gpt-6.1-sol"));
+    let record = f
+        .manager
+        .record(&run_id, PARENT_SESSION_ID)
+        .expect("run record");
+    assert_eq!(
+        record.parent_model.as_deref(),
+        Some("chatgpt-subscription/gpt-6.1-sol")
+    );
 }
 
 #[test]
-fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_no_parent_model_is_recorded() {
+fn given_no_tool_context_model_when_the_workflow_tool_starts_a_run_then_no_parent_model_is_recorded()
+ {
     let f = fixture();
-    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
-        action: "start".into(), definition: Some(default_definition()), run_id: None,
-        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
-        guidance_id: None, text: None, remove: None,
-    }).expect("start");
-    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
-    assert_eq!(f.manager.record(&run_id, PARENT_SESSION_ID).expect("run record").parent_model, None);
+    let started = run_dag_tool(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(default_definition()),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("start");
+    let run_id = started.details.expect("details")["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_owned();
+    assert_eq!(
+        f.manager
+            .record(&run_id, PARENT_SESSION_ID)
+            .expect("run record")
+            .parent_model,
+        None
+    );
 }
 
 #[test]
 fn engine_refusal_node_unresponsive_surfaces_verbatim() {
     let f = fixture();
-    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
-        action: "start".into(), definition: Some(default_definition()), run_id: None,
-        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
-        guidance_id: None, text: None, remove: None,
-    }).expect("start");
-    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    let started = run_dag_tool(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(default_definition()),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("start");
+    let run_id = started.details.expect("details")["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_owned();
     let mut dependencies = deps(&f.manager);
     dependencies.send = Some(Arc::new(|_, _, _| {
-        let mut error = DagNodeControlError::new(DagNodeControlErrorCode::NodeUnresponsive, "HOST_STATUS_SENTINEL");
+        let mut error = DagNodeControlError::new(
+            DagNodeControlErrorCode::NodeUnresponsive,
+            "HOST_STATUS_SENTINEL",
+        );
         error.node_ids = vec!["plan".into()];
         Err(DagToolExecutionError::Control(error))
     }));
-    let result = run_dag_tool(&dependencies, DagToolInput {
-        action: "send".into(), definition: None, run_id: Some(run_id), reason: None,
-        detach: None, node_id: Some("plan".into()), node_ids: None, message: Some("continue".into()), prompt: None,
-        guidance_id: None, text: None, remove: None,
-    }).expect("send");
+    let result = run_dag_tool(
+        &dependencies,
+        DagToolInput {
+            action: "send".into(),
+            definition: None,
+            run_id: Some(run_id),
+            reason: None,
+            detach: None,
+            node_id: Some("plan".into()),
+            node_ids: None,
+            message: Some("continue".into()),
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("send");
     let details = result.details.expect("details");
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "node_unresponsive");
@@ -137,10 +252,13 @@ impl Fixture {
 fn fixture() -> Fixture {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = temp_dir.path().to_path_buf();
-    let store = Arc::new(create_dag_file_store(
-        &DagStoreConfig::new(&project_dir),
-        DagStoreOptions::default(),
-    ).expect("store"));
+    let store = Arc::new(
+        create_dag_file_store(
+            &DagStoreConfig::new(&project_dir),
+            DagStoreOptions::default(),
+        )
+        .expect("store"),
+    );
     let counter = Arc::new(Mutex::new(0));
     let new_run_id = {
         let counter = counter.clone();
@@ -206,14 +324,13 @@ fn deps(manager: &DagManager) -> DagToolDeps {
         cancel: None,
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     }
 }
 
@@ -247,11 +364,12 @@ fn start_action_roundtrips_through_manager() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "started");
     let run_id = details["run_id"].as_str().unwrap();
@@ -264,7 +382,13 @@ fn start_action_roundtrips_through_manager() {
         .collect();
     assert_eq!(node_ids, vec!["plan", "build"]);
     assert_eq!(f.run_file_count(), 1);
-    assert_eq!(f.manager.snapshot(&run_id.into(), PARENT_SESSION_ID).unwrap().run_id, run_id);
+    assert_eq!(
+        f.manager
+            .snapshot(&run_id.into(), PARENT_SESSION_ID)
+            .unwrap()
+            .run_id,
+        run_id
+    );
 }
 
 #[test]
@@ -283,11 +407,12 @@ fn repeat_start_reuses_same_run() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let second = run_dag_tool(
         &d,
@@ -301,11 +426,12 @@ fn repeat_start_reuses_same_run() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = second.details.unwrap();
     assert_eq!(details["kind"], "started");
     assert_eq!(details["run_id"], "run-1");
@@ -328,11 +454,12 @@ fn start_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_definition");
@@ -384,11 +511,12 @@ fn cyclic_definition_rejected_with_diagnostics() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_definition");
@@ -399,7 +527,12 @@ fn cyclic_definition_rejected_with_diagnostics() {
         .map(|e| e["code"].as_str().unwrap())
         .collect();
     assert!(error_codes.contains(&"cycle"));
-    assert!(!details["error"]["diagnostics"].as_array().unwrap().is_empty());
+    assert!(
+        !details["error"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(f.run_file_count(), 0);
 }
 
@@ -434,11 +567,12 @@ fn category_with_model_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_definition");
@@ -478,11 +612,12 @@ fn both_targets_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["nodes"][0]["code"], "both_targets");
@@ -520,11 +655,12 @@ fn no_target_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["nodes"][0]["code"], "no_target");
@@ -562,11 +698,12 @@ fn subagent_type_and_model_accepted() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
@@ -591,12 +728,16 @@ fn attach_roundtrips_live_snapshot() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = run_dag_tool(
         &d,
@@ -610,11 +751,12 @@ fn attach_roundtrips_live_snapshot() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "attached");
     assert_eq!(details["run_id"], run_id);
@@ -637,12 +779,16 @@ fn snapshot_returns_manager_projection() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = run_dag_tool(
         &d,
@@ -656,14 +802,16 @@ fn snapshot_returns_manager_projection() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "snapshot");
-    let expected = serde_json::to_value(f.manager.snapshot(&run_id, PARENT_SESSION_ID).unwrap()).unwrap();
+    let expected =
+        serde_json::to_value(f.manager.snapshot(&run_id, PARENT_SESSION_ID).unwrap()).unwrap();
     assert_eq!(details["snapshot"], expected);
 }
 
@@ -682,11 +830,12 @@ fn snapshot_unknown_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_found");
@@ -707,12 +856,16 @@ fn snapshot_foreign_session_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let foreign = DagToolDeps {
         manager: f.manager.clone(),
@@ -722,14 +875,13 @@ fn snapshot_foreign_session_rejects() {
         cancel: None,
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
     let result = run_dag_tool(
         &foreign,
@@ -743,11 +895,12 @@ fn snapshot_foreign_session_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_owned");
@@ -768,12 +921,16 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let waited = Arc::new(Mutex::new(Vec::new()));
     let waited_clone = waited.clone();
@@ -783,7 +940,10 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: Some(Arc::new(move |run: &str, session: &str| {
-            waited_clone.lock().unwrap().push(format!("{run}:{session}"));
+            waited_clone
+                .lock()
+                .unwrap()
+                .push(format!("{run}:{session}"));
             let snap = manager_clone.snapshot(&run.to_string(), session).unwrap();
             Ok(json!({
                 "runId": run,
@@ -795,14 +955,13 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
         cancel: None,
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -817,15 +976,19 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "waited");
     assert_eq!(details["result"]["status"], "completed");
-    assert_eq!(*waited.lock().unwrap(), vec![format!("{run_id}:{PARENT_SESSION_ID}")]);
+    assert_eq!(
+        *waited.lock().unwrap(),
+        vec![format!("{run_id}:{PARENT_SESSION_ID}")]
+    );
 }
 
 #[test]
@@ -843,12 +1006,16 @@ fn wait_with_default_detach_returns_detached() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let waited = Arc::new(Mutex::new(Vec::new()));
     let waited_clone = waited.clone();
@@ -857,20 +1024,22 @@ fn wait_with_default_detach_returns_detached() {
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: Some(Arc::new(move |run: &str, session: &str| {
-            waited_clone.lock().unwrap().push(format!("{run}:{session}"));
+            waited_clone
+                .lock()
+                .unwrap()
+                .push(format!("{run}:{session}"));
             Ok(json!({"status": "completed"}))
         })),
         cancel: None,
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -885,11 +1054,12 @@ fn wait_with_default_detach_returns_detached() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "detached");
     assert_eq!(details["run_id"], run_id);
@@ -913,14 +1083,22 @@ fn wait_settled_run_returns_final_result() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let mut record: serde_json::Value = f.store.read_checkpoint(&run_id).unwrap().expect("checkpoint");
+    let mut record: serde_json::Value = f
+        .store
+        .read_checkpoint(&run_id)
+        .unwrap()
+        .expect("checkpoint");
     record["status"] = json!("completed");
     f.store.write_checkpoint(&run_id, &record).unwrap();
 
@@ -938,14 +1116,13 @@ fn wait_settled_run_returns_final_result() {
         cancel: None,
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -960,11 +1137,12 @@ fn wait_settled_run_returns_final_result() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "waited");
     assert_eq!(details["result"]["status"], "completed");
@@ -985,11 +1163,12 @@ fn wait_without_wait_surface_enforces_ownership() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_found");
@@ -1010,12 +1189,16 @@ fn cancel_action_forwards_reason() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let cancelled = Arc::new(Mutex::new(Vec::new()));
     let cancelled_clone = cancelled.clone();
@@ -1025,19 +1208,21 @@ fn cancel_action_forwards_reason() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: Some(Arc::new(move |run: &str, reason: Option<&str>| {
-            cancelled_clone.lock().unwrap().push(format!("{run}:{}", reason.unwrap_or_default()));
+            cancelled_clone
+                .lock()
+                .unwrap()
+                .push(format!("{run}:{}", reason.unwrap_or_default()));
             Ok(())
         })),
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1052,14 +1237,18 @@ fn cancel_action_forwards_reason() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "cancelled");
-    assert_eq!(*cancelled.lock().unwrap(), vec![format!("{run_id}:superseded")]);
+    assert_eq!(
+        *cancelled.lock().unwrap(),
+        vec![format!("{run_id}:superseded")]
+    );
 }
 
 #[test]
@@ -1077,12 +1266,16 @@ fn cancel_foreign_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let cancelled = Arc::new(Mutex::new(Vec::new()));
     let cancelled_clone = cancelled.clone();
@@ -1097,14 +1290,13 @@ fn cancel_foreign_run_rejects() {
         })),
         retry: None,
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1119,11 +1311,12 @@ fn cancel_foreign_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_owned");
@@ -1175,19 +1368,34 @@ fn start_warnings_on_contract_violation() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "started");
     let warnings = details["warnings"].as_array().unwrap();
-    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("\"plan\"") && w.as_str().unwrap().contains("TASK:")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("\"plan\"")
+                && w.as_str().unwrap().contains("TASK:"))
+    );
     for marker in ["DELIVERABLE:", "SCOPE:", "VERIFY:"] {
-        assert!(warnings.iter().any(|warning| warning.as_str().unwrap().contains(marker)), "missing {marker} warning");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.as_str().unwrap().contains(marker)),
+            "missing {marker} warning"
+        );
     }
-    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("verification")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("verification"))
+    );
     assert!(get_text(&result.content[0]).contains("warning"));
 }
 
@@ -1236,11 +1444,12 @@ fn contract_complete_definition_has_empty_warnings() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "started");
     assert!(details["warnings"].as_array().unwrap().is_empty());
@@ -1277,11 +1486,12 @@ fn retired_momus_id_starts_as_ordinary_agent() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
@@ -1303,19 +1513,22 @@ fn retry_without_run_id_rejects() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: None,
-        retry: Some(Arc::new(move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
-            retried_clone.lock().unwrap().push(run.to_string());
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
+                retried_clone.lock().unwrap().push(run.to_string());
+                manager_clone
+                    .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                    .map_err(|e| ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1330,11 +1543,12 @@ fn retry_without_run_id_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_found");
@@ -1356,12 +1570,16 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let retried = Arc::new(Mutex::new(Vec::new()));
     let retried_clone = retried.clone();
@@ -1372,19 +1590,22 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: None,
-        retry: Some(Arc::new(move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
-            retried_clone.lock().unwrap().push(run.to_string());
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
+                retried_clone.lock().unwrap().push(run.to_string());
+                manager_clone
+                    .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                    .map_err(|e| ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1399,15 +1620,21 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             node_ids: Some(vec!["build".into()]),
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
-    assert!(details["error"]["message"].as_str().unwrap().contains("node_ids"));
+    assert!(
+        details["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("node_ids")
+    );
     assert!(retried.lock().unwrap().is_empty());
 }
 
@@ -1426,12 +1653,16 @@ fn send_without_message_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let sent = Arc::new(Mutex::new(Vec::new()));
     let sent_clone = sent.clone();
@@ -1443,7 +1674,10 @@ fn send_without_message_rejects() {
         cancel: None,
         retry: None,
         send: Some(Arc::new(move |run: &str, node: &str, message: &str| {
-            sent_clone.lock().unwrap().push(format!("{run}:{node}:{message}"));
+            sent_clone
+                .lock()
+                .unwrap()
+                .push(format!("{run}:{node}:{message}"));
             Ok(DagToolSendOutcome {
                 node_id: node.to_string(),
                 task_id: Some("task-1".into()),
@@ -1453,14 +1687,13 @@ fn send_without_message_rejects() {
                 queue_position: None,
             })
         })),
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1475,11 +1708,12 @@ fn send_without_message_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
@@ -1501,12 +1735,16 @@ fn send_without_node_id_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = run_dag_tool(
         &deps(&f.manager),
@@ -1520,11 +1758,12 @@ fn send_without_node_id_rejects() {
             node_ids: None,
             message: Some("keep going".into()),
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
@@ -1545,18 +1784,24 @@ fn amend_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let amended = Arc::new(Mutex::new(Vec::new()));
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
-        cancel_node: None, guide: None, pause_reason: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1566,7 +1811,9 @@ fn amend_without_definition_rejects() {
         send: None,
         amend: Some(Arc::new(move |run: &str, _def| {
             amended_clone.lock().unwrap().push(run.to_string());
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
+            manager_clone
+                .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                .map_err(|e| ToolError::Message(e.to_string()).into())
         })),
     };
 
@@ -1582,11 +1829,12 @@ fn amend_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
@@ -1608,12 +1856,16 @@ fn retry_prompt_override_alongside_node_ids_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = run_dag_tool(
         &deps(&f.manager),
@@ -1627,15 +1879,21 @@ fn retry_prompt_override_alongside_node_ids_rejects() {
             node_ids: Some(vec!["plan".into(), "build".into()]),
             message: None,
             prompt: Some("try harder".into()),
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
-    assert!(details["error"]["message"].as_str().unwrap().contains("prompt"));
+    assert!(
+        details["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("prompt")
+    );
 }
 
 #[test]
@@ -1653,18 +1911,24 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let amended = Arc::new(Mutex::new(Vec::new()));
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
-        cancel_node: None, guide: None, pause_reason: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1674,7 +1938,9 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
         send: None,
         amend: Some(Arc::new(move |run: &str, _def| {
             amended_clone.lock().unwrap().push(run.to_string());
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
+            manager_clone
+                .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                .map_err(|e| ToolError::Message(e.to_string()).into())
         })),
     };
 
@@ -1707,11 +1973,12 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_definition");
@@ -1734,12 +2001,16 @@ fn retry_seam_receives_targets_and_prompt() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_clone = calls.clone();
@@ -1750,19 +2021,26 @@ fn retry_seam_receives_targets_and_prompt() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: None,
-        retry: Some(Arc::new(move |run: &str, node_ids: Option<&[String]>, prompt: Option<&str>| {
-            calls_clone.lock().unwrap().push((run.to_string(), node_ids.map(|v| v.to_vec()), prompt.map(String::from)));
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |run: &str, node_ids: Option<&[String]>, prompt: Option<&str>| {
+                calls_clone.lock().unwrap().push((
+                    run.to_string(),
+                    node_ids.map(|v| v.to_vec()),
+                    prompt.map(String::from),
+                ));
+                manager_clone
+                    .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                    .map_err(|e| ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1777,16 +2055,20 @@ fn retry_seam_receives_targets_and_prompt() {
             node_ids: None,
             message: None,
             prompt: Some("try harder".into()),
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "retried");
     assert_eq!(details["run_id"], run_id);
     assert_eq!(details["node_ids"], json!(["plan"]));
-    assert_eq!(*calls.lock().unwrap(), vec![(run_id, Some(vec!["plan".into()]), Some("try harder".into()))]);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![(run_id, Some(vec!["plan".into()]), Some("try harder".into()))]
+    );
 }
 
 #[test]
@@ -1804,12 +2086,16 @@ fn retry_with_neither_selector_passes_none() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls_clone = calls.clone();
@@ -1821,19 +2107,25 @@ fn retry_with_neither_selector_passes_none() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: None,
-        retry: Some(Arc::new(move |_run: &str, node_ids: Option<&[String]>, _prompt: Option<&str>| {
-            calls_clone.lock().unwrap().push(node_ids.map(|v| v.to_vec()));
-            manager_clone.snapshot(&run_id_clone, PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |_run: &str, node_ids: Option<&[String]>, _prompt: Option<&str>| {
+                calls_clone
+                    .lock()
+                    .unwrap()
+                    .push(node_ids.map(|v| v.to_vec()));
+                manager_clone
+                    .snapshot(&run_id_clone, PARENT_SESSION_ID)
+                    .map_err(|e| ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     run_dag_tool(
@@ -1848,11 +2140,12 @@ fn retry_with_neither_selector_passes_none() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(*calls.lock().unwrap(), vec![None]);
 }
 
@@ -1871,12 +2164,16 @@ fn send_seam_returns_delivery_kind() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_send = DagToolDeps {
         manager: f.manager.clone(),
@@ -1895,14 +2192,13 @@ fn send_seam_returns_delivery_kind() {
                 queue_position: None,
             })
         })),
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -1917,11 +2213,12 @@ fn send_seam_returns_delivery_kind() {
             node_ids: None,
             message: Some("resume with the new spec".into()),
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "sent");
     assert_eq!(details["node_id"], "plan");
@@ -1944,18 +2241,24 @@ fn amend_seam_receives_compiled_definition() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let amended = Arc::new(Mutex::new(Vec::new()));
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
-        cancel_node: None, guide: None, pause_reason: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1965,8 +2268,13 @@ fn amend_seam_receives_compiled_definition() {
         send: None,
         amend: Some(Arc::new(move |run: &str, def| {
             let prompts: Vec<String> = def.nodes.iter().map(|n| n.prompt.clone()).collect();
-            amended_clone.lock().unwrap().push((run.to_string(), prompts));
-            manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
+            amended_clone
+                .lock()
+                .unwrap()
+                .push((run.to_string(), prompts));
+            manager_clone
+                .snapshot(&run.to_string(), PARENT_SESSION_ID)
+                .map_err(|e| ToolError::Message(e.to_string()).into())
         })),
     };
 
@@ -2013,17 +2321,21 @@ fn amend_seam_receives_compiled_definition() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "amended");
     assert_eq!(details["run_id"], run_id);
     assert_eq!(
         *amended.lock().unwrap(),
-        vec![(run_id, vec!["draft a BETTER plan".into(), "build it".into()])]
+        vec![(
+            run_id,
+            vec!["draft a BETTER plan".into(), "build it".into()]
+        )]
     );
 }
 
@@ -2042,12 +2354,16 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
         manager: f.manager.clone(),
@@ -2064,14 +2380,13 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2086,11 +2401,12 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "node_not_found");
@@ -2113,12 +2429,16 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
         manager: f.manager.clone(),
@@ -2135,14 +2455,13 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2157,15 +2476,19 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "node_not_retryable");
-    assert_eq!(details["error"]["message"], "dag node \"plan\" already completed");
+    assert_eq!(
+        details["error"]["message"],
+        "dag node \"plan\" already completed"
+    );
     assert_eq!(details["error"]["node_ids"], json!(["plan"]));
 }
 
@@ -2184,12 +2507,16 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
         manager: f.manager.clone(),
@@ -2206,14 +2533,13 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2228,15 +2554,19 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "node_not_continuable");
-    assert_eq!(details["error"]["message"], "dag node \"plan\" cannot be continued");
+    assert_eq!(
+        details["error"]["message"],
+        "dag node \"plan\" cannot be continued"
+    );
     assert_eq!(details["error"]["node_ids"], json!(["plan"]));
 }
 
@@ -2255,12 +2585,16 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
         manager: f.manager.clone(),
@@ -2277,14 +2611,13 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2299,11 +2632,12 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_still_active");
@@ -2326,12 +2660,16 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
         manager: f.manager.clone(),
@@ -2348,14 +2686,13 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2370,15 +2707,19 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_arguments");
-    assert_eq!(details["error"]["message"], "a retry prompt override requires exactly one explicit node id");
+    assert_eq!(
+        details["error"]["message"],
+        "a retry prompt override requires exactly one explicit node id"
+    );
     assert_eq!(details["error"]["node_ids"], json!(["plan"]));
 }
 
@@ -2397,15 +2738,21 @@ fn amend_refusal_invalid_amendment_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
-        cancel_node: None, guide: None, pause_reason: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2434,15 +2781,19 @@ fn amend_refusal_invalid_amendment_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "invalid_amendment");
-    assert_eq!(details["error"]["message"], "removed node still has dependents");
+    assert_eq!(
+        details["error"]["message"],
+        "removed node still has dependents"
+    );
 }
 
 #[test]
@@ -2460,15 +2811,21 @@ fn amend_refusal_amend_running_node_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let with_error = DagToolDeps {
-        cancel_node: None, guide: None, pause_reason: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2497,15 +2854,19 @@ fn amend_refusal_amend_running_node_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "amend_running_node");
-    assert_eq!(details["error"]["message"], "cannot amend scheduled or running nodes: plan");
+    assert_eq!(
+        details["error"]["message"],
+        "cannot amend scheduled or running nodes: plan"
+    );
 }
 
 #[test]
@@ -2523,12 +2884,16 @@ fn retry_foreign_session_enforces_run_not_owned() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
-    let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
+    )
+    .unwrap();
+    let run_id = started.details.unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let retried = Arc::new(Mutex::new(Vec::new()));
     let retried_clone = retried.clone();
@@ -2539,19 +2904,22 @@ fn retry_foreign_session_enforces_run_not_owned() {
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
         wait: None,
         cancel: None,
-        retry: Some(Arc::new(move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
-            retried_clone.lock().unwrap().push(run.to_string());
-            manager_clone.snapshot(&run.to_string(), FOREIGN_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
-        })),
+        retry: Some(Arc::new(
+            move |run: &str, _nodes: Option<&[String]>, _prompt: Option<&str>| {
+                retried_clone.lock().unwrap().push(run.to_string());
+                manager_clone
+                    .snapshot(&run.to_string(), FOREIGN_SESSION_ID)
+                    .map_err(|e| ToolError::Message(e.to_string()).into())
+            },
+        )),
         send: None,
-        amend:None,
+        amend: None,
 
-    cancel_node:None,
+        cancel_node: None,
 
-    guide:None,
+        guide: None,
 
-    pause_reason:None,
-
+        pause_reason: None,
     };
 
     let result = run_dag_tool(
@@ -2566,11 +2934,12 @@ fn retry_foreign_session_enforces_run_not_owned() {
             node_ids: None,
             message: None,
             prompt: None,
-        guidance_id: None,
-        text: None,
-        remove: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["kind"], "error");
     assert_eq!(details["error"]["code"], "run_not_owned");
@@ -2590,7 +2959,19 @@ fn workflow_tool_schema_offers_control_verbs() {
         .collect();
     assert_eq!(
         members,
-        vec!["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend", "resume", "cancel_node", "guide"]
+        vec![
+            "start",
+            "attach",
+            "snapshot",
+            "wait",
+            "cancel",
+            "retry",
+            "send",
+            "amend",
+            "resume",
+            "cancel_node",
+            "guide"
+        ]
     );
     let desc = action_schema["description"].as_str().unwrap();
     assert!(desc.contains("retry"));
@@ -2600,36 +2981,58 @@ fn workflow_tool_schema_offers_control_verbs() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_wait_abort_returns_nonterminal_snapshot() {
-    use senpi_task::dag::handle::{create_dag_wait_surface, DagWaitSurfaceOptions};
+    use senpi_task::dag::handle::{DagWaitSurfaceOptions, create_dag_wait_surface};
     let f = fixture();
     let started = run_dag_tool(&deps(&f.manager), serde_json::from_value(json!({
         "action":"start", "definition":{"key":"abort-test","name":"abort","nodes":[{"id":"one","prompt":"work","category":"quick"}]}
     })).expect("input")).expect("start");
-    let run_id = started.details.expect("details")["run_id"].as_str().expect("run").to_owned();
+    let run_id = started.details.expect("details")["run_id"]
+        .as_str()
+        .expect("run")
+        .to_owned();
     let (ready, registered) = tokio::sync::oneshot::channel();
     let ready = Mutex::new(Some(ready));
     let surface = create_dag_wait_surface(DagWaitSurfaceOptions {
         store: f.store.clone(),
         subscribe: Arc::new(move |_, _| {
-            if let Some(ready) = ready.lock().expect("ready").take() { ready.send(()).expect("registration"); }
+            if let Some(ready) = ready.lock().expect("ready").take() {
+                ready.send(()).expect("registration");
+            }
             Box::new(|| {})
         }),
-        cancel: None, read_output: None,
+        cancel: None,
+        read_output: None,
     });
     let waiter = surface.clone();
     let mut dependencies = deps(&f.manager);
     dependencies.wait = Some(Arc::new(move |run, session| {
-        let result = waiter.wait(&run.to_owned(), session).map_err(|error| ToolError::Message(error.to_string()))?;
-        Ok(json!({"runId": result.run_id, "status": result.status, "snapshot": result.snapshot, "nodes": {}}))
+        let result = waiter
+            .wait(&run.to_owned(), session)
+            .map_err(|error| ToolError::Message(error.to_string()))?;
+        Ok(
+            json!({"runId": result.run_id, "status": result.status, "snapshot": result.snapshot, "nodes": {}}),
+        )
     }));
     let signal = maho_ext_api::AbortSignal::default();
     let abort = signal.clone();
-    let trigger = tokio::spawn(async move { registered.await.expect("registered"); abort.abort(); });
+    let trigger = tokio::spawn(async move {
+        registered.await.expect("registered");
+        abort.abort();
+    });
     let tool = create_dag_tool(dependencies);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), (tool.execute)(maho_ext_api::ToolCall {
-        id: "wait", params: json!({"action":"wait","run_id":run_id,"detach":false}),
-        signal, on_update: None, context: None,
-    })).await.expect("bounded abort").expect("snapshot");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        (tool.execute)(maho_ext_api::ToolCall {
+            id: "wait",
+            params: json!({"action":"wait","run_id":run_id,"detach":false}),
+            signal,
+            on_update: None,
+            context: None,
+        }),
+    )
+    .await
+    .expect("bounded abort")
+    .expect("snapshot");
     trigger.await.expect("trigger");
     let details = result.details.expect("details");
     assert_eq!(details["kind"], "waited");
@@ -2640,28 +3043,54 @@ async fn blocking_wait_abort_returns_nonterminal_snapshot() {
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_wait_does_not_starve_the_executor_that_drives_the_run() {
     let f = fixture();
-    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
-        action: "start".into(), definition: Some(default_definition()), run_id: None,
-        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
-    guidance_id: None,
-    text: None,
-    remove: None,
-    }).expect("start");
-    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    let started = run_dag_tool(
+        &deps(&f.manager),
+        DagToolInput {
+            action: "start".into(),
+            definition: Some(default_definition()),
+            run_id: None,
+            reason: None,
+            detach: None,
+            node_id: None,
+            node_ids: None,
+            message: None,
+            prompt: None,
+            guidance_id: None,
+            text: None,
+            remove: None,
+        },
+    )
+    .expect("start");
+    let run_id = started.details.expect("details")["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_owned();
     // The run settles only when a task on this same current-thread executor makes progress, the way
     // in-process children stream their provider responses on the CLI runtime.
     let (settle, settled) = std::sync::mpsc::channel::<()>();
     let settled = Mutex::new(settled);
     let mut dependencies = deps(&f.manager);
     dependencies.wait = Some(Arc::new(move |run, _| {
-        settled.lock().expect("settle receiver").recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| ToolError::Message("executor starved".into()))?;
+        settled
+            .lock()
+            .expect("settle receiver")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| ToolError::Message("executor starved".into()))?;
         Ok(json!({"runId": run, "status": "completed"}))
     }));
     tokio::spawn(async move { settle.send(()).expect("waiter alive") });
     let tool = create_dag_tool(dependencies);
     let result = (tool.execute)(maho_ext_api::ToolCall {
-        id: "wait", params: json!({"action": "wait", "run_id": run_id, "detach": false}),
-        signal: Default::default(), on_update: None, context: None,
-    }).await.expect("wait settles while the executor keeps running");
-    assert_eq!(result.details.expect("details")["result"]["status"], "completed");
+        id: "wait",
+        params: json!({"action": "wait", "run_id": run_id, "detach": false}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("wait settles while the executor keeps running");
+    assert_eq!(
+        result.details.expect("details")["result"]["status"],
+        "completed"
+    );
 }

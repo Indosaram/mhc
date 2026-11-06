@@ -11,12 +11,19 @@ pub fn cloudflare_workers_ai_provider() -> Result<Arc<dyn Provider>, crate::mode
         name: Some("Cloudflare Workers AI".into()),
         base_url: None,
         headers: None,
-        auth: Some(ProviderAuth { api_key: Some(Arc::new(super::cloudflare_auth::cloudflare_workers_ai_auth())), oauth: None }),
+        auth: Some(ProviderAuth {
+            api_key: Some(Arc::new(
+                super::cloudflare_auth::cloudflare_workers_ai_auth(),
+            )),
+            oauth: None,
+        }),
         models: super::cloudflare_workers_ai_models::cloudflare_workers_ai_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,
         images: indexmap::IndexMap::new(),
-        api: ProviderApi::Single(cloudflare_streams(builtin_api_streams("openai-completions"))),
+        api: ProviderApi::Single(cloudflare_streams(builtin_api_streams(
+            "openai-completions",
+        ))),
     })
 }

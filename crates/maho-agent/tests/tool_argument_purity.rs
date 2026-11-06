@@ -43,7 +43,8 @@ fn in_place_normalizing_tool() -> AgentTool {
         execution_mode: None,
         tool: Tool {
             name: "in_place_normalizer".to_owned(),
-            description: "Normalizes its arguments in place and returns the same reference.".to_owned(),
+            description: "Normalizes its arguments in place and returns the same reference."
+                .to_owned(),
             parameters: parameters(),
             output_schema: None,
             freeform: None,
@@ -60,7 +61,10 @@ fn key_deleting_tool() -> AgentTool {
         }
         Ok(args)
     });
-    AgentTool { prepare_arguments: Some(shim), ..in_place_normalizing_tool() }
+    AgentTool {
+        prepare_arguments: Some(shim),
+        ..in_place_normalizing_tool()
+    }
 }
 
 fn tool_call_with(args: Value) -> AgentToolCall {
@@ -77,9 +81,11 @@ fn tool_call_with(args: Value) -> AgentToolCall {
 
 #[test]
 fn keeps_the_providers_arguments_when_the_shim_normalizes_in_place() {
-    let tool_call = tool_call_with(json!({ "summary": "original summary", "nested": { "value": "original" } }));
+    let tool_call =
+        tool_call_with(json!({ "summary": "original summary", "nested": { "value": "original" } }));
 
-    let prepared = prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call).expect("prepared arguments");
+    let prepared = prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call)
+        .expect("prepared arguments");
 
     assert_eq!(
         Value::Object(tool_call.arguments.clone()),
@@ -95,9 +101,13 @@ fn keeps_the_providers_arguments_when_the_shim_normalizes_in_place() {
 fn keeps_the_providers_arguments_when_the_shim_deletes_a_key() {
     let tool_call = tool_call_with(json!({ "summary": "original summary" }));
 
-    let prepared = prepare_agent_tool_call_arguments(&key_deleting_tool(), &tool_call).expect("prepared arguments");
+    let prepared = prepare_agent_tool_call_arguments(&key_deleting_tool(), &tool_call)
+        .expect("prepared arguments");
 
-    assert_eq!(Value::Object(tool_call.arguments.clone()), json!({ "summary": "original summary" }));
+    assert_eq!(
+        Value::Object(tool_call.arguments.clone()),
+        json!({ "summary": "original summary" })
+    );
     assert_eq!(Value::Object(prepared.arguments.clone()), json!({}));
 }
 
@@ -105,7 +115,8 @@ fn keeps_the_providers_arguments_when_the_shim_deletes_a_key() {
 fn keeps_nested_provider_arguments_when_the_shim_mutates_a_nested_object() {
     let tool_call = tool_call_with(json!({ "nested": { "value": "original" } }));
 
-    prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call).expect("prepared arguments");
+    prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call)
+        .expect("prepared arguments");
 
     assert_eq!(tool_call.arguments["nested"]["value"], json!("original"));
 }
@@ -113,9 +124,13 @@ fn keeps_nested_provider_arguments_when_the_shim_mutates_a_nested_object() {
 #[test]
 fn leaves_a_tool_without_a_shim_on_its_original_arguments_object() {
     let tool_call = tool_call_with(json!({ "summary": "original summary" }));
-    let without_shim = AgentTool { prepare_arguments: None, ..in_place_normalizing_tool() };
+    let without_shim = AgentTool {
+        prepare_arguments: None,
+        ..in_place_normalizing_tool()
+    };
 
-    let prepared = prepare_agent_tool_call_arguments(&without_shim, &tool_call).expect("prepared arguments");
+    let prepared =
+        prepare_agent_tool_call_arguments(&without_shim, &tool_call).expect("prepared arguments");
 
     assert_eq!(prepared.arguments, tool_call.arguments);
     assert_eq!(prepared.id, tool_call.id);

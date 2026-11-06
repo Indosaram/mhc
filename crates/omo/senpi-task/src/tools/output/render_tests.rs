@@ -2,11 +2,15 @@
 
 use pretty_assertions::assert_eq;
 
-use crate::tools::output::render::{RenderOptions, TRANSCRIPT_MAX_CHARS, cap_text, render_transcript};
+use crate::tools::output::render::{
+    RenderOptions, TRANSCRIPT_MAX_CHARS, cap_text, render_transcript,
+};
 use crate::tools::output::types::{TranscriptEntry, TranscriptMode};
 
 fn assistant(text: &str) -> TranscriptEntry {
-    TranscriptEntry::Assistant { text: text.to_string() }
+    TranscriptEntry::Assistant {
+        text: text.to_string(),
+    }
 }
 
 fn tool(name: &str, is_error: bool) -> TranscriptEntry {
@@ -23,7 +27,11 @@ fn js_len(text: &str) -> usize {
 #[test]
 fn given_entries_when_full_mode_then_every_entry_is_rendered_and_not_truncated() {
     // given
-    let entries = vec![assistant("first answer"), tool("bash", false), assistant("second answer")];
+    let entries = vec![
+        assistant("first answer"),
+        tool("bash", false),
+        assistant("second answer"),
+    ];
 
     // when
     let rendered = render_transcript(
@@ -42,9 +50,12 @@ fn given_entries_when_full_mode_then_every_entry_is_rendered_and_not_truncated()
 }
 
 #[test]
-fn given_a_transcript_with_more_lines_than_tail_lines_when_tail_mode_then_only_the_last_tail_lines_lines_remain() {
+fn given_a_transcript_with_more_lines_than_tail_lines_when_tail_mode_then_only_the_last_tail_lines_lines_remain()
+ {
     // given
-    let entries: Vec<TranscriptEntry> = (0..10).map(|index| assistant(&format!("line {index}"))).collect();
+    let entries: Vec<TranscriptEntry> = (0..10)
+        .map(|index| assistant(&format!("line {index}")))
+        .collect();
 
     // when
     let rendered = render_transcript(
@@ -63,7 +74,8 @@ fn given_a_transcript_with_more_lines_than_tail_lines_when_tail_mode_then_only_t
 }
 
 #[test]
-fn given_a_transcript_longer_than_the_cap_when_rendered_then_it_is_elided_with_a_head_tail_marker_under_the_cap() {
+fn given_a_transcript_longer_than_the_cap_when_rendered_then_it_is_elided_with_a_head_tail_marker_under_the_cap()
+ {
     // given
     let big = "x".repeat(TRANSCRIPT_MAX_CHARS * 2);
     let entries = vec![assistant(&big)];
@@ -131,7 +143,8 @@ fn given_a_transcript_elided_at_surrogate_boundary_when_rendered_then_no_replace
 }
 
 #[test]
-fn given_a_transcript_elided_at_tail_surrogate_boundary_when_rendered_then_no_replacement_characters() {
+fn given_a_transcript_elided_at_tail_surrogate_boundary_when_rendered_then_no_replacement_characters()
+ {
     let mut text = "a".repeat(25000);
     text.push('🎉');
     text.push_str(&"b".repeat(14985));

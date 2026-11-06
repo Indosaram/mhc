@@ -22,7 +22,9 @@ pub struct TaskArgumentError {
 
 impl TaskArgumentError {
     fn new(message: &str) -> Self {
-        Self { message: message.to_string() }
+        Self {
+            message: message.to_string(),
+        }
     }
 }
 
@@ -121,13 +123,29 @@ fn task_item(value: &Value) -> Result<Option<Map<String, Value>>, TaskArgumentEr
     let mut item = Map::new();
     item.insert("prompt".to_string(), Value::String(prompt));
     put_isolation(&mut item, isolation_arguments(record)?);
-    put_text(&mut item, "task_summary", summary_text(record.get("task_summary")));
-    put_text(&mut item, "description", non_blank_text(record.get("description")));
+    put_text(
+        &mut item,
+        "task_summary",
+        summary_text(record.get("task_summary")),
+    );
+    put_text(
+        &mut item,
+        "description",
+        non_blank_text(record.get("description")),
+    );
     put_text(&mut item, "category", identifier(record.get("category")));
-    put_text(&mut item, "subagent_type", identifier(record.get("subagent_type")));
+    put_text(
+        &mut item,
+        "subagent_type",
+        identifier(record.get("subagent_type")),
+    );
     put_text(&mut item, "name", identifier(record.get("name")));
     put_text(&mut item, "model", identifier(record.get("model")));
-    put_list(&mut item, "load_skills", string_list(record.get("load_skills")));
+    put_list(
+        &mut item,
+        "load_skills",
+        string_list(record.get("load_skills")),
+    );
     if let Some(value) = record.get("run_in_background").and_then(Value::as_bool) {
         item.insert("run_in_background".to_string(), Value::Bool(value));
     }
@@ -181,12 +199,27 @@ pub fn normalize_task_tool_arguments(raw: &Value) -> Result<Value, TaskArgumentE
     let mut out = Map::new();
     put_text(&mut out, "prompt", prompt);
     put_isolation(&mut out, isolation);
-    put_text(&mut out, "task_summary", summary_text(raw.get("task_summary")));
-    put_text(&mut out, "description", non_blank_text(raw.get("description")));
+    put_text(
+        &mut out,
+        "task_summary",
+        summary_text(raw.get("task_summary")),
+    );
+    put_text(
+        &mut out,
+        "description",
+        non_blank_text(raw.get("description")),
+    );
     put_text(&mut out, "category", identifier(raw.get("category")));
-    put_text(&mut out, "subagent_type", identifier(raw.get("subagent_type")));
+    put_text(
+        &mut out,
+        "subagent_type",
+        identifier(raw.get("subagent_type")),
+    );
     if let Some(run_in_background) = run_in_background {
-        out.insert("run_in_background".to_string(), Value::Bool(run_in_background));
+        out.insert(
+            "run_in_background".to_string(),
+            Value::Bool(run_in_background),
+        );
     }
     put_text(&mut out, "name", identifier(raw.get("name")));
     put_text(&mut out, "model", identifier(raw.get("model")));

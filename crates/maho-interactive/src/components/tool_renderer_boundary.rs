@@ -18,7 +18,13 @@ impl ToolRendererBoundary {
         fallback: Option<Rc<RefCell<dyn Component>>>,
         on_failure: Box<dyn FnMut()>,
     ) -> Self {
-        Self { component, component_disposed: false, fallback, failed: false, on_failure }
+        Self {
+            component,
+            component_disposed: false,
+            fallback,
+            failed: false,
+            on_failure,
+        }
     }
 
     fn fail(&mut self) {

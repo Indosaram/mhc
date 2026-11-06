@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use maho_ai::types::{StopReason};
-use serde_json::{json, Value};
+use maho_ai::types::StopReason;
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -37,9 +37,22 @@ async fn capture(
     })]);
     let mut options = capture_options(&sink);
     options.stream.max_tokens = max_tokens;
-    let message = finish(&run_simple(model, context, options, Some(transport.clone()))).await;
-    assert_eq!(message.stop_reason, StopReason::Stop, "request should reach the scripted transport");
-    sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body)
+    let message = finish(&run_simple(
+        model,
+        context,
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
+    assert_eq!(
+        message.stop_reason,
+        StopReason::Stop,
+        "request should reach the scripted transport"
+    );
+    sink.lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body)
 }
 
 #[tokio::test]
@@ -52,18 +65,36 @@ async fn sends_json_content_type_without_custom_headers() {
         &context(vec![user_message("hi")], None),
         simple_options("test"),
         Some(transport.clone()),
-    )).await;
+    ))
+    .await;
 
     assert_eq!(message.stop_reason, StopReason::Stop);
-    assert_eq!(transport.last_request().headers.get("content-type").map(String::as_str), Some("application/json"));
+    assert_eq!(
+        transport
+            .last_request()
+            .headers
+            .get("content-type")
+            .map(String::as_str),
+        Some("application/json")
+    );
 }
 
 #[tokio::test]
 async fn omits_tools_field_when_context_tools_is_an_empty_array() {
     let model = base_model(&[]);
-    let payload = capture(&model, &context(vec![user_message("hi")], Some(Vec::new())), None).await;
+    let payload = capture(
+        &model,
+        &context(vec![user_message("hi")], Some(Vec::new())),
+        None,
+    )
+    .await;
 
-    assert!(!payload.as_object().expect("payload object").contains_key("tools"));
+    assert!(
+        !payload
+            .as_object()
+            .expect("payload object")
+            .contains_key("tools")
+    );
 }
 
 #[tokio::test]
@@ -71,7 +102,12 @@ async fn omits_tools_field_when_context_tools_is_undefined() {
     let model = base_model(&[]);
     let payload = capture(&model, &context(vec![user_message("hi")], None), None).await;
 
-    assert!(!payload.as_object().expect("payload object").contains_key("tools"));
+    assert!(
+        !payload
+            .as_object()
+            .expect("payload object")
+            .contains_key("tools")
+    );
 }
 
 #[tokio::test]
@@ -80,7 +116,10 @@ async fn sends_default_max_tokens() {
     let payload = capture(&model, &context(vec![user_message("hi")], None), None).await;
 
     assert_eq!(payload.get("max_tokens"), None);
-    assert_eq!(payload.get("max_completion_tokens").and_then(Value::as_u64), Some(model.max_tokens));
+    assert_eq!(
+        payload.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(model.max_tokens)
+    );
 }
 
 #[tokio::test]
@@ -89,31 +128,53 @@ async fn sends_explicit_max_tokens() {
     let payload = capture(&model, &context(vec![user_message("hi")], None), Some(1234)).await;
 
     assert_eq!(payload.get("max_tokens"), None);
-    assert_eq!(payload.get("max_completion_tokens").and_then(Value::as_u64), Some(1234));
+    assert_eq!(
+        payload.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(1234)
+    );
 }
 
 #[tokio::test]
 async fn clamps_default_max_tokens_to_remaining_context() {
     let model = base_model(&[("contextWindow", json!(10000)), ("maxTokens", json!(8000))]);
-    let payload = capture(&model, &context(vec![user_message(&"x".repeat(8000))], None), None).await;
+    let payload = capture(
+        &model,
+        &context(vec![user_message(&"x".repeat(8000))], None),
+        None,
+    )
+    .await;
 
     assert_eq!(payload.get("max_tokens"), None);
-    assert_eq!(payload.get("max_completion_tokens").and_then(Value::as_u64), Some(3904));
+    assert_eq!(
+        payload.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(3904)
+    );
 }
 
 #[tokio::test]
 async fn clamps_explicit_max_tokens_to_remaining_context() {
     let model = base_model(&[("contextWindow", json!(10000)), ("maxTokens", json!(8000))]);
-    let payload = capture(&model, &context(vec![user_message(&"x".repeat(8000))], None), Some(7000)).await;
+    let payload = capture(
+        &model,
+        &context(vec![user_message(&"x".repeat(8000))], None),
+        Some(7000),
+    )
+    .await;
 
     assert_eq!(payload.get("max_tokens"), None);
-    assert_eq!(payload.get("max_completion_tokens").and_then(Value::as_u64), Some(3904));
+    assert_eq!(
+        payload.get("max_completion_tokens").and_then(Value::as_u64),
+        Some(3904)
+    );
 }
 
 #[tokio::test]
 async fn still_emits_tools_empty_for_anthropic_lite_llm_proxy_when_conversation_has_tool_history() {
     let model = base_model(&[]);
-    let mut call = assistant(vec![tool_call("t1", "noop", json!({}))], StopReason::ToolUse);
+    let mut call = assistant(
+        vec![tool_call("t1", "noop", json!({}))],
+        StopReason::ToolUse,
+    );
     if let maho_ai::types::Message::Assistant(assistant) = &mut call {
         let assistant = std::sync::Arc::make_mut(assistant);
         assistant.api = "openai-completions".to_owned();
@@ -121,12 +182,19 @@ async fn still_emits_tools_empty_for_anthropic_lite_llm_proxy_when_conversation_
         assistant.model = "gpt-4o-mini".to_owned();
     }
     let messages = context(
-        vec![user_message("use the tool"), call, tool_result("t1", vec![text_block("done")])],
+        vec![
+            user_message("use the tool"),
+            call,
+            tool_result("t1", vec![text_block("done")]),
+        ],
         Some(Vec::new()),
     );
 
     let payload = capture(&model, &messages, None).await;
 
-    let tools = payload.get("tools").and_then(Value::as_array).expect("tools array");
+    let tools = payload
+        .get("tools")
+        .and_then(Value::as_array)
+        .expect("tools array");
     assert!(tools.is_empty());
 }

@@ -14,7 +14,11 @@ pub async fn print_prompt_sizes(
             "error": { "reason": "no model selected" }
         }));
     }
-    if runtime.diagnostics().iter().any(|d| d.kind == crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error) {
+    if runtime
+        .diagnostics()
+        .iter()
+        .any(|d| d.kind == crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error)
+    {
         return Ok(serde_json::json!({
             "error": { "reason": "session initialization failed" }
         }));

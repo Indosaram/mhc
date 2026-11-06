@@ -47,8 +47,14 @@ fn main() {
 
     let input: Rc<RefCell<Input>> = Rc::new(RefCell::new(Input::new(InputOptions::default())));
     let input_component: Rc<RefCell<dyn Component>> = input.clone() as Rc<RefCell<dyn Component>>;
-    screen.borrow_mut().base.add_child(Rc::clone(&input_component));
-    screen.borrow_mut().base.set_focus(Some(Rc::clone(&input_component)));
+    screen
+        .borrow_mut()
+        .base
+        .add_child(Rc::clone(&input_component));
+    screen
+        .borrow_mut()
+        .base
+        .set_focus(Some(Rc::clone(&input_component)));
 
     let is_responding = Rc::new(RefCell::new(false));
     let pending_response_due_ms: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
@@ -67,7 +73,11 @@ fn main() {
         }));
     }
 
-    let support = maho_tui::tui_main_screen::MouseTrackingSupport { is_tty: false, is_termux: false, is_windows_without_wt: false };
+    let support = maho_tui::tui_main_screen::MouseTrackingSupport {
+        is_tty: false,
+        is_termux: false,
+        is_windows_without_wt: false,
+    };
     let mut terminal = ProcessTerminal::default();
 
     // `ProcessTerminal::pump` invokes the input callback while it still holds `&mut self`, so
@@ -102,7 +112,14 @@ fn main() {
         if !submits.is_empty() {
             let mut screen_mut = screen.borrow_mut();
             for value in submits {
-                apply_submit(&mut screen_mut, &value, now, &is_responding, &pending_response_due_ms, &pending_loader);
+                apply_submit(
+                    &mut screen_mut,
+                    &value,
+                    now,
+                    &is_responding,
+                    &pending_response_due_ms,
+                    &pending_loader,
+                );
             }
         }
 
@@ -113,11 +130,13 @@ fn main() {
             *pending_response_due_ms.borrow_mut() = None;
             let mut screen_mut = screen.borrow_mut();
             if let Some(loader) = pending_loader.borrow_mut().take() {
-                let loader_component: Rc<RefCell<dyn Component>> = loader as Rc<RefCell<dyn Component>>;
+                let loader_component: Rc<RefCell<dyn Component>> =
+                    loader as Rc<RefCell<dyn Component>>;
                 screen_mut.base.remove_child(&loader_component);
             }
             let response = RESPONSES[(now as usize / 7) % RESPONSES.len()];
-            let bot_message: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::new(response)));
+            let bot_message: Rc<RefCell<dyn Component>> =
+                Rc::new(RefCell::new(Text::new(response)));
             screen_mut.base.add_child(Rc::clone(&bot_message));
             *is_responding.borrow_mut() = false;
             screen_mut.base.request_render(false, now);
@@ -172,7 +191,11 @@ fn apply_submit(
 
     if trimmed == "/clear" {
         let children: Vec<_> = screen_mut.base.children().to_vec();
-        for child in children.iter().skip(2).take(children.len().saturating_sub(3)) {
+        for child in children
+            .iter()
+            .skip(2)
+            .take(children.len().saturating_sub(3))
+        {
             screen_mut.base.remove_child(child);
         }
         screen_mut.base.request_render(false, now);

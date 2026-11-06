@@ -22,9 +22,9 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::Value;
 use senpi_task::category::{CategoryResolutionResult, ResolveCategoryOptions, resolve_category};
 use senpi_task::host::{HostError, SenpiModelRegistry, parse_available_models};
+use serde_json::Value;
 
 use crate::worker::memory_model_attempts::ReflectionModelCandidate;
 
@@ -64,10 +64,13 @@ pub fn order_kibitzer_candidates_by_connection(
         _ => return Ok(KibitzerCandidateOrder::AvailabilityUnknown),
     };
     let connected: BTreeSet<String> = available.into_iter().collect();
-    let mut candidates: Vec<ReflectionModelCandidate> = Vec::with_capacity(1 + input.fallbacks.len());
+    let mut candidates: Vec<ReflectionModelCandidate> =
+        Vec::with_capacity(1 + input.fallbacks.len());
     candidates.push(ReflectionModelCandidate {
         model: input.model.to_string(),
-        thinking: input.thinking.map(str::to_string), load_extensions: None });
+        thinking: input.thinking.map(str::to_string),
+        load_extensions: None,
+    });
     candidates.extend(input.fallbacks.iter().cloned());
     let leading: Vec<ReflectionModelCandidate> = candidates
         .iter()
@@ -173,11 +176,20 @@ mod tests {
     }
 
     fn candidate(model: &str, thinking: Option<&str>) -> ReflectionModelCandidate {
-        ReflectionModelCandidate { model: model.to_string(), thinking: thinking.map(str::to_string) , load_extensions: None }
+        ReflectionModelCandidate {
+            model: model.to_string(),
+            thinking: thinking.map(str::to_string),
+            load_extensions: None,
+        }
     }
 
     fn models(entries: &[(&str, &str)]) -> Value {
-        Value::Array(entries.iter().map(|(provider, id)| json!({ "provider": provider, "id": id })).collect())
+        Value::Array(
+            entries
+                .iter()
+                .map(|(provider, id)| json!({ "provider": provider, "id": id }))
+                .collect(),
+        )
     }
 
     #[test]
@@ -211,9 +223,13 @@ mod tests {
     }
 
     #[test]
-    fn given_connected_and_disconnected_candidates_when_ordered_then_connected_lead_keeps_order_and_thinking() {
+    fn given_connected_and_disconnected_candidates_when_ordered_then_connected_lead_keeps_order_and_thinking()
+     {
         let reg = registry(models(&[("google", "a"), ("anthropic", "b")]));
-        let fallbacks = [candidate("google/a", Some("medium")), candidate("anthropic/b", None)];
+        let fallbacks = [
+            candidate("google/a", Some("medium")),
+            candidate("anthropic/b", None),
+        ];
         let order = order_kibitzer_candidates_by_connection(&KibitzerCandidateOrderInput {
             category: "quick",
             config: &json!({}),
@@ -224,13 +240,20 @@ mod tests {
         })
         .expect("order");
         match order {
-            KibitzerCandidateOrder::Ordered { model, thinking, fallbacks } => {
+            KibitzerCandidateOrder::Ordered {
+                model,
+                thinking,
+                fallbacks,
+            } => {
                 assert_eq!(model, "google/a", "the first CONNECTED candidate leads");
                 assert_eq!(thinking.as_deref(), Some("medium"));
                 assert_eq!(fallbacks.len(), 2);
                 assert_eq!(fallbacks[0].model, "anthropic/b");
                 assert_eq!(fallbacks[0].thinking, None);
-                assert_eq!(fallbacks[1].model, "anthropic/pinned", "the disconnected pin stays reachable behind");
+                assert_eq!(
+                    fallbacks[1].model, "anthropic/pinned",
+                    "the disconnected pin stays reachable behind"
+                );
                 assert_eq!(fallbacks[1].thinking.as_deref(), Some("high"));
             }
             other => panic!("expected ordered, got {other:?}"),
@@ -240,7 +263,10 @@ mod tests {
     #[test]
     fn given_a_connected_pin_when_ordered_then_the_pin_leads_with_its_thinking() {
         let reg = registry(models(&[("anthropic", "pinned"), ("google", "a")]));
-        let fallbacks = [candidate("google/a", Some("low")), candidate("openai/c", None)];
+        let fallbacks = [
+            candidate("google/a", Some("low")),
+            candidate("openai/c", None),
+        ];
         let order = order_kibitzer_candidates_by_connection(&KibitzerCandidateOrderInput {
             category: "quick",
             config: &json!({}),
@@ -251,10 +277,17 @@ mod tests {
         })
         .expect("order");
         match order {
-            KibitzerCandidateOrder::Ordered { model, thinking, fallbacks } => {
+            KibitzerCandidateOrder::Ordered {
+                model,
+                thinking,
+                fallbacks,
+            } => {
                 assert_eq!(model, "anthropic/pinned");
                 assert_eq!(thinking.as_deref(), Some("high"));
-                let models: Vec<&str> = fallbacks.iter().map(|candidate| candidate.model.as_str()).collect();
+                let models: Vec<&str> = fallbacks
+                    .iter()
+                    .map(|candidate| candidate.model.as_str())
+                    .collect();
                 assert_eq!(models, ["google/a", "openai/c"]);
                 assert_eq!(fallbacks[0].thinking.as_deref(), Some("low"));
                 assert_eq!(fallbacks[1].thinking, None);
@@ -264,7 +297,8 @@ mod tests {
     }
 
     #[test]
-    fn given_no_connected_candidate_when_ordered_then_missing_providers_are_pinned_then_builtin_deduped() {
+    fn given_no_connected_candidate_when_ordered_then_missing_providers_are_pinned_then_builtin_deduped()
+     {
         // A non-empty availability list that connects nothing here: the ordering refuses and reports
         // the providers a `/login` would revive - the pin's own provider first, then the builtin
         // chain's (asked with the pinned category removed), deduped first-wins.
@@ -280,22 +314,37 @@ mod tests {
         .expect("order");
         match order {
             KibitzerCandidateOrder::NoneConnected { missing_providers } => {
-                assert_eq!(missing_providers.first().map(String::as_str), Some("anthropic"), "the pin's own provider leads");
+                assert_eq!(
+                    missing_providers.first().map(String::as_str),
+                    Some("anthropic"),
+                    "the pin's own provider leads"
+                );
                 assert!(
-                    missing_providers.iter().any(|provider| provider == "kimi-coding"),
+                    missing_providers
+                        .iter()
+                        .any(|provider| provider == "kimi-coding"),
                     "the unpinned builtin chain contributes its providers"
                 );
                 assert!(
-                    !missing_providers.iter().any(|provider| provider == "omo-mock"),
+                    !missing_providers
+                        .iter()
+                        .any(|provider| provider == "omo-mock"),
                     "a connected provider is never reported missing"
                 );
                 assert_eq!(
-                    missing_providers.iter().filter(|provider| provider.as_str() == "anthropic").count(),
+                    missing_providers
+                        .iter()
+                        .filter(|provider| provider.as_str() == "anthropic")
+                        .count(),
                     1,
                     "the pin's provider (also in the chain) appears once, at the front (first-wins dedupe)"
                 );
                 let unique: BTreeSet<&String> = missing_providers.iter().collect();
-                assert_eq!(unique.len(), missing_providers.len(), "missing providers are deduped");
+                assert_eq!(
+                    unique.len(),
+                    missing_providers.len(),
+                    "missing providers are deduped"
+                );
             }
             other => panic!("expected none-connected, got {other:?}"),
         }

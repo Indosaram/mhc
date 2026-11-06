@@ -12,7 +12,11 @@ use std::path::{Path, PathBuf};
 /// MCP server name the tools are exposed under (`mcp_ast_grep_<tool>`).
 pub const SERVER_NAME: &str = "ast_grep";
 /// File name of the sibling binary.
-pub const BINARY_NAME: &str = if cfg!(windows) { "mhc-ast-grep.exe" } else { "mhc-ast-grep" };
+pub const BINARY_NAME: &str = if cfg!(windows) {
+    "mhc-ast-grep.exe"
+} else {
+    "mhc-ast-grep"
+};
 
 /// The sibling binary next to `exe`, when it is a file.
 pub fn sibling_binary(exe: &Path) -> Option<PathBuf> {

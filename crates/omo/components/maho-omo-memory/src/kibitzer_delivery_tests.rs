@@ -4,15 +4,33 @@ use memory_core::recall::RecallLedger;
 use std::sync::Mutex as StdMutex;
 
 fn context(root: &std::path::Path) -> MemoryIdentityContext {
-    MemoryIdentityContext::new("agent".into(), build_identity_paths(root, "agent"), crate::binding::MemorySessionBinding { identity: "agent".into(), repo_path_hash: "hash".into(), bound_at: 0.0 })
+    MemoryIdentityContext::new(
+        "agent".into(),
+        build_identity_paths(root, "agent"),
+        crate::binding::MemorySessionBinding {
+            identity: "agent".into(),
+            repo_path_hash: "hash".into(),
+            bound_at: 0.0,
+        },
+    )
 }
 
-fn nudge(path: &str, hint: &str) -> RecallNudge { RecallNudge { path: path.into(), hint: hint.into(), source: None } }
+fn nudge(path: &str, hint: &str) -> RecallNudge {
+    RecallNudge {
+        path: path.into(),
+        hint: hint.into(),
+        source: None,
+    }
+}
 
 struct RealPending(memory_core::recall::PendingNudges);
 impl KibitzerPendingPort for RealPending {
-    fn write(&self, session_id: &str, nudges: &[RecallNudge]) -> std::io::Result<()> { self.0.write(session_id, nudges) }
-    fn delete(&self, session_id: &str) { self.0.delete(session_id); }
+    fn write(&self, session_id: &str, nudges: &[RecallNudge]) -> std::io::Result<()> {
+        self.0.write(session_id, nudges)
+    }
+    fn delete(&self, session_id: &str) {
+        self.0.delete(session_id);
+    }
 }
 
 #[derive(Default)]
@@ -31,21 +49,39 @@ struct Recorder {
 /// A coordinator whose `enqueue` re-enters `mark_delivered` (proves no deadlock: callbacks run
 /// outside every delivery lock). The fixture root travels WITH the coordinator, so the re-entrant
 /// `mark_delivered` rewrites pending under the SAME tempdir the test owns - never a real ledger.
-struct ReentrantCoordinator { recorder: Arc<Recorder>, root: std::path::PathBuf }
+struct ReentrantCoordinator {
+    recorder: Arc<Recorder>,
+    root: std::path::PathBuf,
+}
 impl KibitzerIdleCoordinator for ReentrantCoordinator {
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
-        self.recorder.enqueued.lock().unwrap().push(entry.key.clone());
+        self.recorder
+            .enqueued
+            .lock()
+            .unwrap()
+            .push(entry.key.clone());
         if let Some(delivery) = self.recorder.reenter.lock().unwrap().clone() {
             let context = context(&self.root);
             // Re-entrant flush of a DIFFERENT path; must not deadlock on any delivery lock.
-            delivery.mark_delivered("s1", &context, &["other.md".to_string()], KibitzerDeliveryVia::Wake);
+            delivery.mark_delivered(
+                "s1",
+                &context,
+                &["other.md".to_string()],
+                KibitzerDeliveryVia::Wake,
+            );
         }
         true
     }
-    fn remove(&self, key: &str) { self.recorder.removed.lock().unwrap().push(key.to_string()); }
+    fn remove(&self, key: &str) {
+        self.recorder.removed.lock().unwrap().push(key.to_string());
+    }
 }
 
-fn delivery(root: &std::path::Path, coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>, recorder: Arc<Recorder>) -> Arc<KibitzerDelivery> {
+fn delivery(
+    root: &std::path::Path,
+    coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
+    recorder: Arc<Recorder>,
+) -> Arc<KibitzerDelivery> {
     let ledger_dir = root.join("ledger");
     let pending_dir = root.join("pending");
     let sent = Arc::clone(&recorder);
@@ -53,12 +89,23 @@ fn delivery(root: &std::path::Path, coordinator: Option<Arc<dyn KibitzerIdleCoor
     let warns = Arc::clone(&recorder);
     let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
         ledger_for: Arc::new(move |_| RecallLedger::new(ledger_dir.clone())),
-        pending_for: Arc::new(move |_| Arc::new(RealPending(memory_core::recall::PendingNudges::new(pending_dir.clone()))) as Arc<dyn KibitzerPendingPort>),
+        pending_for: Arc::new(move |_| {
+            Arc::new(RealPending(memory_core::recall::PendingNudges::new(
+                pending_dir.clone(),
+            ))) as Arc<dyn KibitzerPendingPort>
+        }),
         coordinator,
-        send_message: Arc::new(move |message| { sent.sent.lock().unwrap().push(message.content); Ok(()) }),
-        append_entry: Arc::new(move |_kind, data| { entries.entries.lock().unwrap().push(data); }),
+        send_message: Arc::new(move |message| {
+            sent.sent.lock().unwrap().push(message.content);
+            Ok(())
+        }),
+        append_entry: Arc::new(move |_kind, data| {
+            entries.entries.lock().unwrap().push(data);
+        }),
         resolve_source: None,
-        warn: Arc::new(move |message| { warns.warns.lock().unwrap().push(message.to_string()); }),
+        warn: Arc::new(move |message| {
+            warns.warns.lock().unwrap().push(message.to_string());
+        }),
     });
     *recorder.reenter.lock().unwrap() = Some(Arc::clone(&delivery));
     *recorder.root.lock().unwrap() = Some(root.to_path_buf());
@@ -66,7 +113,11 @@ fn delivery(root: &std::path::Path, coordinator: Option<Arc<dyn KibitzerIdleCoor
 }
 
 fn pending_paths(root: &std::path::Path) -> std::collections::BTreeSet<String> {
-    memory_core::recall::PendingNudges::new(root.join("pending")).take("s1").into_iter().map(|nudge| nudge.path).collect()
+    memory_core::recall::PendingNudges::new(root.join("pending"))
+        .take("s1")
+        .into_iter()
+        .map(|nudge| nudge.path)
+        .collect()
 }
 
 #[test]
@@ -76,7 +127,10 @@ fn given_two_accepts_before_a_drain_when_pending_is_read_then_it_holds_the_merge
     let delivery = delivery(root.path(), None, Arc::new(Recorder::default()));
     delivery.accept("s1", &context, &[nudge("a.md", "first")]);
     delivery.accept("s1", &context, &[nudge("b.md", "second")]);
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["a.md".to_string(), "b.md".to_string()]));
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["a.md".to_string(), "b.md".to_string()])
+    );
 }
 
 #[test]
@@ -84,21 +138,50 @@ fn given_a_reentrant_coordinator_when_accepting_then_it_does_not_deadlock() {
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let delivery = delivery(root.path(), Some(Arc::new(ReentrantCoordinator { recorder: Arc::clone(&recorder), root: root.path().to_path_buf() })), Arc::clone(&recorder));
+    let delivery = delivery(
+        root.path(),
+        Some(Arc::new(ReentrantCoordinator {
+            recorder: Arc::clone(&recorder),
+            root: root.path().to_path_buf(),
+        })),
+        Arc::clone(&recorder),
+    );
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
-    assert!(recorder.enqueued.lock().unwrap().contains(&"kibitzer:a.md".to_string()));
+    assert!(
+        recorder
+            .enqueued
+            .lock()
+            .unwrap()
+            .contains(&"kibitzer:a.md".to_string())
+    );
 }
 
 /// A coordinator whose `remove` re-enters `accept` for one extra path. `drain_for_prompt` runs the
 /// `remove` callbacks OUTSIDE the state lock, so this lands exactly in the window where an
 /// unconditional `sessions.remove` would drop the reentrant nudges.
-struct RemoveReentrantCoordinator { recorder: Arc<Recorder>, extra: String }
+struct RemoveReentrantCoordinator {
+    recorder: Arc<Recorder>,
+    extra: String,
+}
 impl KibitzerIdleCoordinator for RemoveReentrantCoordinator {
-    fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool { self.recorder.enqueued.lock().unwrap().push(entry.key.clone()); true }
+    fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
+        self.recorder
+            .enqueued
+            .lock()
+            .unwrap()
+            .push(entry.key.clone());
+        true
+    }
     fn remove(&self, key: &str) {
         self.recorder.removed.lock().unwrap().push(key.to_string());
         if let Some(delivery) = self.recorder.reenter.lock().unwrap().clone() {
-            let root = self.recorder.root.lock().unwrap().clone().expect("fixture root");
+            let root = self
+                .recorder
+                .root
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("fixture root");
             let context = context(&root);
             delivery.accept("s1", &context, &[nudge(&self.extra, "reentrant")]);
         }
@@ -112,12 +195,22 @@ fn given_a_reentrant_accept_during_drain_when_it_finishes_then_the_new_accept_is
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let coordinator = Arc::new(RemoveReentrantCoordinator { recorder: Arc::clone(&recorder), extra: "b.md".to_string() });
+    let coordinator = Arc::new(RemoveReentrantCoordinator {
+        recorder: Arc::clone(&recorder),
+        extra: "b.md".to_string(),
+    });
     let delivery = delivery(root.path(), Some(coordinator), Arc::clone(&recorder));
     delivery.accept("s1", &context, &[nudge("a.md", "first")]);
-    let drained: Vec<String> = delivery.drain_for_prompt("s1").into_iter().map(|nudge| nudge.path).collect();
+    let drained: Vec<String> = delivery
+        .drain_for_prompt("s1")
+        .into_iter()
+        .map(|nudge| nudge.path)
+        .collect();
     assert_eq!(drained, vec!["a.md".to_string()]);
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["b.md".to_string()]));
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["b.md".to_string()])
+    );
 }
 
 /// Deterministic interleaving via the `send_message` callback: the first steer has already claimed
@@ -136,7 +229,11 @@ fn given_two_steers_overlapping_when_the_first_is_mid_dispatch_then_only_one_mes
     let pending_dir = root.path().join("pending");
     let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
         ledger_for: Arc::new(move |_| RecallLedger::new(ledger_dir.clone())),
-        pending_for: Arc::new(move |_| Arc::new(RealPending(memory_core::recall::PendingNudges::new(pending_dir.clone()))) as Arc<dyn KibitzerPendingPort>),
+        pending_for: Arc::new(move |_| {
+            Arc::new(RealPending(memory_core::recall::PendingNudges::new(
+                pending_dir.clone(),
+            ))) as Arc<dyn KibitzerPendingPort>
+        }),
         coordinator: None,
         send_message: Arc::new(move |message| {
             sent_cb.lock().unwrap().push(message.content);
@@ -184,7 +281,14 @@ fn given_the_gate_open_when_on_tool_result_runs_then_it_steers() {
     let recorder = Arc::new(Recorder::default());
     let delivery = delivery(root.path(), None, Arc::clone(&recorder));
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
-    delivery.on_tool_result("s1", &context, &KibitzerToolResultGate { has_pending_messages: false, is_idle: false });
+    delivery.on_tool_result(
+        "s1",
+        &context,
+        &KibitzerToolResultGate {
+            has_pending_messages: false,
+            is_idle: false,
+        },
+    );
     assert_eq!(recorder.sent.lock().unwrap().len(), 1);
 }
 
@@ -195,8 +299,22 @@ fn given_pending_messages_or_idle_when_on_tool_result_runs_then_it_stays_held() 
     let recorder = Arc::new(Recorder::default());
     let delivery = delivery(root.path(), None, Arc::clone(&recorder));
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
-    delivery.on_tool_result("s1", &context, &KibitzerToolResultGate { has_pending_messages: true, is_idle: false });
-    delivery.on_tool_result("s1", &context, &KibitzerToolResultGate { has_pending_messages: false, is_idle: true });
+    delivery.on_tool_result(
+        "s1",
+        &context,
+        &KibitzerToolResultGate {
+            has_pending_messages: true,
+            is_idle: false,
+        },
+    );
+    delivery.on_tool_result(
+        "s1",
+        &context,
+        &KibitzerToolResultGate {
+            has_pending_messages: false,
+            is_idle: true,
+        },
+    );
     assert!(recorder.sent.lock().unwrap().is_empty());
 }
 
@@ -206,9 +324,21 @@ fn given_delivered_paths_when_marked_then_pending_is_rewritten_and_a_nudged_entr
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
     let delivery = delivery(root.path(), None, Arc::clone(&recorder));
-    delivery.accept("s1", &context, &[nudge("a.md", "first"), nudge("b.md", "second")]);
-    delivery.mark_delivered("s1", &context, &["a.md".to_string()], KibitzerDeliveryVia::Steer);
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["b.md".to_string()]));
+    delivery.accept(
+        "s1",
+        &context,
+        &[nudge("a.md", "first"), nudge("b.md", "second")],
+    );
+    delivery.mark_delivered(
+        "s1",
+        &context,
+        &["a.md".to_string()],
+        KibitzerDeliveryVia::Steer,
+    );
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["b.md".to_string()])
+    );
     let entries = recorder.entries.lock().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["via"], "steer");
@@ -229,10 +359,23 @@ fn given_a_compaction_when_accepted_then_held_and_pending_are_retracted() {
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let delivery = delivery(root.path(), Some(Arc::new(ReentrantCoordinator { recorder: Arc::clone(&recorder), root: root.path().to_path_buf() })), Arc::clone(&recorder));
+    let delivery = delivery(
+        root.path(),
+        Some(Arc::new(ReentrantCoordinator {
+            recorder: Arc::clone(&recorder),
+            root: root.path().to_path_buf(),
+        })),
+        Arc::clone(&recorder),
+    );
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
     delivery.on_compaction_accepted("s1", &context);
-    assert!(recorder.removed.lock().unwrap().contains(&"kibitzer:a.md".to_string()));
+    assert!(
+        recorder
+            .removed
+            .lock()
+            .unwrap()
+            .contains(&"kibitzer:a.md".to_string())
+    );
     assert!(pending_paths(root.path()).is_empty());
     assert!(delivery.drain_for_prompt("s1").is_empty());
 }
@@ -242,10 +385,23 @@ fn given_a_session_shutdown_when_called_then_held_and_coordinator_are_retracted(
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let delivery = delivery(root.path(), Some(Arc::new(ReentrantCoordinator { recorder: Arc::clone(&recorder), root: root.path().to_path_buf() })), Arc::clone(&recorder));
+    let delivery = delivery(
+        root.path(),
+        Some(Arc::new(ReentrantCoordinator {
+            recorder: Arc::clone(&recorder),
+            root: root.path().to_path_buf(),
+        })),
+        Arc::clone(&recorder),
+    );
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
     delivery.on_session_shutdown("s1");
-    assert!(recorder.removed.lock().unwrap().contains(&"kibitzer:a.md".to_string()));
+    assert!(
+        recorder
+            .removed
+            .lock()
+            .unwrap()
+            .contains(&"kibitzer:a.md".to_string())
+    );
     assert!(delivery.drain_for_prompt("s1").is_empty());
 }
 
@@ -264,13 +420,21 @@ fn given_a_tool_call_that_never_reports_when_the_turn_ends_then_it_is_dropped() 
 
 /// A coordinator that REFUSES every enqueue (the retired-queue contract): it took NO ownership, so
 /// the caller keeps the nudge and its pending handoff and must never read the refusal as delivered.
-struct RefusingCoordinator { recorder: Arc<Recorder> }
+struct RefusingCoordinator {
+    recorder: Arc<Recorder>,
+}
 impl KibitzerIdleCoordinator for RefusingCoordinator {
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
-        self.recorder.enqueued.lock().unwrap().push(entry.key.clone());
+        self.recorder
+            .enqueued
+            .lock()
+            .unwrap()
+            .push(entry.key.clone());
         false
     }
-    fn remove(&self, key: &str) { self.recorder.removed.lock().unwrap().push(key.to_string()); }
+    fn remove(&self, key: &str) {
+        self.recorder.removed.lock().unwrap().push(key.to_string());
+    }
 }
 
 /// A refused enqueue is the upstream throw path: the accepted nudge and its pending handoff are
@@ -281,11 +445,31 @@ fn given_a_refusing_coordinator_when_accepting_then_the_nudge_survives_without_a
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let delivery = delivery(root.path(), Some(Arc::new(RefusingCoordinator { recorder: Arc::clone(&recorder) })), Arc::clone(&recorder));
+    let delivery = delivery(
+        root.path(),
+        Some(Arc::new(RefusingCoordinator {
+            recorder: Arc::clone(&recorder),
+        })),
+        Arc::clone(&recorder),
+    );
     delivery.accept("s1", &context, &[nudge("a.md", "hint")]);
-    assert!(recorder.warns.lock().unwrap().iter().any(|message| message.contains("coordinator enqueue skipped")));
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["a.md".to_string()]));
-    let drained: Vec<String> = delivery.drain_for_prompt("s1").into_iter().map(|nudge| nudge.path).collect();
+    assert!(
+        recorder
+            .warns
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.contains("coordinator enqueue skipped"))
+    );
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["a.md".to_string()])
+    );
+    let drained: Vec<String> = delivery
+        .drain_for_prompt("s1")
+        .into_iter()
+        .map(|nudge| nudge.path)
+        .collect();
     assert_eq!(drained, vec!["a.md".to_string()]);
     assert!(recorder.removed.lock().unwrap().is_empty());
     assert!(delivery.drain_for_prompt("s1").is_empty());
@@ -294,14 +478,25 @@ fn given_a_refusing_coordinator_when_accepting_then_the_nudge_survives_without_a
 /// A coordinator that fires the entry's `on_flushed` SYNCHRONOUSLY from `enqueue` (an eager flush),
 /// then reports success. `accept` must track a key only for a nudge that is STILL held, so the
 /// callback's own delivery cannot be followed by a phantom key the coordinator no longer holds.
-struct FlushOnEnqueueCoordinator { recorder: Arc<Recorder>, flush_key: String }
+struct FlushOnEnqueueCoordinator {
+    recorder: Arc<Recorder>,
+    flush_key: String,
+}
 impl KibitzerIdleCoordinator for FlushOnEnqueueCoordinator {
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
-        self.recorder.enqueued.lock().unwrap().push(entry.key.clone());
-        if entry.key == self.flush_key { (entry.on_flushed)(); }
+        self.recorder
+            .enqueued
+            .lock()
+            .unwrap()
+            .push(entry.key.clone());
+        if entry.key == self.flush_key {
+            (entry.on_flushed)();
+        }
         true
     }
-    fn remove(&self, key: &str) { self.recorder.removed.lock().unwrap().push(key.to_string()); }
+    fn remove(&self, key: &str) {
+        self.recorder.removed.lock().unwrap().push(key.to_string());
+    }
 }
 
 /// Deterministic synchronous reentry (no sleeps, no threads): the callback delivers `a.md` before
@@ -312,14 +507,34 @@ fn given_a_coordinator_that_flushes_synchronously_when_accepting_then_no_phantom
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
     let recorder = Arc::new(Recorder::default());
-    let coordinator = Arc::new(FlushOnEnqueueCoordinator { recorder: Arc::clone(&recorder), flush_key: "kibitzer:a.md".to_string() });
+    let coordinator = Arc::new(FlushOnEnqueueCoordinator {
+        recorder: Arc::clone(&recorder),
+        flush_key: "kibitzer:a.md".to_string(),
+    });
     let delivery = delivery(root.path(), Some(coordinator), Arc::clone(&recorder));
-    delivery.accept("s1", &context, &[nudge("a.md", "first"), nudge("b.md", "second")]);
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["b.md".to_string()]));
-    assert_eq!(recorder.removed.lock().unwrap().clone(), vec!["kibitzer:a.md".to_string()]);
-    let drained: Vec<String> = delivery.drain_for_prompt("s1").into_iter().map(|nudge| nudge.path).collect();
+    delivery.accept(
+        "s1",
+        &context,
+        &[nudge("a.md", "first"), nudge("b.md", "second")],
+    );
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["b.md".to_string()])
+    );
+    assert_eq!(
+        recorder.removed.lock().unwrap().clone(),
+        vec!["kibitzer:a.md".to_string()]
+    );
+    let drained: Vec<String> = delivery
+        .drain_for_prompt("s1")
+        .into_iter()
+        .map(|nudge| nudge.path)
+        .collect();
     assert_eq!(drained, vec!["b.md".to_string()]);
-    assert_eq!(recorder.removed.lock().unwrap().clone(), vec!["kibitzer:a.md".to_string(), "kibitzer:b.md".to_string()]);
+    assert_eq!(
+        recorder.removed.lock().unwrap().clone(),
+        vec!["kibitzer:a.md".to_string(), "kibitzer:b.md".to_string()]
+    );
 }
 
 #[test]
@@ -330,7 +545,11 @@ fn given_resolve_source_when_accepting_then_source_is_recorded_on_nudge() {
     let pending_dir = root.path().join("pending");
     let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
         ledger_for: Arc::new(move |_| RecallLedger::new(ledger_dir.clone())),
-        pending_for: Arc::new(move |_| Arc::new(RealPending(memory_core::recall::PendingNudges::new(pending_dir.clone()))) as Arc<dyn KibitzerPendingPort>),
+        pending_for: Arc::new(move |_| {
+            Arc::new(RealPending(memory_core::recall::PendingNudges::new(
+                pending_dir.clone(),
+            ))) as Arc<dyn KibitzerPendingPort>
+        }),
         coordinator: None,
         send_message: Arc::new(|_| Ok(())),
         append_entry: Arc::new(|_, _| {}),
@@ -344,10 +563,17 @@ fn given_resolve_source_when_accepting_then_source_is_recorded_on_nudge() {
         warn: Arc::new(|_| {}),
     });
 
-    delivery.accept("s1", &context, &[nudge("@project/p1/a.md", "hint"), nudge("b.md", "hint")]);
+    delivery.accept(
+        "s1",
+        &context,
+        &[nudge("@project/p1/a.md", "hint"), nudge("b.md", "hint")],
+    );
     let drained = delivery.drain_for_prompt("s1");
     assert_eq!(drained.len(), 2);
-    let resolved = drained.iter().find(|n| n.path == "@project/p1/a.md").unwrap();
+    let resolved = drained
+        .iter()
+        .find(|n| n.path == "@project/p1/a.md")
+        .unwrap();
     assert_eq!(resolved.source.as_deref(), Some("/real/path/a.md"));
     let normal = drained.iter().find(|n| n.path == "b.md").unwrap();
     assert_eq!(normal.source, None);
@@ -359,15 +585,51 @@ fn given_resolve_source_when_accepting_then_source_is_recorded_on_nudge() {
 fn given_owner_forgotten_content_when_accepting_then_the_restating_nudge_is_never_delivered() {
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());
-    memory_core::receipts::owner::append_suppressions(&context.identity_paths.runtime, memory_core::receipts::owner::SUPPRESSION_FORGET, "Use the QA remote host for every build.", None, "forget-1").unwrap();
+    memory_core::receipts::owner::append_suppressions(
+        &context.identity_paths.runtime,
+        memory_core::receipts::owner::SUPPRESSION_FORGET,
+        "Use the QA remote host for every build.",
+        None,
+        "forget-1",
+    )
+    .unwrap();
     let recorder = Arc::new(Recorder::default());
-    let coordinator = Arc::new(RemoveReentrantCoordinator { recorder: Arc::clone(&recorder), extra: "unused.md".to_string() });
+    let coordinator = Arc::new(RemoveReentrantCoordinator {
+        recorder: Arc::clone(&recorder),
+        extra: "unused.md".to_string(),
+    });
     let delivery = delivery(root.path(), Some(coordinator), Arc::clone(&recorder));
-    delivery.accept("s1", &context, &[nudge("a.md", "Remember: use the QA remote host for every build."), nudge("b.md", "Integration tests run nightly.")]);
-    assert_eq!(recorder.enqueued.lock().unwrap().clone(), vec!["kibitzer:b.md".to_string()]);
-    assert_eq!(RecallLedger::new(root.path().join("ledger")).surfaced_paths("s1"), std::collections::BTreeSet::from(["b.md".to_string()]));
+    delivery.accept(
+        "s1",
+        &context,
+        &[
+            nudge("a.md", "Remember: use the QA remote host for every build."),
+            nudge("b.md", "Integration tests run nightly."),
+        ],
+    );
+    assert_eq!(
+        recorder.enqueued.lock().unwrap().clone(),
+        vec!["kibitzer:b.md".to_string()]
+    );
+    assert_eq!(
+        RecallLedger::new(root.path().join("ledger")).surfaced_paths("s1"),
+        std::collections::BTreeSet::from(["b.md".to_string()])
+    );
     // A batch that only restates forgotten content changes nothing.
-    delivery.accept("s1", &context, &[nudge("c.md", "The owner said use the qa remote host for every build")]);
-    assert_eq!(recorder.enqueued.lock().unwrap().clone(), vec!["kibitzer:b.md".to_string()]);
-    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["b.md".to_string()]));
+    delivery.accept(
+        "s1",
+        &context,
+        &[nudge(
+            "c.md",
+            "The owner said use the qa remote host for every build",
+        )],
+    );
+    assert_eq!(
+        recorder.enqueued.lock().unwrap().clone(),
+        vec!["kibitzer:b.md".to_string()]
+    );
+    assert_eq!(
+        pending_paths(root.path()),
+        std::collections::BTreeSet::from(["b.md".to_string()])
+    );
 }

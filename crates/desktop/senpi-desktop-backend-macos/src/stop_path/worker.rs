@@ -1,10 +1,10 @@
 //! The tap only sets atomic flags and unparks this prestarted worker.
-use super::{Control, tap};
+use super::{tap, Control};
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{StopPathError, StopSource, Supervisor};
 use std::sync::{
-    Arc,
     atomic::{AtomicU8, Ordering},
+    Arc,
 };
 use std::thread::{self, JoinHandle};
 
@@ -28,7 +28,8 @@ impl StopWorker {
         let pending = Arc::new(AtomicU8::new(0));
         let work = Arc::clone(&pending);
         let stopping = Arc::clone(&supervisor);
-        let thread = thread::Builder::new().name("senpi-desktop-stop-commit".to_owned())
+        let thread = thread::Builder::new()
+            .name("senpi-desktop-stop-commit".to_owned())
             .spawn(move || loop {
                 let flags = work.swap(0, Ordering::SeqCst);
                 if flags & STOP != 0 {
@@ -44,7 +45,9 @@ impl StopWorker {
                     (USER_RECOVERY, tap::TAP_DISABLED_BY_USER_INPUT),
                 ] {
                     if flags & flag != 0 {
-                        eprintln!("senpi-desktop: re-enabled disabled event tap event_type={event_type}");
+                        eprintln!(
+                            "senpi-desktop: re-enabled disabled event tap event_type={event_type}"
+                        );
                         #[cfg(test)]
                         {
                             control.lock().hooks.reenabled.push(event_type);
@@ -52,7 +55,9 @@ impl StopWorker {
                         }
                     }
                 }
-                if flags & SHUTDOWN != 0 { break; }
+                if flags & SHUTDOWN != 0 {
+                    break;
+                }
                 thread::park();
             })
             .map_err(|_| StopPathError::Unavailable {

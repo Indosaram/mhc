@@ -14,7 +14,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use common::{Engine, fake_backend};
+use common::{fake_backend, Engine};
 use serde::Deserialize;
 use serde_json::Value;
 

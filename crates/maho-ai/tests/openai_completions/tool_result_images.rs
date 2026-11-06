@@ -1,11 +1,11 @@
 use maho_ai::api::openai_completions::{
-    convert_messages, ConvertCompletionsMessagesOptions, ResolvedOpenAICompletionsCompat,
+    ConvertCompletionsMessagesOptions, ResolvedOpenAICompletionsCompat, convert_messages,
 };
 use maho_ai::types::{
-    ContentBlock, ImageContent, InputModality, MaxTokensField, SessionAffinityFormat, StopReason, TextContent,
-    ThinkingFormat, ToolResultMessage,
+    ContentBlock, ImageContent, InputModality, MaxTokensField, SessionAffinityFormat, StopReason,
+    TextContent, ThinkingFormat, ToolResultMessage,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -59,13 +59,23 @@ fn image_model() -> maho_ai::types::Model {
     ])
 }
 
-fn image_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> maho_ai::types::Message {
+fn image_tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    timestamp: i64,
+) -> maho_ai::types::Message {
     maho_ai::types::Message::ToolResult(ToolResultMessage {
         tool_call_id: tool_call_id.to_owned(),
         tool_name: tool_name.to_owned(),
         content: vec![
-            ContentBlock::Text(TextContent { text: "Read image file [image/png]".to_owned(), ..TextContent::default() }),
-            ContentBlock::Image(ImageContent { data: "ZmFrZQ==".to_owned(), mime_type: "image/png".to_owned() }),
+            ContentBlock::Text(TextContent {
+                text: "Read image file [image/png]".to_owned(),
+                ..TextContent::default()
+            }),
+            ContentBlock::Image(ImageContent {
+                data: "ZmFrZQ==".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }),
         ],
         details: None,
         usage: None,
@@ -76,7 +86,11 @@ fn image_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> mah
     })
 }
 
-fn empty_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> maho_ai::types::Message {
+fn empty_tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    timestamp: i64,
+) -> maho_ai::types::Message {
     maho_ai::types::Message::ToolResult(ToolResultMessage {
         tool_call_id: tool_call_id.to_owned(),
         tool_name: tool_name.to_owned(),
@@ -90,7 +104,11 @@ fn empty_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> mah
     })
 }
 
-fn assistant_with_tool_calls(calls: Vec<(&str, &str, Value)>, provider: &str, model_id: &str) -> maho_ai::types::Message {
+fn assistant_with_tool_calls(
+    calls: Vec<(&str, &str, Value)>,
+    provider: &str,
+    model_id: &str,
+) -> maho_ai::types::Message {
     let content = calls
         .into_iter()
         .map(|(id, name, arguments)| tool_call(id, name, arguments))
@@ -132,12 +150,21 @@ fn batches_tool_result_images_after_consecutive_tool_results() {
     )
     .expect("convert messages");
 
-    let roles: Vec<&str> = converted.iter().filter_map(|message| message.get("role").and_then(Value::as_str)).collect();
+    let roles: Vec<&str> = converted
+        .iter()
+        .filter_map(|message| message.get("role").and_then(Value::as_str))
+        .collect();
     assert_eq!(roles, vec!["user", "assistant", "tool", "tool", "user"]);
 
     let image_message = converted.last().expect("image message");
-    assert_eq!(image_message.get("role").and_then(Value::as_str), Some("user"));
-    let content = image_message.get("content").and_then(Value::as_array).expect("image content array");
+    assert_eq!(
+        image_message.get("role").and_then(Value::as_str),
+        Some("user")
+    );
+    let content = image_message
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("image content array");
     let image_parts = content
         .iter()
         .filter(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
@@ -152,7 +179,11 @@ fn uses_no_tool_output_placeholder_for_empty_tool_results_without_images() {
     let messages = context(
         vec![
             user_message("Run the command"),
-            assistant_with_tool_calls(vec![("tool-1", "bash", json!({ "command": "true" }))], &model.provider, &model.id),
+            assistant_with_tool_calls(
+                vec![("tool-1", "bash", json!({ "command": "true" }))],
+                &model.provider,
+                &model.id,
+            ),
             empty_tool_result("tool-1", "bash", 2),
         ],
         None,
@@ -170,7 +201,10 @@ fn uses_no_tool_output_placeholder_for_empty_tool_results_without_images() {
         .iter()
         .find(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
         .expect("tool message");
-    let content = tool_message.get("content").and_then(Value::as_str).expect("tool content");
+    let content = tool_message
+        .get("content")
+        .and_then(Value::as_str)
+        .expect("tool content");
     assert_eq!(content, "(no tool output)");
     assert!(!content.contains("see attached image"));
 }

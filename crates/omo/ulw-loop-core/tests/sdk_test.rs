@@ -19,7 +19,11 @@ fn test_ulw_loop_manifest_operations() {
         ]
     );
     let manifest = ulw_loop_manifest();
-    let names: Vec<&str> = manifest.operations.iter().map(|o| o.name.as_str()).collect();
+    let names: Vec<&str> = manifest
+        .operations
+        .iter()
+        .map(|o| o.name.as_str())
+        .collect();
     assert_eq!(names, ULW_LOOP_OPERATIONS);
 }
 

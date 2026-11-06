@@ -6,10 +6,13 @@ use crate::models::{
 use crate::models_store::ModelsStoreEntry;
 use crate::providers::builtin_api_streams;
 use crate::providers::radius_config::{
-    DEFAULT_RADIUS_GATEWAY, get_radius_models, get_radius_models_from_config, load_radius_gateway_config,
-    normalize_radius_gateway_url,
+    DEFAULT_RADIUS_GATEWAY, get_radius_models, get_radius_models_from_config,
+    load_radius_gateway_config, normalize_radius_gateway_url,
 };
-use crate::types::{AssistantMessageEventStream, BoxFuture, Context, Model, ProviderStreams, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, BoxFuture, Context, Model, ProviderStreams, SimpleStreamOptions,
+    StreamOptions,
+};
 use crate::utils::diagnostics::now_ms;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -46,36 +49,57 @@ impl Provider for RadiusProvider {
     }
 
     fn get_models(&self) -> Vec<Model> {
-        self.models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.models
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn supports_refresh(&self) -> bool {
         true
     }
 
-    fn refresh_models<'a>(&'a self, context: RefreshModelsContext) -> BoxFuture<'a, Result<(), ModelsError>> {
+    fn refresh_models<'a>(
+        &'a self,
+        context: RefreshModelsContext,
+    ) -> BoxFuture<'a, Result<(), ModelsError>> {
         Box::pin(async move {
             let stored = context.stored.clone();
             if let Some(stored) = &stored {
-                let restored: Vec<Model> =
-                    stored.models.iter().filter(|model| model.provider == self.id).cloned().collect();
+                let restored: Vec<Model> = stored
+                    .models
+                    .iter()
+                    .filter(|model| model.provider == self.id)
+                    .cloned()
+                    .collect();
                 let models = self.models.clone();
                 let published = context
                     .publish(ModelsPublication {
                         persist: None,
                         update: Some(Box::new(move || {
-                            *models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = restored;
+                            *models
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = restored;
                         })),
                     })
                     .await
-                    .map_err(|reason| ModelsError::new(ModelsErrorCode::ModelSource, reason.message))?;
+                    .map_err(|reason| {
+                        ModelsError::new(ModelsErrorCode::ModelSource, reason.message)
+                    })?;
                 if !published {
                     return Ok(());
                 }
             }
 
             // Import catalogs cached by the pre-ModelsStore Radius implementation.
-            if stored.is_none() && context.credential.as_ref().and_then(|c| c.get("type")).and_then(Value::as_str) == Some("oauth") {
+            if stored.is_none()
+                && context
+                    .credential
+                    .as_ref()
+                    .and_then(|c| c.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("oauth")
+            {
                 let legacy = get_radius_models(&self.id, context.credential.as_ref());
                 if !legacy.is_empty() {
                     let models = self.models.clone();
@@ -87,11 +111,15 @@ impl Provider for RadiusProvider {
                                 ..ModelsStoreEntry::default()
                             })),
                             update: Some(Box::new(move || {
-                                *models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = legacy;
+                                *models
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = legacy;
                             })),
                         })
                         .await
-                        .map_err(|reason| ModelsError::new(ModelsErrorCode::ModelSource, reason.message))?;
+                        .map_err(|reason| {
+                            ModelsError::new(ModelsErrorCode::ModelSource, reason.message)
+                        })?;
                     if !published {
                         return Ok(());
                     }
@@ -111,9 +139,10 @@ impl Provider for RadiusProvider {
                     }
                 })
                 .and_then(Value::as_str);
-            let config = load_radius_gateway_config(&self.gateway, api_key, &context.signal, &self.fetch)
-                .await
-                .map_err(|message| ModelsError::new(ModelsErrorCode::ModelSource, message))?;
+            let config =
+                load_radius_gateway_config(&self.gateway, api_key, &context.signal, &self.fetch)
+                    .await
+                    .map_err(|message| ModelsError::new(ModelsErrorCode::ModelSource, message))?;
             if context.signal.aborted() {
                 return Ok(());
             }
@@ -127,7 +156,9 @@ impl Provider for RadiusProvider {
                         ..ModelsStoreEntry::default()
                     })),
                     update: Some(Box::new(move || {
-                        *models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = refreshed;
+                        *models
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = refreshed;
                     })),
                 })
                 .await;
@@ -135,7 +166,12 @@ impl Provider for RadiusProvider {
         })
     }
 
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.streams.stream(model, context, options)
     }
 
@@ -154,13 +190,27 @@ pub fn radius_provider(options: Option<RadiusProviderOptions>) -> Arc<dyn Provid
     let options = options.unwrap_or_default();
     let id = options.id.clone().unwrap_or_else(|| "radius".to_owned());
     let name = options.name.clone().unwrap_or_else(|| "Radius".to_owned());
-    let gateway = normalize_radius_gateway_url(options.gateway.as_deref().unwrap_or(DEFAULT_RADIUS_GATEWAY));
-    let oauth_options = crate::auth::oauth::load::RadiusOAuthOptions { name: name.clone(), gateway: gateway.clone() };
+    let gateway =
+        normalize_radius_gateway_url(options.gateway.as_deref().unwrap_or(DEFAULT_RADIUS_GATEWAY));
+    let oauth_options = crate::auth::oauth::load::RadiusOAuthOptions {
+        name: name.clone(),
+        gateway: gateway.clone(),
+    };
     let auth = crate::auth::types::ProviderAuth {
-        api_key: Some(Arc::new(crate::auth::helpers::env_api_key_auth("Radius API key", &["RADIUS_API_KEY"]))),
-        oauth: Some(Arc::new(crate::auth::helpers::lazy_oauth(name.clone(), false, None, move || {
-            Box::pin(crate::auth::oauth::load::load_radius_oauth(oauth_options.clone()))
-        }))),
+        api_key: Some(Arc::new(crate::auth::helpers::env_api_key_auth(
+            "Radius API key",
+            &["RADIUS_API_KEY"],
+        ))),
+        oauth: Some(Arc::new(crate::auth::helpers::lazy_oauth(
+            name.clone(),
+            false,
+            None,
+            move || {
+                Box::pin(crate::auth::oauth::load::load_radius_oauth(
+                    oauth_options.clone(),
+                ))
+            },
+        ))),
     };
     Arc::new(RadiusProvider {
         auth,
@@ -170,6 +220,9 @@ pub fn radius_provider(options: Option<RadiusProviderOptions>) -> Arc<dyn Provid
         gateway,
         streams: builtin_api_streams("pi-messages"),
         // PERF-DIVERGENCE(senpi radius.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-        fetch: options.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client),
+        fetch: options
+            .fetch
+            .clone()
+            .unwrap_or_else(crate::utils::http_client::shared_http_client),
     })
 }

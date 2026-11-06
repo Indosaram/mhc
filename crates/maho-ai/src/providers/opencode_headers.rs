@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/providers/opencode-headers.ts.
 
 use crate::types::{
-    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredHandle, Model, ProviderHeaders,
-    ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredHandle, Model,
+    ProviderHeaders, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use std::sync::Arc;
 
@@ -15,7 +15,9 @@ fn has_header(headers: Option<&ProviderHeaders>, name: &str) -> bool {
 
 fn with_session_header(options: StreamOptions) -> StreamOptions {
     let mut options = options;
-    let Some(session_id) = options.session_id.clone() else { return options };
+    let Some(session_id) = options.session_id.clone() else {
+        return options;
+    };
     if has_header(options.request.headers.as_ref(), OPENCODE_SESSION_HEADER) {
         return options;
     }
@@ -30,8 +32,14 @@ struct OpenCodeSessionHeaders {
 }
 
 impl ProviderStreams for OpenCodeSessionHeaders {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
-        self.inner.stream(model, context, options.map(with_session_header))
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.inner
+            .stream(model, context, options.map(with_session_header))
     }
 
     fn stream_simple(
@@ -40,8 +48,14 @@ impl ProviderStreams for OpenCodeSessionHeaders {
         context: &Context,
         options: Option<SimpleStreamOptions>,
     ) -> AssistantMessageEventStream {
-        self.inner
-            .stream_simple(model, context, options.map(|options| SimpleStreamOptions { stream: with_session_header(options.stream), ..options }))
+        self.inner.stream_simple(
+            model,
+            context,
+            options.map(|options| SimpleStreamOptions {
+                stream: with_session_header(options.stream),
+                ..options
+            }),
+        )
     }
 
     fn fetch_deferred(
@@ -71,6 +85,8 @@ impl ProviderStreams for OpenCodeSessionHeaders {
     }
 }
 
-pub fn with_open_code_session_header(streams: Arc<dyn ProviderStreams>) -> Arc<dyn ProviderStreams> {
+pub fn with_open_code_session_header(
+    streams: Arc<dyn ProviderStreams>,
+) -> Arc<dyn ProviderStreams> {
     Arc::new(OpenCodeSessionHeaders { inner: streams })
 }

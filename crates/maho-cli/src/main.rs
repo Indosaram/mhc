@@ -18,8 +18,19 @@ fn main() {
     {
         let hook_args: Vec<String> = std::env::args().skip(1).collect();
         if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
-            let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
-            std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            };
+            std::process::exit(
+                maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(
+                    &hook_args[1..],
+                    &cwd,
+                ),
+            );
         }
     }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
@@ -383,7 +394,14 @@ fn run() -> Result<(), String> {
         };
         if command.kind == AuthCommandKind::Consent {
             use std::io::IsTerminal;
-            let code = maho_cli::cli::auth_command::run_auth_consent(&command, &maho_core::config::get_agent_dir(), std::io::stdin().is_terminal(), &mut std::io::stdin().lock(), &mut std::io::stdout(), &mut std::io::stderr());
+            let code = maho_cli::cli::auth_command::run_auth_consent(
+                &command,
+                &maho_core::config::get_agent_dir(),
+                std::io::stdin().is_terminal(),
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
             std::process::exit(code);
         }
         let parsed = match maho_cli::cli::args::parse_args(&command.args, grok) {
@@ -1227,7 +1245,9 @@ mod ultrawork_registration_tests {
         assert!(armed.classification.effective);
         assert_eq!(message.custom_type, DIRECTIVE_MESSAGE_TYPE);
         assert!(!directive.starts_with(&format!("<{DIRECTIVE_MESSAGE_TYPE}>")));
-        assert!(maho_interactive::components::neon_border::has_glow_keyword("ulw hello"));
+        assert!(maho_interactive::components::neon_border::has_glow_keyword(
+            "ulw hello"
+        ));
         assert_eq!(deduped.collapsed_directives, 1);
     }
 }

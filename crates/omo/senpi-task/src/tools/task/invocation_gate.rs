@@ -2,8 +2,8 @@
 //! and the per-call session.
 
 use crate::agents::{
-    EmptySkillInvocations, InvocationGuardVerdict, SkillInvocationState,
-    evaluate_invocation_guard, invocation_condition_for_agent,
+    EmptySkillInvocations, InvocationGuardVerdict, SkillInvocationState, evaluate_invocation_guard,
+    invocation_condition_for_agent,
 };
 
 /// `TaskToolDeps.resolveSkillInvocations`: resolves a session's skill-invocation state.

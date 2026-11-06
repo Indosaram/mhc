@@ -19,8 +19,7 @@ pub const CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL: &str =
     "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai";
 
 /// AI Gateway -> Anthropic passthrough.
-pub const CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL: &str =
-    "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/anthropic";
+pub const CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL: &str = "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/anthropic";
 
 pub fn is_cloudflare_provider(provider: &str) -> bool {
     provider == "cloudflare-workers-ai" || provider == "cloudflare-ai-gateway"
@@ -40,7 +39,8 @@ mod tests {
     use super::*;
 
     fn any_model() -> Model {
-        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone()
+        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0]
+            .clone()
     }
 
     fn model(base_url: &str) -> Model {
@@ -69,7 +69,10 @@ mod tests {
             "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1"
         );
         assert_eq!(
-            resolve_cloudflare_base_url(&model(CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL), Some(&env)),
+            resolve_cloudflare_base_url(
+                &model(CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL),
+                Some(&env)
+            ),
             "https://gateway.ai.cloudflare.com/v1/acct/gw/anthropic"
         );
     }

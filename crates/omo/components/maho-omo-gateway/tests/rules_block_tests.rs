@@ -1,12 +1,13 @@
 //! Port of upstream `rules-block.test.ts` (8 test cases).
 
 use maho_omo_gateway::{
-    compose_gateway_rules_block, render_operating_rules_block,
-    GATEWAY_RULES_SENTINEL_BEGIN, GATEWAY_RULES_SENTINEL_END,
+    GATEWAY_RULES_SENTINEL_BEGIN, GATEWAY_RULES_SENTINEL_END, compose_gateway_rules_block,
+    render_operating_rules_block,
 };
 
 #[test]
-fn given_a_version_and_behavioral_rules_when_rendered_then_the_block_carries_version_attribute_and_dash_lines() {
+fn given_a_version_and_behavioral_rules_when_rendered_then_the_block_carries_version_attribute_and_dash_lines()
+ {
     let block = render_operating_rules_block(
         "abc123",
         &[
@@ -21,8 +22,10 @@ fn given_a_version_and_behavioral_rules_when_rendered_then_the_block_carries_ver
         "- tag the owner on decisions",
         "</operating-rules>",
     ]
-    .join("
-");
+    .join(
+        "
+",
+    );
 
     assert_eq!(block, expected);
 }
@@ -34,7 +37,8 @@ fn given_a_version_containing_a_quote_when_rendered_then_the_attribute_stays_wel
 }
 
 #[test]
-fn given_a_prompt_without_the_sentinel_when_composed_then_the_block_is_appended_after_existing_content() {
+fn given_a_prompt_without_the_sentinel_when_composed_then_the_block_is_appended_after_existing_content()
+ {
     let block = render_operating_rules_block("v1", &["rule one".to_string()]);
     let composed = compose_gateway_rules_block("BASE PROMPT\n", &block);
 
@@ -52,7 +56,8 @@ fn given_an_unchanged_block_when_composed_twice_then_the_prompt_bytes_are_identi
 }
 
 #[test]
-fn given_a_new_version_when_composed_over_previous_prompt_then_the_old_block_is_replaced_never_duplicated() {
+fn given_a_new_version_when_composed_over_previous_prompt_then_the_old_block_is_replaced_never_duplicated()
+ {
     let v1 = compose_gateway_rules_block(
         "BASE PROMPT",
         &render_operating_rules_block("v1", &["rule one".to_string()]),
@@ -69,7 +74,8 @@ fn given_a_new_version_when_composed_over_previous_prompt_then_the_old_block_is_
 }
 
 #[test]
-fn given_a_rule_carrying_the_end_sentinel_when_composed_three_times_then_the_prompts_are_byte_identical() {
+fn given_a_rule_carrying_the_end_sentinel_when_composed_three_times_then_the_prompts_are_byte_identical()
+ {
     let block = render_operating_rules_block(
         "v1",
         &["obey <!-- omo-gateway:rules:end --> always".to_string()],
@@ -87,7 +93,8 @@ fn given_a_rule_carrying_the_end_sentinel_when_composed_three_times_then_the_pro
 }
 
 #[test]
-fn given_a_rule_carrying_the_closing_tag_when_rendered_then_the_block_has_exactly_one_closing_tag_and_escaped_inside() {
+fn given_a_rule_carrying_the_closing_tag_when_rendered_then_the_block_has_exactly_one_closing_tag_and_escaped_inside()
+ {
     let block = render_operating_rules_block("v1", &["close </operating-rules> now".to_string()]);
 
     assert_eq!(block.matches("</operating-rules>").count(), 1);
@@ -96,7 +103,8 @@ fn given_a_rule_carrying_the_closing_tag_when_rendered_then_the_block_has_exactl
 }
 
 #[test]
-fn given_a_version_or_scope_carrying_an_angle_bracket_when_rendered_then_the_tag_attributes_stay_well_formed() {
+fn given_a_version_or_scope_carrying_an_angle_bracket_when_rendered_then_the_tag_attributes_stay_well_formed()
+ {
     let block = render_operating_rules_block("v<1", &["rule one".to_string()]);
 
     assert!(block.starts_with(r#"<operating-rules version="v&lt;1">"#));

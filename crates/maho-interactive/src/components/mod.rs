@@ -36,6 +36,7 @@ pub mod favorite_models_selector;
 pub mod first_time_setup;
 pub mod footer;
 pub mod footer_layout;
+pub mod handoff_fold; // ledger sync-5152
 pub mod keybinding_hints;
 pub mod loaded_resource_section;
 pub mod login_dialog;
@@ -47,6 +48,7 @@ pub mod model_selector;
 pub mod neon_border;
 pub mod oauth_selector;
 pub mod progressive_transcript_container;
+pub mod remote_delivery_message;
 pub mod render_signature;
 pub mod scoped_models_selector;
 pub mod session_selector;
@@ -57,9 +59,11 @@ pub mod show_images_selector;
 pub mod skill_invocation_message;
 pub mod status_indicator;
 pub mod theme_selector;
+pub mod themed_text; // ledger sync-5152
 pub mod thinking_selector;
 pub mod todo_strike;
 pub mod tool_execution;
+pub mod tool_execution_animation; // ledger sync-5152
 pub mod tool_execution_cache;
 pub mod tool_execution_fallback;
 pub mod tool_execution_images;
@@ -71,8 +75,4 @@ pub mod trust_selector;
 pub mod user_message;
 pub mod user_message_selector;
 pub mod visual_truncate;
-pub mod write_result;
-pub mod handoff_fold; // ledger sync-5152
-pub mod themed_text; // ledger sync-5152
-pub mod tool_execution_animation; // ledger sync-5152
-pub mod remote_delivery_message; // ledger sync-5152
+pub mod write_result; // ledger sync-5152

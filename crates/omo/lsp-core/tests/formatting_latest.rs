@@ -7,7 +7,9 @@ use lsp_core::lsp::format_document::{
 };
 use lsp_core::lsp::types::ResolvedServer;
 use lsp_core::lsp::workspace_edit::types::ParsedTextEdit;
-use lsp_core::request_context::{LspRequestContext, parse_lsp_request_context, scope_request_context};
+use lsp_core::request_context::{
+    LspRequestContext, parse_lsp_request_context, scope_request_context,
+};
 use lsp_core::tools::execute_lsp_format;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -47,7 +49,11 @@ fn create_mock_server_script(
     mutate_on_format: Option<(&Path, &str)>,
 ) -> PathBuf {
     let script_path = dir.join("mock_lsp_server.py");
-    let capability_val = if advertise_capability { "True" } else { "False" };
+    let capability_val = if advertise_capability {
+        "True"
+    } else {
+        "False"
+    };
     let edits_val = match edits {
         Some(e) => serde_json::to_string(&e).expect("serialize formatting edits"),
         None => "None".to_string(),
@@ -135,36 +141,34 @@ while True:
 
 #[test]
 fn given_edits_when_line_delta_is_computed_then_reports_added_and_removed_lines() {
-    let edits = vec![
-        ParsedTextEdit {
-            start_line: 0.0,
-            start_character: 0.0,
-            end_line: 1.0,
-            end_character: 12.0,
-            new_text: "const a = 1;\nconst b = 2;".to_string(),
-        },
-    ];
+    let edits = vec![ParsedTextEdit {
+        start_line: 0.0,
+        start_character: 0.0,
+        end_line: 1.0,
+        end_character: 12.0,
+        new_text: "const a = 1;\nconst b = 2;".to_string(),
+    }];
     let (added, removed) = line_delta(&edits);
     assert_eq!(added, 2);
     assert_eq!(removed, 2);
 
-    let edits_add = vec![
-        ParsedTextEdit {
-            start_line: 0.0,
-            start_character: 0.0,
-            end_line: 0.0,
-            end_character: 19.0,
-            new_text: "const a = 1;\nconst b = 2;".to_string(),
-        },
-    ];
+    let edits_add = vec![ParsedTextEdit {
+        start_line: 0.0,
+        start_character: 0.0,
+        end_line: 0.0,
+        end_character: 19.0,
+        new_text: "const a = 1;\nconst b = 2;".to_string(),
+    }];
     let (added2, removed2) = line_delta(&edits_add);
     assert_eq!(added2, 2);
     assert_eq!(removed2, 1);
 }
 
 #[tokio::test]
-async fn given_a_server_returning_text_edits_when_the_document_is_formatted_then_the_file_is_rewritten_and_line_deltas_are_reported() {
-    let (_workspace, file_path) = TestWorkspace::new("sample.ts", "const a=1\nconst b   =2\nconst c=3\n");
+async fn given_a_server_returning_text_edits_when_the_document_is_formatted_then_the_file_is_rewritten_and_line_deltas_are_reported()
+ {
+    let (_workspace, file_path) =
+        TestWorkspace::new("sample.ts", "const a=1\nconst b   =2\nconst c=3\n");
     let script_path = create_mock_server_script(
         file_path.parent().unwrap(),
         Some(vec![json!({
@@ -182,7 +186,10 @@ async fn given_a_server_returning_text_edits_when_the_document_is_formatted_then
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -217,7 +224,8 @@ async fn given_a_server_returning_text_edits_when_the_document_is_formatted_then
 }
 
 #[tokio::test]
-async fn given_a_server_returning_an_edit_that_adds_lines_when_the_document_is_formatted_then_the_added_and_removed_line_counts_differ() {
+async fn given_a_server_returning_an_edit_that_adds_lines_when_the_document_is_formatted_then_the_added_and_removed_line_counts_differ()
+ {
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", "const a=1;const b=2\n");
     let script_path = create_mock_server_script(
         file_path.parent().unwrap(),
@@ -236,7 +244,10 @@ async fn given_a_server_returning_an_edit_that_adds_lines_when_the_document_is_f
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -271,24 +282,23 @@ async fn given_a_server_returning_an_edit_that_adds_lines_when_the_document_is_f
 }
 
 #[tokio::test]
-async fn given_a_server_that_does_not_advertise_document_formatting_when_the_document_is_formatted_then_the_result_is_unavailable_and_the_file_bytes_are_untouched() {
+async fn given_a_server_that_does_not_advertise_document_formatting_when_the_document_is_formatted_then_the_result_is_unavailable_and_the_file_bytes_are_untouched()
+ {
     let original = "const a=1\n";
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", original);
     let before_metadata = fs::metadata(&file_path).unwrap();
     let before_mtime = before_metadata.modified().unwrap();
 
-    let script_path = create_mock_server_script(
-        file_path.parent().unwrap(),
-        None,
-        false,
-        None,
-    );
+    let script_path = create_mock_server_script(file_path.parent().unwrap(), None, false, None);
 
     let client = LspClient::new(
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -316,24 +326,24 @@ async fn given_a_server_that_does_not_advertise_document_formatting_when_the_doc
 }
 
 #[tokio::test]
-async fn given_a_server_returning_no_edits_when_the_document_is_formatted_then_the_result_is_unchanged_and_the_file_bytes_are_untouched() {
+async fn given_a_server_returning_no_edits_when_the_document_is_formatted_then_the_result_is_unchanged_and_the_file_bytes_are_untouched()
+ {
     let original = "const a = 1;\n";
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", original);
     let before_metadata = fs::metadata(&file_path).unwrap();
     let before_mtime = before_metadata.modified().unwrap();
 
-    let script_path = create_mock_server_script(
-        file_path.parent().unwrap(),
-        Some(vec![]),
-        true,
-        None,
-    );
+    let script_path =
+        create_mock_server_script(file_path.parent().unwrap(), Some(vec![]), true, None);
 
     let client = LspClient::new(
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -361,7 +371,8 @@ async fn given_a_server_returning_no_edits_when_the_document_is_formatted_then_t
 }
 
 #[tokio::test]
-async fn given_edits_that_reproduce_the_current_bytes_when_the_document_is_formatted_then_the_result_is_unchanged() {
+async fn given_edits_that_reproduce_the_current_bytes_when_the_document_is_formatted_then_the_result_is_unchanged()
+ {
     let original = "const a = 1;\n";
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", original);
     let before_metadata = fs::metadata(&file_path).unwrap();
@@ -384,7 +395,10 @@ async fn given_edits_that_reproduce_the_current_bytes_when_the_document_is_forma
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -412,7 +426,8 @@ async fn given_edits_that_reproduce_the_current_bytes_when_the_document_is_forma
 }
 
 #[tokio::test]
-async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edits_are_applied_then_the_stale_edit_is_rejected_instead_of_corrupting_the_file() {
+async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edits_are_applied_then_the_stale_edit_is_rejected_instead_of_corrupting_the_file()
+ {
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", "const a=1\nconst b=2\n");
 
     let script_path = create_mock_server_script(
@@ -432,7 +447,10 @@ async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edi
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -453,12 +471,18 @@ async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edi
     .expect_err("should reject stale edit");
 
     assert!(err.to_string().contains("outside line"), "{}", err);
-    assert_eq!(fs::read_to_string(&file_path).unwrap().replace("\r\n", "\n"), "short\n");
+    assert_eq!(
+        fs::read_to_string(&file_path)
+            .unwrap()
+            .replace("\r\n", "\n"),
+        "short\n"
+    );
     client.stop().await;
 }
 
 #[tokio::test]
-async fn given_a_formatted_document_when_the_write_completes_then_no_temporary_file_is_left_behind() {
+async fn given_a_formatted_document_when_the_write_completes_then_no_temporary_file_is_left_behind()
+{
     let (_workspace, file_path) = TestWorkspace::new("sample.ts", "const a=1\n");
     let temp_candidate = format!("{}.omo-format.tmp", file_path.to_string_lossy());
     assert!(!Path::new(&temp_candidate).exists());
@@ -480,7 +504,10 @@ async fn given_a_formatted_document_when_the_write_completes_then_no_temporary_f
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![
+                python_cmd().to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -529,7 +556,8 @@ fn context_for(root: &str) -> LspRequestContext {
 }
 
 #[tokio::test]
-async fn given_an_extension_with_no_configured_server_when_format_runs_then_the_missing_dependency_result_is_returned_and_the_file_is_untouched() {
+async fn given_an_extension_with_no_configured_server_when_format_runs_then_the_missing_dependency_result_is_returned_and_the_file_is_untouched()
+ {
     let original = "value\n";
     let (workspace, file_path) = TestWorkspace::new("module.wat", original);
     let path_str = file_path.to_string_lossy().to_string();
@@ -537,21 +565,31 @@ async fn given_an_extension_with_no_configured_server_when_format_runs_then_the_
     let context = context_for(&workspace.root());
 
     let args = serde_json::Map::from_iter([("filePath".to_string(), json!(path_str))]);
-    let result = scope_request_context(
-        context,
-        execute_lsp_format(&args, None),
-    )
-    .await
-    .expect("format executed");
+    let result = scope_request_context(context, execute_lsp_format(&args, None))
+        .await
+        .expect("format executed");
 
-    assert_eq!(result.details.get("errorKind").and_then(Value::as_str), Some("missing_dependency"));
-    assert_eq!(result.details.get("status").and_then(Value::as_str), Some("unavailable"));
-    assert!(result.first_text().contains("No LSP server configured for extension: .wat"), "{}", result.first_text());
+    assert_eq!(
+        result.details.get("errorKind").and_then(Value::as_str),
+        Some("missing_dependency")
+    );
+    assert_eq!(
+        result.details.get("status").and_then(Value::as_str),
+        Some("unavailable")
+    );
+    assert!(
+        result
+            .first_text()
+            .contains("No LSP server configured for extension: .wat"),
+        "{}",
+        result.first_text()
+    );
     assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
 }
 
 #[tokio::test]
-async fn given_a_missing_file_path_argument_when_format_runs_then_the_parameter_contract_is_enforced() {
+async fn given_a_missing_file_path_argument_when_format_runs_then_the_parameter_contract_is_enforced()
+ {
     let empty_args = serde_json::Map::new();
     let err = execute_lsp_format(&empty_args, None)
         .await

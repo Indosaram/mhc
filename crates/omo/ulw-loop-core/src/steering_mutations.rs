@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
-use crate::plan_goal_factory::{seed_default_success_criteria, GoalSeedOptions};
+use crate::plan_goal_factory::{GoalSeedOptions, seed_default_success_criteria};
 use crate::steering_types::{UlwLoopSteeringChildGoal, UlwLoopSteeringProposal};
 use crate::surface::UlwLoopToolkitSurface;
 use crate::validation_batch::update_batches_after_supersede;
@@ -66,7 +66,9 @@ fn extract_children(proposal: &UlwLoopSteeringProposal) -> Vec<UlwLoopSteeringCh
         if let Some(arr) = from_after.and_then(|v| v.as_array()) {
             let mut res = Vec::new();
             for item in arr {
-                if let (Some(title), Some(objective)) = (text_field(item, "title"), text_field(item, "objective")) {
+                if let (Some(title), Some(objective)) =
+                    (text_field(item, "title"), text_field(item, "objective"))
+                {
                     res.push(UlwLoopSteeringChildGoal { title, objective });
                 }
             }
@@ -98,14 +100,23 @@ pub fn make_goal(
     surface: Option<UlwLoopToolkitSurface>,
 ) -> UlwLoopItem {
     let id = next_id(plan, offset);
-    let digits: String = id.strip_prefix('G').unwrap_or("").chars().take_while(|c| c.is_ascii_digit()).collect();
-    let goal_index = digits.parse::<usize>().map(|n| n.saturating_sub(1)).unwrap_or_else(|_| plan.goals.len() + offset - 1);
+    let digits: String = id
+        .strip_prefix('G')
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let goal_index = digits
+        .parse::<usize>()
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or_else(|_| plan.goals.len() + offset - 1);
     let seed_opts = GoalSeedOptions {
         goal_id: Some(id.clone()),
         surface,
         ..Default::default()
     };
-    let criteria = seed_default_success_criteria(goal_index, &child_goal.objective, Some(&seed_opts));
+    let criteria =
+        seed_default_success_criteria(goal_index, &child_goal.objective, Some(&seed_opts));
     UlwLoopItem {
         id,
         title: child_goal.title.clone(),
@@ -136,8 +147,12 @@ pub fn make_goal(
 
 pub fn revise_wording(plan: &mut UlwLoopPlan, proposal: &UlwLoopSteeringProposal, now: &str) {
     let target_ids = targets(proposal);
-    let Some(first_target) = target_ids.first() else { return; };
-    let Some(target) = plan.goals.iter_mut().find(|g| g.id == *first_target) else { return; };
+    let Some(first_target) = target_ids.first() else {
+        return;
+    };
+    let Some(target) = plan.goals.iter_mut().find(|g| g.id == *first_target) else {
+        return;
+    };
 
     let raw = proposal.raw_proposal.as_ref().unwrap_or(&Value::Null);
     let title = proposal
@@ -167,8 +182,12 @@ pub fn split_or_block(
     surface: Option<UlwLoopToolkitSurface>,
 ) {
     let target_ids = targets(proposal);
-    let Some(first_target) = target_ids.first() else { return; };
-    let Some(target_idx) = plan.goals.iter().position(|g| g.id == *first_target) else { return; };
+    let Some(first_target) = target_ids.first() else {
+        return;
+    };
+    let Some(target_idx) = plan.goals.iter().position(|g| g.id == *first_target) else {
+        return;
+    };
 
     let child_goals = extract_children(proposal);
     let replacements: Vec<UlwLoopItem> = child_goals
@@ -216,20 +235,44 @@ pub fn split_or_block(
 
 pub fn revise_criterion(plan: &mut UlwLoopPlan, proposal: &UlwLoopSteeringProposal, now: &str) {
     let target_ids = targets(proposal);
-    let Some(first_target) = target_ids.first() else { return; };
-    let Some(target) = plan.goals.iter_mut().find(|g| g.id == *first_target) else { return; };
+    let Some(first_target) = target_ids.first() else {
+        return;
+    };
+    let Some(target) = plan.goals.iter_mut().find(|g| g.id == *first_target) else {
+        return;
+    };
 
-    let Some(crit_id) = &proposal.criterion_id else { return; };
-    let Some(crit) = target.success_criteria.iter_mut().find(|c| c.id == *crit_id) else { return; };
+    let Some(crit_id) = &proposal.criterion_id else {
+        return;
+    };
+    let Some(crit) = target
+        .success_criteria
+        .iter_mut()
+        .find(|c| c.id == *crit_id)
+    else {
+        return;
+    };
 
     let raw = proposal.raw_proposal.as_ref().unwrap_or(&Value::Null);
-    if let Some(sc) = proposal.scenario.clone().or_else(|| text_field(raw, "scenario")) {
+    if let Some(sc) = proposal
+        .scenario
+        .clone()
+        .or_else(|| text_field(raw, "scenario"))
+    {
         crit.scenario = sc;
     }
-    if let Some(ee) = proposal.expected_evidence.clone().or_else(|| text_field(raw, "expectedEvidence")) {
+    if let Some(ee) = proposal
+        .expected_evidence
+        .clone()
+        .or_else(|| text_field(raw, "expectedEvidence"))
+    {
         crit.expected_evidence = ee;
     }
-    if let Some(m) = proposal.user_model.clone().or_else(|| text_field(raw, "userModel")) {
+    if let Some(m) = proposal
+        .user_model
+        .clone()
+        .or_else(|| text_field(raw, "userModel"))
+    {
         crit.user_model = m;
     }
     target.updated_at = now.to_string();

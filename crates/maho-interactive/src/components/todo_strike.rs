@@ -16,12 +16,18 @@ pub fn strike_reveal_count(text: &str, frame: Option<i64>) -> Option<i64> {
         return None;
     }
     Some(
-        (length * (frame - TODO_STRIKE_HOLD_FRAMES).min(TODO_STRIKE_REVEAL_FRAMES) + TODO_STRIKE_REVEAL_FRAMES - 1)
+        (length * (frame - TODO_STRIKE_HOLD_FRAMES).min(TODO_STRIKE_REVEAL_FRAMES)
+            + TODO_STRIKE_REVEAL_FRAMES
+            - 1)
             / TODO_STRIKE_REVEAL_FRAMES,
     )
 }
 
-pub fn partial_strikethrough(text: &str, visible_chars: i64, strike: impl Fn(&str) -> String) -> String {
+pub fn partial_strikethrough(
+    text: &str,
+    visible_chars: i64,
+    strike: impl Fn(&str) -> String,
+) -> String {
     if visible_chars <= 0 {
         return text.to_owned();
     }
@@ -29,7 +35,9 @@ pub fn partial_strikethrough(text: &str, visible_chars: i64, strike: impl Fn(&st
     if visible_chars >= i64::try_from(chars.len()).unwrap_or(i64::MAX) {
         return strike(text);
     }
-    let split = usize::try_from(visible_chars).unwrap_or(usize::MAX).min(chars.len());
+    let split = usize::try_from(visible_chars)
+        .unwrap_or(usize::MAX)
+        .min(chars.len());
     let head: String = chars[..split].iter().collect();
     let tail: String = chars[split..].iter().collect();
     format!("{}{}", strike(&head), tail)

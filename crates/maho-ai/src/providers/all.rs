@@ -167,7 +167,9 @@ pub fn builtin_providers() -> Result<Vec<Arc<dyn Provider>>, crate::models::Mode
 }
 
 /// A Models collection with every built-in provider registered.
-pub fn builtin_models(options: Option<CreateModelsOptions>) -> Result<Models, crate::models::ModelsError> {
+pub fn builtin_models(
+    options: Option<CreateModelsOptions>,
+) -> Result<Models, crate::models::ModelsError> {
     let models = create_models(options);
     for provider in builtin_providers()? {
         models.set_provider(provider);

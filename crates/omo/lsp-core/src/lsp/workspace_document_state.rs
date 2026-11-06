@@ -162,7 +162,8 @@ fn moved_path(candidate: &str, old_path: &str, new_path: &str) -> String {
 
 pub fn file_uri(path: &str) -> String {
     let clean = crate::request_context::strip_verbatim_prefix(path);
-    url::Url::from_file_path(&clean).map_or_else(|()| format!("file://{clean}"), |url| url.to_string())
+    url::Url::from_file_path(&clean)
+        .map_or_else(|()| format!("file://{clean}"), |url| url.to_string())
 }
 
 fn system_now_ms() -> f64 {

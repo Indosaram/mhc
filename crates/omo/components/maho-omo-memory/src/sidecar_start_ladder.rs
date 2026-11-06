@@ -10,7 +10,9 @@
 
 use std::collections::HashSet;
 
-use crate::memory_child_model_chain::{child_model_chain_spec, ChildModelChainInput, ChildModelChainSpec};
+use crate::memory_child_model_chain::{
+    ChildModelChainInput, ChildModelChainSpec, child_model_chain_spec,
+};
 use crate::worker::memory_model_attempts::ReflectionModelCandidate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

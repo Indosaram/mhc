@@ -51,7 +51,8 @@ fn filter_shared_names(names: &[String]) -> Vec<String> {
 }
 
 #[test]
-fn given_the_lead_team_tools_w2lead_when_built_then_the_injection_only_surface_has_no_blocking_wait() {
+fn given_the_lead_team_tools_w2lead_when_built_then_the_injection_only_surface_has_no_blocking_wait()
+ {
     // given / when
     let tools = build_lead_team_tools(&lead_tool_deps());
 
@@ -72,7 +73,8 @@ fn given_the_lead_team_tools_w2lead_when_built_then_the_injection_only_surface_h
 }
 
 #[test]
-fn given_the_lead_team_tools_as_shared_parent_tools_when_filtered_for_a_child_then_all_are_excluded() {
+fn given_the_lead_team_tools_as_shared_parent_tools_when_filtered_for_a_child_then_all_are_excluded()
+ {
     // given
     let team_tools = build_lead_team_tools(&lead_tool_deps());
 

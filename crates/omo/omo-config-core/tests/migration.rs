@@ -829,7 +829,7 @@ fn transaction_concurrent_callers_exclusive_lock_and_retry() {
                 mode: MigrationMode::Merge,
                 on_boundary: None,
                 pid: Some(200),
-        should_run: None,
+                should_run: None,
                 sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
                 target_path: fixture.target_path.to_string(),
                 transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -923,7 +923,7 @@ fn transaction_renewing_owner_never_stolen() {
             mode: MigrationMode::Merge,
             on_boundary: None,
             pid: Some(200),
-        should_run: None,
+            should_run: None,
             sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
             target_path: fixture.target_path.to_string(),
             transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -1077,15 +1077,24 @@ const RETIRED_CODEGRAPH_DIAGNOSTICS: [&str; 10] = [
 /// Asserts each section still exists (the migration must strip codegraph, not the whole block) and no longer carries codegraph.
 fn assert_codegraph_stripped_from_every_section(target: &Value) {
     for harness in HARNESS_BLOCKS {
-        assert!(target[harness].is_object(), "{harness} survives as an object");
+        assert!(
+            target[harness].is_object(),
+            "{harness} survives as an object"
+        );
         assert!(target[harness].get("codegraph").is_none(), "{harness}");
     }
     let profile = &target["profiles"]["default"];
-    assert!(profile.is_object(), "profiles.default survives as an object");
+    assert!(
+        profile.is_object(),
+        "profiles.default survives as an object"
+    );
     assert!(profile.get("codegraph").is_none());
     for harness in HARNESS_BLOCKS {
         assert!(profile[harness].is_object(), "profiles.default.{harness}");
-        assert!(profile[harness].get("codegraph").is_none(), "profiles.default.{harness}");
+        assert!(
+            profile[harness].get("codegraph").is_none(),
+            "profiles.default.{harness}"
+        );
     }
 }
 
@@ -1212,10 +1221,10 @@ fn retired_codegraph_is_stripped_from_a_renamed_harness_block() {
                 .first()
                 .map(|source| source.value.clone())
                 .unwrap_or(Value::Null);
-            Ok(Value::Object(
-                omo_config_core::canonicalize_legacy_harness_blocks(&value).document,
+            Ok(
+                Value::Object(omo_config_core::canonicalize_legacy_harness_blocks(&value).document)
+                    .into(),
             )
-            .into())
         }),
     ))
     .expect("run migration");
@@ -1259,7 +1268,9 @@ fn content_gated_options<'a>(
         should_run,
         sources: vec![],
         target_path: fixture.target_path.to_string(),
-        transform: Box::new(|_| Ok(json!({ "categories": { "deep-low": { "reasoning": "high" } } }).into())),
+        transform: Box::new(|_| {
+            Ok(json!({ "categories": { "deep-low": { "reasoning": "high" } } }).into())
+        }),
         write_target: None,
     }
 }
@@ -1350,5 +1361,8 @@ fn run_migration_gate_receives_the_parsed_target_document() {
     ))
     .expect("run gated migration");
 
-    assert_eq!(*seen.borrow(), vec![json!({ "categories": { "deep": {} } })]);
+    assert_eq!(
+        *seen.borrow(),
+        vec![json!({ "categories": { "deep": {} } })]
+    );
 }

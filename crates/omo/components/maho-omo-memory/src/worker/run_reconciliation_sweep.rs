@@ -49,11 +49,22 @@ pub fn sweep_reflection_run_orphans(
     context: &ReflectionOrphanSweepContext<'_>,
 ) -> Result<(), String> {
     super::run_liveness::throw_if_aborted(context.signal)?;
-    let state = match context.reservation.read_state_with_wait(if context.defer_on_scheduler_contention { Some(0) } else { None }) {
-        Ok(state) => state,
-        Err(memory_core::reflection::ReservationError::Contention(_)) if context.defer_on_scheduler_contention => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
+    let state =
+        match context
+            .reservation
+            .read_state_with_wait(if context.defer_on_scheduler_contention {
+                Some(0)
+            } else {
+                None
+            }) {
+            Ok(state) => state,
+            Err(memory_core::reflection::ReservationError::Contention(_))
+                if context.defer_on_scheduler_contention =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
     let live_run_ids = collect_live_run_ids(context, &state)?;
     super::run_liveness::throw_if_aborted(context.signal)?;
     if !context.identity.paths.repo.join(".git").exists() {
@@ -248,8 +259,14 @@ mod tests {
         run_id: &str,
     ) -> memory_core::reflection::ReflectionWorktree {
         let exec = fixture.repo.exec();
-        create_reflection_worktree(&fixture.repo, run_id, &fixture.worktrees, exec.as_ref(), None)
-            .expect("orphan worktree")
+        create_reflection_worktree(
+            &fixture.repo,
+            run_id,
+            &fixture.worktrees,
+            exec.as_ref(),
+            None,
+        )
+        .expect("orphan worktree")
     }
 
     fn claim_run(fixture: &Fixture, run_id: &str) {
@@ -306,18 +323,29 @@ mod tests {
         assert_eq!(warnings[0].0, "Discarded an orphaned reflection leftover");
         let details = warnings[0].1.as_ref().expect("receipt details");
         assert_eq!(details.kind, Some(OrphanKind::Worktree));
-        let canonical_worktrees = std::fs::canonicalize(&fixture.worktrees).expect("canonical worktrees");
+        let canonical_worktrees =
+            std::fs::canonicalize(&fixture.worktrees).expect("canonical worktrees");
         #[cfg(windows)]
-        let canonical_worktrees = std::path::PathBuf::from(canonical_worktrees.to_string_lossy().trim_start_matches(r"\\?\"));
+        let canonical_worktrees = std::path::PathBuf::from(
+            canonical_worktrees
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\"),
+        );
         let orphan_name = orphan.dir.file_name().expect("orphan dir name");
         assert_eq!(
             details.target.as_deref(),
-            Some(canonical_worktrees.join(orphan_name).to_string_lossy().as_ref())
+            Some(
+                canonical_worktrees
+                    .join(orphan_name)
+                    .to_string_lossy()
+                    .as_ref()
+            )
         );
         drop(warnings);
 
         let exec = fixture.repo.exec();
-        let cleanup = discard_reflection_worktree(&fixture.repo, &live.dir, &live.branch, exec.as_ref());
+        let cleanup =
+            discard_reflection_worktree(&fixture.repo, &live.dir, &live.branch, exec.as_ref());
         assert!(cleanup.worktree_removed && cleanup.branch_removed);
     }
 
@@ -338,7 +366,12 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert!(protected.dir.exists());
         let exec = fixture.repo.exec();
-        let cleanup = discard_reflection_worktree(&fixture.repo, &protected.dir, &protected.branch, exec.as_ref());
+        let cleanup = discard_reflection_worktree(
+            &fixture.repo,
+            &protected.dir,
+            &protected.branch,
+            exec.as_ref(),
+        );
         assert!(cleanup.worktree_removed && cleanup.branch_removed);
     }
 
@@ -359,7 +392,8 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert!(young.dir.exists());
         let exec = fixture.repo.exec();
-        let cleanup = discard_reflection_worktree(&fixture.repo, &young.dir, &young.branch, exec.as_ref());
+        let cleanup =
+            discard_reflection_worktree(&fixture.repo, &young.dir, &young.branch, exec.as_ref());
         assert!(cleanup.worktree_removed && cleanup.branch_removed);
     }
 

@@ -2,12 +2,12 @@
 //! backend takes above the D-Bus round trips, without an accessibility bus.
 
 use atspi::Role;
-use senpi_desktop_core::ax::{AxBackend, AxBounds, AxHandle, AxRegistry, snapshot};
+use senpi_desktop_core::ax::{snapshot, AxBackend, AxBounds, AxHandle, AxRegistry};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
 use crate::bus::Extents;
-use crate::fake::{EDITOR_RECT, FakeBus, FakeNode, editor, node};
+use crate::fake::{editor, node, FakeBus, FakeNode, EDITOR_RECT};
 use crate::{AtSpiAx, AxPermission};
 
 /// A window over the editor's frame rect.

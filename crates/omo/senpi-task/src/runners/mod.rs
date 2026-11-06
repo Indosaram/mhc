@@ -2,9 +2,9 @@
 
 pub mod child_ancestry;
 pub mod engine_spawned_by;
+pub mod in_process;
 pub mod input_admission_read;
 pub mod input_effects;
-pub mod in_process;
 pub mod pinned_model_equivalence;
 pub mod rpc;
 pub mod rpc_host;

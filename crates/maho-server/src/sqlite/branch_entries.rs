@@ -8,15 +8,26 @@ pub fn scan_branch(
     session: &str,
     query: &StorageBranchScan,
 ) -> Result<Vec<Entry>, ValueError> {
-    let ids = scan_branch_ids(db,session,query)?;
-    let entries = entries::read_entries(db,session,&ids)?;
-    let mut by_id = entries.into_iter().map(|entry|(entry.id.clone(),entry)).collect::<std::collections::BTreeMap<_,_>>();
-    Ok(ids.into_iter().filter_map(|id|by_id.remove(&id)).collect())
+    let ids = scan_branch_ids(db, session, query)?;
+    let entries = entries::read_entries(db, session, &ids)?;
+    let mut by_id = entries
+        .into_iter()
+        .map(|entry| (entry.id.clone(), entry))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
-pub fn scan_branch_structure(db: &Connection,session: &str,query: &StorageBranchScan) -> Result<Vec<EntryStructure>,ValueError> {
-    entries::read_entry_structures(db,session,&scan_branch_ids(db,session,query)?)
+pub fn scan_branch_structure(
+    db: &Connection,
+    session: &str,
+    query: &StorageBranchScan,
+) -> Result<Vec<EntryStructure>, ValueError> {
+    entries::read_entry_structures(db, session, &scan_branch_ids(db, session, query)?)
 }
-fn scan_branch_ids(db: &Connection,session: &str,query: &StorageBranchScan) -> Result<Vec<String>,ValueError> {
+fn scan_branch_ids(
+    db: &Connection,
+    session: &str,
+    query: &StorageBranchScan,
+) -> Result<Vec<String>, ValueError> {
     let (mut branch,mut upper)=db.query_row("SELECT b.branch_id,b.entry_seq FROM branch_entries b JOIN branch_meta m ON m.session_id=b.session_id AND m.branch_id=b.branch_id WHERE b.session_id=?1 AND b.entry_id=?2 AND ((m.base_seq IS NULL AND b.entry_seq>0) OR (m.base_seq IS NOT NULL AND b.entry_seq>m.base_seq)) AND b.entry_seq<=m.tip_seq ORDER BY m.tip_seq DESC,b.branch_id LIMIT 1",params![session,query.start],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?)))?;
     let mut segments = Vec::new();
     loop {
@@ -116,9 +127,11 @@ pub fn append_to_branch_index(
         .to_owned();
     let existing = if let Some(parent) = &entry.parent_id {
         // PERF-DIVERGENCE(senpi): upstream re-parses this lookup per write; we use the prepared-statement cache. Same SQL, same row.
-        db.prepare_cached("SELECT branch_id FROM branch_meta WHERE session_id=?1 AND tip_entry_id=?2")?
-            .query_row(params![session, parent], |row| row.get::<_, String>(0))
-            .optional()?
+        db.prepare_cached(
+            "SELECT branch_id FROM branch_meta WHERE session_id=?1 AND tip_entry_id=?2",
+        )?
+        .query_row(params![session, parent], |row| row.get::<_, String>(0))
+        .optional()?
     } else {
         None
     };
@@ -131,12 +144,18 @@ pub fn append_to_branch_index(
     // PERF-DIVERGENCE(senpi): upstream decodes every entry of the session to walk the parent chain; we walk it with one indexed id/parent/seq/type lookup per hop. Same ancestor list, same error.
     let mut ancestry: Vec<(String, i64, String)> = Vec::new();
     if let Some(parent) = &entry.parent_id {
-        let mut lookup = db.prepare_cached("SELECT parent_id,seq,type FROM entries WHERE session_id=?1 AND id=?2")?;
+        let mut lookup = db.prepare_cached(
+            "SELECT parent_id,seq,type FROM entries WHERE session_id=?1 AND id=?2",
+        )?;
         let mut current = Some(parent.clone());
         while let Some(id) = current {
             let (next, seq, kind) = lookup
                 .query_row(params![session, id], |row| {
-                    Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })
                 .optional()?
                 .ok_or_else(|| ValueError::Options(format!("Branch cache missing entry {id}")))?;

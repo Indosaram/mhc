@@ -25,10 +25,16 @@ impl HandleListeners {
         listener: crate::manager::child_handle::ManagedChildListener,
     ) -> Unsubscribe {
         let id = self.ids.fetch_add(1, Ordering::Relaxed);
-        self.events.lock().expect("hosted child state lock poisoned").insert(id, listener);
+        self.events
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .insert(id, listener);
         let listeners = self.events.clone();
         Box::new(move || {
-            listeners.lock().expect("hosted child state lock poisoned").remove(&id);
+            listeners
+                .lock()
+                .expect("hosted child state lock poisoned")
+                .remove(&id);
         })
     }
     pub fn emit_event(&self, event: &crate::manager::child_handle::ManagedChildEvent) {
@@ -45,10 +51,16 @@ impl HandleListeners {
     }
     pub fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Unsubscribe {
         let id = self.ids.fetch_add(1, Ordering::Relaxed);
-        self.resumed.lock().expect("hosted child state lock poisoned").insert(id, listener);
+        self.resumed
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .insert(id, listener);
         let listeners = self.resumed.clone();
         Box::new(move || {
-            listeners.lock().expect("hosted child state lock poisoned").remove(&id);
+            listeners
+                .lock()
+                .expect("hosted child state lock poisoned")
+                .remove(&id);
         })
     }
     pub fn emit_self_resumed(&self) {
@@ -65,10 +77,16 @@ impl HandleListeners {
     }
     pub fn on_durable_session_id(&self, listener: Arc<dyn Fn(&str) + Send + Sync>) -> Unsubscribe {
         let id = self.ids.fetch_add(1, Ordering::Relaxed);
-        self.durable.lock().expect("hosted child state lock poisoned").insert(id, listener);
+        self.durable
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .insert(id, listener);
         let listeners = self.durable.clone();
         Box::new(move || {
-            listeners.lock().expect("hosted child state lock poisoned").remove(&id);
+            listeners
+                .lock()
+                .expect("hosted child state lock poisoned")
+                .remove(&id);
         })
     }
     pub fn emit_durable_session_id(&self, id: &str) {
@@ -84,8 +102,17 @@ impl HandleListeners {
         }
     }
     pub fn clear_active(&self) {
-        self.events.lock().expect("hosted child state lock poisoned").clear();
-        self.resumed.lock().expect("hosted child state lock poisoned").clear();
-        self.durable.lock().expect("hosted child state lock poisoned").clear();
+        self.events
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clear();
+        self.resumed
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clear();
+        self.durable
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clear();
     }
 }

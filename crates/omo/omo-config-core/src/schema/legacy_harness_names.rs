@@ -61,7 +61,9 @@ fn canonicalize_blocks_in(
     result
 }
 
-pub fn canonicalize_legacy_harness_blocks(document: &Value) -> CanonicalizeLegacyHarnessBlocksResult {
+pub fn canonicalize_legacy_harness_blocks(
+    document: &Value,
+) -> CanonicalizeLegacyHarnessBlocksResult {
     let Value::Object(root) = document else {
         return CanonicalizeLegacyHarnessBlocksResult {
             document: Map::new(),

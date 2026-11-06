@@ -22,7 +22,8 @@ pub const HARNESS: &str = "senpi";
 
 /// Upstream `pi.getCommands()`: one entry per registered slash command. Optional as a whole —
 /// `None` means the host predates the API, exactly like upstream's `getCommands === undefined`.
-pub type HostCommands = Arc<dyn Fn() -> Result<Option<Vec<HostCommandInfo>>, ExtensionFailure> + Send + Sync>;
+pub type HostCommands =
+    Arc<dyn Fn() -> Result<Option<Vec<HostCommandInfo>>, ExtensionFailure> + Send + Sync>;
 
 /// The `getCommands()` entry fields both components read: `name`, `description`, `source` and
 /// `sourceInfo.path`. Upstream declares the narrow `HostCommandInfo` in
@@ -52,7 +53,11 @@ pub fn host_command_info(command: &SlashCommandInfo) -> HostCommandInfo {
     HostCommandInfo {
         name: command.name.clone(),
         description: command.description.clone(),
-        source: command.source_info.as_ref().map(|info| info.source.clone()).unwrap_or_default(),
+        source: command
+            .source_info
+            .as_ref()
+            .map(|info| info.source.clone())
+            .unwrap_or_default(),
         source_info_path: command.source_info.as_ref().map(|info| info.path.clone()),
     }
 }
@@ -100,23 +105,33 @@ pub fn resolve_contributed_skill(options: ResolveContributedSkillOptions<'_>) ->
         return ContributedSkill::Disabled;
     }
     let command = format!("skill:{}", options.name);
-    let loaded = options
-        .commands
-        .and_then(|commands| commands.iter().find(|entry| entry.source == "skill" && entry.name == command));
+    let loaded = options.commands.and_then(|commands| {
+        commands
+            .iter()
+            .find(|entry| entry.source == "skill" && entry.name == command)
+    });
     let path = options.path;
-    let Some(loaded) = loaded else { return ContributedSkill::Contributed { path } };
+    let Some(loaded) = loaded else {
+        return ContributedSkill::Contributed { path };
+    };
     match &loaded.source_info_path {
         Some(owner_path) if canonical_path(Path::new(owner_path)) == canonical_path(&path) => {
             ContributedSkill::Contributed { path }
         }
-        owner_path => ContributedSkill::Yielded { owner_path: owner_path.clone() },
+        owner_path => ContributedSkill::Yielded {
+            owner_path: owner_path.clone(),
+        },
     }
 }
 
 /// Upstream `readDiscoverCwd(payload)`: the discover pass carries the cwd it runs for; a host that
 /// reports none falls back to `pi.cwd`.
 pub fn read_discover_cwd(event: &ResourcesDiscoverEvent) -> Option<PathBuf> {
-    if event.cwd.as_os_str().is_empty() { None } else { Some(event.cwd.clone()) }
+    if event.cwd.as_os_str().is_empty() {
+        None
+    } else {
+        Some(event.cwd.clone())
+    }
 }
 
 fn canonical_path(path: &Path) -> PathBuf {
@@ -142,6 +157,8 @@ fn absolute_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().map(|cwd| cwd.join(path)).unwrap_or_else(|_| path.to_path_buf())
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     }
 }

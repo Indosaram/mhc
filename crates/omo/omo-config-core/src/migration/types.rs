@@ -45,7 +45,9 @@ impl<F: Fn(u32) -> bool> ProcessLiveness for F {
 pub fn default_is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        let Ok(pid) = libc::pid_t::try_from(pid) else { return false; };
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
         // SAFETY: FFI boundary: kill accepts an integer PID and signal 0 only probes existence.
         let result = unsafe { libc::kill(pid, 0) };
         result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
@@ -334,8 +336,8 @@ pub struct MigrationTargetWriteResult {
     pub backup_path: Option<String>,
 }
 
-pub type MigrationTargetWriter<'a> =
-    dyn Fn(MigrationTargetWriterInput<'_>) -> Result<MigrationTargetWriteResult, MigrationError> + 'a;
+pub type MigrationTargetWriter<'a> = dyn Fn(MigrationTargetWriterInput<'_>) -> Result<MigrationTargetWriteResult, MigrationError>
+    + 'a;
 
 pub type MigrationTransform<'a> =
     dyn Fn(&[LoadedMigrationSource]) -> Result<MigrationTransformResult, MigrationError> + 'a;

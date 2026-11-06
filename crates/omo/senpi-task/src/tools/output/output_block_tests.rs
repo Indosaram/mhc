@@ -7,10 +7,13 @@ use serde_json::{Value, json};
 
 use crate::manager::types::{ListScope, ListedTask};
 use crate::state::{TaskRecord, TaskStatus};
-use crate::tools::output::output::{TaskOutputInput, TaskOutputMode, run_task_output, task_output_params_schema};
+use crate::tools::output::output::{
+    TaskOutputInput, TaskOutputMode, run_task_output, task_output_params_schema,
+};
 use crate::tools::output::records_fakes::{RecordOverrides, make_record};
 use crate::tools::output::types::{
-    OutputManager, TaskOutputDeps, TaskOutputDetails, TaskOutputToolResult, TranscriptReadResult, TranscriptSource,
+    OutputManager, TaskOutputDeps, TaskOutputDetails, TaskOutputToolResult, TranscriptReadResult,
+    TranscriptSource,
 };
 
 const BLOCKING_REMOVED_GUIDANCE: &str =
@@ -40,13 +43,19 @@ impl ObservableOutputManager {
     }
 
     fn wait_for_calls(&self) -> Vec<String> {
-        self.wait_for_calls.lock().expect("wait_for_calls lock").clone()
+        self.wait_for_calls
+            .lock()
+            .expect("wait_for_calls lock")
+            .clone()
     }
 }
 
 impl OutputManager for ObservableOutputManager {
     fn get(&self, task_id: &str) -> Option<TaskRecord> {
-        self.records.iter().find(|record| record.task_id == task_id).cloned()
+        self.records
+            .iter()
+            .find(|record| record.task_id == task_id)
+            .cloned()
     }
 
     fn list(&self, scope: &ListScope) -> Vec<ListedTask> {
@@ -124,7 +133,8 @@ fn assert_legacy_param_redirects(params_patch: impl FnOnce(&mut TaskOutputInput)
     params_patch(&mut params);
 
     // when
-    let result = run_task_output(&deps_from(&manager), &params, Some("session-parent")).expect("task_output runs");
+    let result = run_task_output(&deps_from(&manager), &params, Some("session-parent"))
+        .expect("task_output runs");
 
     // then
     assert_eq!(manager.wait_for_calls(), Vec::<String>::new());
@@ -136,7 +146,10 @@ fn assert_legacy_param_redirects(params_patch: impl FnOnce(&mut TaskOutputInput)
 fn given_the_task_output_schema_when_exposed_to_a_model_then_blocking_controls_are_absent() {
     // when
     let schema = task_output_params_schema();
-    let properties = schema.get("properties").and_then(Value::as_object).expect("properties object");
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("properties object");
 
     // then
     assert!(!properties.contains_key("block"));
@@ -145,7 +158,8 @@ fn given_the_task_output_schema_when_exposed_to_a_model_then_blocking_controls_a
 }
 
 #[test]
-fn given_a_running_child_when_task_output_reads_its_status_then_it_returns_its_running_snapshot_without_waiting() {
+fn given_a_running_child_when_task_output_reads_its_status_then_it_returns_its_running_snapshot_without_waiting()
+ {
     // given
     let running = running_record();
     let manager = manager_from(vec![running.clone()]);
@@ -156,7 +170,8 @@ fn given_a_running_child_when_task_output_reads_its_status_then_it_returns_its_r
         mode: Some(TaskOutputMode::Status),
         ..TaskOutputInput::default()
     };
-    let result = run_task_output(&deps_from(&manager), &params, Some("session-parent")).expect("task_output runs");
+    let result = run_task_output(&deps_from(&manager), &params, Some("session-parent"))
+        .expect("task_output runs");
 
     // then
     assert_eq!(manager.wait_for_calls(), Vec::<String>::new());
@@ -167,16 +182,19 @@ fn given_a_running_child_when_task_output_reads_its_status_then_it_returns_its_r
 }
 
 #[test]
-fn given_a_legacy_block_true_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks() {
+fn given_a_legacy_block_true_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks()
+ {
     assert_legacy_param_redirects(|params| params.block = Some(json!(true)));
 }
 
 #[test]
-fn given_a_legacy_block_false_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks() {
+fn given_a_legacy_block_false_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks()
+ {
     assert_legacy_param_redirects(|params| params.block = Some(json!(false)));
 }
 
 #[test]
-fn given_a_legacy_blocking_timeout_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks() {
+fn given_a_legacy_blocking_timeout_param_when_task_output_runs_then_it_redirects_to_notification_driven_peeks()
+ {
     assert_legacy_param_redirects(|params| params.timeout_ms = Some(json!(1)));
 }

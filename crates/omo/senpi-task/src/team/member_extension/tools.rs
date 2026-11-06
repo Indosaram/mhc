@@ -123,7 +123,10 @@ pub fn run_member_task_send(
         summary: input.summary.clone(),
     };
     let options = BuildTeamMessageOptions {
-        now: deps.now.as_ref().map(|now| now.as_ref() as &dyn Fn() -> i64),
+        now: deps
+            .now
+            .as_ref()
+            .map(|now| now.as_ref() as &dyn Fn() -> i64),
         new_message_id: deps
             .new_message_id
             .as_ref()
@@ -153,7 +156,10 @@ pub fn run_member_task_send(
         );
     }
     Ok(tool_result(
-        &format!("Message enqueued to {} (id: {}).", input.to, message.message_id),
+        &format!(
+            "Message enqueued to {} (id: {}).",
+            input.to, message.message_id
+        ),
         MemberTaskSendDetails {
             kind: "team_message",
             message_id: message.message_id.clone(),

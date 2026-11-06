@@ -60,22 +60,43 @@ impl RecordingUi {
         self.notices.lock().expect("notices").clone()
     }
     pub fn autocomplete_factory_count(&self) -> usize {
-        self.autocomplete_factories.lock().expect("autocomplete factories").len()
+        self.autocomplete_factories
+            .lock()
+            .expect("autocomplete factories")
+            .len()
     }
 }
 
 impl ExtensionUi for RecordingUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, kind: NotificationType) {
-        self.notices.lock().expect("notices").push((message.to_owned(), kind));
+        self.notices
+            .lock()
+            .expect("notices")
+            .push((message.to_owned(), kind));
     }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -93,8 +114,14 @@ impl ExtensionUi for RecordingUi {
     fn theme(&self) -> Theme {
         Theme::default()
     }
-    fn add_autocomplete_provider(&self, factory: AutocompleteProviderFactory) -> Result<(), ExtensionFailure> {
-        self.autocomplete_factories.lock().expect("autocomplete factories").push(factory);
+    fn add_autocomplete_provider(
+        &self,
+        factory: AutocompleteProviderFactory,
+    ) -> Result<(), ExtensionFailure> {
+        self.autocomplete_factories
+            .lock()
+            .expect("autocomplete factories")
+            .push(factory);
         Ok(())
     }
 }
@@ -102,11 +129,19 @@ impl ExtensionUi for RecordingUi {
 #[derive(Default)]
 pub struct RecordingActions(pub Mutex<Vec<CustomMessage>>);
 impl ExtensionActions for RecordingActions {
-    fn send_message(&self, message: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_message(
+        &self,
+        message: CustomMessage,
+        _: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         self.0.lock().expect("messages").push(message);
         Ok(())
     }
-    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_user_message(
+        &self,
+        _: UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         Err(ExtensionFailure::new("unexpected send_user_message"))
     }
     fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
@@ -131,7 +166,12 @@ impl ExtensionSessionActions for FakeSessionActions {
     fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> {
         Ok(())
     }
-    fn execute_tool<'a>(&'a self, _: &'a str, _: JsonValue, _: ExecuteToolOptions) -> ExecuteToolFuture<'a> {
+    fn execute_tool<'a>(
+        &'a self,
+        _: &'a str,
+        _: JsonValue,
+        _: ExecuteToolOptions,
+    ) -> ExecuteToolFuture<'a> {
         Box::pin(async {
             Err(ExecuteToolError {
                 code: ExecuteToolErrorCode::UnknownTool,
@@ -177,7 +217,13 @@ impl ExtensionSessionActions for FakeSessionActions {
     fn set_session_fast_mode(&self, _: bool) -> Result<(), ExtensionFailure> {
         Ok(())
     }
-    fn exec<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a Path, _: ExecOptions) -> ExtensionFuture<'a, ExecResult> {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: &'a Path,
+        _: ExecOptions,
+    ) -> ExtensionFuture<'a, ExecResult> {
         Box::pin(async { Err(ExtensionFailure::new("unexpected exec")) })
     }
 }
@@ -205,7 +251,10 @@ pub fn context(cwd: &Path, ui: Arc<RecordingUi>, has_ui: bool) -> ExtensionConte
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,
@@ -226,10 +275,17 @@ pub fn skills_fixture(names: &[&str]) -> SkillsFixture {
     for name in names {
         let dir = skills.join(name);
         std::fs::create_dir_all(&dir).expect("skill dir");
-        std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: fixture\n---\nbody\n")).expect("skill file");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: fixture\n---\nbody\n"),
+        )
+        .expect("skill file");
     }
     std::fs::create_dir_all(skills.join("not-a-skill")).expect("plain directory");
-    SkillsFixture { _root: root, skills }
+    SkillsFixture {
+        _root: root,
+        skills,
+    }
 }
 
 pub fn command(name: &str, description: Option<&str>, source: &str) -> SlashCommandInfo {
@@ -237,6 +293,10 @@ pub fn command(name: &str, description: Option<&str>, source: &str) -> SlashComm
         name: name.to_owned(),
         description: description.map(str::to_owned),
         argument_hint: None,
-        source_info: Some(SourceInfo { path: String::new(), source: source.to_owned(), ..Default::default() }),
+        source_info: Some(SourceInfo {
+            path: String::new(),
+            source: source.to_owned(),
+            ..Default::default()
+        }),
     }
 }

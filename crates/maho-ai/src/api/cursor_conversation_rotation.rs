@@ -41,7 +41,10 @@ struct MutableRecord {
 }
 
 pub fn is_zero_token_resource_exhausted(error_message: &str, saw_token_delta: bool) -> bool {
-    !saw_token_delta && RESOURCE_EXHAUSTED_PATTERN.is_match(error_message).unwrap_or(false)
+    !saw_token_delta
+        && RESOURCE_EXHAUSTED_PATTERN
+            .is_match(error_message)
+            .unwrap_or(false)
 }
 
 pub struct ConversationRotationStoreOptions<F: Fn() -> String> {
@@ -75,7 +78,13 @@ impl<F: Fn() -> String> ConversationRotationStore<F> {
     pub fn with_options(options: ConversationRotationStoreOptions<F>) -> Self {
         let max_records = options
             .max_records
-            .or_else(|| read_rotation_record_limit(std::env::var("PI_CURSOR_ROTATION_RECORD_LIMIT").ok().as_deref()))
+            .or_else(|| {
+                read_rotation_record_limit(
+                    std::env::var("PI_CURSOR_ROTATION_RECORD_LIMIT")
+                        .ok()
+                        .as_deref(),
+                )
+            })
             .unwrap_or(MAX_CURSOR_CONVERSATION_ROTATION_RECORDS);
         let records = load_records(&options.persist_path);
         Self {
@@ -87,7 +96,10 @@ impl<F: Fn() -> String> ConversationRotationStore<F> {
     }
 
     fn with_records<T>(&self, f: impl FnOnce(&mut IndexMap<String, MutableRecord>) -> T) -> T {
-        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut records)
     }
 
@@ -127,12 +139,14 @@ impl<F: Fn() -> String> ConversationRotationStore<F> {
 
     pub fn mark_surfaced(&self, base_id: &str, current_wire_id: &str) {
         self.with_records(|records| {
-            let entry = records.entry(base_id.to_string()).or_insert_with(|| MutableRecord {
-                wire_id: current_wire_id.to_string(),
-                poison_count: 0,
-                skip: false,
-                surfaced: false,
-            });
+            let entry = records
+                .entry(base_id.to_string())
+                .or_insert_with(|| MutableRecord {
+                    wire_id: current_wire_id.to_string(),
+                    poison_count: 0,
+                    skip: false,
+                    surfaced: false,
+                });
             if entry.surfaced {
                 return;
             }
@@ -188,7 +202,10 @@ pub fn resolve_conversation_rotation_persist_path(
             let home = env.get("HOME").map(String::as_str).unwrap_or(".");
             format!("{}/.senpi/agent", home.trim_end_matches('/'))
         });
-    format!("{}/cursor-conversation-ids.json", agent_dir.trim_end_matches('/'))
+    format!(
+        "{}/cursor-conversation-ids.json",
+        agent_dir.trim_end_matches('/')
+    )
 }
 
 fn read_rotation_record_limit(raw: Option<&str>) -> Option<usize> {
@@ -200,13 +217,19 @@ fn load_records(persist_path: &Path) -> IndexMap<String, MutableRecord> {
     let Ok(contents) = std::fs::read_to_string(persist_path) else {
         return IndexMap::new();
     };
-    let Ok(serde_json::Value::Object(parsed)) = serde_json::from_str::<serde_json::Value>(&contents) else {
+    let Ok(serde_json::Value::Object(parsed)) =
+        serde_json::from_str::<serde_json::Value>(&contents)
+    else {
         return IndexMap::new();
     };
     let mut records = IndexMap::new();
     for (base_id, value) in parsed {
-        let serde_json::Value::Object(raw) = &value else { continue };
-        let Some(serde_json::Value::String(wire_id)) = raw.get("wireId") else { continue };
+        let serde_json::Value::Object(raw) = &value else {
+            continue;
+        };
+        let Some(serde_json::Value::String(wire_id)) = raw.get("wireId") else {
+            continue;
+        };
         if wire_id.is_empty() {
             continue;
         }
@@ -216,9 +239,23 @@ fn load_records(persist_path: &Path) -> IndexMap<String, MutableRecord> {
             .filter(|value| *value >= 0.0)
             .map(|value| value as u32)
             .unwrap_or(0);
-        let skip = raw.get("skip").and_then(serde_json::Value::as_bool).unwrap_or(false);
-        let surfaced = raw.get("surfaced").and_then(serde_json::Value::as_bool).unwrap_or(false);
-        records.insert(base_id, MutableRecord { wire_id: wire_id.clone(), poison_count, skip, surfaced });
+        let skip = raw
+            .get("skip")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let surfaced = raw
+            .get("surfaced")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        records.insert(
+            base_id,
+            MutableRecord {
+                wire_id: wire_id.clone(),
+                poison_count,
+                skip,
+                surfaced,
+            },
+        );
     }
     records
 }
@@ -247,7 +284,11 @@ mod tests {
         let queue = RefCell::new(ids.into_iter().map(str::to_string).collect::<Vec<_>>());
         move || {
             let mut queue = queue.borrow_mut();
-            if queue.is_empty() { "overflow".to_string() } else { queue.remove(0) }
+            if queue.is_empty() {
+                "overflow".to_string()
+            } else {
+                queue.remove(0)
+            }
         }
     }
 
@@ -262,7 +303,12 @@ mod tests {
         });
         assert_eq!(store.get_wire_id("session-a"), "session-a");
         let first = store.record_zero_token_poison("session-a", "session-a");
-        assert_eq!(first, PoisonDecision::Rotated { wire_id: "rot-1".to_string() });
+        assert_eq!(
+            first,
+            PoisonDecision::Rotated {
+                wire_id: "rot-1".to_string()
+            }
+        );
         assert_eq!(store.get_wire_id("session-a"), "rot-1");
     }
 
@@ -283,7 +329,8 @@ mod tests {
         });
         assert_eq!(reloaded.get_wire_id("session-b"), "persisted-wire");
         let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&persist_path).expect("read")).expect("json");
+            serde_json::from_str(&std::fs::read_to_string(&persist_path).expect("read"))
+                .expect("json");
         assert_eq!(persisted["session-b"]["wireId"], "persisted-wire");
     }
 
@@ -304,23 +351,38 @@ mod tests {
         });
         assert_eq!(
             store.record_zero_token_poison("session-c", "session-c"),
-            PoisonDecision::Rotated { wire_id: "rot-1".to_string() }
+            PoisonDecision::Rotated {
+                wire_id: "rot-1".to_string()
+            }
         );
         assert_eq!(
             store.record_zero_token_poison("session-c", "rot-1"),
-            PoisonDecision::Rotated { wire_id: "rot-2".to_string() }
+            PoisonDecision::Rotated {
+                wire_id: "rot-2".to_string()
+            }
         );
         assert_eq!(
             store.record_zero_token_poison("session-c", "rot-2"),
-            PoisonDecision::Rotated { wire_id: "rot-3".to_string() }
+            PoisonDecision::Rotated {
+                wire_id: "rot-3".to_string()
+            }
         );
-        assert_eq!(store.record_zero_token_poison("session-c", "rot-3"), PoisonDecision::Exhausted);
+        assert_eq!(
+            store.record_zero_token_poison("session-c", "rot-3"),
+            PoisonDecision::Exhausted
+        );
         assert!(store.should_skip("session-c"));
         let reopened = store.get_wire_id("session-c");
         assert_ne!(reopened, "rot-3");
         assert!(!store.should_skip("session-c"));
-        assert!(!is_zero_token_resource_exhausted("Connect error resource_exhausted: Error", true));
-        assert!(is_zero_token_resource_exhausted("Connect error resource_exhausted: Error", false));
+        assert!(!is_zero_token_resource_exhausted(
+            "Connect error resource_exhausted: Error",
+            true
+        ));
+        assert!(is_zero_token_resource_exhausted(
+            "Connect error resource_exhausted: Error",
+            false
+        ));
     }
 
     #[test]
@@ -332,14 +394,23 @@ mod tests {
             "/home/u/.senpi/agent/cursor-conversation-ids.json"
         );
 
-        env.insert("CODING_AGENT_DIR".to_string(), "/home/u/.omo/agent".to_string());
+        env.insert(
+            "CODING_AGENT_DIR".to_string(),
+            "/home/u/.omo/agent".to_string(),
+        );
         assert_eq!(
             resolve_conversation_rotation_persist_path(&env),
             "/home/u/.omo/agent/cursor-conversation-ids.json"
         );
 
-        env.insert("CURSOR_CONVERSATION_ID_STORE".to_string(), "/tmp/store.json".to_string());
-        assert_eq!(resolve_conversation_rotation_persist_path(&env), "/tmp/store.json");
+        env.insert(
+            "CURSOR_CONVERSATION_ID_STORE".to_string(),
+            "/tmp/store.json".to_string(),
+        );
+        assert_eq!(
+            resolve_conversation_rotation_persist_path(&env),
+            "/tmp/store.json"
+        );
     }
 
     #[test]
@@ -364,9 +435,14 @@ mod tests {
         assert!(store.should_surface_before_rotating("rec-1"));
         assert!(store.should_surface_before_rotating("rec-2"));
         let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&persist_path).expect("read")).expect("json");
-        let mut keys: Vec<String> =
-            persisted.as_object().expect("object").keys().cloned().collect();
+            serde_json::from_str(&std::fs::read_to_string(&persist_path).expect("read"))
+                .expect("json");
+        let mut keys: Vec<String> = persisted
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect();
         keys.sort();
         assert_eq!(keys, vec!["rec-3", "rec-4", "rec-5"]);
     }

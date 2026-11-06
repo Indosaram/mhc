@@ -146,7 +146,11 @@ fn sendable(
     };
     // A record that names no cwd fails closed, as at send time: consent read without a cwd would be this
     // process's default, not the writer's.
-    let Some(cwd) = scope.get("cwd").and_then(Value::as_str).filter(|cwd| !cwd.is_empty()) else {
+    let Some(cwd) = scope
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+    else {
         return Some(false);
     };
     let Some(raw_config) = scope.get("config") else {
@@ -212,13 +216,23 @@ mod tests {
             ("OCX_PROFILE", ""),
         ]));
         assert_eq!(selection.len(), 2);
-        assert_eq!(selection.get("OMO_PROFILE").map(String::as_str), Some("work"));
-        assert_eq!(parse_config_selection(&json!(selection)), Some(selection.clone()));
+        assert_eq!(
+            selection.get("OMO_PROFILE").map(String::as_str),
+            Some("work")
+        );
+        assert_eq!(
+            parse_config_selection(&json!(selection)),
+            Some(selection.clone())
+        );
         assert_eq!(parse_config_selection(&json!({"HOME": ""})), None);
         assert_eq!(parse_config_selection(&json!("nope")), None);
 
         let merged = with_config_selection(
-            &env(&[("HOME", "/reader"), ("OMO_PROFILE", "reader"), ("DO_NOT_TRACK", "1")]),
+            &env(&[
+                ("HOME", "/reader"),
+                ("OMO_PROFILE", "reader"),
+                ("DO_NOT_TRACK", "1"),
+            ]),
             &selection,
         );
         assert_eq!(merged.get("HOME").map(String::as_str), Some("/home/user"));
@@ -231,9 +245,21 @@ mod tests {
     fn purge_deletes_opted_out_scopes_and_keeps_consented_ones() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path();
-        queue(state, "opted.json", record("enabled", json!({"cwd": "/opt/out"})));
-        queue(state, "kept.json", record("enabled", json!({"cwd": "/kept"})));
-        queue(state, "unmarked.json", record("unconsented", json!({"cwd": "/kept"})));
+        queue(
+            state,
+            "opted.json",
+            record("enabled", json!({"cwd": "/opt/out"})),
+        );
+        queue(
+            state,
+            "kept.json",
+            record("enabled", json!({"cwd": "/kept"})),
+        );
+        queue(
+            state,
+            "unmarked.json",
+            record("unconsented", json!({"cwd": "/kept"})),
+        );
         queue(
             state,
             "pending/opted.json",
@@ -265,7 +291,10 @@ mod tests {
         purge_unconsented_queue(state, &consented, false);
         let mut remaining = names(&summary_dir(state));
         remaining.sort();
-        assert_eq!(remaining, vec!["corrupt.json".to_string(), "old.json".to_string()]);
+        assert_eq!(
+            remaining,
+            vec!["corrupt.json".to_string(), "old.json".to_string()]
+        );
         purge_unconsented_queue(state, &consented, true);
         assert!(names(&summary_dir(state)).is_empty());
     }
@@ -299,7 +328,10 @@ mod tests {
                 == Some("a")
         };
         purge_unconsented_queue(state, &consented, false);
-        assert_eq!(names(&summary_dir(state)), vec!["profile-a.json".to_string()]);
+        assert_eq!(
+            names(&summary_dir(state)),
+            vec!["profile-a.json".to_string()]
+        );
     }
 
     #[test]

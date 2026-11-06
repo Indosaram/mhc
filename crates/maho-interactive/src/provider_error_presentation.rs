@@ -155,8 +155,12 @@ impl ProviderErrorPresentation {
         self.pending = false;
         self.hide_summary();
     }
-    pub fn has_active_retry(&self) -> bool { self.pending }
-    pub fn awaiting_retry_finish(&self) -> bool { self.retry_awaiting_finish }
+    pub fn has_active_retry(&self) -> bool {
+        self.pending
+    }
+    pub fn awaiting_retry_finish(&self) -> bool {
+        self.retry_awaiting_finish
+    }
     pub fn finish(&mut self, raw: Option<&str>, attempts: Option<usize>) {
         if let Some(raw) = raw.filter(|r| !r.is_empty()) {
             self.record(raw, false);
@@ -193,6 +197,11 @@ mod retry_episode_tests {
         assert!(state.awaiting_retry_finish());
         state.finish(None, Some(2));
         assert!(!state.awaiting_retry_finish());
-        assert!(state.notices[0].summary.as_deref().is_some_and(|s| s.contains("after 2 retries")));
+        assert!(
+            state.notices[0]
+                .summary
+                .as_deref()
+                .is_some_and(|s| s.contains("after 2 retries"))
+        );
     }
 }

@@ -666,7 +666,10 @@ pub enum DagRunEventPayload {
     #[serde(rename = "dag.node.pause-recovered", rename_all = "camelCase")]
     NodePauseRecovered { node_id: DagNodeId, child_seq: u64 },
     #[serde(rename = "dag.node.pause-lost", rename_all = "camelCase")]
-    NodePauseLost { node_id: DagNodeId, error: DagNodeError },
+    NodePauseLost {
+        node_id: DagNodeId,
+        error: DagNodeError,
+    },
 }
 
 /// The discriminator of a [`DagRunEventPayload`].

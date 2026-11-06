@@ -41,21 +41,34 @@ fn provider_rejects_empty_complete_operation_set() {
 #[tokio::test]
 async fn image_only_provider_dispatches_without_chat_implementation() {
     let mut options = operation_options();
-    options.images.insert("contract-images".into(), Arc::new(ContractImages));
+    options
+        .images
+        .insert("contract-images".into(), Arc::new(ContractImages));
     let mut model = crate::image_models::get_image_model("openai", "gpt-image-2.5-flare")
-        .expect("image fixture").clone();
+        .expect("image fixture")
+        .clone();
     model.api = "contract-images".into();
     let provider = create_provider(options).expect("image-only operation is valid");
-    let result = provider.generate_images(&model, &crate::types::ImagesContext::default(), None).await;
-    assert_eq!(result.err().as_deref(), Some("image-implementation-selected"));
+    let result = provider
+        .generate_images(&model, &crate::types::ImagesContext::default(), None)
+        .await;
+    assert_eq!(
+        result.err().as_deref(),
+        Some("image-implementation-selected")
+    );
 }
 
 #[test]
 fn classifier_only_provider_accepts_concrete_operation_without_catalog_models() {
     let mut classifiers: IndexMap<String, Arc<dyn ProviderClassifier>> = IndexMap::new();
     classifiers.insert("typesafe-system-one".into(), Arc::new(BuiltinClassifier));
-    let result = create_provider_with_classifiers(operation_options(), None, Vec::new(), classifiers);
-    assert!(result.expect("classifier-only operation is valid").supports_classification());
+    let result =
+        create_provider_with_classifiers(operation_options(), None, Vec::new(), classifiers);
+    assert!(
+        result
+            .expect("classifier-only operation is valid")
+            .supports_classification()
+    );
 }
 
 #[test]
@@ -90,7 +103,10 @@ fn generated_cache_metadata_only_marks_direct_anthropic() {
     let anthropic = get_builtin_model("anthropic", "claude-fable-5").expect("Anthropic");
     let openai = get_builtin_model("openai", "gpt-6-astra").expect("OpenAI");
     let wire = serde_json::to_value(anthropic).expect("serialize model");
-    assert_eq!(wire["promptCache"], serde_json::json!({"short": 300, "long": 3600}));
+    assert_eq!(
+        wire["promptCache"],
+        serde_json::json!({"short": 300, "long": 3600})
+    );
     assert_eq!(openai.prompt_cache, None);
     assert_eq!(anthropic.supports_assistant_prefill, None);
 }
@@ -102,7 +118,8 @@ fn image_limits_round_trip_independently_optional_dimensions() {
         "images": {"maxPerMessage": 2, "maxPerRequest": 4,
             "resize": {"maxWidth": 800, "maxBytes": 512, "jpegQuality": 75}}
     });
-    let limits: crate::model::ModelInputLimits = serde_json::from_value(wire.clone()).expect("limits");
+    let limits: crate::model::ModelInputLimits =
+        serde_json::from_value(wire.clone()).expect("limits");
     let round_trip = serde_json::to_value(limits).expect("serialize limits");
     assert_eq!(round_trip, wire);
 }
@@ -115,10 +132,14 @@ fn assistant_usage_limit_cause_survives_presentation_replacement() {
             "usage": Usage::default(), "stopReason": "error", "timestamp": 0,
             "errorCause": {"type": "usage_limit", "scope": scope}
         });
-        let mut message: AssistantMessage = serde_json::from_value(wire).expect("assistant message");
+        let mut message: AssistantMessage =
+            serde_json::from_value(wire).expect("assistant message");
         message.error_message = Some("presentation-only replacement".into());
         let projected = serde_json::to_value(message).expect("serialize assistant");
-        assert_eq!(projected["errorCause"], serde_json::json!({"type": "usage_limit", "scope": scope}));
+        assert_eq!(
+            projected["errorCause"],
+            serde_json::json!({"type": "usage_limit", "scope": scope})
+        );
     }
 }
 
@@ -132,7 +153,8 @@ fn nested_calls_round_trip_omitted_arguments_and_unfinished_status() {
             {"id": "c", "name": "bash", "status": "unfinished"}
         ]}
     });
-    let message: crate::types::ToolResultMessage = serde_json::from_value(wire.clone()).expect("tool result");
+    let message: crate::types::ToolResultMessage =
+        serde_json::from_value(wire.clone()).expect("tool result");
     let round_trip = serde_json::to_value(message).expect("serialize result");
     assert_eq!(round_trip, wire);
 }
@@ -207,7 +229,8 @@ async fn failed_restore_keeps_only_the_providers_last_usable_stored_models() {
         filter_models: None,
         api: ProviderApi::Single(crate::providers::builtin_api_streams("openai-responses")),
         images: IndexMap::new(),
-    }).expect("chat implementation");
+    })
+    .expect("chat implementation");
     let context = RefreshModelsContext {
         credential: None,
         stored: Some(ModelsStoreEntry {

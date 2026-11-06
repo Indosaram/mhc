@@ -31,11 +31,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use maho_ai::model::Model;
 use maho_ai::types::ModelThinkingLevel;
 use maho_ext_api::{
-    ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ExtensionMode,
-    ExtensionRuntime, JsonValue, ModelRegistry, NotificationType, SessionReason,
+    ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
+    ExtensionMode, ExtensionRuntime, JsonValue, ModelRegistry, NotificationType, SessionReason,
 };
-use omo_config_core::{LoadOmoConfigOptions, is_excluded_model};
 use maho_omo_config_resolution::{SenpiOmoConfigResult, load_senpi_omo_config};
+use omo_config_core::{LoadOmoConfigOptions, is_excluded_model};
 
 use crate::builtin_profiles::RETIRED_MODEL_PROFILE_IDS;
 use crate::credential_policy::credential_rotation_policy;
@@ -92,7 +92,10 @@ impl ModelProfileComponent {
     }
 
     pub fn with_load_config(load_config: LoadConfig) -> Self {
-        Self::new(ModelProfileComponentOptions { load_config: Some(load_config), env: None })
+        Self::new(ModelProfileComponentOptions {
+            load_config: Some(load_config),
+            env: None,
+        })
     }
 }
 
@@ -101,7 +104,11 @@ impl ModelProfileComponent {
 /// session default alone.
 pub fn as_senpi_thinking_level(reasoning: Option<&str>) -> Option<ModelThinkingLevel> {
     let reasoning = reasoning?;
-    let normalized = if reasoning == "none" { "off" } else { reasoning };
+    let normalized = if reasoning == "none" {
+        "off"
+    } else {
+        reasoning
+    };
     match normalized {
         "off" => Some(ModelThinkingLevel::Off),
         "minimal" => Some(ModelThinkingLevel::Minimal),
@@ -118,7 +125,10 @@ pub fn as_senpi_thinking_level(reasoning: Option<&str>) -> Option<ModelThinkingL
 // reload keeps the running session, and a `--model` flag or scoped model is explicit user state.
 // A session_start without any provenance is treated as explicit too: senpi omits the field on a
 // `--model` run, and silently overriding an unknown origin would clobber the user's choice.
-fn is_fresh_session_without_explicit_model(reason: SessionReason, provenance: Option<&str>) -> bool {
+fn is_fresh_session_without_explicit_model(
+    reason: SessionReason,
+    provenance: Option<&str>,
+) -> bool {
     if !matches!(reason, SessionReason::Startup | SessionReason::New) {
         return false;
     }
@@ -150,7 +160,9 @@ fn available_selectors(registry: &dyn ModelRegistry) -> Vec<String> {
 }
 
 fn provider_of(selector: &str) -> &str {
-    selector.split_once('/').map_or(selector, |(provider, _)| provider)
+    selector
+        .split_once('/')
+        .map_or(selector, |(provider, _)| provider)
 }
 
 /// `omo.json` `exclude_models` as the config loader handed it over: a flat pattern list, absent when
@@ -159,7 +171,13 @@ fn exclude_models_of(config: &JsonValue) -> Option<Vec<String>> {
     let JsonValue::Array(entries) = config.get("exclude_models")? else {
         return None;
     };
-    Some(entries.iter().filter_map(JsonValue::as_str).map(str::to_owned).collect())
+    Some(
+        entries
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &AuthFailure) {
@@ -172,10 +190,19 @@ fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &Au
     if let Some(logger) = logger {
         let details = JsonValue::Object(
             [
-                ("provider".to_owned(), JsonValue::String(failure.provider.clone())),
+                (
+                    "provider".to_owned(),
+                    JsonValue::String(failure.provider.clone()),
+                ),
                 ("model".to_owned(), JsonValue::String(failure.model.clone())),
-                ("reason".to_owned(), JsonValue::String(failure.reason.as_str().to_owned())),
-                ("errorKind".to_owned(), JsonValue::String(failure.error_kind.clone())),
+                (
+                    "reason".to_owned(),
+                    JsonValue::String(failure.reason.as_str().to_owned()),
+                ),
+                (
+                    "errorKind".to_owned(),
+                    JsonValue::String(failure.error_kind.clone()),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -193,14 +220,26 @@ fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &Au
 
 /// A kept candidate whose login refresh failed transiently may still fail on the first turn; this
 /// line (class/code fingerprints only) is what makes that failure diagnosable afterwards.
-fn log_kept_on_transient_refresh(logger: Option<&Arc<dyn ComponentLogger>>, keep: &RefreshUnavailableKeep) {
+fn log_kept_on_transient_refresh(
+    logger: Option<&Arc<dyn ComponentLogger>>,
+    keep: &RefreshUnavailableKeep,
+) {
     if let Some(logger) = logger {
         let details = JsonValue::Object(
             [
-                ("provider".to_owned(), JsonValue::String(keep.provider.clone())),
+                (
+                    "provider".to_owned(),
+                    JsonValue::String(keep.provider.clone()),
+                ),
                 ("model".to_owned(), JsonValue::String(keep.model.clone())),
-                ("errorKind".to_owned(), JsonValue::String(keep.error_kind.clone())),
-                ("causeKind".to_owned(), JsonValue::String(keep.cause_kind.clone())),
+                (
+                    "errorKind".to_owned(),
+                    JsonValue::String(keep.error_kind.clone()),
+                ),
+                (
+                    "causeKind".to_owned(),
+                    JsonValue::String(keep.cause_kind.clone()),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -241,7 +280,11 @@ async fn resolve_with_request_auth(
         .filter(|selector| !is_excluded_model(selector.as_str(), exclude_models))
         .collect();
     let custom_providers = custom_model_providers(agent_dir);
-    let ProbeState { excluded_providers, excluded_selectors, failures } = probes;
+    let ProbeState {
+        excluded_providers,
+        excluded_selectors,
+        failures,
+    } = probes;
     // The rotation policy reads the registry's own auth-status port (a runtime API key turns
     // rotation off), never an injected stub.
     let policy = credential_rotation_policy(registry, agent_dir);
@@ -264,7 +307,13 @@ async fn resolve_with_request_auth(
 
     let mut resolution = resolve(excluded_providers, excluded_selectors);
     let mut model: Option<Model> = None;
-    while let ModelProfileResolution::Resolved { profile, provider, model_id, .. } = &resolution {
+    while let ModelProfileResolution::Resolved {
+        profile,
+        provider,
+        model_id,
+        ..
+    } = &resolution
+    {
         let found = registry.find(provider, model_id);
         let is_pin = profile.source == ModelProfileSource::Pin;
         model = found;
@@ -300,7 +349,9 @@ async fn resolve_with_request_auth(
 
 fn is_retired_profile(name: &str, user_profiles: Option<&JsonValue>) -> bool {
     RETIRED_MODEL_PROFILE_IDS.contains(&name)
-        && user_profiles.and_then(|profiles| profiles.get(name)).is_none()
+        && user_profiles
+            .and_then(|profiles| profiles.get(name))
+            .is_none()
 }
 
 fn log_retired_profile_once(
@@ -308,7 +359,11 @@ fn log_retired_profile_once(
     logged: &Mutex<BTreeSet<String>>,
     name: &str,
 ) {
-    if !logged.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_owned()) {
+    if !logged
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(name.to_owned())
+    {
         return;
     }
     if let Some(logger) = logger {
@@ -341,7 +396,10 @@ fn record_outcome(
     if let Err(error) = actions.append_entry(custom_type, Some(JsonValue::Object(data)))
         && let Some(logger) = logger
     {
-        logger.error("omo-senpi: model profile notice could not be recorded", Some(&JsonValue::String(error.message)));
+        logger.error(
+            "omo-senpi: model profile notice could not be recorded",
+            Some(&JsonValue::String(error.message)),
+        );
     }
 }
 
@@ -349,7 +407,11 @@ fn record_outcome(
 fn notify(ctx: &maho_ext_api::ExtensionContext, message: &str, warning: bool) {
     ctx.ui.notify(
         message,
-        if warning { NotificationType::Warning } else { NotificationType::Info },
+        if warning {
+            NotificationType::Warning
+        } else {
+            NotificationType::Info
+        },
     );
 }
 
@@ -557,7 +619,10 @@ mod tests {
 
     impl ComponentLogger for Logger {
         fn info(&self, message: &str, _: Option<&JsonValue>) {
-            self.0.lock().expect("test logger lock").push(message.to_owned());
+            self.0
+                .lock()
+                .expect("test logger lock")
+                .push(message.to_owned());
         }
         fn warn(&self, _: &str, _: Option<&JsonValue>) {}
         fn error(&self, _: &str, _: Option<&JsonValue>) {}

@@ -8,8 +8,8 @@ use crate::agents::{
     ulw_reviewer_agent_names,
 };
 use crate::category::BUILTIN_CATEGORY_DEFAULTS;
-use crate::host::{HostError, SenpiModelRegistry, parse_available_models};
 use crate::category::exclude_model_patterns;
+use crate::host::{HostError, SenpiModelRegistry, parse_available_models};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub use types::*;
@@ -130,49 +130,116 @@ mod upstream_cases {
     use super::*;
     use crate::host::fake::{FakeRegistry, model};
     fn report(config: Value) -> ModelChainsReport {
-        let models = vec![model("anthropic", "claude-fable-5-1"), model("anthropic", "claude-opus-5-5"), model("kimi-for-coding", "k3.1-pro"), model("kimi-for-coding", "kimi-for-coding-highspeed")];
-        let registry = FakeRegistry { available: Ok(Value::Array(models.clone())), catalog: models, find_override: None };
+        let models = vec![
+            model("anthropic", "claude-fable-5-1"),
+            model("anthropic", "claude-opus-5-5"),
+            model("kimi-for-coding", "k3.1-pro"),
+            model("kimi-for-coding", "kimi-for-coding-highspeed"),
+        ];
+        let registry = FakeRegistry {
+            available: Ok(Value::Array(models.clone())),
+            catalog: models,
+            find_override: None,
+        };
         describe_model_chains(&config, &registry).unwrap()
     }
     #[test]
     fn builtin_category_runtime_uses_declared_rung_order() {
         let report = report(serde_json::json!({}));
-        let entry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
-        assert_eq!(entry.runtime, vec!["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]);
-        assert_eq!(entry.rungs.iter().map(|rung| &rung.state).collect::<Vec<_>>(), vec![&ChainRungState::Primary, &ChainRungState::Fallback, &ChainRungState::Fallback]);
+        let entry = report
+            .categories
+            .iter()
+            .find(|entry| entry.name == "artistry")
+            .unwrap();
+        assert_eq!(
+            entry.runtime,
+            vec![
+                "anthropic/claude-fable-5-1",
+                "anthropic/claude-opus-5-5",
+                "kimi-for-coding/k3.1-pro"
+            ]
+        );
+        assert_eq!(
+            entry
+                .rungs
+                .iter()
+                .map(|rung| &rung.state)
+                .collect::<Vec<_>>(),
+            vec![
+                &ChainRungState::Primary,
+                &ChainRungState::Fallback,
+                &ChainRungState::Fallback
+            ]
+        );
     }
     #[test]
     fn later_override_leaves_earlier_builtin_not_reached() {
-        let report = report(serde_json::json!({"categories":{"artistry":{"model":"anthropic/claude-opus-5-5"}}}));
-        let entry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
-        assert_eq!(entry.runtime, vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]);
+        let report = report(
+            serde_json::json!({"categories":{"artistry":{"model":"anthropic/claude-opus-5-5"}}}),
+        );
+        let entry = report
+            .categories
+            .iter()
+            .find(|entry| entry.name == "artistry")
+            .unwrap();
+        assert_eq!(
+            entry.runtime,
+            vec!["anthropic/claude-opus-5-5", "kimi-for-coding/k3.1-pro"]
+        );
         assert_eq!(entry.rungs[0].source, "omo.json");
         assert_eq!(entry.rungs[1].state, ChainRungState::NotReached);
     }
     #[test]
     fn exclusion_promotes_next_builtin_rung() {
         let report = report(serde_json::json!({"exclude_models":["claude-fable-*"]}));
-        let entry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
+        let entry = report
+            .categories
+            .iter()
+            .find(|entry| entry.name == "artistry")
+            .unwrap();
         assert_eq!(entry.primary.as_deref(), Some("anthropic/claude-opus-5-5"));
         assert_eq!(entry.rungs[0].state, ChainRungState::Excluded);
-        assert_eq!(entry.rungs[0].excluded_by.as_deref(), Some("claude-fable-*"));
+        assert_eq!(
+            entry.rungs[0].excluded_by.as_deref(),
+            Some("claude-fable-*")
+        );
     }
     #[test]
     fn agent_no_login_rungs_retain_provider_choices() {
         let report = report(serde_json::json!({}));
-        let entry = report.agents.iter().find(|entry| entry.name == "explore").unwrap();
-        assert_eq!(entry.runtime, vec!["kimi-for-coding/kimi-for-coding-highspeed"]);
+        let entry = report
+            .agents
+            .iter()
+            .find(|entry| entry.name == "explore")
+            .unwrap();
+        assert_eq!(
+            entry.runtime,
+            vec!["kimi-for-coding/kimi-for-coding-highspeed"]
+        );
         assert_eq!(entry.rungs[1].state, ChainRungState::NoLogin);
-        assert_eq!(entry.rungs[1].providers, Some(vec!["chatgpt-subscription".into(),"openai".into()]));
+        assert_eq!(
+            entry.rungs[1].providers,
+            Some(vec!["chatgpt-subscription".into(), "openai".into()])
+        );
     }
     #[test]
     fn configured_agent_source_and_disabled_category() {
-        let report = report(serde_json::json!({"agents":{"scout":{"models":["anthropic/claude-opus-5-5"]}},"categories":{"artistry":{"disable":true}}}));
-        let scout = report.agents.iter().find(|entry| entry.name == "scout").unwrap();
+        let report = report(
+            serde_json::json!({"agents":{"scout":{"models":["anthropic/claude-opus-5-5"]}},"categories":{"artistry":{"disable":true}}}),
+        );
+        let scout = report
+            .agents
+            .iter()
+            .find(|entry| entry.name == "scout")
+            .unwrap();
         assert_eq!(scout.rungs.len(), 1);
         assert_eq!(scout.rungs[0].source, "omo.json");
         assert_eq!(scout.rungs[0].state, ChainRungState::Primary);
-        let artistry = report.categories.iter().find(|entry| entry.name == "artistry").unwrap();
+        let artistry = report
+            .categories
+            .iter()
+            .find(|entry| entry.name == "artistry")
+            .unwrap();
         assert_eq!(artistry.status, "disabled");
         assert!(artistry.runtime.is_empty());
     }

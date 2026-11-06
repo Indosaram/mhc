@@ -8,8 +8,8 @@ use std::{
 };
 
 use maho_ai::providers::faux::{
-    faux_assistant_message, faux_provider, faux_tool_call, FauxAssistantMessageOptions,
-    FauxModelDefinition, FauxProviderHandle, RegisterFauxProviderOptions,
+    FauxAssistantMessageOptions, FauxModelDefinition, FauxProviderHandle,
+    RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_tool_call,
 };
 use maho_ai::types::StopReason;
 use maho_cli::cli::facts_child::{CliFactsChildSpawner, FactsRuntimeFactory};
@@ -25,7 +25,7 @@ use maho_omo_memory::worker::resolve_model::ReflectionModelResolution;
 use maho_omo_memory::worker::spawn_supervisor::FactsChildOptions;
 use memory_core::agreements::{AgreementAuthor, AgreementScope, FactsKnownAgreement};
 use memory_core::facts::{
-    person_routing::FactsPeopleRouting, queue::FactsAbortSignal, FactsPayload, FactsPrimaryHuman,
+    FactsPayload, FactsPrimaryHuman, person_routing::FactsPeopleRouting, queue::FactsAbortSignal,
 };
 use tempfile::tempdir;
 
@@ -468,11 +468,9 @@ async fn test_abort_blocked_on_gate_ends_cancelled_with_no_records() {
 async fn test_first_candidate_model_absent_falls_back_to_second() {
     let fixture = create_fixture(None, vec![]);
     // Model responds for second candidate
-    fixture
-        .provider
-        .set_responses(vec![
-            faux_assistant_message("Ran on fallback model.", Default::default()).into(),
-        ]);
+    fixture.provider.set_responses(vec![
+        faux_assistant_message("Ran on fallback model.", Default::default()).into(),
+    ]);
 
     let payload = FactsPayload {
         agreement_event_version: Some(1),
@@ -704,10 +702,9 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         .expect("execute child");
     assert!(!matches!(result, FactsLaunchResult::Failed { .. }));
 
-    let agreements_path =
-        fixture
-            .run_dir
-            .join(maho_omo_memory::facts_agreements::FACTS_AGREEMENTS_FILENAME);
+    let agreements_path = fixture
+        .run_dir
+        .join(maho_omo_memory::facts_agreements::FACTS_AGREEMENTS_FILENAME);
     let agreements_content =
         std::fs::read_to_string(&agreements_path).expect("read agreements.jsonl");
     assert!(
@@ -764,7 +761,10 @@ async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
         serde_json::to_string(&queue_entry).expect("serialize queue entry"),
     )
     .expect("write queue file");
-    assert!(queue_file.exists(), "queue file must exist before execution");
+    assert!(
+        queue_file.exists(),
+        "queue file must exist before execution"
+    );
 
     // Also test spawner directly to assert spawner result is completed: false with the error message
     let spawner = fixture.runner.spawner.as_ref().expect("spawner present");
@@ -789,7 +789,10 @@ async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
         .spawn(direct_spawn_input)
         .await
         .expect("spawn result");
-    assert!(!spawner_res.completed, "spawner result must not be completed");
+    assert!(
+        !spawner_res.completed,
+        "spawner result must not be completed"
+    );
     assert_eq!(
         spawner_res.error_message.as_deref(),
         Some("Request timed out."),

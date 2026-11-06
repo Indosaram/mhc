@@ -93,11 +93,7 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-fn skip_flags<'a>(
-    argv: &'a [String],
-    from: usize,
-    value_flags: Option<&[&str]>,
-) -> &'a [String] {
+fn skip_flags<'a>(argv: &'a [String], from: usize, value_flags: Option<&[&str]>) -> &'a [String] {
     let mut index = from;
     while index < argv.len() && argv[index].starts_with('-') {
         let takes_value = value_flags.is_some_and(|flags| contains(flags, argv[index].as_str()));
@@ -190,7 +186,8 @@ fn github_kinds(rest: &[String]) -> Vec<InvokedKind> {
 fn tool_kinds(exe: &str, rest: &[String]) -> Vec<InvokedKind> {
     let first = rest.first().map(String::as_str).unwrap_or("");
     let second = rest.get(1).map(String::as_str).unwrap_or("");
-    if matches!(exe, "bun" | "node" | "tsx") && rest.iter().any(|argument| QA_SCRIPT.is_match(argument))
+    if matches!(exe, "bun" | "node" | "tsx")
+        && rest.iter().any(|argument| QA_SCRIPT.is_match(argument))
     {
         return vec![InvokedKind::Run];
     }
@@ -276,7 +273,10 @@ fn tool_kinds(exe: &str, rest: &[String]) -> Vec<InvokedKind> {
 
 fn wrapped_kinds(exe: &str, rest: &[String], depth: usize) -> Option<Vec<InvokedKind>> {
     if exe == "env" && rest.iter().any(|argument| argument == "-S") {
-        let split = rest.iter().position(|argument| argument == "-S").unwrap_or(0);
+        let split = rest
+            .iter()
+            .position(|argument| argument == "-S")
+            .unwrap_or(0);
         return Some(if depth >= MAX_DEPTH {
             Vec::new()
         } else {
@@ -284,7 +284,10 @@ fn wrapped_kinds(exe: &str, rest: &[String], depth: usize) -> Option<Vec<Invoked
         });
     }
     if contains(&PASSTHROUGH, exe) {
-        return Some(argv_kinds(skip_flags(rest, 1, wrapper_value_flags(exe)), depth));
+        return Some(argv_kinds(
+            skip_flags(rest, 1, wrapper_value_flags(exe)),
+            depth,
+        ));
     }
     if contains(&PYTHON_RUNNERS, exe) && rest.get(1).map(String::as_str) == Some("run") {
         return Some(argv_kinds(skip_flags(rest, 2, None), depth));
@@ -293,11 +296,13 @@ fn wrapped_kinds(exe: &str, rest: &[String], depth: usize) -> Option<Vec<Invoked
         if let Some(module) = rest.iter().position(|argument| argument == "-m") {
             return Some(argv_kinds(rest.get(module + 1..).unwrap_or(&[]), depth));
         }
-        return Some(if rest.iter().any(|argument| QA_SCRIPT.is_match(argument)) {
-            vec![InvokedKind::Run]
-        } else {
-            Vec::new()
-        });
+        return Some(
+            if rest.iter().any(|argument| QA_SCRIPT.is_match(argument)) {
+                vec![InvokedKind::Run]
+            } else {
+                Vec::new()
+            },
+        );
     }
     if exe == "timeout" {
         return Some(argv_kinds(skip_timeout(rest), depth));
@@ -419,7 +424,10 @@ mod tests {
         assert_eq!(kinds("cargo test"), vec!["test"]);
         assert_eq!(kinds("vp check"), vec!["typecheck", "lint"]);
         assert_eq!(kinds("gh pr checks 12"), vec!["test"]);
-        assert_eq!(kinds("gh pr view 9 --json state"), Vec::<&'static str>::new());
+        assert_eq!(
+            kinds("gh pr view 9 --json state"),
+            Vec::<&'static str>::new()
+        );
     }
 
     #[test]
@@ -433,6 +441,9 @@ mod tests {
             kinds("ssh -o BatchMode=yes -p 22 host 'cd w && bun test x'"),
             vec!["test"]
         );
-        assert_eq!(kinds("bash -c 'bunx tsgo --noEmit -p x'"), vec!["typecheck"]);
+        assert_eq!(
+            kinds("bash -c 'bunx tsgo --noEmit -p x'"),
+            vec!["typecheck"]
+        );
     }
 }

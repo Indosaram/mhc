@@ -10,7 +10,8 @@ pub const DAG_LEASE_WATCH_INTERVAL_MS: u64 = 1_000;
 
 pub type DagLeaseWatchTimerHandle = u64;
 pub type DagLeaseWatchCallback = Arc<dyn Fn() + Send + Sync>;
-pub type DagLeaseWatchSetTimer = Arc<dyn Fn(DagLeaseWatchCallback, u64) -> DagLeaseWatchTimerHandle + Send + Sync>;
+pub type DagLeaseWatchSetTimer =
+    Arc<dyn Fn(DagLeaseWatchCallback, u64) -> DagLeaseWatchTimerHandle + Send + Sync>;
 pub type DagLeaseWatchClearTimer = Arc<dyn Fn(DagLeaseWatchTimerHandle) + Send + Sync>;
 pub type DagLeaseWatchIsProcessAlive = Arc<dyn Fn(i64) -> bool + Send + Sync>;
 
@@ -62,7 +63,10 @@ impl DagLeaseWatch {
             }
         });
         arm_with_callback(Arc::clone(&self.state), key, poll);
-        DagLeaseWatchCancel { state: Arc::clone(&self.state), key }
+        DagLeaseWatchCancel {
+            state: Arc::clone(&self.state),
+            key,
+        }
     }
 
     pub fn dispose(&self) {
@@ -88,11 +92,17 @@ pub fn create_dag_lease_watch(options: DagLeaseWatchOptions) -> DagLeaseWatch {
     let timers = options.timers.unwrap_or_default();
     let timers = DagLeaseWatchTimers {
         set: Some(timers.set.unwrap_or_else(|| Arc::new(default_set_timer))),
-        clear: Some(timers.clear.unwrap_or_else(|| Arc::new(default_clear_timer))),
+        clear: Some(
+            timers
+                .clear
+                .unwrap_or_else(|| Arc::new(default_clear_timer)),
+        ),
     };
     DagLeaseWatch {
         state: Arc::new(WatchState {
-            is_process_alive: options.is_process_alive.unwrap_or_else(|| Arc::new(crate::dag::store::default_is_process_alive)),
+            is_process_alive: options
+                .is_process_alive
+                .unwrap_or_else(|| Arc::new(crate::dag::store::default_is_process_alive)),
             timers,
             interval_ms: options.interval_ms.unwrap_or(DAG_LEASE_WATCH_INTERVAL_MS),
             pending: Mutex::new(HashMap::new()),
@@ -109,7 +119,12 @@ fn arm_poll(state: Arc<WatchState>, key: u64, holder_pid: i64, on_exit: DagLease
         let Some(entry) = entry else { return };
         entry.alive.store(false, Ordering::SeqCst);
         if (callback_state.is_process_alive)(holder_pid) {
-                arm_poll(Arc::clone(&next_state), key, holder_pid, Arc::clone(&on_exit));
+            arm_poll(
+                Arc::clone(&next_state),
+                key,
+                holder_pid,
+                Arc::clone(&on_exit),
+            );
         } else {
             on_exit();
         }
@@ -121,32 +136,46 @@ fn arm_with_callback(state: Arc<WatchState>, key: u64, callback: DagLeaseWatchCa
     let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let active = Arc::clone(&alive);
     let guarded: DagLeaseWatchCallback = Arc::new(move || {
-        if active.load(Ordering::SeqCst) { callback(); }
+        if active.load(Ordering::SeqCst) {
+            callback();
+        }
     });
-    let handle = state.timers.set.as_ref().expect("timer set is initialized")(guarded, state.interval_ms);
+    let handle =
+        state.timers.set.as_ref().expect("timer set is initialized")(guarded, state.interval_ms);
     lock(&state.pending).insert(key, TimerEntry { handle, alive });
 }
 
 fn cancel_watch(state: &Arc<WatchState>, key: u64) {
     if let Some(entry) = lock(&state.pending).remove(&key) {
         entry.alive.store(false, Ordering::SeqCst);
-        state.timers.clear.as_ref().expect("timer clear is initialized")(entry.handle);
+        state
+            .timers
+            .clear
+            .as_ref()
+            .expect("timer clear is initialized")(entry.handle);
     }
 }
 
 /// One shared timer thread serves every default-timer watch: each poll tick re-arms a queue entry
 /// instead of spawning a thread, and clearing a timer removes its entry so nothing sleeps on.
 struct DefaultTimers {
-    queue: Mutex<std::collections::BTreeMap<(Instant, DagLeaseWatchTimerHandle), DagLeaseWatchCallback>>,
+    queue: Mutex<
+        std::collections::BTreeMap<(Instant, DagLeaseWatchTimerHandle), DagLeaseWatchCallback>,
+    >,
     changed: Condvar,
 }
 
 fn default_timers() -> &'static DefaultTimers {
     static TIMERS: OnceLock<DefaultTimers> = OnceLock::new();
     static WORKER: Once = Once::new();
-    let timers = TIMERS.get_or_init(|| DefaultTimers { queue: Mutex::new(std::collections::BTreeMap::new()), changed: Condvar::new() });
+    let timers = TIMERS.get_or_init(|| DefaultTimers {
+        queue: Mutex::new(std::collections::BTreeMap::new()),
+        changed: Condvar::new(),
+    });
     WORKER.call_once(|| {
-        let _ = thread::Builder::new().name("dag-lease-watch".into()).spawn(move || run_default_timers(timers));
+        let _ = thread::Builder::new()
+            .name("dag-lease-watch".into())
+            .spawn(move || run_default_timers(timers));
     });
     timers
 }
@@ -156,12 +185,19 @@ fn run_default_timers(timers: &'static DefaultTimers) {
     loop {
         let next = queue.first_key_value().map(|(&key, _)| key);
         let Some((deadline, handle)) = next else {
-            queue = timers.changed.wait(queue).unwrap_or_else(PoisonError::into_inner);
+            queue = timers
+                .changed
+                .wait(queue)
+                .unwrap_or_else(PoisonError::into_inner);
             continue;
         };
         let now = Instant::now();
         if deadline > now {
-            queue = timers.changed.wait_timeout(queue, deadline - now).unwrap_or_else(PoisonError::into_inner).0;
+            queue = timers
+                .changed
+                .wait_timeout(queue, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
             continue;
         }
         let callback = queue.remove(&(deadline, handle));
@@ -178,7 +214,10 @@ fn default_set_timer(callback: DagLeaseWatchCallback, delay_ms: u64) -> DagLease
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let handle = NEXT.fetch_add(1, Ordering::Relaxed);
     let timers = default_timers();
-    lock(&timers.queue).insert((Instant::now() + Duration::from_millis(delay_ms), handle), callback);
+    lock(&timers.queue).insert(
+        (Instant::now() + Duration::from_millis(delay_ms), handle),
+        callback,
+    );
     timers.changed.notify_all();
     handle
 }

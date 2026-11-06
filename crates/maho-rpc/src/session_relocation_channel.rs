@@ -162,7 +162,8 @@ pub fn answer_host_response(
     reply.insert("command".into(), Value::from("host_response"));
     if frame
         .get("id")
-        .and_then(Value::as_str).is_none_or(|id| id.is_empty())
+        .and_then(Value::as_str)
+        .is_none_or(|id| id.is_empty())
     {
         reply.insert("success".into(), Value::Bool(false));
         reply.insert("error".into(), Value::from("invalid_host_response"));
@@ -220,7 +221,9 @@ mod tests {
     #[test]
     fn a_classic_handler_offers_relocation_only_when_its_own_client_does() {
         let (_sent, output, output_event) = capturing();
-        let offered = Arc::new(Mutex::new(Some(vec![SESSION_RELOCATION_CAPABILITY.to_owned()])));
+        let offered = Arc::new(Mutex::new(Some(vec![
+            SESSION_RELOCATION_CAPABILITY.to_owned(),
+        ])));
         let capabilities = Arc::clone(&offered);
         let channel = relocation_channel(RelocationChannelOptions {
             capabilities: Arc::new(move || capabilities.lock().unwrap().clone()),
@@ -257,7 +260,10 @@ mod tests {
         );
         let sent = sent.lock().unwrap();
         assert_eq!(sent.requests, vec![json!({"type":"host_request","id":"1"})]);
-        assert_eq!(sent.events, vec![json!({"type":"relocation_due","moveId":"m"})]);
+        assert_eq!(
+            sent.events,
+            vec![json!({"type":"relocation_due","moveId":"m"})]
+        );
     }
 
     #[test]
@@ -267,10 +273,15 @@ mod tests {
         let current = Arc::new(Mutex::new(Some("peer-a".to_owned())));
         let deliver_to = {
             let sent = Arc::clone(&sent);
-            Arc::new(move |connection: &str, deliver: &(dyn Fn() + Send + Sync)| {
-                sent.lock().unwrap().delivered.push((connection.to_owned(), json!({})));
-                deliver();
-            }) as ConnectionDelivery
+            Arc::new(
+                move |connection: &str, deliver: &(dyn Fn() + Send + Sync)| {
+                    sent.lock()
+                        .unwrap()
+                        .delivered
+                        .push((connection.to_owned(), json!({})));
+                    deliver();
+                },
+            ) as ConnectionDelivery
         };
         let offerer_source = Arc::clone(&offerer);
         let current_source = Arc::clone(&current);
@@ -280,7 +291,9 @@ mod tests {
             }),
             client_info: Some(RelocationClientInfo {
                 connection_id: Arc::new(move || current_source.lock().unwrap().clone()),
-                relocation_connection: Some(Arc::new(move || offerer_source.lock().unwrap().clone())),
+                relocation_connection: Some(Arc::new(move || {
+                    offerer_source.lock().unwrap().clone()
+                })),
                 deliver_to: Some(deliver_to),
             }),
             output,
@@ -320,7 +333,11 @@ mod tests {
         assert_eq!(channel.offerer(), None);
         assert_eq!(channel.current(), None);
         // Nothing can be delivered either: the host has no lane for this binding.
-        channel.send("peer", json!({"type":"host_request","id":"3"}), RelocationRecordKind::Request);
+        channel.send(
+            "peer",
+            json!({"type":"host_request","id":"3"}),
+            RelocationRecordKind::Request,
+        );
     }
 
     #[test]

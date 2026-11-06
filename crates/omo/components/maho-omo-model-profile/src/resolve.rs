@@ -24,8 +24,8 @@
 use std::collections::BTreeSet;
 
 use indexmap::IndexMap;
-use model_core::{fuzzy_match_model, transform_model_for_provider};
 use maho_ext_api::JsonValue;
+use model_core::{fuzzy_match_model, transform_model_for_provider};
 
 use crate::builtin_profiles::{
     BuiltinModelProfile, ModelProfileFamily, ModelProfileTier, builtin_model_profiles,
@@ -109,7 +109,11 @@ struct RungMatch {
 
 fn builtin_rung(rung: &crate::builtin_profiles::BuiltinRung) -> ModelProfileRung {
     ModelProfileRung {
-        providers: rung.providers.iter().map(|provider| (*provider).to_owned()).collect(),
+        providers: rung
+            .providers
+            .iter()
+            .map(|provider| (*provider).to_owned())
+            .collect(),
         model: rung.model.to_owned(),
         reasoning: rung.variant.map(str::to_owned),
     }
@@ -125,17 +129,17 @@ fn user_rung(entry: &JsonValue) -> Option<ModelProfileRung> {
         JsonValue::String(text) => (text.trim().to_owned(), None),
         JsonValue::Object(map) => {
             let model = map.get("model")?.as_str()?.trim().to_owned();
-            let reasoning = map.get("reasoning").and_then(JsonValue::as_str).map(str::to_owned);
+            let reasoning = map
+                .get("reasoning")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned);
             (model, reasoning)
         }
         _ => return None,
     };
     let suffix_index = raw.rfind(':');
     let (selector, suffix_reasoning) = match suffix_index {
-        Some(index) if index > 0 => (
-            raw[..index].to_owned(),
-            Some(raw[index + 1..].to_owned()),
-        ),
+        Some(index) if index > 0 => (raw[..index].to_owned(), Some(raw[index + 1..].to_owned())),
         _ => (raw.clone(), None),
     };
     let reasoning = object_reasoning.or(suffix_reasoning);
@@ -176,7 +180,10 @@ fn tier_of(value: &JsonValue) -> Option<ModelProfileTier> {
 }
 
 fn caution_of(value: &JsonValue) -> Option<String> {
-    value.get("caution").and_then(JsonValue::as_str).map(str::to_owned)
+    value
+        .get("caution")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
 }
 
 /// The builtin table overlaid with `omo.json` `model_profiles`. A user entry replaces a builtin of
@@ -193,14 +200,24 @@ pub fn merge_model_profiles(
     if let Some(JsonValue::Object(entries)) = profiles {
         for (id, entry) in entries {
             let replaced = merged.get(id).map(|definition| definition.profile.clone());
-            let family = family_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.family));
-            let tier = tier_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.tier));
-            let caution = caution_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.caution.clone()));
+            let family =
+                family_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.family));
+            let tier =
+                tier_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.tier));
+            let caution = caution_of(entry).or_else(|| {
+                replaced
+                    .as_ref()
+                    .and_then(|profile| profile.caution.clone())
+            });
             let display_name = entry
                 .get("display_name")
                 .and_then(JsonValue::as_str)
                 .map(str::to_owned)
-                .or_else(|| replaced.as_ref().map(|profile| profile.display_name.clone()))
+                .or_else(|| {
+                    replaced
+                        .as_ref()
+                        .map(|profile| profile.display_name.clone())
+                })
                 .unwrap_or_else(|| id.clone());
             let models = entry
                 .get("models")
@@ -248,7 +265,10 @@ fn format_rung(rung: &ModelProfileRung) -> String {
 }
 
 fn unknown_profile_message(name: &str, known: &[String]) -> String {
-    format!("model_profile \"{name}\" is not defined; known profiles: {}", known.join(", "))
+    format!(
+        "model_profile \"{name}\" is not defined; known profiles: {}",
+        known.join(", ")
+    )
 }
 
 fn model_id_for_provider(provider: &str, model: &str) -> String {
@@ -270,7 +290,10 @@ fn split_selector(selector: &str, reasoning: &Option<String>) -> Option<RungMatc
     })
 }
 
-fn match_rung(rung: &ModelProfileRung, available: &indexmap::IndexSet<String>) -> Option<RungMatch> {
+fn match_rung(
+    rung: &ModelProfileRung,
+    available: &indexmap::IndexSet<String>,
+) -> Option<RungMatch> {
     if rung.providers.is_empty() {
         let matched = fuzzy_match_model(&rung.model, available, None)?;
         return split_selector(&matched, &rung.reasoning);
@@ -326,13 +349,15 @@ fn match_custom_provider(
     let declared: Vec<String> = custom_providers
         .iter()
         .filter(|declared| {
-            !rung.providers.contains(&declared.provider)
-                && declared.model_ids.contains(&rung.model)
+            !rung.providers.contains(&declared.provider) && declared.model_ids.contains(&rung.model)
         })
         .map(|declared| declared.provider.clone())
         .collect();
     match_scoped_user_rung(
-        &ModelProfileRung { providers: declared, ..rung.clone() },
+        &ModelProfileRung {
+            providers: declared,
+            ..rung.clone()
+        },
         available,
     )
 }
@@ -392,7 +417,12 @@ pub fn resolve_model_profile(input: &ResolveModelProfileInput<'_>) -> ModelProfi
 
     let profiles = merge_model_profiles(input.profiles);
     let Some(definition) = profiles.get(active) else {
-        let known: Vec<String> = profiles.keys().cloned().collect::<BTreeSet<_>>().into_iter().collect();
+        let known: Vec<String> = profiles
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         return ModelProfileResolution::Unknown {
             name: active.to_owned(),
             message: unknown_profile_message(active, &known),
@@ -409,7 +439,9 @@ pub fn resolve_model_profile(input: &ResolveModelProfileInput<'_>) -> ModelProfi
     let custom_providers = input.custom_providers.unwrap_or(&[]);
     if !available.is_empty() {
         for rung in &definition.models {
-            if let Some(matched) = match_profile_rung(rung, &available, definition, custom_providers) {
+            if let Some(matched) =
+                match_profile_rung(rung, &available, definition, custom_providers)
+            {
                 return ModelProfileResolution::Resolved {
                     profile: definition.profile.clone(),
                     provider: matched.provider,

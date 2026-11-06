@@ -2,14 +2,22 @@
 
 use std::sync::Arc;
 
-use crate::api::lazy::{lazy_api, LazyApiCapabilities};
+use crate::api::lazy::{LazyApiCapabilities, lazy_api};
 use crate::api::pi_messages;
-use crate::types::{AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions,
+    StreamOptions,
+};
 
 struct PiMessagesModule;
 
 impl ProviderStreams for PiMessagesModule {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         pi_messages::stream(model, context, options)
     }
 
@@ -24,7 +32,10 @@ impl ProviderStreams for PiMessagesModule {
 }
 
 pub fn pi_messages_api() -> Arc<dyn ProviderStreams> {
-    lazy_api(Arc::new(|| Ok(Arc::new(PiMessagesModule) as Arc<dyn ProviderStreams>)), LazyApiCapabilities::default())
+    lazy_api(
+        Arc::new(|| Ok(Arc::new(PiMessagesModule) as Arc<dyn ProviderStreams>)),
+        LazyApiCapabilities::default(),
+    )
 }
 
 #[cfg(test)]
@@ -34,8 +45,9 @@ mod tests {
     #[tokio::test]
     async fn lazy_wrapper_forwards_to_the_concrete_module() {
         let api = pi_messages_api();
-        let mut model =
-            crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
         model.provider = "radius".into();
         model.api = "pi-messages".into();
         let stream = api.stream(&model, &Context::default(), None);

@@ -330,7 +330,9 @@ pub fn deliver_restore_digest(
     send(
         maho_ext_api::CustomMessage {
             custom_type: RESTORE_DIGEST_CUSTOM_TYPE.to_owned(),
-            content: vec![maho_tools::definition::ToolContent::text(message.content.clone())],
+            content: vec![maho_tools::definition::ToolContent::text(
+                message.content.clone(),
+            )],
             display: true,
             details: serde_json::to_value(&message.details).ok(),
         },
@@ -583,36 +585,65 @@ mod tests {
 
     #[test]
     fn quiet_delivery_does_not_wake_and_notification_matches_shipped_content() {
-        let message = build_restore_digest(&RestoreDigestInput::default(), 2,
-            RestoreDigestOutcome::Decided, None);
+        let message = build_restore_digest(
+            &RestoreDigestInput::default(),
+            2,
+            RestoreDigestOutcome::Decided,
+            None,
+        );
         let notified = std::cell::RefCell::new(Vec::new());
         let notify = |content: &str| notified.borrow_mut().push(content.to_owned());
         let mut sent = Vec::new();
-        assert!(!deliver_restore_digest(false, Some(&notify), &message,
-            |_, _| panic!("no model must not send")));
+        assert!(!deliver_restore_digest(
+            false,
+            Some(&notify),
+            &message,
+            |_, _| panic!("no model must not send")
+        ));
         assert!(notified.borrow().is_empty());
-        assert!(deliver_restore_digest(true, Some(&notify), &message,
-            |custom, options| sent.push((custom, options))));
+        assert!(deliver_restore_digest(
+            true,
+            Some(&notify),
+            &message,
+            |custom, options| sent.push((custom, options))
+        ));
         assert_eq!(*notified.borrow(), vec![message.content.clone()]);
         assert_eq!(sent.len(), 1);
         assert!(!sent[0].1.trigger_turn);
-        assert_eq!(sent[0].1.deliver_as, Some(maho_ext_api::DeliverAs::NextTurn));
-        assert_eq!(sent[0].0.details, Some(serde_json::to_value(&message.details).expect("details")));
+        assert_eq!(
+            sent[0].1.deliver_as,
+            Some(maho_ext_api::DeliverAs::NextTurn)
+        );
+        assert_eq!(
+            sent[0].0.details,
+            Some(serde_json::to_value(&message.details).expect("details"))
+        );
     }
 
     #[test]
     fn orphan_and_live_background_are_independently_actionable() {
         let mut revived = monitor("orphan", "restored", "command");
-        revived.orphan = Some(Orphan { pid: 42, action: OrphanAction::Unverified });
+        revived.orphan = Some(Orphan {
+            pid: 42,
+            action: OrphanAction::Unverified,
+        });
         assert!(is_actionable(&RestoreDigestInput {
-            results: vec![revived], ..Default::default()
+            results: vec![revived],
+            ..Default::default()
         }));
         for (outcome, expected) in [("running", true), ("exited", false)] {
-            assert_eq!(is_actionable(&RestoreDigestInput {
-                background_sessions: vec![BackgroundRestoreResult {
-                    id: "background".into(), command: "job".into(), outcome: outcome.into(), pid: Some(42)
-                }], ..Default::default()
-            }), expected);
+            assert_eq!(
+                is_actionable(&RestoreDigestInput {
+                    background_sessions: vec![BackgroundRestoreResult {
+                        id: "background".into(),
+                        command: "job".into(),
+                        outcome: outcome.into(),
+                        pid: Some(42)
+                    }],
+                    ..Default::default()
+                }),
+                expected
+            );
         }
     }
 
@@ -706,7 +737,9 @@ mod tests {
         let message = build_restore_digest(&digest, 2, RestoreDigestOutcome::Decided, None);
         let custom_message = maho_ext_api::CustomMessage {
             custom_type: RESTORE_DIGEST_CUSTOM_TYPE.to_owned(),
-            content: vec![maho_tools::definition::ToolContent::text(message.content.clone())],
+            content: vec![maho_tools::definition::ToolContent::text(
+                message.content.clone(),
+            )],
             display: true,
             details: serde_json::to_value(&message.details).ok(),
         };
@@ -734,12 +767,18 @@ mod tests {
             "mon_done",
             "mon_old",
         ] {
-            assert!(clean.contains(id), "rendered text must contain {id}: {clean}");
+            assert!(
+                clean.contains(id),
+                "rendered text must contain {id}: {clean}"
+            );
         }
         assert!(
             clean.contains("exited with code 127 during the grace window"),
             "rendered text must contain lost reason: {clean}"
         );
-        assert!(clean.contains("bash_1"), "rendered text must contain bash_1: {clean}");
+        assert!(
+            clean.contains("bash_1"),
+            "rendered text must contain bash_1: {clean}"
+        );
     }
 }

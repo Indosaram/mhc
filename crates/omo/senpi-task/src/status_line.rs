@@ -91,15 +91,48 @@ pub fn format_parent_model_fallback(record: &crate::state::TaskRecord) -> Option
     use crate::state::{EffectiveModelSource, ParentModelFallbackReason};
     let fallback = record.parent_model_fallback.as_ref()?;
     let parent = record.parent_model.as_deref()?;
-    let same = |provider: &str, model: &str| parent.split_once('/').is_some_and(|(p, m)| p == provider && m.split(':').next() == Some(model));
-    let observed = record.effective_model.as_ref();
-    let phase = if observed.is_some_and(|model| same(&model.provider, &model.model_id)) { "" } else {
-        let selected = record.resolved_model.as_ref().is_some_and(|model| same(&model.provider, &model.model_id));
-        if !selected || observed.is_some_and(|model| model.switched_by_operator == Some(true) || matches!(model.source, EffectiveModelSource::Set | EffectiveModelSource::Cycle | EffectiveModelSource::Restore | EffectiveModelSource::FallbackRevert)) { return None; }
-        if !record.status.is_terminal() || record.fallback_handoff_epoch.is_some() { "switching, " } else { "unconfirmed, " }
+    let same = |provider: &str, model: &str| {
+        parent
+            .split_once('/')
+            .is_some_and(|(p, m)| p == provider && m.split(':').next() == Some(model))
     };
-    let reason = match fallback.reason { ParentModelFallbackReason::UsageLimit => "usage limit", ParentModelFallbackReason::NotSignedIn => "not signed in", ParentModelFallbackReason::Unavailable => "unavailable", ParentModelFallbackReason::Refused => "refused", ParentModelFallbackReason::Error => "error" };
-    let resets = optional_renderer_text(fallback.resets.as_deref()).map_or_else(String::new, |reset| format!(", resets {reset}"));
+    let observed = record.effective_model.as_ref();
+    let phase = if observed.is_some_and(|model| same(&model.provider, &model.model_id)) {
+        ""
+    } else {
+        let selected = record
+            .resolved_model
+            .as_ref()
+            .is_some_and(|model| same(&model.provider, &model.model_id));
+        if !selected
+            || observed.is_some_and(|model| {
+                model.switched_by_operator == Some(true)
+                    || matches!(
+                        model.source,
+                        EffectiveModelSource::Set
+                            | EffectiveModelSource::Cycle
+                            | EffectiveModelSource::Restore
+                            | EffectiveModelSource::FallbackRevert
+                    )
+            })
+        {
+            return None;
+        }
+        if !record.status.is_terminal() || record.fallback_handoff_epoch.is_some() {
+            "switching, "
+        } else {
+            "unconfirmed, "
+        }
+    };
+    let reason = match fallback.reason {
+        ParentModelFallbackReason::UsageLimit => "usage limit",
+        ParentModelFallbackReason::NotSignedIn => "not signed in",
+        ParentModelFallbackReason::Unavailable => "unavailable",
+        ParentModelFallbackReason::Refused => "refused",
+        ParentModelFallbackReason::Error => "error",
+    };
+    let resets = optional_renderer_text(fallback.resets.as_deref())
+        .map_or_else(String::new, |reset| format!(", resets {reset}"));
     Some(format!("parent-model:{phase}{reason}{resets}"))
 }
 
@@ -115,8 +148,18 @@ pub fn format_status_target(input: &StatusTargetInput<'_>) -> Option<String> {
 //   <identity> · <target (model)> · turn N (M tools) · <verb> · $C · T tok/s
 pub fn compose_status_line(input: &StatusLineInput<'_>) -> String {
     let stats = input.stats;
-    let turn = stats.filter(|stats| stats.turns > 0 || stats.tool_calls > 0).map(|stats| format!("turn {}{}", stats.turns, tool_count_suffix(stats.tool_calls)));
-    let failed = stats.filter(|stats| stats.failed_turns > 0).map(|stats| format!("failed {}", stats.failed_turns));
+    let turn = stats
+        .filter(|stats| stats.turns > 0 || stats.tool_calls > 0)
+        .map(|stats| {
+            format!(
+                "turn {}{}",
+                stats.turns,
+                tool_count_suffix(stats.tool_calls)
+            )
+        });
+    let failed = stats
+        .filter(|stats| stats.failed_turns > 0)
+        .map(|stats| format!("failed {}", stats.failed_turns));
     let tokens = [
         Some(input.identity.to_string()),
         input.target.map(str::to_string),

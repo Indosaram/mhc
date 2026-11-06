@@ -72,14 +72,22 @@ impl ThemeSelectorComponent {
                 description: (name == current_theme).then(|| "(current)".to_owned()),
             })
             .collect();
-        let mut select_list =
-            SelectList::new(items, 10, select_list_theme(theme), theme_select_list_layout());
-        if let Some(index) = available_themes.iter().position(|name| name == current_theme) {
+        let mut select_list = SelectList::new(
+            items,
+            10,
+            select_list_theme(theme),
+            theme_select_list_layout(),
+        );
+        if let Some(index) = available_themes
+            .iter()
+            .position(|name| name == current_theme)
+        {
             select_list.set_selected_index(index);
         }
         let mut on_select = on_select;
         let mut on_preview = on_preview;
-        select_list.on_select = Some(Box::new(move |item: &SelectItem| on_select(&item.value)) as OnSelect);
+        select_list.on_select =
+            Some(Box::new(move |item: &SelectItem| on_select(&item.value)) as OnSelect);
         select_list.on_cancel = Some(on_cancel as OnCancel);
         select_list.on_selection_change =
             Some(Box::new(move |item: &SelectItem| on_preview(&item.value)) as OnSelect);

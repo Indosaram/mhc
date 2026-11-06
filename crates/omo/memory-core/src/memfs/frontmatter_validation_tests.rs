@@ -19,7 +19,10 @@ fn missing_frontmatter_is_reported() {
 fn grammar_rejects_indented_continuations_comments_and_non_pairs() {
     assert_eq!(
         describe_header_grammar_violation("description: A\n  continued"),
-        Some("indented continuation lines are not allowed (single-line scalars only): continued".to_string())
+        Some(
+            "indented continuation lines are not allowed (single-line scalars only): continued"
+                .to_string()
+        )
     );
     assert_eq!(
         describe_header_grammar_violation("description: A\n# a comment"),
@@ -62,7 +65,10 @@ fn values_must_be_safe_or_canonical_scalars() {
     );
     assert_eq!(
         describe_header_grammar_violation("description: A\nkind: a: b"),
-        Some("'kind' is not a safe YAML plain scalar (quote it, or remove ': ' and ' #'): a: b".to_string())
+        Some(
+            "'kind' is not a safe YAML plain scalar (quote it, or remove ': ' and ' #'): a: b"
+                .to_string()
+        )
     );
     assert_eq!(
         describe_header_grammar_violation("description: A\naliases: [1]"),
@@ -70,18 +76,25 @@ fn values_must_be_safe_or_canonical_scalars() {
     );
     assert_eq!(
         describe_header_grammar_violation("description: A\nnote: \"unterminated"),
-        Some("'note' is not a valid quoted scalar (use JSON double quotes): \"unterminated".to_string())
+        Some(
+            "'note' is not a valid quoted scalar (use JSON double quotes): \"unterminated"
+                .to_string()
+        )
     );
     assert_eq!(
         describe_header_grammar_violation("description: A\nnote: >"),
         Some("'note' must be a non-empty single line".to_string())
     );
-    assert_eq!(describe_header_grammar_violation("description: A\nread_only: true"), None);
+    assert_eq!(
+        describe_header_grammar_violation("description: A\nread_only: true"),
+        None
+    );
 }
 
 #[test]
 fn description_contract_names_scaffolding_before_length_or_lines() {
-    let scaffolding = describe_description_violation("a</description>\n<parameter name=\"file_text\">b");
+    let scaffolding =
+        describe_description_violation("a</description>\n<parameter name=\"file_text\">b");
     assert!(
         scaffolding
             .as_deref()
@@ -103,7 +116,10 @@ fn description_contract_names_scaffolding_before_length_or_lines() {
             MAX_DESCRIPTION_LENGTH + 1
         ))
     );
-    assert_eq!(describe_description_violation(&"x".repeat(MAX_DESCRIPTION_LENGTH)), None);
+    assert_eq!(
+        describe_description_violation(&"x".repeat(MAX_DESCRIPTION_LENGTH)),
+        None
+    );
 }
 
 #[test]
@@ -128,10 +144,10 @@ fn scaffolding_detection_matches_the_pinned_pattern() {
 fn a_header_violation_prefers_grammar_over_the_description_contract() {
     assert_eq!(
         describe_header_violation("description: A\n  leaked"),
-        Some("indented continuation lines are not allowed (single-line scalars only): leaked".to_string())
+        Some(
+            "indented continuation lines are not allowed (single-line scalars only): leaked"
+                .to_string()
+        )
     );
-    assert_eq!(
-        describe_header_violation("description: A"),
-        None
-    );
+    assert_eq!(describe_header_violation("description: A"), None);
 }

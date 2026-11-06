@@ -17,21 +17,40 @@ pub fn antml_format_tools_system_prompt(tools: &[Tool]) -> String {
     )
 }
 
-pub fn antml_format_tool_call(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> String {
-    ["<function_calls>".to_string(), anthropic_xml_format_tool_call(name, args), "</function_calls>".to_string()].join("\n")
+pub fn antml_format_tool_call(
+    name: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    [
+        "<function_calls>".to_string(),
+        anthropic_xml_format_tool_call(name, args),
+        "</function_calls>".to_string(),
+    ]
+    .join("\n")
 }
 
-pub fn antml_format_tool_response(tool_name: &str, tool_call_id: &str, content: &[ToolResultContent]) -> String {
+pub fn antml_format_tool_response(
+    tool_name: &str,
+    tool_call_id: &str,
+    content: &[ToolResultContent],
+) -> String {
     anthropic_xml_format_tool_response(tool_name, tool_call_id, content)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
@@ -58,7 +77,11 @@ mod tests {
     #[test]
     fn format_tool_response_delegates_to_anthropic_xml() {
         use crate::types::TextContent;
-        let content = vec![ToolResultContent::Text(TextContent { text: "sunny".into(), audience: None, text_signature: None })];
+        let content = vec![ToolResultContent::Text(TextContent {
+            text: "sunny".into(),
+            audience: None,
+            text_signature: None,
+        })];
         let formatted = antml_format_tool_response("get_weather", "id-1", &content);
         assert!(formatted.contains("sunny"));
     }
@@ -76,7 +99,10 @@ mod tests {
         let start = prompt.rfind("<tools>").expect("tools open") + "<tools>".len();
         let end = prompt.rfind("</tools>").expect("tools close");
         let parsed: Value = serde_json::from_str(&prompt[start..end]).expect("tool json");
-        assert_eq!(parsed, json!([{"name": tool.name, "description": tool.description, "parameters": tool.parameters}]));
+        assert_eq!(
+            parsed,
+            json!([{"name": tool.name, "description": tool.description, "parameters": tool.parameters}])
+        );
         assert!(prompt.contains("<function_calls>"));
         assert!(prompt.contains(r#"<invoke name="get_weather">"#));
         assert!(prompt.contains("</function_calls>"));
@@ -105,7 +131,11 @@ mod tests {
 
     #[test]
     fn formats_tool_output_as_anthropic_style_function_results() {
-        let content = vec![ToolResultContent::Text(crate::types::TextContent { text: "sunny".into(), audience: None, text_signature: None })];
+        let content = vec![ToolResultContent::Text(crate::types::TextContent {
+            text: "sunny".into(),
+            audience: None,
+            text_signature: None,
+        })];
         assert_eq!(
             antml_format_tool_response("get_weather", "call-1", &content),
             "<function_results>\n\
@@ -116,5 +146,4 @@ mod tests {
              </function_results>"
         );
     }
-
 }

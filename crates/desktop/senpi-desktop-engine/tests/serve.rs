@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const HANG_GUARD: Duration = Duration::from_secs(30);
 const BINARY: &str = env!("CARGO_BIN_EXE_senpi-desktop-engine");

@@ -7,8 +7,12 @@ use super::pod::{Negotiated, VideoFormat};
 pub fn to_rgba(format: Negotiated, bytes: &[u8], stride: usize) -> Result<RgbaImage, String> {
     let (width, height) = (format.width as usize, format.height as usize);
     let pixel = format.format.bytes_per_pixel();
-    let row = width.checked_mul(pixel).ok_or("PipeWire row size overflow")?;
-    let needed = stride.checked_mul(height).ok_or("PipeWire frame size overflow")?;
+    let row = width
+        .checked_mul(pixel)
+        .ok_or("PipeWire row size overflow")?;
+    let needed = stride
+        .checked_mul(height)
+        .ok_or("PipeWire frame size overflow")?;
     if stride < row || bytes.len() < needed {
         return Err(format!(
             "PipeWire frame buffer is short: {} bytes for {width}x{height} stride {stride}",

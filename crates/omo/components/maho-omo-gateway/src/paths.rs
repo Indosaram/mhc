@@ -13,7 +13,9 @@ pub fn gateway_database_path(agent_dir: &Path) -> PathBuf {
 }
 
 pub fn gateway_inbox_directory(agent_dir: &Path, durable_id: &str) -> PathBuf {
-    gateway_root_directory(agent_dir).join("inbox").join(durable_id)
+    gateway_root_directory(agent_dir)
+        .join("inbox")
+        .join(durable_id)
 }
 
 pub fn gateway_outbox_marker_path(agent_dir: &Path) -> PathBuf {

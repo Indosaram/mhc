@@ -1,7 +1,7 @@
 use maho_chord::{
-    copy_json,
+    CopyJsonOptions, JsonValue, copy_json,
     delta::{resolve_value, revision_validator::JsonRevisionValidator},
-    is_json_value, CopyJsonOptions, JsonValue,
+    is_json_value,
 };
 use serde_json::json;
 
@@ -61,16 +61,25 @@ fn validator_caches_shared_containers_without_retaining_revisions() {
 }
 
 #[test]
-fn object_keys_preserve_isolated_surrogates_and_duplicate_positions() -> Result<(), serde_json::Error> {
+fn object_keys_preserve_isolated_surrogates_and_duplicate_positions()
+-> Result<(), serde_json::Error> {
     let input = r#"{"\ud800":1,"a":{"\udfff":["},:\"",2]},"\ud800":3,"2":4}"#;
     let value = maho_chord::json::parse(input)?;
     let copied = copy_json(&value, CopyJsonOptions::default());
     let text = serde_json::to_string(&copied)?;
     assert_eq!(maho_chord::json::parse(&text)?, value);
     assert_eq!(serde_json::from_str::<JsonValue>(&text)?, value);
-    let keys: Vec<_> = value.as_object().expect("object").iter().map(|(key, _)| key.units()).collect();
+    let keys: Vec<_> = value
+        .as_object()
+        .expect("object")
+        .iter()
+        .map(|(key, _)| key.units())
+        .collect();
     assert_eq!(keys, vec![vec![50], vec![0xd800], vec![97]]);
-    assert_eq!(value.get_key(&maho_chord::JsString::from_utf16(vec![0xd800])), Some(&json!(3).into()));
+    assert_eq!(
+        value.get_key(&maho_chord::JsString::from_utf16(vec![0xd800])),
+        Some(&json!(3).into())
+    );
     assert!(serde_json::Value::try_from(&value).is_err());
     Ok(())
 }

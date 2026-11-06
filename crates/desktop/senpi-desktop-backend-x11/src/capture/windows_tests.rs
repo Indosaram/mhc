@@ -3,8 +3,8 @@
 use x11rb::protocol::xproto::{Atom, AtomEnum, Window};
 
 use super::connection::Placement;
-use super::fake::{FakeServer, viewable};
-use super::windows::{MAX_WINDOWS, windows};
+use super::fake::{viewable, FakeServer};
+use super::windows::{windows, MAX_WINDOWS};
 
 fn server() -> FakeServer {
     FakeServer::new(1280, 800)

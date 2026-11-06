@@ -8,6 +8,9 @@ use crate::state::TaskRecord;
 pub(crate) fn make_record() -> TaskRecord {
     let harness = default_manager();
     let task = started(harness.manager.start(&base_spec()));
-    harness.in_process.wait_handle(&task.task_id).complete("done");
+    harness
+        .in_process
+        .wait_handle(&task.task_id)
+        .complete("done");
     wait_terminal(&harness.manager, &task.task_id)
 }

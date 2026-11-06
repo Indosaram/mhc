@@ -17,12 +17,16 @@ pub const HOOK_SECRET_PATTERNS: &[HookSecretPattern] = &[
     HookSecretPattern {
         class: "credential_assignment",
         ere: "(^|[^A-Za-z0-9_])([Bb][Ee][Aa][Rr][Ee][Rr]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd])[[:space:]]*[=:][[:space:]]*[^[:space:]]{1,255}",
-        exclude: Some("^[^A-Za-z0-9_]?[A-Za-z_-]+[[:space:]]*[=:][[:space:]]*(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$"),
+        exclude: Some(
+            "^[^A-Za-z0-9_]?[A-Za-z_-]+[[:space:]]*[=:][[:space:]]*(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$",
+        ),
     },
     HookSecretPattern {
         class: "authorization_header",
         ere: "(^|[^A-Za-z0-9_])[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]]{1,255}",
-        exclude: Some("^[^A-Za-z0-9_]?authorization[[:space:]]*:[[:space:]]*bearer[[:space:]]+([]<>,})\"]|(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$)"),
+        exclude: Some(
+            "^[^A-Za-z0-9_]?authorization[[:space:]]*:[[:space:]]*bearer[[:space:]]+([]<>,})\"]|(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$)",
+        ),
     },
     HookSecretPattern {
         class: "openai_key",

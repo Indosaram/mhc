@@ -7,7 +7,9 @@ type Reservation = Box<dyn Fn(&str) + Send + Sync>;
 
 static RESERVE: OnceLock<Reservation> = OnceLock::new();
 
-pub fn install_session_write_reservation(reservation: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
+pub fn install_session_write_reservation(
+    reservation: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<(), String> {
     RESERVE
         .set(Box::new(reservation))
         .map_err(|_| "Session write reservation already installed".to_owned())
@@ -34,16 +36,24 @@ fn live_writers() -> &'static Mutex<Vec<Writer>> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Vec<Writer>> {
-    live_writers().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    live_writers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn same_owner(candidate: &Arc<dyn SessionWriterOwner>, owner: &Arc<dyn SessionWriterOwner>) -> bool {
+fn same_owner(
+    candidate: &Arc<dyn SessionWriterOwner>,
+    owner: &Arc<dyn SessionWriterOwner>,
+) -> bool {
     Arc::ptr_eq(candidate, owner)
 }
 
 pub fn register_session_writer(owner: &Arc<dyn SessionWriterOwner>) {
     let mut writers = lock();
-    if writers.iter().any(|weak| weak.ptr_eq(&Arc::downgrade(owner))) {
+    if writers
+        .iter()
+        .any(|weak| weak.ptr_eq(&Arc::downgrade(owner)))
+    {
         return;
     }
     writers.push(Arc::downgrade(owner));
@@ -63,11 +73,17 @@ pub fn has_other_live_session_writer(path: &str, self_owner: &Arc<dyn SessionWri
     let mut writers = lock();
     writers.retain(|weak| weak.strong_count() > 0);
     for weak in writers.iter() {
-        let Some(owner) = weak.upgrade() else { continue };
+        let Some(owner) = weak.upgrade() else {
+            continue;
+        };
         if same_owner(&owner, self_owner) {
             continue;
         }
-        if owner.is_persisted() && owner.get_session_file().is_some_and(|file| crate::session_manager::resolve_moved_session_path(&file) == path) {
+        if owner.is_persisted()
+            && owner.get_session_file().is_some_and(|file| {
+                crate::session_manager::resolve_moved_session_path(&file) == path
+            })
+        {
             return true;
         }
     }
@@ -80,7 +96,9 @@ pub fn live_session_write_paths() -> Vec<String> {
     writers.retain(|weak| weak.strong_count() > 0);
     let mut paths = Vec::new();
     for weak in writers.iter() {
-        let Some(owner) = weak.upgrade() else { continue };
+        let Some(owner) = weak.upgrade() else {
+            continue;
+        };
         if owner.is_persisted()
             && let Some(path) = owner.get_session_file()
         {
@@ -109,7 +127,10 @@ mod tests {
     }
 
     fn writer(file: Option<&str>, persisted: bool) -> Arc<dyn SessionWriterOwner> {
-        Arc::new(Writer { file: file.map(str::to_owned), persisted })
+        Arc::new(Writer {
+            file: file.map(str::to_owned),
+            persisted,
+        })
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use crate::{
-    host_lifecycle::parse_idle_exit_ms,
-    loop_blocked_time::LoopBlockedTime,
+    host_lifecycle::parse_idle_exit_ms, loop_blocked_time::LoopBlockedTime,
     session_attribution::SessionActivityRegistry,
 };
 use std::collections::HashMap;

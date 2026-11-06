@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 use maho_ext_api::*;
 
-use std::{
-    path::Path,
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 struct TestSession;
 impl ToolSessionManager for TestSession {
@@ -51,13 +48,28 @@ impl ModelRegistry for TestRegistry {
 
 pub struct TestUi;
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
@@ -102,7 +114,10 @@ pub fn context(cwd: &Path) -> ExtensionContext {
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,

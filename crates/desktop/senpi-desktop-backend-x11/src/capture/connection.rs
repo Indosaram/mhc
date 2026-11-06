@@ -6,11 +6,11 @@
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::ErrorKind;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     Atom, ConnectionExt as _, ImageFormat, ImageOrder, MapState, VisualClass, Window,
 };
+use x11rb::protocol::ErrorKind;
 use x11rb::rust_connection::RustConnection;
 
 use super::image::{ColorMasks, Pixmap, RootRect};

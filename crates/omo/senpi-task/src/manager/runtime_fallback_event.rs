@@ -91,9 +91,11 @@ pub fn apply_runtime_fallback_event(
             )
             .then_some(true);
             if let Some(previous) = &record.effective_model
-                && previous.provider == provider && previous.model_id == id {
-                    effective.service_tier = previous.service_tier.clone();
-                }
+                && previous.provider == provider
+                && previous.model_id == id
+            {
+                effective.service_tier = previous.service_tier.clone();
+            }
             record.effective_model = Some(effective);
             without_stale_parent_fallback(&mut record, provider, id);
             store.replace_record(&record);

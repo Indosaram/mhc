@@ -255,7 +255,8 @@ pub async fn discover_provider_models(
             ..Default::default()
         },
     )
-    .await.map_err(|error| error.to_string())?;
+    .await
+    .map_err(|error| error.to_string())?;
     let auth = if runtime.get_provider(&wanted).is_some() {
         runtime.get_auth(&wanted).await.map_err(|e| e.to_string())?
     } else {

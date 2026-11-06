@@ -39,7 +39,9 @@ impl BackendKind {
     }
 
     pub fn parse(value: &str) -> Option<BackendKind> {
-        BackendKind::ALL.into_iter().find(|kind| kind.as_str() == value)
+        BackendKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == value)
     }
 }
 

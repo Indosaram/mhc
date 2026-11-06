@@ -10,12 +10,14 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol_params::{
-    AdvanceClockParams, AxClickParams, AxElementAtParams, AxPerformParams, AxQueryParams, AxRefParams,
-    AxSetValueParams, AxSnapshotParams, CancelParams, CaptureParams, ClipboardText, DragParams, EmptyParams,
-    KeyChordParams, PointParams, RaiseWindowParams, ScrollParams, StopPathResumeParams, StopPathStartParams,
-    StopPathStopParams, TypeTextParams,
+    AdvanceClockParams, AxClickParams, AxElementAtParams, AxPerformParams, AxQueryParams,
+    AxRefParams, AxSetValueParams, AxSnapshotParams, CancelParams, CaptureParams, ClipboardText,
+    DragParams, EmptyParams, KeyChordParams, PointParams, RaiseWindowParams, ScrollParams,
+    StopPathResumeParams, StopPathStartParams, StopPathStopParams, TypeTextParams,
 };
-use crate::protocol_results::{AuditEvent, EngineLog, HelloResult, SessionOpenResult, StopPathStatus};
+use crate::protocol_results::{
+    AuditEvent, EngineLog, HelloResult, SessionOpenResult, StopPathStatus,
+};
 use crate::types::{
     AxNode, AxSnapshot, CaptureResult, DesktopCapabilities, DesktopDisplay, DesktopSessionOptions,
     DesktopWindow,

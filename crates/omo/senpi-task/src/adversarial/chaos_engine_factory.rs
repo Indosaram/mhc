@@ -8,20 +8,23 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::host::HostError;
-use crate::lifecycle::port::{ResidencyRegistry, ResidentHandle, ResidentKind};
 use crate::lifecycle::host_session::NoHostEndpoint;
+use crate::lifecycle::port::{ResidencyRegistry, ResidentHandle, ResidentKind};
 use crate::lifecycle::{
-    AdmissionResult, DestroyCause, LifecycleDeps, TaskLifecycle, TaskSettings, create_task_lifecycle,
+    AdmissionResult, DestroyCause, LifecycleDeps, TaskLifecycle, TaskSettings,
+    create_task_lifecycle,
 };
 use crate::manager::types::{
-    ChildPlanner, ManagedRunner, ManagedRunners, ManagerConfig, ManagerStartSpec, ResolvedChildPlan,
-    SpawnAdmission, TaskManagerOptions,
+    ChildPlanner, ManagedRunner, ManagedRunners, ManagerConfig, ManagerStartSpec,
+    ResolvedChildPlan, SpawnAdmission, TaskManagerOptions,
 };
 use crate::manager::{ManagedChildHandle, TaskManager, create_task_manager};
 use crate::steering::DestructionPort;
 use crate::store::TaskRecordStore;
 
-use super::chaos_engine::{ChaosProcessTable, ChaosRpcRespawnRunner, ChaosRunner, LifecycleChaosObservations};
+use super::chaos_engine::{
+    ChaosProcessTable, ChaosRpcRespawnRunner, ChaosRunner, LifecycleChaosObservations,
+};
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -170,13 +173,19 @@ pub fn build_chaos_engines(input: BuildChaosEnginesInput) -> Vec<ChaosEngine> {
             host_pid: Some(host_pid),
             host_endpoint: Some(Arc::new(NoHostEndpoint)),
             orphan_kill_delay_ms: Some(0),
-            signaller: Some(Arc::clone(&input.processes) as Arc<dyn crate::lifecycle::ProcessSignaller>),
-            respawn: Some(Arc::new(move |record: &crate::state::TaskRecord, session_path: Option<&std::path::Path>| {
-                respawn_registry.manager().respawn(record, session_path)
-            })),
-            reattach: Some(Arc::new(move |record: &crate::state::TaskRecord, handle: Arc<dyn ManagedChildHandle>| {
-                reattach_registry.manager().reattach(record, handle)
-            })),
+            signaller: Some(
+                Arc::clone(&input.processes) as Arc<dyn crate::lifecycle::ProcessSignaller>
+            ),
+            respawn: Some(Arc::new(
+                move |record: &crate::state::TaskRecord, session_path: Option<&std::path::Path>| {
+                    respawn_registry.manager().respawn(record, session_path)
+                },
+            )),
+            reattach: Some(Arc::new(
+                move |record: &crate::state::TaskRecord, handle: Arc<dyn ManagedChildHandle>| {
+                    reattach_registry.manager().reattach(record, handle)
+                },
+            )),
             ..LifecycleDeps::new(
                 Arc::clone(&input.store) as Arc<dyn crate::lifecycle::LifecycleStore>,
                 Arc::clone(&registry) as Arc<dyn ResidencyRegistry>,
@@ -226,10 +235,20 @@ pub fn build_chaos_engines(input: BuildChaosEnginesInput) -> Vec<ChaosEngine> {
                 }
                 Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
                     message: error.to_string(),
-                    max_children: Some(crate::manager::types::MaxChildren::Number(error.max_children)),
-                    residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary {
-                        task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string(),
-                    }).collect()),
+                    max_children: Some(crate::manager::types::MaxChildren::Number(
+                        error.max_children,
+                    )),
+                    residents: Some(
+                        error
+                            .residents
+                            .iter()
+                            .map(|resident| crate::manager::types::ResidentSummary {
+                                task_id: resident.task_id.clone(),
+                                name: resident.name.clone(),
+                                status: resident.status.as_str().to_string(),
+                            })
+                            .collect(),
+                    ),
                 },
                 Err(error) => SpawnAdmission::Rejected {
                     message: error.to_string(),

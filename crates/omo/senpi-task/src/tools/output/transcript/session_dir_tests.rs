@@ -6,7 +6,9 @@ use std::path::Path;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-use crate::tools::output::transcript::session_dir::{child_session_dir, read_session_dir_transcript_result};
+use crate::tools::output::transcript::session_dir::{
+    child_session_dir, read_session_dir_transcript_result,
+};
 
 fn message(text: &str) -> String {
     format!(

@@ -3,7 +3,9 @@
 use pretty_assertions::assert_eq;
 use team_core::types::{Message, MessageKind};
 
-use crate::team::messaging::delivery_journal::{LeadDeliveryJournalOptions, create_lead_delivery_journal};
+use crate::team::messaging::delivery_journal::{
+    LeadDeliveryJournalOptions, create_lead_delivery_journal,
+};
 
 const TEAM: &str = "00000000-0000-4000-8000-000000000000";
 const OTHER_TEAM: &str = "11111111-1111-4111-8111-111111111111";
@@ -34,8 +36,14 @@ fn given_recorded_messages_when_drained_then_it_returns_the_oldest_unreported_fi
     journal.record(TEAM, message("m1", "alpha"));
     journal.record(TEAM, message("m2", "alpha"));
 
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m1".to_string()));
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m2".to_string()));
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m1".to_string())
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m2".to_string())
+    );
     assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), None);
 }
 
@@ -45,9 +53,18 @@ fn given_mixed_senders_when_drained_with_a_from_filter_then_only_matching_messag
     journal.record(TEAM, message("m1", "alpha"));
     journal.record(TEAM, message("m2", "beta"));
 
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, Some("beta"))), Some("m2".to_string()));
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, Some("beta"))), None);
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, Some("alpha"))), Some("m1".to_string()));
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, Some("beta"))),
+        Some("m2".to_string())
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, Some("beta"))),
+        None
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, Some("alpha"))),
+        Some("m1".to_string())
+    );
 }
 
 #[test]
@@ -55,8 +72,14 @@ fn given_two_teams_when_drained_then_deliveries_stay_isolated_per_team() {
     let journal = create_lead_delivery_journal(LeadDeliveryJournalOptions::default());
     journal.record(TEAM, message("m1", "alpha"));
 
-    assert_eq!(taken_id(journal.take_oldest_unreported(OTHER_TEAM, None)), None);
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m1".to_string()));
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(OTHER_TEAM, None)),
+        None
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m1".to_string())
+    );
 }
 
 #[test]
@@ -69,7 +92,10 @@ fn given_a_reported_message_that_is_re_recorded_when_drained_then_it_is_unreport
     // the same message is reserved again (recovery redelivery)
     journal.record(TEAM, message("m1", "alpha"));
 
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m1".to_string()));
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m1".to_string())
+    );
 }
 
 #[test]
@@ -83,14 +109,26 @@ fn given_a_dropped_team_when_drained_then_nothing_remains() {
 }
 
 #[test]
-fn given_more_deliveries_than_the_cap_when_drained_then_the_oldest_are_evicted_and_order_is_preserved() {
-    let journal = create_lead_delivery_journal(LeadDeliveryJournalOptions { max_per_team: Some(3) });
+fn given_more_deliveries_than_the_cap_when_drained_then_the_oldest_are_evicted_and_order_is_preserved()
+ {
+    let journal = create_lead_delivery_journal(LeadDeliveryJournalOptions {
+        max_per_team: Some(3),
+    });
     for id in ["m1", "m2", "m3", "m4", "m5"] {
         journal.record(TEAM, message(id, "alpha"));
     }
 
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m3".to_string()));
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m4".to_string()));
-    assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), Some("m5".to_string()));
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m3".to_string())
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m4".to_string())
+    );
+    assert_eq!(
+        taken_id(journal.take_oldest_unreported(TEAM, None)),
+        Some("m5".to_string())
+    );
     assert_eq!(taken_id(journal.take_oldest_unreported(TEAM, None)), None);
 }

@@ -59,7 +59,13 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Block appended for a formatted file.
-pub fn formatted_block(path: &str, formatter: &str, added: usize, removed: usize, tool: &str) -> String {
+pub fn formatted_block(
+    path: &str,
+    formatter: &str,
+    added: usize,
+    removed: usize,
+    tool: &str,
+) -> String {
     format!(
         "{formatter} reformatted {path} (+{added}/-{removed} lines) after {tool}; the file on disk \
          now differs from what {tool} wrote, so read it again before editing it."
@@ -109,7 +115,13 @@ impl FormatEngine {
         self.runs.pending()
     }
 
-    async fn format_file(&self, kind: FormatterKind, file: &Path, cwd: &Path, timeout: Duration) -> RunOutcome {
+    async fn format_file(
+        &self,
+        kind: FormatterKind,
+        file: &Path,
+        cwd: &Path,
+        timeout: Duration,
+    ) -> RunOutcome {
         self.runs
             .run(file, async {
                 if let Some(outcome) = self.lsp.format(cwd, file).await.outcome() {
@@ -148,7 +160,9 @@ impl FormatEngine {
             if !meta.is_file() || meta.len() > settings.max_file_bytes {
                 continue;
             }
-            let Some(mut kind) = markers.get_or_insert_with(|| Markers::scan(&cwd)).choose(&file)
+            let Some(mut kind) = markers
+                .get_or_insert_with(|| Markers::scan(&cwd))
+                .choose(&file)
             else {
                 continue;
             };

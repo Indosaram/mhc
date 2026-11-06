@@ -1,9 +1,9 @@
 //! Runtime error and ISO timestamp helpers.
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
-use serde_json::Value;
 
 #[derive(Debug, thiserror::Error, Clone)]
 #[error("{message}")]

@@ -171,7 +171,8 @@ fn acquire_and_run<T>(
             Ok(f) => break f,
             Err(err) => {
                 let is_exist = err.kind() == std::io::ErrorKind::AlreadyExists;
-                let is_past_deadline = wait_ms > 0 && (crate::support::time::now_millis() as u64) >= deadline;
+                let is_past_deadline =
+                    wait_ms > 0 && (crate::support::time::now_millis() as u64) >= deadline;
                 if !is_exist {
                     return Err(JournalError::Io(err));
                 }
@@ -179,12 +180,18 @@ fn acquire_and_run<T>(
                     try_reclaim_stale_lock(lock_path);
                     match options.open(lock_path) {
                         Ok(f) => break f,
-                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path))),
+                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                            return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(
+                                lock_path,
+                            )));
+                        }
                         Err(err) => return Err(JournalError::Io(err)),
                     }
                 }
                 if is_past_deadline {
-                    return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path)));
+                    return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(
+                        lock_path,
+                    )));
                 }
                 if let Some(c) = cancel
                     && c()
@@ -263,10 +270,14 @@ pub fn try_with_local_journal_lock<T>(
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path)));
+            return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(
+                lock_path,
+            )));
         }
     };
-    if cancel.is_some_and(|c| c()) { return Err(JournalError::Aborted); }
+    if cancel.is_some_and(|c| c()) {
+        return Err(JournalError::Aborted);
+    }
     acquire_and_run(lock_path, task, cancel, 0)
 }
 

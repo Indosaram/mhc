@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::ledger::{sanitize_session_filename, write_private};
 use crate::fs::resilient;
-use crate::sync::redact::contains_secret_like_material;
 use crate::support::time::{now_iso, now_millis, parse_rfc3339};
+use crate::sync::redact::contains_secret_like_material;
 
 /// Pending payload schema version.
 pub const PENDING_NUDGES_VERSION: u32 = 1;
@@ -132,8 +132,25 @@ fn has_second_person(trimmed: &str) -> bool {
 }
 
 const IMPERATIVE_VERBS: [&str; 19] = [
-    "do not", "don't", "don’t", "never", "always", "make sure", "ensure", "verify", "check", "run",
-    "use", "read", "stop", "avoid", "remember", "keep", "prefer", "skip", "consider",
+    "do not",
+    "don't",
+    "don’t",
+    "never",
+    "always",
+    "make sure",
+    "ensure",
+    "verify",
+    "check",
+    "run",
+    "use",
+    "read",
+    "stop",
+    "avoid",
+    "remember",
+    "keep",
+    "prefer",
+    "skip",
+    "consider",
 ];
 
 fn has_imperative_opening(hint: &str) -> bool {
@@ -150,9 +167,9 @@ fn has_imperative_opening(hint: &str) -> bool {
         .collect::<Vec<_>>()
         .join(" ");
     IMPERATIVE_VERBS.iter().any(|verb| {
-        collapsed.strip_prefix(verb).is_some_and(|rest| {
-            rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric())
-        })
+        collapsed
+            .strip_prefix(verb)
+            .is_some_and(|rest| rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric()))
     })
 }
 
@@ -198,7 +215,8 @@ fn has_decision_language(hint: &str) -> bool {
     }
     let words = words_of(&lower);
     for (index, word) in words.iter().enumerate() {
-        if (word == "no" || word == "not") && words.get(index + 1).is_some_and(|next| next == "relevant")
+        if (word == "no" || word == "not")
+            && words.get(index + 1).is_some_and(|next| next == "relevant")
         {
             return true;
         }
@@ -218,8 +236,7 @@ fn has_decision_language(hint: &str) -> bool {
                     && matches!(
                         words.get(index + 3).map(String::as_str),
                         Some("cover") | Some("address") | Some("pertain")
-                    )
-                =>
+                    ) =>
             {
                 return true;
             }
@@ -248,7 +265,10 @@ pub struct ValidateNudgesOptions {
 }
 
 /// Parent-side validation against the full admission contract; order is preserved.
-pub fn validate_nudges(nudges: &[RecallNudge], options: &ValidateNudgesOptions) -> Vec<RecallNudge> {
+pub fn validate_nudges(
+    nudges: &[RecallNudge],
+    options: &ValidateNudgesOptions,
+) -> Vec<RecallNudge> {
     if options.max_items == 0 {
         return Vec::new();
     }
@@ -391,7 +411,12 @@ fn parse_nudge(value: &serde_json::Value) -> Option<RecallNudge> {
     }
     let source = match record.get("source") {
         None => None,
-        Some(value) => Some(value.as_str().filter(|source| !source.is_empty())?.to_string()),
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|source| !source.is_empty())?
+                .to_string(),
+        ),
     };
     Some(RecallNudge {
         path: path.to_string(),

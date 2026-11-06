@@ -124,7 +124,10 @@ impl ExtensionSelectorComponent {
 
 impl Component for ExtensionSelectorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
         lines.extend(Text::with_padding(self.title_text(), 1, 0).render(width));
         lines.push(String::new());
 
@@ -132,7 +135,8 @@ impl Component for ExtensionSelectorComponent {
         if start_index > 0 {
             lines.extend(
                 Text::with_padding(
-                    self.theme.fg(ThemeColor::Muted, &format!("  … {start_index} more above")),
+                    self.theme
+                        .fg(ThemeColor::Muted, &format!("  … {start_index} more above")),
                     1,
                     0,
                 )
@@ -147,7 +151,10 @@ impl Component for ExtensionSelectorComponent {
                     self.theme.fg(ThemeColor::Accent, &self.options[index])
                 )
             } else {
-                format!("  {}", self.theme.fg(ThemeColor::Text, &self.options[index]))
+                format!(
+                    "  {}",
+                    self.theme.fg(ThemeColor::Text, &self.options[index])
+                )
             };
             lines.extend(Text::with_padding(text, 1, 0).render(width));
         }
@@ -155,7 +162,10 @@ impl Component for ExtensionSelectorComponent {
         if end_index < count {
             lines.extend(
                 Text::with_padding(
-                    self.theme.fg(ThemeColor::Muted, &format!("  … {} more below", count - end_index)),
+                    self.theme.fg(
+                        ThemeColor::Muted,
+                        &format!("  … {} more below", count - end_index),
+                    ),
                     1,
                     0,
                 )
@@ -189,7 +199,8 @@ impl Component for ExtensionSelectorComponent {
         } else if kb.matches(data, "tui.select.up") || data == "k" {
             self.selected_index = self.selected_index.saturating_sub(1);
         } else if kb.matches(data, "tui.select.down") || data == "j" {
-            self.selected_index = (self.selected_index + 1).min(self.options.len().saturating_sub(1));
+            self.selected_index =
+                (self.selected_index + 1).min(self.options.len().saturating_sub(1));
         } else if kb.matches(data, "tui.select.confirm") || data == "\n" {
             if let Some(selected) = self.options.get(self.selected_index) {
                 let selected = selected.clone();

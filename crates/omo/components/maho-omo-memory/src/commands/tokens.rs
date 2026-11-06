@@ -33,7 +33,9 @@ fn list_markdown_files(dir: &Path, prefix: &str) -> Vec<String> {
         } else {
             format!("{prefix}/{name}")
         };
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if file_type.is_dir() {
             files.extend(list_markdown_files(dir, &relative));
         } else if file_type.is_file() && name.ends_with(".md") {
@@ -65,7 +67,11 @@ pub fn estimate_system_tokens(repo_dir: &Path) -> SystemTokenEstimate {
     });
     let total_bytes = files.iter().map(|file| file.bytes).sum();
     let total_tokens = files.iter().map(|file| file.tokens).sum();
-    SystemTokenEstimate { total_bytes, total_tokens, files }
+    SystemTokenEstimate {
+        total_bytes,
+        total_tokens,
+        files,
+    }
 }
 
 /// Path of the system/ directory a repo's token estimate walks.
@@ -90,15 +96,23 @@ mod tests {
     }
 
     #[test]
-    fn given_system_files_including_nested_paths_when_estimated_then_tokens_are_bytes_per_four_sorted_by_size() {
+    fn given_system_files_including_nested_paths_when_estimated_then_tokens_are_bytes_per_four_sorted_by_size()
+     {
         let dir = temp_repo();
         std::fs::create_dir_all(dir.path().join("system").join("projects")).expect("nested");
-        std::fs::write(dir.path().join("system").join("persona.md"), "a".repeat(40)).expect("persona");
-        std::fs::write(dir.path().join("system").join("projects").join("index.md"), "b".repeat(8))
-            .expect("index");
+        std::fs::write(dir.path().join("system").join("persona.md"), "a".repeat(40))
+            .expect("persona");
+        std::fs::write(
+            dir.path().join("system").join("projects").join("index.md"),
+            "b".repeat(8),
+        )
+        .expect("index");
         std::fs::create_dir_all(dir.path().join("external")).expect("external");
-        std::fs::write(dir.path().join("external").join("ignored.md"), "c".repeat(400))
-            .expect("ignored");
+        std::fs::write(
+            dir.path().join("external").join("ignored.md"),
+            "c".repeat(400),
+        )
+        .expect("ignored");
 
         let estimate = estimate_system_tokens(dir.path());
 
@@ -119,7 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn given_a_file_whose_byte_length_is_not_divisible_by_four_when_estimated_then_the_file_rounds_up() {
+    fn given_a_file_whose_byte_length_is_not_divisible_by_four_when_estimated_then_the_file_rounds_up()
+     {
         let dir = temp_repo();
         std::fs::create_dir_all(dir.path().join("system")).expect("system");
         std::fs::write(dir.path().join("system").join("odd.md"), "abcde").expect("odd");

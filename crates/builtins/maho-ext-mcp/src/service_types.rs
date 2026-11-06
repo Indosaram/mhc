@@ -1,44 +1,94 @@
-use std::{path::PathBuf,sync::{Arc,Mutex}};
-use serde::{Deserialize,Serialize};
-use crate::{catalog_cache::McpCachedServerCatalog,config_schema::{McpServerSource,McpServerState},connection::{ServerConnection,ServerConnectionState},log::McpLogger};
-pub use maho_ext_api::mcp_wire::{McpWireAuthStatus,McpWireServerInfo,McpWireTool,McpWireResource,McpWireResourceTemplate,McpWireServerStatus,McpWireStatusServer,McpWireStatusSnapshot};
+use crate::{
+    catalog_cache::McpCachedServerCatalog,
+    config_schema::{McpServerSource, McpServerState},
+    connection::{ServerConnection, ServerConnectionState},
+    log::McpLogger,
+};
+pub use maho_ext_api::mcp_wire::{
+    McpWireAuthStatus, McpWireResource, McpWireResourceTemplate, McpWireServerInfo,
+    McpWireServerStatus, McpWireStatusServer, McpWireStatusSnapshot, McpWireTool,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="lowercase")]
-pub enum McpSnapshotConfigState {Enabled,Disabled,Untrusted,Removed}
-impl From<McpServerState> for McpSnapshotConfigState {
-    fn from(state:McpServerState)->Self {match state {McpServerState::Enabled=>Self::Enabled,McpServerState::Disabled=>Self::Disabled,McpServerState::Untrusted=>Self::Untrusted}}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpSnapshotConfigState {
+    Enabled,
+    Disabled,
+    Untrusted,
+    Removed,
 }
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
+impl From<McpServerState> for McpSnapshotConfigState {
+    fn from(state: McpServerState) -> Self {
+        match state {
+            McpServerState::Enabled => Self::Enabled,
+            McpServerState::Disabled => Self::Disabled,
+            McpServerState::Untrusted => Self::Untrusted,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum McpLifecycleState {Connection(ServerConnectionState),Other(McpUnspawnedState)}
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="snake_case")]
-pub enum McpUnspawnedState {Cached,NotSpawned}
-#[derive(Debug,Clone,Default,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct McpServerCounters {pub call_count:u64,pub error_count:u64,pub total_latency_ms:f64,pub reconnect_count:u64}
-#[derive(Debug,Clone,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all="camelCase")]
+pub enum McpLifecycleState {
+    Connection(ServerConnectionState),
+    Other(McpUnspawnedState),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpUnspawnedState {
+    Cached,
+    NotSpawned,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerCounters {
+    pub call_count: u64,
+    pub error_count: u64,
+    pub total_latency_ms: f64,
+    pub reconnect_count: u64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpServerSnapshot {
-    pub name:String,pub config_state:McpSnapshotConfigState,pub config_hash:Option<String>,pub source:Option<McpServerSource>,pub source_path:Option<PathBuf>,
-    pub lifecycle_state:McpLifecycleState,pub generation:Option<u64>,pub pid:Option<u32>,pub last_error:Option<String>,pub uptime_ms:Option<f64>,pub counters:McpServerCounters,
+    pub name: String,
+    pub config_state: McpSnapshotConfigState,
+    pub config_hash: Option<String>,
+    pub source: Option<McpServerSource>,
+    pub source_path: Option<PathBuf>,
+    pub lifecycle_state: McpLifecycleState,
+    pub generation: Option<u64>,
+    pub pid: Option<u32>,
+    pub last_error: Option<String>,
+    pub uptime_ms: Option<f64>,
+    pub counters: McpServerCounters,
 }
 pub struct McpConnectionEntry {
-    pub key:String,pub name:String,pub config_hash:String,pub connection:Arc<ServerConnection>,pub logger:Arc<Mutex<McpLogger>>,
-    pub created_at_ms:f64,pub counters:McpServerCounters,pub agent_dir:Option<PathBuf>,pub cached_catalog:Option<McpCachedServerCatalog>,pub cache_refreshed_after_connect:bool,
-    pub auth_plan:crate::auth::context::ServerAuthPlan,
-    pub artifacts:Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
+    pub key: String,
+    pub name: String,
+    pub config_hash: String,
+    pub connection: Arc<ServerConnection>,
+    pub logger: Arc<Mutex<McpLogger>>,
+    pub created_at_ms: f64,
+    pub counters: McpServerCounters,
+    pub agent_dir: Option<PathBuf>,
+    pub cached_catalog: Option<McpCachedServerCatalog>,
+    pub cache_refreshed_after_connect: bool,
+    pub auth_plan: crate::auth::context::ServerAuthPlan,
+    pub artifacts: Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
     /// Tool names seen at the last registration, for the `list_changed` diff
     /// (upstream `McpConnectionEntry.knownToolNames`).
-    pub known_tool_names:Option<Vec<String>>,
+    pub known_tool_names: Option<Vec<String>>,
     /// Last `list_changed` delta summary (upstream `lastListChangedDelta`).
-    pub last_list_changed_delta:Option<String>,
+    pub last_list_changed_delta: Option<String>,
     /// Teardown for the coalesced `list_changed` re-registration subscription
     /// (upstream `disposeListChanged`).
-    pub list_changed_tasks:Vec<tokio::task::JoinHandle<()>>,
-    pub list_changed_coalescer:Option<Arc<crate::notifications::McpListChangeCoalescer>>,
+    pub list_changed_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub list_changed_coalescer: Option<Arc<crate::notifications::McpListChangeCoalescer>>,
     /// invocation.ts `owner: entry`: the dispatch owner of every operation this entry offers, stable
     /// across re-registrations of its tools.
-    pub dispatch_owner:maho_ext_api::ToolDispatchOwner,
+    pub dispatch_owner: maho_ext_api::ToolDispatchOwner,
 }

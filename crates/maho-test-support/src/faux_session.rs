@@ -65,7 +65,10 @@ impl FauxSession {
     }
 
     /// Host-supplied session context (`open_session.context`) the native extensions see.
-    pub fn with_session_context(mut self, context: std::collections::BTreeMap<String, String>) -> Self {
+    pub fn with_session_context(
+        mut self,
+        context: std::collections::BTreeMap<String, String>,
+    ) -> Self {
         self.session_context = context;
         self
     }
@@ -501,14 +504,28 @@ impl NativeSession {
 
     /// Runs the registered slash command `name` with `args` exactly as the host dispatches it.
     pub async fn execute_command(&self, name: &str, args: &str) -> Result<(), String> {
-        let command = self.runner.get_command(name).ok_or_else(|| format!("unknown command /{name}"))?;
-        let context = self.runner.create_context().map_err(|error| error.message)?;
-        (command.command.handler)(args, &context).await.map_err(|error| error.message)
+        let command = self
+            .runner
+            .get_command(name)
+            .ok_or_else(|| format!("unknown command /{name}"))?;
+        let context = self
+            .runner
+            .create_context()
+            .map_err(|error| error.message)?;
+        (command.command.handler)(args, &context)
+            .await
+            .map_err(|error| error.message)
     }
 
     /// The session's persisted entries (header first), e.g. to seed a resumed session.
     pub fn entries(&self) -> Vec<Value> {
-        self.session.with_session_manager(|manager| manager.header().into_iter().chain(manager.entries()).collect())
+        self.session.with_session_manager(|manager| {
+            manager
+                .header()
+                .into_iter()
+                .chain(manager.entries())
+                .collect()
+        })
     }
 
     /// Switches the active model, as `session.setModel` does.
@@ -524,7 +541,9 @@ impl NativeSession {
             provider,
             maho_core::provider_composer::ProviderConfigInput {
                 config: maho_core::model_config_schema::ModelsJsonProvider {
-                    api_key: Some(maho_core::config_reference_resolver::ConfigValue::String(key.to_owned())),
+                    api_key: Some(maho_core::config_reference_resolver::ConfigValue::String(
+                        key.to_owned(),
+                    )),
                     ..Default::default()
                 },
                 ..Default::default()

@@ -7,10 +7,12 @@ use maho_ai::types::BoxFuture;
 use crate::harness::context::Context;
 use crate::harness::session::session::{SessionError, SessionResult};
 use crate::harness::session::types::{
-    CommitResult, Entry, EntryScan, EntryStructure, SessionStats, Storage, StorageBranchScan, UsageRow, UsageScan,
-    Write,
+    CommitResult, Entry, EntryScan, EntryStructure, SessionStats, Storage, StorageBranchScan,
+    UsageRow, UsageScan, Write,
 };
-use crate::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
+use crate::harness::session::values::{
+    ListElement, ListReadOptions, StoredValue, Value, ValueList,
+};
 
 /// Test-only forwarding base for decorators that alter one part of Storage behavior.
 pub struct StorageDecorator {
@@ -28,7 +30,11 @@ impl StorageDecorator {
 }
 
 impl Storage for StorageDecorator {
-    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, SessionResult<CommitResult>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<CommitResult>> {
         self.delegate.commit(writes, context)
     }
 
@@ -81,11 +87,19 @@ impl Storage for StorageDecorator {
         self.delegate.scan_branch_structure(query, context)
     }
 
-    fn scan_entries<'a>(&'a self, query: EntryScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+    fn scan_entries<'a>(
+        &'a self,
+        query: EntryScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
         self.delegate.scan_entries(query, context)
     }
 
-    fn scan_usage<'a>(&'a self, query: UsageScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
+    fn scan_usage<'a>(
+        &'a self,
+        query: UsageScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
         self.delegate.scan_usage(query, context)
     }
 
@@ -100,5 +114,8 @@ impl Storage for StorageDecorator {
 
 /// `CommitDiscarded`: every commit rejected after simulated storage loss.
 pub fn commit_discarded(message: impl Into<String>) -> SessionError {
-    SessionError::new(crate::harness::session::session::SessionErrorKind::CommitDiscarded, message)
+    SessionError::new(
+        crate::harness::session::session::SessionErrorKind::CommitDiscarded,
+        message,
+    )
 }

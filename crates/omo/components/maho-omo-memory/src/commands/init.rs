@@ -7,8 +7,8 @@ use maho_ext_api::{ExtensionApi, UserMessageContent};
 
 use super::repo::{has_git_repo, open_repo, short_sha};
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
 fn init_instruction(repo_path: &str) -> String {
@@ -72,7 +72,9 @@ pub async fn handle_init(
         wait().await;
     }
     if let Err(error) = deps.actions.send_user_message(
-        UserMessageContent::Text(init_instruction(&identity.identity_paths.repo.display().to_string())),
+        UserMessageContent::Text(init_instruction(
+            &identity.identity_paths.repo.display().to_string(),
+        )),
         Default::default(),
     ) {
         return respond(ctx, error.to_string(), NotifyLevel::Error);
@@ -90,7 +92,10 @@ pub async fn handle_init(
 pub fn register_init_command(api: &mut ExtensionApi, deps: Arc<MemoryCommandDeps>) {
     api.register_command(
         "init",
-        Some("Initialize the memory repository and instruct the agent to create initial memory.".to_owned()),
+        Some(
+            "Initialize the memory repository and instruct the agent to create initial memory."
+                .to_owned(),
+        ),
         Some(String::new()),
         Arc::new(move |args, context| {
             let deps = deps.clone();
@@ -107,7 +112,8 @@ mod tests {
     use crate::commands::test_support::*;
 
     #[tokio::test]
-    async fn given_no_repository_when_invoked_then_the_repo_is_initialized_and_an_instruction_turn_follows_idle() {
+    async fn given_no_repository_when_invoked_then_the_repo_is_initialized_and_an_instruction_turn_follows_idle()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
         let mut context = fake_command_context(FakeContextOptions::default());
@@ -116,7 +122,10 @@ mod tests {
         context.ctx.wait_for_idle = Some(Arc::new(move || {
             let order = order.clone();
             Box::pin(async move {
-                order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("waitForIdle".to_owned());
+                order
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("waitForIdle".to_owned());
             })
         }));
 
@@ -124,7 +133,10 @@ mod tests {
 
         let repo = crate::commands::repo::open_repo(&fake.deps, &identity).expect("repo");
         assert!(repo.head().expect("head").is_some());
-        assert_eq!(order_of(&context), vec!["waitForIdle".to_owned(), "sendUserMessage".to_owned()]);
+        assert_eq!(
+            order_of(&context),
+            vec!["waitForIdle".to_owned(), "sendUserMessage".to_owned()]
+        );
         let messages = fake.actions.user_messages();
         assert_eq!(messages.len(), 1);
         let message = match &messages[0] {
@@ -138,11 +150,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_existing_repository_when_invoked_then_it_refuses_without_overwriting_and_sends_nothing() {
+    async fn given_an_existing_repository_when_invoked_then_it_refuses_without_overwriting_and_sends_nothing()
+     {
         let (_root, identity) = temp_identity();
         let repo = seeded_repo(
             &identity,
-            vec![seed("system/persona.md", "---\ndescription: persona\n---\nkeep me\n")],
+            vec![seed(
+                "system/persona.md",
+                "---\ndescription: persona\n---\nkeep me\n",
+            )],
         );
         let head_before = repo.head().expect("head");
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());

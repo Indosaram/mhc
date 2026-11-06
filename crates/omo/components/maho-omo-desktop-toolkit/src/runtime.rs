@@ -6,7 +6,7 @@
 
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ext_api::{
-    EventKind, EventResult, ExtensionApi, ExtensionFuture, ExtensionContext, ExtensionEvent,
+    EventKind, EventResult, ExtensionApi, ExtensionContext, ExtensionEvent, ExtensionFuture,
     ExtensionHandlerOptions, ExtensionToolExecutor, ToolDefinition, ToolExecutionMode,
     ToolExposure,
 };

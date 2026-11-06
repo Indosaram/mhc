@@ -174,7 +174,10 @@ fn given_a_body_only_edit_of_a_legacy_oversized_header_when_preflight_runs_then_
 
     assert_eq!(preflight(&fixture), Vec::new());
 
-    assert_eq!(fixture.child.head().expect("head"), Some(fixture.tip.clone()));
+    assert_eq!(
+        fixture.child.head().expect("head"),
+        Some(fixture.tip.clone())
+    );
     assert_eq!(read_note(&fixture.worktree), content);
     assert!(matches!(
         validate_completion(
@@ -187,7 +190,8 @@ fn given_a_body_only_edit_of_a_legacy_oversized_header_when_preflight_runs_then_
 }
 
 #[test]
-fn given_a_note_with_an_oversized_summary_when_preflight_runs_then_one_hooked_commit_preserves_the_body() {
+fn given_a_note_with_an_oversized_summary_when_preflight_runs_then_one_hooked_commit_preserves_the_body()
+ {
     for (existing, leading) in [(true, false), (false, false), (true, true)] {
         let oversized = oversized();
         let original = if leading {
@@ -235,9 +239,13 @@ fn given_a_note_with_an_oversized_summary_when_preflight_runs_then_one_hooked_co
                 new_length: parsed.frontmatter.description.chars().count(),
             }]
         );
-        let head = git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["rev-parse", "HEAD"])
-            .trim()
-            .to_string();
+        let head = git_out(
+            fixture.exec.as_ref(),
+            &fixture.worktree.dir,
+            &["rev-parse", "HEAD"],
+        )
+        .trim()
+        .to_string();
         let parent = git_out(
             fixture.exec.as_ref(),
             &fixture.worktree.dir,
@@ -281,9 +289,13 @@ fn given_a_note_with_an_oversized_summary_when_preflight_runs_then_one_hooked_co
         ));
         assert_eq!(preflight(&fixture), Vec::new());
         assert_eq!(
-            git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["rev-parse", "HEAD"])
-                .trim()
-                .to_string(),
+            git_out(
+                fixture.exec.as_ref(),
+                &fixture.worktree.dir,
+                &["rev-parse", "HEAD"]
+            )
+            .trim()
+            .to_string(),
             head
         );
     }
@@ -299,7 +311,10 @@ fn given_an_oversized_summary_and_a_duplicate_key_when_preflight_runs_then_the_n
 
     assert_eq!(preflight(&fixture), Vec::new());
 
-    assert_eq!(fixture.child.head().expect("head"), Some(fixture.tip.clone()));
+    assert_eq!(
+        fixture.child.head().expect("head"),
+        Some(fixture.tip.clone())
+    );
     assert_eq!(read_note(&fixture.worktree), content);
     match validate_completion(
         &fixture.worktree,
@@ -326,7 +341,10 @@ fn given_no_oversized_summary_when_preflight_runs_then_it_makes_no_commit() {
 
     assert_eq!(preflight(&fixture), Vec::new());
 
-    assert_eq!(fixture.child.head().expect("head"), Some(fixture.tip.clone()));
+    assert_eq!(
+        fixture.child.head().expect("head"),
+        Some(fixture.tip.clone())
+    );
     assert_eq!(read_note(&fixture.worktree), content);
 }
 
@@ -345,7 +363,8 @@ fn given_an_oversized_word_when_preflight_runs_then_it_hard_cuts_within_the_limi
 }
 
 #[test]
-fn given_an_emoji_across_the_hard_cut_boundary_when_preflight_runs_then_only_complete_code_points_remain() {
+fn given_an_emoji_across_the_hard_cut_boundary_when_preflight_runs_then_only_complete_code_points_remain()
+ {
     let description = format!("{}😀{}", "x".repeat(1022), "x".repeat(94));
     let fixture = fixture(&memory_file(&description, BODY), true, None);
 
@@ -373,9 +392,16 @@ fn given_a_refusing_commit_hook_when_preflight_runs_then_it_restores_only_its_ed
 
     assert_eq!(preflight(&fixture), Vec::new());
 
-    assert_eq!(fixture.child.head().expect("head"), Some(fixture.tip.clone()));
     assert_eq!(
-        git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["status", "--porcelain"]),
+        fixture.child.head().expect("head"),
+        Some(fixture.tip.clone())
+    );
+    assert_eq!(
+        git_out(
+            fixture.exec.as_ref(),
+            &fixture.worktree.dir,
+            &["status", "--porcelain"]
+        ),
         ""
     );
     assert_eq!(read_note(&fixture.worktree), input);
@@ -389,9 +415,8 @@ fn given_a_refusing_commit_hook_when_preflight_runs_then_it_restores_only_its_ed
                 dropped,
                 vec![crate::reflection::completion_repair::DroppedEntry {
                     path: PATH.to_string(),
-                    reason:
-                        "invalid frontmatter: 'description' exceeds 1024 characters (1118)"
-                            .to_string(),
+                    reason: "invalid frontmatter: 'description' exceeds 1024 characters (1118)"
+                        .to_string(),
                 }]
             );
         }

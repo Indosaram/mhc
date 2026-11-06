@@ -17,7 +17,8 @@ pub struct TeamMemberTaskIdentity {
     pub member_name: String,
 }
 
-pub type RuntimeStateLoader = Arc<dyn Fn(&str, &TeamModeConfig) -> team_core::Result<RuntimeState> + Send + Sync>;
+pub type RuntimeStateLoader =
+    Arc<dyn Fn(&str, &TeamModeConfig) -> team_core::Result<RuntimeState> + Send + Sync>;
 
 pub struct TeamMemberOwnershipDeps {
     pub state_dir: StateDirConfig,
@@ -29,7 +30,9 @@ static TEAM_MEMBER_NAME_PATTERN: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(?i)^team:([0-9a-f-]{36}):([a-z0-9-]+)$").ok());
 
 /// Parses a `team:<teamRunId>:<memberName>` task name into its team member identity.
-pub fn parse_team_member_task_identity(record_name: Option<&str>) -> Option<TeamMemberTaskIdentity> {
+pub fn parse_team_member_task_identity(
+    record_name: Option<&str>,
+) -> Option<TeamMemberTaskIdentity> {
     let pattern = TEAM_MEMBER_NAME_PATTERN.as_ref()?;
     let captures = pattern.captures(record_name.unwrap_or(""))?;
     let team_run_id = captures.get(1)?.as_str().to_string();

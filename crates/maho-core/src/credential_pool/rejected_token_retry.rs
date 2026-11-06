@@ -151,7 +151,8 @@ mod tests {
     use std::sync::Mutex;
 
     fn message(stop_reason: StopReason) -> AssistantMessage {
-        AssistantMessage { credential_served_recently: None,
+        AssistantMessage {
+            credential_served_recently: None,
             error_cause: None,
             prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,

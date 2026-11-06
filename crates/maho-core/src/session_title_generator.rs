@@ -143,7 +143,9 @@ pub async fn complete_title(
             &model.provider,
         )
     {
-        return Err(crate::provider_consent::consent_required_message(&model.provider));
+        return Err(crate::provider_consent::consent_required_message(
+            &model.provider,
+        ));
     }
     complete_simple(model, context, Some(options))
         .await
@@ -285,7 +287,8 @@ mod tests {
     }
 
     fn assistant_with_text(text: &str) -> AssistantMessage {
-        AssistantMessage { credential_served_recently: None,
+        AssistantMessage {
+            credential_served_recently: None,
             thinking_level: None,
             provider_diagnostic: None,
             prompt_cache_breakpoint: None,

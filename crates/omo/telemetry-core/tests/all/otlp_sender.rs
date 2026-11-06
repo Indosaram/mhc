@@ -45,7 +45,10 @@ fn entry_input(dir: &std::path::Path, env: &[(&str, &str)]) -> CreateOtlpTelemet
         product_env_prefix: "OMO_TEST".to_string(),
         ingest_key: "test-ingest-key".to_string(),
         spool_dir: dir.to_path_buf(),
-        spool_root: dir.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| dir.to_path_buf()),
+        spool_root: dir
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| dir.to_path_buf()),
         resource: test_resource("1.1.0"),
         scope: test_scope(),
         env: Some(
@@ -104,9 +107,11 @@ async fn batches_of_twenty_are_sealed_and_sent_in_emit_order_and_the_rest_waits_
     assert_eq!(sizes, vec![20, 20, 5]);
     let flat: Vec<i64> = batches.into_iter().flatten().collect();
     assert_eq!(flat, (0..45).collect::<Vec<i64>>());
-    assert!(calls
-        .iter()
-        .all(|call| call.url == "https://collector.test/v1/logs"));
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.url == "https://collector.test/v1/logs")
+    );
     assert_eq!(calls[0].header("x-omo-ingest-key"), Some("test-ingest-key"));
     assert_eq!(
         calls[0].header("content-type"),
@@ -189,8 +194,8 @@ async fn the_otlp_exporter_variables_are_ignored_and_omo_telemetry_endpoint_over
             ..TransportOverrides::default()
         },
     );
-    let defaulted = create_otlp_telemetry_transport(entry_input(&root.dir, &[]))
-        .expect("consented transport");
+    let defaulted =
+        create_otlp_telemetry_transport(entry_input(&root.dir, &[])).expect("consented transport");
 
     assert_eq!(ignored.endpoint(), "https://collector.test");
     assert_eq!(overridden.endpoint(), "https://staging.test");
@@ -206,7 +211,10 @@ async fn otel_sdk_disabled_do_not_track_and_the_product_opt_out_build_nothing() 
         vec![("OMO_TEST_SEND_ANONYMOUS_TELEMETRY", "0")],
     ] {
         let transport = create_otlp_telemetry_transport(entry_input(&root.dir, &env));
-        assert!(transport.is_none(), "env {env:?} must disable the transport");
+        assert!(
+            transport.is_none(),
+            "env {env:?} must disable the transport"
+        );
     }
     assert!(!root.dir.exists());
 }
@@ -281,9 +289,11 @@ async fn an_auto_started_transport_sends_the_batch_of_a_flush_that_raced_its_sta
     transport.flush().await;
 
     assert_eq!(recorder.calls.lock().unwrap().len(), 1);
-    assert!(spool_names(&root.dir)
-        .iter()
-        .all(|name| !name.starts_with("batch-")));
+    assert!(
+        spool_names(&root.dir)
+            .iter()
+            .all(|name| !name.starts_with("batch-"))
+    );
     transport.shutdown().await;
 }
 
@@ -308,7 +318,9 @@ async fn consent_that_starts_panicking_mid_run_purges_the_spool_and_resolves() {
     transport.shutdown().await;
 
     assert!(recorder.calls.lock().unwrap().is_empty());
-    assert!(spool_names(&root.dir)
-        .iter()
-        .all(|name| !name.ends_with(".otlp")));
+    assert!(
+        spool_names(&root.dir)
+            .iter()
+            .all(|name| !name.ends_with(".otlp"))
+    );
 }

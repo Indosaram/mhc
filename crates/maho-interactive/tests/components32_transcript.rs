@@ -23,23 +23,41 @@ fn theme() -> Theme {
 }
 
 fn fixtures() -> Value {
-    serde_json::from_str(include_str!("golden/components32-transcript.json")).expect("pinned fixture")
+    serde_json::from_str(include_str!("golden/components32-transcript.json"))
+        .expect("pinned fixture")
 }
 
 fn expected(case: &Value) -> Vec<String> {
-    case["lines"].as_array().expect("lines").iter().map(|line| line.as_str().expect("line").to_owned()).collect()
+    case["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line.as_str().expect("line").to_owned())
+        .collect()
 }
 
 fn trim(lines: Vec<String>) -> Vec<String> {
-    lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
-fn tool_card(theme: &Theme, name: &str, id: &str, args: Value, output: &str) -> Rc<RefCell<ToolExecutionComponent>> {
+fn tool_card(
+    theme: &Theme,
+    name: &str,
+    id: &str,
+    args: Value,
+    output: &str,
+) -> Rc<RefCell<ToolExecutionComponent>> {
     let component = Rc::new(RefCell::new(ToolExecutionComponent::new(
         name,
         id,
         args,
-        ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+        ToolExecutionOptions {
+            show_images: Some(false),
+            image_width_cells: None,
+        },
         None,
         "/tmp/project",
         ToolExecutionPresentation::Classic,
@@ -47,7 +65,11 @@ fn tool_card(theme: &Theme, name: &str, id: &str, args: Value, output: &str) -> 
         theme.clone(),
     )));
     component.borrow_mut().update_result(
-        ToolExecutionResult { content: vec![ToolContent::text(output)], details: None, is_error: false },
+        ToolExecutionResult {
+            content: vec![ToolContent::text(output)],
+            details: None,
+            is_error: false,
+        },
         false,
     );
     component.borrow_mut().stop_animation();
@@ -98,7 +120,10 @@ fn exploration_transcript_projection_matches_pinned_senpi() {
             serde_json::json!({ "content": [{ "type": "thinking", "thinking": "reasoning" }], "stopReason": "stop" }),
         )));
         let renderer = Rc::new(|_entry: &Value, _expanded: bool, _theme: &Theme| {
-            Ok(Some(Rc::new(RefCell::new(Text::with_padding("rules", 0, 0))) as Rc<RefCell<dyn Component>>))
+            Ok(Some(
+                Rc::new(RefCell::new(Text::with_padding("rules", 0, 0)))
+                    as Rc<RefCell<dyn Component>>,
+            ))
         });
         container.add_child(TranscriptChild::Entry(Rc::new(RefCell::new(CustomEntryComponent::new(
             serde_json::json!({
@@ -119,7 +144,11 @@ fn exploration_transcript_projection_matches_pinned_senpi() {
             &theme,
             serde_json::json!({ "content": [{ "type": "text", "text": "done" }], "stopReason": "stop" }),
         )));
-        assert_eq!(trim(container.render(width)), expected(case), "transcript at {width}");
+        assert_eq!(
+            trim(container.render(width)),
+            expected(case),
+            "transcript at {width}"
+        );
     }
 }
 
@@ -129,12 +158,19 @@ fn tool_execution_fallback_matches_pinned_senpi_without_a_renderer() {
     for case in fixtures()["fallback"].as_array().expect("fallback") {
         let width = case["width"].as_u64().expect("width") as usize;
         let with_result = case["name"].as_str() == Some("with-result");
-        let args = if with_result { serde_json::json!({ "alpha": 1 }) } else { serde_json::json!({ "alpha": 1, "beta": "two" }) };
+        let args = if with_result {
+            serde_json::json!({ "alpha": 1 })
+        } else {
+            serde_json::json!({ "alpha": 1, "beta": "two" })
+        };
         let mut component = ToolExecutionComponent::new(
             "custom_tool",
             "call-9",
             args,
-            ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+            ToolExecutionOptions {
+                show_images: Some(false),
+                image_width_cells: None,
+            },
             None,
             "/tmp/project",
             ToolExecutionPresentation::Classic,

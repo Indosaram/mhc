@@ -72,10 +72,14 @@ fn make_goal(id: &str, status: &str, criteria: Vec<UlwLoopSuccessCriterion>) -> 
 #[test]
 fn test_checkpoint_non_final_complete() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let g1 = make_goal("G001", "in_progress", vec![
-        make_criterion("C001", "pass", true),
-        make_criterion("C002", "pending", false),
-    ]);
+    let g1 = make_goal(
+        "G001",
+        "in_progress",
+        vec![
+            make_criterion("C001", "pass", true),
+            make_criterion("C002", "pending", false),
+        ],
+    );
     let g2 = make_goal("G002", "pending", vec![]);
     let plan = make_plan(vec![g1, g2]);
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
@@ -86,7 +90,8 @@ fn test_checkpoint_non_final_complete() -> Result<(), Box<dyn std::error::Error>
             "objective": "aggregate objective",
             "status": "in_progress",
         }
-    }).to_string();
+    })
+    .to_string();
 
     let args = CheckpointUlwLoopArgs {
         goal_id: "G001".into(),
@@ -105,7 +110,11 @@ fn test_checkpoint_non_final_complete() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn test_checkpoint_failed() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let g1 = make_goal("G001", "in_progress", vec![make_criterion("C001", "fail", true)]);
+    let g1 = make_goal(
+        "G001",
+        "in_progress",
+        vec![make_criterion("C001", "fail", true)],
+    );
     let plan = make_plan(vec![g1]);
     std::fs::create_dir_all(tmp.path().join(".omo/ulw-loop"))?;
     write_plan(tmp.path(), plan.clone(), None)?;

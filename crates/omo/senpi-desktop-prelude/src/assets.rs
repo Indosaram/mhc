@@ -1,7 +1,7 @@
 //! Embedded prelude and doc assets mirrored from `src/assets.ts`.
 
-use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// The five prelude and doc assets, generated into `assets.generated.json` by
 /// `scripts/generate-assets.ts`; field names are the historical generated-constant names.

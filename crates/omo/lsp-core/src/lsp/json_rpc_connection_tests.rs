@@ -101,7 +101,10 @@ async fn given_request_write_in_progress_when_signal_aborts_then_cancel_follows_
     assert_eq!(request_frame["method"], json!("textDocument/diagnostic"));
     assert_eq!(cancel_frame["method"], json!("$/cancelRequest"));
     assert_eq!(cancel_frame["params"]["id"], request_frame["id"]);
-    assert_eq!(request.await.expect("join"), Err(LspError::other("caller cancelled")));
+    assert_eq!(
+        request.await.expect("join"),
+        Err(LspError::other("caller cancelled"))
+    );
 }
 
 #[tokio::test]

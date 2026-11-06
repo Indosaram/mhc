@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::PoisonError;
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -163,9 +163,10 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
         .map(|host| (*host).to_string())
         .collect();
     if let Some(host) = url_host(&endpoint)
-        && !host.is_empty() {
-            hosts.push(host);
-        }
+        && !host.is_empty()
+    {
+        hosts.push(host);
+    }
     let fetch = create_traceparent_fetch(fetch, &hosts);
     let sender = Arc::new_cyclic(|weak: &Weak<OtlpSender>| {
         let on_appended: Arc<dyn Fn(&mut SpoolWriter) + Send + Sync> = {
@@ -200,9 +201,7 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
             boot_id: providers.boot_id.clone(),
             pid: input.pid.unwrap_or_else(std::process::id),
             now_ms: input.now_ms.clone().unwrap_or_else(|| {
-                Arc::new(|| {
-                    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
-                })
+                Arc::new(|| u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0))
             }),
             is_pid_alive: input
                 .is_pid_alive
@@ -236,7 +235,9 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
             endpoint: sender_endpoint.clone(),
             ingest_key: input.ingest_key.clone(),
             fetch: Arc::clone(&fetch),
-            request_timeout_ms: input.request_timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS),
+            request_timeout_ms: input
+                .request_timeout_ms
+                .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS),
             lease_renew_interval_ms: input
                 .lease_renew_interval_ms
                 .unwrap_or(LEASE_RENEW_INTERVAL_MS),
@@ -244,10 +245,7 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
                 .sleep
                 .clone()
                 .unwrap_or_else(|| Arc::new(abortable_sleep)),
-            random: input
-                .random
-                .clone()
-                .unwrap_or_else(|| Arc::new(rand_unit)),
+            random: input.random.clone().unwrap_or_else(|| Arc::new(rand_unit)),
             consent: Arc::clone(&consent),
             on_accepted: {
                 let weak = weak.clone();
@@ -259,11 +257,13 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
             },
             report: {
                 let weak = weak.clone();
-                Arc::new(move |event: TelemetryDiagnosticEvent, error: Option<TelemetryError>| {
-                    if let Some(sender) = weak.upgrade() {
-                        sender.report(event, error);
-                    }
-                })
+                Arc::new(
+                    move |event: TelemetryDiagnosticEvent, error: Option<TelemetryError>| {
+                        if let Some(sender) = weak.upgrade() {
+                            sender.report(event, error);
+                        }
+                    },
+                )
             },
         }));
         let traces: TurnTracer = create_turn_tracing(
@@ -307,12 +307,13 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
     // The startup sweep + pass runs first; a flush waits for it, so a batch sealed by an early flush is
     // never left behind by a pass that listed the spool before the seal.
     if input_auto_start(&transport.sender)
-        && let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let sender = Arc::clone(&transport.sender);
-            handle.spawn(async move {
-                sender.ensure_started().await;
-            });
-        }
+        && let Ok(handle) = tokio::runtime::Handle::try_current()
+    {
+        let sender = Arc::clone(&transport.sender);
+        handle.spawn(async move {
+            sender.ensure_started().await;
+        });
+    }
     transport
 }
 
@@ -383,7 +384,10 @@ impl OtlpSender {
 
     fn on_drop(&self, reason: DropReason, records: usize) {
         self.dropped_since_200.fetch_add(records, Ordering::SeqCst);
-        let mut unreported = self.unreported.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut unreported = self
+            .unreported
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         *unreported.entry(reason).or_insert(0) += records;
     }
 
@@ -516,11 +520,12 @@ impl OtlpSender {
             }
         });
         if let Some(sender) = self.self_weak.upgrade()
-            && let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    sender.batches.pump().await;
-                });
-            }
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move {
+                sender.batches.pump().await;
+            });
+        }
     }
 
     fn seal_providers(&self) {
@@ -552,8 +557,10 @@ impl OtlpSender {
     fn report_drops(&self) {
         for (reason, name) in DROP_REASONS {
             let count = {
-                let mut unreported =
-                    self.unreported.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut unreported = self
+                    .unreported
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 let count = unreported.get(&reason).copied().unwrap_or(0);
                 if count > 0 {
                     unreported.insert(reason, 0);
@@ -573,7 +580,11 @@ impl OtlpSender {
     /// Consent withdrawn mid-run: close this process's files, then purge the whole spool.
     fn purge(&self) {
         self.guard(TelemetryDiagnosticEvent::TelemetrySpoolWriteFailed, || {
-            let source = self.input.source.clone().unwrap_or_else(|| "otlp".to_string());
+            let source = self
+                .input
+                .source
+                .clone()
+                .unwrap_or_else(|| "otlp".to_string());
             match purge_owned_spool(
                 &self.ctx.dir,
                 &self.input.spool_root,

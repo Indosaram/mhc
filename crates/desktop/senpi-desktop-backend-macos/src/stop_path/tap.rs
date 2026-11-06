@@ -252,7 +252,7 @@ mod hooks {
     use std::ffi::c_void;
     use std::ptr;
 
-    use super::{CGEventTapEnable, Shared, TAP_DISABLED_BY_TIMEOUT, TapContext, tap_callback};
+    use super::{tap_callback, CGEventTapEnable, Shared, TapContext, TAP_DISABLED_BY_TIMEOUT};
 
     #[derive(Debug, Clone, Copy)]
     pub(in crate::stop_path) enum Simulate {

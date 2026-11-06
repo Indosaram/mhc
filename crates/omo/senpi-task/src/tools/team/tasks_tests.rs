@@ -7,9 +7,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::tools::team::tasks::{
-    TeamTaskCreateInput, TeamTaskGetInput, TeamTaskListInput, TeamTaskUpdateInput, create_team_task_create_tool,
-    create_team_task_get_tool, create_team_task_list_tool, create_team_task_update_tool, run_team_task_create,
-    run_team_task_get, run_team_task_list, run_team_task_update,
+    TeamTaskCreateInput, TeamTaskGetInput, TeamTaskListInput, TeamTaskUpdateInput,
+    create_team_task_create_tool, create_team_task_get_tool, create_team_task_list_tool,
+    create_team_task_update_tool, run_team_task_create, run_team_task_get, run_team_task_list,
+    run_team_task_update,
 };
 use crate::tools::team::team_tool_fakes::{
     FakeTeamServiceOverrides, create_fake_team_service, fake_task, fake_task_with,
@@ -21,7 +22,10 @@ fn result_json<T: Serialize>(result: &T) -> Value {
 }
 
 fn result_text(value: &Value) -> String {
-    value["content"][0]["text"].as_str().unwrap_or("").to_string()
+    value["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
 }
 
 fn create_input(value: Value) -> TeamTaskCreateInput {
@@ -55,14 +59,18 @@ fn deps_with_default_service() -> TeamToolDeps {
 fn assert_multiline_subject_collapsed() {
     // given
     let service = create_fake_team_service(FakeTeamServiceOverrides {
-        create_task: Some(Box::new(|_, _| Ok(fake_task_with(json!({ "subject": "line one\nline two" }))))),
+        create_task: Some(Box::new(|_, _| {
+            Ok(fake_task_with(json!({ "subject": "line one\nline two" })))
+        })),
         ..Default::default()
     });
 
     // when
     let result = run_team_task_create(
         &service,
-        &create_input(json!({ "team_run_id": "run-1", "subject": "line one\nline two", "description": "d" })),
+        &create_input(
+            json!({ "team_run_id": "run-1", "subject": "line one\nline two", "description": "d" }),
+        ),
     )
     .unwrap();
 
@@ -102,7 +110,9 @@ fn given_a_new_task_when_create_runs_then_it_reports_the_created_task() {
 #[test]
 fn given_a_blocked_task_when_create_runs_then_the_text_names_the_blockers() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
-        create_task: Some(Box::new(|_, _| Ok(fake_task_with(json!({ "blockedBy": ["task-0"] }))))),
+        create_task: Some(Box::new(|_, _| {
+            Ok(fake_task_with(json!({ "blockedBy": ["task-0"] })))
+        })),
         ..Default::default()
     });
     let result = run_team_task_create(
@@ -120,21 +130,24 @@ fn given_a_blocked_task_when_create_runs_then_the_text_names_the_blockers() {
 }
 
 #[test]
-fn given_a_subject_with_embedded_newlines_when_create_runs_then_the_text_collapses_them_onto_one_line() {
+fn given_a_subject_with_embedded_newlines_when_create_runs_then_the_text_collapses_them_onto_one_line()
+ {
     assert_multiline_subject_collapsed();
 }
 
 #[test]
-fn given_a_subject_with_embedded_newlines_when_create_runs_then_the_text_collapses_them_onto_one_line_duplicate() {
+fn given_a_subject_with_embedded_newlines_when_create_runs_then_the_text_collapses_them_onto_one_line_duplicate()
+ {
     assert_multiline_subject_collapsed();
 }
 
 #[test]
 fn given_adversarial_owner_and_blocked_by_values_when_list_and_get_run_then_the_echoed_fields_are_collapsed_and_bounded()
-{
+ {
     // given
     let hostile = format!("x\ninjected {}", "y".repeat(500));
-    let task = fake_task_with(json!({ "owner": hostile, "blockedBy": [hostile], "blocks": [hostile] }));
+    let task =
+        fake_task_with(json!({ "owner": hostile, "blockedBy": [hostile], "blocks": [hostile] }));
     let list_task = task.clone();
     let get_task = task;
     let service = create_fake_team_service(FakeTeamServiceOverrides {
@@ -144,9 +157,13 @@ fn given_adversarial_owner_and_blocked_by_values_when_list_and_get_run_then_the_
     });
 
     // when
-    let listed = run_team_task_list(&service, &list_input(json!({ "team_run_id": "run-1" }))).unwrap();
-    let fetched =
-        run_team_task_get(&service, &get_input(json!({ "team_run_id": "run-1", "task_id": "task-1" }))).unwrap();
+    let listed =
+        run_team_task_list(&service, &list_input(json!({ "team_run_id": "run-1" }))).unwrap();
+    let fetched = run_team_task_get(
+        &service,
+        &get_input(json!({ "team_run_id": "run-1", "task_id": "task-1" })),
+    )
+    .unwrap();
 
     // then
     let list_text = result_text(&result_json(&listed));
@@ -160,7 +177,10 @@ fn given_adversarial_owner_and_blocked_by_values_when_list_and_get_run_then_the_
 
 #[test]
 fn given_the_factory_when_built_then_it_names_the_tool_task_create() {
-    assert_eq!(create_team_task_create_tool(&deps_with_default_service()).name, "task_create");
+    assert_eq!(
+        create_team_task_create_tool(&deps_with_default_service()).name,
+        "task_create"
+    );
 }
 
 // ---- task_list tool ----
@@ -176,8 +196,11 @@ fn given_tasks_when_list_runs_then_it_reports_them_forwarding_the_filter() {
         })),
         ..Default::default()
     });
-    let result =
-        run_team_task_list(&service, &list_input(json!({ "team_run_id": "run-1", "status": "pending" }))).unwrap();
+    let result = run_team_task_list(
+        &service,
+        &list_input(json!({ "team_run_id": "run-1", "status": "pending" })),
+    )
+    .unwrap();
     let value = result_json(&result);
     assert_eq!(value["details"]["kind"], json!("list"));
     assert_eq!(value["details"]["tasks"].as_array().map(Vec::len), Some(2));
@@ -185,7 +208,10 @@ fn given_tasks_when_list_runs_then_it_reports_them_forwarding_the_filter() {
     let first_line = text.split('\n').next().unwrap_or("");
     assert_eq!(first_line, "2 task(s).");
     assert!(text.contains("- task-1 [pending] 'do the thing'"), "{text}");
-    assert!(text.contains("- task-2 [claimed] owner:alpha 'do the thing'"), "{text}");
+    assert!(
+        text.contains("- task-2 [claimed] owner:alpha 'do the thing'"),
+        "{text}"
+    );
     let calls = service.calls();
     assert_eq!(calls[0].method, "listTasks");
     assert_eq!(calls[0].args[0], json!("run-1"));
@@ -194,7 +220,10 @@ fn given_tasks_when_list_runs_then_it_reports_them_forwarding_the_filter() {
 
 #[test]
 fn given_the_factory_when_built_then_it_names_the_tool_task_list() {
-    assert_eq!(create_team_task_list_tool(&deps_with_default_service()).name, "task_list");
+    assert_eq!(
+        create_team_task_list_tool(&deps_with_default_service()).name,
+        "task_list"
+    );
 }
 
 // ---- task_get tool ----
@@ -202,11 +231,16 @@ fn given_the_factory_when_built_then_it_names_the_tool_task_list() {
 #[test]
 fn given_an_existing_task_when_get_runs_then_it_reports_the_task() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
-        get_task: Some(Box::new(|_, _| Ok(fake_task_with(json!({ "owner": "alpha" }))))),
+        get_task: Some(Box::new(|_, _| {
+            Ok(fake_task_with(json!({ "owner": "alpha" })))
+        })),
         ..Default::default()
     });
-    let result =
-        run_team_task_get(&service, &get_input(json!({ "team_run_id": "run-1", "task_id": "task-1" }))).unwrap();
+    let result = run_team_task_get(
+        &service,
+        &get_input(json!({ "team_run_id": "run-1", "task_id": "task-1" })),
+    )
+    .unwrap();
     let value = result_json(&result);
     assert_eq!(value["details"]["kind"], json!("task"));
     let text = result_text(&value);
@@ -222,8 +256,11 @@ fn given_a_missing_task_when_get_runs_then_it_reports_not_found() {
         get_task: Some(Box::new(|_, _| Err(named_error("ENOENT", "missing")))),
         ..Default::default()
     });
-    let result =
-        run_team_task_get(&service, &get_input(json!({ "team_run_id": "run-1", "task_id": "ghost" }))).unwrap();
+    let result = run_team_task_get(
+        &service,
+        &get_input(json!({ "team_run_id": "run-1", "task_id": "ghost" })),
+    )
+    .unwrap();
     let value = result_json(&result);
     assert_eq!(value["details"]["kind"], json!("not_found"));
     assert_eq!(value["details"]["task_id"], json!("ghost"));
@@ -231,7 +268,10 @@ fn given_a_missing_task_when_get_runs_then_it_reports_not_found() {
 
 #[test]
 fn given_the_factory_when_built_then_it_names_the_tool_task_get() {
-    assert_eq!(create_team_task_get_tool(&deps_with_default_service()).name, "task_get");
+    assert_eq!(
+        create_team_task_get_tool(&deps_with_default_service()).name,
+        "task_get"
+    );
 }
 
 // ---- task_update tool ----
@@ -239,18 +279,25 @@ fn given_the_factory_when_built_then_it_names_the_tool_task_get() {
 #[test]
 fn given_a_status_update_when_update_runs_then_it_reports_the_updated_task() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
-        update_task: Some(Box::new(|_| Ok(fake_task_with(json!({ "status": "in_progress" }))))),
+        update_task: Some(Box::new(|_| {
+            Ok(fake_task_with(json!({ "status": "in_progress" })))
+        })),
         ..Default::default()
     });
     let result = run_team_task_update(
         &service,
-        &update_input(json!({ "team_run_id": "run-1", "task_id": "task-1", "status": "in_progress" })),
+        &update_input(
+            json!({ "team_run_id": "run-1", "task_id": "task-1", "status": "in_progress" }),
+        ),
     )
     .unwrap();
     let value = result_json(&result);
     assert_eq!(value["details"]["kind"], json!("updated"));
     let text = result_text(&value);
-    assert!(text.contains("Updated task task-1 to in_progress"), "{text}");
+    assert!(
+        text.contains("Updated task task-1 to in_progress"),
+        "{text}"
+    );
     assert!(text.contains("'do the thing'"), "{text}");
     let calls = service.calls();
     assert_eq!(calls[0].method, "updateTask");
@@ -263,7 +310,10 @@ fn given_a_status_update_when_update_runs_then_it_reports_the_updated_task() {
 fn given_an_already_claimed_task_when_claim_runs_then_it_reports_already_claimed() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         update_task: Some(Box::new(|_| {
-            Err(named_error("TeamTaskAlreadyClaimedError", "Task is already claimed"))
+            Err(named_error(
+                "TeamTaskAlreadyClaimedError",
+                "Task is already claimed",
+            ))
         })),
         ..Default::default()
     });
@@ -280,7 +330,12 @@ fn given_an_already_claimed_task_when_claim_runs_then_it_reports_already_claimed
 #[test]
 fn given_a_blocked_task_when_claim_runs_then_it_reports_blocked_by() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
-        update_task: Some(Box::new(|_| Err(named_error("TeamTaskBlockedByError", "Task is blocked by: task-0")))),
+        update_task: Some(Box::new(|_| {
+            Err(named_error(
+                "TeamTaskBlockedByError",
+                "Task is blocked by: task-0",
+            ))
+        })),
         ..Default::default()
     });
     let result = run_team_task_update(
@@ -314,7 +369,10 @@ fn given_an_illegal_transition_when_update_runs_then_it_reports_invalid_transiti
 fn given_a_cross_owner_update_when_update_runs_then_it_reports_cross_owner() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         update_task: Some(Box::new(|_| {
-            Err(named_error("TeamTaskCrossOwnerUpdateError", "Cannot update a task owned by another member"))
+            Err(named_error(
+                "TeamTaskCrossOwnerUpdateError",
+                "Cannot update a task owned by another member",
+            ))
         })),
         ..Default::default()
     });
@@ -328,5 +386,8 @@ fn given_a_cross_owner_update_when_update_runs_then_it_reports_cross_owner() {
 
 #[test]
 fn given_the_factory_when_built_then_it_names_the_tool_task_update() {
-    assert_eq!(create_team_task_update_tool(&deps_with_default_service()).name, "task_update");
+    assert_eq!(
+        create_team_task_update_tool(&deps_with_default_service()).name,
+        "task_update"
+    );
 }

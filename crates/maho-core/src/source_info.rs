@@ -108,7 +108,13 @@ mod tests {
 
     #[test]
     fn synthetic_source_info_defaults_to_temporary_top_level() {
-        let info = create_synthetic_source_info("/tmp/skill.md", SyntheticSourceInfoOptions { source: "local".to_string(), ..Default::default() });
+        let info = create_synthetic_source_info(
+            "/tmp/skill.md",
+            SyntheticSourceInfoOptions {
+                source: "local".to_string(),
+                ..Default::default()
+            },
+        );
         assert_eq!(info.source, "local");
         assert_eq!(info.scope, SourceScope::Temporary);
         assert_eq!(info.origin, SourceOrigin::TopLevel);
@@ -132,7 +138,8 @@ mod tests {
 
     #[test]
     fn source_metadata_copies_every_field() {
-        let metadata = PathMetadata { skill_provenance: None,
+        let metadata = PathMetadata {
+            skill_provenance: None,
             source: "auto".to_string(),
             scope: SourceScope::Project,
             origin: SourceOrigin::Package,
@@ -148,7 +155,12 @@ mod tests {
 
     #[test]
     fn scope_and_origin_round_trip_through_their_wire_spellings() {
-        for scope in [SourceScope::User, SourceScope::Project, SourceScope::Temporary, SourceScope::System] {
+        for scope in [
+            SourceScope::User,
+            SourceScope::Project,
+            SourceScope::Temporary,
+            SourceScope::System,
+        ] {
             assert_eq!(SourceScope::parse(scope.as_str()), Some(scope));
         }
         for origin in [SourceOrigin::Package, SourceOrigin::TopLevel] {

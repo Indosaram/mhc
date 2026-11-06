@@ -193,11 +193,16 @@ fn is_authenticated(
 }
 
 /// The summary-failure class senpi's `classifyRequiredCompactionFallbackFailure` keys on.
-pub fn summary_failure(error: &SummaryGenerationError) -> crate::deterministic_fallback::SummaryFailure {
+pub fn summary_failure(
+    error: &SummaryGenerationError,
+) -> crate::deterministic_fallback::SummaryFailure {
     use crate::{deterministic_fallback::SummaryFailure, speculative_summary::SummaryStreamError};
     match error {
         SummaryGenerationError::Request(response) => summary_request_failure(response),
-        SummaryGenerationError::Stream(SummaryStreamError::IdleTimeout | SummaryStreamError::DurationBudget) | SummaryGenerationError::TotalBudget => SummaryFailure::Timeout,
+        SummaryGenerationError::Stream(
+            SummaryStreamError::IdleTimeout | SummaryStreamError::DurationBudget,
+        )
+        | SummaryGenerationError::TotalBudget => SummaryFailure::Timeout,
         SummaryGenerationError::Overflow(_) => SummaryFailure::OverflowExhausted,
         SummaryGenerationError::EmptySummary(_) => SummaryFailure::EmptySummary,
         SummaryGenerationError::UnsafeRetainedSuffix(_) => SummaryFailure::UnsafeRetainedSuffix,
@@ -215,7 +220,15 @@ pub async fn run_extension_compaction(
     on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     run_extension_compaction_with_body(
-        snapshot, api_key, ambient, headers, None, None, signal, stream_runner, on_progress,
+        snapshot,
+        api_key,
+        ambient,
+        headers,
+        None,
+        None,
+        signal,
+        stream_runner,
+        on_progress,
     )
     .await
 }
@@ -234,25 +247,38 @@ pub async fn run_extension_compaction_for_context(
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     let aborted = || signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
     let auth_failure = |error: ExtensionFailure| {
-        SummaryGenerationError::Auth(format!("summarization credentials unavailable: {}", error.message))
+        SummaryGenerationError::Auth(format!(
+            "summarization credentials unavailable: {}",
+            error.message
+        ))
     };
     let mut selected = context
         .get_compaction_model()
         .map_err(auth_failure)?
         .unwrap_or_else(|| snapshot.model.clone());
-    let mut auth = context.model_registry.get_api_key_and_headers(&selected).await;
+    let mut auth = context
+        .model_registry
+        .get_api_key_and_headers(&selected)
+        .await;
     if aborted() {
         return Ok(None);
     }
     // A configured summary model whose credentials cannot be confirmed must not disable compaction.
     let authenticated = |auth: &Result<maho_ext_api::ResolvedRequestAuth, ExtensionFailure>| {
         auth.as_ref().is_ok_and(|auth| {
-            is_authenticated(auth.auth.api_key.as_deref(), auth.ambient, auth.auth.headers.as_ref())
+            is_authenticated(
+                auth.auth.api_key.as_deref(),
+                auth.ambient,
+                auth.auth.headers.as_ref(),
+            )
         })
     };
     if !same_model(&selected, &snapshot.model) && !authenticated(&auth) {
         selected = snapshot.model.clone();
-        auth = context.model_registry.get_api_key_and_headers(&selected).await;
+        auth = context
+            .model_registry
+            .get_api_key_and_headers(&selected)
+            .await;
         if aborted() {
             return Ok(None);
         }
@@ -271,7 +297,11 @@ pub async fn run_extension_compaction_for_context(
         .await
         .map_err(auth_failure)?;
     let headers = match auth.auth.headers.clone() {
-        Some(headers) => Some((prepared.transform_headers)(headers).await.map_err(auth_failure)?),
+        Some(headers) => Some(
+            (prepared.transform_headers)(headers)
+                .await
+                .map_err(auth_failure)?,
+        ),
         None => None,
     };
     let registry = std::sync::Arc::clone(&context.model_registry);
@@ -280,19 +310,20 @@ pub async fn run_extension_compaction_for_context(
         std::sync::Arc::new(move |model, request_context, mut options| {
             let sanitize = options.request.on_payload.take();
             let transform = std::sync::Arc::clone(&transform_payload);
-            options.request.async_on_payload = Some(std::sync::Arc::new(move |payload, model, metadata| {
-                let sanitize = sanitize.clone();
-                let transform = std::sync::Arc::clone(&transform);
-                Box::pin(async move {
-                    let sanitized = sanitize
-                        .and_then(|hook| hook(&payload, &model, metadata.as_ref()))
-                        .unwrap_or(payload);
-                    transform(sanitized)
-                        .await
-                        .map(Some)
-                        .map_err(|error| error.message)
-                })
-            }));
+            options.request.async_on_payload =
+                Some(std::sync::Arc::new(move |payload, model, metadata| {
+                    let sanitize = sanitize.clone();
+                    let transform = std::sync::Arc::clone(&transform);
+                    Box::pin(async move {
+                        let sanitized = sanitize
+                            .and_then(|hook| hook(&payload, &model, metadata.as_ref()))
+                            .unwrap_or(payload);
+                        transform(sanitized)
+                            .await
+                            .map(Some)
+                            .map_err(|error| error.message)
+                    })
+                }));
             match registry.stream(model, request_context, Some(options)) {
                 Ok(stream) => stream,
                 Err(error) => maho_ai::utils::lazy::error_stream(model, &error.message),

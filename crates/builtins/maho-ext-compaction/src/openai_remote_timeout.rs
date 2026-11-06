@@ -1,7 +1,7 @@
-use std::future::Future;
-use tokio::time::Instant;
-use std::time::Duration;
 use maho_ai::utils::abort::{AbortController, AbortSignal, ListenerId};
+use std::future::Future;
+use std::time::Duration;
+use tokio::time::Instant;
 
 struct AbortLink<'a> {
     source: &'a AbortSignal,
@@ -21,7 +21,14 @@ pub async fn run_with_remote_timeout<T, E, F: Future<Output = Result<T, E>>>(
     on_timeout: impl FnOnce(),
     aborted_error: impl FnOnce() -> E,
 ) -> Result<Option<T>, E> {
-    run_with_remote_deadline(signal, Instant::now() + timeout, run, on_timeout, aborted_error).await
+    run_with_remote_deadline(
+        signal,
+        Instant::now() + timeout,
+        run,
+        on_timeout,
+        aborted_error,
+    )
+    .await
 }
 
 pub async fn run_with_remote_deadline<T, E, F: Future<Output = Result<T, E>>>(
@@ -31,7 +38,8 @@ pub async fn run_with_remote_deadline<T, E, F: Future<Output = Result<T, E>>>(
     on_timeout: impl FnOnce(),
     aborted_error: impl FnOnce() -> E,
 ) -> Result<Option<T>, E> {
-    run_with_remote_deadline_report(signal, deadline, run, move |_| on_timeout(), aborted_error).await
+    run_with_remote_deadline_report(signal, deadline, run, move |_| on_timeout(), aborted_error)
+        .await
 }
 
 pub async fn run_with_remote_deadline_report<T, E, F: Future<Output = Result<T, E>>>(
@@ -47,7 +55,10 @@ pub async fn run_with_remote_deadline_report<T, E, F: Future<Output = Result<T, 
     let controller = AbortController::new();
     let linked = controller.clone();
     let listener = signal.add_abort_listener(move |_| linked.abort(None));
-    let _link = AbortLink { source: signal, listener };
+    let _link = AbortLink {
+        source: signal,
+        listener,
+    };
     let operation = run(controller.signal());
     tokio::pin!(operation);
     let started = Instant::now();
@@ -68,7 +79,9 @@ pub async fn run_with_remote_deadline_report<T, E, F: Future<Output = Result<T, 
     }
 }
 
-const TOTAL_BUDGET: Duration = Duration::from_millis(maho_core::compaction::stream_watchdog::SUMMARIZATION_TOTAL_BUDGET_MS as u64);
+const TOTAL_BUDGET: Duration = Duration::from_millis(
+    maho_core::compaction::stream_watchdog::SUMMARIZATION_TOTAL_BUDGET_MS as u64,
+);
 
 pub struct RemoteCompactionDeadline {
     deadline: tokio::time::Instant,
@@ -76,24 +89,40 @@ pub struct RemoteCompactionDeadline {
 }
 
 impl Clone for RemoteCompactionDeadline {
-    fn clone(&self) -> Self { Self { deadline: self.deadline, attempt_budget: self.attempt_budget } }
+    fn clone(&self) -> Self {
+        Self {
+            deadline: self.deadline,
+            attempt_budget: self.attempt_budget,
+        }
+    }
 }
 
 impl RemoteCompactionDeadline {
     /// senpi `createRemoteCompactionDeadline`: every attempt shares one deadline of
     /// `max(SUMMARIZATION_TOTAL_BUDGET_MS, attemptBudget)`.
     pub fn new(attempt_budget: Duration) -> Self {
-        Self { deadline: tokio::time::Instant::now() + attempt_budget.max(TOTAL_BUDGET), attempt_budget }
+        Self {
+            deadline: tokio::time::Instant::now() + attempt_budget.max(TOTAL_BUDGET),
+            attempt_budget,
+        }
     }
 
     /// Same shared deadline, with a different per-attempt budget.
     pub fn with_attempt_budget(&self, attempt_budget: Duration) -> Self {
-        Self { deadline: self.deadline, attempt_budget }
+        Self {
+            deadline: self.deadline,
+            attempt_budget,
+        }
     }
 
-    pub fn remaining(&self) -> Duration { self.deadline.saturating_duration_since(tokio::time::Instant::now()) }
+    pub fn remaining(&self) -> Duration {
+        self.deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
 
-    pub fn next_attempt(&self) -> Duration { self.attempt_budget.min(self.remaining()) }
+    pub fn next_attempt(&self) -> Duration {
+        self.attempt_budget.min(self.remaining())
+    }
 }
 
 #[cfg(test)]
@@ -109,7 +138,10 @@ mod tests {
         tokio::time::advance(Duration::from_millis(25)).await;
         assert_eq!(deadline.next_attempt(), Duration::from_millis(20));
         // A larger attempt budget stretches the deadline past the total budget.
-        assert_eq!(RemoteCompactionDeadline::new(Duration::from_secs(1000)).remaining(), Duration::from_secs(1000));
+        assert_eq!(
+            RemoteCompactionDeadline::new(Duration::from_secs(1000)).remaining(),
+            Duration::from_secs(1000)
+        );
         // Then once the total budget is spent no attempt can run.
         tokio::time::advance(Duration::from_secs(900)).await;
         assert_eq!(deadline.next_attempt(), Duration::ZERO);
@@ -125,24 +157,51 @@ mod tests {
             let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
-                run_with_remote_timeout(&signal, Duration::from_secs(60), |signal| async move {
-                    started_tx.send(()).expect("start subscriber");
-                    signal.cancelled().await;
-                    cleanup_tx.send(()).expect("cleanup subscriber");
-                    release_rx.await.expect("release cleanup");
-                    if operation_error {Err("operation failed")} else {Ok(7)}
-                }, || panic!("source cancellation is not a timeout"), || "aborted").await
+                run_with_remote_timeout(
+                    &signal,
+                    Duration::from_secs(60),
+                    |signal| async move {
+                        started_tx.send(()).expect("start subscriber");
+                        signal.cancelled().await;
+                        cleanup_tx.send(()).expect("cleanup subscriber");
+                        release_rx.await.expect("release cleanup");
+                        if operation_error {
+                            Err("operation failed")
+                        } else {
+                            Ok(7)
+                        }
+                    },
+                    || panic!("source cancellation is not a timeout"),
+                    || "aborted",
+                )
+                .await
             });
             let bound = Duration::from_secs(5);
-            tokio::time::timeout(bound, started_rx).await.expect("start deadline").expect("started");
+            tokio::time::timeout(bound, started_rx)
+                .await
+                .expect("start deadline")
+                .expect("started");
             // When the caller cancels while cleanup is held open.
             source.abort(None);
-            tokio::time::timeout(bound, cleanup_rx).await.expect("cleanup deadline").expect("cleanup started");
+            tokio::time::timeout(bound, cleanup_rx)
+                .await
+                .expect("cleanup deadline")
+                .expect("cleanup started");
             // Then cancellation cannot settle until cleanup, retaining operation failures.
             assert!(!task.is_finished());
             release_tx.send(()).expect("release subscriber");
-            let outcome = tokio::time::timeout(bound, task).await.expect("settlement deadline").expect("task");
-            assert_eq!(outcome, Err(if operation_error {"operation failed"} else {"aborted"}));
+            let outcome = tokio::time::timeout(bound, task)
+                .await
+                .expect("settlement deadline")
+                .expect("task");
+            assert_eq!(
+                outcome,
+                Err(if operation_error {
+                    "operation failed"
+                } else {
+                    "aborted"
+                })
+            );
         }
     }
 
@@ -157,20 +216,38 @@ mod tests {
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         // When the deadline aborts the operation.
         let task = tokio::spawn(async move {
-            run_with_remote_timeout(&signal, Duration::ZERO, |signal| async move {
-                signal.cancelled().await;
-                cleanup_tx.send(()).expect("cleanup subscriber");
-                release_rx.await.expect("release cleanup");
-                Ok::<_, &str>(7)
-            }, || {notification.store(true, std::sync::atomic::Ordering::SeqCst);}, || "aborted").await
+            run_with_remote_timeout(
+                &signal,
+                Duration::ZERO,
+                |signal| async move {
+                    signal.cancelled().await;
+                    cleanup_tx.send(()).expect("cleanup subscriber");
+                    release_rx.await.expect("release cleanup");
+                    Ok::<_, &str>(7)
+                },
+                || {
+                    notification.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+                || "aborted",
+            )
+            .await
         });
         let bound = Duration::from_secs(5);
-        tokio::time::timeout(bound, cleanup_rx).await.expect("cleanup deadline").expect("cleanup started");
+        tokio::time::timeout(bound, cleanup_rx)
+            .await
+            .expect("cleanup deadline")
+            .expect("cleanup started");
         // Then neither timeout notification nor fallback happens before cleanup.
         assert!(!task.is_finished());
         assert!(!reported.load(std::sync::atomic::Ordering::SeqCst));
         release_tx.send(()).expect("release subscriber");
-        assert_eq!(tokio::time::timeout(bound, task).await.expect("settlement deadline").expect("task"), Ok(None));
+        assert_eq!(
+            tokio::time::timeout(bound, task)
+                .await
+                .expect("settlement deadline")
+                .expect("task"),
+            Ok(None)
+        );
         assert!(reported.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

@@ -11,8 +11,16 @@ fn quick_places_non_reasoning_deepseek_v4_flash_after_luna_and_haiku() {
     assert_eq!(
         quick[0..3].to_vec(),
         vec![
-            entry(&["openai", "chatgpt-subscription"], "gpt-6-luna-fast", Some("low")),
-            entry(&["anthropic", "anthropic-api", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6-luna-fast",
+                Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot"],
+                "claude-haiku-5-5",
+                Some("medium")
+            ),
             entry(&["deepseek"], "deepseek-flash", Some("off")),
         ]
     );
@@ -26,9 +34,21 @@ fn explore_and_librarian_place_max_reasoning_deepseek_v4_flash_after_luna_and_ha
         assert_eq!(
             chain[0..4].to_vec(),
             vec![
-                entry(&["kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
-                entry(&["openai", "chatgpt-subscription"], "gpt-6-luna-fast", Some("low")),
-                entry(&["anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+                entry(
+                    &["kimi-for-coding"],
+                    "kimi-for-coding-highspeed",
+                    Some("off")
+                ),
+                entry(
+                    &["openai", "chatgpt-subscription"],
+                    "gpt-6-luna-fast",
+                    Some("low")
+                ),
+                entry(
+                    &["anthropic", "github-copilot"],
+                    "claude-haiku-5-5",
+                    Some("medium")
+                ),
                 entry(&["deepseek"], "deepseek-flash", Some("max")),
             ],
             "{agent_name}"

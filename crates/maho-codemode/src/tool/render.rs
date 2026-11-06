@@ -578,7 +578,10 @@ impl maho_tui::tui::Component for EvalCard {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
         let spinner_frame = self.spinner_frame.or_else(|| {
-            self.ticker.live.get().then_some((now as u64 / LIVE_ELAPSED_TICK_MS) as usize)
+            self.ticker
+                .live
+                .get()
+                .then_some((now as u64 / LIVE_ELAPSED_TICK_MS) as usize)
         });
         let context = EvalRenderContext {
             expanded: self.expanded,

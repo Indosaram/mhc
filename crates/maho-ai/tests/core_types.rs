@@ -16,7 +16,10 @@ fn provider_native_content_allows_provider_native_blocks_in_assistant_message_co
         }),
     });
 
-    let message = AssistantMessage {  timing: None, failure_source: None, credential_served_recently: None,
+    let message = AssistantMessage {
+        timing: None,
+        failure_source: None,
+        credential_served_recently: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_breakpoint: None,
@@ -67,11 +70,16 @@ fn credential_served_recently_and_model_config_cause_round_trip_under_ts_keys() 
     assert_eq!(message.credential_served_recently, Some(true));
     assert_eq!(
         message.error_cause,
-        Some(maho_ai::types::AssistantErrorCause::ModelConfig { model: "faux/m".into() })
+        Some(maho_ai::types::AssistantErrorCause::ModelConfig {
+            model: "faux/m".into()
+        })
     );
     let value = serde_json::to_value(&message).expect("serialize");
     assert_eq!(value["credentialServedRecently"], json!(true));
-    assert_eq!(value["errorCause"], json!({ "type": "model_config", "model": "faux/m" }));
+    assert_eq!(
+        value["errorCause"],
+        json!({ "type": "model_config", "model": "faux/m" })
+    );
     message.credential_served_recently = None;
     let value = serde_json::to_value(&message).expect("serialize");
     assert!(value.get("credentialServedRecently").is_none());

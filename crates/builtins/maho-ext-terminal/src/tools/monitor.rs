@@ -340,7 +340,9 @@ pub async fn create_file_monitor(
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty()),
     ) else {
-        return error_result("monitor requires description and command or path to start a watcher.");
+        return error_result(
+            "monitor requires description and command or path to start a watcher.",
+        );
     };
     if input.get("wakes_per_hour").is_some() {
         return error_result(
@@ -356,9 +358,8 @@ pub async fn create_file_monitor(
         );
     }
     let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
-    let requested = super::monitor_schema::resolve_timeout_ms(
-        input.get("timeout_ms").and_then(Value::as_f64),
-    );
+    let requested =
+        super::monitor_schema::resolve_timeout_ms(input.get("timeout_ms").and_then(Value::as_f64));
     // A persistent watch has no deadline; its registration is bounded by the default timeout.
     let registration_timeout = if persistent {
         DEFAULT_MONITOR_TIMEOUT_MS
@@ -382,7 +383,9 @@ pub async fn create_file_monitor(
     {
         Ok(Some(reservation)) => reservation,
         Ok(None) => {
-            return error_result("Cannot create file monitor: terminal capacity is already in use.");
+            return error_result(
+                "Cannot create file monitor: terminal capacity is already in use.",
+            );
         }
         Err(error) => return error_result(error.to_string()),
     };
@@ -1116,7 +1119,10 @@ pub(crate) mod tests {
             details["bash_id"].as_str().unwrap().to_owned(),
             details["monitor_id"].as_str().unwrap().to_owned(),
         );
-        assert_eq!(manager.lock().unwrap().resolve_id(&monitor_id), Some(id.clone()));
+        assert_eq!(
+            manager.lock().unwrap().resolve_id(&monitor_id),
+            Some(id.clone())
+        );
         assert_eq!(manager.lock().unwrap().active_size().unwrap(), 1);
         let snapshot = registry.lock().unwrap().snapshot();
         assert_eq!(snapshot[0].persistent, Some(true));

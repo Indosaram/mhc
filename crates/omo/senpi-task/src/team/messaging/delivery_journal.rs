@@ -47,7 +47,10 @@ impl LeadDeliveryJournal {
         let Some(list) = entries.get_mut(team_run_id) else {
             return;
         };
-        if let Some(index) = list.iter().position(|candidate| candidate.message_id == message_id) {
+        if let Some(index) = list
+            .iter()
+            .position(|candidate| candidate.message_id == message_id)
+        {
             list.remove(index);
         }
     }

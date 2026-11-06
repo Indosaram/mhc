@@ -206,10 +206,7 @@ impl<'a, T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> Compac
         Ok(Sub::Draft(self.join(left, min, rest).await?))
     }
 
-    fn take_min(
-        &self,
-        sub: Sub<T>,
-    ) -> BoxFuture<'_, TakeMinResult<T>> {
+    fn take_min(&self, sub: Sub<T>) -> BoxFuture<'_, TakeMinResult<T>> {
         Box::pin(async move {
             let mut node = self.open(sub).await?;
             if matches!(node.left, Sub::Empty) {

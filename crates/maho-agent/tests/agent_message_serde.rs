@@ -13,14 +13,27 @@ fn custom_agent_messages_serialize_as_their_role_shaped_object() {
         timestamp: 7,
     }));
     let value = serde_json::to_value(&message).expect("serializes");
-    assert_eq!(value, json!({"role":"custom","customType":"note","content":"hi","display":false,"timestamp":7}));
-    assert_eq!(serde_json::from_value::<AgentMessage>(value).expect("round-trips"), message);
+    assert_eq!(
+        value,
+        json!({"role":"custom","customType":"note","content":"hi","display":false,"timestamp":7})
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentMessage>(value).expect("round-trips"),
+        message
+    );
 }
 
 #[test]
 fn summary_messages_deserialize_by_role() {
-    let compaction = json!({"role":"compactionSummary","summary":"s","tokensBefore":3,"timestamp":1});
-    assert!(matches!(serde_json::from_value::<AgentMessage>(compaction).expect("compaction"), AgentMessage::Custom(CustomAgentMessage::CompactionSummary(_))));
+    let compaction =
+        json!({"role":"compactionSummary","summary":"s","tokensBefore":3,"timestamp":1});
+    assert!(matches!(
+        serde_json::from_value::<AgentMessage>(compaction).expect("compaction"),
+        AgentMessage::Custom(CustomAgentMessage::CompactionSummary(_))
+    ));
     let branch = json!({"role":"branchSummary","summary":"s","fromId":null,"timestamp":1});
-    assert!(matches!(serde_json::from_value::<AgentMessage>(branch).expect("branch"), AgentMessage::Custom(CustomAgentMessage::BranchSummary(_))));
+    assert!(matches!(
+        serde_json::from_value::<AgentMessage>(branch).expect("branch"),
+        AgentMessage::Custom(CustomAgentMessage::BranchSummary(_))
+    ));
 }

@@ -9,6 +9,9 @@ pub struct IdleWarmupRetryDecision {
     pub still_warm_eligible: bool,
 }
 pub fn should_retry_idle_warmup(decision: &IdleWarmupRetryDecision) -> bool {
-    decision.transient && decision.is_idle && !decision.breaker_tripped
-        && decision.still_warm_eligible && decision.attempt < MAX_IDLE_WARMUP_RETRIES
+    decision.transient
+        && decision.is_idle
+        && !decision.breaker_tripped
+        && decision.still_warm_eligible
+        && decision.attempt < MAX_IDLE_WARMUP_RETRIES
 }

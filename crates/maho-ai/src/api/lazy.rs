@@ -71,15 +71,18 @@ pub fn lazy_stream_typed(
     + 'static,
 ) -> LazyStream {
     let outer = create_assistant_message_event_stream();
-    let (source_tx, source_rx) = tokio::sync::oneshot::channel::<Option<AssistantMessageEventStream>>();
+    let (source_tx, source_rx) =
+        tokio::sync::oneshot::channel::<Option<AssistantMessageEventStream>>();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-    outer.set_cancellation_handler(Box::new(move || Box::pin(async move {
-        let _ = cancel_tx.send(());
-        match source_rx.await {
-            Ok(Some(source)) => source.cancel().await,
-            Ok(None) | Err(_) => Ok(()),
-        }
-    })));
+    outer.set_cancellation_handler(Box::new(move || {
+        Box::pin(async move {
+            let _ = cancel_tx.send(());
+            match source_rx.await {
+                Ok(Some(source)) => source.cancel().await,
+                Ok(None) | Err(_) => Ok(()),
+            }
+        })
+    }));
     let forwarding = outer.clone();
     let error_model = model.clone();
     let task = tokio::spawn(async move {
@@ -101,9 +104,10 @@ pub fn lazy_stream_typed(
                 // Progress crosses as it is read, so the forwarder loop runs exactly the turns it
                 // runs for events alone; each event keeps the capture its source recorded.
                 let progress_sink = forwarding.clone();
-                let mut events = crate::utils::assistant_capture::assistant_events(&source, move |progress| {
-                    progress_sink.push_frozen_progress(progress)
-                });
+                let mut events =
+                    crate::utils::assistant_capture::assistant_events(&source, move |progress| {
+                        progress_sink.push_frozen_progress(progress)
+                    });
                 loop {
                     let next = tokio::select! {
                         biased;
@@ -121,11 +125,18 @@ pub fn lazy_stream_typed(
                     };
                     match next {
                         Ok(Some(event)) => {
-                            partial = Some(crate::utils::event_stream::extract_message(&event.value));
-                            forwarding.push_captured(event, crate::utils::assistant_capture::CaptureHint::default());
+                            partial =
+                                Some(crate::utils::event_stream::extract_message(&event.value));
+                            forwarding.push_captured(
+                                event,
+                                crate::utils::assistant_capture::CaptureHint::default(),
+                            );
                         }
                         Ok(None) => break,
-                        Err(error) => { forwarding.fail(error); return; }
+                        Err(error) => {
+                            forwarding.fail(error);
+                            return;
+                        }
                     }
                 }
                 match source.result_if_ready() {
@@ -325,8 +336,14 @@ mod tests {
             entered_tx.send(()).expect("setup subscriber");
             std::future::pending::<Result<AssistantMessageEventStream, String>>().await
         });
-        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.expect("setup deadline").expect("setup");
-        tokio::time::timeout(Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .expect("setup deadline")
+            .expect("setup");
+        tokio::time::timeout(Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(Arc::strong_count(&resource), 1);
         assert_eq!(stream.next().await, Ok(None));
     }
@@ -337,9 +354,17 @@ mod tests {
         let source = inner.clone();
         let stream = lazy_stream(&model(), async move { Ok(source) });
         let partial = message(StopReason::Pending);
-        inner.push(crate::types::AssistantMessageEvent::Start { partial: partial.clone() });
-        tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("event deadline").expect("event");
-        tokio::time::timeout(Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        inner.push(crate::types::AssistantMessageEvent::Start {
+            partial: partial.clone(),
+        });
+        tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("event deadline")
+            .expect("event");
+        tokio::time::timeout(Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(stream.result_if_ready(), Some(Ok(partial)));
         assert_eq!(inner.next().await, Ok(None));
     }
@@ -349,24 +374,35 @@ mod tests {
         let inner = create_assistant_message_event_stream();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        inner.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("close subscriber");
-            release_rx.await.expect("release");
-            Ok(())
-        })));
+        inner.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("close subscriber");
+                release_rx.await.expect("release");
+                Ok(())
+            })
+        }));
         let final_message = message(StopReason::Stop);
         inner.push(crate::types::AssistantMessageEvent::Done {
             reason: DoneReason::Stop,
             message: final_message.clone(),
         });
         let stream = lazy_stream(&model(), async move { Ok(inner) });
-        tokio::time::timeout(Duration::from_secs(5), stream.result()).await.expect("result deadline").expect("result");
+        tokio::time::timeout(Duration::from_secs(5), stream.result())
+            .await
+            .expect("result deadline")
+            .expect("result");
         let mut cancellation = Box::pin(stream.cancel());
         assert!(futures::poll!(cancellation.as_mut()).is_pending());
-        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.expect("close deadline").expect("close");
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .expect("close deadline")
+            .expect("close");
         assert!(futures::poll!(cancellation.as_mut()).is_pending());
         release_tx.send(()).expect("release subscriber");
-        tokio::time::timeout(Duration::from_secs(5), cancellation).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(Duration::from_secs(5), cancellation)
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(stream.result_if_ready(), Some(Ok(final_message)));
     }
 

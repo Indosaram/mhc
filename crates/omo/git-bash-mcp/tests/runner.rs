@@ -53,7 +53,10 @@ fn run_invokes_bash_with_lc_and_captures_output() {
         command: "printf ok".to_owned(),
         cwd: Some(directory.path().to_string_lossy().into_owned()),
         timeout_ms: 5_000,
-        env: Some(inherited_env(&[("FAKE_BASH_ARGV_PATH", argv_text.as_str())])),
+        env: Some(inherited_env(&[(
+            "FAKE_BASH_ARGV_PATH",
+            argv_text.as_str(),
+        )])),
     };
 
     let result = run_git_bash_command(&input).expect("run");

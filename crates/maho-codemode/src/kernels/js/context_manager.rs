@@ -41,11 +41,7 @@ enum Command {
     Reply(Value),
     Pull(oneshot::Sender<oneshot::Receiver<Value>>),
     MemoryQuery(String, oneshot::Sender<Result<Value, String>>),
-    Interrupt(
-        String,
-        Option<String>,
-        InterruptResponse,
-    ),
+    Interrupt(String, Option<String>, InterruptResponse),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }

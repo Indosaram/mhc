@@ -11,7 +11,8 @@ use crate::error::{CoreResult, DesktopError, TccPermission};
 use crate::frame::FrameGeometry;
 use crate::keys::KeyName;
 use crate::types::{
-    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow, Target,
+    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow,
+    Target,
 };
 use crate::user_input::UserPresses;
 
@@ -47,7 +48,9 @@ impl MouseButton {
             Some(value) if value.eq_ignore_ascii_case("left") => Ok(Self::Left),
             Some(value) if value.eq_ignore_ascii_case("right") => Ok(Self::Right),
             Some(value) if value.eq_ignore_ascii_case("middle") => Ok(Self::Middle),
-            Some(value) => Err(DesktopError::input_failed(format!("unknown button '{value}'"))),
+            Some(value) => Err(DesktopError::input_failed(format!(
+                "unknown button '{value}'"
+            ))),
         }
     }
 }
@@ -94,7 +97,11 @@ pub trait Backend: Send {
     fn capabilities(&mut self) -> DesktopCapabilities;
     fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>>;
     fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>>;
-    fn capture(&mut self, target: &Target, caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)>;
+    fn capture(
+        &mut self,
+        target: &Target,
+        caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)>;
     fn pointer(
         &mut self,
         target: &Target,
@@ -106,12 +113,16 @@ pub trait Backend: Send {
     /// The system clipboard's text. Backends without clipboard access keep
     /// this default and refuse instead of pretending.
     fn clipboard_read(&mut self) -> CoreResult<String> {
-        Err(DesktopError::internal("this desktop backend has no clipboard access"))
+        Err(DesktopError::internal(
+            "this desktop backend has no clipboard access",
+        ))
     }
 
     /// Replaces the system clipboard's text.
     fn clipboard_write(&mut self, _text: &str) -> CoreResult<()> {
-        Err(DesktopError::internal("this desktop backend has no clipboard access"))
+        Err(DesktopError::internal(
+            "this desktop backend has no clipboard access",
+        ))
     }
     /// Backends with incremental text delivery check between Unicode scalars
     /// and report each fully delivered scalar. The default preserves the
@@ -131,7 +142,12 @@ pub trait Backend: Send {
         }
         Ok(())
     }
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()>;
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()>;
     fn raise_window(&mut self, id: &str) -> CoreResult<()>;
     fn ax(&mut self) -> Option<&mut dyn AxBackend>;
 
@@ -217,7 +233,10 @@ mod tests {
     #[test]
     fn delivery_only_escalates_explicit_foreground() {
         assert_eq!(DeliveryMode::parse(None), DeliveryMode::Background);
-        assert_eq!(DeliveryMode::parse(Some("garbage")), DeliveryMode::Background);
+        assert_eq!(
+            DeliveryMode::parse(Some("garbage")),
+            DeliveryMode::Background
+        );
         assert_eq!(
             DeliveryMode::parse(Some(" FoReGrOuNd ")),
             DeliveryMode::Foreground

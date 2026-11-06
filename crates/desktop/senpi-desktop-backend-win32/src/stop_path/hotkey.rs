@@ -6,11 +6,11 @@
 use std::time::{Duration, Instant};
 
 use senpi_desktop_safety::HEARTBEAT_INTERVAL_MS;
-use windows_sys::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, GetLastError, WAIT_FAILED};
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_HOTKEY_ALREADY_REGISTERED, WAIT_FAILED};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MSG, MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW,
+    MsgWaitForMultipleObjects, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, PM_REMOVE,
     QS_ALLINPUT, WM_APP, WM_HOTKEY,
 };
 

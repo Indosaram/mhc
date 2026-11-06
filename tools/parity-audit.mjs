@@ -166,6 +166,38 @@ export function countTsTests(text) {
 	return matches ? matches.length : 0;
 }
 
+// ---------- rust source size ----------
+
+const MAX_NON_TEST_LINES = 8000;
+
+/** Source lines before the first top-level `#[cfg(test)]` line. */
+function nonTestLineCount(text) {
+	if (text === "") return 0;
+	const lines = text.split("\n");
+	const firstTest = lines.findIndex((line) => line.startsWith("#[cfg(test)]"));
+	if (firstTest !== -1) return firstTest;
+	return text.endsWith("\n") ? lines.length - 1 : lines.length;
+}
+
+/** Non-test Rust files under crates/ over MAX_NON_TEST_LINES, as repo-relative paths. */
+function largeSourceFiles(repo) {
+	const found = [];
+	const walk = (dir) => {
+		for (const name of readdirSync(dir).sort()) {
+		const abs = join(dir, name);
+			if (statSync(abs).isDirectory()) {
+				if (name !== "tests") walk(abs);
+			} else if (name.endsWith(".rs") && !name.endsWith("_tests.rs") && statSync(abs).size > MAX_NON_TEST_LINES) {
+				const count = nonTestLineCount(readFileSync(abs, "utf8"));
+				if (count > MAX_NON_TEST_LINES) found.push({ path: relative(repo, abs), count });
+			}
+		}
+	};
+	const crates = join(repo, "crates");
+	if (existsSync(crates)) walk(crates);
+	return found;
+}
+
 // ---------- ledger ----------
 
 const STATUS = new Set(["done", "todo", "n/a", "partial"]);
@@ -496,6 +528,15 @@ function selfTest() {
 		} finally {
 			if (saved !== undefined) process.env.PARITY_REPO = saved;
 		}
+
+		// Large-file warnings: non-test lines only, and test files are never reported.
+		const filler = "// filler\n".repeat(MAX_NON_TEST_LINES + 1);
+		put(join(repo, "crates/maho-ai/src/large.rs"), `${filler}#[cfg(test)]\nmod tests {}\n`);
+		put(join(repo, "crates/maho-ai/src/large_tests.rs"), filler);
+		put(join(repo, "crates/maho-ai/src/tests/large.rs"), filler);
+		check("line count stops at top-level cfg(test)", nonTestLineCount(readFileSync(join(repo, "crates/maho-ai/src/large.rs"), "utf8")) === MAX_NON_TEST_LINES + 1);
+		const large = largeSourceFiles(repo);
+		check("large non-test file is reported", large.length === 1 && large[0].path.endsWith("src/large.rs") && large[0].count === MAX_NON_TEST_LINES + 1);
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
 	}
@@ -541,5 +582,7 @@ if (import.meta.main) {
 		const scopedOthers = all || only ? [] : scopedOwnerLists(owners, c);
 		ok = report(c, only, auditCrate({ repo, senpi, crate: c, only, scopedOthers })) && ok;
 	}
+	// A warning only: oversized non-test sources never change the exit status.
+	for (const file of largeSourceFiles(repo)) console.log(`WARN ${file.path}: ${file.count} non-test lines (limit ${MAX_NON_TEST_LINES})`);
 	process.exit(ok ? 0 : 1);
 }

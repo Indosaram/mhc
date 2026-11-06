@@ -28,7 +28,11 @@ pub fn sweep_stranded_run_temporaries(
     };
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -112,7 +116,10 @@ mod tests {
         let owned = write(root.path(), &format!("ledger.json.tmp-4242-{UUID}"));
         let legacy = write(root.path(), &format!("pending.json.tmp-{UUID}"));
         let durable = write(root.path(), "ledger.json");
-        let uppercase = write(root.path(), "ledger.json.tmp-0F1E2D3C-4B5A-6978-8A9B-0C1D2E3F4A5B");
+        let uppercase = write(
+            root.path(),
+            "ledger.json.tmp-0F1E2D3C-4B5A-6978-8A9B-0C1D2E3F4A5B",
+        );
         let plus_pid = write(root.path(), &format!("ledger.json.tmp-+42-{UUID}"));
         let liveness = |_: u32| ProcessLiveness::Dead;
 
@@ -131,7 +138,11 @@ mod tests {
         let live = write(root.path(), &format!("ledger.json.tmp-4242-{UUID}"));
         let unknown = write(root.path(), &format!("ledger.json.tmp-4243-{UUID}"));
         let liveness = |pid: u32| {
-            if pid == 4242 { ProcessLiveness::Alive } else { ProcessLiveness::Unknown }
+            if pid == 4242 {
+                ProcessLiveness::Alive
+            } else {
+                ProcessLiveness::Unknown
+            }
         };
 
         sweep_stranded_run_temporaries(root.path(), 4_000_000_000_000.0, &liveness).expect("sweep");
@@ -154,10 +165,25 @@ mod tests {
 
     #[test]
     fn the_predicate_rejects_uppercase_and_non_uuid_shapes() {
-        assert_eq!(stranded_temp_owner("a.json.tmp-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"), Some(None));
-        assert_eq!(stranded_temp_owner("a.json.tmp-4242-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"), Some(Some(4242)));
-        assert_eq!(stranded_temp_owner("a.json.tmp-0F1E2D3C-4B5A-6978-8A9B-0C1D2E3F4A5B"), None);
-        assert_eq!(stranded_temp_owner("a.json.tmp-+42-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"), None);
-        assert_eq!(stranded_temp_owner("a.json.tmp-0f1e2d3c4b5a69788a9b0c1d2e3f4a5b"), None);
+        assert_eq!(
+            stranded_temp_owner("a.json.tmp-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"),
+            Some(None)
+        );
+        assert_eq!(
+            stranded_temp_owner("a.json.tmp-4242-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"),
+            Some(Some(4242))
+        );
+        assert_eq!(
+            stranded_temp_owner("a.json.tmp-0F1E2D3C-4B5A-6978-8A9B-0C1D2E3F4A5B"),
+            None
+        );
+        assert_eq!(
+            stranded_temp_owner("a.json.tmp-+42-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"),
+            None
+        );
+        assert_eq!(
+            stranded_temp_owner("a.json.tmp-0f1e2d3c4b5a69788a9b0c1d2e3f4a5b"),
+            None
+        );
     }
 }

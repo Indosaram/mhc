@@ -52,7 +52,9 @@ impl ClaudeLocations {
     }
 
     pub fn plugin_database_path(&self) -> PathBuf {
-        self.claude_dir.join("plugins").join("installed_plugins.json")
+        self.claude_dir
+            .join("plugins")
+            .join("installed_plugins.json")
     }
 }
 
@@ -123,7 +125,11 @@ fn read_json_file(path: &Path) -> JsonFile {
 /// first does not exist. `Ok(None)` when neither exists.
 fn read_manifest(install_dir: &Path) -> Result<Option<Value>, String> {
     let primary = install_dir.join(PRIMARY_MANIFEST);
-    let path = if primary.exists() { primary } else { install_dir.join(FALLBACK_MANIFEST) };
+    let path = if primary.exists() {
+        primary
+    } else {
+        install_dir.join(FALLBACK_MANIFEST)
+    };
     match read_json_file(&path) {
         JsonFile::Missing => Ok(None),
         JsonFile::Parsed(value) => Ok(Some(value)),
@@ -132,7 +138,10 @@ fn read_manifest(install_dir: &Path) -> Result<Option<Value>, String> {
 }
 
 fn non_blank_text(value: Option<&Value>) -> Option<&str> {
-    value.and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
 }
 
 /// Plugin name derived from a database key, used when the manifest carries no name.
@@ -140,14 +149,20 @@ pub fn derive_plugin_name(key: &str) -> String {
     let key = key.strip_prefix("npm:").unwrap_or(key);
     let scoped = key.starts_with('@') && key.contains('/');
     let bare = match key.rfind('@') {
-        Some(at) if at > 0 && (!scoped || key.find('/').is_some_and(|slash| at > slash)) => &key[..at],
+        Some(at) if at > 0 && (!scoped || key.find('/').is_some_and(|slash| at > slash)) => {
+            &key[..at]
+        }
         _ => key,
     };
     if scoped {
         return bare.to_owned();
     }
     if bare.contains(['/', '\\']) {
-        return bare.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or(bare).to_owned();
+        return bare
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+            .unwrap_or(bare)
+            .to_owned();
     }
     bare.to_owned()
 }
@@ -172,7 +187,11 @@ fn read_database(value: &Value) -> Vec<DatabaseEntry> {
             plugins
                 .iter()
                 .filter_map(|(key, value)| {
-                    let entry = if single_entry { value } else { value.as_array()?.first()? };
+                    let entry = if single_entry {
+                        value
+                    } else {
+                        value.as_array()?.first()?
+                    };
                     database_entry(key.clone(), entry)
                 })
                 .collect()
@@ -211,7 +230,10 @@ fn database_entry(key: String, value: &Value) -> Option<DatabaseEntry> {
 
 fn enabled_plugins(settings_path: &Path) -> Option<Map<String, Value>> {
     match read_json_file(settings_path) {
-        JsonFile::Parsed(value) => value.get("enabledPlugins").and_then(Value::as_object).cloned(),
+        JsonFile::Parsed(value) => value
+            .get("enabledPlugins")
+            .and_then(Value::as_object)
+            .cloned(),
         JsonFile::Missing | JsonFile::Broken(_) => None,
     }
 }
@@ -254,7 +276,10 @@ fn leading_version(name: &str) -> Option<(u64, u64, u64, bool)> {
         if index > 0 {
             rest = rest.strip_prefix('.')?;
         }
-        let digits = rest.len() - rest.trim_start_matches(|ch: char| ch.is_ascii_digit()).len();
+        let digits = rest.len()
+            - rest
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .len();
         if digits == 0 {
             return None;
         }
@@ -274,19 +299,27 @@ struct CandidateRank {
 }
 
 fn replacement_install_dir(configured: &Path, expected_name: &str) -> Option<PathBuf> {
-    let parent = configured.parent().filter(|parent| !parent.as_os_str().is_empty())?;
+    let parent = configured
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())?;
     let mut best: Option<(CandidateRank, PathBuf)> = None;
     for child in std::fs::read_dir(parent).ok()?.flatten() {
         let path = child.path();
         if !path.is_dir() {
             continue;
         }
-        let Ok(Some(manifest)) = read_manifest(&path) else { continue };
+        let Ok(Some(manifest)) = read_manifest(&path) else {
+            continue;
+        };
         if manifest.get("name").and_then(Value::as_str) != Some(expected_name) {
             continue;
         }
         let name = child.file_name().to_string_lossy().into_owned();
-        let rank = CandidateRank { version: leading_version(&name), not_unknown: name != "unknown", name: std::cmp::Reverse(name) };
+        let rank = CandidateRank {
+            version: leading_version(&name),
+            not_unknown: name != "unknown",
+            name: std::cmp::Reverse(name),
+        };
         if best.as_ref().is_none_or(|(current, _)| rank > *current) {
             best = Some((rank, path));
         }
@@ -301,14 +334,21 @@ pub fn discover_plugins(locations: &ClaudeLocations, cwd: &Path) -> PluginDiscov
     let entries = match read_json_file(&database_path) {
         JsonFile::Missing => return discovery,
         JsonFile::Broken(reason) => {
-            discovery.log.push(format!("Claude Code plugin database {} ignored: {reason}", database_path.display()));
+            discovery.log.push(format!(
+                "Claude Code plugin database {} ignored: {reason}",
+                database_path.display()
+            ));
             return discovery;
         }
         JsonFile::Parsed(value) => read_database(&value),
     };
     let enabled = enabled_plugins(&locations.user_settings_path());
     for entry in entries {
-        let is_enabled = enabled.as_ref().and_then(|map| map.get(&entry.key)).and_then(Value::as_bool).unwrap_or(true);
+        let is_enabled = enabled
+            .as_ref()
+            .and_then(|map| map.get(&entry.key))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         if !is_enabled || !scope_applies(&entry, cwd, &locations.home) {
             continue;
         }
@@ -322,7 +362,8 @@ pub fn discover_plugins(locations: &ClaudeLocations, cwd: &Path) -> PluginDiscov
             discovery.problems.push(PluginProblem {
                 key: entry.key,
                 install_path: entry.install_path,
-                reason: "the install directory is missing and no installed version replaces it".to_owned(),
+                reason: "the install directory is missing and no installed version replaces it"
+                    .to_owned(),
             });
             continue;
         };
@@ -330,11 +371,16 @@ pub fn discover_plugins(locations: &ClaudeLocations, cwd: &Path) -> PluginDiscov
         let manifest = match read_manifest(&install_dir) {
             Ok(manifest) => manifest,
             Err(reason) => {
-                discovery.log.push(format!("Claude Code plugin {} manifest ignored: {reason}", entry.key));
+                discovery.log.push(format!(
+                    "Claude Code plugin {} manifest ignored: {reason}",
+                    entry.key
+                ));
                 None
             }
         };
-        let manifest_field = |field: &str| non_blank_text(manifest.as_ref().and_then(|manifest| manifest.get(field)));
+        let manifest_field = |field: &str| {
+            non_blank_text(manifest.as_ref().and_then(|manifest| manifest.get(field)))
+        };
         let name = manifest_field("name").map_or(derived_name, str::to_owned);
         let database_version = entry.version.as_deref().map(str::trim).unwrap_or("");
         let version = if !database_version.is_empty() && database_version != "unknown" {
@@ -366,8 +412,12 @@ pub fn substitute_plugin_root(value: &mut Value, root: &str) {
         Value::String(text) if text.contains(PLUGIN_ROOT_PLACEHOLDER) => {
             *text = text.replace(PLUGIN_ROOT_PLACEHOLDER, root);
         }
-        Value::Array(items) => items.iter_mut().for_each(|item| substitute_plugin_root(item, root)),
-        Value::Object(map) => map.values_mut().for_each(|item| substitute_plugin_root(item, root)),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| substitute_plugin_root(item, root)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|item| substitute_plugin_root(item, root)),
         _ => {}
     }
 }
@@ -377,13 +427,22 @@ fn next_display_order(parsed: &ParsedHookConfig) -> usize {
         .executable_handlers
         .iter()
         .map(|handler| &handler.source)
-        .chain(parsed.diagnostics.iter().map(|diagnostic| &diagnostic.source))
+        .chain(
+            parsed
+                .diagnostics
+                .iter()
+                .map(|diagnostic| &diagnostic.source),
+        )
         .map(|source| source.display_order + 1)
         .max()
         .unwrap_or(0)
 }
 
-fn pre_session_source(scope: HookSourceScope, path: &Path, display_order: usize) -> HookSourceMetadata {
+fn pre_session_source(
+    scope: HookSourceScope,
+    path: &Path,
+    display_order: usize,
+) -> HookSourceMetadata {
     HookSourceMetadata {
         scope,
         source_path: path.to_string_lossy().into_owned(),
@@ -396,18 +455,36 @@ fn pre_session_source(scope: HookSourceScope, path: &Path, display_order: usize)
 }
 
 fn data_dir_name(key: &str) -> String {
-    key.chars().map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') { ch } else { '-' }).collect()
+    key.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// Append Claude Code settings hooks (user, project, project local) and, with the
 /// `claude-plugins` feature, installed-plugin hooks after the sources already in `parsed`.
-pub fn append_claude_hooks(options: &HookConfigLoaderOptions, locations: &ClaudeLocations, parsed: &mut ParsedHookConfig) {
+pub fn append_claude_hooks(
+    options: &HookConfigLoaderOptions,
+    locations: &ClaudeLocations,
+    parsed: &mut ParsedHookConfig,
+) {
     let mut order = next_display_order(parsed);
     let cwd = Path::new(&options.cwd);
     let settings = [
         (locations.user_settings_path(), HookSourceScope::Global),
-        (cwd.join(".claude").join("settings.json"), HookSourceScope::Project),
-        (cwd.join(".claude").join("settings.local.json"), HookSourceScope::Project),
+        (
+            cwd.join(".claude").join("settings.json"),
+            HookSourceScope::Project,
+        ),
+        (
+            cwd.join(".claude").join("settings.local.json"),
+            HookSourceScope::Project,
+        ),
     ];
     for (path, scope) in settings {
         let config = match read_json_file(&path) {
@@ -417,7 +494,10 @@ pub fn append_claude_hooks(options: &HookConfigLoaderOptions, locations: &Claude
                 parsed.diagnostics.push(diagnostic(
                     DiagnosticDraft {
                         code: "invalid_root",
-                        message: format!("Claude Code settings file {} was skipped: {reason}", path.display()),
+                        message: format!(
+                            "Claude Code settings file {} was skipped: {reason}",
+                            path.display()
+                        ),
                         path: "$".to_owned(),
                         event: None,
                         severity: None,
@@ -433,7 +513,9 @@ pub fn append_claude_hooks(options: &HookConfigLoaderOptions, locations: &Claude
         }
         let loaded = parse_hook_config(&config, &pre_session_source(scope, &path, order));
         order += 1;
-        parsed.executable_handlers.extend(loaded.executable_handlers);
+        parsed
+            .executable_handlers
+            .extend(loaded.executable_handlers);
         parsed.diagnostics.extend(loaded.diagnostics);
     }
     if cfg!(feature = "claude-plugins") {
@@ -441,7 +523,13 @@ pub fn append_claude_hooks(options: &HookConfigLoaderOptions, locations: &Claude
     }
 }
 
-fn append_plugin_hooks(options: &HookConfigLoaderOptions, locations: &ClaudeLocations, cwd: &Path, mut order: usize, parsed: &mut ParsedHookConfig) {
+fn append_plugin_hooks(
+    options: &HookConfigLoaderOptions,
+    locations: &ClaudeLocations,
+    cwd: &Path,
+    mut order: usize,
+    parsed: &mut ParsedHookConfig,
+) {
     let discovery = discover_plugins(locations, cwd);
     let database_path = locations.plugin_database_path();
     for problem in &discovery.problems {
@@ -451,7 +539,10 @@ fn append_plugin_hooks(options: &HookConfigLoaderOptions, locations: &ClaudeLoca
         parsed.diagnostics.push(diagnostic(
             DiagnosticDraft {
                 code: "invalid_plugin",
-                message: format!("Claude Code plugin {} was skipped: {} (installPath {}).", problem.key, problem.reason, problem.install_path),
+                message: format!(
+                    "Claude Code plugin {} was skipped: {} (installPath {}).",
+                    problem.key, problem.reason, problem.install_path
+                ),
                 path: format!("plugins.{}", problem.key),
                 event: None,
                 severity: None,
@@ -467,7 +558,9 @@ fn append_plugin_hooks(options: &HookConfigLoaderOptions, locations: &ClaudeLoca
         .map(|path| absolute_normalized(Path::new(path)))
         .collect::<Vec<_>>();
     for plugin in discovery.plugins {
-        let Some(hooks_path) = &plugin.hooks_path else { continue };
+        let Some(hooks_path) = &plugin.hooks_path else {
+            continue;
+        };
         if explicit.contains(&absolute_normalized(hooks_path)) {
             continue;
         }
@@ -475,27 +568,46 @@ fn append_plugin_hooks(options: &HookConfigLoaderOptions, locations: &ClaudeLoca
             JsonFile::Parsed(config) => config,
             JsonFile::Missing => continue,
             JsonFile::Broken(reason) => {
-                log.push(format!("Claude Code plugin {} hooks ignored: {}: {reason}", plugin.key, hooks_path.display()));
+                log.push(format!(
+                    "Claude Code plugin {} hooks ignored: {}: {reason}",
+                    plugin.key,
+                    hooks_path.display()
+                ));
                 continue;
             }
         };
         let root = plugin.install_path.to_string_lossy().into_owned();
         substitute_plugin_root(&mut config, &root);
-        let data_dir = locations.claude_dir.join("plugins").join("data").join(data_dir_name(&plugin.key));
+        let data_dir = locations
+            .claude_dir
+            .join("plugins")
+            .join("data")
+            .join(data_dir_name(&plugin.key));
         let plugin_env = match build_plugin_env(&plugin.install_path, Some(&data_dir)) {
             Ok(env) => Some(env),
             Err(error) => {
-                log.push(format!("Claude Code plugin {} environment unavailable: {error}", plugin.key));
+                log.push(format!(
+                    "Claude Code plugin {} environment unavailable: {error}",
+                    plugin.key
+                ));
                 None
             }
         };
         let mut source = pre_session_source(HookSourceScope::Plugin, hooks_path, order);
         source.plugin_root = Some(root);
-        source.manifest_path = Some(plugin.install_path.join(PRIMARY_MANIFEST).to_string_lossy().into_owned());
+        source.manifest_path = Some(
+            plugin
+                .install_path
+                .join(PRIMARY_MANIFEST)
+                .to_string_lossy()
+                .into_owned(),
+        );
         source.plugin_env = plugin_env;
         order += 1;
         let loaded = parse_hook_config(&config, &source);
-        parsed.executable_handlers.extend(loaded.executable_handlers);
+        parsed
+            .executable_handlers
+            .extend(loaded.executable_handlers);
         parsed.diagnostics.extend(loaded.diagnostics);
     }
     for line in log {

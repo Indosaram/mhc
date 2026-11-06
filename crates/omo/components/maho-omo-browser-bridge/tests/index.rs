@@ -1,17 +1,16 @@
-use std::sync::{Arc, Mutex};
 use maho_ext_api::{
     EventBus, EventKind, Extension, ExtensionApi, ExtensionContext, ExtensionEvent,
-    ExtensionFailure, ExtensionMode, ExtensionRuntime, ExtensionSessionProfile,
-    ExtensionUi, ExtensionUiDialogOptions, InputEvent, InputSource, JsonValue,
-    LoadedExtension, Model, ModelRegistry, NotificationType, SessionEntry,
-    SessionManager, SourceInfo, Theme, ToolExecutionMode, ToolExposure, ToolSessionManager,
-    UiFuture,
+    ExtensionFailure, ExtensionMode, ExtensionRuntime, ExtensionSessionProfile, ExtensionUi,
+    ExtensionUiDialogOptions, InputEvent, InputSource, JsonValue, LoadedExtension, Model,
+    ModelRegistry, NotificationType, SessionEntry, SessionManager, SourceInfo, Theme,
+    ToolExecutionMode, ToolExposure, ToolSessionManager, UiFuture,
 };
 use maho_omo_browser_bridge::{
     BROWSER_BRIDGE_TOOL_NAME, BROWSER_STATE_EVENT, BROWSER_STOP_RPC,
     create_browser_bridge_component,
 };
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 struct TestSession(String);
 impl ToolSessionManager for TestSession {
@@ -51,7 +50,10 @@ impl ModelRegistry for TestModels {
     fn has_configured_auth(&self, _: &Model) -> bool {
         false
     }
-    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
 }
@@ -59,18 +61,39 @@ impl ModelRegistry for TestModels {
 #[derive(Default)]
 struct TestUi;
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
     fn set_status(&self, _: &str, _: Option<&str>) {}
-    fn set_widget(&self, _: &str, _: Option<maho_ext_api::WidgetContent>, _: maho_ext_api::ExtensionWidgetOptions) {}
+    fn set_widget(
+        &self,
+        _: &str,
+        _: Option<maho_ext_api::WidgetContent>,
+        _: maho_ext_api::ExtensionWidgetOptions,
+    ) {
+    }
     fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_title(&self, _: &str) {}
@@ -79,7 +102,11 @@ impl ExtensionUi for TestUi {
     fn get_editor_text(&self) -> String {
         String::new()
     }
-    fn custom(&self, _: maho_ext_api::ComponentFactory, _: maho_ext_api::CustomUiOptions) -> maho_ext_api::ExtensionFuture<'_, JsonValue> {
+    fn custom(
+        &self,
+        _: maho_ext_api::ComponentFactory,
+        _: maho_ext_api::CustomUiOptions,
+    ) -> maho_ext_api::ExtensionFuture<'_, JsonValue> {
         Box::pin(async { Ok(JsonValue::Null) })
     }
     fn theme(&self) -> Theme {
@@ -169,7 +196,11 @@ fn setup_with_session(session_id: &str) -> TestFixture {
     }
 }
 
-async fn execute_tool(fixture: &TestFixture, call_id: &str, params: JsonValue) -> maho_ext_api::AgentToolResult {
+async fn execute_tool(
+    fixture: &TestFixture,
+    call_id: &str,
+    params: JsonValue,
+) -> maho_ext_api::AgentToolResult {
     let executor = fixture
         .runtime
         .extension_tool_executor("browser-bridge", BROWSER_BRIDGE_TOOL_NAME)
@@ -179,12 +210,18 @@ async fn execute_tool(fixture: &TestFixture, call_id: &str, params: JsonValue) -
         .expect("successful tool execution")
 }
 
-async fn invoke_rpc(fixture: &TestFixture, name: &str, params: JsonValue) -> Result<JsonValue, ExtensionFailure> {
+async fn invoke_rpc(
+    fixture: &TestFixture,
+    name: &str,
+    params: JsonValue,
+) -> Result<JsonValue, ExtensionFailure> {
     let handlers = fixture
         .runtime
         .live_rpc_handlers("browser-bridge")
         .expect("live rpc handlers");
-    let handler = handlers.get(name).unwrap_or_else(|| panic!("missing RPC handler: {name}"));
+    let handler = handlers
+        .get(name)
+        .unwrap_or_else(|| panic!("missing RPC handler: {name}"));
     handler(params).await
 }
 
@@ -195,7 +232,9 @@ async fn dispatch_input(fixture: &mut TestFixture, event: InputEvent) {
         .unwrap_or_default();
     let mut mut_event = ExtensionEvent::Input(event);
     for h in handlers {
-        h(&mut mut_event, &fixture.context).await.expect("input handled");
+        h(&mut mut_event, &fixture.context)
+            .await
+            .expect("input handled");
     }
 }
 
@@ -240,12 +279,7 @@ async fn malformed_state_publishes_nothing() {
     assert_eq!(result1.details["ok"], false);
     assert_eq!(result1.details["reason"], "invalid_state");
 
-    let result2 = execute_tool(
-        &fixture,
-        "c2",
-        json!({ "op": "state" }),
-    )
-    .await;
+    let result2 = execute_tool(&fixture, "c2", json!({ "op": "state" })).await;
     assert_eq!(result2.details["ok"], false);
     assert_eq!(result2.details["reason"], "invalid_state");
 
@@ -260,7 +294,9 @@ async fn app_presses_stop_held_until_interactive_input() {
     let r1 = execute_tool(&fixture, "c1", json!({ "op": "status" })).await;
     assert_eq!(r1.details["stopped"], false);
 
-    let stop_result = invoke_rpc(&fixture, BROWSER_STOP_RPC, json!({})).await.expect("stop rpc");
+    let stop_result = invoke_rpc(&fixture, BROWSER_STOP_RPC, json!({}))
+        .await
+        .expect("stop rpc");
     assert_eq!(stop_result["stopped"], true);
 
     let r2 = execute_tool(&fixture, "c2", json!({ "op": "status" })).await;
@@ -314,7 +350,9 @@ async fn two_sessions_stopped_isolation() {
     let first = setup_with_session("session-1");
     let second = setup_with_session("session-2");
 
-    let stop_res = invoke_rpc(&first, BROWSER_STOP_RPC, json!({})).await.expect("stop rpc");
+    let stop_res = invoke_rpc(&first, BROWSER_STOP_RPC, json!({}))
+        .await
+        .expect("stop rpc");
     assert_eq!(stop_res["stopped"], true);
 
     let r1 = execute_tool(&first, "c1", json!({ "op": "status" })).await;
@@ -369,7 +407,10 @@ fn tool_registration_metadata_exposure_eval_and_parallel() {
         .find(|t| t.definition.name == BROWSER_BRIDGE_TOOL_NAME)
         .expect("browser bridge tool found");
 
-    assert_eq!(registered_tool.definition.exposure, Some(ToolExposure::Eval));
+    assert_eq!(
+        registered_tool.definition.exposure,
+        Some(ToolExposure::Eval)
+    );
     assert_eq!(
         registered_tool.definition.execution_mode,
         Some(ToolExecutionMode::Parallel)

@@ -15,8 +15,6 @@ pub fn carries_attribution_directive<'a>(texts: impl IntoIterator<Item = &'a str
         .any(|text| text.contains(crate::directive::COMMIT_ATTRIBUTION_OPEN_TAG))
 }
 
-
-
 /// Upstream `GitMasterSkillAdditions`.
 pub struct GitMasterSkillAdditions {
     /// Upstream `rewriteSkillText`.

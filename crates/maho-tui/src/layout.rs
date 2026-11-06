@@ -7,10 +7,13 @@ use std::rc::Rc;
 use crate::components::scroll_view::ScrollView;
 use crate::image_stub::{crop_kitty_image_line, get_kitty_image_metadata, is_image_line};
 use crate::layout_node::{
-    LayoutNode, StackAlign, StackBasis, StackDirection, StackLayoutEntry, LayoutViewport,
+    LayoutNode, LayoutViewport, StackAlign, StackBasis, StackDirection, StackLayoutEntry,
 };
-use crate::tui::{composite_tui_line, Component, CURSOR_MARKER};
-use crate::utils::{extract_ansi_code, get_active_background_ansi, get_grapheme_cell_range, slice_by_column, visible_width};
+use crate::tui::{CURSOR_MARKER, Component, composite_tui_line};
+use crate::utils::{
+    extract_ansi_code, get_active_background_ansi, get_grapheme_cell_range, slice_by_column,
+    visible_width,
+};
 
 /// OSC 133 shell-integration zone markers (A/B/C) at the start of a line; senpi strips a run of
 /// these before painting so they never occupy a terminal cell.
@@ -128,7 +131,11 @@ fn component_key(component: &Rc<RefCell<dyn Component>>) -> usize {
     Rc::as_ptr(component) as *const () as usize
 }
 
-fn render_cached(context: &mut LayoutContext, component: &Rc<RefCell<dyn Component>>, width: usize) -> Rc<Vec<String>> {
+fn render_cached(
+    context: &mut LayoutContext,
+    component: &Rc<RefCell<dyn Component>>,
+    width: usize,
+) -> Rc<Vec<String>> {
     let safe_width = width.max(1);
     let key = component_key(component);
     let widths = context
@@ -143,14 +150,22 @@ fn render_cached(context: &mut LayoutContext, component: &Rc<RefCell<dyn Compone
     lines
 }
 
-fn measure_height(context: &mut LayoutContext, component: &Rc<RefCell<dyn Component>>, width: usize) -> usize {
+fn measure_height(
+    context: &mut LayoutContext,
+    component: &Rc<RefCell<dyn Component>>,
+    width: usize,
+) -> usize {
     if let Some(count) = component.borrow().virtual_line_count(width.max(1)) {
         return count;
     }
     render_cached(context, component, width).len()
 }
 
-fn measure_width(context: &mut LayoutContext, component: &Rc<RefCell<dyn Component>>, width: usize) -> usize {
+fn measure_width(
+    context: &mut LayoutContext,
+    component: &Rc<RefCell<dyn Component>>,
+    width: usize,
+) -> usize {
     render_cached(context, component, width)
         .iter()
         .map(|line| visible_width(line))
@@ -184,7 +199,10 @@ fn allocate_stack_sizes(
     crate::components::stack::allocate_stack_sizes(entries, intrinsic_sizes, available, gap)
 }
 
-fn visible_stack_entries(entries: &[StackLayoutEntry], viewport: LayoutViewport) -> Vec<StackLayoutEntry> {
+fn visible_stack_entries(
+    entries: &[StackLayoutEntry],
+    viewport: LayoutViewport,
+) -> Vec<StackLayoutEntry> {
     crate::components::stack::visible_stack_entries(entries, viewport)
 }
 
@@ -280,7 +298,10 @@ fn layout_component(
                 .borrow_mut()
                 .update_layout(content_height, viewport_height);
             let next_scroll_top = scroll_node.state.borrow().scroll_top();
-            translate_box(&mut child_box, previous_scroll_top as i64 - next_scroll_top as i64);
+            translate_box(
+                &mut child_box,
+                previous_scroll_top as i64 - next_scroll_top as i64,
+            );
 
             let scroll_view = Rc::clone(&scroll_node.state);
             if scroll_node.state.borrow().primary() || context.primary_scroll_view.is_none() {
@@ -298,7 +319,11 @@ fn layout_component(
                 // component has none materialized (the image registry is todo 9's).
                 None
             } else {
-                Some(render_cached(context, &scroll_node.component, content_width))
+                Some(render_cached(
+                    context,
+                    &scroll_node.component,
+                    content_width,
+                ))
             };
             let mut boxed = LayoutBox {
                 component: Rc::clone(component),
@@ -327,7 +352,8 @@ fn layout_component(
                             _ => measure_height(context, &entry.component, safe_width),
                         })
                         .collect();
-                    let sizes = allocate_stack_sizes(&entries, &intrinsic_heights, height, stack_node.gap);
+                    let sizes =
+                        allocate_stack_sizes(&entries, &intrinsic_heights, height, stack_node.gap);
                     let natural_height: usize = sizes.iter().sum::<usize>() + gap_total;
                     let allocated_height = height.unwrap_or(natural_height);
                     let rect = LayoutRect {
@@ -373,13 +399,21 @@ fn layout_component(
                             _ => measure_width(context, &entry.component, safe_width),
                         })
                         .collect();
-                    let widths = allocate_stack_sizes(&entries, &intrinsic_widths, Some(safe_width), stack_node.gap);
+                    let widths = allocate_stack_sizes(
+                        &entries,
+                        &intrinsic_widths,
+                        Some(safe_width),
+                        stack_node.gap,
+                    );
                     let intrinsic_heights: Vec<usize> = entries
                         .iter()
                         .enumerate()
-                        .map(|(index, entry)| measure_height(context, &entry.component, widths[index].max(1)))
+                        .map(|(index, entry)| {
+                            measure_height(context, &entry.component, widths[index].max(1))
+                        })
                         .collect();
-                    let allocated_height = height.unwrap_or_else(|| intrinsic_heights.iter().copied().max().unwrap_or(0));
+                    let allocated_height = height
+                        .unwrap_or_else(|| intrinsic_heights.iter().copied().max().unwrap_or(0));
                     let rect = LayoutRect {
                         x,
                         y,
@@ -500,11 +534,16 @@ fn replace_scrollbar_cell(
             String::new()
         }
     );
-    format!("{before}{before_padding}{target_style}{cell_padding_before}{replacement}{cell_padding_after}{after}")
+    format!(
+        "{before}{before_padding}{target_style}{cell_padding_before}{replacement}{cell_padding_after}{after}"
+    )
 }
 
 /// senpi's `getScrollbarGeometry`.
-pub fn get_scrollbar_geometry(boxed: &LayoutBox, include_hidden_auto: bool) -> Option<ScrollbarGeometry> {
+pub fn get_scrollbar_geometry(
+    boxed: &LayoutBox,
+    include_hidden_auto: bool,
+) -> Option<ScrollbarGeometry> {
     let scroll_view = boxed.scroll_view.as_ref()?;
     if boxed.rect.width == 0 || boxed.rect.height == 0 {
         return None;
@@ -528,11 +567,12 @@ pub fn get_scrollbar_geometry(boxed: &LayoutBox, include_hidden_auto: bool) -> O
     let thumb_height = if content_height == 0 {
         track_height
     } else {
-        min_thumb_height.max(
-            ((track_height as f64 * track_height as f64) / content_height as f64)
-                .round() as usize,
-        )
-        .min(track_height)
+        min_thumb_height
+            .max(
+                ((track_height as f64 * track_height as f64) / content_height as f64).round()
+                    as usize,
+            )
+            .min(track_height)
     };
     let max_scroll_top = content_height.saturating_sub(track_height);
     let max_thumb_top = track_height.saturating_sub(thumb_height);
@@ -572,9 +612,14 @@ fn paint_scrollbar(boxed: &LayoutBox, screen: &mut [String], total_width: usize)
         let Some(row_index) = usize::try_from(row).ok().filter(|&r| r < screen.len()) else {
             continue;
         };
-        let is_thumb = row >= geometry.thumb_top && row < geometry.thumb_top + geometry.thumb_height as i64;
+        let is_thumb =
+            row >= geometry.thumb_top && row < geometry.thumb_top + geometry.thumb_height as i64;
         let replacement = if is_thumb {
-            view.scrollbar_thumb_style(if view.is_scrollbar_active() { "\u{2588}" } else { "\u{2503}" })
+            view.scrollbar_thumb_style(if view.is_scrollbar_active() {
+                "\u{2588}"
+            } else {
+                "\u{2503}"
+            })
         } else {
             view.scrollbar_track_style("\u{2502}")
         };
@@ -589,7 +634,13 @@ fn paint_scrollbar(boxed: &LayoutBox, screen: &mut [String], total_width: usize)
 }
 
 /// Paints one content row (senpi's `paintBox` inner loop body).
-fn paint_content_row(boxed: &LayoutBox, screen: &mut [String], total_width: usize, row: i64, source_line: &str) {
+fn paint_content_row(
+    boxed: &LayoutBox,
+    screen: &mut [String],
+    total_width: usize,
+    row: i64,
+    source_line: &str,
+) {
     let mut line = strip_osc133_zone_prefix(source_line).to_string();
     if let Some(rows) = get_kitty_image_metadata(&line) {
         let clip_bottom = (boxed.clip.bottom()).min(screen.len() as i64);
@@ -605,13 +656,23 @@ fn paint_content_row(boxed: &LayoutBox, screen: &mut [String], total_width: usiz
     {
         screen[row_index] = line;
     } else {
-        screen[row_index] = composite_tui_line(&screen[row_index], &line, boxed.rect.x.max(0) as usize, boxed.rect.width, total_width);
+        screen[row_index] = composite_tui_line(
+            &screen[row_index],
+            &line,
+            boxed.rect.x.max(0) as usize,
+            boxed.rect.width,
+            total_width,
+        );
     }
 }
 
 fn paint_box(boxed: &LayoutBox, screen: &mut Vec<String>, total_width: usize) {
     let first_row = boxed.rect.y.max(boxed.clip.y).max(0);
-    let last_row = boxed.rect.bottom().min(boxed.clip.bottom()).min(screen.len() as i64);
+    let last_row = boxed
+        .rect
+        .bottom()
+        .min(boxed.clip.bottom())
+        .min(screen.len() as i64);
     if let Some(lines) = &boxed.lines {
         let mut row = first_row;
         while row < last_row {
@@ -644,7 +705,9 @@ fn paint_box(boxed: &LayoutBox, screen: &mut Vec<String>, total_width: usize) {
         paint_box(child, screen, total_width);
     }
 
-    if let (Some(scroll_view), Some(scroll_content_lines)) = (&boxed.scroll_view, &boxed.scroll_content_lines) {
+    if let (Some(scroll_view), Some(scroll_content_lines)) =
+        (&boxed.scroll_view, &boxed.scroll_content_lines)
+    {
         let scroll_top = scroll_view.borrow().scroll_top();
         if scroll_top > 0 && boxed.rect.height > 0 {
             let mut image_row = scroll_top as i64 - 1;
@@ -682,7 +745,11 @@ fn paint_box(boxed: &LayoutBox, screen: &mut Vec<String>, total_width: usize) {
 /// `ScrollLayoutState.updateLayout` is unused here: [`ScrollView::update_layout`] (todo 7)
 /// returns whether a render is needed instead of invoking a callback, matching this crate's
 /// poll-driven render-request pattern (see `tui.rs`'s module doc).
-pub fn render_layout_frame(root: &Rc<RefCell<dyn Component>>, width: usize, height: usize) -> LayoutFrame {
+pub fn render_layout_frame(
+    root: &Rc<RefCell<dyn Component>>,
+    width: usize,
+    height: usize,
+) -> LayoutFrame {
     let safe_width = width.max(1);
     let safe_height = height.max(1);
     let mut context = LayoutContext {
@@ -699,7 +766,15 @@ pub fn render_layout_frame(root: &Rc<RefCell<dyn Component>>, width: usize, heig
         width: safe_width,
         height: safe_height,
     };
-    let root_box = layout_component(&mut context, root, 0, 0, safe_width, Some(safe_height), viewport_rect);
+    let root_box = layout_component(
+        &mut context,
+        root,
+        0,
+        0,
+        safe_width,
+        Some(safe_height),
+        viewport_rect,
+    );
     let mut lines = vec![String::new(); safe_height];
     paint_box(&root_box, &mut lines, safe_width);
     LayoutFrame {
@@ -714,7 +789,13 @@ pub fn render_layout_frame(root: &Rc<RefCell<dyn Component>>, width: usize, heig
 /// senpi's `getLayoutBoxesAt`: the visual hit path from deepest component to layout root.
 pub fn get_layout_boxes_at(frame: &LayoutFrame, x: i64, y: i64) -> Vec<&LayoutBox> {
     let mut result: Vec<(&LayoutBox, i64, i64)> = Vec::new();
-    fn visit<'a>(boxed: &'a LayoutBox, x: i64, y: i64, depth: i64, out: &mut Vec<(&'a LayoutBox, i64, i64)>) {
+    fn visit<'a>(
+        boxed: &'a LayoutBox,
+        x: i64,
+        y: i64,
+        depth: i64,
+        out: &mut Vec<(&'a LayoutBox, i64, i64)>,
+    ) {
         if !contains_point(boxed.clip, x, y) {
             return;
         }
@@ -729,7 +810,10 @@ pub fn get_layout_boxes_at(frame: &LayoutFrame, x: i64, y: i64) -> Vec<&LayoutBo
 }
 
 /// senpi's `getScrollViewBox`.
-pub fn get_scroll_view_box<'a>(frame: &'a LayoutFrame, scroll_view: &Rc<RefCell<ScrollView>>) -> Option<&'a LayoutBox> {
+pub fn get_scroll_view_box<'a>(
+    frame: &'a LayoutFrame,
+    scroll_view: &Rc<RefCell<ScrollView>>,
+) -> Option<&'a LayoutBox> {
     fn visit<'a>(boxed: &'a LayoutBox, target: &Rc<RefCell<ScrollView>>) -> Option<&'a LayoutBox> {
         if let Some(sv) = &boxed.scroll_view
             && Rc::ptr_eq(sv, target)
@@ -749,7 +833,13 @@ pub fn get_scroll_view_box<'a>(frame: &'a LayoutFrame, scroll_view: &Rc<RefCell<
 /// senpi's `getScrollViewsAt`.
 pub fn get_scroll_views_at(frame: &LayoutFrame, x: i64, y: i64) -> Vec<Rc<RefCell<ScrollView>>> {
     let mut result: Vec<(Rc<RefCell<ScrollView>>, i64)> = Vec::new();
-    fn visit(boxed: &LayoutBox, x: i64, y: i64, depth: i64, out: &mut Vec<(Rc<RefCell<ScrollView>>, i64)>) {
+    fn visit(
+        boxed: &LayoutBox,
+        x: i64,
+        y: i64,
+        depth: i64,
+        out: &mut Vec<(Rc<RefCell<ScrollView>>, i64)>,
+    ) {
         if !contains_point(boxed.clip, x, y) {
             return;
         }

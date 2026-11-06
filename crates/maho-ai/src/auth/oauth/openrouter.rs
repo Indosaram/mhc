@@ -255,8 +255,9 @@ impl OpenRouterOAuth {
 }
 
 pub fn open_router_oauth() -> Arc<dyn OAuthAuth> {
-    static INSTANCE: LazyLock<Arc<dyn OAuthAuth>> =
-        LazyLock::new(|| -> Arc<dyn OAuthAuth> { Arc::new(OpenRouterOAuth::new(default_transport())) });
+    static INSTANCE: LazyLock<Arc<dyn OAuthAuth>> = LazyLock::new(|| -> Arc<dyn OAuthAuth> {
+        Arc::new(OpenRouterOAuth::new(default_transport()))
+    });
     INSTANCE.clone()
 }
 

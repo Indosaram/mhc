@@ -169,7 +169,8 @@ impl<'a> Reader<'a> {
 
     pub fn read_tag(&mut self) -> Result<(u32, u8), ProtoError> {
         let tag = self.read_varint()?;
-        let field = u32::try_from(tag >> 3).map_err(|_| ProtoError::new("field number too large"))?;
+        let field =
+            u32::try_from(tag >> 3).map_err(|_| ProtoError::new("field number too large"))?;
         Ok((field, (tag & 0x07) as u8))
     }
 

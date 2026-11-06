@@ -7,7 +7,8 @@ use std::sync::OnceLock;
 use libloading::Library;
 
 use super::ffi::{
-    PwBuffer, PwContext, PwCore, PwLoop, PwMainLoop, PwProperties, PwStream, PwStreamEvents, SpaHook, SpaPod,
+    PwBuffer, PwContext, PwCore, PwLoop, PwMainLoop, PwProperties, PwStream, PwStreamEvents,
+    SpaHook, SpaPod,
 };
 
 pub const SONAME: &str = "libpipewire-0.3.so.0";
@@ -18,14 +19,17 @@ type MainLoopGetLoop = unsafe extern "C" fn(*mut PwMainLoop) -> *mut PwLoop;
 type MainLoopAction = unsafe extern "C" fn(*mut PwMainLoop) -> c_int;
 type MainLoopDestroy = unsafe extern "C" fn(*mut PwMainLoop);
 type ContextNew = unsafe extern "C" fn(*mut PwLoop, *mut PwProperties, usize) -> *mut PwContext;
-type ContextConnectFd = unsafe extern "C" fn(*mut PwContext, c_int, *mut PwProperties, usize) -> *mut PwCore;
+type ContextConnectFd =
+    unsafe extern "C" fn(*mut PwContext, c_int, *mut PwProperties, usize) -> *mut PwCore;
 type ContextDestroy = unsafe extern "C" fn(*mut PwContext);
 type CoreDisconnect = unsafe extern "C" fn(*mut PwCore) -> c_int;
 type PropertiesNewString = unsafe extern "C" fn(*const c_char) -> *mut PwProperties;
-type StreamNew = unsafe extern "C" fn(*mut PwCore, *const c_char, *mut PwProperties) -> *mut PwStream;
+type StreamNew =
+    unsafe extern "C" fn(*mut PwCore, *const c_char, *mut PwProperties) -> *mut PwStream;
 type StreamAddListener =
     unsafe extern "C" fn(*mut PwStream, *mut SpaHook, *const PwStreamEvents, *mut c_void);
-type StreamConnect = unsafe extern "C" fn(*mut PwStream, u32, u32, u32, *mut *const SpaPod, u32) -> c_int;
+type StreamConnect =
+    unsafe extern "C" fn(*mut PwStream, u32, u32, u32, *mut *const SpaPod, u32) -> c_int;
 type StreamDequeue = unsafe extern "C" fn(*mut PwStream) -> *mut PwBuffer;
 type StreamQueue = unsafe extern "C" fn(*mut PwStream, *mut PwBuffer) -> c_int;
 type StreamDestroy = unsafe extern "C" fn(*mut PwStream);
@@ -70,7 +74,8 @@ impl PipeWire {
     fn load(soname: &str) -> Result<Self, String> {
         // SAFETY: loading libpipewire runs its ELF constructors, which only
         // register SPA types; nothing else is executed before `pw_init`.
-        let library = unsafe { Library::new(soname) }.map_err(|error| format!("{soname}: {error}"))?;
+        let library =
+            unsafe { Library::new(soname) }.map_err(|error| format!("{soname}: {error}"))?;
         Ok(symbols!(library;
             init = "pw_init",
             main_loop_new = "pw_main_loop_new",

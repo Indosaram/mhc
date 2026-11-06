@@ -2,18 +2,17 @@
 //!
 //! Root `desktop` facade providing capabilities, window listing, and input delegation.
 
-use senpi_desktop_protocol::{DesktopCapabilities, DESKTOP_METHODS};
+use senpi_desktop_protocol::{DESKTOP_METHODS, DesktopCapabilities};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::context::{guard_run, ComputerRunError, DesktopRunError, RunScope};
+use crate::context::{ComputerRunError, DesktopRunError, RunScope, guard_run};
 use crate::engine_results::{
-    expect_optional_ax_node, expect_result, DesktopDisplay, DesktopWindow,
-    TextResult,
+    DesktopDisplay, DesktopWindow, TextResult, expect_optional_ax_node, expect_result,
 };
 use crate::handles::{
-    resolve_element, ClickOptions, DeliveryOptions, ElementHandle, InputTarget, ScrollOptions,
-    WindowHandle,
+    ClickOptions, DeliveryOptions, ElementHandle, InputTarget, ScrollOptions, WindowHandle,
+    resolve_element,
 };
 use crate::screenshot::{ScreenshotOptions, ScreenshotResult};
 
@@ -95,10 +94,7 @@ impl DesktopFacade {
         }
     }
 
-    pub async fn window(
-        &self,
-        selector: WindowSelector,
-    ) -> Result<WindowHandle, DesktopRunError> {
+    pub async fn window(&self, selector: WindowSelector) -> Result<WindowHandle, DesktopRunError> {
         guard_run(&self.root.scope.context, DESKTOP_METHODS, "window").await?;
         let all = self.windows(None).await?;
         let found: Vec<DesktopWindow> = match &selector {
@@ -125,9 +121,13 @@ impl DesktopFacade {
             return Err(ComputerRunError::window(format!(
                 "multiple windows match {label}:\n{}",
                 candidates.join("\n")
-            )).into());
+            ))
+            .into());
         }
-        let only = found.into_iter().next().ok_or_else(|| ComputerRunError::window("no window found"))?;
+        let only = found
+            .into_iter()
+            .next()
+            .ok_or_else(|| ComputerRunError::window("no window found"))?;
         Ok(WindowHandle::new(self.root.scope.clone(), only))
     }
 
@@ -145,7 +145,12 @@ impl DesktopFacade {
         self.root.screenshot(options).await
     }
 
-    pub async fn click(&self, x: i64, y: i64, options: ClickOptions) -> Result<(), DesktopRunError> {
+    pub async fn click(
+        &self,
+        x: i64,
+        y: i64,
+        options: ClickOptions,
+    ) -> Result<(), DesktopRunError> {
         self.root.click(x, y, options).await
     }
 
@@ -207,8 +212,7 @@ impl DesktopFacade {
         )
         .await
         .map_err(DesktopRunError::Engine)?;
-        let node = expect_optional_ax_node("ax.elementAt", res)
-            .map_err(DesktopRunError::Engine)?;
+        let node = expect_optional_ax_node("ax.elementAt", res).map_err(DesktopRunError::Engine)?;
         Ok(node.map(|n| ElementHandle::new(self.root.scope.clone(), n)))
     }
 
@@ -217,8 +221,7 @@ impl DesktopFacade {
         let res = (self.root.scope.call)("ax.focused", json!({}))
             .await
             .map_err(DesktopRunError::Engine)?;
-        let node = expect_optional_ax_node("ax.focused", res)
-            .map_err(DesktopRunError::Engine)?;
+        let node = expect_optional_ax_node("ax.focused", res).map_err(DesktopRunError::Engine)?;
         Ok(node.map(|n| ElementHandle::new(self.root.scope.clone(), n)))
     }
 

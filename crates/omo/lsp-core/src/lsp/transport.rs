@@ -142,7 +142,8 @@ impl LspClientTransport {
     }
 
     pub fn set_document_formatting_supported(&self, supported: bool) {
-        self.document_formatting_supported.store(supported, Ordering::SeqCst);
+        self.document_formatting_supported
+            .store(supported, Ordering::SeqCst);
     }
 
     fn stderr_tail(&self, count: usize) -> Option<String> {

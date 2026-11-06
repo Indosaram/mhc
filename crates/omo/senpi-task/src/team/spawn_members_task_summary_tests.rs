@@ -9,8 +9,8 @@ use crate::team::member_projection::ResidentSessionRef;
 use crate::team::normalize::normalize_senpi_team_spec;
 use crate::team::runtime_fakes::task_status;
 use crate::team::runtime_types::{
-    TeamCancelOutcome, TeamMemberCancelPort, TeamMemberReadPort, TeamMemberStartSpec, TeamMemberTaskRecord,
-    TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
+    TeamCancelOutcome, TeamMemberCancelPort, TeamMemberReadPort, TeamMemberStartSpec,
+    TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
 };
 use crate::team::spawn_members::{SpawnMembersInput, spawn_team_members};
 
@@ -60,7 +60,8 @@ impl TeamRuntimeManagerPort for CapturingManager {
 }
 
 #[test]
-fn given_a_member_with_a_task_summary_when_spawned_then_the_manager_start_spec_carries_the_summary() {
+fn given_a_member_with_a_task_summary_when_spawned_then_the_manager_start_spec_carries_the_summary()
+{
     // given
     let spec = normalize_senpi_team_spec(
         &json!({ "members": [{ "kind": "category", "category": "quick", "prompt": "work", "task_summary": "Investigate the failing test" }] }),
@@ -90,7 +91,10 @@ fn given_a_member_with_a_task_summary_when_spawned_then_the_manager_start_spec_c
     let captured = manager.captured();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].category.as_deref(), Some("quick"));
-    assert_eq!(captured[0].task_summary.as_deref(), Some("Investigate the failing test"));
+    assert_eq!(
+        captured[0].task_summary.as_deref(),
+        Some("Investigate the failing test")
+    );
     assert!(captured[0].run_in_background);
     assert!(result.get(&spec.members[0].name).is_some());
 }
@@ -102,10 +106,19 @@ fn member_launch_extras_survive_the_manager_adapter() {
     let spec = normalize_senpi_team_spec(&json!({"members":[{"name":"worker","kind":"category","category":"quick","worktreePath":cwd,"task_summary":"Repair parser"}]}), "demo", None).expect("spec");
     let manager = CapturingManager::new();
     let result = spawn_team_members(&SpawnMembersInput {
-        spec:&spec, team_run_id:"run-1", manager:&manager, lead_session_id:"lead", root_session_id: None, spawn_depth:1,
-        max_parallel:1, deadline_at:10, now:&|| 1,
-        member_extension:Some(crate::team::runtime_types::SpawnMemberExtensionConfig {
-            entry_path:"member-extension".into(), inherited_extensions:Some(vec!["inherited".into(),"member-extension".into()]), team_config:"{\"team\":1}".into(),
+        spec: &spec,
+        team_run_id: "run-1",
+        manager: &manager,
+        lead_session_id: "lead",
+        root_session_id: None,
+        spawn_depth: 1,
+        max_parallel: 1,
+        deadline_at: 10,
+        now: &|| 1,
+        member_extension: Some(crate::team::runtime_types::SpawnMemberExtensionConfig {
+            entry_path: "member-extension".into(),
+            inherited_extensions: Some(vec!["inherited".into(), "member-extension".into()]),
+            team_config: "{\"team\":1}".into(),
         }),
     });
     assert!(result.failure.is_none());
@@ -113,8 +126,20 @@ fn member_launch_extras_survive_the_manager_adapter() {
     let launch = crate::manager::types::ManagerStartSpec::from(&captured[0]);
     assert_eq!(launch.task_summary.as_deref(), Some("Repair parser"));
     assert_eq!(launch.cwd.as_deref(), Some(cwd.as_str()));
-    assert_eq!(launch.extensions, Some(vec!["member-extension".into(),"inherited".into()]));
-    assert_eq!(launch.member_env, Some([("SENPI_TASK_MEMBER".into(),"run-1::worker".into()),("SENPI_TASK_TEAM_CONFIG".into(),"{\"team\":1}".into())].into()));
+    assert_eq!(
+        launch.extensions,
+        Some(vec!["member-extension".into(), "inherited".into()])
+    );
+    assert_eq!(
+        launch.member_env,
+        Some(
+            [
+                ("SENPI_TASK_MEMBER".into(), "run-1::worker".into()),
+                ("SENPI_TASK_TEAM_CONFIG".into(), "{\"team\":1}".into())
+            ]
+            .into()
+        )
+    );
     assert!(launch.run_in_background);
     assert_eq!(launch.root_session_id.as_deref(), Some("lead"));
 }

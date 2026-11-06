@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::{Engine, TWO_DISPLAYS, error_code, fake_backend};
-use serde_json::{Value, json};
+use common::{error_code, fake_backend, Engine, TWO_DISPLAYS};
+use serde_json::{json, Value};
 
 const CHORD: &str = "ctrl+alt+shift+escape";
 

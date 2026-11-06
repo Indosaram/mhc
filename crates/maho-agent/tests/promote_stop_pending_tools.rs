@@ -1,7 +1,8 @@
 use crate::support;
 
 use maho_agent::assistant_terminal_state::{
-    demote_tool_use_without_tool_calls, promote_stop_with_pending_tool_calls, should_terminate_assistant_turn,
+    demote_tool_use_without_tool_calls, promote_stop_with_pending_tool_calls,
+    should_terminate_assistant_turn,
 };
 use maho_ai::types::{ContentBlock, StopReason, ToolResultMessage, Usage};
 use maho_ai::utils::diagnostics::AssistantMessageDiagnostic;
@@ -47,13 +48,21 @@ fn demotes_tool_use_without_tool_calls_and_records_the_diagnostic() {
     let message = assistant(vec![text_block("thinking out loud")], StopReason::ToolUse);
     let demoted = demote_tool_use_without_tool_calls(message);
     assert_eq!(demoted.stop_reason, StopReason::Stop);
-    let diagnostics: Vec<AssistantMessageDiagnostic> = demoted.diagnostics.clone().unwrap_or_default();
-    assert!(diagnostics.iter().any(|entry| entry.kind == maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC));
+    let diagnostics: Vec<AssistantMessageDiagnostic> =
+        demoted.diagnostics.clone().unwrap_or_default();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|entry| entry.kind == maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC)
+    );
 }
 
 #[test]
 fn demote_keeps_a_tool_use_message_that_carries_a_tool_call() {
-    let message = assistant(vec![tool_call("1", "eval", serde_json::json!({}))], StopReason::ToolUse);
+    let message = assistant(
+        vec![tool_call("1", "eval", serde_json::json!({}))],
+        StopReason::ToolUse,
+    );
     let kept = demote_tool_use_without_tool_calls(message);
     assert_eq!(kept.stop_reason, StopReason::ToolUse);
     assert!(kept.diagnostics.is_none());
@@ -61,9 +70,18 @@ fn demote_keeps_a_tool_use_message_that_carries_a_tool_call() {
 
 #[test]
 fn terminate_covers_error_aborted_and_classifier_refusals() {
-    assert!(should_terminate_assistant_turn(&assistant(vec![], StopReason::Error)));
-    assert!(should_terminate_assistant_turn(&assistant(vec![], StopReason::Aborted)));
-    assert!(!should_terminate_assistant_turn(&assistant(vec![text_block("hi")], StopReason::Stop)));
+    assert!(should_terminate_assistant_turn(&assistant(
+        vec![],
+        StopReason::Error
+    )));
+    assert!(should_terminate_assistant_turn(&assistant(
+        vec![],
+        StopReason::Aborted
+    )));
+    assert!(!should_terminate_assistant_turn(&assistant(
+        vec![text_block("hi")],
+        StopReason::Stop
+    )));
 
     let refusal = support::assistant_with(
         vec![tool_call("refused", "calculate", serde_json::json!({}))],

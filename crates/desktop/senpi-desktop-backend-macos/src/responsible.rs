@@ -1,14 +1,14 @@
 //! The process macOS charges for this engine's TCC requests, not its parent.
 
 use std::ffi::CStr;
-use std::os::unix::ffi::OsStrExt;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use objc2_core_foundation::{
-    CFData, CFDictionary, CFPropertyListCreateWithData, CFPropertyListMutabilityOptions, CFRetained,
-    CFString, CFType,
+    CFData, CFDictionary, CFPropertyListCreateWithData, CFPropertyListMutabilityOptions,
+    CFRetained, CFString, CFType,
 };
 
 /// Larger Info.plist files are not read: the bundle id is diagnostic metadata.
@@ -25,12 +25,20 @@ pub(crate) struct ResponsibleProcess {
 pub(crate) fn suffix_with(lookup: impl FnOnce() -> Option<ResponsibleProcess>) -> String {
     match lookup() {
         Some(identity) => {
-            let bundle = identity.bundle_id.map_or_else(String::new, |id| format!(" bundle={id}"));
-            format!("responsible={}{bundle}, pid={}", identity.executable.display(), identity.pid)
+            let bundle = identity
+                .bundle_id
+                .map_or_else(String::new, |id| format!(" bundle={id}"));
+            format!(
+                "responsible={}{bundle}, pid={}",
+                identity.executable.display(),
+                identity.pid
+            )
         }
         None => {
-            let executable = std::env::current_exe()
-                .map_or_else(|_| "<unavailable>".to_owned(), |path| path.display().to_string());
+            let executable = std::env::current_exe().map_or_else(
+                |_| "<unavailable>".to_owned(),
+                |path| path.display().to_string(),
+            );
             format!("unresolved (engine executable={executable})")
         }
     }
@@ -51,9 +59,7 @@ fn executable_path(pid: libc::pid_t) -> Option<PathBuf> {
     let mut buffer = [0_u8; 4096];
     // SAFETY: proc_pidpath writes at most the supplied buffer size. The buffer
     // is initialized, writable, and lives until the call returns.
-    let length = unsafe {
-        libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), 4096)
-    };
+    let length = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), 4096) };
     if length <= 0 {
         return None;
     }
@@ -65,7 +71,9 @@ fn executable_path(pid: libc::pid_t) -> Option<PathBuf> {
 }
 
 fn bundle_id(executable: &Path) -> Option<String> {
-    let app = executable.ancestors().find(|path| path.extension().is_some_and(|ext| ext == "app"))?;
+    let app = executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))?;
     bundle_id_from_plist(&read_bounded(&app.join("Contents/Info.plist"))?)
 }
 
@@ -82,7 +90,9 @@ fn read_bounded(path: &Path) -> Option<Vec<u8>> {
         return None;
     }
     let mut bytes = Vec::new();
-    file.take(MAX_INFO_PLIST_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    file.take(MAX_INFO_PLIST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
     (u64::try_from(bytes.len()).ok()? <= MAX_INFO_PLIST_BYTES).then_some(bytes)
 }
 
@@ -113,7 +123,9 @@ fn bundle_id_from_plist(bytes: &[u8]) -> Option<String> {
 fn valid_bundle_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().count() <= MAX_BUNDLE_ID_CHARS
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 pub(crate) fn current() -> Option<ResponsibleProcess> {
@@ -133,7 +145,11 @@ fn resolve_with(
     let pid = responsibility(pid)?;
     let executable = path(pid)?;
     let bundle_id = bundle(&executable);
-    Some(ResponsibleProcess { pid, executable, bundle_id })
+    Some(ResponsibleProcess {
+        pid,
+        executable,
+        bundle_id,
+    })
 }
 
 #[cfg(test)]

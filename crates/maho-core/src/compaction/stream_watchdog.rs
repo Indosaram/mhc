@@ -257,15 +257,23 @@ mod tests {
     async fn terminal_result_waits_for_resource_cleanup() {
         let stream = maho_ai::types::AssistantMessageEventStream::assistant();
         let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            closed_tx.send(()).expect("cleanup subscriber");
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                closed_tx.send(()).expect("cleanup subscriber");
+                Ok(())
+            })
+        }));
         let message = maho_ai::providers::faux::faux_assistant_message("done", Default::default());
         stream.end(Some(message.clone()));
-        let result = consume_stream_with_idle_timeout(&stream, 1000, None, None, || panic!("no watchdog abort"))
-            .await.expect("terminal result");
-        tokio::time::timeout(std::time::Duration::from_secs(5), closed_rx).await.expect("bounded cleanup").expect("cleanup completed before return");
+        let result = consume_stream_with_idle_timeout(&stream, 1000, None, None, || {
+            panic!("no watchdog abort")
+        })
+        .await
+        .expect("terminal result");
+        tokio::time::timeout(std::time::Duration::from_secs(5), closed_rx)
+            .await
+            .expect("bounded cleanup")
+            .expect("cleanup completed before return");
         assert_eq!(result, message);
     }
 

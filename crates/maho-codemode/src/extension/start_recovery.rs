@@ -114,7 +114,11 @@ impl<C: Send + 'static> StartRecovery<C> {
             Some(result) => {
                 if result.is_ok() {
                     let mut state = self.state.lock().expect("startup recovery state");
-                    if state.attempt.as_ref().is_some_and(|current| current.same_channel(&attempt)) {
+                    if state
+                        .attempt
+                        .as_ref()
+                        .is_some_and(|current| current.same_channel(&attempt))
+                    {
                         state.attempt = None;
                     }
                 }

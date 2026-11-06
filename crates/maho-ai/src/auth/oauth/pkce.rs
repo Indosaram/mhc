@@ -1,7 +1,7 @@
 //! Port of senpi packages/ai/src/auth/oauth/pkce.ts.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 pub struct Pkce {
@@ -19,7 +19,10 @@ pub fn generate_pkce() -> Pkce {
     verifier_bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     let verifier = base64url_encode(&verifier_bytes);
     let challenge = base64url_encode(&Sha256::digest(verifier.as_bytes()));
-    Pkce { verifier, challenge }
+    Pkce {
+        verifier,
+        challenge,
+    }
 }
 
 #[cfg(test)]
@@ -31,8 +34,15 @@ mod tests {
         let pkce = generate_pkce();
         assert_eq!(pkce.verifier.len(), 43);
         assert_eq!(pkce.challenge.len(), 43);
-        assert_eq!(pkce.challenge, base64url_encode(&Sha256::digest(pkce.verifier.as_bytes())));
-        assert!(!pkce.verifier.contains('+') && !pkce.verifier.contains('/') && !pkce.verifier.contains('='));
+        assert_eq!(
+            pkce.challenge,
+            base64url_encode(&Sha256::digest(pkce.verifier.as_bytes()))
+        );
+        assert!(
+            !pkce.verifier.contains('+')
+                && !pkce.verifier.contains('/')
+                && !pkce.verifier.contains('=')
+        );
     }
 
     #[test]

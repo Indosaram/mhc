@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::backend::Result;
-use crate::util::{device_of, dirname, is_at_or_below, is_denied, mkdtemp_in, resolve_path, sha1_hex};
+use crate::util::{
+    device_of, dirname, is_at_or_below, is_denied, mkdtemp_in, resolve_path, sha1_hex,
+};
 
 pub trait BaseDirIo {
     fn stat_dev(&self, path: &Path) -> Result<u64>;

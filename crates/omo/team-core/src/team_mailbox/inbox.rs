@@ -37,9 +37,10 @@ pub fn read_unread_message_by_id(
         match fs::read_to_string(candidate) {
             Ok(content) => {
                 contents = Some(content);
-                file_name = candidate
-                    .file_name()
-                    .map_or_else(|| file_name.clone(), |name| name.to_string_lossy().into_owned());
+                file_name = candidate.file_name().map_or_else(
+                    || file_name.clone(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
                 break;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}

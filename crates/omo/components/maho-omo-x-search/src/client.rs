@@ -9,7 +9,7 @@ use std::time::Duration;
 use maho_ai::utils::abort::AbortSignal;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::format::{NormalizedXSearch, XSearchErrorCode, XSearchResultItem, XSearchUsage};
 use crate::params::XSearchParams;
@@ -79,7 +79,9 @@ pub fn carrier_model(name: XSearchCarrierName) -> XSearchCarrier {
         },
         XSearchCarrierName::Reasoning => XSearchCarrier {
             model: "grok-4.6".to_string(),
-            reasoning: Some(ReasoningEffort { effort: "low".to_string() }),
+            reasoning: Some(ReasoningEffort {
+                effort: "low".to_string(),
+            }),
         },
     }
 }
@@ -88,9 +90,19 @@ pub const DEFAULT_PROMPT_VARIANT: XSearchPromptVariant = XSearchPromptVariant::V
 pub const DEFAULT_CARRIER: XSearchCarrierName = XSearchCarrierName::Fast;
 
 pub fn prompt_v1(params: &XSearchRequestParams) -> String {
-    let since = params.from_date.as_ref().map_or(String::new(), |d| format!(" since:{d}"));
-    let until = params.to_date.as_ref().map_or(String::new(), |d| format!(" until:{d}"));
-    let mode_str = if params.mode == "top" { "Top" } else { "Latest" };
+    let since = params
+        .from_date
+        .as_ref()
+        .map_or(String::new(), |d| format!(" since:{d}"));
+    let until = params
+        .to_date
+        .as_ref()
+        .map_or(String::new(), |d| format!(" until:{d}"));
+    let mode_str = if params.mode == "top" {
+        "Top"
+    } else {
+        "Latest"
+    };
     format!(
         "Use the x_search tool with x_keyword_search only, mode={}. Run exactly this query: \"{}{}{}\". Return up to {} X posts, one per line as \"URL - one-line summary (@handle, YYYY-MM-DD)\". Posts only, no commentary.",
         mode_str, params.query, since, until, params.max_results
@@ -238,7 +250,9 @@ pub struct PerformXSearchOptions {
 
 pub async fn perform_x_search(options: PerformXSearchOptions) -> XSearchFetchOutcome {
     let deadline_ms = options.deadline_ms.unwrap_or(X_SEARCH_DEFAULT_DEADLINE_MS);
-    let endpoint = options.endpoint.unwrap_or_else(|| X_SEARCH_ENDPOINT.to_string());
+    let endpoint = options
+        .endpoint
+        .unwrap_or_else(|| X_SEARCH_ENDPOINT.to_string());
 
     // Check if caller signal is already aborted before starting
     if let Some(ref signal) = options.signal
@@ -254,7 +268,10 @@ pub async fn perform_x_search(options: PerformXSearchOptions) -> XSearchFetchOut
 
     let mut headers = BTreeMap::new();
     headers.insert("content-type".to_string(), "application/json".to_string());
-    headers.insert("authorization".to_string(), format!("Bearer {}", options.bearer));
+    headers.insert(
+        "authorization".to_string(),
+        format!("Bearer {}", options.bearer),
+    );
 
     let body_str = serde_json::to_string(&options.body).unwrap_or_default();
 
@@ -360,14 +377,22 @@ struct MessageText {
 fn collect_message_texts(output: &[Value]) -> Vec<MessageText> {
     let mut result = Vec::new();
     for raw_item in output {
-        let Some(item) = raw_item.as_object() else { continue };
+        let Some(item) = raw_item.as_object() else {
+            continue;
+        };
         if item.get("type").and_then(Value::as_str) != Some("message") {
             continue;
         }
-        let Some(content_arr) = item.get("content").and_then(Value::as_array) else { continue };
+        let Some(content_arr) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
         for raw_part in content_arr {
-            let Some(part) = raw_part.as_object() else { continue };
-            let Some(text) = part.get("text").and_then(Value::as_str) else { continue };
+            let Some(part) = raw_part.as_object() else {
+                continue;
+            };
+            let Some(text) = part.get("text").and_then(Value::as_str) else {
+                continue;
+            };
             if text.is_empty() {
                 continue;
             }
@@ -386,15 +411,24 @@ fn collect_message_texts(output: &[Value]) -> Vec<MessageText> {
 }
 
 fn tweet_id(url: &str) -> Option<String> {
-    let re = Regex::new(r"https?://(?:www.)?x.com/(?:[A-Za-z0-9_]+/status|i/status)/([0-9]{1,30})").ok()?;
-    re.captures(url).and_then(|cap| cap.get(1)).map(|m| m.as_str().to_string())
+    let re = Regex::new(r"https?://(?:www.)?x.com/(?:[A-Za-z0-9_]+/status|i/status)/([0-9]{1,30})")
+        .ok()?;
+    re.captures(url)
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().to_string())
 }
 
 fn descriptive_title<'a>(raw_title: Option<&'a str>, url: &'a str) -> &'a str {
     let Some(title) = raw_title else { return url };
-    if title.is_empty() { return url; }
-    if title.chars().all(|c| c.is_ascii_digit()) { return url; }
-    if title.starts_with("http://") || title.starts_with("https://") { return url; }
+    if title.is_empty() {
+        return url;
+    }
+    if title.chars().all(|c| c.is_ascii_digit()) {
+        return url;
+    }
+    if title.starts_with("http://") || title.starts_with("https://") {
+        return url;
+    }
     title
 }
 
@@ -419,18 +453,28 @@ fn collect_queries(output: &[Value]) -> Vec<String> {
     ];
     let mut queries = Vec::new();
     for raw_item in output {
-        let Some(item) = raw_item.as_object() else { continue };
+        let Some(item) = raw_item.as_object() else {
+            continue;
+        };
         let item_type = item.get("type").and_then(Value::as_str);
         if item_type != Some("custom_tool_call") && item_type != Some("x_search_call") {
             continue;
         }
-        let Some(name) = item.get("name").and_then(Value::as_str) else { continue };
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
         if !SERVER_QUERY_TOOL_NAMES.contains(&name) {
             continue;
         }
-        let Some(input_str) = item.get("input").and_then(Value::as_str) else { continue };
-        let Ok(parsed) = serde_json::from_str::<Value>(input_str) else { continue };
-        let Some(obj) = parsed.as_object() else { continue };
+        let Some(input_str) = item.get("input").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<Value>(input_str) else {
+            continue;
+        };
+        let Some(obj) = parsed.as_object() else {
+            continue;
+        };
         let parts: Vec<String> = obj
             .iter()
             .map(|(k, v)| {
@@ -479,18 +523,24 @@ pub fn normalize_x_search_response(raw: &Value, max_results: Option<usize>) -> N
     // 1. URL citations from annotations
     for entry in &texts {
         for raw_ann in &entry.annotations {
-            let Some(ann) = raw_ann.as_object() else { continue };
+            let Some(ann) = raw_ann.as_object() else {
+                continue;
+            };
             if ann.get("type").and_then(Value::as_str) != Some("url_citation") {
                 continue;
             }
-            let Some(url) = ann.get("url").and_then(Value::as_str) else { continue };
+            let Some(url) = ann.get("url").and_then(Value::as_str) else {
+                continue;
+            };
             let title = ann.get("title").and_then(Value::as_str).map(str::to_string);
             add(url.to_string(), title);
         }
     }
 
     // 2. Tweet URLs matched in message text
-    if let Ok(tweet_url_re) = Regex::new(r"https?://(?:www.)?x.com/(?:[A-Za-z0-9_]+/status|i/status)/[0-9]{1,30}") {
+    if let Ok(tweet_url_re) =
+        Regex::new(r"https?://(?:www.)?x.com/(?:[A-Za-z0-9_]+/status|i/status)/[0-9]{1,30}")
+    {
         for entry in &texts {
             for m in tweet_url_re.find_iter(&entry.text) {
                 add(m.as_str().to_string(), None);
@@ -499,7 +549,10 @@ pub fn normalize_x_search_response(raw: &Value, max_results: Option<usize>) -> N
     }
 
     // 3. Top-level citations
-    if let Some(citations) = payload.and_then(|p| p.get("citations")).and_then(Value::as_array) {
+    if let Some(citations) = payload
+        .and_then(|p| p.get("citations"))
+        .and_then(Value::as_array)
+    {
         for c in citations {
             if let Some(url) = c.as_str() {
                 add(url.to_string(), None);
@@ -507,14 +560,19 @@ pub fn normalize_x_search_response(raw: &Value, max_results: Option<usize>) -> N
         }
     }
 
-    let mut results: Vec<XSearchResultItem> = order.into_iter().filter_map(|id| by_id.remove(&id)).collect();
+    let mut results: Vec<XSearchResultItem> = order
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect();
     if let Some(max) = max_results {
         results.truncate(max);
     }
 
     let queries = collect_queries(output);
 
-    let usage_obj = payload.and_then(|p| p.get("usage")).and_then(Value::as_object);
+    let usage_obj = payload
+        .and_then(|p| p.get("usage"))
+        .and_then(Value::as_object);
     let tool_usage_obj = usage_obj
         .and_then(|u| u.get("server_side_tool_usage_details"))
         .and_then(Value::as_object);

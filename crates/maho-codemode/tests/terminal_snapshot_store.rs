@@ -137,7 +137,10 @@ fn spilled_images_hydrate_on_get_and_the_disk_budget_drops_the_oldest() {
             .all(|snapshot| images(snapshot).is_empty()),
         "list never reads the disk"
     );
-    assert_eq!(images(&store.get("fg-3").unwrap()), std::slice::from_ref(&image));
+    assert_eq!(
+        images(&store.get("fg-3").unwrap()),
+        std::slice::from_ref(&image)
+    );
     let oldest = store.get("fg-0").unwrap();
     assert!(images(&oldest).is_empty());
     let maho_ai::types::ContentBlock::Text(note) = &oldest.result.content[1] else {

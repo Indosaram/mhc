@@ -23,7 +23,13 @@ impl CancellableLoader {
         now_ms: u64,
     ) -> Self {
         Self {
-            loader: Loader::new(spinner_color_fn, message_color_fn, message, indicator, now_ms),
+            loader: Loader::new(
+                spinner_color_fn,
+                message_color_fn,
+                message,
+                indicator,
+                now_ms,
+            ),
             aborted: false,
             on_abort: None,
         }

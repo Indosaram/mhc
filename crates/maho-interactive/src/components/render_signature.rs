@@ -279,11 +279,19 @@ mod tests {
         assert_eq!(sample_signature_string(&units).encode_utf16().count(), 324);
         let before = create_bounded_render_signature(&json!({"content": text}));
         assert!(before.len() < SIGNATURE_STRING_MAX_LENGTH);
-        for index in [0, (units.len() - 64) / 4, (units.len() - 64) / 2,
-            (units.len() - 64) * 3 / 4, units.len() - 1] {
+        for index in [
+            0,
+            (units.len() - 64) / 4,
+            (units.len() - 64) / 2,
+            (units.len() - 64) * 3 / 4,
+            units.len() - 1,
+        ] {
             let mut changed = text.clone();
             changed.replace_range(index..=index, "b");
-            assert_ne!(create_bounded_render_signature(&json!({"content": changed})), before);
+            assert_ne!(
+                create_bounded_render_signature(&json!({"content": changed})),
+                before
+            );
         }
     }
 }

@@ -236,16 +236,14 @@ fn memory_figures_for_caches(live: Vec<Arc<CacheAccounting>>) -> RecallMemoryFig
     for corpus in &corpora {
         for document in &corpus.documents {
             documents += 1;
-            document_text_bytes += 2 * (document.path.encode_utf16().count()
-                + document.description.encode_utf16().count()
-                + document.body.encode_utf16().count());
+            document_text_bytes += 2
+                * (document.path.encode_utf16().count()
+                    + document.description.encode_utf16().count()
+                    + document.body.encode_utf16().count());
         }
     }
-    let terms = super::bm25::recall_term_figures(
-        corpora
-            .iter()
-            .flat_map(|corpus| corpus.documents.iter()),
-    );
+    let terms =
+        super::bm25::recall_term_figures(corpora.iter().flat_map(|corpus| corpus.documents.iter()));
     RecallMemoryFigures {
         corpus_caches,
         documents,

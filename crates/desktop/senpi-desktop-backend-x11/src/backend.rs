@@ -117,7 +117,11 @@ impl<S: XServer, I: InputServer> X11Backend<S, I> {
 }
 
 const fn granted(granted: bool) -> &'static str {
-    if granted { "granted" } else { "unavailable" }
+    if granted {
+        "granted"
+    } else {
+        "unavailable"
+    }
 }
 
 impl<S: XServer + Send, I: InputServer + Send> Backend for X11Backend<S, I> {

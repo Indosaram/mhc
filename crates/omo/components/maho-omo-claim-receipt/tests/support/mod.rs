@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use maho_ext_api::*;
-use maho_omo_claim_receipt::index::{ClaimReceiptComponent, CLAIM_RECEIPT_NUDGE_FLAG};
-use serde_json::{json, Value};
+use maho_omo_claim_receipt::index::{CLAIM_RECEIPT_NUDGE_FLAG, ClaimReceiptComponent};
+use serde_json::{Value, json};
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,7 +45,13 @@ pub fn tool_call(call_id: &str, name: &str, args: Value) -> Value {
     })
 }
 
-pub fn tool_result(call_id: &str, tool_name: &str, text: &str, details: Value, is_error: bool) -> Value {
+pub fn tool_result(
+    call_id: &str,
+    tool_name: &str,
+    text: &str,
+    details: Value,
+    is_error: bool,
+) -> Value {
     json!({
         "type": "message",
         "id": next_id(),
@@ -70,7 +76,11 @@ pub struct CellFixture<'a> {
 pub fn eval_run(call_id: &str, cell: &CellFixture<'_>, host_calls: Vec<Value>) -> Vec<Value> {
     let status = cell.status.unwrap_or("complete");
     vec![
-        tool_call(call_id, "eval", json!({ "language": "js", "code": cell.code })),
+        tool_call(
+            call_id,
+            "eval",
+            json!({ "language": "js", "code": cell.code }),
+        ),
         tool_result(
             call_id,
             "eval",
@@ -132,7 +142,12 @@ pub fn failing_test(call_id: &str) -> Vec<Value> {
             output: "",
             status: Some("complete"),
         },
-        vec![host_bash("bun test src", " 11 pass\n 1 fail", true, json!({}))],
+        vec![host_bash(
+            "bun test src",
+            " 11 pass\n 1 fail",
+            true,
+            json!({}),
+        )],
     )
 }
 
@@ -203,7 +218,9 @@ impl SessionManager for TestSession {
             .iter()
             .enumerate()
             .map(|(index, value)| SessionEntry {
-                id: value["id"].as_str().map_or_else(|| format!("id{index}"), str::to_owned),
+                id: value["id"]
+                    .as_str()
+                    .map_or_else(|| format!("id{index}"), str::to_owned),
                 parent_id: None,
                 timestamp: "2026-01-01T00:00:00.000Z".to_owned(),
                 kind: value["type"].as_str().unwrap_or("message").to_owned(),
@@ -239,7 +256,9 @@ impl SessionManager for TestSession {
             .map(|(offset, value)| {
                 let index = start + offset;
                 SessionEntry {
-                    id: value["id"].as_str().map_or_else(|| format!("id{index}"), str::to_owned),
+                    id: value["id"]
+                        .as_str()
+                        .map_or_else(|| format!("id{index}"), str::to_owned),
                     parent_id: None,
                     timestamp: "2026-01-01T00:00:00.000Z".to_owned(),
                     kind: value["type"].as_str().unwrap_or("message").to_owned(),
@@ -321,11 +340,7 @@ impl ExtensionUi for TestUi {
         String::new()
     }
 
-    fn custom(
-        &self,
-        _: ComponentFactory,
-        _: CustomUiOptions,
-    ) -> ExtensionFuture<'_, JsonValue> {
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
         Box::pin(async { Err("UI not available".into()) })
     }
 
@@ -527,7 +542,13 @@ impl Harness {
             should_continue: false,
             context: json!({ "outcome": "completed" }),
         };
-        dispatch(&self.api, EventKind::AgentBeforeSettle, &mut settle, &self.ctx).await;
+        dispatch(
+            &self.api,
+            EventKind::AgentBeforeSettle,
+            &mut settle,
+            &self.ctx,
+        )
+        .await;
         match settle {
             ExtensionEvent::AgentBeforeSettle {
                 entries,

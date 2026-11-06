@@ -3,9 +3,9 @@
 //!
 //! Port of senpi `packages/coding-agent/src/core/skill-access.ts`.
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use sha2::{Digest, Sha256};
 
 use crate::diagnostics::ResourceDiagnostic;
 
@@ -124,9 +124,10 @@ impl BlockedSkillLinkError {
         let display = |p: &Path| -> String {
             let home = crate::config::home_dir_path();
             if inside_skill_root(p, &home)
-                && let Ok(stripped) = p.strip_prefix(&home) {
-                    return format!("~{}{}", std::path::MAIN_SEPARATOR, stripped.display());
-                }
+                && let Ok(stripped) = p.strip_prefix(&home)
+            {
+                return format!("~{}{}", std::path::MAIN_SEPARATOR, stripped.display());
+            }
             p.display().to_string()
         };
         let msg = format!(
@@ -162,32 +163,45 @@ pub fn authorize_skill_path(
     allowed: &SkillAllowedSet,
     directory: bool,
 ) -> Result<PathBuf, BlockedSkillLinkError> {
-    if provenance.is_none() || matches!(provenance.map(|p| p.kind), Some(SkillProvenanceKind::User)) {
+    if provenance.is_none() || matches!(provenance.map(|p| p.kind), Some(SkillProvenanceKind::User))
+    {
         return Ok(path.to_path_buf());
     }
 
-    let Some(prov) = provenance else { return Ok(path.to_path_buf()); };
+    let Some(prov) = provenance else {
+        return Ok(path.to_path_buf());
+    };
     let canonical = match std::fs::canonicalize(path) {
         Ok(c) => c,
-        Err(_) => return Err(BlockedSkillLinkError::new(path, Path::new("unresolvable target"))),
+        Err(_) => {
+            return Err(BlockedSkillLinkError::new(
+                path,
+                Path::new("unresolvable target"),
+            ));
+        }
     };
 
     let mut allowed_roots = Vec::new();
     if let Some(ref pr) = prov.project_root
-        && let Ok(c) = std::fs::canonicalize(pr) {
-            allowed_roots.push(c);
-        }
+        && let Ok(c) = std::fs::canonicalize(pr)
+    {
+        allowed_roots.push(c);
+    }
     if prov.kind == SkillProvenanceKind::ProjectSelected
-        && let Ok(c) = std::fs::canonicalize(&prov.selected_root) {
-            allowed_roots.push(c);
-        }
+        && let Ok(c) = std::fs::canonicalize(&prov.selected_root)
+    {
+        allowed_roots.push(c);
+    }
     for root in &allowed.roots {
         if let Ok(c) = std::fs::canonicalize(root) {
             allowed_roots.push(c);
         }
     }
 
-    if allowed_roots.iter().any(|root| inside_skill_root(&canonical, root)) {
+    if allowed_roots
+        .iter()
+        .any(|root| inside_skill_root(&canonical, root))
+    {
         return Ok(canonical);
     }
 
@@ -196,7 +210,12 @@ pub fn authorize_skill_path(
         return Ok(canonical);
     }
 
-    if directory && allowed.files.iter().any(|f| inside_skill_root(Path::new(f), &canonical)) {
+    if directory
+        && allowed
+            .files
+            .iter()
+            .any(|f| inside_skill_root(Path::new(f), &canonical))
+    {
         return Ok(canonical);
     }
 
@@ -208,7 +227,8 @@ pub fn read_skill_file_checked(
     provenance: Option<&SkillProvenance>,
     allowed: &SkillAllowedSet,
 ) -> Result<String, BlockedSkillLinkError> {
-    if provenance.is_none() || matches!(provenance.map(|p| p.kind), Some(SkillProvenanceKind::User)) {
+    if provenance.is_none() || matches!(provenance.map(|p| p.kind), Some(SkillProvenanceKind::User))
+    {
         return std::fs::read_to_string(path).map_err(|_| BlockedSkillLinkError::new(path, path));
     }
 
@@ -224,16 +244,16 @@ pub fn read_skill_file_checked(
         }
 
         use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new().read(true).custom_flags(nix::libc::O_NOFOLLOW).open(&canonical)
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&canonical)
             .map_err(|_| BlockedSkillLinkError::new(path, &canonical))?;
         let opened = file
             .metadata()
             .map_err(|_| BlockedSkillLinkError::new(path, &canonical))?;
 
-        if !opened.is_file()
-            || opened.dev() != expected.dev()
-            || opened.ino() != expected.ino()
-        {
+        if !opened.is_file() || opened.dev() != expected.dev() || opened.ino() != expected.ino() {
             return Err(BlockedSkillLinkError::new(path, &canonical));
         }
 
@@ -253,7 +273,8 @@ pub fn read_skill_file_checked(
         if !expected.is_file() {
             return Err(BlockedSkillLinkError::new(path, &canonical));
         }
-        std::fs::read_to_string(&canonical).map_err(|_| BlockedSkillLinkError::new(path, &canonical))
+        std::fs::read_to_string(&canonical)
+            .map_err(|_| BlockedSkillLinkError::new(path, &canonical))
     }
 }
 

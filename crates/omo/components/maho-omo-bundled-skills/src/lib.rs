@@ -13,8 +13,9 @@ pub use contributed_skill::{
     host_command_info, host_commands_from_runtime, read_disabled_skills, read_discover_cwd,
     resolve_contributed_skill,
 };
-pub use override_dir::{BUNDLED_SKILLS_OVERRIDE_ENV, resolve_bundled_skills_override};
 pub use index::{
     BUNDLED_SKILLS_COMPONENT_NAME, BUNDLED_SKILLS_ROOT_ENV, BundledSkillsComponent,
-    BundledSkillsComponentOptions, resolve_bundled_skills_dir, resolve_bundled_skills_dir_from, resolve_bundled_skills_dir_logged,
+    BundledSkillsComponentOptions, resolve_bundled_skills_dir, resolve_bundled_skills_dir_from,
+    resolve_bundled_skills_dir_logged,
 };
+pub use override_dir::{BUNDLED_SKILLS_OVERRIDE_ENV, resolve_bundled_skills_override};

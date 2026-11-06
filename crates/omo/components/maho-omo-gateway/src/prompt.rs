@@ -2,16 +2,19 @@
 //!
 //! Upstream counterpart: `prompt.ts`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use rusqlite::Connection;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::rules_block::compose_gateway_rules_block;
-use crate::store_extension::{block_for_session, SessionRulesBlock};
+use crate::store_extension::{SessionRulesBlock, block_for_session};
 
 /// Abstraction over the gateway store for prompt rules lookup.
 pub trait GatewayRulesStore: Send + Sync {
-    fn block_for_session(&self, session_durable_id: &str) -> Result<Option<SessionRulesBlock>, String>;
+    fn block_for_session(
+        &self,
+        session_durable_id: &str,
+    ) -> Result<Option<SessionRulesBlock>, String>;
 }
 
 /// A real rusqlite-backed store implementing `GatewayRulesStore`.
@@ -28,13 +31,20 @@ impl SqliteGatewayRulesStore {
 }
 
 impl GatewayRulesStore for SqliteGatewayRulesStore {
-    fn block_for_session(&self, session_durable_id: &str) -> Result<Option<SessionRulesBlock>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Mutex poisoned: {e}"))?;
+    fn block_for_session(
+        &self,
+        session_durable_id: &str,
+    ) -> Result<Option<SessionRulesBlock>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Mutex poisoned: {e}"))?;
         block_for_session(&conn, session_durable_id).map_err(|e| e.to_string())
     }
 }
 
-pub type EnsureStoreFn = Arc<dyn Fn() -> Result<Option<Arc<dyn GatewayRulesStore>>, String> + Send + Sync>;
+pub type EnsureStoreFn =
+    Arc<dyn Fn() -> Result<Option<Arc<dyn GatewayRulesStore>>, String> + Send + Sync>;
 pub type LookupErrorFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Options for configuring the prompt handler.

@@ -123,7 +123,13 @@ impl Host {
     }
 
     /// Runs `program args` in `cwd` with all stdio discarded; killed after `timeout`.
-    pub async fn run(&self, program: &Path, args: &[OsString], cwd: &Path, timeout: Duration) -> Exit {
+    pub async fn run(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        cwd: &Path,
+        timeout: Duration,
+    ) -> Exit {
         let mut command = command_for(program, args);
         command
             .current_dir(cwd)
@@ -245,7 +251,10 @@ impl SharedRuns {
         let slot = Arc::clone(lock(&self.slots).entry(path.to_path_buf()).or_default());
         let outcome = slot.get_or_init(|| work).await.clone();
         let mut slots = lock(&self.slots);
-        if slots.get(path).is_some_and(|current| Arc::ptr_eq(current, &slot)) {
+        if slots
+            .get(path)
+            .is_some_and(|current| Arc::ptr_eq(current, &slot))
+        {
             slots.remove(path);
         }
         outcome

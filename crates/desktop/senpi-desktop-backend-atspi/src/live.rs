@@ -48,7 +48,11 @@ impl AtSpiBus for LiveBus {
     }
 
     fn role(&mut self, node: &ObjectRefOwned) -> BusResult<Role> {
-        self.with_proxy("role", node, |p: Accessible| async move { p.get_role().await })
+        self.with_proxy(
+            "role",
+            node,
+            |p: Accessible| async move { p.get_role().await },
+        )
     }
 
     fn role_name(&mut self, node: &ObjectRefOwned) -> BusResult<String> {
@@ -64,7 +68,11 @@ impl AtSpiBus for LiveBus {
     }
 
     fn state(&mut self, node: &ObjectRefOwned) -> BusResult<StateSet> {
-        self.with_proxy("state", node, |p: Accessible| async move { p.get_state().await })
+        self.with_proxy(
+            "state",
+            node,
+            |p: Accessible| async move { p.get_state().await },
+        )
     }
 
     fn interfaces(&mut self, node: &ObjectRefOwned) -> BusResult<InterfaceSet> {
@@ -80,11 +88,9 @@ impl AtSpiBus for LiveBus {
     }
 
     fn children(&mut self, node: &ObjectRefOwned) -> BusResult<Vec<ObjectRefOwned>> {
-        self.with_proxy(
-            "children",
-            node,
-            |p: Accessible| async move { p.get_children().await },
-        )
+        self.with_proxy("children", node, |p: Accessible| async move {
+            p.get_children().await
+        })
     }
 
     fn child_count(&mut self, node: &ObjectRefOwned) -> BusResult<i32> {
@@ -94,13 +100,22 @@ impl AtSpiBus for LiveBus {
     }
 
     fn parent(&mut self, node: &ObjectRefOwned) -> BusResult<ObjectRefOwned> {
-        self.with_proxy("parent", node, |p: Accessible| async move { p.parent().await })
+        self.with_proxy(
+            "parent",
+            node,
+            |p: Accessible| async move { p.parent().await },
+        )
     }
 
     fn extents(&mut self, node: &ObjectRefOwned) -> BusResult<Extents> {
         self.with_proxy("extents", node, |p: ComponentProxy<'static>| async move {
             let (x, y, width, height) = p.get_extents(CoordType::Screen).await?;
-            Ok(Extents { x, y, width, height })
+            Ok(Extents {
+                x,
+                y,
+                width,
+                height,
+            })
         })
     }
 
@@ -151,9 +166,11 @@ impl AtSpiBus for LiveBus {
     }
 
     fn set_text_contents(&mut self, node: &ObjectRefOwned, text: &str) -> BusResult<bool> {
-        self.with_proxy("text value", node, |p: EditableTextProxy<'static>| async move {
-            p.set_text_contents(text).await
-        })
+        self.with_proxy(
+            "text value",
+            node,
+            |p: EditableTextProxy<'static>| async move { p.set_text_contents(text).await },
+        )
     }
 
     fn set_current_value(&mut self, node: &ObjectRefOwned, value: f64) -> BusResult<()> {

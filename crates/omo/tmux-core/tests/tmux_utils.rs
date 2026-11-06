@@ -7,11 +7,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::env;
 use tmux_core::{
-    FetchFn, IsServerRunningOptions, ServerHealthState, TmuxLayout,
-    build_subagent_pane_title, build_tmux_placeholder_command, escape_tmux_format,
-    create_server_health_state_for_testing, is_inside_tmux_environment,
-    is_server_marked_running_in_process, is_server_running, is_tmux_pane_compatible_environment,
-    mark_server_running_in_process, reset_server_check,
+    FetchFn, IsServerRunningOptions, ServerHealthState, TmuxLayout, build_subagent_pane_title,
+    build_tmux_placeholder_command, create_server_health_state_for_testing, escape_tmux_format,
+    is_inside_tmux_environment, is_server_marked_running_in_process, is_server_running,
+    is_tmux_pane_compatible_environment, mark_server_running_in_process, reset_server_check,
 };
 
 fn fetch_recorder(status: Result<u16, String>) -> (FetchFn, Arc<AtomicUsize>) {
@@ -100,7 +99,10 @@ fn is_server_running_counts_a_password_protected_server_401_403_as_running() {
         let mut state = create_server_health_state_for_testing();
         let (fetch, _) = fetch_recorder(Ok(status));
         // alive, so the stale-pane sweep keeps its panes
-        assert!(check("http://localhost:4096", &fetch, &mut state), "{status}");
+        assert!(
+            check("http://localhost:4096", &fetch, &mut state),
+            "{status}"
+        );
     }
 }
 
@@ -186,7 +188,10 @@ fn pane_title_removes_nuls_truncates_and_escapes_tmux_formats() {
     assert_eq!(build_subagent_pane_title("ab\0#cd"), "omo-subagent-ab##cd");
     // Upstream cuts the description to 20 characters after adding the 13-character prefix.
     // See /tmp/parity-up/omo-dev/packages/tmux-core/src/tmux-utils/pane-command.ts:29-31.
-    assert_eq!(build_subagent_pane_title(&"x".repeat(30)).chars().count(), 33);
+    assert_eq!(
+        build_subagent_pane_title(&"x".repeat(30)).chars().count(),
+        33
+    );
     assert_eq!(escape_tmux_format("a#b"), "a##b");
 }
 

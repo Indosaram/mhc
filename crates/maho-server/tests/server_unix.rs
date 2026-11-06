@@ -1,4 +1,6 @@
 #![cfg(unix)]
+use maho_chord::types::JsonValue as Value;
+use maho_server::transport_json as json;
 use maho_server::{
     protocol::codec::{MessageDecoder, encode_client_message},
     server::{
@@ -8,8 +10,6 @@ use maho_server::{
         unix::{UnixServerOptions, create_unix_server, get_unix_socket_path},
     },
 };
-use maho_chord::types::JsonValue as Value;
-use maho_server::transport_json as json;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -23,9 +23,14 @@ fn invalid_server_identity_and_timer_limits_are_rejected_before_publication() {
     let directory = tempfile::tempdir().expect("server options directory");
     let path = directory.path().join("invalid.sock");
     for identity in ["", "invalid-server"] {
-        let result = create_unix_server(Arc::new(Host), UnixServerOptions {
-            server_id: identity.into(), path: path.clone(), ..Default::default()
-        });
+        let result = create_unix_server(
+            Arc::new(Host),
+            UnixServerOptions {
+                server_id: identity.into(),
+                path: path.clone(),
+                ..Default::default()
+            },
+        );
         assert!(matches!(result, Err(error) if error.code == "invalid_request"));
         assert!(!path.exists());
     }
@@ -39,9 +44,14 @@ fn invalid_server_identity_and_timer_limits_are_rejected_before_publication() {
             ..Default::default()
         },
     ] {
-        let result = create_unix_server(Arc::new(Host), UnixServerOptions {
-            server_id: ID.into(), path: path.clone(), ..options
-        });
+        let result = create_unix_server(
+            Arc::new(Host),
+            UnixServerOptions {
+                server_id: ID.into(),
+                path: path.clone(),
+                ..options
+            },
+        );
         assert!(matches!(result, Err(error) if error.code == "invalid_request"));
         assert!(!path.exists());
     }
@@ -75,9 +85,15 @@ async fn a_live_listener_is_not_unlinked_by_a_second_start() {
     let path = directory.path().join("live.sock");
     let first = start_unix(path.clone()).await;
     let before = std::fs::metadata(&path).expect("first socket");
-    let second = create_unix_server(Arc::new(Host), UnixServerOptions {
-        server_id: ID.into(), path: path.clone(), ..Default::default()
-    }).expect("second server options");
+    let second = create_unix_server(
+        Arc::new(Host),
+        UnixServerOptions {
+            server_id: ID.into(),
+            path: path.clone(),
+            ..Default::default()
+        },
+    )
+    .expect("second server options");
     assert!(second.start().await.is_err());
     let after = std::fs::metadata(&path).expect("first socket remains");
     assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
@@ -92,13 +108,25 @@ async fn a_regular_file_at_the_socket_path_is_preserved() {
     let directory = tempfile::tempdir().expect("socket directory");
     let path = directory.path().join("file.sock");
     std::fs::write(&path, b"preserved bytes").expect("fixture file");
-    let server = create_unix_server(Arc::new(Host), UnixServerOptions {
-        server_id: ID.into(), path: path.clone(), ..Default::default()
-    }).expect("server options");
+    let server = create_unix_server(
+        Arc::new(Host),
+        UnixServerOptions {
+            server_id: ID.into(),
+            path: path.clone(),
+            ..Default::default()
+        },
+    )
+    .expect("server options");
     assert!(server.start().await.is_err());
-    assert_eq!(std::fs::read(&path).expect("preserved file"), b"preserved bytes");
+    assert_eq!(
+        std::fs::read(&path).expect("preserved file"),
+        b"preserved bytes"
+    );
     server.close().await.expect("close rejected server");
-    assert_eq!(std::fs::read(&path).expect("preserved file after close"), b"preserved bytes");
+    assert_eq!(
+        std::fs::read(&path).expect("preserved file after close"),
+        b"preserved bytes"
+    );
 }
 
 #[tokio::test]
@@ -215,7 +243,10 @@ impl RoutedServerServiceAttachment for Services {
         Box::pin(async move {
             if call["member"] == json!("subscribe") {
                 publish(
-                    match &call["args"][0] { Value::String(id) => id.clone(), _ => panic!("subscription id") },
+                    match &call["args"][0] {
+                        Value::String(id) => id.clone(),
+                        _ => panic!("subscription id"),
+                    },
                     json!({"type":"state","member":"value","sequence":1,"ops":[["s",["n"],1]]}),
                     context.clone(),
                 )
@@ -347,7 +378,11 @@ async fn subscription_flushes_updates_after_snapshot_over_real_client() {
     .unwrap();
     client.connect().await.unwrap();
     let mut subscription = client
-        .subscribe(json!({"serverId":ID}), &"echo".into(), maho_chord::types::ServiceMode::Singleton)
+        .subscribe(
+            json!({"serverId":ID}),
+            &"echo".into(),
+            maho_chord::types::ServiceMode::Singleton,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -454,7 +489,10 @@ async fn connect_ready(path: &std::path::Path) -> (UnixStream, MessageDecoder) {
     let mut stream = UnixStream::connect(path).await.expect("test fixture");
     let mut decoder = MessageDecoder::server();
     write(&mut stream, json!({"type":"hello","version":8})).await;
-    assert_eq!(read(&mut stream, &mut decoder).await["type"], json!("hello"));
+    assert_eq!(
+        read(&mut stream, &mut decoder).await["type"],
+        json!("hello")
+    );
     (stream, decoder)
 }
 async fn assert_closed(stream: &mut UnixStream) {

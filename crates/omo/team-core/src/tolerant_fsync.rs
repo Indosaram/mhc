@@ -12,11 +12,18 @@ fn is_tolerated(error: &io::Error) -> bool {
         // libuv maps these Win32 failures to EPERM/EACCES/ENOTSUP/EINVAL.
         matches!(error.raw_os_error(), Some(5 | 50 | 87 | 1314))
             || (error.raw_os_error().is_none()
-                && matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput))
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::Unsupported
+                        | io::ErrorKind::InvalidInput
+                ))
     }
     #[cfg(not(windows))]
     {
-        error.raw_os_error().is_some_and(|code| TOLERATED_FSYNC_CODES.contains(&code))
+        error
+            .raw_os_error()
+            .is_some_and(|code| TOLERATED_FSYNC_CODES.contains(&code))
     }
 }
 

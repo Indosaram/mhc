@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use senpi_desktop_protocol::{DESKTOP_METHODS, ELEMENT_METHODS, WINDOW_METHODS};
+use std::collections::BTreeSet;
 
 const CHAIN_METHOD_SNAPSHOT: &[&str] = &[
     "actions",
@@ -59,12 +59,18 @@ fn is_host_control(name: &str) -> bool {
 
 #[test]
 fn equals_the_snapshot_when_every_table_is_unioned() {
-    let expected: Vec<String> = CHAIN_METHOD_SNAPSHOT.iter().map(|s| (*s).to_string()).collect();
+    let expected: Vec<String> = CHAIN_METHOD_SNAPSHOT
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     assert_eq!(chain_methods(), expected);
 }
 
 #[test]
 fn exposes_no_stop_path_resume_or_session_control_to_a_chain() {
-    let exposed: Vec<String> = chain_methods().into_iter().filter(|n| is_host_control(n)).collect();
+    let exposed: Vec<String> = chain_methods()
+        .into_iter()
+        .filter(|n| is_host_control(n))
+        .collect();
     assert!(exposed.is_empty(), "Exposed host controls: {:?}", exposed);
 }

@@ -19,7 +19,10 @@ pub struct ThemeJson {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ThemeAppearance { Dark, Light }
+pub enum ThemeAppearance {
+    Dark,
+    Light,
+}
 #[derive(Debug, thiserror::Error)]
 pub enum ThemeError {
     #[error("Invalid theme: {0}")]
@@ -48,27 +51,51 @@ fn is_color_value(value: &serde_json::Value) -> bool {
 
 /// Schema errors other than missing color tokens, as `(instance path, message)` pairs in the
 /// order the TypeBox `ThemeJsonSchema` walk reports them.
-fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -> Vec<(String, String)> {
+fn collect_schema_errors(
+    value: &serde_json::Value,
+    missing: &mut Vec<String>,
+) -> Vec<(String, String)> {
     let mut errors = Vec::new();
     let Some(root) = value.as_object() else {
         errors.push((String::new(), "must be object".to_owned()));
         return errors;
     };
-    let absent: Vec<&str> = ["name", "colors"].into_iter().filter(|key| !root.contains_key(*key)).collect();
+    let absent: Vec<&str> = ["name", "colors"]
+        .into_iter()
+        .filter(|key| !root.contains_key(*key))
+        .collect();
     if !absent.is_empty() {
-        errors.push((String::new(), format!("must have required properties {}", absent.join(", "))));
+        errors.push((
+            String::new(),
+            format!("must have required properties {}", absent.join(", ")),
+        ));
     }
-    if root.get("$schema").is_some_and(|schema| !schema.is_string()) {
+    if root
+        .get("$schema")
+        .is_some_and(|schema| !schema.is_string())
+    {
         errors.push(("/$schema".to_owned(), "must be string".to_owned()));
     }
     if root.get("name").is_some_and(|name| !name.is_string()) {
         errors.push(("/name".to_owned(), "must be string".to_owned()));
     }
-    if root.get("appearance").is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light"))) {
-        errors.push(("/appearance".to_owned(), "must be equal to one of the allowed values".to_owned()));
+    if root
+        .get("appearance")
+        .is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light")))
+    {
+        errors.push((
+            "/appearance".to_owned(),
+            "must be equal to one of the allowed values".to_owned(),
+        ));
     }
-    if root.get("appearance").is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light"))) {
-        errors.push(("/appearance".to_owned(), "must be equal to one of the allowed values".to_owned()));
+    if root
+        .get("appearance")
+        .is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light")))
+    {
+        errors.push((
+            "/appearance".to_owned(),
+            "must be equal to one of the allowed values".to_owned(),
+        ));
     }
     let mut record = |key: &str, required: &[&str], optional_keys: Option<&[&str]>| {
         let Some(entry) = root.get(key) else { return };
@@ -82,9 +109,14 @@ fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -
             }
         }
         for (name, value) in object {
-            let checked = optional_keys.is_none_or(|keys| keys.contains(&name.as_str()) || required.contains(&name.as_str()));
+            let checked = optional_keys.is_none_or(|keys| {
+                keys.contains(&name.as_str()) || required.contains(&name.as_str())
+            });
             if checked && !is_color_value(value) {
-                errors.push((format!("/{key}/{name}"), "must match a schema in anyOf".to_owned()));
+                errors.push((
+                    format!("/{key}/{name}"),
+                    "must match a schema in anyOf".to_owned(),
+                ));
             }
         }
     };
@@ -103,7 +135,10 @@ fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -
             Some(object) => {
                 for (name, value) in object {
                     if export_keys.contains(&name.as_str()) && !is_color_value(value) {
-                        errors.push((format!("/export/{name}"), "must match a schema in anyOf".to_owned()));
+                        errors.push((
+                            format!("/export/{name}"),
+                            "must match a schema in anyOf".to_owned(),
+                        ));
                     }
                 }
             }
@@ -123,14 +158,27 @@ pub fn validate_theme_json(label: &str, value: serde_json::Value) -> Result<Them
             missing.sort();
             missing.dedup();
             message.push_str("\nMissing required color tokens:\n");
-            message.push_str(&missing.iter().map(|color| format!("  - {color}")).collect::<Vec<_>>().join("\n"));
+            message.push_str(
+                &missing
+                    .iter()
+                    .map(|color| format!("  - {color}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
             message.push_str("\n\nPlease add these colors to your theme's \"colors\" object.");
-            message.push_str("\nSee the built-in themes (dark.json, light.json) for reference values.");
+            message.push_str(
+                "\nSee the built-in themes (dark.json, light.json) for reference values.",
+            );
         }
         if !other_errors.is_empty() {
             let lines: Vec<String> = other_errors
                 .into_iter()
-                .map(|(path, error)| format!("  - {}: {error}", if path.is_empty() { "/" } else { path.as_str() }))
+                .map(|(path, error)| {
+                    format!(
+                        "  - {}: {error}",
+                        if path.is_empty() { "/" } else { path.as_str() }
+                    )
+                })
                 .collect();
             message.push_str(&format!("\n\nOther errors:\n{}", lines.join("\n")));
         }
@@ -160,7 +208,9 @@ mod tests {
         let colors = doc["colors"].as_object_mut().expect("colors object");
         colors.remove("text");
         colors.remove("accent");
-        let error = validate_theme_json("mine", doc).expect_err("missing tokens").to_string();
+        let error = validate_theme_json("mine", doc)
+            .expect_err("missing tokens")
+            .to_string();
         assert_eq!(
             error,
             "Invalid theme \"mine\":\n\nMissing required color tokens:\n  - accent\n  - text\n\nPlease add these colors to your theme's \"colors\" object.\nSee the built-in themes (dark.json, light.json) for reference values."
@@ -172,7 +222,9 @@ mod tests {
         let mut doc = dark();
         doc["colors"]["accent"] = serde_json::json!(true);
         doc["name"] = serde_json::json!(7);
-        let error = validate_theme_json("mine", doc).expect_err("wrong types").to_string();
+        let error = validate_theme_json("mine", doc)
+            .expect_err("wrong types")
+            .to_string();
         assert_eq!(
             error,
             "Invalid theme \"mine\":\n\n\nOther errors:\n  - /name: must be string\n  - /colors/accent: must match a schema in anyOf"

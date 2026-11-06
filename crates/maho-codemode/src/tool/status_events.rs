@@ -17,13 +17,18 @@ fn trim_status_history(events: &mut Vec<Value>) {
         return;
     }
     let remove_count = events.len() - STATUS_EVENT_HISTORY_LIMIT + 1;
-    events.splice(0..remove_count, [json!({"op": OMITTED_STATUS_EVENTS_OP, "count": remove_count})]);
+    events.splice(
+        0..remove_count,
+        [json!({"op": OMITTED_STATUS_EVENTS_OP, "count": remove_count})],
+    );
 }
 
 pub fn upsert_status_event(events: &mut Vec<Value>, event: Value) {
     if event["op"] == "agent"
         && let Some(id) = event["id"].as_str()
-        && let Some(index) = events.iter().position(|candidate| candidate["op"] == "agent" && candidate["id"].as_str() == Some(id))
+        && let Some(index) = events.iter().position(|candidate| {
+            candidate["op"] == "agent" && candidate["id"].as_str() == Some(id)
+        })
     {
         events[index] = event;
         trim_status_history(events);

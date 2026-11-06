@@ -1,5 +1,5 @@
-use maho_chord::{delta::*, JsonValue};
-use serde_json::{json, Value};
+use maho_chord::{JsonValue, delta::*};
+use serde_json::{Value, json};
 
 fn value(v: Value) -> JsonValue {
     v.into()
@@ -15,10 +15,16 @@ fn codec_interns_second_use_and_resets_at_replacement() {
     let first = ops(json!([["s", ["text"], "a"], ["a", ["text"], "b"]]));
     let second = ops(json!([["t", ["text"], 1]]));
     let wire = encoder.encode(&first);
-    assert_eq!(serde_json::to_value(&wire).expect("serialize"), json!([["s", ["text"], "a"], ["a", "b"]]));
+    assert_eq!(
+        serde_json::to_value(&wire).expect("serialize"),
+        json!([["s", ["text"], "a"], ["a", "b"]])
+    );
     assert_eq!(decoder.decode(&wire).expect("decode"), first);
     let wire = encoder.encode(&second);
-    assert_eq!(serde_json::to_value(&wire).expect("serialize"), json!([["#", 0, ["text"]], ["t", 0, 1]]));
+    assert_eq!(
+        serde_json::to_value(&wire).expect("serialize"),
+        json!([["#", 0, ["text"]], ["t", 0, 1]])
+    );
     assert_eq!(decoder.decode(&wire).expect("decode"), second);
     let recovery = ops(json!([["r",{"text":"x"}],["a",["text"],"y"]]));
     let wire = encoder.encode(&recovery);
@@ -61,9 +67,11 @@ fn malformed_operations_are_rejected_before_replay() {
     }
     assert!(decoder().decode(&[json!(["d"])]).is_err());
     assert!(decoder().decode(&[json!(["s", 7, 1])]).is_err());
-    assert!(decoder()
-        .decode(&[json!(["#", 0, []]), json!(["s", 0, 1])])
-        .is_err());
+    assert!(
+        decoder()
+            .decode(&[json!(["#", 0, []]), json!(["s", 0, 1])])
+            .is_err()
+    );
 }
 
 #[test]
@@ -105,9 +113,11 @@ fn immutable_replay_preserves_payload_and_untouched_container_identity() {
             json!({"text":"cdef!","stable":{"n":7},"placed":{"nested":{"n":2}},"rows":[3,1,4,5]})
         )
     );
-    assert!(resolve_value(&result, &["stable".into()])
-        .expect("stable")
-        .same_identity(resolve_value(&base, &["stable".into()]).expect("stable")));
+    assert!(
+        resolve_value(&result, &["stable".into()])
+            .expect("stable")
+            .same_identity(resolve_value(&base, &["stable".into()]).expect("stable"))
+    );
     assert_eq!(payload, value(json!({"nested":{"n":1}})));
     assert_eq!(
         resolve_value(&base, &["text".into()]).expect("text"),

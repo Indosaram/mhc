@@ -27,7 +27,8 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
     let mut process = {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
         let mut cmd = tokio::process::Command::new(comspec);
-        cmd.args(["/d", "/s", "/c"]).raw_arg(format!("\"{command}\""));
+        cmd.args(["/d", "/s", "/c"])
+            .raw_arg(format!("\"{command}\""));
         cmd
     };
     #[cfg(not(windows))]
@@ -36,7 +37,10 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
         cmd.arg("-c").arg(command);
         cmd
     };
-    process.stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null());
+    process
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
     for (key, value) in env {
         process.env(key, value);
     }
@@ -44,7 +48,10 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
-            return CommandOutcome { executed: error.kind() != std::io::ErrorKind::NotFound, value: None };
+            return CommandOutcome {
+                executed: error.kind() != std::io::ErrorKind::NotFound,
+                value: None,
+            };
         }
     };
     let mut stdout = child.stdout.take();
@@ -72,16 +79,30 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
         Ok(Some(buffer)) => {
             let status = child.wait().await.ok();
             let text = String::from_utf8_lossy(&buffer).trim().to_owned();
-            let value = if status.map(|status| status.success()).unwrap_or(false) && !text.is_empty() { Some(text) } else { None };
-            CommandOutcome { executed: true, value }
+            let value =
+                if status.map(|status| status.success()).unwrap_or(false) && !text.is_empty() {
+                    Some(text)
+                } else {
+                    None
+                };
+            CommandOutcome {
+                executed: true,
+                value,
+            }
         }
         Ok(None) => {
             let _ = child.start_kill();
-            CommandOutcome { executed: true, value: None }
+            CommandOutcome {
+                executed: true,
+                value: None,
+            }
         }
         Err(_) => {
             let _ = child.start_kill();
-            CommandOutcome { executed: true, value: None }
+            CommandOutcome {
+                executed: true,
+                value: None,
+            }
         }
     }
 }
@@ -110,7 +131,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_prints_a_value_returns_it() {
-        assert_eq!(run_config_command("!echo token-value", &[]).await.as_deref(), Some("token-value"));
+        assert_eq!(
+            run_config_command("!echo token-value", &[])
+                .await
+                .as_deref(),
+            Some("token-value")
+        );
     }
 
     #[tokio::test]
@@ -127,7 +153,14 @@ mod tests {
     #[tokio::test]
     async fn a_command_reads_the_passed_environment() {
         let env = vec![("MAHO_TEST_KEY".to_owned(), "env-value".to_owned())];
-        let cmd = if cfg!(windows) { "!echo %MAHO_TEST_KEY%" } else { "!printenv MAHO_TEST_KEY" };
-        assert_eq!(run_config_command(cmd, &env).await.as_deref(), Some("env-value"));
+        let cmd = if cfg!(windows) {
+            "!echo %MAHO_TEST_KEY%"
+        } else {
+            "!printenv MAHO_TEST_KEY"
+        };
+        assert_eq!(
+            run_config_command(cmd, &env).await.as_deref(),
+            Some("env-value")
+        );
     }
 }

@@ -24,7 +24,10 @@ fn get_dir_lock(dir: &Path) -> Arc<Mutex<()>> {
 
 #[cfg(test)]
 pub(crate) fn config_mutation_lock_is_held(dir: &Path) -> bool {
-    matches!(get_dir_lock(dir).try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    matches!(
+        get_dir_lock(dir).try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    )
 }
 
 /// Tests whether an error message or GitError represents Git config file lock contention.

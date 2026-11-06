@@ -1,4 +1,4 @@
-use maho_interactive::grok_mermaid::{render, Cls};
+use maho_interactive::grok_mermaid::{Cls, render};
 use serde_json::Value;
 
 fn fixture() -> Value {
@@ -19,7 +19,10 @@ fn class_name(cls: Cls) -> &'static str {
 #[test]
 fn grok_mermaid_matches_pinned_upstream_goldens() {
     let fixture = fixture();
-    assert_eq!(fixture["provenance"]["senpiCommit"], "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407");
+    assert_eq!(
+        fixture["provenance"]["senpiCommit"],
+        "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407"
+    );
     assert_eq!(fixture["provenance"]["package"], "grok-mermaid");
     assert_eq!(fixture["provenance"]["version"], "0.2.3");
 
@@ -38,16 +41,42 @@ fn grok_mermaid_matches_pinned_upstream_goldens() {
         assert_eq!(actual.plain, expected_plain, "{name}: plain output");
 
         let expected_styled = expected["styled"].as_array().expect("styled rows");
-        assert_eq!(actual.styled.len(), expected_styled.len(), "{name}: styled row count");
-        for (row_index, (actual_row, expected_row)) in actual.styled.iter().zip(expected_styled).enumerate() {
-            assert_eq!(actual_row.len(), expected_row.as_array().expect("styled row").len(), "{name}: spans in row {row_index}");
-            for (span_index, (span, expected_span)) in actual_row.iter().zip(expected_row.as_array().expect("styled row")).enumerate() {
-                assert_eq!(span.text, expected_span["text"].as_str().expect("span text"), "{name}: text at {row_index}:{span_index}");
-                assert_eq!(class_name(span.cls), expected_span["cls"].as_str().expect("span class"), "{name}: class at {row_index}:{span_index}");
+        assert_eq!(
+            actual.styled.len(),
+            expected_styled.len(),
+            "{name}: styled row count"
+        );
+        for (row_index, (actual_row, expected_row)) in
+            actual.styled.iter().zip(expected_styled).enumerate()
+        {
+            assert_eq!(
+                actual_row.len(),
+                expected_row.as_array().expect("styled row").len(),
+                "{name}: spans in row {row_index}"
+            );
+            for (span_index, (span, expected_span)) in actual_row
+                .iter()
+                .zip(expected_row.as_array().expect("styled row"))
+                .enumerate()
+            {
+                assert_eq!(
+                    span.text,
+                    expected_span["text"].as_str().expect("span text"),
+                    "{name}: text at {row_index}:{span_index}"
+                );
+                assert_eq!(
+                    class_name(span.cls),
+                    expected_span["cls"].as_str().expect("span class"),
+                    "{name}: class at {row_index}:{span_index}"
+                );
             }
         }
 
-        assert_eq!(actual.width, expected["width"].as_u64().expect("diagram width") as usize, "{name}: width");
+        assert_eq!(
+            actual.width,
+            expected["width"].as_u64().expect("diagram width") as usize,
+            "{name}: width"
+        );
         let expected_warnings: Vec<&str> = expected["warnings"]
             .as_array()
             .expect("warnings")

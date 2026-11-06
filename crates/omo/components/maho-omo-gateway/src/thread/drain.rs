@@ -9,11 +9,16 @@ pub type OnAdmittedCallback = Option<Arc<dyn Fn(&str, &str) + Send + Sync>>;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use super::adapter::{Admission, DrainWakeEvent, GatewayAdmissionKind, SessionRuntimePort, WakeReason};
+use super::adapter::{
+    Admission, DrainWakeEvent, GatewayAdmissionKind, SessionRuntimePort, WakeReason,
+};
 use super::decision::{DeliveryDecision, RefusalKind, TargetState, decide_delivery};
 use super::provenance::{delivery_provenance_line, delivery_sender, render_delivery_text};
 use super::store_api::GatewayStoreApi;
-use super::types::{AdmissionLedger, ClaimOutcome, DeliveryRow, GatewayDeliveryMode, OutcomeRecord, ProcessIdentity, ReconcileRequest, RecordOutcomeRequest, RefusalReason};
+use super::types::{
+    AdmissionLedger, ClaimOutcome, DeliveryRow, GatewayDeliveryMode, OutcomeRecord,
+    ProcessIdentity, ReconcileRequest, RecordOutcomeRequest, RefusalReason,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InboxDrainResult {
@@ -22,11 +27,21 @@ pub struct InboxDrainResult {
 
 /// The notice a session shows when a delivery waits behind its running turn or the user's draft.
 pub fn queued_notice(row: &DeliveryRow) -> String {
-    format!("remote message from {} queued ({})", row.envelope.actor, row.delivery_id)
+    format!(
+        "remote message from {} queued ({})",
+        row.envelope.actor, row.delivery_id
+    )
 }
 
 fn releasing_reason(reason: WakeReason) -> bool {
-    matches!(reason, WakeReason::Submission | WakeReason::DraftCleared | WakeReason::Idle | WakeReason::Start | WakeReason::Continue)
+    matches!(
+        reason,
+        WakeReason::Submission
+            | WakeReason::DraftCleared
+            | WakeReason::Idle
+            | WakeReason::Start
+            | WakeReason::Continue
+    )
 }
 
 pub struct InboxDrainOptions {
@@ -54,15 +69,26 @@ pub struct InboxDrain {
 
 impl InboxDrain {
     pub fn new(options: InboxDrainOptions) -> Self {
-        Self { options: Arc::new(options), held: Mutex::new(BTreeMap::new()), noticed: Mutex::new(BTreeMap::new()), pass: Mutex::new(()) }
+        Self {
+            options: Arc::new(options),
+            held: Mutex::new(BTreeMap::new()),
+            noticed: Mutex::new(BTreeMap::new()),
+            pass: Mutex::new(()),
+        }
     }
 
     pub fn held_deliveries(&self) -> BTreeMap<String, i64> {
-        self.held.lock().map(|held| held.clone()).unwrap_or_default()
+        self.held
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default()
     }
 
     pub fn is_session_referenced(&self) -> bool {
-        self.options.store.is_referenced(&self.options.durable_id).unwrap_or(false)
+        self.options
+            .store
+            .is_referenced(&self.options.durable_id)
+            .unwrap_or(false)
     }
 
     fn now(&self) -> i64 {
@@ -85,7 +111,11 @@ impl InboxDrain {
         let Some(notify) = &self.options.notify else {
             return;
         };
-        let already = self.noticed.lock().map(|mut noticed| noticed.insert(row.delivery_id.clone(), true).is_some()).unwrap_or(true);
+        let already = self
+            .noticed
+            .lock()
+            .map(|mut noticed| noticed.insert(row.delivery_id.clone(), true).is_some())
+            .unwrap_or(true);
         if !already {
             notify(&queued_notice(row));
         }
@@ -98,7 +128,10 @@ impl InboxDrain {
     }
 
     /// One drain pass; `event.reason` decides whether a held row may be released.
-    pub fn drain(&self, event: &DrainWakeEvent) -> Result<InboxDrainResult, super::store_ops::StoreError> {
+    pub fn drain(
+        &self,
+        event: &DrainWakeEvent,
+    ) -> Result<InboxDrainResult, super::store_ops::StoreError> {
         let _serialized = self.pass.lock();
         let self_identity = self.identity();
         let ledger: AdmissionLedger = (self.options.runtime.list_admitted_deliveries)();
@@ -110,18 +143,29 @@ impl InboxDrain {
             session_path: (self.options.session_path)(),
         })?;
         for id in &reconciled.dual_runtime {
-            self.log(&format!("dual_runtime: delivery {id} is claimed by another live process for {}", self.options.durable_id));
+            self.log(&format!(
+                "dual_runtime: delivery {id} is claimed by another live process for {}",
+                self.options.durable_id
+            ));
         }
         let mut admitted: Vec<Admission> = Vec::new();
         {
-            let queued_ids: Vec<String> = reconciled.queued.iter().map(|row| row.delivery_id.clone()).collect();
+            let queued_ids: Vec<String> = reconciled
+                .queued
+                .iter()
+                .map(|row| row.delivery_id.clone())
+                .collect();
             if let Ok(mut held) = self.held.lock() {
                 held.retain(|id, _| queued_ids.contains(id));
             }
         }
         for row in &reconciled.queued {
             let gate = (self.options.runtime.admission_gate)();
-            let held_revision = self.held.lock().ok().and_then(|held| held.get(&row.delivery_id).copied());
+            let held_revision = self
+                .held
+                .lock()
+                .ok()
+                .and_then(|held| held.get(&row.delivery_id).copied());
             if let Some(held_revision) = held_revision
                 && !releasing_reason(event.reason)
                 && held_revision == gate.editor_revision
@@ -133,25 +177,52 @@ impl InboxDrain {
                     held.insert(row.delivery_id.clone(), gate.editor_revision);
                 }
                 self.notice_queued(row);
-                admitted.push(Admission { delivery_id: row.delivery_id.clone(), kind: super::adapter::ExternalAdmissionKind::HeldDraft });
+                admitted.push(Admission {
+                    delivery_id: row.delivery_id.clone(),
+                    kind: super::adapter::ExternalAdmissionKind::HeldDraft,
+                });
                 break;
             }
             if let Ok(mut held) = self.held.lock() {
                 held.remove(&row.delivery_id);
             }
-            let decision = decide_delivery(TargetState::Phase((self.options.runtime.phase)()), row.mode_requested, row.expected_turn_id, Some(gate.turn_epoch));
+            let decision = decide_delivery(
+                TargetState::Phase((self.options.runtime.phase)()),
+                row.mode_requested,
+                row.expected_turn_id,
+                Some(gate.turn_epoch),
+            );
             let deliver_as = match decision {
                 DeliveryDecision::Admit { deliver_as, .. } => deliver_as,
                 DeliveryDecision::Refuse { reason } => {
-                    let refusal = if reason == RefusalKind::NotSteerable { RefusalReason::NotSteerable } else { RefusalReason::TurnConflict };
-                    let _ = self.options.store.refuse_queued(self.now(), &row.delivery_id, refusal);
-                    admitted.push(Admission { delivery_id: row.delivery_id.clone(), kind: super::adapter::ExternalAdmissionKind::TurnConflict });
+                    let refusal = if reason == RefusalKind::NotSteerable {
+                        RefusalReason::NotSteerable
+                    } else {
+                        RefusalReason::TurnConflict
+                    };
+                    let _ = self
+                        .options
+                        .store
+                        .refuse_queued(self.now(), &row.delivery_id, refusal);
+                    admitted.push(Admission {
+                        delivery_id: row.delivery_id.clone(),
+                        kind: super::adapter::ExternalAdmissionKind::TurnConflict,
+                    });
                     continue;
                 }
                 DeliveryDecision::QueuedOffline => GatewayDeliveryMode::FollowUp,
             };
-            let lane = if deliver_as == GatewayDeliveryMode::Steer { super::types::EffectiveLane::Steer } else { super::types::EffectiveLane::FollowUp };
-            let claimed = self.options.store.claim(&super::types::ClaimRequest { now: self.now(), delivery_id: row.delivery_id.clone(), self_identity: self.identity(), lane })?;
+            let lane = if deliver_as == GatewayDeliveryMode::Steer {
+                super::types::EffectiveLane::Steer
+            } else {
+                super::types::EffectiveLane::FollowUp
+            };
+            let claimed = self.options.store.claim(&super::types::ClaimRequest {
+                now: self.now(),
+                delivery_id: row.delivery_id.clone(),
+                self_identity: self.identity(),
+                lane,
+            })?;
             let ClaimOutcome::Claimed { row: claimed_row } = claimed else {
                 continue;
             };
@@ -161,7 +232,11 @@ impl InboxDrain {
                 deliver_as,
                 expected_turn_id: None,
                 sender: Some(delivery_sender(&claimed_row)),
-                display_text: Some(format!("{}\n{}", delivery_provenance_line(claimed_row.envelope.provenance.as_ref()), claimed_row.body)),
+                display_text: Some(format!(
+                    "{}\n{}",
+                    delivery_provenance_line(claimed_row.envelope.provenance.as_ref()),
+                    claimed_row.body
+                )),
             };
             let result = match (self.options.runtime.admit_external_message)(input) {
                 Ok(result) => result,
@@ -172,7 +247,10 @@ impl InboxDrain {
                         self_identity: self.identity(),
                         outcome: OutcomeRecord::Requeue,
                     });
-                    self.log(&format!("admission closed for {}: {error}", self.options.durable_id));
+                    self.log(&format!(
+                        "admission closed for {}: {error}",
+                        self.options.durable_id
+                    ));
                     break;
                 }
             };
@@ -184,10 +262,16 @@ impl InboxDrain {
                     outcome: OutcomeRecord::Requeue,
                 });
                 if let Ok(mut held) = self.held.lock() {
-                    held.insert(row.delivery_id.clone(), (self.options.runtime.admission_gate)().editor_revision);
+                    held.insert(
+                        row.delivery_id.clone(),
+                        (self.options.runtime.admission_gate)().editor_revision,
+                    );
                 }
                 self.notice_queued(row);
-                admitted.push(Admission { delivery_id: row.delivery_id.clone(), kind: result.kind });
+                admitted.push(Admission {
+                    delivery_id: row.delivery_id.clone(),
+                    kind: result.kind,
+                });
                 break;
             }
             if result.kind == super::adapter::ExternalAdmissionKind::Queued {
@@ -198,27 +282,48 @@ impl InboxDrain {
                     now: self.now(),
                     delivery_id: row.delivery_id.clone(),
                     self_identity: self.identity(),
-                    outcome: OutcomeRecord::Refused { reason: RefusalReason::TurnConflict },
+                    outcome: OutcomeRecord::Refused {
+                        reason: RefusalReason::TurnConflict,
+                    },
                 });
             } else {
-                let emitted = (self.options.runtime.list_admitted_deliveries)().emitted.contains(&row.delivery_id);
-                let written = result.kind == super::adapter::ExternalAdmissionKind::AlreadyAdmitted && emitted;
+                let emitted = (self.options.runtime.list_admitted_deliveries)()
+                    .emitted
+                    .contains(&row.delivery_id);
+                let written = result.kind == super::adapter::ExternalAdmissionKind::AlreadyAdmitted
+                    && emitted;
                 let outcome = if written {
-                    OutcomeRecord::Applied { admission_kind: kind_label(result.kind).to_owned(), turn_epoch: result.turn_epoch }
+                    OutcomeRecord::Applied {
+                        admission_kind: kind_label(result.kind).to_owned(),
+                        turn_epoch: result.turn_epoch,
+                    }
                 } else {
-                    OutcomeRecord::Admitted { admission_kind: kind_label(result.kind).to_owned(), turn_epoch: result.turn_epoch }
+                    OutcomeRecord::Admitted {
+                        admission_kind: kind_label(result.kind).to_owned(),
+                        turn_epoch: result.turn_epoch,
+                    }
                 };
-                let _ = self.options.store.record_outcome(&RecordOutcomeRequest { now: self.now(), delivery_id: row.delivery_id.clone(), self_identity: self.identity(), outcome });
+                let _ = self.options.store.record_outcome(&RecordOutcomeRequest {
+                    now: self.now(),
+                    delivery_id: row.delivery_id.clone(),
+                    self_identity: self.identity(),
+                    outcome,
+                });
             }
             if let Some(on_admitted) = &self.options.on_admitted
                 && matches!(
                     result.kind,
-                    super::adapter::ExternalAdmissionKind::Started | super::adapter::ExternalAdmissionKind::Steered | super::adapter::ExternalAdmissionKind::Queued
+                    super::adapter::ExternalAdmissionKind::Started
+                        | super::adapter::ExternalAdmissionKind::Steered
+                        | super::adapter::ExternalAdmissionKind::Queued
                 )
             {
                 on_admitted(&row.delivery_id, kind_label(result.kind));
             }
-            admitted.push(Admission { delivery_id: row.delivery_id.clone(), kind: result.kind });
+            admitted.push(Admission {
+                delivery_id: row.delivery_id.clone(),
+                kind: result.kind,
+            });
         }
         Ok(InboxDrainResult { admitted })
     }
@@ -254,7 +359,9 @@ mod tests {
             sender_turn: None,
             envelope: StoredDeliveryEnvelope {
                 provenance: None,
-                origin: EnvelopeOrigin::Session { session: "sender".into() },
+                origin: EnvelopeOrigin::Session {
+                    session: "sender".into(),
+                },
                 actor: "planner".into(),
                 via: vec![],
                 root_id: "root".into(),
@@ -286,7 +393,10 @@ mod tests {
 
     #[test]
     fn the_queued_notice_names_the_sender_and_the_delivery() {
-        assert_eq!(queued_notice(&row()), "remote message from planner queued (d-1)");
+        assert_eq!(
+            queued_notice(&row()),
+            "remote message from planner queued (d-1)"
+        );
     }
 
     #[test]

@@ -165,7 +165,8 @@ fn given_a_background_task_when_the_start_result_is_rendered_then_it_directs_the
 }
 
 #[test]
-fn given_the_caller_session_when_spawning_then_caller_session_id_is_injected_as_parent_session_id() {
+fn given_the_caller_session_when_spawning_then_caller_session_id_is_injected_as_parent_session_id()
+{
     let harness = default_manager();
 
     let result = run_execute(&harness.manager, "c", &params("p", "quick", Some(true)));
@@ -204,7 +205,8 @@ fn given_a_resolved_background_start_when_executed_then_resolved_metadata_and_ba
 }
 
 #[test]
-fn given_config_default_execution_mode_when_spawning_without_an_agent_overlay_then_the_task_starts() {
+fn given_config_default_execution_mode_when_spawning_without_an_agent_overlay_then_the_task_starts()
+{
     let harness = default_manager();
 
     let result = run_execute(&harness.manager, "c", &params("p", "quick", Some(true)));

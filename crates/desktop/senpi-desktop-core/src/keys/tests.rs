@@ -63,7 +63,10 @@ fn parses_full_alias_table() {
         parse_keys(&["cmd+shift+p".into()]).unwrap(),
         [KeyName::Meta, KeyName::Shift, KeyName::Char('p')]
     );
-    assert_eq!(parse_key("garbage").unwrap_err().code, ErrorCode::InvalidKey);
+    assert_eq!(
+        parse_key("garbage").unwrap_err().code,
+        ErrorCode::InvalidKey
+    );
 }
 
 #[test]

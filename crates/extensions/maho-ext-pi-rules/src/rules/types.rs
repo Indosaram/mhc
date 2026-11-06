@@ -56,13 +56,24 @@ pub struct RuleDiagnostic {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Severity { Warning, Error }
+pub enum Severity {
+    Warning,
+    Error,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode { Static, Dynamic, Both, Off }
+pub enum Mode {
+    Static,
+    Dynamic,
+    Both,
+    Off,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EnabledSources { Auto, Sources(Vec<String>) }
+pub enum EnabledSources {
+    Auto,
+    Sources(Vec<String>),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PiRulesConfig {

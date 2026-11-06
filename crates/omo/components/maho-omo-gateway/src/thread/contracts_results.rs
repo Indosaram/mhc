@@ -279,7 +279,12 @@ mod tests {
 
     #[test]
     fn an_error_result_serializes_its_failure() {
-        let error = ThreadDataError::of(super::super::errors::thread_tool_failure("not_found", "gone", "call thread_list", None));
+        let error = ThreadDataError::of(super::super::errors::thread_tool_failure(
+            "not_found",
+            "gone",
+            "call thread_list",
+            None,
+        ));
         let json = serde_json::to_value(&error).unwrap_or_default();
         assert_eq!(json["kind"], "error");
         assert_eq!(json["error"]["code"], "not_found");

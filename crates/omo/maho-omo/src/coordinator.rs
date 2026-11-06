@@ -12,14 +12,16 @@
 //!   future on the current tokio runtime and needs a runtime to settle.
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use idle_injection::{
+    IdleInjection, IdleInjectionCoordinator as IdleInjectionCoordinatorTrait, IdleInjectionSource,
+};
 use indexmap::IndexMap;
-use idle_injection::{IdleInjection, IdleInjectionCoordinator as IdleInjectionCoordinatorTrait, IdleInjectionSource};
 use maho_ext_api::{CustomMessage, DeliverAs, JsonValue, MessageDeliveryReceipt, ToolContent};
 
 use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
@@ -27,10 +29,12 @@ use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
 pub const WAKE_CUSTOM_TYPE: &str = "omo-senpi:wake";
 pub const DETAIL_SEPARATOR: &str = "\n\n";
 pub const DEFAULT_COMPLETION_BATCH_LIMIT: usize = 24_000;
-pub const RETIRED_ERROR_MESSAGE: &str = "idle-injection coordinator retired on session shutdown; injection not delivered";
+pub const RETIRED_ERROR_MESSAGE: &str =
+    "idle-injection coordinator retired on session shutdown; injection not delivered";
 
 fn read_configured_completion_batch_limit() -> usize {
-    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
+    let loaded =
+        omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
     loaded
         .config
         .get("task")
@@ -77,10 +81,12 @@ impl IdleInjectionMessage {
         let details = self
             .details
             .iter()
-            .map(|detail| serde_json::json!({
-                "customType": detail.custom_type,
-                "details": detail.details,
-            }))
+            .map(|detail| {
+                serde_json::json!({
+                    "customType": detail.custom_type,
+                    "details": detail.details,
+                })
+            })
             .collect::<Vec<JsonValue>>();
         CustomMessage {
             custom_type: self.custom_type.to_owned(),
@@ -100,7 +106,8 @@ pub enum Delivery {
     Receipt(MessageDeliveryReceipt),
 }
 
-pub type IdleInjectionDelivery = Arc<dyn Fn(&IdleInjectionMessage, DeliverAs) -> Delivery + Send + Sync>;
+pub type IdleInjectionDelivery =
+    Arc<dyn Fn(&IdleInjectionMessage, DeliverAs) -> Delivery + Send + Sync>;
 
 struct Inner {
     deliver: IdleInjectionDelivery,
@@ -122,7 +129,11 @@ pub struct IdleInjectionQueue {
 }
 
 impl IdleInjectionQueue {
-    pub fn new(deliver: IdleInjectionDelivery, flush: DeferredScheduler, soon: DeferredScheduler) -> Self {
+    pub fn new(
+        deliver: IdleInjectionDelivery,
+        flush: DeferredScheduler,
+        soon: DeferredScheduler,
+    ) -> Self {
         let barrier = flush.barrier();
         Self {
             inner: Arc::new(Inner {
@@ -141,7 +152,11 @@ impl IdleInjectionQueue {
     }
 
     pub fn set_batch_limit(&self, limit: usize) {
-        *self.inner.batch_limit.lock().unwrap_or_else(PoisonError::into_inner) = Some(limit);
+        *self
+            .inner
+            .batch_limit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(limit);
     }
 
     pub fn with_batch_limit(self, limit: usize) -> Self {
@@ -150,7 +165,11 @@ impl IdleInjectionQueue {
     }
 
     pub fn set_state_dir(&self, dir: impl Into<PathBuf>) {
-        *self.inner.state_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir.into());
+        *self
+            .inner
+            .state_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(dir.into());
     }
 
     pub fn with_state_dir(self, dir: impl Into<PathBuf>) -> Self {
@@ -194,16 +213,24 @@ impl IdleInjectionQueue {
 
     fn flush(&self, deliver_as: DeliverAs) -> usize {
         let ordered: Vec<IdleInjection> = {
-            let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if pending.is_empty() {
                 return 0;
             }
             // LATEST `#flush`: an all-passive queue is RETAINED - no delivery, no receipts - until a
             // non-passive entry joins; that entry then carries the batch out in source order.
-            if pending.values().all(|injection| injection.passive == Some(true)) {
+            if pending
+                .values()
+                .all(|injection| injection.passive == Some(true))
+            {
                 return 0;
             }
-            let mut ordered: Vec<IdleInjection> = pending.drain(..).map(|(_, injection)| injection).collect();
+            let mut ordered: Vec<IdleInjection> =
+                pending.drain(..).map(|(_, injection)| injection).collect();
             ordered.sort_by_key(|injection| source_rank(injection.source));
             ordered
         };
@@ -245,7 +272,10 @@ impl IdleInjectionQueue {
                 state_dir.join("completion-manifests")
             };
             if let Err(error) = std::fs::create_dir_all(&dir) {
-                eprintln!("failed to create completion manifest dir {}: {error}", dir.display());
+                eprintln!(
+                    "failed to create completion manifest dir {}: {error}",
+                    dir.display()
+                );
             }
             let manifest_filename = format!("wake-manifest-{}.txt", uuid::Uuid::new_v4().simple());
             let manifest_path = dir.join(manifest_filename);
@@ -292,7 +322,10 @@ impl IdleInjectionQueue {
             let trailing_line = match std::fs::write(&manifest_path, &remaining_content) {
                 Ok(()) => format!("{remaining_count} more task results: {manifest_url}"),
                 Err(error) => {
-                    eprintln!("failed to write completion manifest {}: {error}", manifest_path.display());
+                    eprintln!(
+                        "failed to write completion manifest {}: {error}",
+                        manifest_path.display()
+                    );
                     format!("{remaining_count} more task results (manifest unavailable: {error})")
                 }
             };
@@ -322,10 +355,13 @@ impl IdleInjectionQueue {
             details: ordered[..fitting_count]
                 .iter()
                 .filter_map(|injection| {
-                    injection.custom_type.as_ref().map(|custom_type| IdleInjectionDetail {
-                        custom_type: custom_type.clone(),
-                        details: injection.details.clone(),
-                    })
+                    injection
+                        .custom_type
+                        .as_ref()
+                        .map(|custom_type| IdleInjectionDetail {
+                            custom_type: custom_type.clone(),
+                            details: injection.details.clone(),
+                        })
                 })
                 .collect(),
         };
@@ -353,7 +389,10 @@ impl IdleInjectionQueue {
                         }
                     });
                 }
-                Err(_) => fail_all(&ordered, "no async runtime to settle the deferred injection delivery"),
+                Err(_) => fail_all(
+                    &ordered,
+                    "no async runtime to settle the deferred injection delivery",
+                ),
             },
         }
         collapsed
@@ -363,7 +402,11 @@ impl IdleInjectionQueue {
 impl IdleInjectionCoordinatorTrait for IdleInjectionQueue {
     fn enqueue(&self, injection: IdleInjection) -> bool {
         let _turn = self.enter_turn();
-        let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if self.inner.retired.load(Ordering::SeqCst) {
             return false;
         }
@@ -374,7 +417,11 @@ impl IdleInjectionCoordinatorTrait for IdleInjectionQueue {
     fn retire(&self) {
         let _turn = self.enter_turn();
         let dropped: Vec<IdleInjection> = {
-            let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             self.inner.retired.store(true, Ordering::SeqCst);
             pending.drain(..).map(|(_, injection)| injection).collect()
         };
@@ -423,12 +470,21 @@ impl IdleInjectionCoordinatorTrait for IdleInjectionQueue {
 
     fn pending_count(&self) -> usize {
         let _turn = self.enter_turn();
-        self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     fn remove(&self, key: &str) -> bool {
         let _turn = self.enter_turn();
-        self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner).shift_remove(key).is_some()
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .shift_remove(key)
+            .is_some()
     }
 }
 

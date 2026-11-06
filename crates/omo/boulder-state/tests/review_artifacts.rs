@@ -3,12 +3,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use boulder_state::get_plan_reviews_dir;
 use boulder_state::{
     MomusReviewArtifactInput, MomusReviewVerdict, format_momus_review_artifact, hash_plan_content,
     write_momus_review_artifact,
 };
-#[cfg(unix)]
-use boulder_state::get_plan_reviews_dir;
 use chrono::{DateTime, Utc};
 use pretty_assertions::assert_eq;
 

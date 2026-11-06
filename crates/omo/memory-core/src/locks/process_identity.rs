@@ -196,7 +196,10 @@ fn read_windows_start_identity(pid: u32) -> Option<String> {
     if handle.is_null() {
         return None;
     }
-    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
     let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
     // SAFETY: `handle` is a valid open process handle and the four out-pointers reference live
     // `FILETIME` locals; the handle is closed exactly once below.
@@ -280,7 +283,10 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains(&pid.to_string()) {
                 ProcessLiveness::Alive
-            } else if stdout.contains("No tasks are running") || stdout.contains("INFO:") || stdout.contains("정보:") {
+            } else if stdout.contains("No tasks are running")
+                || stdout.contains("INFO:")
+                || stdout.contains("정보:")
+            {
                 ProcessLiveness::Dead
             } else {
                 ProcessLiveness::Unknown

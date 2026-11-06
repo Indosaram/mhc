@@ -109,7 +109,10 @@ impl CachingHostSessionProbe {
         let taken = Arc::new(HostSnapshot {
             daemon_alive,
             listed,
-            live_paths: paths.iter().map(|path| canonical_session_path(path)).collect(),
+            live_paths: paths
+                .iter()
+                .map(|path| canonical_session_path(path))
+                .collect(),
         });
         passes.insert(socket.to_string(), Arc::clone(&taken));
         taken
@@ -274,7 +277,10 @@ pub struct HostDrainingHold {
 }
 
 /// Reads a draining hold from an error's name (and an optional nested cause name).
-pub fn read_host_draining_hold(error_name: &str, cause_name: Option<&str>) -> Option<HostDrainingHold> {
+pub fn read_host_draining_hold(
+    error_name: &str,
+    cause_name: Option<&str>,
+) -> Option<HostDrainingHold> {
     if error_name != "SessionHeldElsewhereError"
         && error_name != "session_path_in_use"
         && cause_name != Some("SessionHeldElsewhereError")
@@ -292,7 +298,9 @@ pub fn read_host_draining_hold_from_runner_error(
 ) -> Option<HostDrainingHold> {
     match error {
         crate::manager::types::ManagedRunnerError::HostSessionOpen(
-            crate::runners::rpc_host::HostSessionOpenError::SessionPathInUse { retry_after_ms, .. },
+            crate::runners::rpc_host::HostSessionOpenError::SessionPathInUse {
+                retry_after_ms, ..
+            },
         ) => Some(HostDrainingHold {
             retry_after_ms: *retry_after_ms,
         }),

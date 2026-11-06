@@ -8,8 +8,14 @@
 
 use crate::types::ProviderHeaders;
 
-const CREDENTIAL_HEADER_SUFFIXES: [&str; 6] =
-    ["api-key", "api-token", "auth-token", "access-token", "authorization", "client-secret"];
+const CREDENTIAL_HEADER_SUFFIXES: [&str; 6] = [
+    "api-key",
+    "api-token",
+    "auth-token",
+    "access-token",
+    "authorization",
+    "client-secret",
+];
 
 pub fn is_credential_header_name(name: &str) -> bool {
     let normalized = name.to_lowercase();
@@ -54,7 +60,9 @@ fn is_bare_basic_or_bearer(value: &str) -> bool {
         .is_some_and(|rest| rest.chars().all(char::is_whitespace))
 }
 
-fn effective_headers(headers: &ProviderHeaders) -> std::collections::BTreeMap<String, Option<String>> {
+fn effective_headers(
+    headers: &ProviderHeaders,
+) -> std::collections::BTreeMap<String, Option<String>> {
     let mut effective = std::collections::BTreeMap::new();
     for (name, value) in headers {
         effective.insert(name.to_lowercase(), value.clone());

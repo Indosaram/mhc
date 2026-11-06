@@ -14,7 +14,6 @@ pub struct WakePacer {
     buckets: BTreeMap<String, Bucket>,
 }
 
-
 fn valid_rate(rate: Option<f64>) -> Option<f64> {
     rate.filter(|rate| rate.is_finite() && *rate >= 1.0)
 }

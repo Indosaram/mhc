@@ -1,6 +1,8 @@
 use ulw_loop_core::cli_steering::parse_steering_kind;
 
-fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).into()).collect() }
+fn args(values: &[&str]) -> Vec<String> {
+    values.iter().map(|v| (*v).into()).collect()
+}
 
 #[test]
 fn missing_kind_explains_allowed_kinds_and_example() {

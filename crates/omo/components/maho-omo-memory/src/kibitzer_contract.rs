@@ -13,7 +13,10 @@ use memory_core::recall::RecallNudge;
 
 use crate::recall_consumer::CollectedRecallCandidates;
 
-pub use crate::kibitzer_child::{JudgeSettle, KibitzerChild, KibitzerChildSpawnInput, KibitzerChildSpawner, KibitzerChildObservation};
+pub use crate::kibitzer_child::{
+    JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput,
+    KibitzerChildSpawner,
+};
 
 pub const KIBITZER_WAKE_TOOL_BUDGET: usize = 8;
 pub const KIBITZER_WAKE_DEADLINE_MS: i64 = 90_000;
@@ -23,7 +26,13 @@ pub const KIBITZER_RESEED_FRACTION: f64 = 0.6;
 pub const KIBITZER_REJECTED_AFTER_WAKES: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KibitzerSidecarState { Idle, TurnRunning, Reseeding, Backoff, Disposed }
+pub enum KibitzerSidecarState {
+    Idle,
+    TurnRunning,
+    Reseeding,
+    Backoff,
+    Disposed,
+}
 
 /// A plain warning sink (`options.logger?.warn`); absent means silent.
 pub type WarnFn = Arc<dyn Fn(&str) + Send + Sync>;
@@ -35,7 +44,15 @@ pub trait KibitzerSidecarTimers: Send + Sync {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KibitzerBufferedReason { MaxItemsZero, NoCandidates, NoNewCandidate, Cooldown, Backoff, SlotBusy, Disposed }
+pub enum KibitzerBufferedReason {
+    MaxItemsZero,
+    NoCandidates,
+    NoNewCandidate,
+    Cooldown,
+    Backoff,
+    SlotBusy,
+    Disposed,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KibitzerOfferResult {
@@ -46,7 +63,13 @@ pub enum KibitzerOfferResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KibitzerWakeStatus { Completed, Empty, Failed, Dropped, Cancelled }
+pub enum KibitzerWakeStatus {
+    Completed,
+    Empty,
+    Failed,
+    Dropped,
+    Cancelled,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KibitzerWakeOutcome {

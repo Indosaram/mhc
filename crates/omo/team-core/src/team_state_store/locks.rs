@@ -6,13 +6,18 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use super::lock_publish::publish_lock_record;
+pub use super::lock_reclaim::{
+    LockReclaimDeps, LockReclaimOutcome, remove_lock_record_if_unchanged,
+};
+pub use super::lock_record::LOCK_OWNER_INSTANCE_ID as lock_owner_instance_id;
+use super::lock_record::{
+    build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released,
+    read_lock_record,
+};
 use crate::clock::now_ms;
 use crate::error::{Result, TeamCoreError};
 use crate::tolerant_fsync::tolerant_fsync;
-use super::lock_publish::publish_lock_record;
-pub use super::lock_reclaim::{LockReclaimDeps, LockReclaimOutcome, remove_lock_record_if_unchanged};
-use super::lock_record::{build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released, read_lock_record};
-pub use super::lock_record::LOCK_OWNER_INSTANCE_ID as lock_owner_instance_id;
 
 const LOCK_RETRY_MS: u64 = 50;
 const LOCK_WAIT_TIMEOUT_MS: i64 = 15_000;
@@ -114,7 +119,9 @@ pub(super) fn is_pid_alive(pid: i64) -> bool {
 #[cfg(windows)]
 pub(super) fn is_pid_alive(pid: i64) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     let Ok(pid) = u32::try_from(pid) else {
         return false;
@@ -151,9 +158,12 @@ fn acquire_lock(lock_path: &Path, owner_tag: &str, stale_after_ms: i64) -> Resul
         if publish_lock_record(lock_path, &record)? {
             return Ok(record);
         }
-        match reap_stale_lock_with_options(lock_path, stale_after_ms, &LockReclaimDeps::default())? {
+        match reap_stale_lock_with_options(lock_path, stale_after_ms, &LockReclaimDeps::default())?
+        {
             LockReclaimOutcome::Removed | LockReclaimOutcome::Absent => continue,
-            LockReclaimOutcome::Changed | LockReclaimOutcome::Busy | LockReclaimOutcome::Stuck => thread::sleep(Duration::from_millis(LOCK_RETRY_MS)),
+            LockReclaimOutcome::Changed | LockReclaimOutcome::Busy | LockReclaimOutcome::Stuck => {
+                thread::sleep(Duration::from_millis(LOCK_RETRY_MS))
+            }
         }
     }
 }
@@ -173,7 +183,12 @@ pub fn with_lock<T>(
     let record = acquire_lock(lock_path, owner_tag, stale_after_ms)?;
     let result = run();
     mark_lock_record_released(&record);
-    remove_lock_record_if_unchanged(lock_path, &record, stale_after_ms, &LockReclaimDeps::default())?;
+    remove_lock_record_if_unchanged(
+        lock_path,
+        &record,
+        stale_after_ms,
+        &LockReclaimDeps::default(),
+    )?;
     result
 }
 
@@ -188,16 +203,28 @@ pub fn reap_stale_lock(lock_path: &Path) -> io::Result<LockReclaimOutcome> {
     reap_stale_lock_with(lock_path, &LockReclaimDeps::default())
 }
 
-pub fn reap_stale_lock_with_threshold(lock_path: &Path, stale_after_ms: i64) -> io::Result<LockReclaimOutcome> {
+pub fn reap_stale_lock_with_threshold(
+    lock_path: &Path,
+    stale_after_ms: i64,
+) -> io::Result<LockReclaimOutcome> {
     reap_stale_lock_with_options(lock_path, stale_after_ms, &LockReclaimDeps::default())
 }
 
-pub fn reap_stale_lock_with(lock_path: &Path, deps: &LockReclaimDeps<'_>) -> io::Result<LockReclaimOutcome> {
+pub fn reap_stale_lock_with(
+    lock_path: &Path,
+    deps: &LockReclaimDeps<'_>,
+) -> io::Result<LockReclaimOutcome> {
     reap_stale_lock_with_options(lock_path, DEFAULT_STALE_AFTER_MS, deps)
 }
 
-pub fn reap_stale_lock_with_options(lock_path: &Path, stale_after_ms: i64, deps: &LockReclaimDeps<'_>) -> io::Result<LockReclaimOutcome> {
-    let Some(record) = read_lock_record(lock_path) else { return Ok(LockReclaimOutcome::Absent); };
+pub fn reap_stale_lock_with_options(
+    lock_path: &Path,
+    stale_after_ms: i64,
+    deps: &LockReclaimDeps<'_>,
+) -> io::Result<LockReclaimOutcome> {
+    let Some(record) = read_lock_record(lock_path) else {
+        return Ok(LockReclaimOutcome::Absent);
+    };
     if !is_lock_record_stale(&record, stale_after_ms) {
         return Ok(LockReclaimOutcome::Changed);
     }
@@ -258,13 +285,21 @@ mod threshold_tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("lock");
         let replacement = build_lock_record("replacement");
-        with_lock(&path, || {
-            assert!(!detect_stale_lock(&path, 0));
-            fs::remove_file(&path)?;
-            assert!(publish_lock_record(&path, &replacement)?);
-            Ok(())
-        }, None).expect("with lock");
-        assert_eq!(fs::read_to_string(&path).expect("replacement survives"), replacement);
+        with_lock(
+            &path,
+            || {
+                assert!(!detect_stale_lock(&path, 0));
+                fs::remove_file(&path)?;
+                assert!(publish_lock_record(&path, &replacement)?);
+                Ok(())
+            },
+            None,
+        )
+        .expect("with lock");
+        assert_eq!(
+            fs::read_to_string(&path).expect("replacement survives"),
+            replacement
+        );
         mark_lock_record_released(&replacement);
     }
 
@@ -273,9 +308,21 @@ mod threshold_tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("lock");
         for instance in [lock_owner_instance_id.as_str(), "foreign-instance"] {
-            fs::write(&path, format!("owner {}\n{}\n{}\n{instance}\n", uuid::Uuid::new_v4(), std::process::id(), now_ms())).expect("leftover");
+            fs::write(
+                &path,
+                format!(
+                    "owner {}\n{}\n{}\n{instance}\n",
+                    uuid::Uuid::new_v4(),
+                    std::process::id(),
+                    now_ms()
+                ),
+            )
+            .expect("leftover");
             assert!(detect_stale_lock(&path, 300_000));
-            assert_eq!(with_lock(&path, || Ok("acquired"), None).expect("acquire"), "acquired");
+            assert_eq!(
+                with_lock(&path, || Ok("acquired"), None).expect("acquire"),
+                "acquired"
+            );
             assert!(!path.exists());
         }
     }
@@ -286,7 +333,8 @@ mod threshold_tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("lock");
         fs::write(&path, "").expect("torn lock");
-        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1, 0)).expect("old mtime");
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1, 0))
+            .expect("old mtime");
         let active = AtomicUsize::new(0);
         let entries = AtomicUsize::new(0);
         thread::scope(|scope| {
@@ -295,12 +343,17 @@ mod threshold_tests {
                 let (path, active, entries) = (&path, &active, &entries);
                 handles.push(scope.spawn(move || {
                     for _ in 0..25 {
-                        with_lock(path, || {
-                            assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
-                            entries.fetch_add(1, Ordering::SeqCst);
-                            assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
-                            Ok(())
-                        }, None).expect("acquire");
+                        with_lock(
+                            path,
+                            || {
+                                assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
+                                entries.fetch_add(1, Ordering::SeqCst);
+                                assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
+                                Ok(())
+                            },
+                            None,
+                        )
+                        .expect("acquire");
                     }
                 }));
             }
@@ -315,8 +368,8 @@ mod threshold_tests {
 
     #[test]
     fn threshold_reaper_preserves_live_owner_lock() {
-        let directory = std::env::temp_dir()
-            .join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).expect("create temporary directory");
         let path = directory.join("claim.lock");
         fs::write(
@@ -333,8 +386,8 @@ mod threshold_tests {
 
     #[test]
     fn threshold_reaper_removes_expired_dead_owner_lock() {
-        let directory = std::env::temp_dir()
-            .join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).expect("create temporary directory");
         let path = directory.join("claim.lock");
         fs::write(&path, "test-owner\n2147483647\n1\n").expect("write lock");

@@ -22,7 +22,10 @@ mod tests {
 
     #[test]
     fn builds_string_enum_schema() {
-        assert_eq!(string_enum(&["a", "b"], None, Some("")), json!({"type": "string", "enum": ["a", "b"]}));
+        assert_eq!(
+            string_enum(&["a", "b"], None, Some("")),
+            json!({"type": "string", "enum": ["a", "b"]})
+        );
         assert_eq!(
             string_enum(&["a"], Some("pick"), Some("a")),
             json!({"type": "string", "enum": ["a"], "description": "pick", "default": "a"})

@@ -58,14 +58,15 @@ where
     match &verdict {
         ActiveHolderVerdict::Dead { run_id } => {
             if let Some(should) = &should_reconcile
-                && !should(run_id) {
-                    let notice = stale_reflection_lock_notice(
-                        reflection_dir,
-                        run_id,
-                        "recovering it did not release the lock",
-                    );
-                    return (verdict, Some(notice));
-                }
+                && !should(run_id)
+            {
+                let notice = stale_reflection_lock_notice(
+                    reflection_dir,
+                    run_id,
+                    "recovering it did not release the lock",
+                );
+                return (verdict, Some(notice));
+            }
             reconcile().await;
             let after = classify_active_reflection_holder(reflection_dir, None);
             match &after {

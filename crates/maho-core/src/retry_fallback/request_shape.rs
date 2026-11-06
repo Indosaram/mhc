@@ -185,7 +185,9 @@ mod tests {
     fn stripping_leaves_messages_after_the_cutoff_alone() {
         let mut message = maho_ai::providers::faux::faux_assistant_message("", Default::default());
         message.timestamp = 20;
-        let messages = vec![AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message)))];
+        let messages = vec![AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(
+            message,
+        )))];
         let result = strip_provider_native_replay(&messages, 10);
         assert_eq!(result.stripped_blocks, 0);
         assert_eq!(result.messages, messages);

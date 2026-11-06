@@ -3,7 +3,7 @@
 
 use objc2_application_services::AXUIElement;
 use objc2_core_foundation::{CFBoolean, CFString, CFType};
-use senpi_desktop_core::ax::{AxBounds, AxProps, normalize_role_macos};
+use senpi_desktop_core::ax::{normalize_role_macos, AxBounds, AxProps};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use super::element::{self, copy_attribute_result};

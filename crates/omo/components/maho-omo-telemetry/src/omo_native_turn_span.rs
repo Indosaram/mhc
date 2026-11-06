@@ -6,8 +6,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use telemetry_core::{
-    TurnSpanAttribute, TurnSpanAttributes, TurnSpanHandle, TurnSpanStart, TurnSpanStatus, TurnTracing,
-    clear_turn_traceparent, is_traceparent, publish_turn_traceparent,
+    TurnSpanAttribute, TurnSpanAttributes, TurnSpanHandle, TurnSpanStart, TurnSpanStatus,
+    TurnTracing, clear_turn_traceparent, is_traceparent, publish_turn_traceparent,
 };
 
 use crate::pinned_model_ids::pinned_model_id;
@@ -313,11 +313,9 @@ mod tests {
                 Some(&model("openai", "gpt-5.6-sol")),
             );
             assert!(fixture.spans.is_open());
-            fixture.spans.end(
-                Some(&model("openai", "gpt-5.6-sol")),
-                None,
-                false,
-            );
+            fixture
+                .spans
+                .end(Some(&model("openai", "gpt-5.6-sol")), None, false);
             assert!(!fixture.spans.is_open());
         }
         let records = fixture.records.lock().unwrap();
@@ -385,7 +383,10 @@ mod tests {
         assert_eq!(gen_ai_provider_name("anthropic"), "anthropic");
         assert_eq!(gen_ai_provider_name("openai"), "openai");
         assert_eq!(gen_ai_provider_name("custom"), "custom");
-        assert_eq!(gen_ai_provider_name("sionic-openrouter"), "sionic-openrouter");
+        assert_eq!(
+            gen_ai_provider_name("sionic-openrouter"),
+            "sionic-openrouter"
+        );
     }
 
     #[test]
@@ -434,7 +435,11 @@ mod tests {
         fixture.spans.abandon();
         let records = fixture.records.lock().unwrap();
         assert_eq!(records.len(), 2);
-        assert!(records.iter().all(|record| record.status == Some(TurnSpanStatus::Error)));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.status == Some(TurnSpanStatus::Error))
+        );
     }
 
     #[test]
@@ -455,7 +460,9 @@ mod tests {
     #[test]
     fn a_published_traceparent_lives_only_as_long_as_its_turn() {
         let fixture = fixture();
-        fixture.spans.start(1.0, "hashed", Some("raw-session"), None);
+        fixture
+            .spans
+            .start(1.0, "hashed", Some("raw-session"), None);
         let published = telemetry_core::read_turn_traceparent("raw-session").expect("published");
         assert!(telemetry_core::is_traceparent(&published));
         fixture.spans.end(None, None, false);
@@ -467,9 +474,7 @@ mod tests {
         let fixture = fixture();
         fixture.spans.start(1.0, "hashed", Some("raw-parent"), None);
         let parent = telemetry_core::read_turn_traceparent("raw-parent").unwrap();
-        let child = fixture
-            .spans
-            .run(telemetry_core::active_turn_traceparent);
+        let child = fixture.spans.run(telemetry_core::active_turn_traceparent);
         assert_eq!(child.as_deref(), Some(parent.as_str()));
         fixture.spans.end(None, None, false);
         assert_eq!(

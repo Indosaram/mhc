@@ -23,8 +23,8 @@ pub use bm25::{
     DocumentTerms, DocumentTermsInput, RECALL_TERM_ACCESS, RankedRecallDocument,
     RecallQueryExpansions, RecallTermAccess, RecallTermFigures, RecallTermsSnapshot,
     StoredDocumentTerms, is_cjk_char, is_han_character, on_recall_documents_encoded,
-    rank_recall_documents_bm25, recall_document_terms, recall_expansion_weights, recall_term_figures,
-    recall_terms, tokenize_recall_text,
+    rank_recall_documents_bm25, recall_document_terms, recall_expansion_weights,
+    recall_term_figures, recall_terms, tokenize_recall_text,
 };
 pub use bm25_persist::{
     RECALL_TERM_STORE_NAME, RecallTermErrorHandler, RecallTermPersistence,

@@ -24,7 +24,6 @@ pub enum ProtocolPollResult {
 }
 
 const SPAWNED_HOST_PROBE_TIMEOUT_MS: u64 = 10_000;
-const POLL_INTERVAL_MS: u64 = 50;
 
 /// `probe(socket, timeout_ms)` is one held protocol probe (production passes
 /// [`crate::host_attach_hold::hold_protocol_info`]).
@@ -86,7 +85,7 @@ where
             }
             (None, None) => {}
         }
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(crate::deadline::POLL_INTERVAL).await;
     }
     ProtocolPollResult::NotReady {
         protocol: last_protocol,

@@ -11,7 +11,7 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use senpi_desktop_safety::{Chord, MonotonicClock, StopPathError, StopPathListener, Supervisor};
 
 use super::tap::Simulate;
-use super::{CgEventTapListener, Control, DEFAULT_STOP_CHORD, Shared};
+use super::{CgEventTapListener, Control, Shared, DEFAULT_STOP_CHORD};
 
 /// Hang guard only; the latency bound is asserted separately.
 const HANG_GUARD: Duration = Duration::from_secs(30);

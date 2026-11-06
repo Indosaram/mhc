@@ -73,10 +73,12 @@ pub(crate) fn parse_iso_to_millis(value: &str) -> Option<i64> {
 }
 
 fn local_wall_time_millis(millis: i64, zone: jiff::tz::TimeZone) -> Option<i64> {
-    jiff::Timestamp::from_millisecond(millis).ok()?
+    jiff::Timestamp::from_millisecond(millis)
+        .ok()?
         .to_zoned(jiff::tz::TimeZone::UTC)
         .datetime()
-        .to_zoned(zone).ok()
+        .to_zoned(zone)
+        .ok()
         .map(|date| date.timestamp().as_millisecond())
 }
 
@@ -111,7 +113,9 @@ fn parse_time(text: &str) -> Option<(u32, u32, u32, u32, i32)> {
         Some((seconds, fraction)) => (parse_digits(seconds, 2)?, parse_fraction(fraction)?),
         None => (parse_digits(seconds_field, 2)?, 0),
     };
-    if hours > 24 || minutes > 59 || seconds > 59
+    if hours > 24
+        || minutes > 59
+        || seconds > 59
         || (hours == 24 && (minutes != 0 || seconds != 0 || millis != 0))
     {
         return None;

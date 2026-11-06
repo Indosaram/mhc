@@ -30,7 +30,10 @@ pub fn parse_people_observations(raw: Option<&str>, limits: PeopleLimits) -> Vec
     let Some(body) = file_body(raw) else {
         return Vec::new();
     };
-    parse_people_card(&body, limits).card.observations.unwrap_or_default()
+    parse_people_card(&body, limits)
+        .card
+        .observations
+        .unwrap_or_default()
 }
 
 pub fn render_roster(graph: &PalacePeople) -> String {
@@ -51,9 +54,20 @@ pub fn render_roster(graph: &PalacePeople) -> String {
             .filter(|edge| edge.source == node.slug)
             .collect();
         for (index, edge) in outgoing.iter().enumerate() {
-            let marker = if index + 1 == outgoing.len() { TREE_LAST } else { TREE_BRANCH };
-            let unknown = if edge.target_slug.is_none() { " (no card)" } else { "" };
-            lines.push(format!("  {marker} {} -> {}{unknown}", edge.predicate, edge.target));
+            let marker = if index + 1 == outgoing.len() {
+                TREE_LAST
+            } else {
+                TREE_BRANCH
+            };
+            let unknown = if edge.target_slug.is_none() {
+                " (no card)"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  {marker} {} -> {}{unknown}",
+                edge.predicate, edge.target
+            ));
         }
     }
     lines.push(String::new());
@@ -97,15 +111,17 @@ pub fn render_person_card(
     let related: Vec<&PalacePeopleEdge> = edges
         .iter()
         .filter(|edge| {
-            edge.source == node.slug
-                || edge.target_slug.as_deref() == Some(node.slug.as_str())
+            edge.source == node.slug || edge.target_slug.as_deref() == Some(node.slug.as_str())
         })
         .collect();
     if !related.is_empty() {
         lines.push(String::new());
         lines.push("## Relationships".to_owned());
         for edge in related {
-            lines.push(format!("{} {} -> {}", edge.source, edge.predicate, edge.target));
+            lines.push(format!(
+                "{} {} -> {}",
+                edge.source, edge.predicate, edge.target
+            ));
         }
     }
 
@@ -119,7 +135,12 @@ pub fn render_person_card(
         lines.push(String::new());
         lines.push(format!("### {} ({})", group.section, group.entries.len()));
         for entry in &group.entries {
-            lines.push(format!("- [{}] {}{}", entry.date, entry.content, suffix_of(entry)));
+            lines.push(format!(
+                "- [{}] {}{}",
+                entry.date,
+                entry.content,
+                suffix_of(entry)
+            ));
         }
     }
     lines.join("\n")

@@ -24,7 +24,9 @@ pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
         if git_path.exists() {
             match std::fs::metadata(&git_path) {
                 Ok(metadata) if metadata.is_file() => {
-                    let Ok(content) = std::fs::read_to_string(&git_path) else { return None };
+                    let Ok(content) = std::fs::read_to_string(&git_path) else {
+                        return None;
+                    };
                     let content = content.trim();
                     if let Some(rest) = content.strip_prefix("gitdir: ") {
                         let git_dir = resolve_against(&dir, rest.trim());
@@ -68,7 +70,11 @@ pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
 
 fn resolve_against(base: &Path, relative: &str) -> PathBuf {
     let path = Path::new(relative);
-    if path.is_absolute() { path.to_path_buf() } else { base.join(path) }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,12 +86,18 @@ pub struct HeadBranch {
 
 fn is_wsl_environment() -> bool {
     cfg!(target_os = "linux")
-        && (std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some())
+        && (std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || std::env::var_os("WSL_INTEROP").is_some())
 }
 
 fn is_windows_mounted_repo_path(repo_dir: &str) -> bool {
     let lowered = repo_dir.to_ascii_lowercase();
-    lowered.starts_with("/mnt/") && lowered.as_bytes().get(5).map(|byte| byte.is_ascii_lowercase()).unwrap_or(false)
+    lowered.starts_with("/mnt/")
+        && lowered
+            .as_bytes()
+            .get(5)
+            .map(|byte| byte.is_ascii_lowercase())
+            .unwrap_or(false)
 }
 
 fn should_poll_git_head(repo_dir: &str) -> bool {
@@ -122,7 +134,9 @@ impl FooterDataProvider {
     }
 
     fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-        value.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        value
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Current git branch: None outside a repo, "detached" on a detached HEAD.
@@ -165,7 +179,9 @@ impl FooterDataProvider {
         *Self::lock(&self.subagent_cost) = None;
     }
 
-    pub fn subagent_cost(&self) -> Option<f64> { *Self::lock(&self.subagent_cost) }
+    pub fn subagent_cost(&self) -> Option<f64> {
+        *Self::lock(&self.subagent_cost)
+    }
 
     pub fn set_subagent_cost(&self, cost: Option<f64>) {
         *Self::lock(&self.subagent_cost) = cost.filter(|value| value.is_finite() && *value >= 0.0);
@@ -206,26 +222,52 @@ impl FooterDataProvider {
 
     fn read_branch_from_head(&self) -> HeadBranch {
         let paths = Self::lock(&self.git_paths).clone();
-        let Some(Some(paths)) = paths else { return HeadBranch { branch: None, needs_git_probe: false } };
+        let Some(Some(paths)) = paths else {
+            return HeadBranch {
+                branch: None,
+                needs_git_probe: false,
+            };
+        };
         let Ok(content) = std::fs::read_to_string(&paths.head_path) else {
-            return HeadBranch { branch: None, needs_git_probe: false };
+            return HeadBranch {
+                branch: None,
+                needs_git_probe: false,
+            };
         };
         let content = content.trim();
         let Some(branch) = content.strip_prefix("ref: refs/heads/") else {
-            return HeadBranch { branch: Some("detached".to_owned()), needs_git_probe: false };
+            return HeadBranch {
+                branch: Some("detached".to_owned()),
+                needs_git_probe: false,
+            };
         };
         if branch == ".invalid" {
-            HeadBranch { branch: Some("detached".to_owned()), needs_git_probe: true }
+            HeadBranch {
+                branch: Some("detached".to_owned()),
+                needs_git_probe: true,
+            }
         } else {
-            HeadBranch { branch: Some(branch.to_owned()), needs_git_probe: false }
+            HeadBranch {
+                branch: Some(branch.to_owned()),
+                needs_git_probe: false,
+            }
         }
     }
 
     /// Asks git for the current branch; None on a detached HEAD or when git is unavailable.
     pub fn resolve_git_branch(&self) -> Option<String> {
-        let repo_dir = Self::lock(&self.git_paths).clone().flatten().map(|paths| paths.repo_dir)?;
+        let repo_dir = Self::lock(&self.git_paths)
+            .clone()
+            .flatten()
+            .map(|paths| paths.repo_dir)?;
         let output = std::process::Command::new("git")
-            .args(["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"])
+            .args([
+                "--no-optional-locks",
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ])
             .current_dir(&repo_dir)
             .output()
             .ok()?;
@@ -233,7 +275,11 @@ impl FooterDataProvider {
             return None;
         }
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if branch.is_empty() { None } else { Some(branch) }
+        if branch.is_empty() {
+            None
+        } else {
+            Some(branch)
+        }
     }
 
     /// Re-resolves the branch and notifies subscribers when it changed. The host calls this from its
@@ -257,7 +303,11 @@ impl FooterDataProvider {
         let head = self.read_branch_from_head();
         // A reftable HEAD never changes on branch switches, so only plain reads may be skipped later.
         *Self::lock(&self.head_mtime) = if head.needs_git_probe { None } else { mtime };
-        let next = if head.needs_git_probe { self.resolve_git_branch() } else { head.branch };
+        let next = if head.needs_git_probe {
+            self.resolve_git_branch()
+        } else {
+            head.branch
+        };
         let mut cached = Self::lock(&self.cached_branch);
         let previous = cached.clone();
         let changed = previous.is_some() && previous.clone().flatten() != next;
@@ -284,7 +334,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn init_repo(dir: &Path) {
-        std::process::Command::new("git").args(["init", "-q", "-b", "feature"]).current_dir(dir).output().expect("git init");
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "feature"])
+            .current_dir(dir)
+            .output()
+            .expect("git init");
     }
 
     #[test]
@@ -292,7 +346,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_repo(tmp.path());
         std::fs::create_dir_all(tmp.path().join("nested/deep")).expect("mkdir");
-        let paths = find_git_paths(&tmp.path().join("nested/deep").to_string_lossy()).expect("paths");
+        let paths =
+            find_git_paths(&tmp.path().join("nested/deep").to_string_lossy()).expect("paths");
         assert_eq!(paths.repo_dir, tmp.path().to_string_lossy());
         assert!(paths.head_path.replace('\\', "/").ends_with(".git/HEAD"));
     }
@@ -314,8 +369,12 @@ mod tests {
     fn a_detached_head_reports_detached() {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_repo(tmp.path());
-        std::fs::write(tmp.path().join(".git/HEAD"), "0123456789abcdef
-").expect("write");
+        std::fs::write(
+            tmp.path().join(".git/HEAD"),
+            "0123456789abcdef
+",
+        )
+        .expect("write");
         let provider = FooterDataProvider::new(&tmp.path().to_string_lossy());
         assert_eq!(provider.git_branch().as_deref(), Some("detached"));
     }
@@ -324,7 +383,10 @@ mod tests {
     fn extension_statuses_track_set_and_clear() {
         let provider = FooterDataProvider::new("/tmp");
         provider.set_extension_status("k", Some("v"));
-        assert_eq!(provider.extension_statuses().get("k").map(String::as_str), Some("v"));
+        assert_eq!(
+            provider.extension_statuses().get("k").map(String::as_str),
+            Some("v")
+        );
         provider.set_extension_status("k", None);
         assert!(provider.extension_statuses().is_empty());
     }
@@ -340,8 +402,12 @@ mod tests {
         provider.on_branch_change(Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
-        std::fs::write(tmp.path().join(".git/HEAD"), "ref: refs/heads/renamed
-").expect("write");
+        std::fs::write(
+            tmp.path().join(".git/HEAD"),
+            "ref: refs/heads/renamed
+",
+        )
+        .expect("write");
         provider.refresh_branch();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(provider.git_branch().as_deref(), Some("renamed"));
@@ -380,7 +446,10 @@ mod status_keep_tests {
         provider.set_extension_status("ext", Some("busy"));
         provider.clear_extension_statuses_keeping(&["lifecycle".to_string()].into());
         assert_eq!(
-            provider.extension_statuses().into_keys().collect::<Vec<_>>(),
+            provider
+                .extension_statuses()
+                .into_keys()
+                .collect::<Vec<_>>(),
             vec!["lifecycle".to_string()]
         );
         provider.clear_extension_statuses();

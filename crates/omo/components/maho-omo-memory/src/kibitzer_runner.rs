@@ -13,12 +13,16 @@ use std::sync::{Arc, Mutex};
 
 use memory_core::recall::RecallNudge;
 
-use crate::kibitzer_child::{KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput, KibitzerChildSpawner};
-use crate::kibitzer_contract::{
-    KibitzerWakeFuture, KibitzerWakeRequest, KibitzerWakeResult, KibitzerWakeRunner, KibitzerWakeSpawn,
-    KibitzerWakeStatus,
+use crate::kibitzer_child::{
+    KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput, KibitzerChildSpawner,
 };
-use crate::kibitzer_events::{KibitzerEventCaps, KibitzerEventStream, create_kibitzer_event_stream};
+use crate::kibitzer_contract::{
+    KibitzerWakeFuture, KibitzerWakeRequest, KibitzerWakeResult, KibitzerWakeRunner,
+    KibitzerWakeSpawn, KibitzerWakeStatus,
+};
+use crate::kibitzer_events::{
+    KibitzerEventCaps, KibitzerEventStream, create_kibitzer_event_stream,
+};
 use crate::kibitzer_judge_outcome::{JudgeTurnClassification, classify_judge_turn};
 use crate::kibitzer_prompt::{
     KibitzerEnvelopeInput, KibitzerReseedInput, KibitzerSidecarCandidate,
@@ -57,23 +61,47 @@ impl ResidentKibitzerRunner {
         task_summary: Option<String>,
         warn: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
-        Self { spawner, spawn, caps, task_summary, warn, sessions: Arc::new(Mutex::new(BTreeMap::new())), generations: Arc::new(Mutex::new(BTreeMap::new())) }
+        Self {
+            spawner,
+            spawn,
+            caps,
+            task_summary,
+            warn,
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            generations: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     /// The current generation for `session_id` (0 when no child was ever created).
     pub fn generation(&self, session_id: &str) -> u64 {
-        self.generations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).copied().unwrap_or(0)
+        self.generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     fn drop_child(&self, session_id: &str) -> Option<ResidentChild> {
-        self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id)
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id)
     }
 
     /// Unsubscribe both listeners then schedule the async `dispose` on the host executor; a dispose
     /// failure is reported through `warn`, never silently dropped.
-    fn teardown(spawn: &KibitzerWakeSpawn, warn: &Arc<dyn Fn(&str) + Send + Sync>, resident: &mut ResidentChild) {
-        if let Some(unsubscribe) = resident.unsubscribe_nudges.take() { unsubscribe(); }
-        if let Some(unsubscribe) = resident.unsubscribe_tools.take() { unsubscribe(); }
+    fn teardown(
+        spawn: &KibitzerWakeSpawn,
+        warn: &Arc<dyn Fn(&str) + Send + Sync>,
+        resident: &mut ResidentChild,
+    ) {
+        if let Some(unsubscribe) = resident.unsubscribe_nudges.take() {
+            unsubscribe();
+        }
+        if let Some(unsubscribe) = resident.unsubscribe_tools.take() {
+            unsubscribe();
+        }
         let child = Arc::clone(&resident.child);
         let warn = Arc::clone(warn);
         spawn(Box::pin(async move {
@@ -88,7 +116,10 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
     fn start(&self, request: KibitzerWakeRequest) -> KibitzerWakeFuture {
         let spawner = Arc::clone(&self.spawner);
         let spawn = Arc::clone(&self.spawn);
-        let maps = ResidentMaps { sessions: Arc::clone(&self.sessions), generations: Arc::clone(&self.generations) };
+        let maps = ResidentMaps {
+            sessions: Arc::clone(&self.sessions),
+            generations: Arc::clone(&self.generations),
+        };
         let warn = Arc::clone(&self.warn);
         let caps = self.caps;
         let task_summary = self.task_summary.clone();
@@ -97,9 +128,24 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
         let cancel = Arc::clone(&request.cancel);
         let max_tool_budget = request.max_tool_budget;
         Box::pin(async move {
-            let prepared = match prepare(&spawner, caps, task_summary.as_deref(), &maps, &session_id, &candidates, max_tool_budget).await {
+            let prepared = match prepare(
+                &spawner,
+                caps,
+                task_summary.as_deref(),
+                &maps,
+                &session_id,
+                &candidates,
+                max_tool_budget,
+            )
+            .await
+            {
                 Ok(prepared) => prepared,
-                Err(_) => return KibitzerWakeResult { nudges: Vec::new(), status: KibitzerWakeStatus::Failed },
+                Err(_) => {
+                    return KibitzerWakeResult {
+                        nudges: Vec::new(),
+                        status: KibitzerWakeStatus::Failed,
+                    };
+                }
             };
             let child = Arc::clone(&prepared.child);
             // ARM settlement BEFORE the trigger so a synchronous terminal is observed.
@@ -111,21 +157,35 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
             if let Err(error) = trigger {
                 // A first-trigger failure after subscription must not leak the resident or child.
                 if prepared.fresh
-                    && let Some(mut resident) = maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&prepared.session_id)
+                    && let Some(mut resident) = maps
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&prepared.session_id)
                 {
                     Self::teardown(&spawn, &warn, &mut resident);
                 }
                 warn(&format!("kibitzer wake trigger failed: {error}"));
-                return KibitzerWakeResult { nudges: Vec::new(), status: KibitzerWakeStatus::Failed };
+                return KibitzerWakeResult {
+                    nudges: Vec::new(),
+                    status: KibitzerWakeStatus::Failed,
+                };
             }
             prepared.running.store(true, Ordering::SeqCst);
             let settle_outcome = settle.await;
-            let nudges = prepared.nudges.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let nudges = prepared
+                .nudges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let tool_calls = prepared.tool_calls.load(Ordering::SeqCst);
             prepared.running.store(false, Ordering::SeqCst);
             if tool_calls > max_tool_budget || (cancel)() {
                 child.abort();
-                return KibitzerWakeResult { nudges, status: KibitzerWakeStatus::Cancelled };
+                return KibitzerWakeResult {
+                    nudges,
+                    status: KibitzerWakeStatus::Cancelled,
+                };
             }
             let status = match classify_judge_turn(&settle_outcome, &nudges) {
                 JudgeTurnClassification::Completed => KibitzerWakeStatus::Completed,
@@ -138,7 +198,12 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
     }
 
     fn abort(&self, session_id: &str) {
-        if let Some(resident) = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id) {
+        if let Some(resident) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+        {
             resident.child.abort();
         }
     }
@@ -156,7 +221,10 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
     }
 }
 
-enum Trigger { Steer(String), FollowUp(String) }
+enum Trigger {
+    Steer(String),
+    FollowUp(String),
+}
 
 struct PreparedWake {
     child: Arc<dyn KibitzerChild>,
@@ -187,19 +255,27 @@ async fn prepare(
 ) -> Result<PreparedWake, String> {
     // --- resident branch: clone into an owned tuple, drop the guard, then decide. ---
     let resident = {
-        let sessions = maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions.get(session_id).map(|resident| (
-            Arc::clone(&resident.child),
-            resident.generation,
-            resident.running.load(Ordering::SeqCst),
-            Arc::clone(&resident.nudges),
-            Arc::clone(&resident.tool_calls),
-            Arc::clone(&resident.running),
-        ))
+        let sessions = maps
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get(session_id).map(|resident| {
+            (
+                Arc::clone(&resident.child),
+                resident.generation,
+                resident.running.load(Ordering::SeqCst),
+                Arc::clone(&resident.nudges),
+                Arc::clone(&resident.tool_calls),
+                Arc::clone(&resident.running),
+            )
+        })
     };
     if let Some((child, _generation, running, nudges, tool_calls, running_flag)) = resident {
         let events = event_batch(caps, candidates, false).peek();
-        let digest = events.digest.as_ref().map(crate::kibitzer_sidecar_envelope::sidecar_digest);
+        let digest = events
+            .digest
+            .as_ref()
+            .map(crate::kibitzer_sidecar_envelope::sidecar_digest);
         let sidecar_candidates = sidecar_candidates(candidates);
         let prompt = render_kibitzer_wake_prompt(&KibitzerEnvelopeInput {
             session_id,
@@ -217,16 +293,30 @@ async fn prepare(
             Trigger::Steer(prompt)
         } else {
             // A fresh turn: reset the turn-local accumulator and budget (under the lock, no await).
-            nudges.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            nudges
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             tool_calls.store(0, Ordering::SeqCst);
             Trigger::FollowUp(prompt)
         };
-        return Ok(PreparedWake { child, nudges, tool_calls, running: running_flag, trigger, fresh: false, session_id: session_id.to_string() });
+        return Ok(PreparedWake {
+            child,
+            nudges,
+            tool_calls,
+            running: running_flag,
+            trigger,
+            fresh: false,
+            session_id: session_id.to_string(),
+        });
     }
 
     // --- new child branch: monotonic generation, spawn, subscribe, REGISTER, no trigger here. ---
     let generation = {
-        let mut generations = maps.generations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generations = maps
+            .generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = generations.entry(session_id.to_string()).or_insert(0);
         *entry += 1;
         *entry
@@ -234,33 +324,57 @@ async fn prepare(
     let nudges: Arc<Mutex<Vec<RecallNudge>>> = Arc::new(Mutex::new(Vec::new()));
     let tool_calls = Arc::new(AtomicUsize::new(0));
     let running = Arc::new(AtomicBool::new(true));
-    let input = KibitzerChildSpawnInput { session_id: session_id.to_string(), generation, tools: tools_of(), max_items: candidates.max_items };
+    let input = KibitzerChildSpawnInput {
+        session_id: session_id.to_string(),
+        generation,
+        tools: tools_of(),
+        max_items: candidates.max_items,
+    };
     let child = spawner.spawn(input).await.map_err(|error| error.message)?;
     // Listeners registered BEFORE the trigger; the tool listener aborts THIS child on budget.
     let collected = Arc::clone(&nudges);
     let nudge_listener: Arc<dyn Fn(RecallNudge) + Send + Sync> = Arc::new(move |nudge| {
-        collected.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(nudge);
+        collected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(nudge);
     });
     let counted = Arc::clone(&tool_calls);
     let abort_child = Arc::clone(&child);
-    let tool_listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync> = Arc::new(move |event| {
-        // The wake budget charges tool STARTS only (upstream `sidecar-turn.ts` `turn.toolStarts`); a
-        // `ToolEnd` or `MessageEnd` observation is not a charge and never aborts.
-        if matches!(event, KibitzerChildObservation::ToolStart { .. }) {
-            let count = counted.fetch_add(1, Ordering::SeqCst) + 1;
-            if count > max_tool_budget { abort_child.abort(); }
-        }
-    });
+    let tool_listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync> =
+        Arc::new(move |event| {
+            // The wake budget charges tool STARTS only (upstream `sidecar-turn.ts` `turn.toolStarts`); a
+            // `ToolEnd` or `MessageEnd` observation is not a charge and never aborts.
+            if matches!(event, KibitzerChildObservation::ToolStart { .. }) {
+                let count = counted.fetch_add(1, Ordering::SeqCst) + 1;
+                if count > max_tool_budget {
+                    abort_child.abort();
+                }
+            }
+        });
     let unsubscribe_nudges = child.subscribe_nudges(nudge_listener);
     let unsubscribe_tools = child.subscribe_observations(tool_listener);
     // Register the resident BEFORE the trigger so `abort(session_id)` finds it while pending.
-    maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_string(), ResidentChild {
-        child: Arc::clone(&child), generation, running: Arc::clone(&running),
-        nudges: Arc::clone(&nudges), tool_calls: Arc::clone(&tool_calls),
-        unsubscribe_nudges: Some(unsubscribe_nudges), unsubscribe_tools: Some(unsubscribe_tools),
-    });
+    maps.sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            session_id.to_string(),
+            ResidentChild {
+                child: Arc::clone(&child),
+                generation,
+                running: Arc::clone(&running),
+                nudges: Arc::clone(&nudges),
+                tool_calls: Arc::clone(&tool_calls),
+                unsubscribe_nudges: Some(unsubscribe_nudges),
+                unsubscribe_tools: Some(unsubscribe_tools),
+            },
+        );
     let events = event_batch(caps, candidates, true).peek();
-    let digest = events.digest.as_ref().map(crate::kibitzer_sidecar_envelope::sidecar_digest);
+    let digest = events
+        .digest
+        .as_ref()
+        .map(crate::kibitzer_sidecar_envelope::sidecar_digest);
     let sidecar_candidates = sidecar_candidates(candidates);
     let cursor = candidates.transcript.len();
     let prompt = if generation == 1 {
@@ -288,15 +402,29 @@ async fn prepare(
             max_chars: None,
         })
     };
-    Ok(PreparedWake { child, nudges, tool_calls, running, trigger: Trigger::FollowUp(prompt), fresh: true, session_id: session_id.to_string() })
+    Ok(PreparedWake {
+        child,
+        nudges,
+        tool_calls,
+        running,
+        trigger: Trigger::FollowUp(prompt),
+        fresh: true,
+        session_id: session_id.to_string(),
+    })
 }
 
-fn event_batch(caps: KibitzerEventCaps, candidates: &CollectedRecallCandidates, with_assistant: bool) -> KibitzerEventStream {
+fn event_batch(
+    caps: KibitzerEventCaps,
+    candidates: &CollectedRecallCandidates,
+    with_assistant: bool,
+) -> KibitzerEventStream {
     let mut events = create_kibitzer_event_stream(caps);
     let cursor = candidates.transcript.len();
     for turn in &candidates.transcript {
         match turn.role {
-            RecallRole::User => { events.on_prompt(&turn.text, cursor); }
+            RecallRole::User => {
+                events.on_prompt(&turn.text, cursor);
+            }
             RecallRole::Assistant => {
                 if with_assistant {
                     events.newest_assistant(&[serde_json::json!({ "type": "message", "message": { "role": "assistant", "content": turn.text } })], cursor);
@@ -307,7 +435,12 @@ fn event_batch(caps: KibitzerEventCaps, candidates: &CollectedRecallCandidates, 
     events
 }
 
-fn tools_of() -> Vec<String> { KIBITZER_SIDECAR_TOOL_NAMES.iter().map(|name| (*name).to_string()).collect() }
+fn tools_of() -> Vec<String> {
+    KIBITZER_SIDECAR_TOOL_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
 
 /// The envelope's candidate view over the collected candidates. The runner owns this mapping, so a
 /// candidate field can never be silently dropped between collection and the child's envelope.

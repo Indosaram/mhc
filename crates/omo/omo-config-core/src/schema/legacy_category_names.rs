@@ -114,7 +114,10 @@ fn canonicalize_value(
                     result.insert(key.clone(), Value::String(canonical));
                     continue;
                 }
-                result.insert(key.clone(), canonicalize_value(entry, &child(path, key), renames));
+                result.insert(
+                    key.clone(),
+                    canonicalize_value(entry, &child(path, key), renames),
+                );
             }
             Value::Object(result)
         }
@@ -122,7 +125,9 @@ fn canonicalize_value(
     }
 }
 
-pub fn canonicalize_legacy_category_names(document: &Value) -> CanonicalizeLegacyCategoryNamesResult {
+pub fn canonicalize_legacy_category_names(
+    document: &Value,
+) -> CanonicalizeLegacyCategoryNamesResult {
     let mut renames = Vec::new();
     let canonicalized = match document {
         Value::Object(_) => canonicalize_value(document, &[], &mut renames),
@@ -138,5 +143,7 @@ pub fn canonicalize_legacy_category_names(document: &Value) -> CanonicalizeLegac
 }
 
 pub fn has_legacy_category_names(document: &Value) -> bool {
-    !canonicalize_legacy_category_names(document).renames.is_empty()
+    !canonicalize_legacy_category_names(document)
+        .renames
+        .is_empty()
 }

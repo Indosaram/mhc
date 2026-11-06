@@ -88,8 +88,9 @@ pub fn packed_point(x: i32, y: i32) -> CoreResult<isize> {
 /// # Errors
 /// `InputFailed` when the delta does not fit a signed 16-bit word.
 pub fn wheel_wparam(delta: i32) -> CoreResult<usize> {
-    let delta = i16::try_from(delta)
-        .map_err(|_| DesktopError::input_failed(format!("scroll delta {delta} exceeds Win32 range")))?;
+    let delta = i16::try_from(delta).map_err(|_| {
+        DesktopError::input_failed(format!("scroll delta {delta} exceeds Win32 range"))
+    })?;
     Ok(usize::from(u16::from_ne_bytes(delta.to_ne_bytes())) << 16)
 }
 

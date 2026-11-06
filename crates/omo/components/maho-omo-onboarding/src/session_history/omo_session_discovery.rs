@@ -234,18 +234,12 @@ mod tests {
         write(
             root,
             "probe.jsonl",
-            &[
-                header("a", PROBE).as_str(),
-                r#"{"type":"model_change"}"#,
-            ],
+            &[header("a", PROBE).as_str(), r#"{"type":"model_change"}"#],
         )?;
         write(
             root,
             "real.jsonl",
-            &[
-                header("b", REAL).as_str(),
-                r#"{"type":"message"}"#,
-            ],
+            &[header("b", REAL).as_str(), r#"{"type":"message"}"#],
         )?;
         write(
             root,

@@ -6,21 +6,33 @@ use serde_json::{Value, json};
 fn empty_details_and_text_use_compact_shape() {
     let mut result = AgentToolResult::text("first");
     result.content.push(ContentBlock::text("second"));
-    assert_eq!(marshal_tool_result(&result), json!({"text":"first\nsecond"}));
+    assert_eq!(
+        marshal_tool_result(&result),
+        json!({"text":"first\nsecond"})
+    );
 }
 
 #[test]
 fn images_use_kernel_display_shape() {
     let mut result = AgentToolResult::text("image");
-    result.content.push(ContentBlock::Image(ImageContent { data: "aGVsbG8=".into(), mime_type: "image/png".into() }));
-    assert_eq!(marshal_tool_result(&result), json!({"text":"image", "images":[{"mimeType":"image/png", "dataBase64":"aGVsbG8="}], "hasError":false}));
+    result.content.push(ContentBlock::Image(ImageContent {
+        data: "aGVsbG8=".into(),
+        mime_type: "image/png".into(),
+    }));
+    assert_eq!(
+        marshal_tool_result(&result),
+        json!({"text":"image", "images":[{"mimeType":"image/png", "dataBase64":"aGVsbG8="}], "hasError":false})
+    );
 }
 
 #[test]
 fn nonempty_details_survive_marshaling() {
     let mut result = AgentToolResult::text("receipt");
     result.details = json!({"task_id":"st_abc"});
-    assert_eq!(marshal_tool_result(&result), json!({"text":"receipt", "details":{"task_id":"st_abc"}, "images":[], "hasError":false}));
+    assert_eq!(
+        marshal_tool_result(&result),
+        json!({"text":"receipt", "details":{"task_id":"st_abc"}, "images":[], "hasError":false})
+    );
 }
 
 #[test]

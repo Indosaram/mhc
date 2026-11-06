@@ -73,30 +73,47 @@ fn snapshot() -> ServiceSubscriptionSnapshot {
 }
 
 #[test]
-fn wire_sequences_follow_js_number_rounding_not_safe_integer_restrictions() -> Result<(), ServiceError> {
-    let update = maho_chord::json::parse(r#"{"type":"state","member":"state","sequence":9007199254740993,"ops":[]}"#)?;
+fn wire_sequences_follow_js_number_rounding_not_safe_integer_restrictions()
+-> Result<(), ServiceError> {
+    let update = maho_chord::json::parse(
+        r#"{"type":"state","member":"state","sequence":9007199254740993,"ops":[]}"#,
+    )?;
     let parsed = parse_service_provider_update(update)?;
-    assert!(matches!(parsed, ServiceProviderUpdate::State { sequence, .. } if sequence == seq(9_007_199_254_740_992)));
+    assert!(
+        matches!(parsed, ServiceProviderUpdate::State { sequence, .. } if sequence == seq(9_007_199_254_740_992))
+    );
     for sequence in ["1.0", "1e3", "-0"] {
-        let input = maho_chord::json::parse(&format!(r#"{{"serviceId":"test","mode":"singleton","instances":[{{"members":[{{"name":"state","kind":"state","sequence":{sequence},"ops":[["r",{{}}]]}}]}}]}}"#))?;
+        let input = maho_chord::json::parse(&format!(
+            r#"{{"serviceId":"test","mode":"singleton","instances":[{{"members":[{{"name":"state","kind":"state","sequence":{sequence},"ops":[["r",{{}}]]}}]}}]}}"#
+        ))?;
         parse_service_subscription_snapshot(input)?;
     }
     for sequence in ["-1", "1.5"] {
-        let input = maho_chord::json::parse(&format!(r#"{{"type":"state","member":"state","sequence":{sequence},"ops":[]}}"#))?;
+        let input = maho_chord::json::parse(&format!(
+            r#"{{"type":"state","member":"state","sequence":{sequence},"ops":[]}}"#
+        ))?;
         assert!(parse_service_provider_update(input).is_err());
     }
     Ok(())
 }
 
 #[test]
-fn sequences_cover_finite_js_numbers_beyond_u64_and_preserve_increment() -> Result<(), ServiceError> {
+fn sequences_cover_finite_js_numbers_beyond_u64_and_preserve_increment() -> Result<(), ServiceError>
+{
     for token in ["18446744073709551616", "1e100", "1.7976931348623157e308"] {
-        let input = maho_chord::json::parse(&format!(r#"{{"type":"state","member":"state","sequence":{token},"ops":[]}}"#))?;
+        let input = maho_chord::json::parse(&format!(
+            r#"{{"type":"state","member":"state","sequence":{token},"ops":[]}}"#
+        ))?;
         let update = parse_service_provider_update(input)?;
-        let ServiceProviderUpdate::State { sequence, .. } = &update else { return Err("expected state".into()); };
+        let ServiceProviderUpdate::State { sequence, .. } = &update else {
+            return Err("expected state".into());
+        };
         assert_eq!(sequence.number(), token.parse::<f64>()?);
-        let decoded: ServiceProviderUpdate = serde_json::from_str(&serde_json::to_string(&update)?)?;
-        assert!(matches!(decoded, ServiceProviderUpdate::State { sequence: actual, .. } if actual == *sequence));
+        let decoded: ServiceProviderUpdate =
+            serde_json::from_str(&serde_json::to_string(&update)?)?;
+        assert!(
+            matches!(decoded, ServiceProviderUpdate::State { sequence: actual, .. } if actual == *sequence)
+        );
     }
     assert_eq!(ServiceSequence::new(-0.0)?, ServiceSequence::ZERO);
     let boundary = seq(9_007_199_254_740_992);
@@ -108,23 +125,51 @@ fn sequences_cover_finite_js_numbers_beyond_u64_and_preserve_increment() -> Resu
 }
 
 #[test]
-fn surrogate_service_member_key_and_subscription_identifiers_roundtrip() -> Result<(), ServiceError> {
+fn surrogate_service_member_key_and_subscription_identifiers_roundtrip() -> Result<(), ServiceError>
+{
     let service = JsString::from_utf16(vec![0xd800]);
     let member = JsString::from_utf16(vec![0xdfff]);
     let key = JsString::from_utf16(vec![0xd801]);
     let subscription = JsString::from_utf16(vec![0xdc00]);
-    let call = ServiceCall { service_id: service.clone(), member: member.clone(), instance: Some(ServiceInstanceAddress { key: key.clone(), generation: ServiceSequence::new(1e100)? }), args: vec![] };
+    let call = ServiceCall {
+        service_id: service.clone(),
+        member: member.clone(),
+        instance: Some(ServiceInstanceAddress {
+            key: key.clone(),
+            generation: ServiceSequence::new(1e100)?,
+        }),
+        args: vec![],
+    };
     let decoded = parse_service_call(maho_chord::json::parse(&serde_json::to_string(&call)?)?)?;
-    assert_eq!(decoded.service_id, service); assert_eq!(decoded.member, member);
+    assert_eq!(decoded.service_id, service);
+    assert_eq!(decoded.member, member);
     let address = decoded.instance.ok_or("missing instance")?;
-    assert_eq!(address.key, key); assert_eq!(address.generation.number(), 1e100);
+    assert_eq!(address.key, key);
+    assert_eq!(address.generation.number(), 1e100);
     let control = create_service_subscribe_call(&subscription, &service, ServiceMode::Keyed);
     let control = parse_service_call(maho_chord::json::parse(&serde_json::to_string(&control)?)?)?;
-    assert_eq!(decode_service_control_call(&control), Some(ServiceControlCall::Subscribe { subscription_id: subscription.clone(), service_id: service.clone(), mode: ServiceMode::Keyed }));
-    assert_eq!(decode_service_control_call(&create_service_unsubscribe_call(&subscription)), Some(ServiceControlCall::Unsubscribe { subscription_id: subscription }));
-    let catalogue = maho_chord::json::parse(r#"[{"serviceId":"\ud800","mode":"singleton"},{"serviceId":"\ud801","mode":"keyed"}]"#)?;
+    assert_eq!(
+        decode_service_control_call(&control),
+        Some(ServiceControlCall::Subscribe {
+            subscription_id: subscription.clone(),
+            service_id: service.clone(),
+            mode: ServiceMode::Keyed
+        })
+    );
+    assert_eq!(
+        decode_service_control_call(&create_service_unsubscribe_call(&subscription)),
+        Some(ServiceControlCall::Unsubscribe {
+            subscription_id: subscription
+        })
+    );
+    let catalogue = maho_chord::json::parse(
+        r#"[{"serviceId":"\ud800","mode":"singleton"},{"serviceId":"\ud801","mode":"keyed"}]"#,
+    )?;
     assert_eq!(parse_service_catalogue(catalogue)?.len(), 2);
-    assert_eq!(maho_chord::api::define_service::<()>(service.clone(), false)?.id, service);
+    assert_eq!(
+        maho_chord::api::define_service::<()>(service.clone(), false)?.id,
+        service
+    );
     let reserved = JsString::from("$chord.").concat(&member);
     assert!(maho_chord::api::define_service::<()>(reserved, false).is_err());
     Ok(())
@@ -134,19 +179,49 @@ fn surrogate_service_member_key_and_subscription_identifiers_roundtrip() -> Resu
 fn surrogate_keys_and_values_survive_both_service_wire_codecs() -> Result<(), ServiceError> {
     let value = maho_chord::json::parse(r#"{"\ud800":"\udfff","text":"\ud800"}"#)?;
     let expected = value.clone();
-    let mut encoder = create_service_state_encoder(); let mut decoder = create_service_state_decoder();
-    let snapshot = ServiceSubscriptionSnapshot { service_id: "test".into(), mode: ServiceMode::Singleton, instances: vec![ServiceInstanceSnapshot { instance: None, members: vec![ServiceMemberSnapshot::State { name: "state".into(), sequence: seq(0), ops: vec![Op::Replace(value)] }] }] };
+    let mut encoder = create_service_state_encoder();
+    let mut decoder = create_service_state_decoder();
+    let snapshot = ServiceSubscriptionSnapshot {
+        service_id: "test".into(),
+        mode: ServiceMode::Singleton,
+        instances: vec![ServiceInstanceSnapshot {
+            instance: None,
+            members: vec![ServiceMemberSnapshot::State {
+                name: "state".into(),
+                sequence: seq(0),
+                ops: vec![Op::Replace(value)],
+            }],
+        }],
+    };
     let wire = encoder.encode_snapshot(snapshot)?;
     let json = serde_json::to_string(&wire)?;
     let parsed = parse_wire_service_subscription_snapshot(maho_chord::json::parse(&json)?)?;
     let decoded = decoder.decode_snapshot(parsed)?;
-    match &decoded.instances[0].members[0] { ServiceMemberSnapshot::State { ops, .. } => assert_eq!(ops, &vec![Op::Replace(expected)]), ServiceMemberSnapshot::Method { .. } => return Err("expected state".into()) }
+    match &decoded.instances[0].members[0] {
+        ServiceMemberSnapshot::State { ops, .. } => assert_eq!(ops, &vec![Op::Replace(expected)]),
+        ServiceMemberSnapshot::Method { .. } => return Err("expected state".into()),
+    }
     let key = JsString::from_utf16(vec![0xd800]);
-    let update = ServiceProviderUpdate::State { instance: None, member: "state".into(), sequence: seq(1), ops: vec![Op::Set(vec![key.into()], JsonValue::String(JsString::from_utf16(vec![0xdfff])))] };
+    let update = ServiceProviderUpdate::State {
+        instance: None,
+        member: "state".into(),
+        sequence: seq(1),
+        ops: vec![Op::Set(
+            vec![key.into()],
+            JsonValue::String(JsString::from_utf16(vec![0xdfff])),
+        )],
+    };
     let wire = encoder.encode_update(update)?;
     let json = serde_json::to_string(&wire)?;
-    let decoded = decoder.decode_update(parse_wire_service_provider_update(maho_chord::json::parse(&json)?)?)?;
-    match decoded { ServiceProviderUpdate::State { ops, .. } => assert!(matches!(&ops[0], Op::Set(path, JsonValue::String(value)) if path == &vec![JsString::from_utf16(vec![0xd800]).into()] && value.units() == vec![0xdfff])), _ => return Err("expected update".into()) }
+    let decoded = decoder.decode_update(parse_wire_service_provider_update(
+        maho_chord::json::parse(&json)?,
+    )?)?;
+    match decoded {
+        ServiceProviderUpdate::State { ops, .. } => assert!(
+            matches!(&ops[0], Op::Set(path, JsonValue::String(value)) if path == &vec![JsString::from_utf16(vec![0xd800]).into()] && value.units() == vec![0xdfff])
+        ),
+        _ => return Err("expected update".into()),
+    }
     Ok(())
 }
 #[test]
@@ -157,7 +232,8 @@ fn control_calls_and_strict_validation() -> Result<(), ServiceError> {
     );
     assert_eq!(
         decode_service_control_call(&create_service_subscribe_call(
-            &"sub".into(), &"test.models".into(),
+            &"sub".into(),
+            &"test.models".into(),
             ServiceMode::Singleton
         )),
         Some(ServiceControlCall::Subscribe {
@@ -177,18 +253,24 @@ fn control_calls_and_strict_validation() -> Result<(), ServiceError> {
             .is_err()
     );
     assert!(parse_service_catalogue(json!([{"serviceId":"test","mode":"unknown"}])).is_err());
-    assert!(parse_service_catalogue(
-        json!([{"serviceId":"test","mode":"singleton"},{"serviceId":"test","mode":"keyed"}])
-    )
-    .is_err());
-    assert!(parse_service_provider_update(
-        json!({"type":"state","member":"state","sequence":0,"ops":[]})
-    )
-    .is_err());
-    assert!(parse_wire_service_provider_update(
-        json!({"type":"state","member":"state","sequence":1,"ops":[["?",0]]})
-    )
-    .is_err());
+    assert!(
+        parse_service_catalogue(
+            json!([{"serviceId":"test","mode":"singleton"},{"serviceId":"test","mode":"keyed"}])
+        )
+        .is_err()
+    );
+    assert!(
+        parse_service_provider_update(
+            json!({"type":"state","member":"state","sequence":0,"ops":[]})
+        )
+        .is_err()
+    );
+    assert!(
+        parse_wire_service_provider_update(
+            json!({"type":"state","member":"state","sequence":1,"ops":[["?",0]]})
+        )
+        .is_err()
+    );
     assert!(parse_service_call(
         json!({"serviceId":"test","instance":{"key":"x","generation":0},"member":"call","args":[]})
     )
@@ -263,14 +345,16 @@ fn state_codecs_retain_dictionaries_and_reset_them_for_replacement() -> Result<(
     let decoded = decoder.decode_update(encoder.encode_update(reset.clone())?)?;
     assert_eq!(serde_json::to_value(decoded)?, serde_json::to_value(reset)?);
     decoder.decode_update(encoder.encode_update(ServiceProviderUpdate::Unavailable)?)?;
-    assert!(encoder
-        .encode_update(ServiceProviderUpdate::State {
-            instance: None,
-            member: "state".into(),
-            sequence: seq(4),
-            ops: vec![]
-        })
-        .is_err());
+    assert!(
+        encoder
+            .encode_update(ServiceProviderUpdate::State {
+                instance: None,
+                member: "state".into(),
+                sequence: seq(4),
+                ops: vec![]
+            })
+            .is_err()
+    );
     Ok(())
 }
 #[test]
@@ -307,18 +391,22 @@ fn keyed_generations_have_independent_codecs_and_close_removes_only_one() -> Res
         ops: vec![Op::Set(vec!["revision".into()], json!(1).into())],
     };
     decoder.decode_update(encoder.encode_update(update)?)?;
-    assert!(encoder
-        .encode_update(ServiceProviderUpdate::State {
-            instance: Some(ServiceInstanceAddress {
-                key: "a".into(),
-                generation: seq(1)
-            }),
-            member: "state".into(),
-            sequence: seq(1),
-            ops: vec![]
-        })
-        .is_err());
+    assert!(
+        encoder
+            .encode_update(ServiceProviderUpdate::State {
+                instance: Some(ServiceInstanceAddress {
+                    key: "a".into(),
+                    generation: seq(1)
+                }),
+                member: "state".into(),
+                sequence: seq(1),
+                ops: vec![]
+            })
+            .is_err()
+    );
     Ok(())
 }
 
-fn seq(value: u64) -> ServiceSequence { ServiceSequence::new(value as f64).expect("small finite integral fixture sequence") }
+fn seq(value: u64) -> ServiceSequence {
+    ServiceSequence::new(value as f64).expect("small finite integral fixture sequence")
+}

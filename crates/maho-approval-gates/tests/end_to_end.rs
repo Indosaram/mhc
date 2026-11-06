@@ -122,7 +122,9 @@ async fn run_unanswered(
         tokens_per_second: Some(0.0),
         ..Default::default()
     })?;
-    let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
+    let model = provider
+        .get_model(Some("faux-1"))
+        .ok_or("Missing faux model")?;
     let streams = faux_streams(provider.core.clone());
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
         maho_core::model_runtime::CreateModelRuntimeOptions {

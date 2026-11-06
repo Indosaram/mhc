@@ -1,10 +1,9 @@
-use std::sync::{Arc, Mutex};
 use maho_ext_api::{
-    AgentToolResult, ContentBlock, EventKind, EventResult, Extension, ExtensionApi,
-    ExtensionEvent, InputSource, JsonValue, ToolDefinition, ToolExecutionMode,
-    ToolExposure,
+    AgentToolResult, ContentBlock, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
+    InputSource, JsonValue, ToolDefinition, ToolExecutionMode, ToolExposure,
 };
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 pub const BROWSER_BRIDGE_TOOL_NAME: &str = "omo_browser_bridge";
 pub const BROWSER_STATE_EVENT: &str = "omo.browser.state";
@@ -23,8 +22,12 @@ pub fn parameters_schema() -> JsonValue {
 }
 
 fn is_state_payload(value: Option<&JsonValue>) -> bool {
-    let Some(value) = value else { return false; };
-    let Some(map) = value.as_object() else { return false; };
+    let Some(value) = value else {
+        return false;
+    };
+    let Some(map) = value.as_object() else {
+        return false;
+    };
     matches!(
         (map.get("engine"), map.get("status")),
         (Some(JsonValue::String(_)), Some(JsonValue::String(_)))
@@ -58,11 +61,17 @@ impl BrowserBridgeComponent {
     }
 
     pub fn is_stopped(&self) -> bool {
-        *self.stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn set_stopped(&self, value: bool) {
-        *self.stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+        *self
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
     }
 }
 
@@ -89,49 +98,59 @@ impl Extension for BrowserBridgeComponent {
         definition.permission_parser = Some(Arc::new(|_input, _cwd| Vec::new()));
 
         let events = api.events.clone();
-        let execute: maho_ext_api::ExtensionToolExecutor = Arc::new(move |_id: &str, params: JsonValue, _signal, _update, _context: &maho_ext_api::ExtensionContext| {
-            let stopped = stopped_for_tool.clone();
-            let events = events.clone();
-            Box::pin(async move {
-                let op = params.get("op").and_then(JsonValue::as_str);
-                let current_stopped = *stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let execute: maho_ext_api::ExtensionToolExecutor = Arc::new(
+            move |_id: &str,
+                  params: JsonValue,
+                  _signal,
+                  _update,
+                  _context: &maho_ext_api::ExtensionContext| {
+                let stopped = stopped_for_tool.clone();
+                let events = events.clone();
+                Box::pin(async move {
+                    let op = params.get("op").and_then(JsonValue::as_str);
+                    let current_stopped = *stopped
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                if op == Some("state") {
-                    let data = params.get("data");
-                    if !is_state_payload(data) {
+                    if op == Some("state") {
+                        let data = params.get("data");
+                        if !is_state_payload(data) {
+                            return Ok(reply_agent_result(json!({
+                                "ok": false,
+                                "stopped": current_stopped,
+                                "reason": "invalid_state"
+                            })));
+                        }
+                        if let Some(data) = data {
+                            let event = json!({
+                                "name": BROWSER_STATE_EVENT,
+                                "data": data.clone()
+                            });
+                            events.emit("senpi:extension-rpc-event", &event);
+                        }
                         return Ok(reply_agent_result(json!({
-                            "ok": false,
-                            "stopped": current_stopped,
-                            "reason": "invalid_state"
+                            "ok": true,
+                            "stopped": current_stopped
                         })));
                     }
-                    if let Some(data) = data {
-                        let event = json!({
-                            "name": BROWSER_STATE_EVENT,
-                            "data": data.clone()
-                        });
-                        events.emit("senpi:extension-rpc-event", &event);
+
+                    if op == Some("stopped") {
+                        *stopped
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                        return Ok(reply_agent_result(json!({
+                            "ok": true,
+                            "stopped": true
+                        })));
                     }
-                    return Ok(reply_agent_result(json!({
+
+                    Ok(reply_agent_result(json!({
                         "ok": true,
                         "stopped": current_stopped
-                    })));
-                }
-
-                if op == Some("stopped") {
-                    *stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-                    return Ok(reply_agent_result(json!({
-                        "ok": true,
-                        "stopped": true
-                    })));
-                }
-
-                Ok(reply_agent_result(json!({
-                    "ok": true,
-                    "stopped": current_stopped
-                })))
-            })
-        });
+                    })))
+                })
+            },
+        );
 
         if let Err(error) = api.register_tool_with_extension_context(definition, execute) {
             std::panic::panic_any(error);
@@ -142,7 +161,9 @@ impl Extension for BrowserBridgeComponent {
             Arc::new(move |_params| {
                 let stopped = stopped_for_rpc.clone();
                 Box::pin(async move {
-                    *stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                    *stopped
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                     Ok(json!({ "stopped": true }))
                 })
             }),
@@ -156,8 +177,11 @@ impl Extension for BrowserBridgeComponent {
                 let stopped = stopped_for_input.clone();
                 Box::pin(async move {
                     if let ExtensionEvent::Input(input_event) = event
-                        && input_event.source != InputSource::Extension {
-                        *stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+                        && input_event.source != InputSource::Extension
+                    {
+                        *stopped
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
                     }
                     Ok(EventResult::None)
                 })

@@ -5,8 +5,14 @@ use fancy_regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-const CREDENTIAL_HEADER_SUFFIXES: &[&str] =
-    &["api-key", "api-token", "auth-token", "access-token", "authorization", "client-secret"];
+const CREDENTIAL_HEADER_SUFFIXES: &[&str] = &[
+    "api-key",
+    "api-token",
+    "auth-token",
+    "access-token",
+    "authorization",
+    "client-secret",
+];
 
 static BASIC_OR_BEARER_ONLY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:basic|bearer)\s*$").expect("valid regex"));
@@ -40,7 +46,9 @@ pub fn has_credential_headers(headers: Option<&ProviderHeaders>) -> bool {
             continue;
         }
         if name.ends_with("authorization")
-            && BASIC_OR_BEARER_ONLY.is_match(&normalized.to_lowercase()).unwrap_or(false)
+            && BASIC_OR_BEARER_ONLY
+                .is_match(&normalized.to_lowercase())
+                .unwrap_or(false)
         {
             continue;
         }
@@ -80,16 +88,33 @@ mod tests {
             "x-access-token",
             "cf-access-client-secret",
         ] {
-            assert!(is_credential_header_name(name), "{name} should be credential-bearing");
-            assert!(has_credential_headers(Some(&headers_of(name, "credential"))), "{name} should be detected");
+            assert!(
+                is_credential_header_name(name),
+                "{name} should be credential-bearing"
+            );
+            assert!(
+                has_credential_headers(Some(&headers_of(name, "credential"))),
+                "{name} should be detected"
+            );
         }
     }
 
     #[test]
     fn does_not_treat_non_credential_headers_as_credential_bearing() {
-        for name in ["User-Agent", "x-request-id", "x-trace-token", "content-type"] {
-            assert!(!is_credential_header_name(name), "{name} should not be credential-bearing");
-            assert!(!has_credential_headers(Some(&headers_of(name, "metadata"))), "{name} should not be detected");
+        for name in [
+            "User-Agent",
+            "x-request-id",
+            "x-trace-token",
+            "content-type",
+        ] {
+            assert!(
+                !is_credential_header_name(name),
+                "{name} should not be credential-bearing"
+            );
+            assert!(
+                !has_credential_headers(Some(&headers_of(name, "metadata"))),
+                "{name} should not be detected"
+            );
         }
     }
 

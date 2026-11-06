@@ -21,7 +21,8 @@ fn key_line(path: &Path) -> Option<String> {
 }
 
 fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
         .and_then(Path::parent)
@@ -36,17 +37,25 @@ fn main() {
 
     let versioned = std::env::var("MHC_BUILD_VERSION").is_ok_and(|value| !value.trim().is_empty());
     let debug_profile = std::env::var("PROFILE").is_ok_and(|profile| profile == "debug");
-    let key_file = match std::env::var_os("MHC_RELEASE_PUBKEY_FILE").filter(|value| !value.is_empty()) {
-        Some(value) => {
-            let path = PathBuf::from(value);
-            if path.is_absolute() { path } else { repo_root.join(path) }
-        }
-        None if debug_profile && !versioned => fixture_file.clone(),
-        None => repo_root.join("mhc-release.pub"),
-    };
+    let key_file =
+        match std::env::var_os("MHC_RELEASE_PUBKEY_FILE").filter(|value| !value.is_empty()) {
+            Some(value) => {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    repo_root.join(path)
+                }
+            }
+            None if debug_profile && !versioned => fixture_file.clone(),
+            None => repo_root.join("mhc-release.pub"),
+        };
     println!("cargo:rerun-if-changed={}", key_file.display());
 
-    let channel = match std::env::var("MHC_RELEASE_CHANNEL").ok().filter(|value| !value.is_empty()) {
+    let channel = match std::env::var("MHC_RELEASE_CHANNEL")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
         Some(value) => value,
         None if versioned => "release".to_owned(),
         None => "dev".to_owned(),
@@ -65,10 +74,16 @@ fn main() {
     }
     match channel.as_str() {
         "release" if key.is_some() && key == fixture => {
-            panic!("release builds must not embed the test fixture key ({})", fixture_file.display())
+            panic!(
+                "release builds must not embed the test fixture key ({})",
+                fixture_file.display()
+            )
         }
         "candidate" if key.is_none() || key != fixture => {
-            panic!("candidate builds must embed the test fixture key; set MHC_RELEASE_PUBKEY_FILE to {}", fixture_file.display())
+            panic!(
+                "candidate builds must embed the test fixture key; set MHC_RELEASE_PUBKEY_FILE to {}",
+                fixture_file.display()
+            )
         }
         _ => {}
     }

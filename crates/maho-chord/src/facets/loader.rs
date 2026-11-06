@@ -9,12 +9,16 @@ pub async fn dispose_loaded_facets(loaded: &mut [Box<dyn LoadedFacets>]) -> Vec<
             let entry = entry;
             entry.dispose()
         }))
-            .map_err(|_| crate::services::errors::contract("Loaded facet disposal panicked"))?;
-        std::panic::AssertUnwindSafe(future).catch_unwind().await
-            .map_err(|_| crate::services::errors::contract("Loaded facet disposal future panicked"))?
+        .map_err(|_| crate::services::errors::contract("Loaded facet disposal panicked"))?;
+        std::panic::AssertUnwindSafe(future)
+            .catch_unwind()
+            .await
+            .map_err(|_| {
+                crate::services::errors::contract("Loaded facet disposal future panicked")
+            })?
     }))
-        .await
-        .into_iter()
-        .filter_map(Result::err)
-        .collect()
+    .await
+    .into_iter()
+    .filter_map(Result::err)
+    .collect()
 }

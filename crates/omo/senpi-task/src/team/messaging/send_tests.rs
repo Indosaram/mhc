@@ -11,11 +11,14 @@ use crate::team::member_map::{MemberTaskMap, write_member_task_map};
 use crate::team::messaging::lead_poller_types::{AppendEventFn, TeamTaskEvent};
 use crate::team::messaging::messaging_fakes::{state_dir_config, temp_project_dir};
 use crate::team::messaging::send::send_team_message;
-use crate::team::messaging::types::{MessagingEngineDeps, SendTeamMessageInput, SendTeamMessageResult};
+use crate::team::messaging::types::{
+    MessagingEngineDeps, SendTeamMessageInput, SendTeamMessageResult,
+};
 use crate::team::runtime_config::{TeamCoreConfig, to_team_core_config};
 use crate::team::runtime_fakes::{TeamBoundsOverrides, team_bounds};
 use crate::team::storage::{
-    ensure_team_runtime_dirs, resolve_team_member_inbox_dir, resolve_team_runtime_dirs, team_storage_base_dir,
+    ensure_team_runtime_dirs, resolve_team_member_inbox_dir, resolve_team_runtime_dirs,
+    team_storage_base_dir,
 };
 
 const TEAM_RUN_ID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -32,8 +35,11 @@ fn member_map(entries: &[(&str, &str)]) -> MemberTaskMap {
 fn setup(map: &MemberTaskMap) -> (StateDirConfig, TeamCoreConfig) {
     let state_dir = state_dir_config(&temp_project_dir());
     let base_dir = team_storage_base_dir(&state_dir);
-    let config = to_team_core_config(&team_bounds(TeamBoundsOverrides::default()), &base_dir.to_string_lossy())
-        .expect("team core config");
+    let config = to_team_core_config(
+        &team_bounds(TeamBoundsOverrides::default()),
+        &base_dir.to_string_lossy(),
+    )
+    .expect("team core config");
     let names: Vec<String> = map.keys().cloned().collect();
     ensure_team_runtime_dirs(&state_dir, TEAM_RUN_ID, &names).expect("ensure runtime dirs");
     let runtime_dir = resolve_team_runtime_dirs(&state_dir, TEAM_RUN_ID)
@@ -57,7 +63,8 @@ fn deps(
         active_members: map.keys().cloned().collect(),
         append_event,
         now: None,
-        new_message_id: message_id.map(|id| Box::new(move || id.to_string()) as Box<dyn Fn() -> String + Send + Sync>),
+        new_message_id: message_id
+            .map(|id| Box::new(move || id.to_string()) as Box<dyn Fn() -> String + Send + Sync>),
     }
 }
 
@@ -65,7 +72,9 @@ fn recorder() -> (Appended, AppendEventFn) {
     let appended: Appended = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&appended);
     let append: AppendEventFn = Box::new(move |task_id: &str, event: TeamTaskEvent| {
-        sink.lock().expect("lock appended").push((task_id.to_string(), event));
+        sink.lock()
+            .expect("lock appended")
+            .push((task_id.to_string(), event));
     });
     (appended, append)
 }
@@ -96,7 +105,13 @@ fn processed_path(state_dir: &StateDirConfig, recipient: &str, message_id: &str)
 fn unread_files(state_dir: &StateDirConfig, recipient: &str) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(inbox_dir(state_dir, recipient))
         .expect("read inbox")
-        .map(|entry| entry.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|name| name.ends_with(".json") && !name.starts_with('.'))
         .collect();
     files.sort();
@@ -104,36 +119,48 @@ fn unread_files(state_dir: &StateDirConfig, recipient: &str) -> Vec<String> {
 }
 
 #[test]
-fn given_an_unknown_recipient_when_the_lead_sends_then_the_error_names_the_team_members_and_valid_forms() {
+fn given_an_unknown_recipient_when_the_lead_sends_then_the_error_names_the_team_members_and_valid_forms()
+ {
     // given
     let map = member_map(&[("alpha", "st_alpha"), ("beta", "st_beta")]);
     let (state_dir, config) = setup(&map);
 
     // when
-    let error = send_team_message(&input("lead", "ghost", "hello"), &deps(&state_dir, config, &map, None, None))
-        .expect_err("unknown recipient must fail");
+    let error = send_team_message(
+        &input("lead", "ghost", "hello"),
+        &deps(&state_dir, config, &map, None, None),
+    )
+    .expect_err("unknown recipient must fail");
 
     // then
     let pattern = regex::Regex::new(r"ghost[\s\S]*alpha[\s\S]*beta").expect("regex");
-    assert!(pattern.is_match(&error.to_string()), "unexpected message: {error}");
+    assert!(
+        pattern.is_match(&error.to_string()),
+        "unexpected message: {error}"
+    );
 }
 
 #[test]
-fn given_an_unknown_recipient_when_the_lead_sends_then_the_stable_invalid_recipient_error_name_survives() {
+fn given_an_unknown_recipient_when_the_lead_sends_then_the_stable_invalid_recipient_error_name_survives()
+ {
     // given
     let map = member_map(&[("alpha", "st_alpha")]);
     let (state_dir, config) = setup(&map);
 
     // when
-    let error = send_team_message(&input("lead", "ghost", "hello"), &deps(&state_dir, config, &map, None, None))
-        .expect_err("unknown recipient must fail");
+    let error = send_team_message(
+        &input("lead", "ghost", "hello"),
+        &deps(&state_dir, config, &map, None, None),
+    )
+    .expect_err("unknown recipient must fail");
 
     // then
     assert_eq!(error.name(), "InvalidRecipientError");
 }
 
 #[test]
-fn given_a_member_recipient_when_a_member_sends_then_one_unread_file_is_written_and_the_send_returns_enqueued() {
+fn given_a_member_recipient_when_a_member_sends_then_one_unread_file_is_written_and_the_send_returns_enqueued()
+ {
     // given
     let map = member_map(&[("alpha", "st_a"), ("beta", "st_b")]);
     let (state_dir, config) = setup(&map);
@@ -155,7 +182,10 @@ fn given_a_member_recipient_when_a_member_sends_then_one_unread_file_is_written_
         }
     );
     assert_eq!(result.kind(), "to_members");
-    assert_eq!(unread_files(&state_dir, "beta"), vec![format!("{message_id}.json")]);
+    assert_eq!(
+        unread_files(&state_dir, "beta"),
+        vec![format!("{message_id}.json")]
+    );
     assert!(!processed_path(&state_dir, "beta", message_id).exists());
 }
 
@@ -181,7 +211,10 @@ fn given_the_lead_sentinel_when_a_member_sends_then_the_lead_inbox_receives_an_u
         }
     );
     assert_eq!(result.kind(), "to_lead");
-    assert_eq!(unread_files(&state_dir, "lead"), vec![format!("{message_id}.json")]);
+    assert_eq!(
+        unread_files(&state_dir, "lead"),
+        vec![format!("{message_id}.json")]
+    );
     assert!(!processed_path(&state_dir, "lead", message_id).exists());
 }
 
@@ -218,11 +251,15 @@ fn given_three_active_members_when_the_lead_broadcasts_then_every_recipient_inbo
         .iter()
         .map(|(task_id, _)| task_id.clone())
         .collect();
-    assert_eq!(task_ids, vec!["st_a".to_string(), "st_b".to_string(), "st_g".to_string()]);
+    assert_eq!(
+        task_ids,
+        vec!["st_a".to_string(), "st_b".to_string(), "st_g".to_string()]
+    );
 }
 
 #[test]
-fn given_a_member_task_mapping_when_the_member_sends_then_team_message_sent_is_anchored_to_the_sender_record() {
+fn given_a_member_task_mapping_when_the_member_sends_then_team_message_sent_is_anchored_to_the_sender_record()
+ {
     // given
     let map = member_map(&[("alpha", "st_a"), ("beta", "st_b")]);
     let (state_dir, config) = setup(&map);
@@ -273,7 +310,8 @@ fn given_no_append_event_dependency_when_the_lead_sends_then_enqueue_still_succe
 }
 
 #[test]
-fn given_a_full_recipient_inbox_when_a_member_sends_then_recipient_backpressure_error_still_surfaces() {
+fn given_a_full_recipient_inbox_when_a_member_sends_then_recipient_backpressure_error_still_surfaces()
+ {
     // given
     let map = member_map(&[("alpha", "st_a"), ("beta", "st_b")]);
     let (state_dir, mut config) = setup(&map);

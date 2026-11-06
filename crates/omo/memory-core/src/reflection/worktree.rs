@@ -9,9 +9,7 @@ use crate::git::exec::GitExec;
 
 use super::completion_repair::describe_dropped_entries;
 use super::completion_validation::validate_completion;
-use super::description_preflight::{
-    DescriptionPreflightWarn, preflight_reflection_descriptions,
-};
+use super::description_preflight::{DescriptionPreflightWarn, preflight_reflection_descriptions};
 use super::machine::ReflectionOutcome;
 use super::worktree_integration::{
     IntegrateValidatedReflectionInput, ReflectionIntegrationMode, ReflectionIntegrationResult,
@@ -330,7 +328,10 @@ fn remove_worktree_and_branch(
     // A `git worktree add` that died keeps its "initializing" lock: `remove --force` refuses a
     // locked worktree and `prune` skips it, so the leftover would be reported on every sweep.
     let unlock_path = crate::support::paths::strip_verbatim_prefix(dir);
-    let _ = exec.run_in(&repo.dir, &["worktree", "unlock", &unlock_path.to_string_lossy()]);
+    let _ = exec.run_in(
+        &repo.dir,
+        &["worktree", "unlock", &unlock_path.to_string_lossy()],
+    );
     let _ = repo.worktree_remove(dir, true);
     let _ = std::fs::remove_dir_all(dir);
     let _ = exec.run_in(&repo.dir, &["worktree", "prune"]);
@@ -340,7 +341,9 @@ fn remove_worktree_and_branch(
         .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
         .map(|r| r.stdout)
         .unwrap_or_default();
-    let canonical = crate::support::paths::strip_verbatim_prefix(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
+    let canonical = crate::support::paths::strip_verbatim_prefix(
+        &dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+    );
     let listed_has_dir = listed.lines().any(|line| {
         line.starts_with("worktree ") && line.contains(&canonical.to_string_lossy().to_string())
     });

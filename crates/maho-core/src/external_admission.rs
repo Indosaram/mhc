@@ -333,11 +333,12 @@ impl ExternalAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         l.file_takes_writes = Some(false);
         if let Some(id) = delivery_id_of(message)
-            && !l.emitted.contains(id) {
-                l.pending.shift_remove(id);
-                l.restored.shift_remove(id);
-                l.failed.insert(id.into(), error);
-            }
+            && !l.emitted.contains(id)
+        {
+            l.pending.shift_remove(id);
+            l.restored.shift_remove(id);
+            l.failed.insert(id.into(), error);
+        }
     }
     pub fn observe_run_settled(&self) {
         let mut l = self

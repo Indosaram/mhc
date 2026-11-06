@@ -9,15 +9,15 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use maho_ext_api::*;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use maho_omo_start_work_continuation::agent_end_eligibility::read_agent_end_outcome;
 
 use crate::r#match::ClaimVerdict;
 use crate::runtime::evaluate_answer;
 use crate::verdict::{
-    gate_flags_block, nudge_text, VerdictRecord, GATE_FLAGS_TAG, NUDGE_MESSAGE_TYPE,
-    VERDICT_ENTRY_TYPE,
+    GATE_FLAGS_TAG, NUDGE_MESSAGE_TYPE, VERDICT_ENTRY_TYPE, VerdictRecord, gate_flags_block,
+    nudge_text,
 };
 
 pub const CLAIM_RECEIPT_NUDGE_FLAG: &str = "omo-senpi-claim-receipt-nudge";
@@ -89,7 +89,10 @@ fn last_assistant_index(branch: &[Value]) -> Option<usize> {
 fn last_assistant_tail(ctx: &ExtensionContext) -> Option<Value> {
     let (_, tail) = ctx.session_manager.get_branch_tail(1, &mut |data| {
         data.get("type").and_then(Value::as_str) == Some("message")
-            && data.get("message").and_then(|m| m.get("role")).and_then(Value::as_str)
+            && data
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(Value::as_str)
                 == Some("assistant")
     });
     tail.into_iter().rev().find_map(|entry| {

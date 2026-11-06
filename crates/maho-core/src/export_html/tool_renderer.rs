@@ -1,4 +1,9 @@
-use std::{collections::HashMap, panic::{catch_unwind, AssertUnwindSafe}, path::PathBuf, sync::{Arc, OnceLock}};
+use std::{
+    collections::HashMap,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 use maho_agent::types::AgentToolResult;
 use maho_ext_api::{ErasedToolRenderers, JsonValue, Theme};
@@ -7,7 +12,8 @@ use regex::Regex;
 use super::ansi_to_html::ansi_lines_to_html;
 
 /// Looks up the registered renderers for a tool name.
-pub type ToolRendererLookup = Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>;
+pub type ToolRendererLookup =
+    Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>;
 
 pub struct ToolHtmlRendererDeps {
     pub get_tool_renderer: ToolRendererLookup,
@@ -51,15 +57,26 @@ impl ToolHtmlRenderer {
         }
     }
 
-    pub fn render_call(&mut self, tool_call_id: &str, tool_name: &str, args: JsonValue) -> Option<String> {
+    pub fn render_call(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: JsonValue,
+    ) -> Option<String> {
         let renderer = (self.get_tool_renderer)(tool_name)?;
-        self.rendered_args.insert(tool_call_id.to_owned(), args.clone());
-        let state = self.rendered_states.entry(tool_call_id.to_owned()).or_default();
+        self.rendered_args
+            .insert(tool_call_id.to_owned(), args.clone());
+        let state = self
+            .rendered_states
+            .entry(tool_call_id.to_owned())
+            .or_default();
         catch_unwind(AssertUnwindSafe(|| {
             let lines = renderer.render_call(&args, &self.theme, self.width)?;
             state.call_lines = Some(lines.clone());
             Some(ansi_lines_to_html(&lines))
-        })).ok().flatten()
+        }))
+        .ok()
+        .flatten()
     }
 
     pub fn render_result(
@@ -70,44 +87,92 @@ impl ToolHtmlRenderer {
         is_error: bool,
     ) -> Option<ToolHtmlResult> {
         let renderer = (self.get_tool_renderer)(tool_name)?;
-        let state = self.rendered_states.entry(tool_call_id.to_owned()).or_default();
+        let state = self
+            .rendered_states
+            .entry(tool_call_id.to_owned())
+            .or_default();
         catch_unwind(AssertUnwindSafe(|| {
-            let args = self.rendered_args.get(tool_call_id).unwrap_or(&JsonValue::Null);
-            let collapsed_options = maho_ext_api::ToolRenderResultOptions { expanded: false, is_partial: false };
-            let collapsed_lines = renderer.render_result_with(args, result, collapsed_options, is_error, &self.theme, self.width)?;
+            let args = self
+                .rendered_args
+                .get(tool_call_id)
+                .unwrap_or(&JsonValue::Null);
+            let collapsed_options = maho_ext_api::ToolRenderResultOptions {
+                expanded: false,
+                is_partial: false,
+            };
+            let collapsed_lines = renderer.render_result_with(
+                args,
+                result,
+                collapsed_options,
+                is_error,
+                &self.theme,
+                self.width,
+            )?;
             let collapsed_lines = trim_rendered_result_lines(collapsed_lines);
-            let expanded_options = maho_ext_api::ToolRenderResultOptions { expanded: true, is_partial: false };
-            let expanded_lines = renderer.render_result_with(args, result, expanded_options, is_error, &self.theme, self.width)?;
+            let expanded_options = maho_ext_api::ToolRenderResultOptions {
+                expanded: true,
+                is_partial: false,
+            };
+            let expanded_lines = renderer.render_result_with(
+                args,
+                result,
+                expanded_options,
+                is_error,
+                &self.theme,
+                self.width,
+            )?;
             let expanded_lines = trim_rendered_result_lines(expanded_lines);
             state.collapsed_lines = Some(collapsed_lines.clone());
             state.result_lines = Some(expanded_lines.clone());
             let collapsed = ansi_lines_to_html(&collapsed_lines);
             let expanded = ansi_lines_to_html(&expanded_lines);
-            Some(ToolHtmlResult { collapsed: (collapsed != expanded).then_some(collapsed), expanded })
-        })).ok().flatten()
+            Some(ToolHtmlResult {
+                collapsed: (collapsed != expanded).then_some(collapsed),
+                expanded,
+            })
+        }))
+        .ok()
+        .flatten()
     }
 
     pub fn rendered_html(&self, tool_call_id: &str) -> Option<serde_json::Value> {
         let state = self.rendered_states.get(tool_call_id)?;
         let mut rendered = serde_json::Map::new();
-        if let Some(lines) = &state.call_lines { rendered.insert("callHtml".into(), ansi_lines_to_html(lines).into()); }
-        if let Some(lines) = &state.collapsed_lines { rendered.insert("resultHtmlCollapsed".into(), ansi_lines_to_html(lines).into()); }
-        if let Some(lines) = &state.result_lines { rendered.insert("resultHtmlExpanded".into(), ansi_lines_to_html(lines).into()); }
+        if let Some(lines) = &state.call_lines {
+            rendered.insert("callHtml".into(), ansi_lines_to_html(lines).into());
+        }
+        if let Some(lines) = &state.collapsed_lines {
+            rendered.insert(
+                "resultHtmlCollapsed".into(),
+                ansi_lines_to_html(lines).into(),
+            );
+        }
+        if let Some(lines) = &state.result_lines {
+            rendered.insert(
+                "resultHtmlExpanded".into(),
+                ansi_lines_to_html(lines).into(),
+            );
+        }
         (!rendered.is_empty()).then_some(serde_json::Value::Object(rendered))
     }
 }
 
 fn is_blank_rendered_line(line: &str) -> bool {
     static ANSI_ESCAPE_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = ANSI_ESCAPE_REGEX.get_or_init(|| Regex::new(r"\x1b\[[\d;]*m").expect("valid ANSI SGR regex"));
+    let regex = ANSI_ESCAPE_REGEX
+        .get_or_init(|| Regex::new(r"\x1b\[[\d;]*m").expect("valid ANSI SGR regex"));
     regex.replace_all(line, "").trim().is_empty()
 }
 
 fn trim_rendered_result_lines(lines: Vec<String>) -> Vec<String> {
     let mut start = 0;
     let mut end = lines.len();
-    while start < end && is_blank_rendered_line(&lines[start]) { start += 1; }
-    while end > start && is_blank_rendered_line(&lines[end - 1]) { end -= 1; }
+    while start < end && is_blank_rendered_line(&lines[start]) {
+        start += 1;
+    }
+    while end > start && is_blank_rendered_line(&lines[end - 1]) {
+        end -= 1;
+    }
     lines[start..end].to_vec()
 }
 
@@ -124,7 +189,13 @@ mod tests {
     #[test]
     fn result_lines_trim_blank_edges_but_preserve_inner_lines() {
         assert_eq!(
-            trim_rendered_result_lines(vec!["  ".into(), "first".into(), "".into(), "last".into(), "\x1b[0m".into()]),
+            trim_rendered_result_lines(vec![
+                "  ".into(),
+                "first".into(),
+                "".into(),
+                "last".into(),
+                "\x1b[0m".into()
+            ]),
             vec!["first", "", "last"]
         );
     }
@@ -136,20 +207,54 @@ mod tests {
 
     struct OptionsRenderer;
     impl ErasedToolRenderers for OptionsRenderer {
-        fn render_call(&self, _: &JsonValue, _: &Theme, _: usize) -> Option<Vec<String>> { None }
-        fn render_result(&self, _: &JsonValue, _: &AgentToolResult, _: &Theme, _: usize) -> Option<Vec<String>> { None }
-        fn render_result_with(&self, _: &JsonValue, _: &AgentToolResult, options: maho_ext_api::ToolRenderResultOptions, is_error: bool, _: &Theme, _: usize) -> Option<Vec<String>> {
-            Some(vec![format!("expanded={} error={is_error}", options.expanded)])
+        fn render_call(&self, _: &JsonValue, _: &Theme, _: usize) -> Option<Vec<String>> {
+            None
+        }
+        fn render_result(
+            &self,
+            _: &JsonValue,
+            _: &AgentToolResult,
+            _: &Theme,
+            _: usize,
+        ) -> Option<Vec<String>> {
+            None
+        }
+        fn render_result_with(
+            &self,
+            _: &JsonValue,
+            _: &AgentToolResult,
+            options: maho_ext_api::ToolRenderResultOptions,
+            is_error: bool,
+            _: &Theme,
+            _: usize,
+        ) -> Option<Vec<String>> {
+            Some(vec![format!(
+                "expanded={} error={is_error}",
+                options.expanded
+            )])
         }
     }
 
     #[test]
     fn result_renders_collapsed_and_expanded_with_the_error_flag() {
-        let lookup: ToolRendererLookup = Arc::new(|_| Some(Arc::new(OptionsRenderer) as Arc<dyn ErasedToolRenderers>));
-        let mut renderer = ToolHtmlRenderer::new(ToolHtmlRendererDeps { get_tool_renderer: lookup, theme: Theme::default(), cwd: PathBuf::from("/work"), width: None });
-        let rendered = renderer.render_result("call-1", "custom", &AgentToolResult::text("failed"), true).expect("rendered result");
-        assert_eq!(rendered.collapsed.as_deref(), Some(ansi_lines_to_html(&["expanded=false error=true".to_owned()]).as_str()));
-        assert_eq!(rendered.expanded, ansi_lines_to_html(&["expanded=true error=true".to_owned()]));
+        let lookup: ToolRendererLookup =
+            Arc::new(|_| Some(Arc::new(OptionsRenderer) as Arc<dyn ErasedToolRenderers>));
+        let mut renderer = ToolHtmlRenderer::new(ToolHtmlRendererDeps {
+            get_tool_renderer: lookup,
+            theme: Theme::default(),
+            cwd: PathBuf::from("/work"),
+            width: None,
+        });
+        let rendered = renderer
+            .render_result("call-1", "custom", &AgentToolResult::text("failed"), true)
+            .expect("rendered result");
+        assert_eq!(
+            rendered.collapsed.as_deref(),
+            Some(ansi_lines_to_html(&["expanded=false error=true".to_owned()]).as_str())
+        );
+        assert_eq!(
+            rendered.expanded,
+            ansi_lines_to_html(&["expanded=true error=true".to_owned()])
+        );
     }
-
 }

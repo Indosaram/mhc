@@ -1,8 +1,8 @@
 //! SDK request and response types.
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::checkpoint::{CheckpointUlwLoopArgs, CheckpointUlwLoopResult};
 use crate::checkpoint_template::CheckpointTemplate;
@@ -39,7 +39,11 @@ pub struct StatusResult {
     pub next_actions: Vec<String>,
     #[serde(rename = "evidenceRoot")]
     pub evidence_root: String,
-    #[serde(rename = "currentAttemptDir", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "currentAttemptDir",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub current_attempt_dir: Option<String>,
 }
 
@@ -79,11 +83,23 @@ pub struct CheckpointArgs {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
-    #[serde(rename = "codexGoalJson", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "codexGoalJson",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub codex_goal_json: Option<String>,
-    #[serde(rename = "qualityGateJson", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "qualityGateJson",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub quality_gate_json: Option<String>,
-    #[serde(rename = "printTemplate", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "printTemplate",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub print_template: Option<bool>,
 }
 

@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-use crate::team::messaging::session_marker_index::{SessionSliceReader, create_session_marker_index};
+use crate::team::messaging::session_marker_index::{
+    SessionSliceReader, create_session_marker_index,
+};
 
 fn temp_session_file() -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::tempdir().expect("tempdir");
@@ -38,7 +40,10 @@ fn counting_reader(counter: Arc<AtomicU64>) -> SessionSliceReader {
 }
 
 fn append(file: &Path, text: &str) {
-    let mut handle = std::fs::OpenOptions::new().append(true).open(file).expect("open");
+    let mut handle = std::fs::OpenOptions::new()
+        .append(true)
+        .open(file)
+        .expect("open");
     handle.write_all(text.as_bytes()).expect("append");
 }
 
@@ -53,7 +58,8 @@ fn given_a_session_file_with_an_envelope_when_contains_is_queried_then_it_finds_
 }
 
 #[test]
-fn given_repeated_queries_on_an_unchanged_file_when_contains_runs_again_then_no_bytes_are_re_read() {
+fn given_repeated_queries_on_an_unchanged_file_when_contains_runs_again_then_no_bytes_are_re_read()
+{
     let (_root, file) = temp_session_file();
     std::fs::write(&file, envelope_line("id-1")).expect("write");
     let counter = Arc::new(AtomicU64::new(0));
@@ -82,15 +88,21 @@ fn given_an_appended_envelope_when_contains_runs_then_only_the_appended_bytes_ar
     let found = index.contains(Some(&file), "id-2").expect("contains");
 
     assert!(found);
-    assert_eq!(counter.load(Ordering::SeqCst) - after_first, second.len() as u64);
+    assert_eq!(
+        counter.load(Ordering::SeqCst) - after_first,
+        second.len() as u64
+    );
     assert!(index.contains(Some(&file), "id-1").expect("contains"));
 }
 
 #[test]
-fn given_a_hidden_custom_message_with_an_envelope_when_contains_is_queried_then_it_finds_the_message_id() {
+fn given_a_hidden_custom_message_with_an_envelope_when_contains_is_queried_then_it_finds_the_message_id()
+ {
     let (_root, file) = temp_session_file();
     let message_id = "id-hidden-1";
-    let content = format!("<peer_message from=\"worker\" to=\"lead\" messageId=\"{message_id}\">hello</peer_message>");
+    let content = format!(
+        "<peer_message from=\"worker\" to=\"lead\" messageId=\"{message_id}\">hello</peer_message>"
+    );
     let entry = json!({
         "type": "custom_message",
         "customType": "senpi-task:team-message",
@@ -115,7 +127,11 @@ fn given_a_missing_session_file_when_contains_runs_then_it_returns_false() {
 #[test]
 fn given_a_truncated_rotated_file_when_contains_runs_then_the_index_resets_and_rescans() {
     let (_root, file) = temp_session_file();
-    std::fs::write(&file, envelope_line("id-old-1") + &envelope_line("id-old-2")).expect("write");
+    std::fs::write(
+        &file,
+        envelope_line("id-old-1") + &envelope_line("id-old-2"),
+    )
+    .expect("write");
     let index = create_session_marker_index(None);
     assert!(index.contains(Some(&file), "id-old-2").expect("contains"));
 

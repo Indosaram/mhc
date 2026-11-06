@@ -21,15 +21,21 @@ async fn test_cli_fallback_degrades_when_binary_cannot_be_spawned_in_best_effort
             timeout_ms: Some(1_000),
         }),
         markers: Some(Box::new(|_| vec![".prettierrc".to_string()])),
-        daemon_format: Some(Box::new(|_| Box::pin(async {
-            Ok(DaemonFormatResult {
-                content: None,
-                details: Some(json!({"status": "unavailable"})),
-                is_error: false,
+        daemon_format: Some(Box::new(|_| {
+            Box::pin(async {
+                Ok(DaemonFormatResult {
+                    content: None,
+                    details: Some(json!({"status": "unavailable"})),
+                    is_error: false,
+                })
             })
-        }))),
+        })),
         resolve_binary: Some(Box::new(|_, cwd| {
-            Some(cwd.join("node_modules/.bin/prettier").to_string_lossy().into_owned())
+            Some(
+                cwd.join("node_modules/.bin/prettier")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         })),
         logger: Some(Arc::new(move |msg: &str| {
             warnings_clone.lock().unwrap().push(msg.to_string());
@@ -47,12 +53,17 @@ async fn test_cli_fallback_degrades_when_binary_cannot_be_spawned_in_best_effort
         usage: None,
     };
 
-    let outcome = step.format_tool_result(&event, dir.path(), Some("s1")).await;
+    let outcome = step
+        .format_tool_result(&event, dir.path(), Some("s1"))
+        .await;
     assert!(outcome.error.is_none());
     assert!(outcome.content.is_none());
 
     let recorded = warnings.lock().unwrap().clone();
-    assert_eq!(recorded, vec!["Formatter prettier unavailable; install it with bun add -d"]);
+    assert_eq!(
+        recorded,
+        vec!["Formatter prettier unavailable; install it with bun add -d"]
+    );
 }
 
 #[tokio::test]
@@ -69,15 +80,21 @@ async fn test_cli_fallback_reports_error_in_required_mode() {
             timeout_ms: Some(1_000),
         }),
         markers: Some(Box::new(|_| vec![".prettierrc".to_string()])),
-        daemon_format: Some(Box::new(|_| Box::pin(async {
-            Ok(DaemonFormatResult {
-                content: None,
-                details: Some(json!({"status": "unavailable"})),
-                is_error: false,
+        daemon_format: Some(Box::new(|_| {
+            Box::pin(async {
+                Ok(DaemonFormatResult {
+                    content: None,
+                    details: Some(json!({"status": "unavailable"})),
+                    is_error: false,
+                })
             })
-        }))),
+        })),
         resolve_binary: Some(Box::new(|_, cwd| {
-            Some(cwd.join("node_modules/.bin/prettier").to_string_lossy().into_owned())
+            Some(
+                cwd.join("node_modules/.bin/prettier")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         })),
         ..Default::default()
     });
@@ -92,7 +109,9 @@ async fn test_cli_fallback_reports_error_in_required_mode() {
         usage: None,
     };
 
-    let outcome = step.format_tool_result(&event, dir.path(), Some("s1")).await;
+    let outcome = step
+        .format_tool_result(&event, dir.path(), Some("s1"))
+        .await;
     assert!(outcome.error.is_some());
     let err_str = outcome.error.unwrap();
     assert!(err_str.contains("Formatter prettier is unavailable"));

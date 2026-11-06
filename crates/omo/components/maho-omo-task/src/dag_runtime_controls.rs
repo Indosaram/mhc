@@ -4,13 +4,28 @@
 //! record-based controls, and retry/amend take the record-based path instead of acquiring or adopting
 //! a scheduler. Only a run that is not user-stopped reaches the live entry points.
 
-pub type LiveRetryCallback = Arc<dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
-pub type LiveSendCallback = Arc<dyn Fn(&str, &str, &str) -> Result<DagToolSendOutcome, DagToolExecutionError> + Send + Sync>;
-pub type LiveAmendCallback = Arc<dyn Fn(&str, senpi_task::dag::graph::DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
+pub type LiveRetryCallback = Arc<
+    dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError>
+        + Send
+        + Sync,
+>;
+pub type LiveSendCallback = Arc<
+    dyn Fn(&str, &str, &str) -> Result<DagToolSendOutcome, DagToolExecutionError> + Send + Sync,
+>;
+pub type LiveAmendCallback = Arc<
+    dyn Fn(
+            &str,
+            senpi_task::dag::graph::DagDefinition,
+        ) -> Result<DagRunSnapshot, DagToolExecutionError>
+        + Send
+        + Sync,
+>;
 use std::sync::Arc;
 
 use senpi_task::dag::{
-    paused_controls::{DagPauseStore, DagRunPauseReason, PausedDagGuideCommand, apply_paused_dag_guidance},
+    paused_controls::{
+        DagPauseStore, DagRunPauseReason, PausedDagGuideCommand, apply_paused_dag_guidance,
+    },
     scheduler::DagSchedulerOptions,
     types::DagRunSnapshot,
 };
@@ -53,7 +68,12 @@ impl DagRuntimeControls {
     }
 
     /// `retry`: a user-stopped run retries from the record; a live run re-enters a scheduler.
-    pub fn retry(&self, run_id: &str, node_ids: Option<&[String]>, prompt: Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> {
+    pub fn retry(
+        &self,
+        run_id: &str,
+        node_ids: Option<&[String]>,
+        prompt: Option<&str>,
+    ) -> Result<DagRunSnapshot, DagToolExecutionError> {
         if self.user_stopped(run_id) {
             return (self.ports.paused_retry)(run_id, node_ids, prompt);
         }
@@ -62,12 +82,20 @@ impl DagRuntimeControls {
     }
 
     /// `send`: a user-stopped run stores the message as guidance; a live run steers or revives.
-    pub fn send(&self, run_id: &str, node_id: &str, message: &str) -> Result<DagToolSendOutcome, DagToolExecutionError> {
+    pub fn send(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        message: &str,
+    ) -> Result<DagToolSendOutcome, DagToolExecutionError> {
         if self.user_stopped(run_id) {
             let guidance = apply_paused_dag_guidance(
                 &(self.ports.options)(run_id),
                 &run_id.to_string(),
-                PausedDagGuideCommand::Add { text: message.to_string(), node_id: Some(node_id.to_string()) },
+                PausedDagGuideCommand::Add {
+                    text: message.to_string(),
+                    node_id: Some(node_id.to_string()),
+                },
                 self.ports.pauses.as_ref(),
             )
             .map_err(DagToolExecutionError::Control)?;
@@ -84,7 +112,11 @@ impl DagRuntimeControls {
     }
 
     /// `amend`: a user-stopped run journals the amendment and never re-enters.
-    pub fn amend(&self, run_id: &str, definition: senpi_task::dag::graph::DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> {
+    pub fn amend(
+        &self,
+        run_id: &str,
+        definition: senpi_task::dag::graph::DagDefinition,
+    ) -> Result<DagRunSnapshot, DagToolExecutionError> {
         let stopped = self.user_stopped(run_id);
         (self.ports.clear_admission_latch)(run_id);
         if stopped {
@@ -94,8 +126,17 @@ impl DagRuntimeControls {
     }
 
     /// `guide`: validated add/edit/remove against the run's stored guidance.
-    pub fn guide(&self, run_id: &str, command: PausedDagGuideCommand) -> Result<senpi_task::pause::guidance::Guidance, DagToolExecutionError> {
-        apply_paused_dag_guidance(&(self.ports.options)(run_id), &run_id.to_string(), command, self.ports.pauses.as_ref())
-            .map_err(DagToolExecutionError::Control)
+    pub fn guide(
+        &self,
+        run_id: &str,
+        command: PausedDagGuideCommand,
+    ) -> Result<senpi_task::pause::guidance::Guidance, DagToolExecutionError> {
+        apply_paused_dag_guidance(
+            &(self.ports.options)(run_id),
+            &run_id.to_string(),
+            command,
+            self.ports.pauses.as_ref(),
+        )
+        .map_err(DagToolExecutionError::Control)
     }
 }

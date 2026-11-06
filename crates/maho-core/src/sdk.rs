@@ -312,8 +312,9 @@ pub async fn create_agent_session(
         .await?;
         model = initial.parsed.model;
         if options.initial_model_provenance.is_none() {
-            options.initial_model_provenance =
-                Some(crate::model_resolver::initial_model_provenance_str(initial.provenance).to_owned());
+            options.initial_model_provenance = Some(
+                crate::model_resolver::initial_model_provenance_str(initial.provenance).to_owned(),
+            );
         }
         // senpi sdk.ts:322-326: no model leaves a model-less session with the login guidance.
         match &model {
@@ -329,18 +330,31 @@ pub async fn create_agent_session(
         }
     }
     let has_thinking_entry = manager.has_thinking_level_changes();
-    let model_thinking = model
-        .as_ref()
-        .and_then(|model| {
-            settings
-                .get_value("modelThinkingLevels")
-                .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
-                .and_then(serde_json::Value::as_str)
-                .and_then(ModelThinkingLevel::parse)
-        });
+    let model_thinking = model.as_ref().and_then(|model| {
+        settings
+            .get_value("modelThinkingLevels")
+            .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
+            .and_then(serde_json::Value::as_str)
+            .and_then(ModelThinkingLevel::parse)
+    });
     let configured_thinking = model_thinking;
-    let explicit_thinking = options.thinking_level.is_some() || options.thinking_selection.is_some();
-    let mut thinking_level_source = if explicit_thinking { "explicit" } else if has_thinking_entry { "session" } else if model_thinking.is_some() { "global" } else if model.as_ref().and_then(|m| m.default_thinking_level).is_some() { "model-default" } else { "default" };
+    let explicit_thinking =
+        options.thinking_level.is_some() || options.thinking_selection.is_some();
+    let mut thinking_level_source = if explicit_thinking {
+        "explicit"
+    } else if has_thinking_entry {
+        "session"
+    } else if model_thinking.is_some() {
+        "global"
+    } else if model
+        .as_ref()
+        .and_then(|m| m.default_thinking_level)
+        .is_some()
+    {
+        "model-default"
+    } else {
+        "default"
+    };
     let requested_thinking = options
         .thinking_level
         .map(ModelThinkingLevel::from)
@@ -357,7 +371,12 @@ pub async fn create_agent_session(
         })
         .or(configured_thinking)
         .or_else(|| model.as_ref().and_then(|m| m.default_thinking_level))
-        .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse))
+        .or_else(|| {
+            settings
+                .get_string("defaultThinkingLevel")
+                .as_deref()
+                .and_then(ModelThinkingLevel::parse)
+        })
         .or(Some(ModelThinkingLevel::Medium));
     // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).
     let thinking_level = match requested_thinking {
@@ -368,7 +387,9 @@ pub async fn create_agent_session(
         ),
         None => clamp_thinking_level_to_model(None, model.as_ref()),
     };
-    if requested_thinking != Some(thinking_level) && thinking_level_source != "default" { thinking_level_source = "clamped"; }
+    if requested_thinking != Some(thinking_level) && thinking_level_source != "default" {
+        thinking_level_source = "clamped";
+    }
     let mut thinking_selection = options
         .thinking_selection
         .take()
@@ -385,7 +406,10 @@ pub async fn create_agent_session(
                 .flatten()
                 .and_then(|value| serde_json::from_value(value).ok())
         });
-    if thinking_selection.is_none() && !has_thinking_entry && (configured_thinking.is_some() || settings.get_string("defaultThinkingLevel").is_some()) {
+    if thinking_selection.is_none()
+        && !has_thinking_entry
+        && (configured_thinking.is_some() || settings.get_string("defaultThinkingLevel").is_some())
+    {
         thinking_selection = Some(ThinkingSelection {
             level: thinking_level,
             source: maho_ai::types::ThinkingSelectionSource::Explicit,
@@ -893,13 +917,19 @@ mod tests {
         use maho_ai::models::{ModelsError, ModelsErrorCode};
         use maho_ai::utils::event_stream::StreamErrorKind;
 
-        let error = api_key_from_auth(Err(ModelsError::new(ModelsErrorCode::ConsentRequired, "consent text")))
-            .expect_err("consent error");
+        let error = api_key_from_auth(Err(ModelsError::new(
+            ModelsErrorCode::ConsentRequired,
+            "consent text",
+        )))
+        .expect_err("consent error");
         assert_eq!(error.message, "consent text");
         let StreamErrorKind::ProviderFailure(diagnostic) = error.kind else {
             panic!("consent error must not become oauth_refresh_unavailable");
         };
-        assert_eq!(diagnostic.code.as_deref(), Some("provider_consent_required"));
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some("provider_consent_required")
+        );
     }
 
     #[test]

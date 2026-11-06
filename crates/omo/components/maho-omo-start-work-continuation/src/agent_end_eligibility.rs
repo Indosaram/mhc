@@ -96,7 +96,9 @@ pub fn read_agent_end_outcome(payload: &Value) -> AgentEndOutcome {
         return blocked(outcome, ContinuationBlockReason::UnfinishedTurn);
     }
     let trailing = messages.map_or(&[][..], |messages| {
-        messages.get(usize::try_from(assistant_index).unwrap_or(0) + 1..).unwrap_or(&[])
+        messages
+            .get(usize::try_from(assistant_index).unwrap_or(0) + 1..)
+            .unwrap_or(&[])
     });
     if trailing.iter().any(is_aborted_tool_result) {
         return blocked(outcome, ContinuationBlockReason::AbortedToolResult);
@@ -131,11 +133,14 @@ fn refusal_like(assistant: &Value) -> bool {
 
 fn is_demoted_empty_tool_use(assistant: &Value) -> bool {
     assistant["stopReason"] == Value::String("stop".to_string())
-        && assistant["diagnostics"].as_array().is_some_and(|diagnostics| {
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic["type"] == Value::String(EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC.to_string()))
-        })
+        && assistant["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| {
+                diagnostics.iter().any(|diagnostic| {
+                    diagnostic["type"]
+                        == Value::String(EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC.to_string())
+                })
+            })
 }
 
 fn is_finished_assistant_turn(assistant: &Value, stop_reason: &str) -> bool {
@@ -236,22 +241,102 @@ mod tests {
     fn blocked_outcomes_name_the_single_reason() {
         // given / when / then
         let cases: Vec<(&str, Value, ContinuationBlockReason)> = vec![
-            ("terminal safety error", with_messages(json!([error_message(CODEX_ERROR)])), ContinuationBlockReason::UnfinishedTurn),
-            ("ordinary provider failure", with_messages(json!([error_message("Connection failed")])), ContinuationBlockReason::UnfinishedTurn),
-            ("aborted run", json!({ "messages": [{ "role": "assistant", "stopReason": "stop" }], "aborted": true }), ContinuationBlockReason::Aborted),
-            ("aborted assistant", with_messages(json!([{ "role": "assistant", "stopReason": "aborted" }])), ContinuationBlockReason::UnfinishedTurn),
-            ("host-owned retry", json!({ "messages": [{ "role": "assistant", "stopReason": "stop" }], "willRetry": true }), ContinuationBlockReason::HostRetry),
-            ("empty tool-use refusal", with_messages(json!([{ "role": "assistant", "stopReason": "toolUse", "content": [], "stopDetails": { "type": "refusal" } }])), ContinuationBlockReason::Refusal),
-            ("sensitive stop", with_messages(json!([{ "role": "assistant", "stopReason": "toolUse", "content": [], "stopDetails": { "type": "sensitive" } }])), ContinuationBlockReason::Refusal),
-            ("normalized empty-tool-use refusal", with_messages(json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()], "stopDetails": { "type": "refusal" } }])), ContinuationBlockReason::Refusal),
-            ("normalized sensitive stop", with_messages(json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()], "stopDetails": { "type": "sensitive" } }])), ContinuationBlockReason::Refusal),
-            ("missing outcome", json!({ "type": "agent_end" }), ContinuationBlockReason::MissingOutcome),
-            ("empty outcome", with_messages(json!([])), ContinuationBlockReason::MissingOutcome),
-            ("missing stop reason", with_messages(json!([{ "role": "assistant" }])), ContinuationBlockReason::MissingOutcome),
-            ("error behind custom tail", with_messages(json!([error_message(CODEX_ERROR), { "role": "custom", "content": "notice" }])), ContinuationBlockReason::UnfinishedTurn),
-            ("unfinished tool-use turn", with_messages(json!([{ "role": "assistant", "stopReason": "toolUse", "content": [{ "type": "toolCall", "id": "call-1", "name": "bash", "arguments": {} }] }])), ContinuationBlockReason::UnfinishedTurn),
-            ("trailing aborted tool result", with_messages(json!([{ "role": "assistant", "stopReason": "toolUse", "content": [{ "type": "toolCall", "id": "call-1", "name": "bash", "arguments": {} }] }, aborted_tool_result("Command aborted by user")])), ContinuationBlockReason::UnfinishedTurn),
-            ("aborted tool result behind a finished assistant", with_messages(json!([{ "role": "assistant", "stopReason": "stop" }, aborted_tool_result("Command aborted by user")])), ContinuationBlockReason::AbortedToolResult),
+            (
+                "terminal safety error",
+                with_messages(json!([error_message(CODEX_ERROR)])),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "ordinary provider failure",
+                with_messages(json!([error_message("Connection failed")])),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "aborted run",
+                json!({ "messages": [{ "role": "assistant", "stopReason": "stop" }], "aborted": true }),
+                ContinuationBlockReason::Aborted,
+            ),
+            (
+                "aborted assistant",
+                with_messages(json!([{ "role": "assistant", "stopReason": "aborted" }])),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "host-owned retry",
+                json!({ "messages": [{ "role": "assistant", "stopReason": "stop" }], "willRetry": true }),
+                ContinuationBlockReason::HostRetry,
+            ),
+            (
+                "empty tool-use refusal",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "toolUse", "content": [], "stopDetails": { "type": "refusal" } }]),
+                ),
+                ContinuationBlockReason::Refusal,
+            ),
+            (
+                "sensitive stop",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "toolUse", "content": [], "stopDetails": { "type": "sensitive" } }]),
+                ),
+                ContinuationBlockReason::Refusal,
+            ),
+            (
+                "normalized empty-tool-use refusal",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()], "stopDetails": { "type": "refusal" } }]),
+                ),
+                ContinuationBlockReason::Refusal,
+            ),
+            (
+                "normalized sensitive stop",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()], "stopDetails": { "type": "sensitive" } }]),
+                ),
+                ContinuationBlockReason::Refusal,
+            ),
+            (
+                "missing outcome",
+                json!({ "type": "agent_end" }),
+                ContinuationBlockReason::MissingOutcome,
+            ),
+            (
+                "empty outcome",
+                with_messages(json!([])),
+                ContinuationBlockReason::MissingOutcome,
+            ),
+            (
+                "missing stop reason",
+                with_messages(json!([{ "role": "assistant" }])),
+                ContinuationBlockReason::MissingOutcome,
+            ),
+            (
+                "error behind custom tail",
+                with_messages(
+                    json!([error_message(CODEX_ERROR), { "role": "custom", "content": "notice" }]),
+                ),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "unfinished tool-use turn",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "toolUse", "content": [{ "type": "toolCall", "id": "call-1", "name": "bash", "arguments": {} }] }]),
+                ),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "trailing aborted tool result",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "toolUse", "content": [{ "type": "toolCall", "id": "call-1", "name": "bash", "arguments": {} }] }, aborted_tool_result("Command aborted by user")]),
+                ),
+                ContinuationBlockReason::UnfinishedTurn,
+            ),
+            (
+                "aborted tool result behind a finished assistant",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop" }, aborted_tool_result("Command aborted by user")]),
+                ),
+                ContinuationBlockReason::AbortedToolResult,
+            ),
         ];
         for (name, payload, expected) in cases {
             let outcome = read_agent_end_outcome(&payload);
@@ -264,15 +349,47 @@ mod tests {
     fn continuable_outcomes_admit_the_turn() {
         // given / when / then
         let cases: Vec<(&str, Value)> = vec![
-            ("explanatory assistant text", with_messages(json!([{ "role": "assistant", "stopReason": "stop", "content": [{ "type": "text", "text": CODEX_ERROR }] }]))),
-            ("an earlier failed attempt behind a clean tail", with_messages(json!([error_message(CODEX_ERROR), { "role": "assistant", "stopReason": "stop" }, { "role": "custom", "content": "notice" }]))),
-            ("a demoted empty tool-use turn without refusal details", with_messages(json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()] }]))),
-            ("a plain stop carrying stale refusal details", with_messages(json!([{ "role": "assistant", "stopReason": "stop", "content": [], "stopDetails": { "type": "refusal" } }]))),
-            ("a trailing tool error that is not an abort", with_messages(json!([{ "role": "assistant", "stopReason": "stop" }, aborted_tool_result("exit status 1: file not found")]))),
-            ("a length stop", with_messages(json!([{ "role": "assistant", "stopReason": "length" }]))),
+            (
+                "explanatory assistant text",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop", "content": [{ "type": "text", "text": CODEX_ERROR }] }]),
+                ),
+            ),
+            (
+                "an earlier failed attempt behind a clean tail",
+                with_messages(
+                    json!([error_message(CODEX_ERROR), { "role": "assistant", "stopReason": "stop" }, { "role": "custom", "content": "notice" }]),
+                ),
+            ),
+            (
+                "a demoted empty tool-use turn without refusal details",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop", "content": [], "diagnostics": [demotion_diagnostic()] }]),
+                ),
+            ),
+            (
+                "a plain stop carrying stale refusal details",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop", "content": [], "stopDetails": { "type": "refusal" } }]),
+                ),
+            ),
+            (
+                "a trailing tool error that is not an abort",
+                with_messages(
+                    json!([{ "role": "assistant", "stopReason": "stop" }, aborted_tool_result("exit status 1: file not found")]),
+                ),
+            ),
+            (
+                "a length stop",
+                with_messages(json!([{ "role": "assistant", "stopReason": "length" }])),
+            ),
         ];
         for (name, payload) in cases {
-            assert_eq!(read_agent_end_outcome(&payload).blocked_by, None, "case: {name}");
+            assert_eq!(
+                read_agent_end_outcome(&payload).blocked_by,
+                None,
+                "case: {name}"
+            );
             assert!(can_continue_after_agent_end(&payload), "case: {name}");
         }
     }

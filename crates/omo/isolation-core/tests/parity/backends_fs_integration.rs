@@ -1,10 +1,9 @@
-use std::path::Path;
 use isolation_core::IsolationBackend;
+use std::path::Path;
 
 use isolation_core::{
-    checked, cleanup_isolation, ensure_isolation, BackendKind, BackendRef, BtrfsBackend,
-    EnsureIsolationOptions, OverlayfsBackend, RcopyBackend, ReflinkBackend, SystemRuntime,
-    ZfsBackend,
+    BackendKind, BackendRef, BtrfsBackend, EnsureIsolationOptions, OverlayfsBackend, RcopyBackend,
+    ReflinkBackend, SystemRuntime, ZfsBackend, checked, cleanup_isolation, ensure_isolation,
 };
 
 fn env_path(name: &str) -> Option<String> {
@@ -117,17 +116,20 @@ fn fs_integration_ext4_probe_rejects_eopnotsupp() {
         skip("ext4 unsupported probe");
         return;
     };
-    let lower = isolation_core::mkdtemp_in(Path::new(&root), "reflink-unsupported-").expect("lower");
+    let lower =
+        isolation_core::mkdtemp_in(Path::new(&root), "reflink-unsupported-").expect("lower");
     let context = isolation_core::IsolationContext {
         id: "ext4".to_string(),
         base_dir: lower.clone(),
         cross_device: false,
         max_copy_bytes: None,
     };
-    assert!(!ReflinkBackend::default()
-        .probe(&lower, Some(&context))
-        .expect("probe")
-        .available);
+    assert!(
+        !ReflinkBackend::default()
+            .probe(&lower, Some(&context))
+            .expect("probe")
+            .available
+    );
     let _ = std::fs::remove_dir_all(&lower);
 }
 

@@ -11,8 +11,12 @@ pub fn marshal_tool_result(result: &AgentToolResult) -> Value {
     for part in &result.content {
         match part {
             ContentBlock::Text(content) => texts.push(content.text.as_str()),
-            ContentBlock::Image(content) => images.push(json!({"mimeType": content.mime_type, "dataBase64": content.data})),
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {}
+            ContentBlock::Image(content) => {
+                images.push(json!({"mimeType": content.mime_type, "dataBase64": content.data}))
+            }
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => {}
         }
     }
     let details = match result.details.as_object() {

@@ -44,11 +44,12 @@ use serde_json::Value;
 
 use crate::kibitzer_child::KibitzerChild;
 use crate::kibitzer_contract::{
-    KibitzerSidecarState, KibitzerSidecarTimers, KibitzerToolBudget, KIBITZER_RESEED_FRACTION,
-    KIBITZER_SIDECAR_MAX_TOKENS, KIBITZER_WAKE_DEADLINE_MS, KIBITZER_WAKE_TOOL_BUDGET, WarnFn,
+    KIBITZER_RESEED_FRACTION, KIBITZER_SIDECAR_MAX_TOKENS, KIBITZER_WAKE_DEADLINE_MS,
+    KIBITZER_WAKE_TOOL_BUDGET, KibitzerSidecarState, KibitzerSidecarTimers, KibitzerToolBudget,
+    WarnFn,
 };
 use crate::kibitzer_events::{
-    create_kibitzer_event_stream, KibitzerEvent, KibitzerEventCaps, KibitzerEventStream,
+    KibitzerEvent, KibitzerEventCaps, KibitzerEventStream, create_kibitzer_event_stream,
 };
 use crate::kibitzer_prompt::KibitzerSidecarDigest;
 use crate::kibitzer_prompt_blocks::KibitzerFieldCaps;
@@ -198,7 +199,10 @@ pub struct Settlement {
 
 impl Settlement {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { done: AtomicBool::new(false), notify: tokio::sync::Notify::new() })
+        Arc::new(Self {
+            done: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        })
     }
 
     /// Marks the turn settled and wakes every waiter. Idempotent.
@@ -234,7 +238,9 @@ pub struct AdmissionCancel {
 
 impl AdmissionCancel {
     pub fn new() -> Self {
-        Self { flag: Arc::new(AtomicBool::new(false)) }
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     pub fn abort(&self) {
@@ -339,7 +345,9 @@ impl SidecarCore {
 
     /// `options.logger?.warn(message, { sessionId, ...details })`: silent when no warn sink is set.
     pub fn warn(&self, message: &str, details: Option<Value>) {
-        let Some(warn) = &self.options.warn else { return };
+        let Some(warn) = &self.options.warn else {
+            return;
+        };
         match details {
             Some(details) => warn(&format!("{message} {details}")),
             None => warn(message),
@@ -358,7 +366,10 @@ impl SidecarCore {
     }
 
     pub fn state(&self) -> KibitzerSidecarState {
-        self.record.lock().unwrap_or_else(PoisonError::into_inner).state
+        self.record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state
     }
 
     /// `Disposed` is TERMINAL for the bound session: a late offer must never create another child.
@@ -404,8 +415,12 @@ pub fn create_sidecar_core(options: KibitzerSidecarCoreOptions) -> Arc<SidecarCo
         .clone()
         .unwrap_or_else(|| Arc::new(RuntimeTimers::new()) as Arc<dyn KibitzerSidecarTimers>);
     let tool_budget = options.tool_budget.unwrap_or(KIBITZER_WAKE_TOOL_BUDGET);
-    let wake_deadline_ms = options.wake_deadline_ms.unwrap_or(KIBITZER_WAKE_DEADLINE_MS);
-    let sidecar_max_tokens = options.sidecar_max_tokens.unwrap_or(KIBITZER_SIDECAR_MAX_TOKENS);
+    let wake_deadline_ms = options
+        .wake_deadline_ms
+        .unwrap_or(KIBITZER_WAKE_DEADLINE_MS);
+    let sidecar_max_tokens = options
+        .sidecar_max_tokens
+        .unwrap_or(KIBITZER_SIDECAR_MAX_TOKENS);
     let reseed_at_tokens = ((sidecar_max_tokens as f64) * KIBITZER_RESEED_FRACTION).floor() as i64;
     let cooldown = AcceptedNudgeCooldown::new(Arc::clone(&now));
     let stream = create_kibitzer_event_stream(options.event_caps.unwrap_or_default());
@@ -451,7 +466,10 @@ pub struct RuntimeTimers {
 
 impl RuntimeTimers {
     pub fn new() -> Self {
-        Self { next: AtomicU64::new(0), handles: Arc::new(Mutex::new(BTreeMap::new())) }
+        Self {
+            next: AtomicU64::new(0),
+            handles: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 }
 
@@ -474,7 +492,10 @@ impl KibitzerSidecarTimers for RuntimeTimers {
             tokio::time::sleep(delay).await;
             // Deregister first, then run the callback WITHOUT holding the guard (the lock is a
             // statement-scoped temporary, released before `callback()`).
-            task_handles.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
+            task_handles
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&handle);
             callback();
         });
         handles.insert(handle, join);
@@ -483,19 +504,32 @@ impl KibitzerSidecarTimers for RuntimeTimers {
     }
 
     fn clear(&self, handle: u64) {
-        if let Some(join) = self.handles.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle) {
+        if let Some(join) = self
+            .handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&handle)
+        {
             join.abort();
         }
     }
 }
 
 fn default_now() -> Arc<dyn Fn() -> i64 + Send + Sync> {
-    Arc::new(|| SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0))
+    Arc::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0)
+    })
 }
 
 fn default_random() -> Arc<dyn Fn() -> f64 + Send + Sync> {
     Arc::new(|| {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.subsec_nanos()).unwrap_or(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos())
+            .unwrap_or(0);
         (nanos as f64) / 1_000_000_000.0
     })
 }
@@ -546,14 +580,23 @@ mod tests {
     struct StubChild;
 
     impl KibitzerChild for StubChild {
-        fn steer<'a>(&'a self, _text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        fn steer<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
             Box::pin(async { Ok(()) })
         }
-        fn follow_up<'a>(&'a self, _text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        fn follow_up<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
             Box::pin(async { Ok(()) })
         }
         fn abort(&self) {}
-        fn subscribe_nudges(&self, _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+        fn subscribe_nudges(
+            &self,
+            _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>,
+        ) -> Box<dyn FnOnce() + Send> {
             Box::new(|| {})
         }
         fn subscribe_observations(
@@ -563,7 +606,13 @@ mod tests {
             Box::new(|| {})
         }
         fn settle(&self) -> Pin<Box<dyn Future<Output = JudgeSettle> + Send>> {
-            Box::pin(async { JudgeSettle { completed: true, cancelled: false, failure_message: None } })
+            Box::pin(async {
+                JudgeSettle {
+                    completed: true,
+                    cancelled: false,
+                    failure_message: None,
+                }
+            })
         }
         fn dispose<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
             Box::pin(async { Ok(()) })
@@ -591,10 +640,22 @@ mod tests {
         let child = fixture_child();
         let snapshot = child.clone();
 
-        assert!(Arc::ptr_eq(&child.handle, &snapshot.handle), "the handle is shared");
-        assert!(Arc::ptr_eq(&child.unsubscribes, &snapshot.unsubscribes), "the unsubscribe list is shared");
-        assert!(Arc::ptr_eq(&child.usage_tokens, &snapshot.usage_tokens), "the usage counter is shared");
-        assert!(Arc::ptr_eq(&child.chars_sent, &snapshot.chars_sent), "the char counter is shared");
+        assert!(
+            Arc::ptr_eq(&child.handle, &snapshot.handle),
+            "the handle is shared"
+        );
+        assert!(
+            Arc::ptr_eq(&child.unsubscribes, &snapshot.unsubscribes),
+            "the unsubscribe list is shared"
+        );
+        assert!(
+            Arc::ptr_eq(&child.usage_tokens, &snapshot.usage_tokens),
+            "the usage counter is shared"
+        );
+        assert!(
+            Arc::ptr_eq(&child.chars_sent, &snapshot.chars_sent),
+            "the char counter is shared"
+        );
         assert_eq!(child.generation, snapshot.generation);
     }
 
@@ -603,11 +664,29 @@ mod tests {
         let child = fixture_child();
         let snapshot = child.clone();
 
-        *snapshot.usage_tokens.lock().unwrap_or_else(PoisonError::into_inner) = Some(1_234);
-        assert_eq!(*child.usage_tokens.lock().unwrap_or_else(PoisonError::into_inner), Some(1_234));
+        *snapshot
+            .usage_tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(1_234);
+        assert_eq!(
+            *child
+                .usage_tokens
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            Some(1_234)
+        );
 
-        *child.chars_sent.lock().unwrap_or_else(PoisonError::into_inner) = 7;
-        assert_eq!(*snapshot.chars_sent.lock().unwrap_or_else(PoisonError::into_inner), 7);
+        *child
+            .chars_sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = 7;
+        assert_eq!(
+            *snapshot
+                .chars_sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            7
+        );
     }
 
     #[test]
@@ -629,17 +708,38 @@ mod tests {
         let snapshot = child.clone();
 
         // `dispose_child` drains the SHARED list once (`std::mem::take` over the same `Arc`).
-        let drained = std::mem::take(&mut *snapshot.unsubscribes.lock().unwrap_or_else(PoisonError::into_inner));
+        let drained = std::mem::take(
+            &mut *snapshot
+                .unsubscribes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         assert_eq!(drained.len(), 2);
         for unsubscribe in drained {
             unsubscribe();
         }
-        assert_eq!(runs.load(Ordering::SeqCst), 2, "each unsubscribe runs exactly once");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "each unsubscribe runs exactly once"
+        );
 
         // The original observes the SAME list, already drained: a second drain is empty, so no
         // `FnOnce` can run again and no unsubscribe action is duplicated.
-        let again = std::mem::take(&mut *child.unsubscribes.lock().unwrap_or_else(PoisonError::into_inner));
-        assert!(again.is_empty(), "a second drain of the shared list is empty");
-        assert_eq!(runs.load(Ordering::SeqCst), 2, "no unsubscribe runs twice across snapshots");
+        let again = std::mem::take(
+            &mut *child
+                .unsubscribes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        assert!(
+            again.is_empty(),
+            "a second drain of the shared list is empty"
+        );
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "no unsubscribe runs twice across snapshots"
+        );
     }
 }

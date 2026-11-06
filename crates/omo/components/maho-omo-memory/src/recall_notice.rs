@@ -40,7 +40,10 @@ pub fn recall_notice_spec(record: &MemoryRecallRecord) -> Option<NoticeSpec> {
 }
 
 /// Registers the recall entry renderer.
-pub fn register_recall_notice_renderer(api: &mut maho_ext_api::ExtensionApi, theme: ResolveEntryTheme) {
+pub fn register_recall_notice_renderer(
+    api: &mut maho_ext_api::ExtensionApi,
+    theme: ResolveEntryTheme,
+) {
     api.register_entry_renderer(
         RECALL_ENTRY_TYPE,
         std::sync::Arc::new(move |entry, options, native_theme| {
@@ -64,13 +67,20 @@ mod tests {
 
     struct Theme;
     impl EntryRenderTheme for Theme {
-        fn fg(&self, tone: &str, text: &str) -> String { format!("<{tone}>{text}</{tone}>") }
-        fn italic(&self, text: &str) -> String { format!("<italic>{text}</italic>") }
+        fn fg(&self, tone: &str, text: &str) -> String {
+            format!("<{tone}>{text}</{tone}>")
+        }
+        fn italic(&self, text: &str) -> String {
+            format!("<italic>{text}</italic>")
+        }
     }
 
     #[test]
     fn given_paths_when_rendered_then_the_title_names_them() {
-        let spec = recall_notice_spec(&MemoryRecallRecord { paths: vec!["notes/a.md".into(), "notes/b.md".into()] }).unwrap();
+        let spec = recall_notice_spec(&MemoryRecallRecord {
+            paths: vec!["notes/a.md".into(), "notes/b.md".into()],
+        })
+        .unwrap();
         assert_eq!(spec.glyph, "\u{00b7}");
         assert_eq!(spec.tone, "muted");
         assert!(spec.title.contains("notes/a.md, notes/b.md"));
@@ -79,16 +89,40 @@ mod tests {
     #[test]
     fn given_blank_paths_when_rendered_then_nothing_is_drawn() {
         assert!(recall_notice_spec(&MemoryRecallRecord { paths: vec![] }).is_none());
-        assert!(recall_notice_spec(&MemoryRecallRecord { paths: vec!["".into(), "  ".into()] }).is_none());
+        assert!(
+            recall_notice_spec(&MemoryRecallRecord {
+                paths: vec!["".into(), "  ".into()]
+            })
+            .is_none()
+        );
     }
 
     #[test]
     fn given_a_registered_renderer_when_the_entry_renders_then_the_notice_component_is_returned() {
-        let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()), Default::default(), Default::default(), Default::default());
-        register_recall_notice_renderer(&mut api, std::sync::Arc::new(|_| std::sync::Arc::new(Theme)));
-        let entry = maho_ext_api::SessionEntry { id: "entry".into(), parent_id: None, timestamp: "now".into(), kind: "custom".into(), data: serde_json::json!({ "data": { "paths": ["notes/a.md"] } }) };
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        register_recall_notice_renderer(
+            &mut api,
+            std::sync::Arc::new(|_| std::sync::Arc::new(Theme)),
+        );
+        let entry = maho_ext_api::SessionEntry {
+            id: "entry".into(),
+            parent_id: None,
+            timestamp: "now".into(),
+            kind: "custom".into(),
+            data: serde_json::json!({ "data": { "paths": ["notes/a.md"] } }),
+        };
         let renderer = &api.registered.entry_renderers[RECALL_ENTRY_TYPE];
-        let mut component = renderer(&entry, &maho_ext_api::EntryRenderOptions { expanded: false }, &Default::default()).unwrap();
+        let mut component = renderer(
+            &entry,
+            &maho_ext_api::EntryRenderOptions { expanded: false },
+            &Default::default(),
+        )
+        .unwrap();
         let lines = component.render(80);
         assert!(lines.len() >= 4, "{lines:?}");
         assert!(lines.iter().any(|line| line.contains("notes/a.md")));

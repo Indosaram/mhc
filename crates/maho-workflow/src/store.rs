@@ -210,14 +210,22 @@ impl WorkflowStore {
     ///
     /// # Errors
     /// Filesystem errors or an invalid node id.
-    pub fn write_result(&self, run_id: &str, node_id: &str, text: &str, stats: &ResultStats) -> std::io::Result<()> {
+    pub fn write_result(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        text: &str,
+        stats: &ResultStats,
+    ) -> std::io::Result<()> {
         if !valid_component(run_id) || !valid_component(node_id) {
             return Err(std::io::Error::other("invalid run or node id"));
         }
         write_atomic(&self.result_path(run_id, node_id), text.as_bytes())?;
         let bytes = serde_json::to_vec_pretty(stats).map_err(std::io::Error::other)?;
         write_atomic(
-            &self.results_dir(run_id).join(format!("{node_id}.stats.json")),
+            &self
+                .results_dir(run_id)
+                .join(format!("{node_id}.stats.json")),
             &bytes,
         )
     }
@@ -236,7 +244,11 @@ impl WorkflowStore {
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join(format!("{name}.lock"));
         for _ in 0..2 {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(mut file) => {
                     let _ = write!(file, "{}", std::process::id());
                     return Some(FileLock { path });
@@ -268,9 +280,18 @@ impl WorkflowStore {
                 errors.push(format!("{what}: {error}"));
             }
         };
-        attempt(std::fs::remove_file(self.record_path(&run.run_id)), "record");
-        attempt(std::fs::remove_file(self.journal_path(&run.run_id)), "journal");
-        attempt(std::fs::remove_dir_all(self.results_dir(&run.run_id)), "results");
+        attempt(
+            std::fs::remove_file(self.record_path(&run.run_id)),
+            "record",
+        );
+        attempt(
+            std::fs::remove_file(self.journal_path(&run.run_id)),
+            "journal",
+        );
+        attempt(
+            std::fs::remove_dir_all(self.results_dir(&run.run_id)),
+            "results",
+        );
         if self
             .lookup_key(&run.parent_session, &run.key)
             .is_some_and(|entry| entry.run_id == run.run_id)
@@ -333,10 +354,20 @@ mod tests {
         write_atomic(&path, b"1").expect("write");
         write_atomic(&path, b"2").expect("write");
         assert_eq!(std::fs::read(&path).expect("read"), b"2");
-        let lock = store.try_lock("k", std::time::Duration::from_secs(60)).expect("lock");
-        assert!(store.try_lock("k", std::time::Duration::from_secs(60)).is_none());
+        let lock = store
+            .try_lock("k", std::time::Duration::from_secs(60))
+            .expect("lock");
+        assert!(
+            store
+                .try_lock("k", std::time::Duration::from_secs(60))
+                .is_none()
+        );
         drop(lock);
-        assert!(store.try_lock("k", std::time::Duration::from_secs(60)).is_some());
+        assert!(
+            store
+                .try_lock("k", std::time::Duration::from_secs(60))
+                .is_some()
+        );
     }
 
     #[test]

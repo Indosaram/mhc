@@ -81,19 +81,25 @@ mod tests {
 
         let empty_map = Map::new();
         assert_eq!(
-            require_string(&empty_map, "filePath").unwrap_err().to_string(),
+            require_string(&empty_map, "filePath")
+                .unwrap_err()
+                .to_string(),
             "Missing required string parameter 'filePath'"
         );
 
         let empty_str = Map::from_iter([("filePath".to_string(), json!(""))]);
         assert_eq!(
-            require_string(&empty_str, "filePath").unwrap_err().to_string(),
+            require_string(&empty_str, "filePath")
+                .unwrap_err()
+                .to_string(),
             "Missing required string parameter 'filePath'"
         );
 
         let number_val = Map::from_iter([("filePath".to_string(), json!(42))]);
         assert_eq!(
-            require_string(&number_val, "filePath").unwrap_err().to_string(),
+            require_string(&number_val, "filePath")
+                .unwrap_err()
+                .to_string(),
             "Missing required string parameter 'filePath'"
         );
     }
@@ -126,7 +132,10 @@ mod tests {
     #[test]
     fn given_optional_parameters_when_values_have_wrong_type_then_ignores_them() {
         let str_valid = Map::from_iter([("query".to_string(), json!("symbol"))]);
-        assert_eq!(optional_string(&str_valid, "query"), Some("symbol".to_string()));
+        assert_eq!(
+            optional_string(&str_valid, "query"),
+            Some("symbol".to_string())
+        );
 
         let str_wrong = Map::from_iter([("query".to_string(), json!(7))]);
         assert_eq!(optional_string(&str_wrong, "query"), None);
@@ -138,7 +147,10 @@ mod tests {
         assert_eq!(optional_number(&num_wrong, "limit"), None);
 
         let bool_valid = Map::from_iter([("includeDeclaration".to_string(), json!(false))]);
-        assert_eq!(optional_boolean(&bool_valid, "includeDeclaration"), Some(false));
+        assert_eq!(
+            optional_boolean(&bool_valid, "includeDeclaration"),
+            Some(false)
+        );
 
         let bool_wrong = Map::from_iter([("includeDeclaration".to_string(), json!("false"))]);
         assert_eq!(optional_boolean(&bool_wrong, "includeDeclaration"), None);

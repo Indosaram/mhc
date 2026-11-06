@@ -88,8 +88,12 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
         return handle;
     }
     let tree_root = (engine.session_role)().is_none();
-    let configured = if tree_root && engine.default_execution_mode.as_deref() != Some("in-process") {
-        engine.host_shard_prewarm.clone().unwrap_or_else(|| "first-turn".into())
+    let configured = if tree_root && engine.default_execution_mode.as_deref() != Some("in-process")
+    {
+        engine
+            .host_shard_prewarm
+            .clone()
+            .unwrap_or_else(|| "first-turn".into())
     } else {
         "off".into()
     };
@@ -97,52 +101,60 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
     let first_turn_mode = configured == "first-turn";
     let start = engine.clone();
     let warmed = handle.warmed.clone();
-    api.on(EventKind::SessionStart, Arc::new(move |_, _| {
-        let engine = start.clone();
-        let warmed = warmed.clone();
-        Box::pin(async move {
-            if let Some(session) = (engine.session_id)() {
-                if engine.resume_children != Some(false) && engine.reattach_on_reconcile != Some(false) {
-                    warm_recorded_hosts(engine.as_ref(), &session);
+    api.on(
+        EventKind::SessionStart,
+        Arc::new(move |_, _| {
+            let engine = start.clone();
+            let warmed = warmed.clone();
+            Box::pin(async move {
+                if let Some(session) = (engine.session_id)() {
+                    if engine.resume_children != Some(false)
+                        && engine.reattach_on_reconcile != Some(false)
+                    {
+                        warm_recorded_hosts(engine.as_ref(), &session);
+                    }
+                    if session_start_mode
+                        && warmed
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(session, ())
+                            .is_none()
+                    {
+                        warm_own_host(engine.as_ref());
+                    }
                 }
-                if session_start_mode
-                    && warmed
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(session, ())
-                        .is_none()
-                {
-                    warm_own_host(engine.as_ref());
-                }
-            }
-            Ok(EventResult::None)
-        })
-    }));
+                Ok(EventResult::None)
+            })
+        }),
+    );
     if first_turn_mode {
         let edges = engine.clone();
         for event in FIRST_TURN_EVENTS {
             let engine = edges.clone();
             let warmed = handle.warmed.clone();
-            api.on(event, Arc::new(move |payload, context| {
-                // A preview payload is a read-only probe: it warms nothing and touches no state.
-                if (engine.is_preview)(payload) {
-                    return Box::pin(async move { Ok(EventResult::None) });
-                }
-                let engine = engine.clone();
-                let warmed = warmed.clone();
-                let session = context.session_manager.session_id().to_string();
-                Box::pin(async move {
-                    if warmed
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(session, ())
-                        .is_none()
-                    {
-                        warm_own_host(engine.as_ref());
+            api.on(
+                event,
+                Arc::new(move |payload, context| {
+                    // A preview payload is a read-only probe: it warms nothing and touches no state.
+                    if (engine.is_preview)(payload) {
+                        return Box::pin(async move { Ok(EventResult::None) });
                     }
-                    Ok(EventResult::None)
-                })
-            }));
+                    let engine = engine.clone();
+                    let warmed = warmed.clone();
+                    let session = context.session_manager.session_id().to_string();
+                    Box::pin(async move {
+                        if warmed
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(session, ())
+                            .is_none()
+                        {
+                            warm_own_host(engine.as_ref());
+                        }
+                        Ok(EventResult::None)
+                    })
+                }),
+            );
         }
     }
     handle
@@ -163,8 +175,13 @@ fn warm_own_host(engine: &HostPrewarmEngine) {
         return;
     }
     let socket = engine.host.shard_socket();
-    if let Err(error) = engine.host.warm_host(&socket, &(engine.cwd)(), Some(&agent_dir)) {
-        (engine.on_log)(&format!("omo-senpi task host warm failed: socket={socket} error={error}"));
+    if let Err(error) = engine
+        .host
+        .warm_host(&socket, &(engine.cwd)(), Some(&agent_dir))
+    {
+        (engine.on_log)(&format!(
+            "omo-senpi task host warm failed: socket={socket} error={error}"
+        ));
     }
 }
 
@@ -179,7 +196,11 @@ fn warm_recorded_hosts(engine: &HostPrewarmEngine, session_id: &str) {
         if record.runner_kind != Some(senpi_task::state::RunnerKind::HostSession) {
             continue;
         }
-        let Some(socket) = record.host_session.as_ref().map(|session| session.socket.clone()) else {
+        let Some(socket) = record
+            .host_session
+            .as_ref()
+            .map(|session| session.socket.clone())
+        else {
             continue;
         };
         // The session's own endpoint is already serving it, or not restartable from inside.
@@ -189,18 +210,29 @@ fn warm_recorded_hosts(engine: &HostPrewarmEngine, session_id: &str) {
     }
     for socket in sockets {
         if let Err(error) = engine.host.ensure_endpoint(&socket) {
-            (engine.on_log)(&format!("omo-senpi task host ensure failed: socket={socket} error={error}"));
+            (engine.on_log)(&format!(
+                "omo-senpi task host ensure failed: socket={socket} error={error}"
+            ));
         }
     }
 }
 
 /// `selectRevivalBatch`: this session's suspended host-session children, capped.
-pub fn select_revival_batch(records: &[TaskRecord], session_id: &str, cap: usize) -> Vec<TaskRecord> {
+pub fn select_revival_batch(
+    records: &[TaskRecord],
+    session_id: &str,
+    cap: usize,
+) -> Vec<TaskRecord> {
     records
         .iter()
         .filter(|record| record.parent_session_id == session_id)
         .filter(|record| record.runner_kind == Some(senpi_task::state::RunnerKind::HostSession))
-        .filter(|record| matches!(record.status, senpi_task::state::TaskStatus::Paused | senpi_task::state::TaskStatus::Running))
+        .filter(|record| {
+            matches!(
+                record.status,
+                senpi_task::state::TaskStatus::Paused | senpi_task::state::TaskStatus::Running
+            )
+        })
         .take(cap)
         .cloned()
         .collect()

@@ -46,7 +46,9 @@ pub fn is_priority_alias_of(candidate: Option<&Value>, base: &ModelReference) ->
     if candidate.get("provider").and_then(Value::as_str) != Some(base.provider.as_str()) {
         return false;
     }
-    if candidate.get("id").and_then(Value::as_str) != Some(format!("{}{FAST_MODEL_SUFFIX}", base.id).as_str()) {
+    if candidate.get("id").and_then(Value::as_str)
+        != Some(format!("{}{FAST_MODEL_SUFFIX}", base.id).as_str())
+    {
         return false;
     }
     if candidate.get("serviceTier").and_then(Value::as_str) != Some("priority") {
@@ -63,7 +65,8 @@ pub fn is_priority_alias_of(candidate: Option<&Value>, base: &ModelReference) ->
 }
 
 fn as_fast_variant(candidate: Option<&Value>, base: &ModelReference) -> Option<String> {
-    is_priority_alias_of(candidate, base).then(|| format!("{}/{}{FAST_MODEL_SUFFIX}", base.provider, base.id))
+    is_priority_alias_of(candidate, base)
+        .then(|| format!("{}/{}{FAST_MODEL_SUFFIX}", base.provider, base.id))
 }
 
 /// `inheritParentFastMode`: only a priority parent with a true sibling changes the plan.
@@ -85,11 +88,14 @@ pub fn inherit_parent_fast_mode(
     let Some(model) = as_fast_variant(candidate.as_ref(), &base) else {
         return plan;
     };
-    let resolved_model = plan.resolved_model.clone().map(|record| ResolvedModelRecord {
-        model_id: format!("{}{FAST_MODEL_SUFFIX}", base.id),
-        display: model.clone(),
-        ..record
-    });
+    let resolved_model = plan
+        .resolved_model
+        .clone()
+        .map(|record| ResolvedModelRecord {
+            model_id: format!("{}{FAST_MODEL_SUFFIX}", base.id),
+            display: model.clone(),
+            ..record
+        });
     ResolvedChildPlan {
         model,
         resolved_model: resolved_model.or(Some(ResolvedModelRecord::new(
@@ -116,12 +122,16 @@ mod tests {
     #[test]
     fn a_priority_alias_needs_the_tier_and_the_upstream_pointer() {
         assert!(is_priority_alias_of(
-            Some(&json!({"provider":"openai","id":"gpt-5-fast","serviceTier":"priority","upstreamModelId":"gpt-5"})),
+            Some(
+                &json!({"provider":"openai","id":"gpt-5-fast","serviceTier":"priority","upstreamModelId":"gpt-5"})
+            ),
             &base()
         ));
         // A different SKU that merely ends in -fast is NOT an alias.
         assert!(!is_priority_alias_of(
-            Some(&json!({"provider":"cursor","id":"gpt-5-fast","serviceTier":"priority","upstreamModelId":"composer"})),
+            Some(
+                &json!({"provider":"cursor","id":"gpt-5-fast","serviceTier":"priority","upstreamModelId":"composer"})
+            ),
             &base()
         ));
         assert!(!is_priority_alias_of(

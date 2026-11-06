@@ -228,17 +228,26 @@ fn profile_diagnostics(view: &Value) -> Vec<ModelReferenceDiagnostic> {
         for name in profiles.keys().filter(|name| catalog.contains_key(*name)) {
             diagnostics.push(ModelReferenceDiagnostic {
                 kind: "validation",
-                message: format!("Model profile \"{name}\" shadows a model catalog entry of the same name"),
+                message: format!(
+                    "Model profile \"{name}\" shadows a model catalog entry of the same name"
+                ),
                 path: format!("model_profiles.{name}"),
             });
         }
     }
     for section in ["categories", "agents"] {
-        let Some(definitions) = view.get(section).and_then(Value::as_object) else { continue };
+        let Some(definitions) = view.get(section).and_then(Value::as_object) else {
+            continue;
+        };
         for (name, definition) in definitions {
-            let Some(models) = definition.get("models").and_then(Value::as_array) else { continue };
+            let Some(models) = definition.get("models").and_then(Value::as_array) else {
+                continue;
+            };
             for (index, entry) in models.iter().enumerate() {
-                let Some(profile) = entry.as_str().filter(|entry| profile_names.contains(entry)) else { continue };
+                let Some(profile) = entry.as_str().filter(|entry| profile_names.contains(entry))
+                else {
+                    continue;
+                };
                 diagnostics.push(ModelReferenceDiagnostic {
                     kind: "validation",
                     message: format!("\"{profile}\" is a model profile; splicing a profile into a category chain is not supported yet"),
@@ -318,7 +327,10 @@ pub fn resolve_model_references(view: &Value) -> ResolveModelReferencesResult {
         let resolved_profiles = profiles
             .iter()
             .map(|(name, definition)| {
-                (name.clone(), resolve_model_profile(definition, catalog, &cycle_names))
+                (
+                    name.clone(),
+                    resolve_model_profile(definition, catalog, &cycle_names),
+                )
             })
             .collect();
         resolved_view.insert("model_profiles".into(), Value::Object(resolved_profiles));
@@ -352,12 +364,18 @@ mod tests {
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == "validation" && diagnostic.path == "model_profiles.shared"
         }));
-        assert_eq!(result.view["agents"]["worker"]["model"], json!("provider/model"));
+        assert_eq!(
+            result.view["agents"]["worker"]["model"],
+            json!("provider/model")
+        );
         assert_eq!(result.view["agents"]["worker"]["reasoning"], json!("high"));
         let chain = json!([{ "model": "provider/model", "reasoning": "high" }]);
         assert_eq!(result.view["agents"]["worker"]["models"], chain);
         assert_eq!(result.view["model_profiles"]["shared"]["models"], chain);
-        assert_eq!(result.view["categories"]["quick"]["model"], json!("provider/model"));
+        assert_eq!(
+            result.view["categories"]["quick"]["model"],
+            json!("provider/model")
+        );
         assert_eq!(result.view["categories"]["quick"]["fallback_models"], chain);
     }
 

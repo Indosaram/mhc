@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 use maho_ext_api::*;
 use maho_omo_skill_pointers::*;
-use std::{path::Path, sync::{Arc, Mutex}};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 pub struct TestSession {
     pub session_id: String,
@@ -17,18 +20,34 @@ impl ToolSessionManager for TestSession {
 }
 
 impl SessionManager for TestSession {
-    fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
-    fn get_leaf_id(&self) -> Option<String> { None }
-    fn get_session_name(&self) -> Option<String> { None }
+    fn get_entries(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_branch(&self) -> Vec<SessionEntry> {
+        Vec::new()
+    }
+    fn get_leaf_id(&self) -> Option<String> {
+        None
+    }
+    fn get_session_name(&self) -> Option<String> {
+        None
+    }
 }
 
 struct TestRegistry;
 impl ModelRegistry for TestRegistry {
-    fn get_all(&self) -> Vec<Model> { Vec::new() }
-    fn get_available(&self) -> Vec<Model> { Vec::new() }
-    fn find(&self, _: &str, _: &str) -> Option<Model> { None }
-    fn has_configured_auth(&self, _: &Model) -> bool { false }
+    fn get_all(&self) -> Vec<Model> {
+        Vec::new()
+    }
+    fn get_available(&self) -> Vec<Model> {
+        Vec::new()
+    }
+    fn find(&self, _: &str, _: &str) -> Option<Model> {
+        None
+    }
+    fn has_configured_auth(&self, _: &Model) -> bool {
+        false
+    }
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
@@ -36,9 +55,30 @@ impl ModelRegistry for TestRegistry {
 
 struct TestUi;
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
     fn notify(&self, _: &str, _: NotificationType) {}
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -47,9 +87,15 @@ impl ExtensionUi for TestUi {
     fn set_title(&self, _: &str) {}
     fn paste_to_editor(&self, _: &str) {}
     fn set_editor_text(&self, _: &str) {}
-    fn get_editor_text(&self) -> String { String::new() }
-    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
-    fn theme(&self) -> Theme { Theme::default() }
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("UI not available".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
 }
 
 #[derive(Default)]
@@ -58,13 +104,21 @@ pub struct TestActions {
 }
 
 impl ExtensionActions for TestActions {
-    fn send_message(&self, m: CustomMessage, o: SendMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_message(
+        &self,
+        m: CustomMessage,
+        o: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         assert!(!o.trigger_turn);
         assert!(o.deliver_as.is_none());
         self.messages.lock().expect("messages lock").push(m);
         Ok(())
     }
-    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_user_message(
+        &self,
+        _: UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         panic!("unexpected send_user_message");
     }
     fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
@@ -82,7 +136,9 @@ pub fn make_context(session_id: &str) -> ExtensionContext {
         has_ui: false,
         cwd: "/tmp".into(),
         agent_dir: "/tmp/agent".into(),
-        session_manager: Arc::new(TestSession { session_id: session_id.to_string() }),
+        session_manager: Arc::new(TestSession {
+            session_id: session_id.to_string(),
+        }),
         model_registry: Arc::new(TestRegistry),
         model: None,
         thinking_level: None,
@@ -98,7 +154,10 @@ pub fn make_context(session_id: &str) -> ExtensionContext {
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,
@@ -150,7 +209,13 @@ pub async fn dispatch_input(
         streaming_behavior,
     });
     let ctx = make_context(session_id);
-    let handler = harness.api.registered.handlers.get(&EventKind::Input).expect("input handler registered")[0].clone();
+    let handler = harness
+        .api
+        .registered
+        .handlers
+        .get(&EventKind::Input)
+        .expect("input handler registered")[0]
+        .clone();
     handler(&mut event, &ctx).await.expect("dispatch success")
 }
 
@@ -183,9 +248,15 @@ pub fn expect_pointer_injections(
             _ => panic!("expected text content"),
         };
         let tag = format!("<omo-{}-pointer>", entry.skill_name);
-        assert!(text.contains(&tag), "content should contain {tag}, got {text}");
+        assert!(
+            text.contains(&tag),
+            "content should contain {tag}, got {text}"
+        );
         let skill_file = format!("{}/SKILL.md", entry.skill_name);
-        assert!(text.contains(&skill_file), "content should contain {skill_file}, got {text}");
+        assert!(
+            text.contains(&skill_file),
+            "content should contain {skill_file}, got {text}"
+        );
     }
 }
 
@@ -200,7 +271,10 @@ pub fn expect_no_injection(harness: &TestHarness, result: &EventResult) {
 
 pub fn injected_content(harness: &TestHarness, custom_type: &str) -> String {
     let messages = harness.actions.messages.lock().expect("messages lock");
-    let msg = messages.iter().find(|m| m.custom_type == custom_type).expect("message with custom_type");
+    let msg = messages
+        .iter()
+        .find(|m| m.custom_type == custom_type)
+        .expect("message with custom_type");
     match &msg.content[0] {
         ToolContent::Text { text, .. } => text.clone(),
         _ => panic!("expected text content"),

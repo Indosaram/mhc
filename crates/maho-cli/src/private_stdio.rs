@@ -27,7 +27,8 @@ mod tests {
     /// Set in the re-executed child: it is the process whose stdout the test reads.
     const CHILD_ENV: &str = "MAHO_PRIVATE_STDIO_TEST_CHILD";
     /// This test's libtest name, which the parent re-executes with `--exact`.
-    const TEST_NAME: &str = "private_stdio::tests::a_spawned_process_does_not_hold_the_parents_stdio_pipes";
+    const TEST_NAME: &str =
+        "private_stdio::tests::a_spawned_process_does_not_hold_the_parents_stdio_pipes";
     const STARTED_LINE: &str = "PRIVATE_STDIO_CHILD_STARTED";
     const GRANDCHILD_PREFIX: &str = "GRANDCHILD_PID=";
     /// Safety bound on each wait below; a regression holds the pipe for minutes, not this long.
@@ -76,14 +77,15 @@ mod tests {
             let status = grandchild.wait();
             panic!("the grandchild exited while the child still ran: {status:?}");
         }
-        let mut child = std::process::Command::new(std::env::current_exe().expect("test executable"))
-            .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
-            .env(CHILD_ENV, "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .expect("re-execute the test as the child");
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .expect("re-execute the test as the child");
         let stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
         // The reader reports the grandchild's pid when its line arrives, then the end of the stream
         // with the whole transcript.
@@ -99,7 +101,9 @@ mod tests {
                         transcript.push(line);
                     }
                     Err(error) => {
-                        let _ = events.send(Seen::Failed(format!("{error}; read so far: {transcript:?}")));
+                        let _ = events.send(Seen::Failed(format!(
+                            "{error}; read so far: {transcript:?}"
+                        )));
                         return;
                     }
                 }
@@ -113,12 +117,16 @@ mod tests {
                 let killed = child.kill();
                 let status = child.wait();
                 let seen = match other {
-                    Ok(Seen::End(transcript)) => format!("stdout ended; transcript: {transcript:#?}"),
+                    Ok(Seen::End(transcript)) => {
+                        format!("stdout ended; transcript: {transcript:#?}")
+                    }
                     Ok(Seen::Failed(error)) => format!("reading stdout failed: {error}"),
                     Ok(Seen::Grandchild(_)) => unreachable!("matched above"),
                     Err(error) => format!("no line within the bound: {error}"),
                 };
-                panic!("the child never reported its grandchild (kill {killed:?}, child status {status:?}); {seen}");
+                panic!(
+                    "the child never reported its grandchild (kill {killed:?}, child status {status:?}); {seen}"
+                );
             }
         };
         // End the child while its grandchild runs: only an inherited pipe handle can keep the
@@ -127,8 +135,15 @@ mod tests {
         let eof = received.recv_timeout(BOUND);
         let status = child.wait().expect("reap the child");
         // Clean up the grandchild whatever happened, before asserting.
-        let killed = std::process::Command::new("taskkill").args(["/F", "/PID", &grandchild]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-        assert!(ended.is_ok(), "the child was ended while its grandchild ran: {ended:?}; child status {status}");
+        let killed = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &grandchild])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert!(
+            ended.is_ok(),
+            "the child was ended while its grandchild ran: {ended:?}; child status {status}"
+        );
         match eof {
             Ok(Seen::End(transcript)) => assert!(
                 // libtest prints "test <name> ... " without a newline before the child's output.
@@ -137,8 +152,13 @@ mod tests {
             ),
             Ok(Seen::Failed(error)) => panic!("reading the child's stdout failed: {error}"),
             Ok(Seen::Grandchild(pid)) => panic!("the child reported a second grandchild {pid}"),
-            Err(error) => panic!("the child's stdout did not reach end-of-file while its grandchild ran ({error}); child status {status}"),
+            Err(error) => panic!(
+                "the child's stdout did not reach end-of-file while its grandchild ran ({error}); child status {status}"
+            ),
         }
-        assert!(killed.is_ok_and(|status| status.success()), "the grandchild was still running when the stream ended");
+        assert!(
+            killed.is_ok_and(|status| status.success()),
+            "the grandchild was still running when the stream ended"
+        );
     }
 }

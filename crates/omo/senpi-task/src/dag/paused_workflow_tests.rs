@@ -21,11 +21,12 @@ use crate::dag::recovery::{DagRecoveryOptions, RecoverableRecord, create_dag_rec
 use crate::dag::scheduler::{DagNodeControlErrorCode, DagSchedulerOptions};
 use crate::dag::store::{DagStoreConfig, DagStoreOptions, create_dag_file_store};
 use crate::dag::types::{
-    DagEventLane, DagNode, DagNodeErrorCode, DagNodeState, DagNodeTarget,
-    DagNodeTransitionReason, DagRunEvent, DagRunEventPayload, DagRunId, DagRunPause,
-    DagRunStatus, SchemaVersion1,
+    DagEventLane, DagNode, DagNodeErrorCode, DagNodeState, DagNodeTarget, DagNodeTransitionReason,
+    DagRunEvent, DagRunEventPayload, DagRunId, DagRunPause, DagRunStatus, SchemaVersion1,
 };
-use crate::manager::manager_tests::fakes::{Harness, HarnessOptions, base_spec, make_manager, started};
+use crate::manager::manager_tests::fakes::{
+    Harness, HarnessOptions, base_spec, make_manager, started,
+};
 
 const AT: &str = "2026-08-14T00:00:00.000Z";
 
@@ -169,7 +170,9 @@ fn setup_paused_run() -> PausedFixture {
         paused_child_acks: None,
     };
 
-    store.write_checkpoint(&run_id, &record).expect("write checkpoint");
+    store
+        .write_checkpoint(&run_id, &record)
+        .expect("write checkpoint");
 
     let options = DagSchedulerOptions {
         store: Arc::clone(&store),
@@ -199,11 +202,15 @@ fn setup_paused_run() -> PausedFixture {
 #[test]
 fn test_compat_paused_node_encoding_on_disk() {
     let fixture = setup_paused_run();
-    let raw_text = fs::read_to_string(fixture.store.paths.run(&fixture.run_id)).expect("read run json");
+    let raw_text =
+        fs::read_to_string(fixture.store.paths.run(&fixture.run_id)).expect("read run json");
     let raw: serde_json::Value = serde_json::from_str(&raw_text).expect("parse json");
     let nodes = raw["nodes"].as_array().expect("nodes array");
     for node in nodes {
-        assert_ne!(node["state"], "paused", "disk format must not expose paused node state directly");
+        assert_ne!(
+            node["state"], "paused",
+            "disk format must not expose paused node state directly"
+        );
         if node["id"] == "b" {
             assert_eq!(node["state"], "running");
             assert_eq!(node["paused"], true);
@@ -216,7 +223,11 @@ fn test_compat_paused_node_encoding_on_disk() {
         .expect("read")
         .expect("exists");
     assert_eq!(
-        read_back.nodes.iter().find(|n| n.id == "b").map(|n| n.state),
+        read_back
+            .nodes
+            .iter()
+            .find(|n| n.id == "b")
+            .map(|n| n.state),
         Some(DagNodeState::Paused)
     );
 }
@@ -239,19 +250,25 @@ fn test_compat_paused_transition_event_on_disk() {
     };
     fixture.store.append_event(&event).expect("append event");
 
-    let event_text = fs::read_to_string(fixture.store.paths.event(&fixture.run_id)).expect("read event log");
-    let line: serde_json::Value = serde_json::from_str(event_text.lines().last().unwrap()).expect("parse event json");
+    let event_text =
+        fs::read_to_string(fixture.store.paths.event(&fixture.run_id)).expect("read event log");
+    let line: serde_json::Value =
+        serde_json::from_str(event_text.lines().last().unwrap()).expect("parse event json");
     assert_eq!(line["to"], "running");
     assert_eq!(line["toPaused"], true);
 
     let page = fixture
         .store
-        .read_events(&fixture.run_id, 0, &crate::dag::store::DagEventReadOptions {
-            limit: 10,
-            through_seq: None,
-            lane: None,
-            types: None,
-        })
+        .read_events(
+            &fixture.run_id,
+            0,
+            &crate::dag::store::DagEventReadOptions {
+                limit: 10,
+                through_seq: None,
+                lane: None,
+                types: None,
+            },
+        )
         .expect("read events");
     assert_eq!(page.events.len(), 1);
     match &page.events[0].payload {
@@ -268,7 +285,10 @@ fn test_design_28_model_cannot_reenter_user_paused_workflow() {
     let fixture = setup_paused_run();
     let result = reenter_dag_run(fixture.options);
     assert!(result.is_err());
-    let error = match result { Err(error) => error, Ok(_) => panic!("model reentered a user-paused workflow") };
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("model reentered a user-paused workflow"),
+    };
     assert_eq!(error.code, DagNodeControlErrorCode::RunPausedByUser);
 
     let read_back: DagRunRecordV1 = fixture
@@ -282,8 +302,13 @@ fn test_design_28_model_cannot_reenter_user_paused_workflow() {
 #[test]
 fn test_design_28_send_to_paused_node_stores_guidance_without_sending() {
     let fixture = setup_paused_run();
-    let result = send_to_dag_node(&fixture.options, &fixture.run_id, &"b".into(), "new instructions")
-        .expect("send to paused node");
+    let result = send_to_dag_node(
+        &fixture.options,
+        &fixture.run_id,
+        &"b".into(),
+        "new instructions",
+    )
+    .expect("send to paused node");
     assert_eq!(result.delivery, DagNodeDeliveryResult::Guidance);
     assert!(result.guidance_id.is_some());
 
@@ -341,10 +366,7 @@ fn test_design_26_cancel_then_retry_records_staged_retry() {
     .expect("stage retry for node b");
 
     assert_eq!(result.record.status, DagRunStatus::Paused);
-    assert_eq!(
-        result.record.retry_on_resume,
-        Some(vec!["b".to_string()])
-    );
+    assert_eq!(result.record.retry_on_resume, Some(vec!["b".to_string()]));
 
     let after_retry: DagRunRecordV1 = fixture
         .store
@@ -352,7 +374,11 @@ fn test_design_26_cancel_then_retry_records_staged_retry() {
         .expect("read")
         .expect("exists");
     assert_eq!(
-        after_retry.nodes.iter().find(|n| n.id == "c").map(|n| n.state),
+        after_retry
+            .nodes
+            .iter()
+            .find(|n| n.id == "c")
+            .map(|n| n.state),
         Some(DagNodeState::Blocked)
     );
 }
@@ -409,7 +435,10 @@ fn test_design_26_staged_retry_runs_b_then_c_only_after_user_resumes() {
         .expect("install resumed run")
         .unwrap_installed();
     let outcome = installed.wait();
-    assert!(matches!(outcome, crate::dag::recovery::DagRecoveryOutcome::Resumed { .. }));
+    assert!(matches!(
+        outcome,
+        crate::dag::recovery::DagRecoveryOutcome::Resumed { .. }
+    ));
 
     let fresh: DagRunRecordV1 = fixture
         .store
@@ -462,7 +491,10 @@ fn test_design_26_cancelled_b_makes_c_skipped_when_user_resumes() {
         .expect("install resumed run")
         .unwrap_installed();
     let outcome = installed.wait();
-    assert!(matches!(outcome, crate::dag::recovery::DagRecoveryOutcome::Resumed { .. }));
+    assert!(matches!(
+        outcome,
+        crate::dag::recovery::DagRecoveryOutcome::Resumed { .. }
+    ));
 
     let fresh: DagRunRecordV1 = fixture
         .store
@@ -519,7 +551,10 @@ fn test_design_26_amending_queued_c_while_paused_never_reenters_or_changes_pause
             parent_session_id: "parent-1".to_string(),
         })
         .expect_err("amend b must fail");
-    assert_eq!(err.code, crate::dag::manager::DagManagerErrorCode::AmendRunningNode);
+    assert_eq!(
+        err.code,
+        crate::dag::manager::DagManagerErrorCode::AmendRunningNode
+    );
 }
 
 struct MockPausedPort {

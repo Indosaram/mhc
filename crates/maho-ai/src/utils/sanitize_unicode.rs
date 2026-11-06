@@ -4,7 +4,9 @@
 
 /// Removes unpaired UTF-16 surrogates and decodes the rest.
 pub fn sanitize_surrogates_utf16(units: &[u16]) -> String {
-    char::decode_utf16(units.iter().copied()).filter_map(Result::ok).collect()
+    char::decode_utf16(units.iter().copied())
+        .filter_map(Result::ok)
+        .collect()
 }
 
 /// A `str` is already surrogate-free; returned unchanged for call-site parity.
@@ -20,7 +22,11 @@ mod tests {
     fn drops_unpaired_keeps_pairs() {
         let mut units: Vec<u16> = "Hello 🙈 World".encode_utf16().collect();
         assert_eq!(sanitize_surrogates_utf16(&units), "Hello 🙈 World");
-        units = "Text ".encode_utf16().chain([0xD83D]).chain(" here".encode_utf16()).collect();
+        units = "Text "
+            .encode_utf16()
+            .chain([0xD83D])
+            .chain(" here".encode_utf16())
+            .collect();
         assert_eq!(sanitize_surrogates_utf16(&units), "Text  here");
         units = vec![0xDC00, 0x61];
         assert_eq!(sanitize_surrogates_utf16(&units), "a");

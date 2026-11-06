@@ -7,7 +7,10 @@ pub enum ClientError {
     #[error("{0}")]
     Disconnected(String),
     #[error("{message}")]
-    Io { kind:std::io::ErrorKind, message:String },
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
     #[error("Client is disposed")]
     Disposed,
     #[error("{0}")]
@@ -23,6 +26,9 @@ impl From<crate::protocol::codec::ProtocolValidationError> for ClientError {
 }
 impl From<std::io::Error> for ClientError {
     fn from(value: std::io::Error) -> Self {
-        Self::Io { kind:value.kind(), message:value.to_string() }
+        Self::Io {
+            kind: value.kind(),
+            message: value.to_string(),
+        }
     }
 }

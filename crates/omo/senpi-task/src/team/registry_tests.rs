@@ -42,7 +42,8 @@ fn write_project_team_spec(project_root: &Path, team_name: &str, spec: &Value) {
 }
 
 #[test]
-fn given_omo_json_teams_with_category_and_agent_alias_member_when_loaded_then_round_trips_into_team_core_spec() {
+fn given_omo_json_teams_with_category_and_agent_alias_member_when_loaded_then_round_trips_into_team_core_spec()
+ {
     // given
     let project = tempfile::tempdir().expect("tempdir");
     let omo_teams = to_map(json!({
@@ -70,7 +71,10 @@ fn given_omo_json_teams_with_category_and_agent_alias_member_when_loaded_then_ro
     assert_eq!(entry.source, TeamSpecSource::OmoJson);
     assert_eq!(entry.source.as_str(), "omo-json");
     let spec_json = serde_json::to_value(&entry.spec).expect("serialize spec");
-    assert_eq!(spec_json.get("leadAgentId").and_then(Value::as_str), Some("lead"));
+    assert_eq!(
+        spec_json.get("leadAgentId").and_then(Value::as_str),
+        Some("lead")
+    );
     assert_eq!(entry.spec.members.len(), 2);
 }
 

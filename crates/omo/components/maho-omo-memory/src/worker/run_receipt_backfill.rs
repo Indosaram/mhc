@@ -9,8 +9,8 @@ use memory_core::receipts::MemoryReceiptInput;
 use memory_core::reflection::ReflectionOutcome;
 
 use crate::receipts_port::{
-    emit_memory_receipt, run_outcome_receipt, run_receipt, MemoryReceiptsPort, ReceiptExtra,
-    RunReceiptLedger,
+    MemoryReceiptsPort, ReceiptExtra, RunReceiptLedger, emit_memory_receipt, run_outcome_receipt,
+    run_receipt,
 };
 use crate::worker::reservation_run_ledger::parse_reservation_run_ledger;
 use crate::worker::run_artifacts::read_run_json;
@@ -47,16 +47,23 @@ fn terminal_receipt(run_dir: &Path) -> Option<MemoryReceiptInput> {
         let outcome_str = final_val.get("outcome")?.as_str()?;
         let outcome = parse_outcome(outcome_str)?;
         let ledger = ledger?;
-        let settled = if let Some(generation_str) = final_val.get("generation").and_then(|v| v.as_str()) {
-            RunReceiptLedger {
-                started_at: generation_str.to_string(),
-                ..ledger
-            }
-        } else {
-            ledger
-        };
-        let sha = final_val.get("integrationSha").and_then(|v| v.as_str()).map(str::to_string);
-        let reason = final_val.get("reason").and_then(|v| v.as_str()).map(str::to_string);
+        let settled =
+            if let Some(generation_str) = final_val.get("generation").and_then(|v| v.as_str()) {
+                RunReceiptLedger {
+                    started_at: generation_str.to_string(),
+                    ..ledger
+                }
+            } else {
+                ledger
+            };
+        let sha = final_val
+            .get("integrationSha")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let reason = final_val
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         return Some(run_outcome_receipt(
             &settled,
             outcome,
@@ -68,13 +75,19 @@ fn terminal_receipt(run_dir: &Path) -> Option<MemoryReceiptInput> {
         ));
     }
 
-    for (file, event) in [("quarantined.json", "quarantined"), ("abandoned.json", "abandoned")] {
+    for (file, event) in [
+        ("quarantined.json", "quarantined"),
+        ("abandoned.json", "abandoned"),
+    ] {
         let path = run_dir.join(file);
         if !path.exists() {
             continue;
         }
         let sentinel = read_sentinel(&path);
-        let source = sentinel.as_ref().and_then(sentinel_ledger).or(ledger.clone())?;
+        let source = sentinel
+            .as_ref()
+            .and_then(sentinel_ledger)
+            .or(ledger.clone())?;
         let reason = sentinel
             .as_ref()
             .and_then(|s| s.get("reason").or_else(|| s.get("outcome")))
@@ -103,7 +116,10 @@ fn sentinel_ledger(sentinel: &serde_json::Value) -> Option<RunReceiptLedger> {
         return None;
     }
     let trigger = obj.get("trigger")?.as_str()?;
-    let origin = obj.get("origin").and_then(|v| v.as_str()).map(str::to_string);
+    let origin = obj
+        .get("origin")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     Some(RunReceiptLedger {
         kind: kind.to_string(),

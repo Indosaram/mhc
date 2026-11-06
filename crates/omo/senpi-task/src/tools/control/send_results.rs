@@ -2,7 +2,8 @@
 
 use crate::tools::control::tool_result::tool_result;
 use crate::tools::control::types::{
-    ControlListScope, ControlTaskRecord, SendManager, SendOutcome, SendResultDetails, SendToolResult,
+    ControlListScope, ControlTaskRecord, SendManager, SendOutcome, SendResultDetails,
+    SendToolResult,
 };
 
 /// Raised when the manager reports a steered delivery that is not a steer.
@@ -66,7 +67,8 @@ pub fn scope_denied(
         return None;
     }
     let record = resolve_listed_task(manager, to)?;
-    if caller_session_id == record.parent_session_id || caller_session_id == record.root_session_id {
+    if caller_session_id == record.parent_session_id || caller_session_id == record.root_session_id
+    {
         return None;
     }
     let reason = format!(

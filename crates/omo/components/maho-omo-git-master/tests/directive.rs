@@ -49,7 +49,9 @@ fn the_co_author_flag_emits_the_trailer_alongside_the_footer() {
     };
     let directive = build_git_master_attribution_directive(&settings, "").expect("directive");
     assert!(directive.contains(BUILTIN_FOOTER));
-    assert!(directive.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(directive.contains(
+        "--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""
+    ));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Port of `test/routes.test.ts`.
 
-use get_worker::{route, Method, Request, INSTALL_PS1, INSTALL_SH, NPM_DIST_TAGS};
+use get_worker::{INSTALL_PS1, INSTALL_SH, Method, NPM_DIST_TAGS, Request, route};
 
 use crate::fakes::{Harness, StaticFetcher};
 
@@ -20,7 +20,8 @@ fn mirror(h: &Harness, version: &str, assets: &[(&str, &str)]) {
     for (name, body) in assets {
         h.bucket.put(&format!("releases/v{version}/{name}"), body);
     }
-    h.bucket.put(&format!("releases/v{version}/.complete"), "{}");
+    h.bucket
+        .put(&format!("releases/v{version}/.complete"), "{}");
 }
 
 #[test]
@@ -37,7 +38,10 @@ fn serves_install_scripts_as_text_with_a_short_cache_and_counts_them() {
     assert_eq!(ps1.body_text(), INSTALL_PS1);
 
     let assets: Vec<String> = h.sink.points().iter().map(|p| p.blobs[3].clone()).collect();
-    assert_eq!(assets, vec!["install.sh".to_string(), "install.ps1".to_string()]);
+    assert_eq!(
+        assets,
+        vec!["install.sh".to_string(), "install.ps1".to_string()]
+    );
 }
 
 #[test]
@@ -61,7 +65,10 @@ fn root_serves_the_script_to_curl_and_powershell_and_sends_browsers_to_the_docs(
     )
     .expect("route");
     assert_eq!(browser.status, 302);
-    assert_eq!(browser.headers.get("Location"), Some("https://omo.dev/docs/install"));
+    assert_eq!(
+        browser.headers.get("Location"),
+        Some("https://omo.dev/docs/install")
+    );
 }
 
 #[test]
@@ -73,7 +80,10 @@ fn reads_the_mirrored_channel_pointer_and_caches_it_for_a_minute() {
     let response = route(&get("/channels/latest"), &ctx).expect("route");
     assert_eq!(response.body_text(), "5.1.1\n");
     assert_eq!(response.headers.get("X-Omo-Source"), Some("r2"));
-    assert_eq!(response.headers.get("Cache-Control"), Some("public, max-age=60"));
+    assert_eq!(
+        response.headers.get("Cache-Control"),
+        Some("public, max-age=60")
+    );
 
     h.settle();
     h.bucket.clear();
@@ -105,7 +115,11 @@ fn rejects_an_unknown_channel() {
 #[test]
 fn serves_a_mirrored_binary_from_storage_with_an_immutable_cache_and_counts_it() {
     let h = Harness::new("", StaticFetcher::new());
-    mirror(&h, "5.1.1", &[("omo-linux-x64", "binary-bytes"), ("SHA256SUMS", "sums")]);
+    mirror(
+        &h,
+        "5.1.1",
+        &[("omo-linux-x64", "binary-bytes"), ("SHA256SUMS", "sums")],
+    );
     let ctx = h.context();
 
     let response = route(&get("/v/5.1.1/omo-linux-x64"), &ctx).expect("route");
@@ -145,16 +159,22 @@ fn repeat_downloads_are_cache_hits_that_never_read_storage() {
 #[test]
 fn redirects_to_the_github_asset_when_the_version_was_never_marked_complete() {
     let h = Harness::new("", StaticFetcher::new());
-    h.bucket.put("releases/v5.1.0/omo-linux-x64", "half-mirrored");
+    h.bucket
+        .put("releases/v5.1.0/omo-linux-x64", "half-mirrored");
     let ctx = h.context();
 
     let response = route(&get("/v/5.1.0/omo-linux-x64"), &ctx).expect("route");
     assert_eq!(response.status, 302);
     assert_eq!(
         response.headers.get("Location"),
-        Some("https://github.com/code-yeongyu/oh-my-openagent/releases/download/v5.1.0/omo-linux-x64")
+        Some(
+            "https://github.com/code-yeongyu/oh-my-openagent/releases/download/v5.1.0/omo-linux-x64"
+        )
     );
-    assert_eq!(response.headers.get("X-Omo-Fallback-Reason"), Some("version-not-mirrored"));
+    assert_eq!(
+        response.headers.get("X-Omo-Fallback-Reason"),
+        Some("version-not-mirrored")
+    );
 
     let points = h.sink.points();
     assert_eq!(points.last().expect("a recorded point").blobs[1], "github");
@@ -169,7 +189,10 @@ fn redirects_to_github_when_storage_errors() {
 
     let response = route(&get("/v/5.1.1/omo-linux-x64"), &ctx).expect("route");
     assert_eq!(response.status, 302);
-    assert_eq!(response.headers.get("X-Omo-Fallback-Reason"), Some("r2-error"));
+    assert_eq!(
+        response.headers.get("X-Omo-Fallback-Reason"),
+        Some("r2-error")
+    );
 }
 
 #[test]
@@ -183,7 +206,11 @@ fn refuses_names_outside_the_release_allowlist_so_the_redirect_cannot_be_steered
         "/v/latest/omo-linux-x64",
         "/v/5.1.1/omo-plan9-x64",
     ] {
-        assert_eq!(route(&get(path), &ctx).expect("route").status, 404, "{path}");
+        assert_eq!(
+            route(&get(path), &ctx).expect("route").status,
+            404,
+            "{path}"
+        );
     }
     assert!(h.sink.points().is_empty());
 }
@@ -203,7 +230,10 @@ fn tags_installer_qa_downloads_so_the_rollup_can_leave_them_out() {
     )
     .expect("route");
     let _ = route(
-        &get_with("/v/5.1.1/omo-linux-x64", &[("User-Agent", "omo-install.sh/1")]),
+        &get_with(
+            "/v/5.1.1/omo-linux-x64",
+            &[("User-Agent", "omo-install.sh/1")],
+        ),
         &ctx,
     )
     .expect("route");
@@ -218,7 +248,10 @@ fn counts_checksums_and_desktop_engines_under_their_own_kinds() {
     mirror(
         &h,
         "5.1.1",
-        &[("SHA256SUMS", "s"), ("senpi-desktop-engine-darwin-arm64", "e")],
+        &[
+            ("SHA256SUMS", "s"),
+            ("senpi-desktop-engine-darwin-arm64", "e"),
+        ],
     );
     let ctx = h.context();
 

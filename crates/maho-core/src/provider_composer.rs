@@ -147,7 +147,18 @@ fn model_from_json(
             .input
             .clone()
             .unwrap_or_else(|| vec![maho_ai::types::InputModality::Text]),
-        cost: definition.cost.clone().or_else(|| defaults.filter(|m| m.id == definition.id).map(|m| m.cost.clone())).unwrap_or_else(|| maho_ai::types::ModelCost { unknown: Some(id != "ollama"), ..Default::default() }),
+        cost: definition
+            .cost
+            .clone()
+            .or_else(|| {
+                defaults
+                    .filter(|m| m.id == definition.id)
+                    .map(|m| m.cost.clone())
+            })
+            .unwrap_or_else(|| maho_ai::types::ModelCost {
+                unknown: Some(id != "ollama"),
+                ..Default::default()
+            }),
         context_window: definition.context_window.unwrap_or(128000.0) as u64,
         max_tokens: definition.max_tokens.unwrap_or(16384.0) as u64,
         sampling_params: definition.sampling_params.clone(),
@@ -246,7 +257,10 @@ pub fn compose_models(
         models.retain(|m| {
             config.whitelist.as_ref().is_none_or(|v| v.contains(&m.id))
                 && config.blacklist.as_ref().is_none_or(|v| !v.contains(&m.id))
-                && !(config.hide_free == Some(true) && m.cost.unknown != Some(true) && m.cost.input == 0.0 && m.cost.output == 0.0)
+                && !(config.hide_free == Some(true)
+                    && m.cost.unknown != Some(true)
+                    && m.cost.input == 0.0
+                    && m.cost.output == 0.0)
         });
     }
     if let Some(extension) = extension {
@@ -313,7 +327,13 @@ pub fn compose_models(
             model.input.clone_from(input);
         }
         if let Some(cost) = &overlay.cost {
-            model.cost.unknown = Some(model.cost.unknown == Some(true) && !(cost.input.is_some() && cost.output.is_some() && cost.cache_read.is_some() && cost.cache_write.is_some()));
+            model.cost.unknown = Some(
+                model.cost.unknown == Some(true)
+                    && !(cost.input.is_some()
+                        && cost.output.is_some()
+                        && cost.cache_read.is_some()
+                        && cost.cache_write.is_some()),
+            );
             model.cost.effective_rates = None;
             if let Some(value) = cost.input {
                 model.cost.input = value;
@@ -897,7 +917,8 @@ impl Provider for ComposedProvider {
 pub struct ComposedOAuthAuth {
     provider_id: String,
     oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
-    raw_headers: Option<std::collections::HashMap<String, crate::config_reference_resolver::ConfigValue>>,
+    raw_headers:
+        Option<std::collections::HashMap<String, crate::config_reference_resolver::ConfigValue>>,
     auth_header: bool,
 }
 
@@ -1100,7 +1121,10 @@ pub async fn resolve_compatibility_request_headers(
     extension: Option<&ProviderConfigInput>,
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Option<maho_ai::types::ProviderHeaders>, String> {
-    crate::provider_api_key_auth::assert_configured_header_authority(config, extension.map(|e| &e.config))?;
+    crate::provider_api_key_auth::assert_configured_header_authority(
+        config,
+        extension.map(|e| &e.config),
+    )?;
     let mut headers =
         crate::provider_api_key_auth::configured_headers(config, extension.map(|e| &e.config))
             .unwrap_or_default();
@@ -1481,9 +1505,21 @@ mod parity_cost_tests {
     use super::*;
     #[test]
     fn custom_prices_are_unknown_except_local_ollama_and_remain_visible() {
-        let definition=ModelsJsonModel { id:"custom".into(), ..Default::default() };
-        let config=ModelsJsonProvider { api:Some("openai-completions".into()), base_url:Some("http://localhost".into()), models:Some(vec![definition]), hide_free:Some(true), ..Default::default() };
-        let models=compose_models("remote",&[],Some(&config),None).expect("models"); assert_eq!(models.len(),1); assert_eq!(models[0].cost.unknown, Some(true));
-        let local=compose_models("ollama",&[],Some(&config),None).expect("local"); assert!(local.is_empty());
+        let definition = ModelsJsonModel {
+            id: "custom".into(),
+            ..Default::default()
+        };
+        let config = ModelsJsonProvider {
+            api: Some("openai-completions".into()),
+            base_url: Some("http://localhost".into()),
+            models: Some(vec![definition]),
+            hide_free: Some(true),
+            ..Default::default()
+        };
+        let models = compose_models("remote", &[], Some(&config), None).expect("models");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].cost.unknown, Some(true));
+        let local = compose_models("ollama", &[], Some(&config), None).expect("local");
+        assert!(local.is_empty());
     }
 }

@@ -58,7 +58,11 @@ pub(super) fn front_process() -> Option<ProcessSerialNumber> {
 
 /// The PSN owning `pid`, preferring the window-owner connection chain and
 /// falling back to `GetProcessForPID`.
-pub(super) fn process_psn(lookup: PsnLookup, pid: libc::pid_t, wid: u32) -> Option<ProcessSerialNumber> {
+pub(super) fn process_psn(
+    lookup: PsnLookup,
+    pid: libc::pid_t,
+    wid: u32,
+) -> Option<ProcessSerialNumber> {
     if let (Some(main_connection), Some(get_window_owner), Some(get_connection_psn)) = (
         lookup.main_connection,
         lookup.get_window_owner,

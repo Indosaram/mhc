@@ -29,7 +29,13 @@ pub(crate) fn spawn() -> io::Result<Helper> {
     socket.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let token = token()?;
     let child = Command::new(std::env::current_exe()?)
-        .args(["--release-helper", "--parent", &std::process::id().to_string(), "--token", &encode_token(&token)])
+        .args([
+            "--release-helper",
+            "--parent",
+            &std::process::id().to_string(),
+            "--token",
+            &encode_token(&token),
+        ])
         .stdin(Stdio::from(OwnedFd::from(theirs)))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -37,7 +43,10 @@ pub(crate) fn spawn() -> io::Result<Helper> {
         .env_remove(USER_HOLDS_ENV)
         .spawn()?;
     let mut helper = Helper::new(Some(child), socket, false);
-    if let Err(error) = helper.write(&Record::Hello { version: VERSION, token }) {
+    if let Err(error) = helper.write(&Record::Hello {
+        version: VERSION,
+        token,
+    }) {
         if let Some(child) = helper.child.as_mut() {
             stop(child);
         }
@@ -127,13 +136,17 @@ pub(crate) fn reap(child: &mut Child) {
 /// deadline.
 pub(crate) fn reap_detached(child: Child) {
     let shared = Arc::new(Mutex::new(Some(child)));
-    let take = |shared: &Mutex<Option<Child>>| shared.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let take = |shared: &Mutex<Option<Child>>| {
+        shared.lock().unwrap_or_else(PoisonError::into_inner).take()
+    };
     let detached = Arc::clone(&shared);
-    let spawned = thread::Builder::new().name("release-helper-reaper".to_owned()).spawn(move || {
-        if let Some(mut child) = take(&detached) {
-            reap(&mut child);
-        }
-    });
+    let spawned = thread::Builder::new()
+        .name("release-helper-reaper".to_owned())
+        .spawn(move || {
+            if let Some(mut child) = take(&detached) {
+                reap(&mut child);
+            }
+        });
     if let Err(error) = spawned {
         eprintln!("release helper: no reaper thread, reaping inline: {error}");
         if let Some(mut child) = take(&shared) {
@@ -148,7 +161,8 @@ pub(crate) fn reap_detached(child: Child) {
 pub(crate) fn stop(child: &mut Child) {
     // SAFETY: [FFI] the helper is this process's unreaped child, so its pid
     // cannot have been reused.
-    let asked = libc::pid_t::try_from(child.id()).is_ok_and(|pid| unsafe { libc::kill(pid, ABANDON) } == 0);
+    let asked =
+        libc::pid_t::try_from(child.id()).is_ok_and(|pid| unsafe { libc::kill(pid, ABANDON) } == 0);
     let deadline = Instant::now() + STOP_TIMEOUT;
     while asked && Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
         thread::sleep(Duration::from_millis(2));

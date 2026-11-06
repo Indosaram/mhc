@@ -48,7 +48,8 @@ pub fn get_grok_chrome_tokens(theme: &Theme) -> GrokChromeTokens {
         let theme = theme.clone();
         Rc::new(move |text: &str| theme.bg(ThemeBg::ToolPendingBg, text))
     });
-    let surface = background_from_theme_export(&page_background).unwrap_or_else(|| Rc::new(|text: &str| text.to_string()));
+    let surface = background_from_theme_export(&page_background)
+        .unwrap_or_else(|| Rc::new(|text: &str| text.to_string()));
     GrokChromeTokens {
         input_border: fg_style(theme, ThemeColor::BorderAccent),
         input_interior,

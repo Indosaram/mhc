@@ -21,10 +21,15 @@ pub fn editor_theme(theme: &Theme) -> EditorTheme {
     let border = theme.clone();
     let mention = theme.clone();
     EditorTheme {
-        keyword_highlight: crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(theme),
+        keyword_highlight: crate::theme::reserved_keyword_rainbow::get_reserved_keyword_highlight(
+            theme,
+        ),
         border_color: Rc::new(move |text: &str| border.fg(ThemeColor::BorderMuted, text)),
         mention: Some(Rc::new(move |text: &str| {
-            mention.fg(ThemeColor::SkillMention, &format!("\u{1b}[1m{text}\u{1b}[22m"))
+            mention.fg(
+                ThemeColor::SkillMention,
+                &format!("\u{1b}[1m{text}\u{1b}[22m"),
+            )
         })),
         select_list: select_list_theme(theme),
     }
@@ -104,7 +109,10 @@ impl ExtensionEditorComponent {
 
 impl Component for ExtensionEditorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
         let title = self.theme.fg(ThemeColor::Accent, &self.title.clone());
         lines.extend(Text::with_padding(title, 1, 0).render(width));
         lines.push(String::new());

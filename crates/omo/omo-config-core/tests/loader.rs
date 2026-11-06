@@ -1328,7 +1328,10 @@ fn diagnostic_lines_reset_the_merged_config_and_read_unreadable_files() {
 #[test]
 fn diagnostic_lines_render_a_dropped_invalid_leaf() {
     let root = tempfile::tempdir().expect("tempdir");
-    let home = format!("{}/home", omo_config_core::to_posix_path(&root.path().to_string_lossy()));
+    let home = format!(
+        "{}/home",
+        omo_config_core::to_posix_path(&root.path().to_string_lossy())
+    );
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(format!("{home}/.omo")).expect("config dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -1345,9 +1348,7 @@ fn diagnostic_lines_render_a_dropped_invalid_leaf() {
     let lines = omo_config_core::omo_config_diagnostic_lines(&result.diagnostics, Some(&home));
     assert_eq!(
         lines,
-        vec![
-            "config: ~/.omo/omo.jsonc: task.max_depth ignored (invalid value)".to_string()
-        ]
+        vec!["config: ~/.omo/omo.jsonc: task.max_depth ignored (invalid value)".to_string()]
     );
 }
 
@@ -1372,10 +1373,7 @@ fn display_omo_config_path_is_home_relative_only_under_home() {
         "~/.omo/omo.jsonc"
     );
     assert_eq!(
-        omo_config_core::display_omo_config_path(
-            "(merged omo config)",
-            Some("/home/user")
-        ),
+        omo_config_core::display_omo_config_path("(merged omo config)", Some("/home/user")),
         "merged config"
     );
     assert_eq!(
@@ -1438,7 +1436,9 @@ fn display_omo_config_path_normalizes_a_windows_home_to_forward_slashes() {
             )],
             Some("C:\\Users\\me"),
         ),
-        vec!["config: ~/.omo/omo.jsonc: task.host_engine_policy ignored (invalid value)".to_string()]
+        vec![
+            "config: ~/.omo/omo.jsonc: task.host_engine_policy ignored (invalid value)".to_string()
+        ]
     );
 }
 
@@ -1569,13 +1569,7 @@ fn invalid_value_keys(result: &omo_config_core::LoadOmoConfigResult) -> Vec<Stri
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.kind == "invalid-value")
-        .map(|diagnostic| {
-            diagnostic
-                .issue_paths
-                .first()
-                .cloned()
-                .unwrap_or_default()
-        })
+        .map(|diagnostic| diagnostic.issue_paths.first().cloned().unwrap_or_default())
         .collect()
 }
 
@@ -1653,7 +1647,10 @@ fn unknown_keys_strip_a_nested_prototype_pollution_key() {
     );
     let result = load_senpi(&home, &cwd, None);
     assert!(result.sources[0].loaded);
-    assert_eq!(result.config["agents"]["evil"]["model"], json!("user-model"));
+    assert_eq!(
+        result.config["agents"]["evil"]["model"],
+        json!("user-model")
+    );
     assert_eq!(
         result.config["categories"]["quick"]["model"],
         json!("user-model")
@@ -1689,7 +1686,10 @@ fn prune_keeps_a_valid_agent_beside_an_unknown_sibling_key() {
         r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":"kimi-k3","bogus_key":1}}}"#,
     );
     let result = load_default(&home, &cwd);
-    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert_eq!(
+        result.config["agents"]["sisyphus"]["model"],
+        json!("anthropic/")
+    );
     assert_eq!(result.config["agents"]["oracle"]["model"], json!("kimi-k3"));
     assert!(result.sources.iter().any(|source| source.loaded));
     assert_eq!(result.diagnostics.len(), 1);
@@ -1708,7 +1708,10 @@ fn prune_drops_a_wrong_typed_agent_model_and_keeps_the_sibling() {
         r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":123}}}"#,
     );
     let result = load_default(&home, &cwd);
-    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert_eq!(
+        result.config["agents"]["sisyphus"]["model"],
+        json!("anthropic/")
+    );
     assert!(result.config["agents"].get("oracle").is_none());
     assert!(result.sources.iter().any(|source| source.loaded));
     let dropped: Vec<&omo_config_core::OmoConfigDiagnostic> = result
@@ -1732,7 +1735,10 @@ fn prune_drops_every_invalid_agent_leaf_with_one_diagnostic_each() {
         r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":123},"explore":{"model":456}}}"#,
     );
     let result = load_default(&home, &cwd);
-    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert_eq!(
+        result.config["agents"]["sisyphus"]["model"],
+        json!("anthropic/")
+    );
     assert!(result.config["agents"].get("oracle").is_none());
     assert!(result.config["agents"].get("explore").is_none());
     let mut dropped = invalid_value_keys(&result);
@@ -1754,7 +1760,10 @@ fn prune_is_symmetric_for_categories() {
         r#"{"categories":{"quick":{"model":"gpt-5.6"},"deep":{"model":123}}}"#,
     );
     let result = load_default(&home, &cwd);
-    assert_eq!(result.config["categories"]["quick"]["model"], json!("gpt-5.6"));
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("gpt-5.6")
+    );
     assert!(result.config["categories"].get("deep").is_none());
     assert_eq!(
         invalid_value_keys(&result),
@@ -1784,10 +1793,7 @@ fn prune_rejects_a_file_whose_every_value_is_invalid() {
 #[test]
 fn prune_rejects_a_file_whose_only_value_is_a_malformed_task_field() {
     let (_root, home, cwd) = prune_fixture();
-    write_project_config(
-        &home,
-        r#"{"task":{"default_concurrency":"not-a-number"}}"#,
-    );
+    write_project_config(&home, r#"{"task":{"default_concurrency":"not-a-number"}}"#);
     let result = load_default(&home, &cwd);
     assert_eq!(result.config["task"]["default_concurrency"], json!(5));
     assert!(result.sources.iter().all(|source| !source.loaded));
@@ -1827,7 +1833,10 @@ fn prune_paths_drop_only_the_invalid_task_leaf_beside_a_valid_sibling() {
     let result = load_default(&home, &cwd);
     assert_eq!(result.config["task"]["max_depth"], json!(3));
     assert_eq!(result.config["task"]["default_concurrency"], json!(5));
-    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert_eq!(
+        result.config["agents"]["sisyphus"]["model"],
+        json!("anthropic/")
+    );
     assert!(
         result
             .sources
@@ -1852,9 +1861,16 @@ fn prune_paths_drop_one_field_inside_an_agent_and_keep_its_siblings() {
         r#"{"agents":{"oracle":{"model":"openai/gpt-6","temperature":"hot","max_turns":7}}}"#,
     );
     let result = load_default(&home, &cwd);
-    assert_eq!(result.config["agents"]["oracle"]["model"], json!("openai/gpt-6"));
+    assert_eq!(
+        result.config["agents"]["oracle"]["model"],
+        json!("openai/gpt-6")
+    );
     assert_eq!(result.config["agents"]["oracle"]["max_turns"], json!(7));
-    assert!(result.config["agents"]["oracle"].get("temperature").is_none());
+    assert!(
+        result.config["agents"]["oracle"]
+            .get("temperature")
+            .is_none()
+    );
     assert_eq!(
         invalid_value_keys(&result),
         vec!["agents.oracle.temperature".to_string()]
@@ -1918,7 +1934,13 @@ fn prune_paths_drop_a_partial_team_only_once_merged() {
     );
     let result = load_default(&home, &cwd);
     assert_eq!(result.config["task"]["default_concurrency"], json!(3));
-    assert!(result.config.get("teams").and_then(|teams| teams.get("alpha")).is_none());
+    assert!(
+        result
+            .config
+            .get("teams")
+            .and_then(|teams| teams.get("alpha"))
+            .is_none()
+    );
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].kind, "invalid-value");
     assert_eq!(result.diagnostics[0].path, "(merged omo config)");
@@ -1993,10 +2015,7 @@ fn project_paths_walk_stops_at_account_home_boundary_when_home_is_isolated() {
     // When HOME is isolated to /tmp/isolated-home, the upward walk from /home/alice/work/src
     // must stop at the account home boundary (/home/alice) so /home/alice/.omo is NEVER
     // loaded as a project layer.
-    let file_system = project_file_system(
-        &["/home/alice", "/home/alice/work"],
-        &[],
-    );
+    let file_system = project_file_system(&["/home/alice", "/home/alice/work"], &[]);
     let paths = find_project_config_paths_farthest_first(
         "/home/alice/work/src",
         "/tmp/isolated-home",
@@ -2118,10 +2137,7 @@ fn retired_sections_are_silently_ignored_in_every_config_container() {
                 json!({ "quick": { "model": "test/model" } }),
             );
             profile.insert("[senpi]".into(), Value::Object(profile_harness));
-            document.insert(
-                "profiles".into(),
-                json!({ "work": Value::Object(profile) }),
-            );
+            document.insert("profiles".into(), json!({ "work": Value::Object(profile) }));
 
             let comment = if extension == "jsonc" {
                 "// preserved comment\n"
@@ -2204,7 +2220,10 @@ fn retired_section_names_survive_as_nested_application_keys() {
         result.config["legacy_migrations"]["gateway"],
         json!({ "enabled": true })
     );
-    assert_eq!(result.config["categories"]["quick"]["tools"]["dori"], json!(true));
+    assert_eq!(
+        result.config["categories"]["quick"]["tools"]["dori"],
+        json!(true)
+    );
 }
 
 /// Runs `work` on its own thread and fails when it has not finished within the bound, so a

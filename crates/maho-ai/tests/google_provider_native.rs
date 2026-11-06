@@ -2,13 +2,15 @@
 
 use crate::google_fixtures;
 
-use google_fixtures::server::{sse_body, RecordingServer};
+use google_fixtures::server::{RecordingServer, sse_body};
 use google_fixtures::{assistant, builtin_model, context, text, user_text};
 use maho_ai::api::google_generative_ai::stream as stream_google;
-use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};
+use maho_ai::api::google_shared::{ConvertMessagesOptions, convert_messages};
 use maho_ai::api::google_vertex::stream as stream_vertex;
-use maho_ai::types::{ContentBlock, ProviderNativeContent, ProviderRequestOptions, StopReason, StreamOptions};
-use serde_json::{json, Value};
+use maho_ai::types::{
+    ContentBlock, ProviderNativeContent, ProviderRequestOptions, StopReason, StreamOptions,
+};
+use serde_json::{Value, json};
 
 fn provider_native_stream_chunks() -> Vec<Value> {
     vec![
@@ -73,20 +75,32 @@ fn expected_provider_native_blocks() -> Vec<ProviderNativeContent> {
 
 fn options(api_key: &str) -> StreamOptions {
     StreamOptions {
-        request: ProviderRequestOptions { api_key: Some(api_key.into()), ..ProviderRequestOptions::default() },
+        request: ProviderRequestOptions {
+            api_key: Some(api_key.into()),
+            ..ProviderRequestOptions::default()
+        },
         ..StreamOptions::default()
     }
 }
 
 #[tokio::test]
 async fn surfaces_executable_code_and_candidate_metadata_once_for_google_and_vertex() {
-    let server = RecordingServer::start(sse_body(&provider_native_stream_chunks()), "text/event-stream").await;
+    let server = RecordingServer::start(
+        sse_body(&provider_native_stream_chunks()),
+        "text/event-stream",
+    )
+    .await;
 
     let mut google_model = builtin_model("google", "gemini-2.5-flash");
     google_model.base_url = server.base_url();
     let google_message = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        stream_google(&google_model, &context(vec![user_text("hello")]), Some(options("x"))).result(),
+        stream_google(
+            &google_model,
+            &context(vec![user_text("hello")]),
+            Some(options("x")),
+        )
+        .result(),
     )
     .await
     .expect("bounded wait")
@@ -96,14 +110,24 @@ async fn surfaces_executable_code_and_candidate_metadata_once_for_google_and_ver
     vertex_model.base_url = server.base_url();
     let vertex_message = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        stream_vertex(&vertex_model, &context(vec![user_text("hello")]), Some(options("x"))).result(),
+        stream_vertex(
+            &vertex_model,
+            &context(vec![user_text("hello")]),
+            Some(options("x")),
+        )
+        .result(),
     )
     .await
     .expect("bounded wait")
     .expect("result");
 
     for message in [&google_message, &vertex_message] {
-        assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);
+        assert_eq!(
+            message.stop_reason,
+            StopReason::Stop,
+            "{:?}",
+            message.error_message
+        );
         let provider_native: Vec<ProviderNativeContent> = message
             .content
             .iter()
@@ -141,6 +165,17 @@ fn skips_provider_native_blocks_when_converting_assistant_replay_messages() {
         ConvertMessagesOptions::default(),
     );
 
-    let assistant_replay = replay.iter().find(|item| item.role == "model").expect("a model turn");
-    assert_eq!(assistant_replay.parts, vec![json!({ "text": "kept" }).as_object().cloned().expect("object")]);
+    let assistant_replay = replay
+        .iter()
+        .find(|item| item.role == "model")
+        .expect("a model turn");
+    assert_eq!(
+        assistant_replay.parts,
+        vec![
+            json!({ "text": "kept" })
+                .as_object()
+                .cloned()
+                .expect("object")
+        ]
+    );
 }

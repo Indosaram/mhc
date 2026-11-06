@@ -115,9 +115,18 @@ pub async fn download_ast_grep(
     let operation = async {
         crate::binary_downloader::ensure_cache_dir(cache)?;
         crate::binary_downloader::download_archive(&url, &archive).await?;
-        crate::binary_downloader::extract_zip_archive(&archive, cache)?;
-        crate::binary_downloader::cleanup_archive(&archive)?;
-        crate::binary_downloader::ensure_executable(&binary)?;
+        let extract_archive = archive.clone();
+        let extract_dir = cache.to_path_buf();
+        let extract_binary = binary.clone();
+        tokio::task::spawn_blocking(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                crate::binary_downloader::extract_zip_archive(&extract_archive, &extract_dir)?;
+                crate::binary_downloader::cleanup_archive(&extract_archive)?;
+                crate::binary_downloader::ensure_executable(&extract_binary)?;
+                Ok(())
+            },
+        )
+        .await??;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     operation.await.ok()?;

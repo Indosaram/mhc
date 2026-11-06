@@ -109,7 +109,10 @@ mod tests {
 
     #[test]
     fn windows_never_reports_a_start_token() {
-        assert_eq!(read_process_start_time_for(std::process::id(), "win32"), None);
+        assert_eq!(
+            read_process_start_time_for(std::process::id(), "win32"),
+            None
+        );
     }
 
     #[test]
@@ -117,7 +120,8 @@ mod tests {
         if current_platform() != "linux" {
             return;
         }
-        let token = read_process_start_time_for(std::process::id(), "linux").expect("own start ticks");
+        let token =
+            read_process_start_time_for(std::process::id(), "linux").expect("own start ticks");
         assert!(token.starts_with("proc:"));
         assert!(token[5..].bytes().all(|byte| byte.is_ascii_digit()));
         assert_eq!(
@@ -134,12 +138,27 @@ mod tests {
 
     #[test]
     fn lstart_parsing_is_utc_and_strict() {
-        assert_eq!(parse_lstart("Sun Oct 18 05:00:00 2026\n"), Some(1_792_299_600));
-        assert_eq!(parse_lstart("  Thu Oct  8 05:00:00 2026  "), Some(1_791_435_600));
+        assert_eq!(
+            parse_lstart("Sun Oct 18 05:00:00 2026\n"),
+            Some(1_792_299_600)
+        );
+        assert_eq!(
+            parse_lstart("  Thu Oct  8 05:00:00 2026  "),
+            Some(1_791_435_600)
+        );
         // Upstream thread/gateway/process-identity.ts uses Date.UTC normalization.
-        assert_eq!(parse_lstart("Xyz Oct 18 05:00:00 2026"), Some(1_792_299_600));
-        assert_eq!(parse_lstart("Sat Oct 18 25:00:00 2026"), Some(1_792_371_600));
-        assert_eq!(parse_lstart("Sat Oct 32 05:00:00 2026"), Some(1_793_509_200));
+        assert_eq!(
+            parse_lstart("Xyz Oct 18 05:00:00 2026"),
+            Some(1_792_299_600)
+        );
+        assert_eq!(
+            parse_lstart("Sat Oct 18 25:00:00 2026"),
+            Some(1_792_371_600)
+        );
+        assert_eq!(
+            parse_lstart("Sat Oct 32 05:00:00 2026"),
+            Some(1_793_509_200)
+        );
         for invalid in [
             "",
             "Sat Oct 18 05:00:00",

@@ -91,14 +91,21 @@ impl DaemonArgs {
         };
         push(
             "--audit-path",
-            self.audit_path.as_ref().map(|path| path.display().to_string()),
+            self.audit_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
         );
         push(
             "--artifact-dir",
-            self.artifact_dir.as_ref().map(|path| path.display().to_string()),
+            self.artifact_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
         );
         push("--max-width", self.max_width.map(|value| value.to_string()));
-        push("--max-height", self.max_height.map(|value| value.to_string()));
+        push(
+            "--max-height",
+            self.max_height.map(|value| value.to_string()),
+        );
         push("--max-bytes", self.max_bytes.map(|value| value.to_string()));
         push("--display", self.display.clone());
         push("--stop-chord", self.stop_chord.clone());

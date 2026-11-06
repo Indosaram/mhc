@@ -4,8 +4,7 @@ use omo_config_core::issue::PathSegment;
 use omo_config_core::writer::types::FsError;
 use omo_config_core::{
     LoadOmoConfigOptions, OmoConfigEdit, OmoConfigEnv, OmoConfigWriteFileSystem,
-    StdWriteFileSystem, UpdateOmoConfigOptions, load_omo_config, to_posix_path,
-    update_omo_config,
+    StdWriteFileSystem, UpdateOmoConfigOptions, load_omo_config, to_posix_path, update_omo_config,
 };
 use serde_json::json;
 
@@ -123,10 +122,7 @@ fn a_pinned_timestamp_still_yields_distinct_backup_paths() {
     let second = update_omo_config(&second).expect("second write");
 
     let reported_backup = to_posix_path(&format!("{config_path}.bak.2026-07-06T00-00-00-000Z"));
-    assert_eq!(
-        first.backup_path,
-        Some(reported_backup.clone())
-    );
+    assert_eq!(first.backup_path, Some(reported_backup.clone()));
     let second_backup = second.backup_path.clone().expect("second backup");
     assert!(second_backup.starts_with(&reported_backup));
     assert_ne!(second.backup_path, first.backup_path);
@@ -160,8 +156,14 @@ fn planned_backup_is_reused_only_when_its_contents_match() {
     write_file(&planned, "different bytes");
     let result = update_omo_config(&options).expect("preserve conflicting planned backup");
     assert_eq!(result.backup_path, Some(format!("{planned}.1")));
-    assert_eq!(std::fs::read_to_string(&planned).expect("planned"), "different bytes");
-    assert_eq!(std::fs::read_to_string(format!("{planned}.1")).expect("fallback"), original);
+    assert_eq!(
+        std::fs::read_to_string(&planned).expect("planned"),
+        "different bytes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{planned}.1")).expect("fallback"),
+        original
+    );
 }
 
 #[test]
@@ -346,7 +348,10 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     options.edits = vec![edit(&["task", "default_concurrency"], json!(3))];
     let created = update_omo_config(&options).expect("write");
 
-    assert_eq!(created.path, to_posix_path(&format!("{home}/.omo/omo.jsonc")));
+    assert_eq!(
+        created.path,
+        to_posix_path(&format!("{home}/.omo/omo.jsonc"))
+    );
     assert!(
         std::fs::read_to_string(format!("{legacy_dir}/omo.jsonc"))
             .expect("legacy content")

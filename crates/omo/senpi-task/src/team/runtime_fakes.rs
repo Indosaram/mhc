@@ -13,8 +13,9 @@ use crate::state::{ResidencyState, ResolvedModelRecord, TaskStatus};
 use crate::team::member_projection::ResidentSessionRef;
 use crate::team::runtime_config::TeamTaskBounds;
 use crate::team::runtime_types::{
-    TeamCancelOutcome, TeamMemberCancelPort, TeamMemberDestructionPort, TeamMemberReadPort, TeamMemberStartSpec,
-    TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
+    TeamCancelOutcome, TeamMemberCancelPort, TeamMemberDestructionPort, TeamMemberReadPort,
+    TeamMemberStartSpec, TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult,
+    TeamStartedMember,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -111,7 +112,10 @@ fn build_record(
         execution_mode: spec
             .execution_mode
             .unwrap_or_else(|| ExecutionMode::parse("in-process").expect("known execution mode")),
-        model: spec.model.clone().unwrap_or_else(|| "fake/model".to_string()),
+        model: spec
+            .model
+            .clone()
+            .unwrap_or_else(|| "fake/model".to_string()),
         child_session_id: Some(format!("sess-{task_id}")),
         resolved_model,
         name: spec.name.clone(),
@@ -221,7 +225,10 @@ impl TeamMemberReadPort for FakeTeamManager {
         }
         let read_count = state.get_counts.get(task_id).copied().unwrap_or(0) + 1;
         state.get_counts.insert(task_id.to_string(), read_count);
-        let updated = state.get_hooks.get(task_id).map(|hook| hook(&record, read_count))?;
+        let updated = state
+            .get_hooks
+            .get(task_id)
+            .map(|hook| hook(&record, read_count))?;
         state.records.insert(task_id.to_string(), updated.clone());
         Some(updated)
     }
@@ -281,7 +288,10 @@ impl TeamRuntimeManagerPort for FakeTeamManager {
         let (status, resolved_model) = match behavior {
             StartBehavior::Throw { message } => return Err(message),
             StartBehavior::Reject { result } => return Ok(result),
-            StartBehavior::Ok { status, resolved_model } => (status, resolved_model),
+            StartBehavior::Ok {
+                status,
+                resolved_model,
+            } => (status, resolved_model),
         };
         state.counter += 1;
         let task_id = format!("st_{:06}", state.counter);
@@ -304,8 +314,11 @@ impl TeamRuntimeManagerPort for FakeTeamManager {
     }
 
     fn get_resident_handle(&self, task_id: &str) -> Option<ResidentSessionRef> {
-        lock(&self.state).records.get(task_id).map(|record| ResidentSessionRef {
-            session_id: record.child_session_id.clone(),
-        })
+        lock(&self.state)
+            .records
+            .get(task_id)
+            .map(|record| ResidentSessionRef {
+                session_id: record.child_session_id.clone(),
+            })
     }
 }

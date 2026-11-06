@@ -33,8 +33,12 @@ use std::sync::PoisonError;
 
 use memory_core::recall::RecallCandidate;
 
-use crate::kibitzer_events::{KibitzerEvent, KibitzerEventBatch, KibitzerEventBatchCursors, KibitzerEventDigest};
-use crate::kibitzer_prompt::{KibitzerEnvelopeInput, KibitzerSidecarCandidate, KibitzerSidecarDigest};
+use crate::kibitzer_events::{
+    KibitzerEvent, KibitzerEventBatch, KibitzerEventBatchCursors, KibitzerEventDigest,
+};
+use crate::kibitzer_prompt::{
+    KibitzerEnvelopeInput, KibitzerSidecarCandidate, KibitzerSidecarDigest,
+};
 use crate::kibitzer_prompt_blocks::KIBITZER_FIELD_CAPS;
 use crate::kibitzer_sidecar_core::{Payload, SidecarCore};
 use crate::kibitzer_sidecar_outcome::KibitzerCursorSpan;
@@ -84,7 +88,12 @@ pub fn merge(parts: &[Payload]) -> Payload {
         (Some(first), Some(last)) => Some(KibitzerCursorSpan { first, last }),
         _ => None,
     };
-    Payload { events: by_seq.into_values().collect(), digest, candidates, cursors }
+    Payload {
+        events: by_seq.into_values().collect(),
+        digest,
+        candidates,
+        cursors,
+    }
 }
 
 /// envelopeInput's digest map: the events batch fold onto the prompt's digest shape. The line, the
@@ -102,7 +111,10 @@ pub fn sidecar_digest(digest: &KibitzerEventDigest) -> KibitzerSidecarDigest {
 /// envelopeInput's cursor-span map: the batch span onto the outcome's cursor span. Kept for the
 /// payload carrier; the prompt input derives its own span from the events and the digest.
 pub fn sidecar_cursor_span(cursors: &KibitzerEventBatchCursors) -> KibitzerCursorSpan {
-    KibitzerCursorSpan { first: cursors.first, last: cursors.last }
+    KibitzerCursorSpan {
+        first: cursors.first,
+        last: cursors.last,
+    }
 }
 
 /// Shapes a payload's candidates for the prompt renderer. Upstream hands RecallCandidate through by
@@ -158,10 +170,24 @@ impl KibitzerEnvelopeAdapter {
 /// session id, the tool budget and the task summary; with_task gates the summary (the seed carries
 /// it, a wake usually does not). The payload's own cursor span is not read: the prompt derives its
 /// span from the events and the digest.
-pub fn envelope_input(core: &SidecarCore, payload: Payload, max_items: usize, with_task: bool) -> KibitzerEnvelopeAdapter {
-    let Payload { events, digest, candidates, .. } = payload;
+pub fn envelope_input(
+    core: &SidecarCore,
+    payload: Payload,
+    max_items: usize,
+    with_task: bool,
+) -> KibitzerEnvelopeAdapter {
+    let Payload {
+        events,
+        digest,
+        candidates,
+        ..
+    } = payload;
     let task_summary = if with_task {
-        core.record.lock().unwrap_or_else(PoisonError::into_inner).task_summary.clone()
+        core.record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .task_summary
+            .clone()
     } else {
         None
     };
@@ -192,12 +218,32 @@ mod tests {
         }
     }
 
-    fn batch(events: Vec<KibitzerEvent>, digest: Option<KibitzerEventDigest>, cursors: Option<KibitzerEventBatchCursors>) -> KibitzerEventBatch {
-        KibitzerEventBatch { events, digest, cursors }
+    fn batch(
+        events: Vec<KibitzerEvent>,
+        digest: Option<KibitzerEventDigest>,
+        cursors: Option<KibitzerEventBatchCursors>,
+    ) -> KibitzerEventBatch {
+        KibitzerEventBatch {
+            events,
+            digest,
+            cursors,
+        }
     }
 
-    fn event_digest(line: &str, first_cursor: usize, last_cursor: usize, count: usize) -> KibitzerEventDigest {
-        KibitzerEventDigest { count, first_seq: 1, last_seq: count, first_cursor, last_cursor, line: line.to_string() }
+    fn event_digest(
+        line: &str,
+        first_cursor: usize,
+        last_cursor: usize,
+        count: usize,
+    ) -> KibitzerEventDigest {
+        KibitzerEventDigest {
+            count,
+            first_seq: 1,
+            last_seq: count,
+            first_cursor,
+            last_cursor,
+            line: line.to_string(),
+        }
     }
 
     fn candidate(path: &str, score: f64) -> RecallCandidate {
@@ -212,38 +258,93 @@ mod tests {
     #[test]
     fn given_duplicate_and_out_of_order_seqs_when_merged_then_last_wins_and_events_sort_by_seq() {
         let carried = payload_of(
-            batch(vec![event(5, 50, "assistant", "carried-5"), event(2, 20, "prompt", "carried-2")], None, None),
+            batch(
+                vec![
+                    event(5, 50, "assistant", "carried-5"),
+                    event(2, 20, "prompt", "carried-2"),
+                ],
+                None,
+                None,
+            ),
             vec![],
         );
         let fresh = payload_of(
-            batch(vec![event(2, 22, "prompt", "fresh-2"), event(9, 90, "assistant", "fresh-9")], None, None),
+            batch(
+                vec![
+                    event(2, 22, "prompt", "fresh-2"),
+                    event(9, 90, "assistant", "fresh-9"),
+                ],
+                None,
+                None,
+            ),
             vec![],
         );
         let merged = merge(&[carried, fresh]);
         let seqs: Vec<usize> = merged.events.iter().map(|event| event.seq).collect();
         assert_eq!(seqs, vec![2, 5, 9], "events sort numerically by seq");
-        let duplicate = merged.events.iter().find(|event| event.seq == 2).expect("seq 2 present");
-        assert_eq!(duplicate.body, "fresh-2", "the last value for a duplicate seq wins");
+        let duplicate = merged
+            .events
+            .iter()
+            .find(|event| event.seq == 2)
+            .expect("seq 2 present");
+        assert_eq!(
+            duplicate.body, "fresh-2",
+            "the last value for a duplicate seq wins"
+        );
         assert_eq!(duplicate.cursor, 22);
     }
 
     #[test]
     fn given_duplicate_candidate_paths_when_merged_then_first_value_wins_and_order_is_kept() {
-        let carried = payload_of(batch(vec![], None, None), vec![candidate("a.md", 0.1), candidate("b.md", 0.2)]);
-        let fresh = payload_of(batch(vec![], None, None), vec![candidate("a.md", 0.9), candidate("c.md", 0.3)]);
+        let carried = payload_of(
+            batch(vec![], None, None),
+            vec![candidate("a.md", 0.1), candidate("b.md", 0.2)],
+        );
+        let fresh = payload_of(
+            batch(vec![], None, None),
+            vec![candidate("a.md", 0.9), candidate("c.md", 0.3)],
+        );
         let merged = merge(&[carried, fresh]);
-        let paths: Vec<&str> = merged.candidates.iter().map(|candidate| candidate.path.as_str()).collect();
-        assert_eq!(paths, vec!["a.md", "b.md", "c.md"], "first-sight order, no duplicate path");
-        assert_eq!(merged.candidates[0].score, 0.1, "the first candidate for a path wins");
+        let paths: Vec<&str> = merged
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["a.md", "b.md", "c.md"],
+            "first-sight order, no duplicate path"
+        );
+        assert_eq!(
+            merged.candidates[0].score, 0.1,
+            "the first candidate for a path wins"
+        );
         assert_eq!(merged.candidates[0].description, "a.md description");
     }
 
     #[test]
     fn given_multiple_digests_and_spans_when_merged_then_first_digest_wins_and_span_widens() {
-        let one = payload_of(batch(vec![], Some(event_digest("first", 1, 5, 4)), Some(KibitzerEventBatchCursors { first: 4, last: 10 })), vec![]);
-        let two = payload_of(batch(vec![], Some(event_digest("second", 2, 9, 7)), Some(KibitzerEventBatchCursors { first: 1, last: 7 })), vec![]);
+        let one = payload_of(
+            batch(
+                vec![],
+                Some(event_digest("first", 1, 5, 4)),
+                Some(KibitzerEventBatchCursors { first: 4, last: 10 }),
+            ),
+            vec![],
+        );
+        let two = payload_of(
+            batch(
+                vec![],
+                Some(event_digest("second", 2, 9, 7)),
+                Some(KibitzerEventBatchCursors { first: 1, last: 7 }),
+            ),
+            vec![],
+        );
         let merged = merge(&[one, two]);
-        assert_eq!(merged.digest.as_ref().map(|digest| digest.text.as_str()), Some("first"));
+        assert_eq!(
+            merged.digest.as_ref().map(|digest| digest.text.as_str()),
+            Some("first")
+        );
         let span = merged.cursors.expect("a widened span");
         assert_eq!(span.first, 1, "the minimum first");
         assert_eq!(span.last, 10, "the maximum last");
@@ -259,15 +360,23 @@ mod tests {
     }
 
     #[test]
-    fn given_a_batch_when_payload_of_then_absent_options_stay_absent_and_present_ones_map_through() {
-        let absent = payload_of(batch(vec![event(1, 3, "prompt", "hello")], None, None), vec![candidate("notes/a.md", 0.5)]);
+    fn given_a_batch_when_payload_of_then_absent_options_stay_absent_and_present_ones_map_through()
+    {
+        let absent = payload_of(
+            batch(vec![event(1, 3, "prompt", "hello")], None, None),
+            vec![candidate("notes/a.md", 0.5)],
+        );
         assert_eq!(absent.events.len(), 1);
         assert_eq!(absent.candidates.len(), 1);
         assert!(absent.digest.is_none());
         assert!(absent.cursors.is_none());
 
         let present = payload_of(
-            batch(vec![event(2, 8, "assistant", "body")], Some(event_digest("fold line", 4, 30, 7)), Some(KibitzerEventBatchCursors { first: 4, last: 30 })),
+            batch(
+                vec![event(2, 8, "assistant", "body")],
+                Some(event_digest("fold line", 4, 30, 7)),
+                Some(KibitzerEventBatchCursors { first: 4, last: 30 }),
+            ),
             vec![],
         );
         let digest = present.digest.expect("a mapped digest");
@@ -281,18 +390,39 @@ mod tests {
     }
 
     #[test]
-    fn given_carried_and_fresh_payloads_when_merged_then_the_passed_inputs_are_unchanged_and_outcomes_are_ordered() {
+    fn given_carried_and_fresh_payloads_when_merged_then_the_passed_inputs_are_unchanged_and_outcomes_are_ordered()
+     {
         let parts = vec![
-            payload_of(batch(vec![event(1, 10, "prompt", "carried")], None, None), vec![candidate("a.md", 0.1)]),
-            payload_of(batch(vec![event(2, 20, "assistant", "fresh")], None, None), vec![candidate("b.md", 0.2)]),
+            payload_of(
+                batch(vec![event(1, 10, "prompt", "carried")], None, None),
+                vec![candidate("a.md", 0.1)],
+            ),
+            payload_of(
+                batch(vec![event(2, 20, "assistant", "fresh")], None, None),
+                vec![candidate("b.md", 0.2)],
+            ),
         ];
         let before = parts.clone();
         let merged = merge(&parts);
-        assert_eq!(parts, before, "merge must not mutate the payloads it was passed");
+        assert_eq!(
+            parts, before,
+            "merge must not mutate the payloads it was passed"
+        );
         let seqs: Vec<usize> = merged.events.iter().map(|event| event.seq).collect();
         assert_eq!(seqs, vec![1, 2], "merged events keep ascending seq order");
-        let paths: Vec<&str> = merged.candidates.iter().map(|candidate| candidate.path.as_str()).collect();
-        assert_eq!(paths, vec!["a.md", "b.md"], "merged candidates keep first-sight order");
-        assert_eq!(merged.candidates[0].score, 0.1, "the carried candidate's value is kept");
+        let paths: Vec<&str> = merged
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["a.md", "b.md"],
+            "merged candidates keep first-sight order"
+        );
+        assert_eq!(
+            merged.candidates[0].score, 0.1,
+            "the carried candidate's value is kept"
+        );
     }
 }

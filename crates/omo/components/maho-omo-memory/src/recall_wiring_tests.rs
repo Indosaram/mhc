@@ -15,33 +15,54 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::Poll;
 
-use memory_core::identity::layout::build_identity_paths;
 use memory_core::git::GitCommitAuthor;
+use memory_core::identity::layout::build_identity_paths;
 use memory_core::recall::{RecallCandidate, RecallNudge};
 
 use crate::binding::MemorySessionBinding;
-use crate::kibitzer_child::{JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnFuture, KibitzerChildSpawnInput};
+use crate::kibitzer_child::{
+    JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnFuture,
+    KibitzerChildSpawnInput,
+};
 use crate::kibitzer_contract::{KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState};
 use crate::kibitzer_delivery::{KibitzerCoordinatorEntry, KibitzerPendingPort};
-use crate::recall_drain::PendingNudgesPort;
 use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
 use crate::kibitzer_sidecar_admission::{BlockingAcquire, BlockingAcquireFuture};
+use crate::recall_drain::PendingNudgesPort;
 
 /// The session every case binds.
 const SESSION: &str = "s1";
 
-fn tool_call_offer_harness() -> (Arc<MemoryRecallWiring>, MemoryIdentityContext, Arc<ManualSpawn>, tempfile::TempDir) {
+fn tool_call_offer_harness() -> (
+    Arc<MemoryRecallWiring>,
+    MemoryIdentityContext,
+    Arc<ManualSpawn>,
+    tempfile::TempDir,
+) {
     let (mut wiring, context, _child, root) = capture_harness(None);
     let repo = GitMemoryRepo::open(context.identity_paths.repo.clone(), "agent").unwrap();
     repo.init(None).unwrap();
     let notes = context.identity_paths.repo.join("notes");
     std::fs::create_dir_all(&notes).unwrap();
     std::fs::write(notes.join("qa.md"), "---\ndescription: deploy gate\n---\nThe note records the canary rollback gate and the release order.\n").unwrap();
-    repo.commit_write(&["notes/qa.md"], "fixture corpus", &GitCommitAuthor { agent_id: "agent".into(), author_name: "agent".into(), author_email: None }).unwrap();
+    repo.commit_write(
+        &["notes/qa.md"],
+        "fixture corpus",
+        &GitCommitAuthor {
+            agent_id: "agent".into(),
+            author_name: "agent".into(),
+            author_email: None,
+        },
+    )
+    .unwrap();
     let repo_directory = context.identity_paths.repo.clone();
     let spawn = Arc::new(ManualSpawn::default());
-    let options = &mut Arc::get_mut(&mut wiring).expect("fixture wiring is unshared").options;
-    options.create_repo = Arc::new(move |_identity| GitMemoryRepo::open(repo_directory.clone(), "agent").map_err(|error| error.to_string()));
+    let options = &mut Arc::get_mut(&mut wiring)
+        .expect("fixture wiring is unshared")
+        .options;
+    options.create_repo = Arc::new(move |_identity| {
+        GitMemoryRepo::open(repo_directory.clone(), "agent").map_err(|error| error.to_string())
+    });
     options.spawn = spawn.spawner();
     (wiring, context, spawn, root)
 }
@@ -52,7 +73,17 @@ fn matching_tool_call_offers_without_a_prompt_candidate() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
     assert_eq!(spawn.queued(), 0);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    wiring.on_tool_call(
+        SESSION,
+        "call-1",
+        "grep",
+        &serde_json::json!({ "pattern": "canary rollback gate" }),
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+    );
     assert_eq!(spawn.queued(), 1);
 }
 
@@ -62,7 +93,17 @@ fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_session_shutdown(SESSION);
     assert_eq!(spawn.queued(), 1);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    wiring.on_tool_call(
+        SESSION,
+        "call-1",
+        "grep",
+        &serde_json::json!({ "pattern": "canary rollback gate" }),
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+    );
     assert_eq!(spawn.queued(), 1);
 }
 
@@ -73,12 +114,27 @@ fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn
     let resolves = Arc::new(AtomicUsize::new(0));
     {
         let (disabled, resolves) = (Arc::clone(&disabled), Arc::clone(&resolves));
-        Arc::get_mut(&mut wiring).expect("fixture wiring is unshared").options.resolve_settings = Arc::new(move || {
+        Arc::get_mut(&mut wiring)
+            .expect("fixture wiring is unshared")
+            .options
+            .resolve_settings = Arc::new(move || {
             resolves.fetch_add(1, Ordering::SeqCst);
             Ok(serde_json::json!({ "recall": { "enabled": !disabled.load(Ordering::SeqCst) } }))
         });
     }
-    let call = |wiring: &MemoryRecallWiring| wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    let call = |wiring: &MemoryRecallWiring| {
+        wiring.on_tool_call(
+            SESSION,
+            "call-1",
+            "grep",
+            &serde_json::json!({ "pattern": "canary rollback gate" }),
+            &BranchTail {
+                len: 0,
+                entries: &[],
+                summary: &[],
+            },
+        )
+    };
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     // A tool hook with no turn-cached value resolves fresh.
     call(&wiring);
@@ -111,7 +167,9 @@ fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
 fn poll_ready_once<F: Future + ?Sized>(mut future: Pin<Box<F>>) -> F::Output {
     match poll_once(future.as_mut()) {
         Poll::Ready(value) => value,
-        Poll::Pending => panic!("a shutdown-lifecycle future must resolve on the FIRST poll; Pending is a defect"),
+        Poll::Pending => panic!(
+            "a shutdown-lifecycle future must resolve on the FIRST poll; Pending is a defect"
+        ),
     }
 }
 
@@ -124,16 +182,29 @@ struct ManualSpawn {
 impl ManualSpawn {
     fn spawner(self: &Arc<Self>) -> KibitzerWakeSpawn {
         let me = Arc::clone(self);
-        Arc::new(move |future| me.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(future))
+        Arc::new(move |future| {
+            me.queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(future)
+        })
     }
 
     fn queued(&self) -> usize {
-        self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     fn drain(&self) {
         loop {
-            let next = { self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop() };
+            let next = {
+                self.queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop()
+            };
             match next {
                 Some(future) => {
                     poll_ready_once(future);
@@ -161,21 +232,39 @@ impl KibitzerChildSpawner for CountingSpawner {
 struct StubChild;
 
 impl KibitzerChild for StubChild {
-    fn steer<'a>(&'a self, _text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+    fn steer<'a>(
+        &'a self,
+        _text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
-    fn follow_up<'a>(&'a self, _text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+    fn follow_up<'a>(
+        &'a self,
+        _text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
     fn abort(&self) {}
-    fn subscribe_nudges(&self, _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    fn subscribe_nudges(
+        &self,
+        _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send> {
         Box::new(|| {})
     }
-    fn subscribe_observations(&self, _listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    fn subscribe_observations(
+        &self,
+        _listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send> {
         Box::new(|| {})
     }
     fn settle(&self) -> Pin<Box<dyn Future<Output = JudgeSettle> + Send>> {
-        Box::pin(async { JudgeSettle { completed: true, cancelled: false, failure_message: None } })
+        Box::pin(async {
+            JudgeSettle {
+                completed: true,
+                cancelled: false,
+                failure_message: None,
+            }
+        })
     }
     fn dispose<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
@@ -231,7 +320,10 @@ struct RecordingCoordinator {
 
 impl KibitzerIdleCoordinator for RecordingCoordinator {
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
-        self.enqueued.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(entry.key);
+        self.enqueued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(entry.key);
         true
     }
     fn remove(&self, key: &str) {
@@ -242,7 +334,10 @@ impl KibitzerIdleCoordinator for RecordingCoordinator {
             .as_ref()
             .map(|sidecar| sidecar.state())
             .unwrap_or(KibitzerSidecarState::Idle);
-        self.removed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((key.to_string(), observed));
+        self.removed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((key.to_string(), observed));
     }
 }
 
@@ -263,27 +358,49 @@ fn harness(resolve_available: bool, with_coordinator: bool) -> Harness {
     let context = MemoryIdentityContext::new(
         "agent".to_string(),
         paths,
-        MemorySessionBinding { identity: "agent".to_string(), repo_path_hash: "fixture".to_string(), bound_at: 0.0 },
+        MemorySessionBinding {
+            identity: "agent".to_string(),
+            repo_path_hash: "fixture".to_string(),
+            bound_at: 0.0,
+        },
     );
     let spawner = Arc::new(CountingSpawner::default());
     let spawn = Arc::new(ManualSpawn::default());
-    let coordinator = if with_coordinator { Some(Arc::new(RecordingCoordinator::default())) } else { None };
+    let coordinator = if with_coordinator {
+        Some(Arc::new(RecordingCoordinator::default()))
+    } else {
+        None
+    };
     let registry = KibitzerSessionResourceRegistry::new();
     let ledger_directory = context.identity_paths.recall_ledger.clone();
     let resolve_context = {
         let context = context.clone();
-        Arc::new(move |_session_id: &str| if resolve_available { Some(context.clone()) } else { None })
+        Arc::new(move |_session_id: &str| {
+            if resolve_available {
+                Some(context.clone())
+            } else {
+                None
+            }
+        })
     };
     let options = MemoryRecallWiringOptions {
         resolve_context,
         resolve_settings: Arc::new(|| Ok(Value::Null)),
         env: Arc::new(|_name: &str| None),
-        create_repo: Arc::new(|_identity: &MemoryIdentityContext| -> Result<GitMemoryRepo, String> {
-            panic!("create_repo must not run in the shutdown lifecycle unit")
+        create_repo: Arc::new(
+            |_identity: &MemoryIdentityContext| -> Result<GitMemoryRepo, String> {
+                panic!("create_repo must not run in the shutdown lifecycle unit")
+            },
+        ),
+        ledger_for: Arc::new(move |_identity: &MemoryIdentityContext| {
+            RecallLedger::new(ledger_directory.clone())
         }),
-        ledger_for: Arc::new(move |_identity: &MemoryIdentityContext| RecallLedger::new(ledger_directory.clone())),
-        pending_for: Arc::new(|_identity: &MemoryIdentityContext| Arc::new(InertPending) as Arc<dyn KibitzerPendingPort>),
-        coordinator: coordinator.clone().map(|coordinator| coordinator as Arc<dyn KibitzerIdleCoordinator>),
+        pending_for: Arc::new(|_identity: &MemoryIdentityContext| {
+            Arc::new(InertPending) as Arc<dyn KibitzerPendingPort>
+        }),
+        coordinator: coordinator
+            .clone()
+            .map(|coordinator| coordinator as Arc<dyn KibitzerIdleCoordinator>),
         send_message: Arc::new(|_message: KibitzerSteerMessage| Ok(())),
         append_entry: Arc::new(|_kind: &str, _data: Value| {}),
         spawn: spawn.spawner(),
@@ -299,15 +416,29 @@ fn harness(resolve_available: bool, with_coordinator: bool) -> Harness {
         max_concurrent_wakes: Some(2),
         sidecar_max_tokens: None,
         drain_resolve_settings: Arc::new(|| Value::Null),
-        drain_pending_for: Arc::new(|_identity: &MemoryIdentityContext| Arc::new(InertPendingTake) as Arc<dyn PendingNudgesPort>),
+        drain_pending_for: Arc::new(|_identity: &MemoryIdentityContext| {
+            Arc::new(InertPendingTake) as Arc<dyn PendingNudgesPort>
+        }),
         drain_queued: None,
     };
-    Harness { wiring: MemoryRecallWiring::new(options), spawner, spawn, coordinator, context, _root: root }
+    Harness {
+        wiring: MemoryRecallWiring::new(options),
+        spawner,
+        spawn,
+        coordinator,
+        context,
+        _root: root,
+    }
 }
 
 fn offer_input(path: &str) -> KibitzerOfferInput {
     KibitzerOfferInput {
-        candidates: vec![RecallCandidate { path: path.to_string(), description: String::new(), excerpt: String::new(), score: 1.0 }],
+        candidates: vec![RecallCandidate {
+            path: path.to_string(),
+            description: String::new(),
+            excerpt: String::new(),
+            score: 1.0,
+        }],
         surfaced: BTreeSet::new(),
         max_items: 2,
         task_summary: None,
@@ -315,27 +446,58 @@ fn offer_input(path: &str) -> KibitzerOfferInput {
 }
 
 fn sidecar_removed(harness: &Harness) -> bool {
-    harness.wiring.sidecars.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(SESSION).is_none()
+    harness
+        .wiring
+        .sidecars
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(SESSION)
+        .is_none()
 }
 
 #[test]
-fn given_a_resident_sidecar_when_shutdown_is_requested_then_a_late_offer_is_buffered_disposed_without_spawning() {
+fn given_a_resident_sidecar_when_shutdown_is_requested_then_a_late_offer_is_buffered_disposed_without_spawning()
+ {
     let harness = harness(true, false);
     let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
-    assert_eq!(harness.spawner.calls.load(Ordering::SeqCst), 0, "lazy construction creates no child");
+    assert_eq!(
+        harness.spawner.calls.load(Ordering::SeqCst),
+        0,
+        "lazy construction creates no child"
+    );
 
     harness.wiring.on_session_shutdown(SESSION);
 
-    assert_eq!(harness.spawn.queued(), 1, "the async cleanup is queued, never run inline");
-    assert!(sidecar_removed(&harness), "the synchronous half leaves the map immediately");
+    assert_eq!(
+        harness.spawn.queued(),
+        1,
+        "the async cleanup is queued, never run inline"
+    );
+    assert!(
+        sidecar_removed(&harness),
+        "the synchronous half leaves the map immediately"
+    );
 
     // A FRESH candidate offered after the synchronous shutdown returned but BEFORE the queue drains.
     let offered = poll_ready_once(Box::pin(sidecar.offer(offer_input("fresh.md"))));
-    assert_eq!(offered, Ok(KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Disposed }));
-    assert_eq!(harness.spawner.calls.load(Ordering::SeqCst), 0, "a closing sidecar spawns no child");
+    assert_eq!(
+        offered,
+        Ok(KibitzerOfferResult::Buffered {
+            reason: KibitzerBufferedReason::Disposed
+        })
+    );
+    assert_eq!(
+        harness.spawner.calls.load(Ordering::SeqCst),
+        0,
+        "a closing sidecar spawns no child"
+    );
 
     harness.spawn.drain();
-    assert_eq!(sidecar.state(), KibitzerSidecarState::Disposed, "draining completes the terminal transition");
+    assert_eq!(
+        sidecar.state(),
+        KibitzerSidecarState::Disposed,
+        "draining completes the terminal transition"
+    );
 }
 
 #[test]
@@ -346,26 +508,69 @@ fn given_the_context_is_no_longer_resolvable_when_shutdown_fires_then_the_cleanu
     harness.wiring.on_session_shutdown(SESSION);
     harness.spawn.drain();
 
-    assert_eq!(sidecar.state(), KibitzerSidecarState::Disposed, "cleanup does not consult the (absent) context");
+    assert_eq!(
+        sidecar.state(),
+        KibitzerSidecarState::Disposed,
+        "cleanup does not consult the (absent) context"
+    );
 }
 
 #[test]
-fn given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_the_sidecar_is_disposed() {
+fn given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_the_sidecar_is_disposed()
+ {
     let harness = harness(true, true);
     let sidecar = harness.wiring.sidecar_for(SESSION, &harness.context);
     let coordinator = Arc::clone(harness.coordinator.as_ref().unwrap());
-    *coordinator.sidecar.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&sidecar));
+    *coordinator
+        .sidecar
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&sidecar));
 
-    harness.wiring.delivery().accept(SESSION, &harness.context, &[RecallNudge { path: "held.md".to_string(), hint: "held".to_string(), source: None }]);
-    assert_eq!(coordinator.enqueued.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "the nudge is held on the coordinator");
+    harness.wiring.delivery().accept(
+        SESSION,
+        &harness.context,
+        &[RecallNudge {
+            path: "held.md".to_string(),
+            hint: "held".to_string(),
+            source: None,
+        }],
+    );
+    assert_eq!(
+        coordinator
+            .enqueued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len(),
+        1,
+        "the nudge is held on the coordinator"
+    );
 
     harness.wiring.on_session_shutdown(SESSION);
-    assert!(coordinator.removed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(), "delivery is NOT retracted synchronously");
+    assert!(
+        coordinator
+            .removed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "delivery is NOT retracted synchronously"
+    );
 
     harness.spawn.drain();
-    let removed = coordinator.removed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    assert_eq!(removed.len(), 1, "delivery retraction ran inside the scheduled cleanup");
-    assert_eq!(removed[0].1, KibitzerSidecarState::Disposed, "the sidecar was already Disposed when delivery retracted");
+    let removed = coordinator
+        .removed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        removed.len(),
+        1,
+        "delivery retraction ran inside the scheduled cleanup"
+    );
+    assert_eq!(
+        removed[0].1,
+        KibitzerSidecarState::Disposed,
+        "the sidecar was already Disposed when delivery retracted"
+    );
 }
 
 #[test]
@@ -379,10 +584,27 @@ fn given_a_shut_down_session_when_a_tool_hook_fires_then_no_sidecar_is_resurrect
     harness.wiring.on_session_shutdown(SESSION);
     harness.spawn.drain();
 
-    harness.wiring.on_tool_call(SESSION, "call-1", "read", &serde_json::json!({ "file_path": "x.md" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    harness.wiring.on_tool_call(
+        SESSION,
+        "call-1",
+        "read",
+        &serde_json::json!({ "file_path": "x.md" }),
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+    );
 
-    assert!(sidecar_removed(&harness), "a late tool hook never re-creates a terminal sidecar");
-    assert_eq!(sidecar.event_size(), captured_before, "the disposed sidecar captured nothing");
+    assert!(
+        sidecar_removed(&harness),
+        "a late tool hook never re-creates a terminal sidecar"
+    );
+    assert_eq!(
+        sidecar.event_size(),
+        captured_before,
+        "the disposed sidecar captured nothing"
+    );
 }
 
 /// A child that records every prompt the sidecar sends it, so a capture test can read the RENDERED
@@ -393,28 +615,57 @@ struct CapturingChild {
 
 impl CapturingChild {
     fn last_prompt(&self) -> String {
-        self.prompts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned().unwrap_or_default()
+        self.prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
 impl KibitzerChild for CapturingChild {
-    fn steer<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
-        self.prompts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(text.to_string());
+    fn steer<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        self.prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(text.to_string());
         Box::pin(async { Ok(()) })
     }
-    fn follow_up<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
-        self.prompts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(text.to_string());
+    fn follow_up<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        self.prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(text.to_string());
         Box::pin(async { Ok(()) })
     }
     fn abort(&self) {}
-    fn subscribe_nudges(&self, _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    fn subscribe_nudges(
+        &self,
+        _listener: Arc<dyn Fn(RecallNudge) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send> {
         Box::new(|| {})
     }
-    fn subscribe_observations(&self, _listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    fn subscribe_observations(
+        &self,
+        _listener: Arc<dyn Fn(KibitzerChildObservation) + Send + Sync>,
+    ) -> Box<dyn FnOnce() + Send> {
         Box::new(|| {})
     }
     fn settle(&self) -> Pin<Box<dyn Future<Output = JudgeSettle> + Send>> {
-        Box::pin(async { JudgeSettle { completed: true, cancelled: false, failure_message: None } })
+        Box::pin(async {
+            JudgeSettle {
+                completed: true,
+                cancelled: false,
+                failure_message: None,
+            }
+        })
     }
     fn dispose<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
@@ -446,17 +697,32 @@ impl KibitzerBlockingExecutor for RealTaskExecutor {
 /// Builds a wiring whose sidecar can complete a real `offer` -> `seed` (a real wake-slot lease, a
 /// capturing child) so the RENDERED seed prompt is observable. `create_repo` fails, so the prompt
 /// hook's candidate collection returns `None` and no offer is auto-scheduled.
-fn capture_harness(event_caps: Option<KibitzerEventCaps>) -> (Arc<MemoryRecallWiring>, MemoryIdentityContext, Arc<CapturingChild>, tempfile::TempDir) {
+fn capture_harness(
+    event_caps: Option<KibitzerEventCaps>,
+) -> (
+    Arc<MemoryRecallWiring>,
+    MemoryIdentityContext,
+    Arc<CapturingChild>,
+    tempfile::TempDir,
+) {
     let root = tempfile::tempdir().unwrap();
     let paths = build_identity_paths(root.path(), "agent");
     std::fs::create_dir_all(&paths.locks).unwrap();
     let context = MemoryIdentityContext::new(
         "agent".to_string(),
         paths,
-        MemorySessionBinding { identity: "agent".to_string(), repo_path_hash: "fixture".to_string(), bound_at: 0.0 },
+        MemorySessionBinding {
+            identity: "agent".to_string(),
+            repo_path_hash: "fixture".to_string(),
+            bound_at: 0.0,
+        },
     );
-    let child = Arc::new(CapturingChild { prompts: Mutex::new(Vec::new()) });
-    let spawner: Arc<dyn KibitzerChildSpawner> = Arc::new(CapturingSpawner { child: Arc::clone(&child) });
+    let child = Arc::new(CapturingChild {
+        prompts: Mutex::new(Vec::new()),
+    });
+    let spawner: Arc<dyn KibitzerChildSpawner> = Arc::new(CapturingSpawner {
+        child: Arc::clone(&child),
+    });
     let spawn = Arc::new(ManualSpawn::default());
     let registry = KibitzerSessionResourceRegistry::new();
     let ledger_directory = context.identity_paths.recall_ledger.clone();
@@ -468,9 +734,17 @@ fn capture_harness(event_caps: Option<KibitzerEventCaps>) -> (Arc<MemoryRecallWi
         resolve_context,
         resolve_settings: Arc::new(|| Ok(Value::Null)),
         env: Arc::new(|_name: &str| None),
-        create_repo: Arc::new(|_identity: &MemoryIdentityContext| -> Result<GitMemoryRepo, String> { Err("fixture: no repo".to_string()) }),
-        ledger_for: Arc::new(move |_identity: &MemoryIdentityContext| RecallLedger::new(ledger_directory.clone())),
-        pending_for: Arc::new(|_identity: &MemoryIdentityContext| Arc::new(InertPending) as Arc<dyn KibitzerPendingPort>),
+        create_repo: Arc::new(
+            |_identity: &MemoryIdentityContext| -> Result<GitMemoryRepo, String> {
+                Err("fixture: no repo".to_string())
+            },
+        ),
+        ledger_for: Arc::new(move |_identity: &MemoryIdentityContext| {
+            RecallLedger::new(ledger_directory.clone())
+        }),
+        pending_for: Arc::new(|_identity: &MemoryIdentityContext| {
+            Arc::new(InertPending) as Arc<dyn KibitzerPendingPort>
+        }),
         coordinator: None,
         send_message: Arc::new(|_message: KibitzerSteerMessage| Ok(())),
         append_entry: Arc::new(|_kind: &str, _data: Value| {}),
@@ -487,7 +761,9 @@ fn capture_harness(event_caps: Option<KibitzerEventCaps>) -> (Arc<MemoryRecallWi
         max_concurrent_wakes: Some(2),
         sidecar_max_tokens: None,
         drain_resolve_settings: Arc::new(|| Value::Null),
-        drain_pending_for: Arc::new(|_identity: &MemoryIdentityContext| Arc::new(InertPendingTake) as Arc<dyn PendingNudgesPort>),
+        drain_pending_for: Arc::new(|_identity: &MemoryIdentityContext| {
+            Arc::new(InertPendingTake) as Arc<dyn PendingNudgesPort>
+        }),
         drain_queued: None,
     };
     (MemoryRecallWiring::new(options), context, child, root)
@@ -497,52 +773,131 @@ fn capture_harness(event_caps: Option<KibitzerEventCaps>) -> (Arc<MemoryRecallWi
 /// on this path is uncontended, so the future resolves on the FIRST poll.
 fn seeded_offer(sidecar: &Arc<KibitzerSidecar>, child: &CapturingChild, path: &str) -> String {
     let offered = poll_ready_once(Box::pin(sidecar.offer(offer_input(path))));
-    assert!(matches!(offered, Ok(KibitzerOfferResult::Seeded { .. })), "the offer must seed: {offered:?}");
+    assert!(
+        matches!(offered, Ok(KibitzerOfferResult::Seeded { .. })),
+        "the offer must seed: {offered:?}"
+    );
     child.last_prompt()
 }
 
 #[test]
-fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_precedes_the_prompt_event() {
+fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_precedes_the_prompt_event()
+ {
     let (wiring, context, child, _root) = capture_harness(None);
-    let entries = vec![serde_json::json!({ "type": "message", "message": { "role": "assistant", "content": "BRANCH-ASSISTANT-MARKER" } })];
+    let entries = vec![
+        serde_json::json!({ "type": "message", "message": { "role": "assistant", "content": "BRANCH-ASSISTANT-MARKER" } }),
+    ];
     wiring.on_before_agent_start(SESSION, "CURRENT-PROMPT-MARKER", &entries);
     let sidecar = wiring.sidecar_for(SESSION, &context);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     let events = &prompt[prompt.find("<events").expect("an events block")..];
-    let assistant = events.find("BRANCH-ASSISTANT-MARKER").expect("the branch assistant event body");
-    let current = events.find("CURRENT-PROMPT-MARKER").expect("the prompt event body");
-    assert!(assistant < current, "the branch assistant event must precede the prompt event: {events}");
-    assert!(events.contains("kind=\"assistant\"") && events.contains("kind=\"prompt\""), "both event kinds are on the wire: {events}");
+    let assistant = events
+        .find("BRANCH-ASSISTANT-MARKER")
+        .expect("the branch assistant event body");
+    let current = events
+        .find("CURRENT-PROMPT-MARKER")
+        .expect("the prompt event body");
+    assert!(
+        assistant < current,
+        "the branch assistant event must precede the prompt event: {events}"
+    );
+    assert!(
+        events.contains("kind=\"assistant\"") && events.contains("kind=\"prompt\""),
+        "both event kinds are on the wire: {events}"
+    );
 }
 
 #[test]
-fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt() {
+fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt()
+ {
     let (wiring, context, child, _root) = capture_harness(None);
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &BranchTail { len: 0, entries: &[], summary: &[] });
-    let gate = crate::kibitzer_delivery::KibitzerToolResultGate { has_pending_messages: false, is_idle: true };
-    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &BranchTail { len: 0, entries: &[], summary: &[] }, &gate);
+    wiring.on_tool_call(
+        SESSION,
+        "call-1",
+        "grep",
+        &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }),
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+    );
+    let gate = crate::kibitzer_delivery::KibitzerToolResultGate {
+        has_pending_messages: false,
+        is_idle: true,
+    };
+    wiring.on_tool_result(
+        SESSION,
+        &KibitzerToolResultEvent {
+            tool_call_id: "call-1",
+            tool_name: "grep",
+            input: &serde_json::json!({}),
+            content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")],
+            is_error: true,
+        },
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+        &gate,
+    );
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
-    assert!(prompt.contains("kind=\"tool_call\"") && prompt.contains("tool=\"grep\""), "the tool_call event: {prompt}");
-    assert!(prompt.contains("<args>") && prompt.contains("TOOL-ARG-MARKER"), "the REAL tool args reach the prompt: {prompt}");
-    assert!(prompt.contains("kind=\"tool_result\"") && prompt.contains("<result>") && prompt.contains("RESULT-BODY-MARKER"), "the REAL tool content reaches the prompt: {prompt}");
+    assert!(
+        prompt.contains("kind=\"tool_call\"") && prompt.contains("tool=\"grep\""),
+        "the tool_call event: {prompt}"
+    );
+    assert!(
+        prompt.contains("<args>") && prompt.contains("TOOL-ARG-MARKER"),
+        "the REAL tool args reach the prompt: {prompt}"
+    );
+    assert!(
+        prompt.contains("kind=\"tool_result\"")
+            && prompt.contains("<result>")
+            && prompt.contains("RESULT-BODY-MARKER"),
+        "the REAL tool content reaches the prompt: {prompt}"
+    );
     // The prompt wire carries no `error` attribute (render_event's contract), so the captured
     // `is_error` flag is stored on the event but never rendered into the envelope.
-    assert!(!prompt.contains("error=\"true\""), "the prompt wire omits the error flag: {prompt}");
+    assert!(
+        !prompt.contains("error=\"true\""),
+        "the prompt wire omits the error flag: {prompt}"
+    );
 }
 
 #[test]
-fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_it_and_the_args_are_truncated() {
-    let caps = KibitzerEventCaps { tool_args: 20, result_head: 20, assistant: 1500, prompt: 4000 };
+fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_it_and_the_args_are_truncated()
+ {
+    let caps = KibitzerEventCaps {
+        tool_args: 20,
+        result_head: 20,
+        assistant: 1500,
+        prompt: 4000,
+    };
     let (wiring, context, child, _root) = capture_harness(Some(caps));
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    wiring.on_tool_call(
+        SESSION,
+        "call-1",
+        "grep",
+        &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }),
+        &BranchTail {
+            len: 0,
+            entries: &[],
+            summary: &[],
+        },
+    );
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
-    assert!(!prompt.contains("TOOL-ARG-MARKER-LONG"), "the tool_args cap must truncate the stored body: {prompt}");
-    assert!(prompt.contains("[+"), "the truncation marker proves the cap reached the stream: {prompt}");
+    assert!(
+        !prompt.contains("TOOL-ARG-MARKER-LONG"),
+        "the tool_args cap must truncate the stored body: {prompt}"
+    );
+    assert!(
+        prompt.contains("[+"),
+        "the truncation marker proves the cap reached the stream: {prompt}"
+    );
 }
-
-

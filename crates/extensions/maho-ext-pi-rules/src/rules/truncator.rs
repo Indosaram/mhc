@@ -42,7 +42,11 @@ fn prefix(body: &str, max_units: usize) -> &str {
 pub fn truncate_rule(body: &str, max_chars: usize, relative_path: &str) -> TruncationResult {
     let original_length = length(body);
     if original_length <= max_chars {
-        return TruncationResult { body: body.into(), truncated: false, original_length };
+        return TruncationResult {
+            body: body.into(),
+            truncated: false,
+            original_length,
+        };
     }
     let suffix = notice(relative_path);
     let available = max_chars.saturating_sub(length(&suffix));
@@ -59,7 +63,11 @@ pub fn truncate_budget(rules: &[BudgetRule], max_result_chars: usize) -> Vec<Bud
     for rule in rules {
         let body_length = length(&rule.body);
         if remaining >= body_length {
-            results.push(BudgetResult { body: rule.body.clone(), relative_path: rule.relative_path.clone(), truncated: false });
+            results.push(BudgetResult {
+                body: rule.body.clone(),
+                relative_path: rule.relative_path.clone(),
+                truncated: false,
+            });
             remaining -= body_length;
             continue;
         }
@@ -70,7 +78,11 @@ pub fn truncate_budget(rules: &[BudgetRule], max_result_chars: usize) -> Vec<Bud
         }
         let body = format!("{}{suffix}", prefix(&rule.body, remaining - suffix_length));
         remaining -= length(&body);
-        results.push(BudgetResult { body, relative_path: rule.relative_path.clone(), truncated: true });
+        results.push(BudgetResult {
+            body,
+            relative_path: rule.relative_path.clone(),
+            truncated: true,
+        });
     }
     results
 }

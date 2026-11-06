@@ -129,7 +129,8 @@ fn given_a_lead_shutdown_request_when_routed_through_task_send_then_request_shut
 }
 
 #[test]
-fn given_a_lead_shutdown_response_approve_when_routed_through_task_send_then_approve_shutdown_is_called() {
+fn given_a_lead_shutdown_response_approve_when_routed_through_task_send_then_approve_shutdown_is_called()
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         approve_shutdown: Some(Box::new(|_, _| Ok(fake_runtime_state()))),
@@ -162,7 +163,7 @@ fn given_a_lead_shutdown_response_approve_when_routed_through_task_send_then_app
 
 #[test]
 fn given_a_shutdown_response_reject_without_a_reason_when_routed_through_task_send_then_it_fails_before_reject_shutdown()
-{
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         reject_shutdown: Some(Box::new(|_, _, _| Ok(fake_runtime_state()))),
@@ -231,7 +232,8 @@ fn given_a_shutdown_response_reject_with_whitespace_reason_when_routed_through_t
 }
 
 #[test]
-fn given_a_lead_shutdown_response_reject_with_a_reason_when_routed_through_task_send_then_reject_shutdown_is_called() {
+fn given_a_lead_shutdown_response_reject_with_a_reason_when_routed_through_task_send_then_reject_shutdown_is_called()
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         reject_shutdown: Some(Box::new(|_, _, _| Ok(fake_runtime_state()))),
@@ -256,7 +258,10 @@ fn given_a_lead_shutdown_response_reject_with_a_reason_when_routed_through_task_
     );
     let calls = service.calls();
     assert_eq!(calls[0].method, "rejectShutdown");
-    assert_eq!(calls[0].args, vec![json!("run-1"), json!("alpha"), json!("still needed")]);
+    assert_eq!(
+        calls[0].args,
+        vec![json!("run-1"), json!("alpha"), json!("still needed")]
+    );
     let text = first_text(&result);
     assert!(text.contains("alpha"));
     assert!(text.contains("run-1"));
@@ -331,7 +336,8 @@ fn given_shutdown_response_reject_hits_missing_team_state_when_routed_through_ta
 }
 
 #[test]
-fn given_a_shutdown_domain_failure_when_routed_through_task_send_then_it_returns_stable_safe_failure_details() {
+fn given_a_shutdown_domain_failure_when_routed_through_task_send_then_it_returns_stable_safe_failure_details()
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         request_shutdown: Some(Box::new(|_, _| {
@@ -366,7 +372,8 @@ fn given_a_shutdown_domain_failure_when_routed_through_task_send_then_it_returns
 }
 
 #[test]
-fn given_an_unexpected_shutdown_service_error_when_routed_through_task_send_then_the_original_exception_propagates() {
+fn given_an_unexpected_shutdown_service_error_when_routed_through_task_send_then_the_original_exception_propagates()
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         request_shutdown: Some(Box::new(|_, _| {
@@ -380,7 +387,9 @@ fn given_an_unexpected_shutdown_service_error_when_routed_through_task_send_then
 
     let outcome = run_task_send(
         &manager,
-        &input(json!({ "to": "alpha", "team_run_id": "run-1", "message": { "type": "shutdown_request" } })),
+        &input(
+            json!({ "to": "alpha", "team_run_id": "run-1", "message": { "type": "shutdown_request" } }),
+        ),
         Some("lead-session"),
         Some(&lead_routing(&service)),
     );
@@ -414,7 +423,8 @@ fn given_structured_message_with_no_team_routing_when_sent_then_it_reports_not_i
 }
 
 #[test]
-fn given_member_scoped_task_send_when_it_sends_a_structured_shutdown_message_then_shutdown_is_lead_only() {
+fn given_member_scoped_task_send_when_it_sends_a_structured_shutdown_message_then_shutdown_is_lead_only()
+ {
     let manager = spy_manager();
     let service = Arc::new(create_fake_team_service(FakeTeamServiceOverrides {
         request_shutdown: Some(Box::new(|_, _| Ok(fake_runtime_state()))),

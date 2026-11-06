@@ -227,7 +227,10 @@ fn mixed_catalog_parses_classifier_without_chat_fields() {
         .expect("mixed catalog entry");
 
     assert_eq!(parsed.model_type(), ModelType::Classifier);
-    for model in CLASSIFIER_MODELS.values().flat_map(|models| models.values()) {
+    for model in CLASSIFIER_MODELS
+        .values()
+        .flat_map(|models| models.values())
+    {
         let value = serde_json::to_value(model).expect("serialize classifier metadata");
         assert!(value.get("reasoning").is_none(), "{}", model.id);
         assert!(value.get("maxTokens").is_none(), "{}", model.id);

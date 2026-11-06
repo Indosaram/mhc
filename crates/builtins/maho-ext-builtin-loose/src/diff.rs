@@ -1,38 +1,76 @@
-#[derive(Clone,Debug, PartialEq, Eq)]
-pub struct FileInfo { pub status: String, pub status_label: String, pub file: String }
-pub fn parse_status(stdout: &str) -> Vec<FileInfo> {
-    stdout.split('\n').filter_map(|line| {
-        if line.encode_utf16().count() < 4 { return None; }
-        let mut chars = line.chars();
-        let status: String = chars.by_ref().take(2).collect();
-        let file = chars.as_str().trim_start().to_owned();
-        let label = ['M','A','D','?','R','C'].into_iter().find(|c| status.contains(*c)).map(|c| c.to_string()).unwrap_or_else(|| {
-            let trimmed = status.trim();
-            if trimmed.is_empty() { "~".into() } else { trimmed.into() }
-        });
-        Some(FileInfo { status: label.clone(), status_label: label, file })
-    }).collect()
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileInfo {
+    pub status: String,
+    pub status_label: String,
+    pub file: String,
 }
-pub fn windows_unsafe_cmd_path(path: &str) -> bool { path.contains(['&','|','<','>','^','%','\r','\n']) }
-pub fn quote_cmd_arg(value: &str) -> String { format!("\"{}\"", value.replace('"', "\"\"")) }
-pub fn windows_code_command_line(path: &str) -> String { format!("code {}", quote_cmd_arg(path)) }
+pub fn parse_status(stdout: &str) -> Vec<FileInfo> {
+    stdout
+        .split('\n')
+        .filter_map(|line| {
+            if line.encode_utf16().count() < 4 {
+                return None;
+            }
+            let mut chars = line.chars();
+            let status: String = chars.by_ref().take(2).collect();
+            let file = chars.as_str().trim_start().to_owned();
+            let label = ['M', 'A', 'D', '?', 'R', 'C']
+                .into_iter()
+                .find(|c| status.contains(*c))
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| {
+                    let trimmed = status.trim();
+                    if trimmed.is_empty() {
+                        "~".into()
+                    } else {
+                        trimmed.into()
+                    }
+                });
+            Some(FileInfo {
+                status: label.clone(),
+                status_label: label,
+                file,
+            })
+        })
+        .collect()
+}
+pub fn windows_unsafe_cmd_path(path: &str) -> bool {
+    path.contains(['&', '|', '<', '>', '^', '%', '\r', '\n'])
+}
+pub fn quote_cmd_arg(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+pub fn windows_code_command_line(path: &str) -> String {
+    format!("code {}", quote_cmd_arg(path))
+}
 
 #[cfg(test)]
 mod open_tests {
     use super::*;
     #[test]
     fn windows_code_open_uses_plain_file_argument() {
-        assert_eq!(windows_code_command_line(r"C:\work\file.rs"), r#"code "C:\work\file.rs""#);
+        assert_eq!(
+            windows_code_command_line(r"C:\work\file.rs"),
+            r#"code "C:\work\file.rs""#
+        );
         assert!(!windows_code_command_line(r"C:\work\file.rs").contains("-g"));
     }
 }
 
 use maho_ext_api::*;
-use std::sync::{Arc,Mutex};
-pub struct Diff{pub render_binding:crate::files::RenderBinding}
-impl Extension for Diff{
-    fn register(&self,api:&mut ExtensionApi){
-        let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));let render_binding=self.render_binding.clone();
+use std::sync::{Arc, Mutex};
+pub struct Diff {
+    pub render_binding: crate::files::RenderBinding,
+}
+impl Extension for Diff {
+    fn register(&self, api: &mut ExtensionApi) {
+        let sender = Arc::new(ExtensionApi::new(
+            api.registered.clone(),
+            api.profile.clone(),
+            api.events.clone(),
+            api.runtime.clone(),
+        ));
+        let render_binding = self.render_binding.clone();
         api.register_command("diff",Some("Show git changes and open in VS Code diff view".into()),None,Arc::new(move|_,ctx|{let sender=sender.clone();let render_binding=render_binding.clone();Box::pin(async move{
             if !ctx.has_ui{ctx.ui.notify("No UI available",NotificationType::Error);return Ok(());}
             let status=sender.exec("git",&["status".into(),"--porcelain".into()],ExecOptions{cwd:Some(ctx.cwd.clone()),..Default::default()}).await?;

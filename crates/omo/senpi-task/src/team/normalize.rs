@@ -52,7 +52,10 @@ fn coerce_string_spec(raw_spec: &Value, team_name: &str) -> Result<Value, SenpiT
 fn wrap_single_member(raw_spec: Value) -> Value {
     match raw_spec {
         Value::Object(mut record) => {
-            if let Some(members) = record.get_mut("members").filter(|members| members.is_object()) {
+            if let Some(members) = record
+                .get_mut("members")
+                .filter(|members| members.is_object())
+            {
                 let single = members.take();
                 *members = Value::Array(vec![single]);
             }
@@ -109,7 +112,10 @@ fn remap_agent_alias_kind(members: Vec<Value>) -> Vec<Value> {
                 .as_object_mut()
                 .filter(|record| record.get("kind").and_then(Value::as_str) == Some("agent"))
             {
-                record.insert("kind".to_string(), Value::String("subagent_type".to_string()));
+                record.insert(
+                    "kind".to_string(),
+                    Value::String("subagent_type".to_string()),
+                );
             }
             member
         })
@@ -123,7 +129,10 @@ fn clamp_member_task_summaries(members: Vec<Value>) -> Vec<Value> {
         .into_iter()
         .map(|mut member| {
             if let Some(record) = member.as_object_mut() {
-                let summary = record.get("task_summary").and_then(Value::as_str).map(str::to_string);
+                let summary = record
+                    .get("task_summary")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 if let Some(summary) = summary {
                     match clamp_task_summary(Some(&summary)) {
                         Some(clamped) => {
@@ -140,7 +149,10 @@ fn clamp_member_task_summaries(members: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
-fn assert_no_reserved_member_name(members: &[Value], team_name: &str) -> Result<(), SenpiTeamSpecError> {
+fn assert_no_reserved_member_name(
+    members: &[Value],
+    team_name: &str,
+) -> Result<(), SenpiTeamSpecError> {
     let reserved = members.iter().any(|member| {
         member
             .as_object()
@@ -177,7 +189,10 @@ pub fn normalize_senpi_team_spec(
     let coerced = wrap_single_member(coerce_string_spec(raw_spec, team_name)?);
     assert_no_raw_lead_field(&coerced, team_name)?;
 
-    let normalized = match normalize_team_spec_input(&coerced, Some(&NormalizeTeamSpecInputOptions::default())) {
+    let normalized = match normalize_team_spec_input(
+        &coerced,
+        Some(&NormalizeTeamSpecInputOptions::default()),
+    ) {
         Ok(Value::Object(normalized)) => normalized,
         Ok(_) => return Err(not_an_object_error(raw_spec, team_name)),
         Err(_) if !coerced.is_object() => return Err(not_an_object_error(raw_spec, team_name)),
@@ -199,13 +214,20 @@ pub fn normalize_senpi_team_spec(
     if pre_normalized.get("name").is_none_or(Value::is_null) {
         pre_normalized.insert("name".to_string(), Value::String(team_name.to_string()));
     }
-    pre_normalized.insert("leadAgentId".to_string(), Value::String(TEAM_LEAD_SENTINEL.to_string()));
+    pre_normalized.insert(
+        "leadAgentId".to_string(),
+        Value::String(TEAM_LEAD_SENTINEL.to_string()),
+    );
 
     TeamSpec::safe_parse(&Value::Object(pre_normalized)).map_err(|issues| {
         let detail = match issues.first() {
             Some(issue) => {
                 let path = issue.path.join(".");
-                let path = if path.is_empty() { "spec".to_string() } else { path };
+                let path = if path.is_empty() {
+                    "spec".to_string()
+                } else {
+                    path
+                };
                 format!("{path}: {}", issue.message)
             }
             None => "Invalid input".to_string(),

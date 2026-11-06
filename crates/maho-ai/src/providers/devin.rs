@@ -2,17 +2,17 @@
 
 use crate::api::devin_agent::discovery::{DevinDiscoveryOptions, fetch_devin_models};
 use crate::api::devin_agent::paths::DEVIN_DEFAULT_BASE_URL;
+use crate::auth::helpers::lazy_oauth;
+use crate::auth::types::ProviderAuth;
 use crate::models::{
-    CreateProviderOptions, Credential, ModelsError, ModelsPublication, Provider, ProviderApi, RefreshModelsContext,
-    create_provider,
+    CreateProviderOptions, Credential, ModelsError, ModelsPublication, Provider, ProviderApi,
+    RefreshModelsContext, create_provider,
 };
 use crate::models_store::ModelsStoreEntry;
-use crate::auth::types::ProviderAuth;
-use crate::auth::helpers::lazy_oauth;
 use crate::providers::builtin_api_streams;
 use crate::types::{
-    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle, Model,
-    ProviderHeaders, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions,
+    DeferredHandle, Model, ProviderHeaders, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::diagnostics::now_ms;
 use indexmap::IndexMap;
@@ -34,7 +34,15 @@ pub fn devin_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError>
         name: Some("Devin".into()),
         base_url: Some(DEVIN_DEFAULT_BASE_URL.to_owned()),
         headers: None,
-        auth: Some(ProviderAuth { api_key: None, oauth: Some(Arc::new(lazy_oauth("Devin", false, Some("Sign in with Devin".into()), || Box::pin(crate::auth::oauth::load::load_devin_oauth())))) }),
+        auth: Some(ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(lazy_oauth(
+                "Devin",
+                false,
+                Some("Sign in with Devin".into()),
+                || Box::pin(crate::auth::oauth::load::load_devin_oauth()),
+            ))),
+        }),
         models: seed.clone(),
         fetch_models: None,
         restore_models: None,
@@ -42,7 +50,11 @@ pub fn devin_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError>
         images: indexmap::IndexMap::new(),
         api: ProviderApi::ByApi(api),
     })?;
-    Ok(Arc::new(DevinProvider { provider, models: Arc::new(RwLock::new(seed)), client: reqwest::Client::new() }))
+    Ok(Arc::new(DevinProvider {
+        provider,
+        models: Arc::new(RwLock::new(seed)),
+        client: reqwest::Client::new(),
+    }))
 }
 
 /// `{ ...provider, getModels, refreshModels }`: the created provider with its catalog replaced.
@@ -55,8 +67,16 @@ struct DevinProvider {
 /// `credential?.type === "oauth" ? credential.access : credential?.key`.
 fn credential_api_key(credential: Option<&Credential>) -> Option<String> {
     let credential = credential?;
-    let field = if credential.get("type").and_then(Value::as_str) == Some("oauth") { "access" } else { "key" };
-    credential.get(field).and_then(Value::as_str).filter(|key| !key.is_empty()).map(str::to_owned)
+    let field = if credential.get("type").and_then(Value::as_str) == Some("oauth") {
+        "access"
+    } else {
+        "key"
+    };
+    credential
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
 }
 
 impl DevinProvider {
@@ -92,14 +112,20 @@ impl Provider for DevinProvider {
     }
 
     fn get_models(&self) -> Vec<Model> {
-        self.models.read().unwrap_or_else(|p| p.into_inner()).clone()
+        self.models
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     fn supports_refresh(&self) -> bool {
         true
     }
 
-    fn refresh_models<'a>(&'a self, context: RefreshModelsContext) -> BoxFuture<'a, Result<(), ModelsError>> {
+    fn refresh_models<'a>(
+        &'a self,
+        context: RefreshModelsContext,
+    ) -> BoxFuture<'a, Result<(), ModelsError>> {
         Box::pin(async move {
             if let Some(stored) = &context.stored {
                 // Restore-path normalization: catalogs persisted before the
@@ -110,18 +136,26 @@ impl Provider for DevinProvider {
                     .models
                     .iter()
                     .filter(|model| model.provider == "devin")
-                    .map(|model| Model { reasoning: false, ..model.clone() })
+                    .map(|model| Model {
+                        reasoning: false,
+                        ..model.clone()
+                    })
                     .collect();
                 if !restored.is_empty() {
                     let _ = context
-                        .publish(ModelsPublication { persist: None, update: Some(self.replace_models(restored)) })
+                        .publish(ModelsPublication {
+                            persist: None,
+                            update: Some(self.replace_models(restored)),
+                        })
                         .await;
                 }
             }
             if !context.allow_network || context.signal.aborted() {
                 return Ok(());
             }
-            let Some(api_key) = credential_api_key(context.credential.as_ref()) else { return Ok(()) };
+            let Some(api_key) = credential_api_key(context.credential.as_ref()) else {
+                return Ok(());
+            };
             let discovered = fetch_devin_models(&DevinDiscoveryOptions {
                 api_key: Some(&api_key),
                 base_url: Some(DEVIN_DEFAULT_BASE_URL),
@@ -130,14 +164,22 @@ impl Provider for DevinProvider {
                 client: &self.client,
             })
             .await;
-            let Some(discovered) = discovered else { return Ok(()) };
+            let Some(discovered) = discovered else {
+                return Ok(());
+            };
             if context.signal.aborted() {
                 return Ok(());
             }
-            let entry =
-                ModelsStoreEntry { models: discovered.clone(), checked_at: Some(now_ms()), ..ModelsStoreEntry::default() };
+            let entry = ModelsStoreEntry {
+                models: discovered.clone(),
+                checked_at: Some(now_ms()),
+                ..ModelsStoreEntry::default()
+            };
             let _ = context
-                .publish(ModelsPublication { persist: Some(Some(entry)), update: Some(self.replace_models(discovered)) })
+                .publish(ModelsPublication {
+                    persist: Some(Some(entry)),
+                    update: Some(self.replace_models(discovered)),
+                })
                 .await;
             Ok(())
         })
@@ -147,7 +189,12 @@ impl Provider for DevinProvider {
         self.provider.filter_models(models, credential)
     }
 
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.provider.stream(model, context, options)
     }
 
@@ -186,7 +233,10 @@ impl Provider for DevinProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, ModelsAuth, ModelsRefreshOptions, create_models};
+    use crate::models::{
+        AuthResolution, AuthResolutionOverrides, CreateModelsOptions, ModelsAuth,
+        ModelsRefreshOptions, create_models,
+    };
     use crate::models_store::{InMemoryModelsStore, ModelsStore};
     use crate::utils::abort::AbortSignal;
 
@@ -213,16 +263,40 @@ mod tests {
 
     #[tokio::test]
     async fn normalizes_stale_stored_catalogs_that_still_advertise_a_thinking_level() {
-        let seed = super::super::devin_models::devin_models().into_iter().next().expect("devin seed");
-        let stale = ModelsStoreEntry { models: vec![Model { reasoning: true, ..seed.clone() }], ..ModelsStoreEntry::default() };
+        let seed = super::super::devin_models::devin_models()
+            .into_iter()
+            .next()
+            .expect("devin seed");
+        let stale = ModelsStoreEntry {
+            models: vec![Model {
+                reasoning: true,
+                ..seed.clone()
+            }],
+            ..ModelsStoreEntry::default()
+        };
         let store: Arc<dyn ModelsStore> = Arc::new(InMemoryModelsStore::new());
-        store.write("devin", &stale, None).await.expect("seed store");
-        let models = create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(Arc::new(StoredOnlyAuth)) }));
+        store
+            .write("devin", &stale, None)
+            .await
+            .expect("seed store");
+        let models = create_models(Some(CreateModelsOptions {
+            models_store: Some(store),
+            auth: Some(Arc::new(StoredOnlyAuth)),
+        }));
         models.set_provider(devin_provider().expect("provider"));
 
-        let result = models.refresh(ModelsRefreshOptions { allow_network: Some(false), ..ModelsRefreshOptions::default() }).await;
+        let result = models
+            .refresh(ModelsRefreshOptions {
+                allow_network: Some(false),
+                ..ModelsRefreshOptions::default()
+            })
+            .await;
         assert!(result.errors.is_empty());
-        let restored: Vec<Model> = models.get_models(Some("devin")).into_iter().filter(|model| model.id == seed.id).collect();
+        let restored: Vec<Model> = models
+            .get_models(Some("devin"))
+            .into_iter()
+            .filter(|model| model.id == seed.id)
+            .collect();
         assert!(!restored.is_empty());
         assert!(restored.iter().all(|model| !model.reasoning));
     }

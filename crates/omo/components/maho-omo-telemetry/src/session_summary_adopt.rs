@@ -47,7 +47,11 @@ pub fn adopt_foreign_window(input: AdoptForeignWindowInput<'_>) -> LiveWindow {
     };
     let record = match claimed.record {
         ReadResult::Value(record)
-            if is_record_sendable(record.consent, record.scope.as_ref(), input.is_scope_consented) =>
+            if is_record_sendable(
+                record.consent,
+                record.scope.as_ref(),
+                input.is_scope_consented,
+            ) =>
         {
             record
         }
@@ -67,7 +71,11 @@ pub fn adopt_foreign_window(input: AdoptForeignWindowInput<'_>) -> LiveWindow {
         fresh(FreshArgs {
             key: Some(input.key.to_string()),
             epoch: Some(epoch.clone()),
-            seq: Some(if published { record.seq + 1 } else { record.seq }),
+            seq: Some(if published {
+                record.seq + 1
+            } else {
+                record.seq
+            }),
         })
     } else {
         LiveWindow {
@@ -148,7 +156,9 @@ mod tests {
     }
 
     fn write_peer_owner(dir: &std::path::Path, pid: u32, boot_id: &str) {
-        let path = dir.join("session-summary/owners").join(format!("{pid}.json"));
+        let path = dir
+            .join("session-summary/owners")
+            .join(format!("{pid}.json"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             path,
@@ -190,7 +200,9 @@ mod tests {
     fn a_dead_owner_window_is_claimed_continued_in_a_new_epoch() {
         let fixture = fixture();
         let storage = fixture.storage.storage.clone();
-        storage.write_window("shared", &record(2, "boot-peer", true)).unwrap();
+        storage
+            .write_window("shared", &record(2, "boot-peer", true))
+            .unwrap();
         let fresh = |args: FreshArgs| LiveWindow {
             key: args.key.unwrap_or_else(|| "shared".to_string()),
             epoch: args.epoch.unwrap_or_else(|| "default-epoch-00".to_string()),
@@ -212,17 +224,28 @@ mod tests {
         });
         assert_eq!(entry.key, "shared");
         assert_eq!(entry.seq, 4);
-        assert_eq!(entry.window_id.as_deref(), Some("01234567-89ab-cdef-0123-456789abcdef"));
+        assert_eq!(
+            entry.window_id.as_deref(),
+            Some("01234567-89ab-cdef-0123-456789abcdef")
+        );
         assert_ne!(entry.epoch, "0123456789abcdef");
         assert_eq!(fixture.persisted.lock().unwrap().len(), 1);
-        assert!(!fixture.dir.path().join("session-summary/shared.json").exists());
+        assert!(
+            !fixture
+                .dir
+                .path()
+                .join("session-summary/shared.json")
+                .exists()
+        );
     }
 
     #[test]
     fn a_published_window_continues_at_the_next_sequence() {
         let fixture = fixture();
         let storage = fixture.storage.storage.clone();
-        storage.write_window("shared", &record(2, "boot-peer", true)).unwrap();
+        storage
+            .write_window("shared", &record(2, "boot-peer", true))
+            .unwrap();
         storage
             .write_pending(&crate::session_summary_store::PendingRecord {
                 consent: RecordConsent::Enabled,
@@ -259,7 +282,9 @@ mod tests {
     fn an_opted_out_or_corrupt_window_starts_fresh_and_the_claim_is_removed() {
         let fixture = fixture();
         let storage = fixture.storage.storage.clone();
-        storage.write_window("shared", &record(2, "boot-peer", true)).unwrap();
+        storage
+            .write_window("shared", &record(2, "boot-peer", true))
+            .unwrap();
         let fresh = |args: FreshArgs| LiveWindow {
             key: args.key.unwrap_or_else(|| "default-key".to_string()),
             epoch: args.epoch.unwrap_or_else(|| "default-epoch-00".to_string()),
@@ -279,7 +304,13 @@ mod tests {
         });
         assert_eq!(entry.key, "default-key");
         assert_eq!(entry.seq, 0);
-        assert!(!fixture.dir.path().join("session-summary/shared.json").exists());
+        assert!(
+            !fixture
+                .dir
+                .path()
+                .join("session-summary/shared.json")
+                .exists()
+        );
         assert!(
             fixture
                 .storage

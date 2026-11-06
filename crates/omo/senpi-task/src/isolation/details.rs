@@ -66,7 +66,11 @@ pub fn isolation_line(details: &IsolationDetails) -> String {
         .patch_path
         .as_ref()
         .map_or(String::new(), |path| format!(" -> {path}"));
-    format!("isolation: {} via {}{target}", details.kind.as_str(), details.backend)
+    format!(
+        "isolation: {} via {}{target}",
+        details.kind.as_str(),
+        details.backend
+    )
 }
 
 /// The `IsolationRecord` of a record, when one exists.

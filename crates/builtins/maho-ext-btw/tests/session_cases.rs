@@ -7,39 +7,67 @@ use serde_json::Value;
 use std::time::Duration;
 
 fn response(content: &str) -> FauxResponse {
-    FauxResponse { content: content.into(), stop_reason: "stop".into() }
+    FauxResponse {
+        content: content.into(),
+        stop_reason: "stop".into(),
+    }
 }
 
 fn script(responses: Vec<FauxResponse>) -> FauxScript {
-    FauxScript { name: "btw-session".into(), prompt: "main".into(), responses }
+    FauxScript {
+        name: "btw-session".into(),
+        prompt: "main".into(),
+        responses,
+    }
 }
 
 fn btw_extension() -> NativeExtensionFactory {
-    NativeExtensionFactory { path: "btw".into(), source_info: SourceInfo::default(), extension: Box::new(maho_ext_btw::Btw::default()) }
+    NativeExtensionFactory {
+        path: "btw".into(),
+        source_info: SourceInfo::default(),
+        extension: Box::new(maho_ext_btw::Btw::default()),
+    }
 }
 
 async fn boot(responses: Vec<FauxResponse>) -> NativeSession {
-    FauxSession::new(script(responses)).with_native_extension(btw_extension()).run_native_handle().await.expect("native session")
+    FauxSession::new(script(responses))
+        .with_native_extension(btw_extension())
+        .run_native_handle()
+        .await
+        .expect("native session")
 }
 
 async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_secs(5), future).await.expect("bounded wait")
+    tokio::time::timeout(Duration::from_secs(5), future)
+        .await
+        .expect("bounded wait")
 }
 
 async fn finish(handle: tokio::task::JoinHandle<Result<(), String>>) {
-    bounded(handle).await.expect("prompt task joined").expect("prompt result");
+    bounded(handle)
+        .await
+        .expect("prompt task joined")
+        .expect("prompt result");
 }
 fn text_of(message: &Message) -> String {
     let value = serde_json::to_value(message).expect("message");
     match &value["content"] {
         Value::String(text) => text.clone(),
-        Value::Array(parts) => parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => String::new(),
     }
 }
 
 fn user_texts(messages: &[Message]) -> Vec<String> {
-    messages.iter().filter(|message| message.role() == "user").map(text_of).collect()
+    messages
+        .iter()
+        .filter(|message| message.role() == "user")
+        .map(text_of)
+        .collect()
 }
 
 #[tokio::test]
@@ -66,7 +94,12 @@ async fn runs_a_side_query_in_parallel_with_an_in_flight_main_turn() {
 
 #[tokio::test]
 async fn snapshots_context_synchronously_so_a_concurrent_turn_cannot_mix_generations() {
-    let session = boot(vec![response("first answer"), response("side answer"), response("second answer")]).await;
+    let session = boot(vec![
+        response("first answer"),
+        response("side answer"),
+        response("second answer"),
+    ])
+    .await;
     finish(session.prompt("first question".into())).await;
 
     let gate = session.hold_next_response();
@@ -77,7 +110,10 @@ async fn snapshots_context_synchronously_so_a_concurrent_turn_cannot_mix_generat
     let side_call = &calls[1];
     assert_eq!(side_call.context.tools.as_ref().map_or(0, Vec::len), 0);
     let snapshot = user_texts(&side_call.context.messages);
-    assert_eq!(snapshot, vec!["first question".to_owned(), "snapshot question".to_owned()]);
+    assert_eq!(
+        snapshot,
+        vec!["first question".to_owned(), "snapshot question".to_owned()]
+    );
 
     let second = session.prompt("second question".into());
     gate.release();

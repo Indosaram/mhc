@@ -72,7 +72,10 @@ pub fn excluded_model_pattern(model: &str, patterns: Option<&[String]>) -> Optio
                 .chain(tails.iter().copied())
                 .any(|subject| expression.is_match(subject))
         } else {
-            tails.iter().copied().any(|subject| expression.is_match(subject))
+            tails
+                .iter()
+                .copied()
+                .any(|subject| expression.is_match(subject))
         };
         if matched {
             return Some(raw.clone());
@@ -123,17 +126,32 @@ mod tests {
     fn a_wildcard_entry_matches_every_build_of_the_family_ignoring_case() {
         let list = patterns(&[family_wildcard("FABLE-5").as_str()]);
         assert!(is_excluded_model("anthropic/fable-5-1", Some(&list)));
-        assert!(is_excluded_model("anthropic-subscription/FABLE-5-1", Some(&list)));
+        assert!(is_excluded_model(
+            "anthropic-subscription/FABLE-5-1",
+            Some(&list)
+        ));
         assert!(!is_excluded_model("anthropic/opus-5-5", Some(&list)));
     }
 
     #[test]
     fn a_gateway_id_that_nests_a_provider_is_matched_on_its_tail() {
         let nested = "openrouter/anthropic/fable-5-1";
-        assert!(is_excluded_model(nested, Some(&patterns(&[family_wildcard("fable-5").as_str()]))));
-        assert!(is_excluded_model(nested, Some(&patterns(&["anthropic/fable-5-1"]))));
-        assert!(is_excluded_model(nested, Some(&patterns(&["openrouter/anthropic/fable-5-1"]))));
-        assert!(!is_excluded_model(nested, Some(&patterns(&["openrouter/"]))));
+        assert!(is_excluded_model(
+            nested,
+            Some(&patterns(&[family_wildcard("fable-5").as_str()]))
+        ));
+        assert!(is_excluded_model(
+            nested,
+            Some(&patterns(&["anthropic/fable-5-1"]))
+        ));
+        assert!(is_excluded_model(
+            nested,
+            Some(&patterns(&["openrouter/anthropic/fable-5-1"]))
+        ));
+        assert!(!is_excluded_model(
+            nested,
+            Some(&patterns(&["openrouter/"]))
+        ));
         assert!(!is_excluded_model(nested, Some(&patterns(&["anthropic"]))));
     }
 
@@ -144,7 +162,10 @@ mod tests {
         assert!(!is_excluded_model("openai/gpt-6x1-sol", Some(&list)));
         assert!(!is_excluded_model("openai/gpt-6.1-sol", None));
         assert_eq!(
-            excluded_model_pattern("openai/gpt-6.1-sol", Some(&patterns(&["gpt-6*", "gpt-6.1-sol"]))),
+            excluded_model_pattern(
+                "openai/gpt-6.1-sol",
+                Some(&patterns(&["gpt-6*", "gpt-6.1-sol"]))
+            ),
             Some("gpt-6*".to_owned())
         );
     }

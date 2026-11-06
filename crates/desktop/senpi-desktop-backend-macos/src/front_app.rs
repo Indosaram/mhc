@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 
-use crate::focus::{WindowInfo, window_info};
+use crate::focus::{window_info, WindowInfo};
 use crate::{launch_services, skylight};
 
 /// The application the user sees in front: LaunchServices' front application

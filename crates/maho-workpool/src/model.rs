@@ -127,7 +127,10 @@ pub struct ItemError {
 
 impl ItemError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.to_owned(), message: message.into() }
+        Self {
+            code: code.to_owned(),
+            message: message.into(),
+        }
     }
 }
 
@@ -321,7 +324,10 @@ pub struct PoolError {
 
 impl PoolError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -345,7 +351,10 @@ pub fn new_item_id() -> String {
 
 fn is_hex_id(id: &str, prefix: &str) -> bool {
     id.strip_prefix(prefix).is_some_and(|rest| {
-        rest.len() == 32 && rest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        rest.len() == 32
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
 
@@ -357,7 +366,10 @@ pub fn validate_pool_id(id: &str) -> Result<(), PoolError> {
     if is_hex_id(id, "wp_") {
         Ok(())
     } else {
-        Err(PoolError::new(codes::INVALID_POOL_ID, format!("malformed pool id {id:?}")))
+        Err(PoolError::new(
+            codes::INVALID_POOL_ID,
+            format!("malformed pool id {id:?}"),
+        ))
     }
 }
 
@@ -370,7 +382,8 @@ pub fn canonical(value: &Value) -> String {
     fn sort(value: &Value) -> Value {
         match value {
             Value::Object(map) => {
-                let sorted: BTreeMap<&String, Value> = map.iter().map(|(k, v)| (k, sort(v))).collect();
+                let sorted: BTreeMap<&String, Value> =
+                    map.iter().map(|(k, v)| (k, sort(v))).collect();
                 Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
             }
             Value::Array(items) => Value::Array(items.iter().map(sort).collect()),

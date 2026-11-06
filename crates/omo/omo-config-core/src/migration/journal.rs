@@ -168,7 +168,11 @@ pub fn parse_journal(value: &Value) -> Result<MigrationJournal, MigrationError> 
     let target_backup_path = match map.get("targetBackupPath") {
         None => None,
         Some(Value::String(path)) => Some(path.clone()),
-        Some(_) => return Err(MigrationError::transaction("Migration journal target backup is invalid")),
+        Some(_) => {
+            return Err(MigrationError::transaction(
+                "Migration journal target backup is invalid",
+            ));
+        }
     };
 
     let backup_moves_val = match map.get("backupMoves").and_then(Value::as_array) {

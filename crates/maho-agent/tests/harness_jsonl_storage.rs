@@ -49,7 +49,8 @@ fn options(file_system: Arc<dyn FileSystem>, path: &str) -> JsonlStorageOptions 
 }
 
 fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
-    Usage { context_usage: None,
+    Usage {
+        context_usage: None,
         input,
         output,
         cache_read,

@@ -534,17 +534,38 @@ pub enum RpcCommandBody {
             skip_serializing_if = "Option::is_none"
         )]
         retain_on_disconnect: Option<bool>,
-        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
         expected_host_instance: Option<Value>,
-        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
         kind: Option<Value>,
-        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
         context: Option<Value>,
-        #[serde(rename = "auto_title", default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "auto_title",
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
         auto_title: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         durable_session_id: Option<String>,
-        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "present_value",
+            skip_serializing_if = "Option::is_none"
+        )]
         attended: Option<Value>,
         /// Where this session's replies render: `terminal`, `app` or `chat` (validated at the router).
         #[serde(skip_serializing_if = "Option::is_none")]

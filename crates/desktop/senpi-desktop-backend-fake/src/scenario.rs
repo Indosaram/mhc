@@ -173,7 +173,10 @@ pub struct FakeBounds {
 #[derive(Debug, thiserror::Error)]
 pub enum ScenarioError {
     #[error("cannot read fake scenario {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("invalid fake scenario: {0}")]
     Parse(serde_json::Error),
     #[error("unknown capability field '{0}' in fake scenario")]
@@ -222,7 +225,8 @@ impl TryFrom<RawScenario> for FakeScenario {
             return Err(ScenarioError::UnknownWindow(unknown.clone()));
         }
         let display_count = u32::try_from(raw.displays.len()).unwrap_or(u32::MAX);
-        let capabilities = overlay_capabilities(fake_capabilities(display_count), raw.capabilities)?;
+        let capabilities =
+            overlay_capabilities(fake_capabilities(display_count), raw.capabilities)?;
         Ok(Self {
             displays: raw.displays,
             windows: raw.windows,

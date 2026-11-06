@@ -15,9 +15,7 @@ use crate::shared::{parse_iso_to_ms, project_work_to_mirror, strip_session_platf
 use crate::storage::read_state::{read_boulder_state, work_docs};
 use crate::storage::write_state::write_boulder_state;
 use crate::time::{format_iso_millis, now_millis};
-use crate::types::{
-    ReconcileStaleWorksOptions, StaleWorkDemotion, StaleWorkReconcileResult,
-};
+use crate::types::{ReconcileStaleWorksOptions, StaleWorkDemotion, StaleWorkReconcileResult};
 
 /// A ulw-execute session that dies abnormally never completes its work, so activity decides.
 pub const DEFAULT_STALE_WORK_THRESHOLD_MS: f64 = 21_600_000.0;
@@ -47,16 +45,24 @@ pub fn resolve_stale_work_threshold_ms(env: &BTreeMap<String, String>) -> f64 {
     // Number accepts unsigned radix prefixes as well as decimal fractions/exponents.
     let radix = [("0x", "0X", 16), ("0b", "0B", 2), ("0o", "0O", 8)]
         .into_iter()
-        .find_map(|(lower, upper, radix)| raw.strip_prefix(lower)
-            .or_else(|| raw.strip_prefix(upper)).map(|digits| (digits, radix)));
+        .find_map(|(lower, upper, radix)| {
+            raw.strip_prefix(lower)
+                .or_else(|| raw.strip_prefix(upper))
+                .map(|digits| (digits, radix))
+        });
     let parsed = match radix {
-        Some((digits, radix)) if !digits.is_empty() => digits.chars().try_fold(0.0, |value, digit| {
-            digit.to_digit(radix).map(|digit| value * f64::from(radix) + f64::from(digit))
-        }),
+        Some((digits, radix)) if !digits.is_empty() => {
+            digits.chars().try_fold(0.0, |value, digit| {
+                digit
+                    .to_digit(radix)
+                    .map(|digit| value * f64::from(radix) + f64::from(digit))
+            })
+        }
         Some(_) => None,
         None => raw.parse::<f64>().ok(),
     };
-    parsed.filter(|value| value.is_finite() && *value > 0.0)
+    parsed
+        .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(DEFAULT_STALE_WORK_THRESHOLD_MS)
 }
 
@@ -66,7 +72,11 @@ pub fn is_work_stale(last_activity_ms: Option<i64>, now_ms: i64, threshold_ms: f
     is_work_stale_precise(last_activity_ms.map(|ms| ms as f64), now_ms, threshold_ms)
 }
 
-pub fn is_work_stale_precise(last_activity_ms: Option<f64>, now_ms: i64, threshold_ms: f64) -> bool {
+pub fn is_work_stale_precise(
+    last_activity_ms: Option<f64>,
+    now_ms: i64,
+    threshold_ms: f64,
+) -> bool {
     match last_activity_ms {
         None => true,
         Some(last) => now_ms as f64 - last >= threshold_ms,
@@ -218,7 +228,10 @@ fn resolve_last_activity_ms(
         find_newest_session_transcript_ms_precise(
             sessions_directory,
             &session_ids,
-            &[Some(directory.to_string_lossy().into_owned()), worktree_path],
+            &[
+                Some(directory.to_string_lossy().into_owned()),
+                worktree_path,
+            ],
         ),
     ])
 }
@@ -347,4 +360,3 @@ fn newest_ms(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
     }
     newest
 }
-

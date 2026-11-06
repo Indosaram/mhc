@@ -37,7 +37,7 @@ impl SpawnProcess for StdinFailingProcess {
 
 #[tokio::test]
 async fn given_stdin_delivery_fails_when_checker_still_exits_2_then_child_is_killed_and_result_is_empty()
-{
+ {
     let signals = Arc::new(Mutex::new(Vec::new()));
     let captured = signals.clone();
     let result = run_comment_checker(
@@ -83,12 +83,15 @@ async fn given_stdin_delivery_fails_when_checker_still_exits_2_then_child_is_kil
             failure: None,
         }
     );
-    assert_eq!(*signals.lock().expect("lock signals"), vec![SpawnSignal::Sigkill]);
+    assert_eq!(
+        *signals.lock().expect("lock signals"),
+        vec![SpawnSignal::Sigkill]
+    );
 }
 
 #[tokio::test]
 async fn given_spawn_fails_synchronously_when_checker_runs_then_no_comments_reported_and_start_failure_exposed()
-{
+ {
     let result = run_comment_checker(
         &RunCommentCheckerInput {
             binary_path: Some("/checker".to_string()),
@@ -104,9 +107,7 @@ async fn given_spawn_fails_synchronously_when_checker_runs_then_no_comments_repo
             custom_prompt: None,
         },
         &RunCommentCheckerOptions {
-            spawn: &|_args| {
-                Err(io::Error::new(io::ErrorKind::InvalidInput, "spawn EINVAL"))
-            },
+            spawn: &|_args| Err(io::Error::new(io::ErrorKind::InvalidInput, "spawn EINVAL")),
             exists_sync: &|_path| true,
             timeout_ms: None,
             kill_grace_ms: None,

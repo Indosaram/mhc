@@ -21,7 +21,10 @@ pub struct ThemeRegistry {
     reload_at: Option<u64>,
     /// senpi `themeWatcher`: the OS watch on the custom themes directory and the file names it
     /// reported, drained by [`ThemeRegistry::poll_theme_watcher`].
-    watcher: Option<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<Option<PathBuf>>)>,
+    watcher: Option<(
+        notify::RecommendedWatcher,
+        std::sync::mpsc::Receiver<Option<PathBuf>>,
+    )>,
     /// Directory listing plus parsed custom theme names. Reused while the directory mtime,
     /// builtin directory, and registered sources are unchanged. Dropped when the watcher reports
     /// a change and when a debounced reload runs, so an in-place json edit cannot keep a stale name.
@@ -341,7 +344,10 @@ mod tests {
             second.iter().any(|theme| theme.name == "alpha"),
             "cached theme list was re-parsed on the UI thread: {second:?}"
         );
-        assert!(second.iter().all(|theme| theme.name != "beta"), "{second:?}");
+        assert!(
+            second.iter().all(|theme| theme.name != "beta"),
+            "{second:?}"
+        );
 
         let bumped = before
             .checked_add(std::time::Duration::from_secs(1))
@@ -389,7 +395,10 @@ mod tests {
             cached.iter().any(|theme| theme.name == "alpha"),
             "a8ac6196 already re-parsed the rewritten json before any watcher poll: {cached:?}"
         );
-        assert!(cached.iter().all(|theme| theme.name != "beta"), "{cached:?}");
+        assert!(
+            cached.iter().all(|theme| theme.name != "beta"),
+            "{cached:?}"
+        );
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let watcher = notify::recommended_watcher(|_event: notify::Result<notify::Event>| {})
@@ -405,7 +414,10 @@ mod tests {
             refreshed.iter().any(|theme| theme.name == "beta"),
             "watcher-reported change left the cached theme name: {refreshed:?}"
         );
-        assert!(refreshed.iter().all(|theme| theme.name != "alpha"), "{refreshed:?}");
+        assert!(
+            refreshed.iter().all(|theme| theme.name != "alpha"),
+            "{refreshed:?}"
+        );
     }
 
     /// On a8ac6196 the list read after the rewrite has already parsed `beta`, before `reload_due`.
@@ -491,6 +503,9 @@ mod tests {
             .expect("dir metadata")
             .modified()
             .expect("dir mtime");
-        assert_eq!(mtime, restored, "directory mtime must stick so the cache key is deterministic");
+        assert_eq!(
+            mtime, restored,
+            "directory mtime must stick so the cache key is deterministic"
+        );
     }
 }

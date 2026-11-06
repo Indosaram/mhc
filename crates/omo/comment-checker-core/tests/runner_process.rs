@@ -126,7 +126,11 @@ impl RealHarness {
         self.directory.path().join(name)
     }
 
-    async fn run(&self, custom_prompt: Option<&str>, timeout_ms: Option<u64>) -> io::Result<CheckResult> {
+    async fn run(
+        &self,
+        custom_prompt: Option<&str>,
+        timeout_ms: Option<u64>,
+    ) -> io::Result<CheckResult> {
         let (exit_tx, exit_rx) = oneshot::channel();
         *self.exit.lock().expect("exit slot") = Some(exit_rx);
         let binary = self.binary.clone();
@@ -187,7 +191,9 @@ impl RealHarness {
     async fn child_exited(&self) -> bool {
         let receiver = self.exit.lock().expect("exit slot").take();
         match receiver {
-            Some(receiver) => tokio::time::timeout(Duration::from_secs(5), receiver).await.is_ok(),
+            Some(receiver) => tokio::time::timeout(Duration::from_secs(5), receiver)
+                .await
+                .is_ok(),
             None => false,
         }
     }
@@ -260,7 +266,10 @@ async fn real_checker_timeout_sends_sigterm_and_reaps_the_child() {
     let result = harness.run(None, Some(200)).await.expect("run");
 
     assert_eq!(result, CheckResult::default());
-    assert_eq!(*harness.signals.lock().expect("signals"), vec![SpawnSignal::Sigterm]);
+    assert_eq!(
+        *harness.signals.lock().expect("signals"),
+        vec![SpawnSignal::Sigterm]
+    );
     assert!(
         harness.child_exited().await,
         "the timed-out child must be reaped by the SIGTERM, not orphaned"

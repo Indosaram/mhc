@@ -38,14 +38,23 @@ fn main() -> ExitCode {
     };
 
     let session = maho_test_support::faux_session::FauxSession::new(script);
-    let session = if omo { session.with_extension("omo") } else { session };
+    let session = if omo {
+        session.with_extension("omo")
+    } else {
+        session
+    };
 
     let result = if native {
-        match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(runtime) => runtime.block_on(session.run_native()),
             Err(error) => Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>),
         }
-    } else { session.run_and_serialize() };
+    } else {
+        session.run_and_serialize()
+    };
     match result {
         Ok(json) => {
             let formatted = match serde_json::to_string_pretty(&json) {

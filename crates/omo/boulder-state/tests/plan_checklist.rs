@@ -1,14 +1,29 @@
 //! Port of `src/plan-checklist.test.ts`.
 
-use boulder_state::{PlanChecklist, TopLevelTaskSection, get_plan_checklist, is_structured_task_row, parse_plan_checklist};
+use boulder_state::{
+    PlanChecklist, TopLevelTaskSection, get_plan_checklist, is_structured_task_row,
+    parse_plan_checklist,
+};
 use pretty_assertions::assert_eq;
 
 #[test]
 fn structured_task_row_helper_matches_todo_and_final_wave_grammar() {
-    assert!(is_structured_task_row("- [ ] T2.1a Add the public helper", TopLevelTaskSection::Todo));
-    assert!(is_structured_task_row("- [x] H3 Verify exports", TopLevelTaskSection::FinalWave));
-    assert!(!is_structured_task_row("- [ ] F1. Wrong section", TopLevelTaskSection::Todo));
-    assert!(!is_structured_task_row("  - [ ] F1. Nested row", TopLevelTaskSection::FinalWave));
+    assert!(is_structured_task_row(
+        "- [ ] T2.1a Add the public helper",
+        TopLevelTaskSection::Todo
+    ));
+    assert!(is_structured_task_row(
+        "- [x] H3 Verify exports",
+        TopLevelTaskSection::FinalWave
+    ));
+    assert!(!is_structured_task_row(
+        "- [ ] F1. Wrong section",
+        TopLevelTaskSection::Todo
+    ));
+    assert!(!is_structured_task_row(
+        "  - [ ] F1. Nested row",
+        TopLevelTaskSection::FinalWave
+    ));
 }
 
 const SCAFFOLD_PLAN_MARKDOWN: &str = "# Scaffold Parser Parity
@@ -377,12 +392,7 @@ fn qa_scenarios_happy_and_failure() {
     let happy = parse_plan_checklist(&happy_plan);
     assert_eq!(
         happy,
-        checklist(
-            1,
-            3,
-            5,
-            Some("T1.2a Next actionable implementation")
-        )
+        checklist(1, 3, 5, Some("T1.2a Next actionable implementation"))
     );
 
     let failure_plan = [
@@ -401,8 +411,5 @@ fn qa_scenarios_happy_and_failure() {
     ]
     .join("\n");
     let failure = parse_plan_checklist(&failure_plan);
-    assert_eq!(
-        failure,
-        checklist(0, 2, 2, Some("2. Valid implementation"))
-    );
+    assert_eq!(failure, checklist(0, 2, 2, Some("2. Valid implementation")));
 }

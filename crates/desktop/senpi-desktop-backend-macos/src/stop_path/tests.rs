@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use senpi_desktop_safety::{
-    ActiveStopPath, Chord, FakeClock, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS, StopPathError,
-    StopPathListener, StopPolicy, StopSource, Supervisor,
+    ActiveStopPath, Chord, FakeClock, StopPathError, StopPathListener, StopPolicy, StopSource,
+    Supervisor, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS,
 };
 
-use super::chord::{DEFAULT_STOP_CHORD, Hotkey};
+use super::chord::{Hotkey, DEFAULT_STOP_CHORD};
 use super::tap::{
-    EVENT_KEY_DOWN, RUN_LOOP_HANDLED_SOURCE, RUN_LOOP_TIMED_OUT, TAP_DISABLED_BY_TIMEOUT,
-    TAP_DISABLED_BY_USER_INPUT, TapAction, classify, listener_step_is_live,
+    classify, listener_step_is_live, TapAction, EVENT_KEY_DOWN, RUN_LOOP_HANDLED_SOURCE,
+    RUN_LOOP_TIMED_OUT, TAP_DISABLED_BY_TIMEOUT, TAP_DISABLED_BY_USER_INPUT,
 };
 use super::{CgEventTapListener, Ladder, Shared, Wake};
 
@@ -29,7 +29,10 @@ fn hotkey(chord: &str) -> Result<Hotkey, StopPathError> {
 fn shared(chord: &str) -> (Shared, Arc<FakeClock>) {
     let clock = Arc::new(FakeClock::new(1_000));
     let supervisor = Arc::new(Supervisor::new(clock.clone()));
-    (Shared::new(supervisor, hotkey(chord).unwrap()).unwrap(), clock)
+    (
+        Shared::new(supervisor, hotkey(chord).unwrap()).unwrap(),
+        clock,
+    )
 }
 
 #[test]
@@ -144,7 +147,11 @@ fn the_chord_latches_a_hotkey_stop() {
     let mut control = shared.control.lock();
     let signalled = !shared
         .changed
-        .wait_while_for(&mut control, |control| control.stops == 0, Duration::from_secs(5))
+        .wait_while_for(
+            &mut control,
+            |control| control.stops == 0,
+            Duration::from_secs(5),
+        )
         .timed_out();
     assert!(signalled, "the stop worker never committed the stop");
     assert_eq!(control.stops, 1);

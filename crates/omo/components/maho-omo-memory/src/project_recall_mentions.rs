@@ -5,15 +5,15 @@
 //! found in the transcript by the file path.
 
 pub type SourceForCallback = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use serde_json::Value;
 
-use memory_core::recall::RecallDocument;
 use crate::recall_transcript_mentions::{
-    create_transcript_mention_index, BranchMentionIndex, MentionDocument, TranscriptMentionIndex,
-    TranscriptMentionInput,
+    BranchMentionIndex, MentionDocument, TranscriptMentionIndex, TranscriptMentionInput,
+    create_transcript_mention_index,
 };
+use memory_core::recall::RecallDocument;
 
 pub struct ProjectSourceMentions {
     source_for: SourceForCallback,

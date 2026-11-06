@@ -87,9 +87,7 @@ fn sent_spans(
         .collect()
 }
 
-fn sent_logs(
-    recorder: &crate::otlp_support::RecordingFetch,
-) -> Vec<(String, String, String)> {
+fn sent_logs(recorder: &crate::otlp_support::RecordingFetch) -> Vec<(String, String, String)> {
     recorder
         .calls
         .lock()
@@ -152,7 +150,10 @@ async fn one_turn_span_is_exported_and_only_the_in_turn_event_carries_its_exact_
     assert_eq!(span.kind, 1);
     assert_eq!(span.status.as_ref().map(|status| status.code), Some(1));
     let attributes = attribute_map(&span.attributes);
-    assert_eq!(attributes.get("gen_ai.operation.name"), Some(&json!("chat")));
+    assert_eq!(
+        attributes.get("gen_ai.operation.name"),
+        Some(&json!("chat"))
+    );
     assert_eq!(attributes.get("session.id"), Some(&json!("session-hash")));
     assert_eq!(attributes.get("omo.session.role"), Some(&json!("main")));
     assert_eq!(attributes.get("omo.turn.index"), Some(&json!(0)));
@@ -170,7 +171,11 @@ async fn one_turn_span_is_exported_and_only_the_in_turn_event_carries_its_exact_
                 turn.trace_id.clone(),
                 turn.span_id.clone()
             ),
-            ("omo.session_summary".to_string(), String::new(), String::new()),
+            (
+                "omo.session_summary".to_string(),
+                String::new(),
+                String::new()
+            ),
         ]
     );
 }

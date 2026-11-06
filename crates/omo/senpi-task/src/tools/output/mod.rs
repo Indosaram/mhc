@@ -21,5 +21,5 @@ mod renderers_run_stats_tests;
 #[cfg(test)]
 mod renderers_tests;
 pub mod snapshot;
-pub mod types;
 pub mod transcript;
+pub mod types;

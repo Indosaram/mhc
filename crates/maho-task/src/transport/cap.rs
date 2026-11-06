@@ -69,9 +69,10 @@ impl<'a> CompletionCapOptions<'a> {
 /// `<state_dir>/completion-results/<task_id>.txt`, cleanly slices at the limit without splitting
 /// surrogate pairs, and returns details with sliced text and the visible pointer line.
 pub fn cap_completion_response(options: CompletionCapOptions<'_>) -> std::io::Result<Value> {
-    let limit = options
-        .limit
-        .clamp(MIN_COMPLETION_TRANSPORT_LIMIT, MAX_COMPLETION_TRANSPORT_LIMIT);
+    let limit = options.limit.clamp(
+        MIN_COMPLETION_TRANSPORT_LIMIT,
+        MAX_COMPLETION_TRANSPORT_LIMIT,
+    );
     let total_units = count_utf16_code_units(options.response);
     if total_units <= limit {
         return Ok(json!({
@@ -183,12 +184,8 @@ pub fn deliver_settled(delivery: SettledDelivery<'_>) -> std::io::Result<()> {
             state.read_log_tail(&delivery.record.id, 4_000)
         }
     };
-    let (envelope, details) = build_capped_result_envelope(
-        delivery.state_dir,
-        delivery.record,
-        &raw,
-        delivery.limit,
-    );
+    let (envelope, details) =
+        build_capped_result_envelope(delivery.state_dir, delivery.record, &raw, delivery.limit);
     let completion = super::batch::ChildCompletion::new(
         &delivery.record.id,
         delivery.record.status.as_str(),

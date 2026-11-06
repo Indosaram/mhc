@@ -192,7 +192,8 @@ fn setup_fixture(home: &std::path::Path, llm_addr: std::net::SocketAddr, telemet
         "defaultProvider": "offline",
         "defaultModel": "offline"
     });
-    std::fs::write(agent_dir.join("settings.json"), settings.to_string()).expect("write settings.json");
+    std::fs::write(agent_dir.join("settings.json"), settings.to_string())
+        .expect("write settings.json");
 }
 
 async fn run_mhc_print(
@@ -242,7 +243,10 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
     let output = run_mhc_print(temp.path(), recorder.address).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {stderr}\nstdout: {stdout}");
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
 
     // The process has exited, so every request it would have sent is already recorded.
     let recorded = recorder.requests.lock().expect("test").clone();
@@ -270,7 +274,10 @@ async fn telemetry_enabled_records_requests_with_geoip_disabled() {
     let output = run_mhc_print(temp.path(), recorder.address).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "stderr: {stderr}\nstdout: {stdout}");
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
 
     // Telemetry flushes on shutdown and the process has exited, so assert immediately.
     let recorded = recorder.requests.lock().expect("test").clone();
@@ -296,7 +303,10 @@ async fn telemetry_enabled_records_requests_with_geoip_disabled() {
             seen_events += 1;
         }
     }
-    assert!(seen_events > 0, "expected at least one batch event, got: {recorded:?}");
+    assert!(
+        seen_events > 0,
+        "expected at least one batch event, got: {recorded:?}"
+    );
 
     let _ = llm.shutdown.send(());
     let _ = recorder.shutdown.send(());

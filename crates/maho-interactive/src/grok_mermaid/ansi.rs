@@ -69,8 +69,8 @@ pub fn to_ansi(art: &MermaidArt, theme: Option<&AnsiTheme>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grok_mermaid::source_box::source_box;
     use crate::grok_mermaid::Span;
+    use crate::grok_mermaid::source_box::source_box;
 
     #[test]
     fn test_to_ansi_default_theme() {

@@ -18,12 +18,17 @@ use super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS;
 
 /// `getGlobalDefaultExtensionShimPath`.
 pub fn global_default_extension_shim_path(agent_dir: &Path, extension_id: &str) -> PathBuf {
-    agent_dir.join("extensions").join(format!("{extension_id}.js"))
+    agent_dir
+        .join("extensions")
+        .join(format!("{extension_id}.js"))
 }
 
 /// `buildGlobalDefaultExtensionShim` for a natively linked default.
 pub fn build_global_default_extension_shim(extension_id: &str) -> String {
-    format!("{}export {{ default }} from \"builtin:{extension_id}\";\n", generated_shim_banner())
+    format!(
+        "{}export {{ default }} from \"builtin:{extension_id}\";\n",
+        generated_shim_banner()
+    )
 }
 
 /// `ensureGlobalDefaultExtensions`: write every absent shim.
@@ -40,10 +45,14 @@ pub fn ensure_global_default_extensions(agent_dir: &Path) -> std::io::Result<()>
 
 /// Default ids whose shim is present and generated; only these load the native default.
 pub fn active_global_default_extension_ids(agent_dir: &Path) -> BTreeSet<&'static str> {
-    GLOBAL_DEFAULT_EXTENSION_IDS.iter().copied().filter(|extension_id| {
-        std::fs::read_to_string(global_default_extension_shim_path(agent_dir, extension_id))
-            .is_ok_and(|content| has_generated_shim_banner(&content))
-    }).collect()
+    GLOBAL_DEFAULT_EXTENSION_IDS
+        .iter()
+        .copied()
+        .filter(|extension_id| {
+            std::fs::read_to_string(global_default_extension_shim_path(agent_dir, extension_id))
+                .is_ok_and(|content| has_generated_shim_banner(&content))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -54,9 +63,14 @@ mod tests {
     fn absent_shims_are_written_and_activate_every_default() {
         let agent = tempfile::tempdir().expect("agent dir");
         ensure_global_default_extensions(agent.path()).expect("write shims");
-        let diff = std::fs::read_to_string(global_default_extension_shim_path(agent.path(), "diff")).expect("diff shim");
+        let diff =
+            std::fs::read_to_string(global_default_extension_shim_path(agent.path(), "diff"))
+                .expect("diff shim");
         assert_eq!(diff, build_global_default_extension_shim("diff"));
-        assert_eq!(active_global_default_extension_ids(agent.path()).len(), GLOBAL_DEFAULT_EXTENSION_IDS.len());
+        assert_eq!(
+            active_global_default_extension_ids(agent.path()).len(),
+            GLOBAL_DEFAULT_EXTENSION_IDS.len()
+        );
     }
 
     #[test]
@@ -66,7 +80,10 @@ mod tests {
         let tps = global_default_extension_shim_path(agent.path(), "tps");
         std::fs::write(&tps, "export default function () {}\n").expect("user file");
         ensure_global_default_extensions(agent.path()).expect("write shims");
-        assert_eq!(std::fs::read_to_string(&tps).expect("user file kept"), "export default function () {}\n");
+        assert_eq!(
+            std::fs::read_to_string(&tps).expect("user file kept"),
+            "export default function () {}\n"
+        );
         assert!(!active_global_default_extension_ids(agent.path()).contains("tps"));
     }
 
@@ -75,10 +92,16 @@ mod tests {
         let agent = tempfile::tempdir().expect("agent dir");
         std::fs::create_dir_all(agent.path().join("extensions")).expect("extensions dir");
         let files = global_default_extension_shim_path(agent.path(), "files");
-        let foreign = format!("{}export {{ default }} from \"file:///other/files.js\";\n", maho_core::generated_shim_banner::HISTORICAL_SHIM_BANNERS[0]);
+        let foreign = format!(
+            "{}export {{ default }} from \"file:///other/files.js\";\n",
+            maho_core::generated_shim_banner::HISTORICAL_SHIM_BANNERS[0]
+        );
         std::fs::write(&files, &foreign).expect("foreign shim");
         ensure_global_default_extensions(agent.path()).expect("write shims");
-        assert_eq!(std::fs::read_to_string(&files).expect("foreign shim kept"), foreign);
+        assert_eq!(
+            std::fs::read_to_string(&files).expect("foreign shim kept"),
+            foreign
+        );
         assert!(active_global_default_extension_ids(agent.path()).contains("files"));
     }
 }

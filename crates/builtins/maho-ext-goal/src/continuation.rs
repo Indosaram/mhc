@@ -507,16 +507,20 @@ mod tests {
     #[test]
     fn clean_agent_end_queues_active_goal() {
         let goal = goal();
-        let messages =
-            vec![maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Stop))).into()];
+        let messages = vec![
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Stop)))
+                .into(),
+        ];
         let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages);
         assert!(result);
     }
     #[test]
     fn terminal_error_agent_end_does_not_queue() {
         let goal = goal();
-        let messages =
-            vec![maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Error))).into()];
+        let messages = vec![
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Error)))
+                .into(),
+        ];
         let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages);
         assert!(!result);
     }
@@ -544,7 +548,8 @@ mod tests {
     fn aborted_error_tool_result_prevents_continuation() {
         let goal = goal();
         let messages = vec![
-            maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Stop))).into(),
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(StopReason::Stop)))
+                .into(),
             maho_ai::types::Message::ToolResult(maho_ai::types::ToolResultMessage {
                 tool_call_id: "call".into(),
                 tool_name: "wait".into(),

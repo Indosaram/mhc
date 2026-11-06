@@ -157,12 +157,14 @@ fn split_symbols(list: &str) -> Vec<String> {
 /// The key type XKB infers for a key that names none.
 pub fn infer_type(symbols: &[String], keysyms: &HashMap<String, char>) -> &'static str {
     let alphabetic = match symbols {
-        [lower, upper, ..] => keysyms
-            .get(lower)
-            .zip(keysyms.get(upper))
-            .is_some_and(|(&lower, &upper)| {
-                lower.is_lowercase() && upper == lower.to_uppercase().next().unwrap_or(lower)
-            }),
+        [lower, upper, ..] => {
+            keysyms
+                .get(lower)
+                .zip(keysyms.get(upper))
+                .is_some_and(|(&lower, &upper)| {
+                    lower.is_lowercase() && upper == lower.to_uppercase().next().unwrap_or(lower)
+                })
+        }
         _ => false,
     };
     match (symbols.len(), alphabetic) {

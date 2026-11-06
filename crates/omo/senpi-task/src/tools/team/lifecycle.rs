@@ -221,7 +221,11 @@ pub fn spec_error_to_service_error(error: &SenpiTeamSpecError) -> TeamToolServic
 
 /// Carries a `SenpiTeamRuntimeError` across the service seam (`{ name, message }`).
 pub fn runtime_error_to_service_error(error: &SenpiTeamRuntimeError) -> TeamToolServiceError {
-    TeamToolServiceError::with_code(RUNTIME_ERROR_NAME, error.message.clone(), error.code.as_str())
+    TeamToolServiceError::with_code(
+        RUNTIME_ERROR_NAME,
+        error.message.clone(),
+        error.code.as_str(),
+    )
 }
 
 /// Recovers the spec error code from the stable `SenpiTeamSpecError` messages (the service seam only
@@ -235,7 +239,9 @@ pub fn infer_spec_error_code(message: &str) -> SenpiTeamSpecErrorCode {
         SenpiTeamSpecErrorCode::ReservedLeadMember
     } else if message.contains("references unknown category") {
         SenpiTeamSpecErrorCode::UnresolvableCategory
-    } else if message.contains("references unknown subagent_type") || message.starts_with("curated read-only agent") {
+    } else if message.contains("references unknown subagent_type")
+        || message.starts_with("curated read-only agent")
+    {
         SenpiTeamSpecErrorCode::UnknownSubagentType
     } else {
         SenpiTeamSpecErrorCode::InvalidSpec
@@ -279,7 +285,10 @@ pub fn run_team_create(
     service: &dyn TeamToolsService,
     params: &TeamCreateInput,
 ) -> Result<AgentToolResult<TeamCreateDetails>, TeamToolServiceError> {
-    let has_name = params.team_name.as_deref().is_some_and(|name| !name.is_empty());
+    let has_name = params
+        .team_name
+        .as_deref()
+        .is_some_and(|name| !name.is_empty());
     let has_inline = params.inline_spec.as_ref().is_some_and(|v| !v.is_null());
     if !has_name && !has_inline {
         return Ok(tool_result(
@@ -297,7 +306,12 @@ pub fn run_team_create(
                 inline_spec: Some(spec),
             },
             Err(reason) => {
-                return Ok(tool_result(&reason, TeamCreateDetails::InvalidArguments { reason: reason.clone() }));
+                return Ok(tool_result(
+                    &reason,
+                    TeamCreateDetails::InvalidArguments {
+                        reason: reason.clone(),
+                    },
+                ));
             }
         },
         _ => CreateTeamToolInput {
@@ -341,14 +355,21 @@ pub fn run_team_create(
         Err(error) if error.name == SPEC_ERROR_NAME => Ok(tool_result(
             &error.message,
             TeamCreateDetails::SpecError {
-                code: error.code.clone().unwrap_or_else(|| infer_spec_error_code(&error.message).as_str().to_string()),
+                code: error
+                    .code
+                    .clone()
+                    .unwrap_or_else(|| infer_spec_error_code(&error.message).as_str().to_string()),
                 reason: error.message.clone(),
             },
         )),
         Err(error) if error.name == RUNTIME_ERROR_NAME => Ok(tool_result(
             &error.message,
             TeamCreateDetails::RuntimeError {
-                code: error.code.clone().unwrap_or_else(|| infer_runtime_error_code(&error.message).as_str().to_string()),
+                code: error.code.clone().unwrap_or_else(|| {
+                    infer_runtime_error_code(&error.message)
+                        .as_str()
+                        .to_string()
+                }),
                 reason: error.message.clone(),
             },
         )),
@@ -387,7 +408,11 @@ pub fn run_team_delete(
             &error.message,
             TeamDeleteDetails::InvalidState {
                 team_run_id: params.team_run_id.clone(),
-                code: error.code.clone().unwrap_or_else(|| infer_runtime_error_code(&error.message).as_str().to_string()),
+                code: error.code.clone().unwrap_or_else(|| {
+                    infer_runtime_error_code(&error.message)
+                        .as_str()
+                        .to_string()
+                }),
                 reason: error.message.clone(),
             },
         )),
@@ -427,7 +452,9 @@ fn format_created_member_line(member: &CreatedMemberInfo) -> String {
     )
 }
 
-pub fn create_team_create_tool(deps: &TeamToolDeps) -> TeamTool<TeamCreateInput, TeamCreateDetails> {
+pub fn create_team_create_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamCreateInput, TeamCreateDetails> {
     TeamTool {
         name: TEAM_CREATE_TOOL_NAME,
         label: TEAM_CREATE_TOOL_LABEL,
@@ -438,7 +465,9 @@ pub fn create_team_create_tool(deps: &TeamToolDeps) -> TeamTool<TeamCreateInput,
     }
 }
 
-pub fn create_team_delete_tool(deps: &TeamToolDeps) -> TeamTool<TeamDeleteInput, TeamDeleteDetails> {
+pub fn create_team_delete_tool(
+    deps: &TeamToolDeps,
+) -> TeamTool<TeamDeleteInput, TeamDeleteDetails> {
     TeamTool {
         name: TEAM_DELETE_TOOL_NAME,
         label: TEAM_DELETE_TOOL_LABEL,

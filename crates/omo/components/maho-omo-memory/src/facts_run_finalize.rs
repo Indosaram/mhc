@@ -96,7 +96,8 @@ pub fn finalize_claimed_facts_run(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(error) => return Err(error.to_string()),
             };
-            let agreements = parse_agreement_records_jsonl(&raw).map_err(|error| error.to_string())?;
+            let agreements =
+                parse_agreement_records_jsonl(&raw).map_err(|error| error.to_string())?;
             for (index, agreement) in agreements.iter().enumerate() {
                 memory_core::agreements::validate_agreement_source(agreement, &payload, index)
                     .map_err(|error| error.to_string())?;
@@ -448,10 +449,16 @@ mod tests {
             &mut |_, _| panic!("an unreadable suppression store must not apply"),
         )
         .unwrap();
-        assert!(matches!(result, FactsLaunchResult::Failed { .. }), "{result:?}");
+        assert!(
+            matches!(result, FactsLaunchResult::Failed { .. }),
+            "{result:?}"
+        );
         let entries = failures.read_failures().unwrap().entries;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].last_reason, FactsFailureReason::InvalidExtraction);
+        assert_eq!(
+            entries[0].last_reason,
+            FactsFailureReason::InvalidExtraction
+        );
         assert_eq!(repo.head().unwrap(), head, "nothing is committed");
     }
     #[test]

@@ -149,8 +149,14 @@ fn neither_deep_lane_carries_the_other_lanes_model() {
 #[test]
 fn visual_engineering_starts_with_argon_low() {
     assert_eq!(
-        CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain.first(),
-        Some(&entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")))
+        CATEGORY_MODEL_REQUIREMENTS["visual-engineering"]
+            .fallback_chain
+            .first(),
+        Some(&entry(
+            &["google", "google-vertex", "opencode"],
+            "gemini-4-argon",
+            Some("low")
+        ))
     );
 }
 
@@ -159,24 +165,18 @@ fn visual_engineering_follows_the_approved_5_rung_chain_with_the_gated_fable_5_5
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
-            entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["google", "google-vertex", "opencode"],
+                "gemini-4-argon",
+                Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-fable-5-1",
                 Some("max")
             ),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
                 Some("max")
             ),
@@ -200,7 +200,11 @@ fn quick_follows_the_approved_9_rung_chain() {
                 "gpt-6-luna-fast",
                 Some("low")
             ),
-            entry(&["anthropic", "anthropic-api", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot"],
+                "claude-haiku-5-5",
+                Some("medium")
+            ),
             entry(&["deepseek"], "deepseek-flash", Some("off")),
             entry(
                 &[
@@ -226,27 +230,22 @@ fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_
         CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain,
         vec![
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-sonnet-5-5",
                 Some("medium")
             ),
-            entry(
-                &["xiaomi", "opencode-go"],
-                "mimo-v2.6-pro",
-                Some("max")
-            ),
+            entry(&["xiaomi", "opencode-go"], "mimo-v2.6-pro", Some("max")),
             entry(
                 &["xai", "github-copilot", "opencode-go"],
                 "grok-4.7",
                 Some("xhigh")
             ),
             entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
-            entry(&["openai", "chatgpt-subscription"], "gpt-6.1-sol", Some("medium")),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6.1-sol",
+                Some("medium")
+            ),
             entry(
                 &[
                     "openai",
@@ -258,12 +257,7 @@ fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_
                 Some("medium")
             ),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-sonnet-5",
                 Some("low")
             ),
@@ -277,16 +271,8 @@ fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_
                 "qwen3.8-max-preview",
                 Some("max")
             ),
-            entry(
-                &["deepseek", "opencode-go"],
-                "deepseek-v4-pro",
-                Some("max")
-            ),
-            entry(
-                &["xiaomi", "opencode-go"],
-                "mimo-v2.5-pro",
-                Some("max")
-            ),
+            entry(&["deepseek", "opencode-go"], "deepseek-v4-pro", Some("max")),
+            entry(&["xiaomi", "opencode-go"], "mimo-v2.5-pro", Some("max")),
         ]
     );
 }
@@ -297,20 +283,11 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
         CATEGORY_MODEL_REQUIREMENTS["unspecified-high"].fallback_chain,
         vec![
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
                 Some("medium")
             ),
-            entry(
-                &["zai-coding-plan", "opencode-go"],
-                "glm-5.3",
-                Some("max")
-            ),
+            entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("max")),
             entry(
                 &["kimi-for-coding", "moonshotai", "opencode-go"],
                 "kimi-k3.1-pro",
@@ -327,22 +304,12 @@ fn artistry_follows_the_approved_4_rung_chain_with_the_gated_fable_5_5_rung_drop
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-fable-5-1",
                 Some("max")
             ),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
                 Some("max")
             ),
@@ -364,24 +331,18 @@ fn writing_leads_with_argon_low_then_opus_without_fable() {
     assert_eq!(
         chain,
         &vec![
-            entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["google", "google-vertex", "opencode"],
+                "gemini-4-argon",
+                Some("low")
+            ),
+            entry(
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-5-5",
                 Some("low")
             ),
             entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot",
-                    "opencode"
-                ],
+                &["anthropic", "anthropic-api", "github-copilot", "opencode"],
                 "claude-opus-4-6",
                 Some("max")
             ),
@@ -392,6 +353,9 @@ fn writing_leads_with_argon_low_then_opus_without_fable() {
 #[test]
 fn the_deep_lanes_and_artistry_no_longer_hard_require_primary_models() {
     assert_eq!(CATEGORY_MODEL_REQUIREMENTS["deep-low"].requires_model, None);
-    assert_eq!(CATEGORY_MODEL_REQUIREMENTS["deep-high"].requires_model, None);
+    assert_eq!(
+        CATEGORY_MODEL_REQUIREMENTS["deep-high"].requires_model,
+        None
+    );
     assert_eq!(CATEGORY_MODEL_REQUIREMENTS["artistry"].requires_model, None);
 }

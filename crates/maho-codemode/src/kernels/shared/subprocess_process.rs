@@ -120,13 +120,20 @@ impl SubprocessProcess {
                             if tail.len() > 16 * 1024 {
                                 tail.drain(..tail.len() - 16 * 1024);
                             }
-                            if let Some(cause) = super::super::js::process_worker::crash_cause_from(&String::from_utf8_lossy(&tail), token) {
-                                *stderr_crash_cause.lock().expect("JS crash cause lock") = Some(cause);
+                            if let Some(cause) = super::super::js::process_worker::crash_cause_from(
+                                &String::from_utf8_lossy(&tail),
+                                token,
+                            ) {
+                                *stderr_crash_cause.lock().expect("JS crash cause lock") =
+                                    Some(cause);
                             }
                         }
                         if error_sender.send(serde_json::json!({"type":"text","stream":"stderr","data":String::from_utf8_lossy(&chunk[..length])})).await.is_err() { return; }
                     }
-                    Err(error) => { maho_ext_api::diagnostic(&format!("kernel stderr read failed: {error}")); return; }
+                    Err(error) => {
+                        maho_ext_api::diagnostic(&format!("kernel stderr read failed: {error}"));
+                        return;
+                    }
                 }
             }
         });
@@ -226,7 +233,9 @@ impl SubprocessProcess {
     async fn sweep_group(&self, pid: Option<u32>) {
         #[cfg(unix)]
         if let Some(pid) = pid
-            && let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw)
+            && let Some(pid) = i32::try_from(pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
         {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }

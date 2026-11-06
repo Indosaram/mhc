@@ -5,7 +5,7 @@
 
 use std::io;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::oneshot::translate;
 use crate::rpc::Failure;

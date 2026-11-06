@@ -4,7 +4,7 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::DisplaySelector;
 
 use super::fake::{FakeServer, MASKS};
-use super::image::{ColorMasks, Pixmap, RootRect, clip_to_root, to_rgba};
+use super::image::{clip_to_root, to_rgba, ColorMasks, Pixmap, RootRect};
 use super::monitors::displays;
 use super::windows::parse_wm_class;
 

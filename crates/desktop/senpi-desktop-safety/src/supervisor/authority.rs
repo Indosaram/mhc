@@ -1,7 +1,7 @@
 //! Immediate authority admission is independent of durable stop publication.
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use super::Supervisor;

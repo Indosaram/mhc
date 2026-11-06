@@ -8,17 +8,21 @@ use std::sync::Arc;
 use crate::types::{StreamOptions, ThinkingSelection, ToolResultMessage};
 
 use super::r#gen::agent_pb::{
-    DeleteArgs, DeleteResult, DiagnosticsArgs, DiagnosticsResult, GrepArgs, GrepResult, LsArgs, LsResult, McpResult,
-    PiBashExecArgs, PiBashExecResult, PiEditExecArgs, PiEditExecResult, PiFindExecArgs, PiFindExecResult,
-    PiGrepExecArgs, PiGrepExecResult, PiLsExecArgs, PiLsExecResult, PiReadExecArgs, PiReadExecResult,
-    PiWriteExecArgs, PiWriteExecResult, ReadArgs, ReadResult, ShellArgs, ShellResult, WriteArgs, WriteResult,
+    DeleteArgs, DeleteResult, DiagnosticsArgs, DiagnosticsResult, GrepArgs, GrepResult, LsArgs,
+    LsResult, McpResult, PiBashExecArgs, PiBashExecResult, PiEditExecArgs, PiEditExecResult,
+    PiFindExecArgs, PiFindExecResult, PiGrepExecArgs, PiGrepExecResult, PiLsExecArgs,
+    PiLsExecResult, PiReadExecArgs, PiReadExecResult, PiWriteExecArgs, PiWriteExecResult, ReadArgs,
+    ReadResult, ShellArgs, ShellResult, WriteArgs, WriteResult,
 };
 
 /// The three return forms an exec handler may use: a wire result with an
 /// optional transcript pairing, a bare wire result, or a bare
 /// `ToolResultMessage` from which the wire result is derived.
 pub enum CursorExecHandlerResult<T> {
-    WithToolResult { result: T, tool_result: Option<ToolResultMessage> },
+    WithToolResult {
+        result: T,
+        tool_result: Option<ToolResultMessage>,
+    },
     Result(T),
     ToolResult(ToolResultMessage),
 }
@@ -88,10 +92,13 @@ pub struct CursorExecHandlers {
     pub shell: Option<Arc<dyn Fn(ShellArgs) -> ExecFuture<ShellResult> + Send + Sync>>,
     pub shell_stream: Option<
         Arc<
-            dyn Fn(ShellArgs, Box<dyn CursorShellStreamCallbacks>) -> ExecFuture<ShellResult> + Send + Sync,
+            dyn Fn(ShellArgs, Box<dyn CursorShellStreamCallbacks>) -> ExecFuture<ShellResult>
+                + Send
+                + Sync,
         >,
     >,
-    pub diagnostics: Option<Arc<dyn Fn(DiagnosticsArgs) -> ExecFuture<DiagnosticsResult> + Send + Sync>>,
+    pub diagnostics:
+        Option<Arc<dyn Fn(DiagnosticsArgs) -> ExecFuture<DiagnosticsResult> + Send + Sync>>,
     pub mcp: Option<Arc<dyn Fn(CursorMcpCall) -> ExecFuture<McpResult> + Send + Sync>>,
     /// Answers "would this MCP call be permitted", without running it.
     ///
@@ -99,17 +106,31 @@ pub struct CursorExecHandlers {
     /// pending prompt is `false`: it can only be answered interactively at
     /// execution time. When no handler is registered the provider refuses,
     /// since it cannot decide.
-    pub mcp_approval_preflight: Option<Arc<dyn Fn(CursorMcpCall) -> BoxFuture<'static, bool> + Send + Sync>>,
+    pub mcp_approval_preflight:
+        Option<Arc<dyn Fn(CursorMcpCall) -> BoxFuture<'static, bool> + Send + Sync>>,
     /// Modern Cursor CLI Pi tool frames (`ExecServerMessage` 45-51). They are a
     /// distinct frame family from the legacy `readArgs`/`shellArgs`/... set:
     /// different args, different result oneofs, and no `tool_call_id`.
-    pub pi_read: Option<Arc<dyn Fn(CursorPiCall<PiReadExecArgs>) -> ExecFuture<PiReadExecResult> + Send + Sync>>,
-    pub pi_bash: Option<Arc<dyn Fn(CursorPiCall<PiBashExecArgs>) -> ExecFuture<PiBashExecResult> + Send + Sync>>,
-    pub pi_edit: Option<Arc<dyn Fn(CursorPiCall<PiEditExecArgs>) -> ExecFuture<PiEditExecResult> + Send + Sync>>,
-    pub pi_write: Option<Arc<dyn Fn(CursorPiCall<PiWriteExecArgs>) -> ExecFuture<PiWriteExecResult> + Send + Sync>>,
-    pub pi_grep: Option<Arc<dyn Fn(CursorPiCall<PiGrepExecArgs>) -> ExecFuture<PiGrepExecResult> + Send + Sync>>,
-    pub pi_find: Option<Arc<dyn Fn(CursorPiCall<PiFindExecArgs>) -> ExecFuture<PiFindExecResult> + Send + Sync>>,
-    pub pi_ls: Option<Arc<dyn Fn(CursorPiCall<PiLsExecArgs>) -> ExecFuture<PiLsExecResult> + Send + Sync>>,
+    pub pi_read: Option<
+        Arc<dyn Fn(CursorPiCall<PiReadExecArgs>) -> ExecFuture<PiReadExecResult> + Send + Sync>,
+    >,
+    pub pi_bash: Option<
+        Arc<dyn Fn(CursorPiCall<PiBashExecArgs>) -> ExecFuture<PiBashExecResult> + Send + Sync>,
+    >,
+    pub pi_edit: Option<
+        Arc<dyn Fn(CursorPiCall<PiEditExecArgs>) -> ExecFuture<PiEditExecResult> + Send + Sync>,
+    >,
+    pub pi_write: Option<
+        Arc<dyn Fn(CursorPiCall<PiWriteExecArgs>) -> ExecFuture<PiWriteExecResult> + Send + Sync>,
+    >,
+    pub pi_grep: Option<
+        Arc<dyn Fn(CursorPiCall<PiGrepExecArgs>) -> ExecFuture<PiGrepExecResult> + Send + Sync>,
+    >,
+    pub pi_find: Option<
+        Arc<dyn Fn(CursorPiCall<PiFindExecArgs>) -> ExecFuture<PiFindExecResult> + Send + Sync>,
+    >,
+    pub pi_ls:
+        Option<Arc<dyn Fn(CursorPiCall<PiLsExecArgs>) -> ExecFuture<PiLsExecResult> + Send + Sync>>,
     pub on_tool_result: Option<CursorToolResultHandler>,
 }
 

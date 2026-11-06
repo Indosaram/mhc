@@ -132,7 +132,10 @@ fn is_run_outcome(value: &Value, run_id: &str) -> bool {
         Some(Value::Number(number)) => number.as_f64().is_some(),
         _ => false,
     };
-    let signal_ok = matches!(child_exit.get("signal"), Some(Value::Null) | Some(Value::String(_)));
+    let signal_ok = matches!(
+        child_exit.get("signal"),
+        Some(Value::Null) | Some(Value::String(_))
+    );
     let timed_out_ok = fields.get("timedOut").is_some_and(Value::is_boolean);
     version_is_one
         && names_run
@@ -182,9 +185,7 @@ fn launcher_liveness(
     };
     let actual = probe.process_start_identity(pid_value).unwrap_or(None);
     match actual {
-        Some(actual)
-            if start_identities_comparable(recorded, &actual) && recorded != actual =>
-        {
+        Some(actual) if start_identities_comparable(recorded, &actual) && recorded != actual => {
             // rule:pid-reused
             ProcessLiveness::Dead
         }
@@ -246,7 +247,10 @@ pub fn classify_reflection_lock_holder(
         ProcessLiveness::Unknown => {
             return stuck(
                 &run_id,
-                format!("launcher pid {} could not be checked", format_pid(launcher_pid)),
+                format!(
+                    "launcher pid {} could not be checked",
+                    format_pid(launcher_pid)
+                ),
             );
         }
         ProcessLiveness::Dead => {}
@@ -280,7 +284,10 @@ pub fn classify_reflection_lock_holder(
     match claim {
         // rule:claim-unreadable
         JsonRead::Unreadable(code) => {
-            return stuck(&run_id, format!("its terminal claim could not be read ({code})"));
+            return stuck(
+                &run_id,
+                format!("its terminal claim could not be read ({code})"),
+            );
         }
         // rule:claim-invalid
         JsonRead::Invalid => return stuck(&run_id, "its terminal claim is not valid JSON"),

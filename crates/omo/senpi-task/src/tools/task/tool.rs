@@ -10,7 +10,9 @@ use serde_json::Value;
 use crate::agents::AgentDefinition;
 use crate::manager::{AbortSignal, WaitError};
 use crate::tools::render::{LinesComponent, RendererTheme, ThemeColor};
-use crate::tools::task::argument_normalization::{normalize_task_tool_arguments, TaskArgumentError};
+use crate::tools::task::argument_normalization::{
+    TaskArgumentError, normalize_task_tool_arguments,
+};
 use crate::tools::task::call_renderer::{TaskCallArgs, render_task_call_lines};
 use crate::tools::task::description::{
     DescriptionInput, TASK_PROMPT_GUIDELINES, TASK_PROMPT_SNIPPET, build_task_tool_description,

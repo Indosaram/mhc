@@ -41,8 +41,13 @@ pub struct HostOwner {
 
 #[derive(Debug, Clone)]
 pub enum OwnerChild {
-    Process { pid: u32 },
-    HostSession { socket: String, session_path: String },
+    Process {
+        pid: u32,
+    },
+    HostSession {
+        socket: String,
+        session_path: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +168,9 @@ pub fn hostname() -> String {
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(buffer.len());
-            if let Ok(name) = std::str::from_utf8(&buffer[..end]) && !name.is_empty() {
+            if let Ok(name) = std::str::from_utf8(&buffer[..end])
+                && !name.is_empty()
+            {
                 return name.to_string();
             }
         }
@@ -223,7 +230,10 @@ fn is_owner_marker(value: &serde_json::Value) -> bool {
     match child.get("kind").and_then(|kind| kind.as_str()) {
         Some("process") => is_process_owner(&serde_json::Value::Object(child.clone())),
         Some("host-session") => {
-            child.get("socket").map(|socket| socket.is_string()).unwrap_or(false)
+            child
+                .get("socket")
+                .map(|socket| socket.is_string())
+                .unwrap_or(false)
                 && child
                     .get("session_path")
                     .map(|session| session.is_string())
@@ -233,7 +243,11 @@ fn is_owner_marker(value: &serde_json::Value) -> bool {
     }
 }
 
-pub fn read_owner_liveness(base_dir: &Path, probe: &dyn OwnerProbe, now: u64) -> Result<OwnerLiveness> {
+pub fn read_owner_liveness(
+    base_dir: &Path,
+    probe: &dyn OwnerProbe,
+    now: u64,
+) -> Result<OwnerLiveness> {
     let name = base_dir
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -258,42 +272,42 @@ pub fn read_owner_liveness(base_dir: &Path, probe: &dyn OwnerProbe, now: u64) ->
     {
         return Ok(OwnerLiveness::Foreign);
     }
-    if let Some(value) = &marker && is_owner_marker(value) {
-            let parsed: OwnerMarker = serde_json::from_value(value.clone())
-                .map_err(|error| crate::backend::IsolationError::other(error.to_string()))?;
-            let mut states = vec![probe.pid_alive(
-                parsed.host.pid,
-                parsed.host.start_identity.as_deref(),
-            )];
-            if let Some(child) = &parsed.child {
-                match child {
-                    OwnerMarkerChild::Process {
-                        pid,
-                        start_identity,
-                    } => states.push(probe.pid_alive(*pid, start_identity.as_deref())),
-                    OwnerMarkerChild::HostSession {
-                        socket,
-                        session_path,
-                    } => states.push(
-                        probe
-                            .host_session_alive(socket, session_path)
-                            .unwrap_or(OwnerStatus::Unknown),
-                    ),
-                }
+    if let Some(value) = &marker
+        && is_owner_marker(value)
+    {
+        let parsed: OwnerMarker = serde_json::from_value(value.clone())
+            .map_err(|error| crate::backend::IsolationError::other(error.to_string()))?;
+        let mut states =
+            vec![probe.pid_alive(parsed.host.pid, parsed.host.start_identity.as_deref())];
+        if let Some(child) = &parsed.child {
+            match child {
+                OwnerMarkerChild::Process {
+                    pid,
+                    start_identity,
+                } => states.push(probe.pid_alive(*pid, start_identity.as_deref())),
+                OwnerMarkerChild::HostSession {
+                    socket,
+                    session_path,
+                } => states.push(
+                    probe
+                        .host_session_alive(socket, session_path)
+                        .unwrap_or(OwnerStatus::Unknown),
+                ),
             }
-            if states.contains(&OwnerStatus::Alive) {
-                return Ok(if name.contains(".creating-") {
-                    OwnerLiveness::Creating
-                } else {
-                    OwnerLiveness::Live
-                });
-            }
-            if states.contains(&OwnerStatus::Unknown) {
-                return Ok(OwnerLiveness::Unknown);
-            }
-            if !name.contains(".creating-") {
-                return Ok(OwnerLiveness::Dead);
-            }
+        }
+        if states.contains(&OwnerStatus::Alive) {
+            return Ok(if name.contains(".creating-") {
+                OwnerLiveness::Creating
+            } else {
+                OwnerLiveness::Live
+            });
+        }
+        if states.contains(&OwnerStatus::Unknown) {
+            return Ok(OwnerLiveness::Unknown);
+        }
+        if !name.contains(".creating-") {
+            return Ok(OwnerLiveness::Dead);
+        }
     }
     let age = now.saturating_sub(mtime_ms(base_dir)?);
     Ok(if age > CREATING_GRACE_MS {

@@ -10,9 +10,8 @@ pub(crate) static TEST_PROCESS_STATE: std::sync::Mutex<()> = std::sync::Mutex::n
 
 pub use features::claude_code_mcp_loader;
 pub use features::claude_code_mcp_loader::{
-    configure_allowed_env_vars, env_expander, transformer,
-    configure_allowed_env_vars::*, env_expander::*, loader::*,
-    scope_filter::should_load_mcp_server, transformer::*, types::*,
+    configure_allowed_env_vars, configure_allowed_env_vars::*, env_expander, env_expander::*,
+    loader::*, scope_filter::should_load_mcp_server, transformer, transformer::*, types::*,
 };
 pub use features::claude_code_plugin_loader;
 pub use features::claude_code_plugin_loader::*;
@@ -20,8 +19,8 @@ pub use features::claude_code_plugin_loader::*;
 pub use features::claude_code_agent_loader::{
     AgentFrontmatter, AgentJsonDefinition, AgentMode, AgentModel, AgentScope,
     ClaudeCodeAgentConfig, LoadedAgent, load_agent_definitions, load_agents_from_dir,
-    load_opencode_global_agents, load_opencode_project_agents, load_project_agents,
-    load_user_agents, load_native_agents, parse_json_agent_file, parse_markdown_agent_file,
+    load_native_agents, load_opencode_global_agents, load_opencode_project_agents,
+    load_project_agents, load_user_agents, parse_json_agent_file, parse_markdown_agent_file,
     read_opencode_config_agents,
 };
 pub use features::claude_code_command_loader::{

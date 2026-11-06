@@ -1,9 +1,9 @@
 pub mod arguments;
-pub mod model_selector;
-pub mod settings;
 pub mod commands;
-pub mod prompts;
 pub mod image_input;
-pub mod runner;
-pub mod render;
 pub mod index;
+pub mod model_selector;
+pub mod prompts;
+pub mod render;
+pub mod runner;
+pub mod settings;

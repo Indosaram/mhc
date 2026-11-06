@@ -3,7 +3,9 @@
 use image::Rgba;
 use senpi_desktop_core::backend::DeliveryMode;
 use senpi_desktop_core::error::{CoreResult, DesktopError, ErrorCode};
-use senpi_desktop_core::types::{DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, Target};
+use senpi_desktop_core::types::{
+    DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, Target,
+};
 
 use crate::ax_tree::AxTree;
 use crate::faults::{Faults, Reply};
@@ -96,7 +98,9 @@ impl FakeBackend {
         self.windows
             .iter()
             .find(|window| window.id == id)
-            .ok_or_else(|| DesktopError::window_not_found(format!("window {id} is not in the fake scenario")))
+            .ok_or_else(|| {
+                DesktopError::window_not_found(format!("window {id} is not in the fake scenario"))
+            })
     }
 
     /// Refuses input the scenario's capabilities say this host cannot deliver.

@@ -43,7 +43,7 @@ mod system;
 mod typing;
 
 #[cfg(target_os = "windows")]
-pub(crate) use dispatch::{Win32Input, cursor_position, warp_cursor};
+pub(crate) use dispatch::{cursor_position, warp_cursor, Win32Input};
 #[cfg(target_os = "windows")]
 pub(crate) use foreground::raise_window;
 #[cfg(target_os = "windows")]

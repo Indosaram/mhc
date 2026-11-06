@@ -26,8 +26,8 @@ use crate::isolation::salvage::{needs_crash_salvage, sweep_roots_for};
 use crate::isolation::settle::{SettleIsolationInput, settle_isolation};
 use crate::manager::isolation_wiring::IsolationSettings;
 use crate::state::{
-    IsolationMergeMode, IsolationMergeResult as TaskMergeResult, IsolationRecord, TaskIsolationSpec,
-    TaskRecord, TaskStatus, create_task_record,
+    IsolationMergeMode, IsolationMergeResult as TaskMergeResult, IsolationRecord,
+    TaskIsolationSpec, TaskRecord, TaskStatus, create_task_record,
 };
 
 /// A fake runtime that performs no cloning and records the calls it received.
@@ -87,7 +87,9 @@ impl IsolationRuntime for FakeRuntime {
     fn ensure(&self, _input: &EnsureInput) -> Result<IsolationHandle, IsolationError> {
         // The producer's IsolationHandle has private fields, so a fake cannot build one.
         self.recording("ensure");
-        Err(IsolationError::other("fake runtime does not build a real handle"))
+        Err(IsolationError::other(
+            "fake runtime does not build a real handle",
+        ))
     }
 
     fn capture_delta(
@@ -96,10 +98,16 @@ impl IsolationRuntime for FakeRuntime {
         _baseline: &WorktreeBaseline,
     ) -> Result<DeltaPatchResult, IsolationError> {
         self.recording("capture_delta");
-        Ok(DeltaPatchResult { root_patch: "patch".to_string(), nested_patches: Vec::new() })
+        Ok(DeltaPatchResult {
+            root_patch: "patch".to_string(),
+            nested_patches: Vec::new(),
+        })
     }
 
-    fn merge(&self, _options: IsolationMergeOptions) -> Result<IsolationMergeResult, IsolationError> {
+    fn merge(
+        &self,
+        _options: IsolationMergeOptions,
+    ) -> Result<IsolationMergeResult, IsolationError> {
         self.recording("merge");
         if self.merge_fails {
             return Err(IsolationError::other("merge boom"));
@@ -119,14 +127,21 @@ impl IsolationRuntime for FakeRuntime {
 
     fn retain(&self, handle: &IsolationHandle, reason: &str) -> Result<PathBuf, IsolationError> {
         self.recording(&format!("retain:{reason}"));
-        Ok(PathBuf::from(format!("{}.retained-1", handle.base_dir.display())))
+        Ok(PathBuf::from(format!(
+            "{}.retained-1",
+            handle.base_dir.display()
+        )))
     }
 
     fn write_owner(&self, _base_dir: &Path, _id: &str, _owner: &IsolationOwner) {
         self.recording("write_owner");
     }
 
-    fn sweep(&self, roots: &[PathBuf], _probe: Arc<dyn OwnerProbe>) -> Result<SweepResult, IsolationError> {
+    fn sweep(
+        &self,
+        roots: &[PathBuf],
+        _probe: Arc<dyn OwnerProbe>,
+    ) -> Result<SweepResult, IsolationError> {
         self.recording(&format!("sweep:{}", roots.len()));
         Ok(SweepResult::default())
     }
@@ -178,7 +193,9 @@ fn prepare_refuses_a_non_git_checkout_without_touching_the_child_cwd() {
         apply: true,
         host_pid: 1,
     });
-    assert!(matches!(preparation, IsolationPreparation::Refused { reason } if reason == "not a git checkout"));
+    assert!(
+        matches!(preparation, IsolationPreparation::Refused { reason } if reason == "not a git checkout")
+    );
     assert_eq!(runtime.calls(), vec!["resolve_repo_root".to_string()]);
 }
 
@@ -200,7 +217,9 @@ fn prepare_refuses_when_the_baseline_cannot_be_captured() {
         apply: true,
         host_pid: 1,
     });
-    assert!(matches!(preparation, IsolationPreparation::Refused { ref reason } if reason.starts_with("baseline capture failed")));
+    assert!(
+        matches!(preparation, IsolationPreparation::Refused { ref reason } if reason.starts_with("baseline capture failed"))
+    );
 }
 
 #[test]
@@ -227,7 +246,10 @@ fn settle_merges_a_completed_child_and_projects_the_result() {
 #[test]
 fn settle_retains_when_the_merge_fails() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let runtime = FakeRuntime { merge_fails: true, ..FakeRuntime::default() };
+    let runtime = FakeRuntime {
+        merge_fails: true,
+        ..FakeRuntime::default()
+    };
     let isolation = spec();
     let baseline = baseline(dir.path());
     let result = settle_isolation(&SettleIsolationInput {
@@ -260,7 +282,10 @@ fn needs_crash_salvage_is_true_only_for_a_terminal_isolated_record_without_a_mer
 
 #[test]
 fn sweep_roots_union_the_runtime_roots_with_every_record_base_dir() {
-    let runtime = FakeRuntime { roots: vec![PathBuf::from("/home/.omo/wt")], ..FakeRuntime::default() };
+    let runtime = FakeRuntime {
+        roots: vec![PathBuf::from("/home/.omo/wt")],
+        ..FakeRuntime::default()
+    };
     let record = record_with(Some(IsolationRecord::new(spec())));
     let roots = sweep_roots_for(&runtime, std::slice::from_ref(&record));
     assert!(roots.contains(&PathBuf::from("/home/.omo/wt")));
@@ -284,7 +309,10 @@ fn isolation_settings_from_config_keeps_auto_as_no_preference() {
     let auto = IsolationSettings::from_config(&serde_json::json!({
         "isolation": { "enabled": true, "backend": "auto", "apply": true, "merge": "patch" }
     }));
-    assert_eq!(auto.backend, None, "the config sentinel 'auto' is not a backend");
+    assert_eq!(
+        auto.backend, None,
+        "the config sentinel 'auto' is not a backend"
+    );
     assert!(auto.enabled);
     assert!(auto.apply);
     let pinned = IsolationSettings::from_config(&serde_json::json!({
@@ -300,7 +328,10 @@ fn isolation_settings_defaults_match_the_config_schema() {
     let default = IsolationSettings::from_config(&serde_json::json!({}));
     assert_eq!(default, IsolationSettings::default());
     assert!(!default.enabled);
-    assert_eq!(default.backend, None, "the schema default backend is 'auto'");
+    assert_eq!(
+        default.backend, None,
+        "the schema default backend is 'auto'"
+    );
     assert!(default.apply, "the schema default for apply is true");
     assert_eq!(default.merge, IsolationMergeMode::Patch);
 }

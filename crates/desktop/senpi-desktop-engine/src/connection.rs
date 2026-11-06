@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 use crate::engine::{Engine, SessionCall};
 use crate::route::Route;
-use crate::rpc::{Failure, failure_line, reply_line};
+use crate::rpc::{failure_line, reply_line, Failure};
 
 /// Reply lines buffered ahead of a slow reader of the output.
 const OUTBOUND_CAPACITY: usize = 256;

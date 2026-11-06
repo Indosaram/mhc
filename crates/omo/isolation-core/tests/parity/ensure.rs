@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use isolation_core::backends::git_fixture::repo;
-use isolation_core::test_support::{backend, fixture, Fixture, TestBackend};
+use isolation_core::test_support::{Fixture, TestBackend, backend, fixture};
 use isolation_core::{
-    choose_base_dir, cleanup_isolation, ensure_isolation, now_ms, retain_isolation, BackendKind,
-    BackendRef, EnsureIsolationOptions, FilesystemBaseDirIo, IsolationError,
+    BackendKind, BackendRef, EnsureIsolationOptions, FilesystemBaseDirIo, IsolationError,
+    choose_base_dir, cleanup_isolation, ensure_isolation, now_ms, retain_isolation,
 };
 
 fn options(f: &Fixture, id: &str, backends: Vec<BackendRef>) -> EnsureIsolationOptions {
@@ -22,7 +22,12 @@ fn options(f: &Fixture, id: &str, backends: Vec<BackendRef>) -> EnsureIsolationO
     }
 }
 
-fn preferred(f: &Fixture, id: &str, backends: Vec<BackendRef>, kind: BackendKind) -> EnsureIsolationOptions {
+fn preferred(
+    f: &Fixture,
+    id: &str,
+    backends: Vec<BackendRef>,
+    kind: BackendKind,
+) -> EnsureIsolationOptions {
     EnsureIsolationOptions {
         preferred: Some(kind),
         ..options(f, id, backends)
@@ -47,8 +52,8 @@ fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
 fn writes_marker_before_start_and_publishes_only_a_complete_directory() {
     let f = fixture();
     let before = now_ms();
-    let selection = choose_base_dir(&f.repo_root, &f.home_dir, "one", &FilesystemBaseDirIo)
-        .expect("base dir");
+    let selection =
+        choose_base_dir(&f.repo_root, &f.home_dir, "one", &FilesystemBaseDirIo).expect("base dir");
     let base_dir = selection.base_dir.clone();
     let probe_base = base_dir.clone();
     let backend: BackendRef = Arc::new(TestBackend {
@@ -59,8 +64,8 @@ fn writes_marker_before_start_and_publishes_only_a_complete_directory() {
                     .expect("parent")
                     .join(".omo-isolation-owner.json"),
             )?;
-            let marker: serde_json::Value =
-                serde_json::from_str(&marker_text).map_err(|error| IsolationError::other(error.to_string()))?;
+            let marker: serde_json::Value = serde_json::from_str(&marker_text)
+                .map_err(|error| IsolationError::other(error.to_string()))?;
             assert_eq!(marker.get("id").and_then(|id| id.as_str()), Some("one"));
             assert!(
                 !probe_base.exists(),
@@ -114,24 +119,34 @@ fn unavailable_start_falls_through_and_preserves_the_reason() {
     .expect("handle");
     assert_eq!(handle.backend, BackendKind::Rcopy);
     assert!(handle.fell_back);
-    assert!(handle
-        .fallback_reason
-        .clone()
-        .unwrap_or_default()
-        .contains("no clone support"));
+    assert!(
+        handle
+            .fallback_reason
+            .clone()
+            .unwrap_or_default()
+            .contains("no clone support")
+    );
     let parent = handle.base_dir.parent().expect("parent").to_path_buf();
     let entries: Vec<String> = std::fs::read_dir(&parent)
         .expect("readdir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert_eq!(
         entries,
-        vec![handle
-            .base_dir
-            .file_name()
-            .expect("name")
-            .to_string_lossy()
-            .into_owned()]
+        vec![
+            handle
+                .base_dir
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned()
+        ]
     );
 }
 
@@ -150,10 +165,12 @@ fn unavailable_probe_skips_start_and_falls_through() {
     })
     .expect("handle");
     assert_eq!(handle.backend, BackendKind::Rcopy);
-    assert!(handle
-        .fallback_reason
-        .unwrap_or_default()
-        .contains("wrong filesystem"));
+    assert!(
+        handle
+            .fallback_reason
+            .unwrap_or_default()
+            .contains("wrong filesystem")
+    );
 }
 
 #[test]
@@ -164,12 +181,19 @@ fn generic_start_error_propagates_and_removes_the_creating_directory() {
         ..TestBackend::new()
     });
     let error = ensure_isolation(preferred(&f, "one", vec![backend], BackendKind::Rcopy))
-        .err().expect("must fail");
+        .err()
+        .expect("must fail");
     assert!(error.to_string().contains("disk failure"));
     assert!(!error.is_unavailable());
     let entries: Vec<String> = std::fs::read_dir(f.home_dir.join(".omo/wt"))
         .expect("readdir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert!(entries.is_empty());
 }
@@ -182,8 +206,14 @@ fn generic_probe_error_propagates_without_falling_through() {
         probe_fn: Arc::new(|_, _| Err(IsolationError::other("probe I/O failure"))),
         ..TestBackend::new()
     });
-    let error = ensure_isolation(preferred(&f, "one", vec![apfs, backend()], BackendKind::Apfs))
-        .err().expect("must fail");
+    let error = ensure_isolation(preferred(
+        &f,
+        "one",
+        vec![apfs, backend()],
+        BackendKind::Apfs,
+    ))
+    .err()
+    .expect("must fail");
     assert!(error.to_string().contains("probe I/O failure"));
     assert!(!error.is_unavailable());
 }
@@ -207,16 +237,20 @@ fn a_probing_backend_whose_cli_fails_falls_through_instead_of_aborting_the_walk(
     .expect("handle");
     assert_eq!(handle.backend, BackendKind::Rcopy);
     assert!(handle.fell_back);
-    assert!(handle
-        .fallback_reason
-        .unwrap_or_default()
-        .contains("volume does not exist"));
+    assert!(
+        handle
+            .fallback_reason
+            .unwrap_or_default()
+            .contains("volume does not exist")
+    );
 }
 
 #[test]
 fn all_unavailable_yields_a_typed_error() {
     let f = fixture();
-    let error = ensure_isolation(options(&f, "one", Vec::new())).err().expect("must fail");
+    let error = ensure_isolation(options(&f, "one", Vec::new()))
+        .err()
+        .expect("must fail");
     assert!(error.is_unavailable());
     assert_eq!(error.code(), Some("isolation_unavailable"));
 }
@@ -261,9 +295,11 @@ fn retention_renames_the_complete_tree_and_stores_the_reason() {
     let handle = ensure_isolation(preferred(&f, "one", vec![backend()], BackendKind::Rcopy))
         .expect("handle");
     let retained = retain_isolation(&handle, "merge conflict").expect("retained");
-    assert!(retained
-        .to_string_lossy()
-        .contains(&format!("{}.retained-", handle.base_dir.to_string_lossy())));
+    assert!(
+        retained
+            .to_string_lossy()
+            .contains(&format!("{}.retained-", handle.base_dir.to_string_lossy()))
+    );
     std::fs::metadata(retained.join("m")).expect("retained merged tree");
     assert!(!handle.base_dir.exists());
     let marker: serde_json::Value = serde_json::from_str(
@@ -344,7 +380,13 @@ fn fall_through_leaves_no_creating_directory_behind() {
     let parent = handle.base_dir.parent().expect("parent").to_path_buf();
     let leftovers: Vec<String> = std::fs::read_dir(&parent)
         .expect("readdir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|name| name.contains(".creating-"))
         .collect();
     assert!(leftovers.is_empty());
@@ -365,8 +407,13 @@ fn publication_and_retention_route_through_the_backend_relocation_hook() {
         })),
         ..TestBackend::new()
     });
-    let handle = ensure_isolation(preferred(&f, "relocate", vec![instance], BackendKind::Rcopy))
-        .expect("handle");
+    let handle = ensure_isolation(preferred(
+        &f,
+        "relocate",
+        vec![instance],
+        BackendKind::Rcopy,
+    ))
+    .expect("handle");
     let creating = PathBuf::from(format!(
         "{}.creating-{}",
         handle.base_dir.to_string_lossy(),
@@ -407,9 +454,13 @@ fn retry_restores_ownership_after_a_mount_backend_removes_its_whole_base() {
         }),
         ..TestBackend::new()
     });
-    let handle =
-        ensure_isolation(preferred(&f, "retry-owner", vec![backend], BackendKind::Rcopy))
-            .expect("handle");
+    let handle = ensure_isolation(preferred(
+        &f,
+        "retry-owner",
+        vec![backend],
+        BackendKind::Rcopy,
+    ))
+    .expect("handle");
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     let marker: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(handle.base_dir.join(".omo-isolation-owner.json"))
@@ -436,7 +487,8 @@ fn git_snapshot_inconsistency_after_retry_is_a_hard_failure_not_a_fallback_signa
         preferred: Some(BackendKind::Rcopy),
         ..options(&f, "broken", vec![backend])
     })
-    .err().expect("must fail");
+    .err()
+    .expect("must fail");
     assert!(!error.is_unavailable());
     assert!(error.to_string().contains("snapshot"));
 }

@@ -79,9 +79,11 @@ fn rcopy_seeds_staged_unstaged_and_nul_delimited_untracked_files_without_ignored
         );
     }
     backend.stop(&merged).expect("stop");
-    assert!(!git(&lower, &["worktree", "list", "--porcelain"])
-        .expect("worktrees")
-        .contains(&merged.to_string_lossy().into_owned()));
+    assert!(
+        !git(&lower, &["worktree", "list", "--porcelain"])
+            .expect("worktrees")
+            .contains(&merged.to_string_lossy().into_owned())
+    );
 }
 
 #[test]
@@ -100,12 +102,16 @@ fn rcopy_plain_copy_preserves_symlinks_refuses_existing_destinations_and_enforce
     backend
         .start(&lower, &merged, &context(&f.root, Some(100)))
         .expect("start");
-    assert!(std::fs::symlink_metadata(merged.join("link"))
-        .expect("lstat")
-        .file_type()
-        .is_symlink());
-    assert!(backend
-        .start(&lower, &merged, &context(&f.root, Some(100)))
-        .is_err());
+    assert!(
+        std::fs::symlink_metadata(merged.join("link"))
+            .expect("lstat")
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        backend
+            .start(&lower, &merged, &context(&f.root, Some(100)))
+            .is_err()
+    );
     backend.stop(&merged).expect("stop");
 }

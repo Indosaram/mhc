@@ -169,7 +169,8 @@ pub fn resolve_daemon_runtime(
             message: format!(
                 "{OMO_LSP_DAEMON_CLI} and {OMO_LSP_DAEMON_VERSION} must be set together"
             ),
-        }.into());
+        }
+        .into());
     }
 
     let (Some(cli_override), Some(version_override)) = (cli_override, version_override) else {
@@ -177,7 +178,8 @@ pub fn resolve_daemon_runtime(
             return Err(InvalidRuntimeOverrideError {
                 reason: InvalidRuntimeOverrideReason::PackagedCliMustBeAbsolute,
                 message: String::from("Packaged LSP daemon CLI path must be absolute"),
-            }.into());
+            }
+            .into());
         }
         return Ok(DaemonRuntime {
             cli_path: defaults.cli_path.clone(),
@@ -191,7 +193,8 @@ pub fn resolve_daemon_runtime(
             message: format!(
                 "{OMO_LSP_DAEMON_CLI} must be an absolute path to an existing regular file"
             ),
-        }.into());
+        }
+        .into());
     }
 
     if !stat_is_file(Path::new(cli_override)) {
@@ -203,7 +206,8 @@ pub fn resolve_daemon_runtime(
                 InvalidRuntimeOverrideReason::CliNotFound
             },
             message: format!("{OMO_LSP_DAEMON_CLI} must name an existing regular file"),
-        }.into());
+        }
+        .into());
     }
 
     Ok(DaemonRuntime {
@@ -221,17 +225,26 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime directory");
         let cli = root.path().join("cli");
         std::fs::write(&cli, "").expect("runtime CLI fixture");
-        let defaults = DaemonRuntime { cli_path: cli.clone(), version: "../bad".to_string() };
+        let defaults = DaemonRuntime {
+            cli_path: cli.clone(),
+            version: "../bad".to_string(),
+        };
         let override_env = Env::from([
-            (OMO_LSP_DAEMON_CLI.to_string(), cli.to_string_lossy().into_owned()),
+            (
+                OMO_LSP_DAEMON_CLI.to_string(),
+                cli.to_string_lossy().into_owned(),
+            ),
             (OMO_LSP_DAEMON_VERSION.to_string(), "../bad".to_string()),
         ]);
         for env in [Env::new(), override_env] {
             let error = resolve_daemon_runtime(&env, &defaults).expect_err("invalid version");
             assert_eq!(error.code(), "invalid_daemon_version");
-            assert_eq!(error, DaemonRuntimeError::Version(InvalidDaemonVersionError {
-                version: "../bad".to_string(),
-            }));
+            assert_eq!(
+                error,
+                DaemonRuntimeError::Version(InvalidDaemonVersionError {
+                    version: "../bad".to_string(),
+                })
+            );
         }
     }
 }

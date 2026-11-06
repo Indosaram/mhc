@@ -169,7 +169,8 @@ async fn faux_provider_accepts_repaired_messages() {
     let registration = maho_ai::compat::register_faux_provider(RegisterFauxProviderOptions {
         scheduler_hook: Some(std::sync::Arc::new(|| Box::pin(async {}))),
         ..Default::default()
-    }).expect("register faux API provider");
+    })
+    .expect("register faux API provider");
     registration.set_responses(vec![
         faux_assistant_message("acknowledged", FauxAssistantMessageOptions::default()).into(),
     ]);

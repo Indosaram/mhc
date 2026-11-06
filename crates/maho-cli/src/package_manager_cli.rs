@@ -437,7 +437,11 @@ pub async fn run_package_command(
     if options.command == PackageCommand::Update
         && matches!(options.update_target, None | Some(UpdateTarget::SelfOnly))
     {
-        return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned).await;
+        return run_self_update(
+            maho_core::brand::brand_profile().update.as_ref(),
+            options.allow_unsigned,
+        )
+        .await;
     }
     if options.command == PackageCommand::Update
         && options.update_target == Some(UpdateTarget::Models)
@@ -449,7 +453,8 @@ pub async fn run_package_command(
                 models_path: Some(agent_dir.join("models.json")),
                 ..Default::default()
             },
-        ).map_err(|error| error.to_string())?;
+        )
+        .map_err(|error| error.to_string())?;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             runtime.refresh(maho_ai::models::ModelsRefreshOptions {
@@ -523,7 +528,9 @@ async fn run_self_update(
         ));
         return Ok(());
     }
-    crate::native_update::update(allow_unsigned).await.map_err(Into::into)
+    crate::native_update::update(allow_unsigned)
+        .await
+        .map_err(Into::into)
 }
 
 /// The caller's settings manager is borrowed by the real resource manager throughout execution.
@@ -624,8 +631,11 @@ pub async fn execute_package_command(
                 }
                 UpdateTarget::All => {
                     // The application update goes first so a failing resource package cannot block it.
-                    run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
-                        .await?;
+                    run_self_update(
+                        maho_core::brand::brand_profile().update.as_ref(),
+                        options.allow_unsigned,
+                    )
+                    .await?;
                     manager.update(None).await.map_err(|error| {
                         format!(
                             "{} was updated, but updating packages failed: {error}",
@@ -635,8 +645,11 @@ pub async fn execute_package_command(
                     "Updated packages\n".into()
                 }
                 UpdateTarget::SelfOnly => {
-                    return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
-                        .await;
+                    return run_self_update(
+                        maho_core::brand::brand_profile().update.as_ref(),
+                        options.allow_unsigned,
+                    )
+                    .await;
                 }
                 UpdateTarget::Models => {
                     return Err(

@@ -205,22 +205,24 @@ impl SqliteGatewayStore {
         });
         drop(extensions);
         drop(ctx);
-        if phase == SessionCallPhase::Op && reply.result.is_ok()
+        if phase == SessionCallPhase::Op
+            && reply.result.is_ok()
             && let (Some(wake_dir), Some(wake)) = (wake_dir.as_deref(), entry.entry.wake.as_deref())
-                && let Err(error) = super::extension_session_ops::touch_wake(
-                    Path::new(&self.config.agent_dir),
-                    wake_dir,
-                    wake,
-                ) {
-                    let listeners = self
-                        .after_commit_listeners
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    for listener in listeners {
-                        listener(name, &error.message());
-                    }
-                }
+            && let Err(error) = super::extension_session_ops::touch_wake(
+                Path::new(&self.config.agent_dir),
+                wake_dir,
+                wake,
+            )
+        {
+            let listeners = self
+                .after_commit_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for listener in listeners {
+                listener(name, &error.message());
+            }
+        }
         reply
     }
 }

@@ -1,7 +1,7 @@
 //! Port of the capture half of `omo-senpi/src/extension/tool-capture-registry.test.ts`.
 
-use maho_omo::ToolCaptureRegistry;
 use crate::support::{fake_tool, new_api};
+use maho_omo::ToolCaptureRegistry;
 
 #[test]
 fn every_registered_tool_is_captured_with_its_execute_closure_in_order() {
@@ -12,11 +12,20 @@ fn every_registered_tool_is_captured_with_its_execute_closure_in_order() {
     api.register_tool(fake_tool("task_send"));
 
     let registry = ToolCaptureRegistry::new();
-    registry.capture(api.registered.tools.iter().map(|tool| tool.definition.clone()).collect());
+    registry.capture(
+        api.registered
+            .tools
+            .iter()
+            .map(|tool| tool.definition.clone())
+            .collect(),
+    );
 
     let captured = registry.get_captured_tools();
     assert_eq!(
-        captured.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>(),
+        captured
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>(),
         vec![
             "lsp_diagnostics".to_owned(),
             "lsp_find_references".to_owned(),
@@ -24,7 +33,11 @@ fn every_registered_tool_is_captured_with_its_execute_closure_in_order() {
             "task_send".to_owned(),
         ]
     );
-    assert!(captured.iter().all(|tool| tool.parameters == serde_json::json!({ "type": "object" })));
+    assert!(
+        captured
+            .iter()
+            .all(|tool| tool.parameters == serde_json::json!({ "type": "object" }))
+    );
 }
 
 #[test]

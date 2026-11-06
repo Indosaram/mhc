@@ -1,59 +1,223 @@
-use std::collections::BTreeMap;
-use maho_ai::{types::Model,utils::chatgpt_subscription_auth::extract_chatgpt_subscription_account_id};
-use sha2::{Digest,Sha256};
-use url::Url;
 use crate::openai_remote_schema::OpenAiRemoteCompactionOrigin;
+use maho_ai::{
+    types::Model, utils::chatgpt_subscription_auth::extract_chatgpt_subscription_account_id,
+};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use url::Url;
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpenAiRemoteCompactionIdentity {pub provider:String,pub api:String}
-pub fn parse_openai_remote_compaction_identity(provider:&str,api:&str)->Option<OpenAiRemoteCompactionIdentity> {
-    if (!provider.is_empty() && api=="openai-responses") || (provider=="chatgpt-subscription" && api=="openai-codex-responses") {Some(OpenAiRemoteCompactionIdentity {provider:provider.into(),api:api.into()})} else {None}
+pub struct OpenAiRemoteCompactionIdentity {
+    pub provider: String,
+    pub api: String,
 }
-fn codex(model:&Model)->bool {model.api=="openai-codex-responses"}
-fn base_url(model:&Model)->&str {if model.base_url.is_empty() {if codex(model) {"https://chatgpt.com/backend-api"} else {"https://api.openai.com/v1"}} else {&model.base_url}}
-fn platform()->&'static str {if cfg!(target_os="macos") {"darwin"} else if cfg!(target_os="windows") {"win32"} else {std::env::consts::OS}}
-fn arch()->&'static str {match std::env::consts::ARCH {"x86_64"=>"x64","aarch64"=>"arm64","x86"=>"ia32",arch=>arch}}
-pub fn is_openai_remote_compaction_model(model:Option<&Model>)->bool {
-    let Some(model)=model else {return false;};
-    if parse_openai_remote_compaction_identity(&model.provider,&model.api).is_none() {return false;}
-    if model.api=="openai-responses" && model.provider!="openai" && !model.compat.as_ref().is_some_and(|c|c.0.get("supportsRemoteCompactionV2")==Some(&serde_json::Value::Bool(true))) {return false;}
-    if !codex(model) {return true;}
-    Url::parse(base_url(model)).is_ok_and(|u|(u.scheme()=="https" && u.host_str()==Some("chatgpt.com")) || matches!(u.host_str(),Some("127.0.0.1"|"[::1]"|"localhost")))
+pub fn parse_openai_remote_compaction_identity(
+    provider: &str,
+    api: &str,
+) -> Option<OpenAiRemoteCompactionIdentity> {
+    if (!provider.is_empty() && api == "openai-responses")
+        || (provider == "chatgpt-subscription" && api == "openai-codex-responses")
+    {
+        Some(OpenAiRemoteCompactionIdentity {
+            provider: provider.into(),
+            api: api.into(),
+        })
+    } else {
+        None
+    }
 }
-pub fn matches_openai_remote_compaction_identity(model:&Model,identity:&OpenAiRemoteCompactionIdentity)->bool {model.provider==identity.provider && model.api==identity.api}
-pub fn openai_remote_compaction_identity(model:&Model)->OpenAiRemoteCompactionIdentity {OpenAiRemoteCompactionIdentity {provider:if codex(model) {"chatgpt-subscription".into()} else {model.provider.clone()},api:model.api.clone()}}
-pub fn openai_remote_compaction_endpoint_path(model:&Model)->&'static str {if codex(model) {"codex/responses/compact"} else {"responses/compact"}}
-pub fn openai_remote_compaction_endpoint_url(model:&Model)->Result<String,url::ParseError> {
-    let base=base_url(model);let base=if base.ends_with('/') {base.into()} else {format!("{base}/")};
-    Ok(Url::parse(&base)?.join(openai_remote_compaction_endpoint_path(model))?.to_string())
+fn codex(model: &Model) -> bool {
+    model.api == "openai-codex-responses"
 }
-pub fn openai_remote_compaction_origin(model:&Model,headers:&BTreeMap<String,String>)->Option<OpenAiRemoteCompactionOrigin> {
-    let mut url=Url::parse(base_url(model)).ok()?;
-    let _=url.set_username("");let _=url.set_password(None);url.set_query(None);url.set_fragment(None);
-    let path=url.path().trim_end_matches('/').to_owned();url.set_path(if path.is_empty() {"/"} else {&path});
-    let trust_domain=url.origin().ascii_serialization();
-    let endpoint=if url.path()=="/" {trust_domain.clone()} else {url.to_string().trim_end_matches('/').into()};
-    if codex(model) && !headers.iter().any(|(k,v)|k.eq_ignore_ascii_case("chatgpt-account-id") && !v.is_empty()) {return None;}
-    let mut material:Vec<_>=headers.iter().filter_map(|(k,v)| {
-        let name=k.to_lowercase();
-        if matches!(name.as_str(),"content-length"|"user-agent"|"request-id"|"x-client-request-id"|"x-request-id") || (codex(model) && name=="authorization") {None} else {Some(format!("{name}\0{}",v.trim()))}
-    }).collect();
-    if material.is_empty() {return None;}
-    material.sort_by(|a,b|a.encode_utf16().cmp(b.encode_utf16()));
-    let hash=Sha256::digest(material.join("\n").as_bytes());
-    Some(OpenAiRemoteCompactionOrigin {endpoint,trust_domain,auth_tenant_fingerprint:format!("sha256:{hash:x}")})
+fn base_url(model: &Model) -> &str {
+    if model.base_url.is_empty() {
+        if codex(model) {
+            "https://chatgpt.com/backend-api"
+        } else {
+            "https://api.openai.com/v1"
+        }
+    } else {
+        &model.base_url
+    }
 }
-pub fn create_openai_remote_compaction_headers(model:&Model,api_key:Option<&str>,additional:&BTreeMap<String,Option<String>>,session_id:Option<&str>,os_release:&str)->Option<BTreeMap<String,String>> {
-    let mut headers:BTreeMap<_,_>=model.headers.iter().flat_map(|h|h.iter()).map(|(k,v)|(k.to_lowercase(),v.trim().to_owned())).collect();
-    for (k,v) in additional {let k=k.to_lowercase();if let Some(v)=v {headers.insert(k,v.trim().into());} else {headers.remove(&k);}}
-    headers.insert("content-type".into(),"application/json".into());
-    if codex(model) && let Some(key)=api_key.filter(|k|!k.is_empty()) {
-        headers.insert("authorization".into(),format!("Bearer {key}"));
-        if let Some(account)=extract_chatgpt_subscription_account_id(key) {headers.insert("chatgpt-account-id".into(),account);} else {headers.remove("chatgpt-account-id");}
-    } else if !headers.contains_key("authorization") && let Some(key)=api_key.filter(|k|!k.is_empty()) {headers.insert("authorization".into(),format!("Bearer {key}"));}
-    if !headers.contains_key("authorization") {return None;}
+fn platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        std::env::consts::OS
+    }
+}
+fn arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        arch => arch,
+    }
+}
+pub fn is_openai_remote_compaction_model(model: Option<&Model>) -> bool {
+    let Some(model) = model else {
+        return false;
+    };
+    if parse_openai_remote_compaction_identity(&model.provider, &model.api).is_none() {
+        return false;
+    }
+    if model.api == "openai-responses"
+        && model.provider != "openai"
+        && !model.compat.as_ref().is_some_and(|c| {
+            c.0.get("supportsRemoteCompactionV2") == Some(&serde_json::Value::Bool(true))
+        })
+    {
+        return false;
+    }
+    if !codex(model) {
+        return true;
+    }
+    Url::parse(base_url(model)).is_ok_and(|u| {
+        (u.scheme() == "https" && u.host_str() == Some("chatgpt.com"))
+            || matches!(u.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"))
+    })
+}
+pub fn matches_openai_remote_compaction_identity(
+    model: &Model,
+    identity: &OpenAiRemoteCompactionIdentity,
+) -> bool {
+    model.provider == identity.provider && model.api == identity.api
+}
+pub fn openai_remote_compaction_identity(model: &Model) -> OpenAiRemoteCompactionIdentity {
+    OpenAiRemoteCompactionIdentity {
+        provider: if codex(model) {
+            "chatgpt-subscription".into()
+        } else {
+            model.provider.clone()
+        },
+        api: model.api.clone(),
+    }
+}
+pub fn openai_remote_compaction_endpoint_path(model: &Model) -> &'static str {
     if codex(model) {
-        headers.insert("originator".into(),"senpi".into());headers.insert("user-agent".into(),format!("senpi ({} {os_release}; {})",platform(),arch()));headers.insert("openai-beta".into(),"responses=experimental".into());headers.insert("accept".into(),"text/event-stream".into());
-        if let Some(id)=session_id.filter(|id|!id.is_empty()) {headers.insert("session-id".into(),id.into());headers.insert("x-client-request-id".into(),id.into());}
+        "codex/responses/compact"
+    } else {
+        "responses/compact"
+    }
+}
+pub fn openai_remote_compaction_endpoint_url(model: &Model) -> Result<String, url::ParseError> {
+    let base = base_url(model);
+    let base = if base.ends_with('/') {
+        base.into()
+    } else {
+        format!("{base}/")
+    };
+    Ok(Url::parse(&base)?
+        .join(openai_remote_compaction_endpoint_path(model))?
+        .to_string())
+}
+pub fn openai_remote_compaction_origin(
+    model: &Model,
+    headers: &BTreeMap<String, String>,
+) -> Option<OpenAiRemoteCompactionOrigin> {
+    let mut url = Url::parse(base_url(model)).ok()?;
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(if path.is_empty() { "/" } else { &path });
+    let trust_domain = url.origin().ascii_serialization();
+    let endpoint = if url.path() == "/" {
+        trust_domain.clone()
+    } else {
+        url.to_string().trim_end_matches('/').into()
+    };
+    if codex(model)
+        && !headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("chatgpt-account-id") && !v.is_empty())
+    {
+        return None;
+    }
+    let mut material: Vec<_> = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            let name = k.to_lowercase();
+            if matches!(
+                name.as_str(),
+                "content-length"
+                    | "user-agent"
+                    | "request-id"
+                    | "x-client-request-id"
+                    | "x-request-id"
+            ) || (codex(model) && name == "authorization")
+            {
+                None
+            } else {
+                Some(format!("{name}\0{}", v.trim()))
+            }
+        })
+        .collect();
+    if material.is_empty() {
+        return None;
+    }
+    material.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    let hash = Sha256::digest(material.join("\n").as_bytes());
+    Some(OpenAiRemoteCompactionOrigin {
+        endpoint,
+        trust_domain,
+        auth_tenant_fingerprint: format!("sha256:{hash:x}"),
+    })
+}
+pub fn create_openai_remote_compaction_headers(
+    model: &Model,
+    api_key: Option<&str>,
+    additional: &BTreeMap<String, Option<String>>,
+    session_id: Option<&str>,
+    os_release: &str,
+) -> Option<BTreeMap<String, String>> {
+    let mut headers: BTreeMap<_, _> = model
+        .headers
+        .iter()
+        .flat_map(|h| h.iter())
+        .map(|(k, v)| (k.to_lowercase(), v.trim().to_owned()))
+        .collect();
+    for (k, v) in additional {
+        let k = k.to_lowercase();
+        if let Some(v) = v {
+            headers.insert(k, v.trim().into());
+        } else {
+            headers.remove(&k);
+        }
+    }
+    headers.insert("content-type".into(), "application/json".into());
+    if codex(model)
+        && let Some(key) = api_key.filter(|k| !k.is_empty())
+    {
+        headers.insert("authorization".into(), format!("Bearer {key}"));
+        if let Some(account) = extract_chatgpt_subscription_account_id(key) {
+            headers.insert("chatgpt-account-id".into(), account);
+        } else {
+            headers.remove("chatgpt-account-id");
+        }
+    } else if !headers.contains_key("authorization")
+        && let Some(key) = api_key.filter(|k| !k.is_empty())
+    {
+        headers.insert("authorization".into(), format!("Bearer {key}"));
+    }
+    if !headers.contains_key("authorization") {
+        return None;
+    }
+    if codex(model) {
+        headers.insert("originator".into(), "senpi".into());
+        headers.insert(
+            "user-agent".into(),
+            format!("senpi ({} {os_release}; {})", platform(), arch()),
+        );
+        headers.insert("openai-beta".into(), "responses=experimental".into());
+        headers.insert("accept".into(), "text/event-stream".into());
+        if let Some(id) = session_id.filter(|id| !id.is_empty()) {
+            headers.insert("session-id".into(), id.into());
+            headers.insert("x-client-request-id".into(), id.into());
+        }
     }
     Some(headers)
 }
@@ -75,22 +239,31 @@ fn kernel_release() -> std::io::Result<String> {
 }
 #[cfg(windows)]
 fn kernel_release() -> std::io::Result<String> {
-    let output = std::process::Command::new("cmd").args(["/c", "ver"]).output()?;
+    let output = std::process::Command::new("cmd")
+        .args(["/c", "ver"])
+        .output()?;
     if !output.status.success() {
         return Err(std::io::Error::other("cmd /c ver failed"));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let in_brackets = text
         .find('[')
-        .and_then(|open| text.rfind(']').filter(|&close| close > open).map(|close| &text[open + 1..close]))
+        .and_then(|open| {
+            text.rfind(']')
+                .filter(|&close| close > open)
+                .map(|close| &text[open + 1..close])
+        })
         .unwrap_or(&text);
     let version = in_brackets
         .split_whitespace()
         .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
         .and_then(|v| {
             let parts: Vec<&str> = v.split('.').take(3).collect();
-            (!parts.is_empty() && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
-                .then(|| parts.join("."))
+            (!parts.is_empty()
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+            .then(|| parts.join("."))
         })
         .unwrap_or_else(|| "10.0.0".to_string());
     Ok(version)
@@ -105,15 +278,29 @@ fn kernel_release() -> std::io::Result<String> {
 /// The kernel release is read once per process: every OpenAI remote provider request builds these
 /// headers, and off Linux the lookup spawns a process. The first result, success or failure, is kept.
 fn cached_kernel_release() -> std::io::Result<&'static str> {
-    static RELEASE: std::sync::OnceLock<Result<String, (std::io::ErrorKind, String)>> = std::sync::OnceLock::new();
-    match RELEASE.get_or_init(|| kernel_release().map_err(|error| (error.kind(), error.to_string()))) {
+    static RELEASE: std::sync::OnceLock<Result<String, (std::io::ErrorKind, String)>> =
+        std::sync::OnceLock::new();
+    match RELEASE
+        .get_or_init(|| kernel_release().map_err(|error| (error.kind(), error.to_string())))
+    {
         Ok(release) => Ok(release.as_str()),
         Err((kind, message)) => Err(std::io::Error::new(*kind, message.clone())),
     }
 }
-pub fn create_live_openai_remote_compaction_headers(model: &Model, api_key: Option<&str>, additional: &BTreeMap<String, Option<String>>, session_id: Option<&str>) -> std::io::Result<Option<BTreeMap<String, String>>> {
+pub fn create_live_openai_remote_compaction_headers(
+    model: &Model,
+    api_key: Option<&str>,
+    additional: &BTreeMap<String, Option<String>>,
+    session_id: Option<&str>,
+) -> std::io::Result<Option<BTreeMap<String, String>>> {
     let release = cached_kernel_release()?;
-    Ok(create_openai_remote_compaction_headers(model, api_key, additional, session_id, release.trim_end()))
+    Ok(create_openai_remote_compaction_headers(
+        model,
+        api_key,
+        additional,
+        session_id,
+        release.trim_end(),
+    ))
 }
 #[cfg(test)]
 mod kernel_release_tests {

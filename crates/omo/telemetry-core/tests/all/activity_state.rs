@@ -128,8 +128,12 @@ fn stale_state_sends_next_day_and_preserves_schema_field_name() {
 fn malformed_state_json_is_treated_as_missing_and_recorded_in_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let path = get_telemetry_activity_state_file_path(dir.path());
-    fs::write(&path, "{bad-json
-").unwrap();
+    fs::write(
+        &path,
+        "{bad-json
+",
+    )
+    .unwrap();
     let now = at("2026-05-25T10:20:30.000Z");
     let events = std::cell::RefCell::new(Vec::new());
     let sink = |input: &TelemetryDiagnosticInput| {
@@ -213,8 +217,12 @@ fn yesterday_claim_pruned_on_fresh_day() {
 fn unwritable_state_dir_bounded_to_single_capture_in_process() {
     let root = tempfile::tempdir().unwrap();
     let blocker = root.path().join("blocker");
-    fs::write(&blocker, "not a directory
-").unwrap();
+    fs::write(
+        &blocker,
+        "not a directory
+",
+    )
+    .unwrap();
     let unwritable_state_dir = blocker.join("state");
 
     let first = get_daily_active_capture_state(&DailyActiveCaptureStateInput {
@@ -242,8 +250,12 @@ fn unwritable_state_dir_bounded_to_single_capture_in_process() {
 fn corrupt_state_file_captures_and_repairs_state() {
     let dir = tempfile::tempdir().unwrap();
     let state_file_path = get_telemetry_activity_state_file_path(dir.path());
-    fs::write(&state_file_path, "{bad-json
-").unwrap();
+    fs::write(
+        &state_file_path,
+        "{bad-json
+",
+    )
+    .unwrap();
 
     let result = get_daily_active_capture_state(&DailyActiveCaptureStateInput {
         state_dir: dir.path(),
@@ -263,7 +275,11 @@ fn corrupt_state_file_captures_and_repairs_state() {
 fn state_already_stamped_today_reports_false_without_touching_dir() {
     let dir = tempfile::tempdir().unwrap();
     let state_file_path = get_telemetry_activity_state_file_path(dir.path());
-    fs::write(&state_file_path, format!("{{\"lastActiveDayUTC\":\"{DAY_UTC}\"}}\n")).unwrap();
+    fs::write(
+        &state_file_path,
+        format!("{{\"lastActiveDayUTC\":\"{DAY_UTC}\"}}\n"),
+    )
+    .unwrap();
     let entries_before = read_dir_names(dir.path());
     let mtime_before = fs::metadata(&state_file_path).unwrap().modified().unwrap();
 
@@ -307,12 +323,12 @@ fn many_concurrent_evaluations_on_fresh_day_exactly_one_captures() {
         }));
     }
 
-    let results: Vec<bool> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
+    let results: Vec<bool> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     let capture_count = results.iter().filter(|&&c| c).count();
-    assert_eq!(capture_count, 1, "exactly one concurrent worker must capture");
+    assert_eq!(
+        capture_count, 1,
+        "exactly one concurrent worker must capture"
+    );
     assert_eq!(results.len(), WORKER_COUNT);
 }

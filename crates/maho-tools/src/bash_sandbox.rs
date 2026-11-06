@@ -317,7 +317,11 @@ mod tests {
             )
             .expect("test");
             assert_eq!(out.command, "ls");
-            assert!(notice.expect("test").starts_with("bash sandbox unavailable: "));
+            assert!(
+                notice
+                    .expect("test")
+                    .starts_with("bash sandbox unavailable: ")
+            );
         }
     }
 
@@ -336,7 +340,8 @@ mod tests {
                 &[],
                 &|_| None,
             )
-            .err().expect("test");
+            .err()
+            .expect("test");
             assert_eq!(
                 error.to_string(),
                 format!("bashSandbox is \"required\" but {tool} is not available on this system")

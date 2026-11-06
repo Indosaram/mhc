@@ -38,7 +38,10 @@ struct Ctx {
 
 impl Ctx {
     fn new() -> Self {
-        Self { errors: Vec::new(), stack: vec![Frame::default()] }
+        Self {
+            errors: Vec::new(),
+            stack: vec![Frame::default()],
+        }
     }
 
     fn at_capacity(&self) -> bool {
@@ -46,7 +49,12 @@ impl Ctx {
     }
 
     fn add(&mut self, keyword: &'static str, instance_path: &str, message: String) -> bool {
-        self.add_issue(Issue { keyword, instance_path: instance_path.to_owned(), message, required_properties: Vec::new() })
+        self.add_issue(Issue {
+            keyword,
+            instance_path: instance_path.to_owned(),
+            message,
+            required_properties: Vec::new(),
+        })
     }
 
     fn add_issue(&mut self, issue: Issue) -> bool {
@@ -89,7 +97,9 @@ impl Ctx {
     }
 
     fn has_index(&self, index: usize) -> bool {
-        self.stack.last().is_some_and(|top| top.indices.contains(&index))
+        self.stack
+            .last()
+            .is_some_and(|top| top.indices.contains(&index))
     }
 
     fn merge(&mut self, other: &Ctx) {
@@ -121,9 +131,13 @@ fn limit_text(value: &Value) -> String {
 pub(super) fn js_deep_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
-        (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| js_deep_equal(x, y)),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| js_deep_equal(x, y))
+        }
         (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len() && a.iter().all(|(key, x)| b.get(key).is_some_and(|y| js_deep_equal(x, y)))
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, x)| b.get(key).is_some_and(|y| js_deep_equal(x, y)))
         }
         _ => left == right,
     }
@@ -134,7 +148,11 @@ fn is_multiple_of(dividend: f64, divisor: f64) -> bool {
         return true;
     }
     let modulo = dividend % divisor;
-    modulo.abs().min((modulo - divisor).abs()).min((modulo + divisor).abs()) < 1e-10
+    modulo
+        .abs()
+        .min((modulo - divisor).abs())
+        .min((modulo + divisor).abs())
+        < 1e-10
 }
 
 fn type_matches(name: &str, value: &Value) -> bool {
@@ -160,7 +178,8 @@ fn type_names(schema: &Map<String, Value>) -> Option<Vec<&str>> {
 
 /// Compiled schema `pattern`/`patternProperties` sources, keyed by source; bounded by the distinct
 /// schema patterns in use (model-supplied `format: "regex"` values are never cached).
-static PATTERN_CACHE: LazyLock<RwLock<HashMap<String, Option<Arc<Regex>>>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+static PATTERN_CACHE: LazyLock<RwLock<HashMap<String, Option<Arc<Regex>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn regex_test(pattern: &str, text: &str) -> bool {
     // PERF-DIVERGENCE(ajv): ajv compiles each pattern once per schema; this port shares a process-wide pattern cache and takes only a read lock on the hit path so parallel tool-call validations do not contend. Match results are identical.
@@ -256,11 +275,22 @@ impl<'a> Engine<'a> {
         ok
     }
 
-    fn object_keywords(&self, ctx: &mut Ctx, path: &str, s: &Map<String, Value>, object: &Map<String, Value>, value: &Value) -> bool {
+    fn object_keywords(
+        &self,
+        ctx: &mut Ctx,
+        path: &str,
+        s: &Map<String, Value>,
+        object: &Map<String, Value>,
+        value: &Value,
+    ) -> bool {
         let mut ok = true;
         if let Some(Value::Array(required)) = s.get("required") {
-            let missing: Vec<String> =
-                required.iter().filter_map(Value::as_str).filter(|key| !object.contains_key(*key)).map(str::to_owned).collect();
+            let missing: Vec<String> = required
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|key| !object.contains_key(*key))
+                .map(str::to_owned)
+                .collect();
             if !missing.is_empty() {
                 ok &= ctx.add_issue(Issue {
                     keyword: "required",
@@ -272,16 +302,28 @@ impl<'a> Engine<'a> {
         }
         if let Some(additional) = s.get("additionalProperties").filter(|v| is_schema(v)) {
             let properties = s.get("properties").and_then(Value::as_object);
-            let patterns: Vec<&String> = s.get("patternProperties").and_then(Value::as_object).map(|p| p.keys().collect()).unwrap_or_default();
+            let patterns: Vec<&String> = s
+                .get("patternProperties")
+                .and_then(Value::as_object)
+                .map(|p| p.keys().collect())
+                .unwrap_or_default();
             let mut failed = false;
             for (key, item) in object {
-                let known = properties.is_some_and(|p| p.contains_key(key)) || patterns.iter().any(|pattern| regex_test(pattern, key));
-                if !(known || self.push_stack(ctx, &child(path, key), additional, item) && ctx.add_key(key)) {
+                let known = properties.is_some_and(|p| p.contains_key(key))
+                    || patterns.iter().any(|pattern| regex_test(pattern, key));
+                if !(known
+                    || self.push_stack(ctx, &child(path, key), additional, item)
+                        && ctx.add_key(key))
+                {
                     failed = true;
                 }
             }
             if failed {
-                ok &= ctx.add("additionalProperties", path, "must not have additional properties".into());
+                ok &= ctx.add(
+                    "additionalProperties",
+                    path,
+                    "must not have additional properties".into(),
+                );
             }
         }
         if let Some(Value::Object(dependencies)) = s.get("dependencies") {
@@ -303,7 +345,9 @@ impl<'a> Engine<'a> {
         }
         if let Some(Value::Object(dependent)) = s.get("dependentRequired") {
             for (key, names) in dependent {
-                let (true, Value::Array(list)) = (object.contains_key(key), names) else { continue };
+                let (true, Value::Array(list)) = (object.contains_key(key), names) else {
+                    continue;
+                };
                 for name in list.iter().filter_map(Value::as_str) {
                     if !object.contains_key(name) {
                         ok &= ctx.add("dependentRequired", path, dependency_message(key, list));
@@ -322,7 +366,8 @@ impl<'a> Engine<'a> {
             for (pattern, sub) in patterns {
                 for (key, item) in object {
                     if regex_test(pattern, key) {
-                        ok &= self.push_stack(ctx, &child(path, key), sub, item) && ctx.add_key(key);
+                        ok &=
+                            self.push_stack(ctx, &child(path, key), sub, item) && ctx.add_key(key);
                     }
                 }
             }
@@ -342,19 +387,31 @@ impl<'a> Engine<'a> {
                 }
             }
             if !invalid.is_empty() {
-                ok &= ctx.add("propertyNames", path, format!("property names {} are invalid", invalid.join(", ")));
+                ok &= ctx.add(
+                    "propertyNames",
+                    path,
+                    format!("property names {} are invalid", invalid.join(", ")),
+                );
             }
         }
         let count = object.len() as f64;
         if let Some(limit) = s.get("minProperties").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| count < l)
         {
-            ok &= ctx.add("minProperties", path, format!("must not have fewer than {} properties", limit_text(limit)));
+            ok &= ctx.add(
+                "minProperties",
+                path,
+                format!("must not have fewer than {} properties", limit_text(limit)),
+            );
         }
         if let Some(limit) = s.get("maxProperties").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| count > l)
         {
-            ok &= ctx.add("maxProperties", path, format!("must not have more than {} properties", limit_text(limit)));
+            ok &= ctx.add(
+                "maxProperties",
+                path,
+                format!("must not have more than {} properties", limit_text(limit)),
+            );
         }
         ok
     }
@@ -370,12 +427,23 @@ impl<'a> Engine<'a> {
         count
     }
 
-    fn array_keywords(&self, ctx: &mut Ctx, path: &str, s: &Map<String, Value>, items: &[Value]) -> bool {
+    fn array_keywords(
+        &self,
+        ctx: &mut Ctx,
+        path: &str,
+        s: &Map<String, Value>,
+        items: &[Value],
+    ) -> bool {
         let mut ok = true;
         let tuple = s.get("items").and_then(Value::as_array);
-        if let (Some(additional), Some(tuple)) = (s.get("additionalItems").filter(|v| is_schema(v)), tuple) {
+        if let (Some(additional), Some(tuple)) =
+            (s.get("additionalItems").filter(|v| is_schema(v)), tuple)
+        {
             for (index, item) in items.iter().enumerate() {
-                if index >= tuple.len() && !(self.push_stack(ctx, &format!("{path}/{index}"), additional, item) && ctx.add_index(index)) {
+                if index >= tuple.len()
+                    && !(self.push_stack(ctx, &format!("{path}/{index}"), additional, item)
+                        && ctx.add_index(index))
+                {
                     ok = false;
                     break;
                 }
@@ -387,20 +455,29 @@ impl<'a> Engine<'a> {
             && min_contains != Some(0.0)
             && (items.is_empty() || self.contains_count(contains, items, ctx) == 0)
         {
-            ok &= ctx.add("contains", path, "must contain at least 1 valid item".into());
+            ok &= ctx.add(
+                "contains",
+                path,
+                "must contain at least 1 valid item".into(),
+            );
         }
         match s.get("items") {
             Some(Value::Array(tuple)) => {
                 for (index, sub) in tuple.iter().enumerate() {
                     if let Some(item) = items.get(index) {
-                        ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item) && ctx.add_index(index);
+                        ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item)
+                            && ctx.add_index(index);
                     }
                 }
             }
             Some(sub) if is_schema(sub) => {
-                let offset = s.get("prefixItems").and_then(Value::as_array).map_or(0, Vec::len);
+                let offset = s
+                    .get("prefixItems")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
                 for (index, item) in items.iter().enumerate().skip(offset) {
-                    ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item) && ctx.add_index(index);
+                    ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item)
+                        && ctx.add_index(index);
                 }
             }
             _ => {}
@@ -408,35 +485,55 @@ impl<'a> Engine<'a> {
         if let (Some(contains), Some(min)) = (contains, min_contains)
             && (self.contains_count(contains, items, ctx) as f64) < min
         {
-            ok &= ctx.add("contains", path, "must contain at least 1 valid item".into());
+            ok &= ctx.add(
+                "contains",
+                path,
+                "must contain at least 1 valid item".into(),
+            );
         }
         if let (Some(contains), Some(max)) = (contains, s.get("maxContains").and_then(number))
             && (self.contains_count(contains, items, ctx) as f64) > max
         {
-            ok &= ctx.add("contains", path, "must contain at least 1 valid item".into());
+            ok &= ctx.add(
+                "contains",
+                path,
+                "must contain at least 1 valid item".into(),
+            );
         }
         let count = items.len() as f64;
         if let Some(limit) = s.get("minItems").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| count < l)
         {
-            ok &= ctx.add("minItems", path, format!("must not have fewer than {} items", limit_text(limit)));
+            ok &= ctx.add(
+                "minItems",
+                path,
+                format!("must not have fewer than {} items", limit_text(limit)),
+            );
         }
         if let Some(limit) = s.get("maxItems").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| count > l)
         {
-            ok &= ctx.add("maxItems", path, format!("must not have more than {} items", limit_text(limit)));
+            ok &= ctx.add(
+                "maxItems",
+                path,
+                format!("must not have more than {} items", limit_text(limit)),
+            );
         }
         if let Some(Value::Array(prefix)) = s.get("prefixItems")
             && !items.is_empty()
         {
             for (index, sub) in prefix.iter().enumerate() {
                 if let Some(item) = items.get(index) {
-                    ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item) && ctx.add_index(index);
+                    ok &= self.push_stack(ctx, &format!("{path}/{index}"), sub, item)
+                        && ctx.add_index(index);
                 }
             }
         }
         if s.get("uniqueItems") == Some(&Value::Bool(true)) {
-            let duplicate = items.iter().enumerate().any(|(i, item)| items[..i].iter().any(|prev| js_deep_equal(prev, item)));
+            let duplicate = items
+                .iter()
+                .enumerate()
+                .any(|(i, item)| items[..i].iter().any(|prev| js_deep_equal(prev, item)));
             if duplicate {
                 ok &= ctx.add("uniqueItems", path, "must not have duplicate items".into());
             }
@@ -450,12 +547,20 @@ impl<'a> Engine<'a> {
         if let Some(limit) = s.get("minLength").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| length < l)
         {
-            ok &= ctx.add("minLength", path, format!("must not have fewer than {} characters", limit_text(limit)));
+            ok &= ctx.add(
+                "minLength",
+                path,
+                format!("must not have fewer than {} characters", limit_text(limit)),
+            );
         }
         if let Some(limit) = s.get("maxLength").filter(|v| v.is_number())
             && number(limit).is_some_and(|l| length > l)
         {
-            ok &= ctx.add("maxLength", path, format!("must not have more than {} characters", limit_text(limit)));
+            ok &= ctx.add(
+                "maxLength",
+                path,
+                format!("must not have more than {} characters", limit_text(limit)),
+            );
         }
         if let Some(Value::String(format)) = s.get("format")
             && !test_format(format, text)
@@ -483,22 +588,39 @@ impl<'a> Engine<'a> {
             if let Some(limit) = s.get(keyword).and_then(number)
                 && !holds(n, limit)
             {
-                ok &= ctx.add(keyword, path, format!("must be {comparison} {}", number_to_string(limit)));
+                ok &= ctx.add(
+                    keyword,
+                    path,
+                    format!("must be {comparison} {}", number_to_string(limit)),
+                );
             }
         }
         if let Some(divisor) = s.get("multipleOf").and_then(number)
             && !is_multiple_of(n, divisor)
         {
-            ok &= ctx.add("multipleOf", path, format!("must be multiple of {}", number_to_string(divisor)));
+            ok &= ctx.add(
+                "multipleOf",
+                path,
+                format!("must be multiple of {}", number_to_string(divisor)),
+            );
         }
         ok
     }
 
-    fn logical_keywords(&self, ctx: &mut Ctx, path: &str, s: &Map<String, Value>, value: &Value) -> bool {
+    fn logical_keywords(
+        &self,
+        ctx: &mut Ctx,
+        path: &str,
+        s: &Map<String, Value>,
+        value: &Value,
+    ) -> bool {
         let mut ok = true;
         if let Some(Value::String(reference)) = s.get("$ref") {
             let mut next = Ctx::new();
-            let valid = self.resolve(reference).filter(|t| is_schema(t)).is_some_and(|target| self.schema(&mut next, path, target, value));
+            let valid = self
+                .resolve(reference)
+                .filter(|t| is_schema(t))
+                .is_some_and(|target| self.schema(&mut next, path, target, value));
             if valid {
                 ctx.merge(&next);
             } else {
@@ -517,7 +639,11 @@ impl<'a> Engine<'a> {
         if let Some(Value::Array(options)) = s.get("enum")
             && !options.iter().any(|option| js_deep_equal(value, option))
         {
-            ok &= ctx.add("enum", path, "must be equal to one of the allowed values".into());
+            ok &= ctx.add(
+                "enum",
+                path,
+                "must be equal to one of the allowed values".into(),
+            );
         }
         if let Some(condition) = s.get("if").filter(|v| is_schema(v)) {
             let truthy = Value::Bool(true);
@@ -525,9 +651,11 @@ impl<'a> Engine<'a> {
             let else_schema = s.get("else").filter(|v| is_schema(v)).unwrap_or(&truthy);
             let mut true_ctx = Ctx::new();
             let is_if = if self.schema(&mut true_ctx, path, condition, value) {
-                self.schema(&mut true_ctx, path, then_schema, value) || ctx.add("if", path, "must match \"then\" schema".into())
+                self.schema(&mut true_ctx, path, then_schema, value)
+                    || ctx.add("if", path, "must match \"then\" schema".into())
             } else {
-                self.schema(ctx, path, else_schema, value) || ctx.add("if", path, "must match \"else\" schema".into())
+                self.schema(ctx, path, else_schema, value)
+                    || ctx.add("if", path, "must match \"else\" schema".into())
             };
             if is_if {
                 ctx.merge(&true_ctx);
@@ -549,14 +677,18 @@ impl<'a> Engine<'a> {
                     ctx.merge(next);
                 }
             } else {
-                failed.into_iter().for_each(|next| ctx.add_errors(next.errors));
+                failed
+                    .into_iter()
+                    .for_each(|next| ctx.add_errors(next.errors));
                 ok = false;
             }
         }
         if let Some(Value::Array(any)) = s.get("anyOf") {
             let (passed, failed) = self.operands(path, any, value);
             if passed.is_empty() {
-                failed.into_iter().for_each(|next| ctx.add_errors(next.errors));
+                failed
+                    .into_iter()
+                    .for_each(|next| ctx.add_errors(next.errors));
                 ok &= ctx.add("anyOf", path, "must match a schema in anyOf".into());
             } else {
                 for next in &passed {
@@ -570,24 +702,40 @@ impl<'a> Engine<'a> {
                 ctx.merge(&passed[0]);
             } else {
                 if passed.is_empty() {
-                    failed.into_iter().for_each(|next| ctx.add_errors(next.errors));
+                    failed
+                        .into_iter()
+                        .for_each(|next| ctx.add_errors(next.errors));
                 }
-                ok &= ctx.add("oneOf", path, "must match exactly one schema in oneOf".into());
+                ok &= ctx.add(
+                    "oneOf",
+                    path,
+                    "must match exactly one schema in oneOf".into(),
+                );
             }
         }
-        if let (Value::Array(items), Some(sub)) = (value, s.get("unevaluatedItems").filter(|v| is_schema(v))) {
+        if let (Value::Array(items), Some(sub)) =
+            (value, s.get("unevaluatedItems").filter(|v| is_schema(v)))
+        {
             let mut failed = false;
             for (index, item) in items.iter().enumerate() {
-                if (ctx.has_index(index) || self.check_in(path, sub, item)) && ctx.add_index(index) {
+                if (ctx.has_index(index) || self.check_in(path, sub, item)) && ctx.add_index(index)
+                {
                     continue;
                 }
                 failed = true;
             }
             if failed {
-                ok &= ctx.add("unevaluatedItems", path, "must not have unevaluated items".into());
+                ok &= ctx.add(
+                    "unevaluatedItems",
+                    path,
+                    "must not have unevaluated items".into(),
+                );
             }
         }
-        if let (Value::Object(object), Some(sub)) = (value, s.get("unevaluatedProperties").filter(|v| is_schema(v))) {
+        if let (Value::Object(object), Some(sub)) = (
+            value,
+            s.get("unevaluatedProperties").filter(|v| is_schema(v)),
+        ) {
             let mut failed = false;
             for (key, item) in object {
                 if ctx.has_key(key) || (self.check_in(path, sub, item) && ctx.add_key(key)) {
@@ -596,7 +744,11 @@ impl<'a> Engine<'a> {
                 failed = true;
             }
             if failed {
-                ok &= ctx.add("unevaluatedProperties", path, "must not have unevaluated properties".into());
+                ok &= ctx.add(
+                    "unevaluatedProperties",
+                    path,
+                    "must not have unevaluated properties".into(),
+                );
             }
         }
         ok
@@ -624,7 +776,10 @@ impl<'a> Engine<'a> {
 
 fn dependency_message(key: &str, names: &[Value]) -> String {
     let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
-    format!("must have properties {} when property {key} is present", names.join(", "))
+    format!(
+        "must have properties {} when property {key} is present",
+        names.join(", ")
+    )
 }
 
 /// `Compile(schema).Errors(value)` with the `en_US` locale; empty when the value is valid.

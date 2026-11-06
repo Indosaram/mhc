@@ -16,13 +16,19 @@ pub struct CliWakeBudget {
 
 impl CliWakeBudget {
     fn new(limit: usize) -> Arc<Self> {
-        Arc::new(Self { limit, used: AtomicUsize::new(0) })
+        Arc::new(Self {
+            limit,
+            used: AtomicUsize::new(0),
+        })
     }
 
     /// Seeded constructor for the boundary regression: the counter starts at `used`.
     #[cfg(test)]
     fn seeded(limit: usize, used: usize) -> Arc<Self> {
-        Arc::new(Self { limit, used: AtomicUsize::new(used) })
+        Arc::new(Self {
+            limit,
+            used: AtomicUsize::new(used),
+        })
     }
 }
 
@@ -54,7 +60,9 @@ pub struct CliBudgetSlot {
 
 impl CliBudgetSlot {
     pub fn new(limit: usize) -> Self {
-        Self { inner: Arc::new(Mutex::new(CliWakeBudget::new(limit))) }
+        Self {
+            inner: Arc::new(Mutex::new(CliWakeBudget::new(limit))),
+        }
     }
 }
 
@@ -62,7 +70,8 @@ impl KibitzerBudgetSlot for CliBudgetSlot {
     fn current(&self) -> Arc<dyn KibitzerToolBudget> {
         // Clone the INNER `Arc<CliWakeBudget>` (dereference the guard), then coerce to the trait
         // object; never clone the guard itself.
-        let budget: Arc<CliWakeBudget> = Arc::clone(&*self.inner.lock().unwrap_or_else(PoisonError::into_inner));
+        let budget: Arc<CliWakeBudget> =
+            Arc::clone(&*self.inner.lock().unwrap_or_else(PoisonError::into_inner));
         budget as Arc<dyn KibitzerToolBudget>
     }
 

@@ -30,7 +30,8 @@ impl SummaryPublication {
     }
 }
 
-pub type DeliveryReporter = Arc<dyn Fn(TelemetryDiagnosticEvent, Option<TelemetryError>, u64) + Send + Sync>;
+pub type DeliveryReporter =
+    Arc<dyn Fn(TelemetryDiagnosticEvent, Option<TelemetryError>, u64) + Send + Sync>;
 pub type DroppedCounter = Arc<dyn Fn(u64) + Send + Sync>;
 
 /// Sends one record; `true` means the pending file was retired (acknowledged, or permanently refused).
@@ -72,9 +73,9 @@ mod tests {
     use futures::FutureExt;
     use futures::future::BoxFuture;
     use serde_json::json;
-    use telemetry_core::TelemetryDeliveryError;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use telemetry_core::TelemetryDeliveryError;
 
     fn record(uuid: &str) -> PendingRecord {
         PendingRecord {
@@ -122,15 +123,11 @@ mod tests {
         let dropped = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&dropped);
         let report: DeliveryReporter = Arc::new(|_, _, _| {});
-        let counter: DroppedCounter = Arc::new(move |count| { observed.fetch_add(count, Ordering::SeqCst); });
-        let retired = send_summary_record(
-            &record(uuid),
-            &storage,
-            &publish(Ok(())),
-            &report,
-            &counter,
-        )
-        .await;
+        let counter: DroppedCounter = Arc::new(move |count| {
+            observed.fetch_add(count, Ordering::SeqCst);
+        });
+        let retired =
+            send_summary_record(&record(uuid), &storage, &publish(Ok(())), &report, &counter).await;
         assert!(retired);
         assert!(storage.pending_uuids().is_empty());
         assert_eq!(dropped.load(Ordering::SeqCst), 0);

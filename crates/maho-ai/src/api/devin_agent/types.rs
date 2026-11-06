@@ -17,7 +17,11 @@ impl DevinAgentOptions {
     pub fn from_stream_options(options: &StreamOptions) -> Self {
         Self {
             api_key: options.request.api_key.clone(),
-            cascade_id: options.extra.get("cascadeId").and_then(|value| value.as_str()).map(str::to_owned),
+            cascade_id: options
+                .extra
+                .get("cascadeId")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
         }
     }
 }

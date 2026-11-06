@@ -1,71 +1,289 @@
-use std::{collections::HashMap,sync::OnceLock};
-use sha2::{Digest,Sha256};
-use crate::host_protocol_info::{RpcLaunchProfile,RpcLaunchProfileCore};
-pub const HOST_GENERATION_ENV:&str="SENPI_RPC_HOST_GENERATION";
-pub const HOST_INSTANCE_ID_ENV:&str="SENPI_RPC_HOST_INSTANCE_ID";
-static INSTANCE_ID:OnceLock<String>=OnceLock::new();
-pub fn resolve_instance_id(value:Option<&str>)->String{value.filter(|value|!value.trim().is_empty()).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string())}
-pub fn host_instance_id()->&'static str{INSTANCE_ID.get_or_init(||resolve_instance_id(std::env::var(HOST_INSTANCE_ID_ENV).ok().as_deref()))}
-pub fn host_generation(env:&HashMap<String,String>)->f64{env.get(HOST_GENERATION_ENV).filter(|value|!value.is_empty()&&value.bytes().all(|byte|byte.is_ascii_digit())).and_then(|value|value.parse().ok()).unwrap_or(0.)}
-pub fn launch_profile_from_core(mut core:RpcLaunchProfileCore)->Result<RpcLaunchProfile,serde_json::Error>{core.extensions.sort();core.extensions.dedup();let canonical=serde_json::to_vec(&core)?;Ok(RpcLaunchProfile{profile_id:format!("{:x}",Sha256::digest(canonical)),core})}
+use crate::host_protocol_info::{RpcLaunchProfile, RpcLaunchProfileCore};
+use sha2::{Digest, Sha256};
+use std::{collections::HashMap, sync::OnceLock};
+pub const HOST_GENERATION_ENV: &str = "SENPI_RPC_HOST_GENERATION";
+pub const HOST_INSTANCE_ID_ENV: &str = "SENPI_RPC_HOST_INSTANCE_ID";
+static INSTANCE_ID: OnceLock<String> = OnceLock::new();
+pub fn resolve_instance_id(value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+pub fn host_instance_id() -> &'static str {
+    INSTANCE_ID
+        .get_or_init(|| resolve_instance_id(std::env::var(HOST_INSTANCE_ID_ENV).ok().as_deref()))
+}
+pub fn host_generation(env: &HashMap<String, String>) -> f64 {
+    env.get(HOST_GENERATION_ENV)
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.)
+}
+pub fn launch_profile_from_core(
+    mut core: RpcLaunchProfileCore,
+) -> Result<RpcLaunchProfile, serde_json::Error> {
+    core.extensions.sort();
+    core.extensions.dedup();
+    let canonical = serde_json::to_vec(&core)?;
+    Ok(RpcLaunchProfile {
+        profile_id: format!("{:x}", Sha256::digest(canonical)),
+        core,
+    })
+}
 /// Derives the launch profile from one argument vector, resolving extensions against `cwd`
 /// (senpi `hostLaunchProfile`). Pure: same argv and cwd, same profile.
-pub fn host_launch_profile(argv:&[String],cwd:&str)->Result<RpcLaunchProfile,serde_json::Error>{
-    let mut extensions=Vec::new();let mut multi_session=false;let mut session_runtime=None;let mut listen:Option<&str>=None;let mut rpc_mode=false;
-    let mut index=0;
-    while index<argv.len(){
-        match argv[index].as_str(){
-            "--extension"=>{if let Some(value)=argv.get(index+1){extensions.push(resolve_extension_path(cwd,value));}index+=2;continue;},
-            "--multi-session"=>{multi_session=true;},
-            "--session-runtime"=>{if let Some(value)=argv.get(index+1){session_runtime=Some(if value=="worker"{crate::host_protocol_info::SessionRuntimeKind::Worker}else{crate::host_protocol_info::SessionRuntimeKind::InProcess});}index+=2;continue;},
-            "--mode"=>{rpc_mode=argv.get(index+1).is_some_and(|mode|mode=="rpc");index+=2;continue;},
+pub fn host_launch_profile(
+    argv: &[String],
+    cwd: &str,
+) -> Result<RpcLaunchProfile, serde_json::Error> {
+    let mut extensions = Vec::new();
+    let mut multi_session = false;
+    let mut session_runtime = None;
+    let mut listen: Option<&str> = None;
+    let mut rpc_mode = false;
+    let mut index = 0;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--extension" => {
+                if let Some(value) = argv.get(index + 1) {
+                    extensions.push(resolve_extension_path(cwd, value));
+                }
+                index += 2;
+                continue;
+            }
+            "--multi-session" => {
+                multi_session = true;
+            }
+            "--session-runtime" => {
+                if let Some(value) = argv.get(index + 1) {
+                    session_runtime = Some(if value == "worker" {
+                        crate::host_protocol_info::SessionRuntimeKind::Worker
+                    } else {
+                        crate::host_protocol_info::SessionRuntimeKind::InProcess
+                    });
+                }
+                index += 2;
+                continue;
+            }
+            "--mode" => {
+                rpc_mode = argv.get(index + 1).is_some_and(|mode| mode == "rpc");
+                index += 2;
+                continue;
+            }
             // senpi args.ts: `--listen` is an rpc-mode flag and implies a multi-session host.
-            "--listen" if rpc_mode=>{if let Some(value)=argv.get(index+1){listen=Some(value.as_str());multi_session=true;}index+=2;continue;},
-            _=>{}
+            "--listen" if rpc_mode => {
+                if let Some(value) = argv.get(index + 1) {
+                    listen = Some(value.as_str());
+                    multi_session = true;
+                }
+                index += 2;
+                continue;
+            }
+            _ => {}
         }
-        index+=1;
+        index += 1;
     }
     // senpi `resolveSessionRuntime`: an explicit runtime wins; a socket host runs sessions in-process,
     // every other host (stdio, classic) runs one worker per session.
-    let session_runtime=session_runtime.unwrap_or(if listen.is_some_and(|listen|listen!="stdio://"){crate::host_protocol_info::SessionRuntimeKind::InProcess}else{crate::host_protocol_info::SessionRuntimeKind::Worker});
-    launch_profile_from_core(RpcLaunchProfileCore{extensions,multi_session,session_runtime})
+    let session_runtime =
+        session_runtime.unwrap_or(if listen.is_some_and(|listen| listen != "stdio://") {
+            crate::host_protocol_info::SessionRuntimeKind::InProcess
+        } else {
+            crate::host_protocol_info::SessionRuntimeKind::Worker
+        });
+    launch_profile_from_core(RpcLaunchProfileCore {
+        extensions,
+        multi_session,
+        session_runtime,
+    })
 }
 /// The launch profile of the socket host the supervisor spawns from `host_args` (senpi `socketHostLaunchProfile`).
-pub fn socket_host_launch_profile(host_args:&[String],cwd:&str)->Result<RpcLaunchProfile,serde_json::Error>{
-    let argv:Vec<String>=["--mode","rpc","--multi-session","--listen","unix://"].into_iter().map(str::to_owned).chain(host_args.iter().cloned()).collect();
-    host_launch_profile(&argv,cwd)
+pub fn socket_host_launch_profile(
+    host_args: &[String],
+    cwd: &str,
+) -> Result<RpcLaunchProfile, serde_json::Error> {
+    let argv: Vec<String> = ["--mode", "rpc", "--multi-session", "--listen", "unix://"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(host_args.iter().cloned())
+        .collect();
+    host_launch_profile(&argv, cwd)
 }
 /// Resolves one `--extension` value against `cwd` the way `path.resolve` does (senpi
 /// `hostLaunchProfile`): an absolute value is kept, otherwise it joins `cwd`, and `.`/`..` are
 /// resolved lexically without touching the filesystem. A plain `Path::join` leaves a literal
 /// `./`/`../` in the profile id, so the same argv would hash differently from the pinned host.
-fn resolve_extension_path(cwd:&str,value:&str)->String{
-    use std::path::{Component,Path,PathBuf};
-    let joined=if Path::new(value).is_absolute(){PathBuf::from(value)}else{Path::new(cwd).join(value)};
-    let mut resolved=PathBuf::new();
-    for component in joined.components(){
-        match component{
-            Component::CurDir=>{},
-            Component::ParentDir=>{if !resolved.pop()&&!resolved.has_root(){resolved.push("..");}},
-            other=>resolved.push(other.as_os_str()),
+fn resolve_extension_path(cwd: &str, value: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+    let joined = if Path::new(value).is_absolute() {
+        PathBuf::from(value)
+    } else {
+        Path::new(cwd).join(value)
+    };
+    let mut resolved = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !resolved.pop() && !resolved.has_root() {
+                    resolved.push("..");
+                }
+            }
+            other => resolved.push(other.as_os_str()),
         }
     }
     resolved.to_string_lossy().into_owned()
 }
 /// The identity fields of this host's `get_protocol_info` answer, including the agent dir it reads and writes
 /// (#3560): this process's own, resolved.
-pub fn protocol_identity(profile:RpcLaunchProfile,env:&HashMap<String,String>)->serde_json::Value{
-    let agent_dir=std::path::absolute(maho_core::config::get_agent_dir()).map(|dir|dir.to_string_lossy().into_owned()).unwrap_or_else(|_|maho_core::config::get_agent_dir());
-    protocol_identity_for(profile,env,&agent_dir)
+pub fn protocol_identity(
+    profile: RpcLaunchProfile,
+    env: &HashMap<String, String>,
+) -> serde_json::Value {
+    let agent_dir = std::path::absolute(maho_core::config::get_agent_dir())
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| maho_core::config::get_agent_dir());
+    protocol_identity_for(profile, env, &agent_dir)
 }
 /// `protocol_identity` with the agent dir a socket host captured at startup.
-pub fn protocol_identity_for(profile:RpcLaunchProfile,env:&HashMap<String,String>,agent_dir:&str)->serde_json::Value{let build=maho_core::engine_build_identity::engine_build_identity();serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile,"agentDir":agent_dir})}
+pub fn protocol_identity_for(
+    profile: RpcLaunchProfile,
+    env: &HashMap<String, String>,
+    agent_dir: &str,
+) -> serde_json::Value {
+    let build = maho_core::engine_build_identity::engine_build_identity();
+    serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile,"agentDir":agent_dir})
+}
 #[cfg(test)]
-mod tests{
+mod tests {
     use super::*;
-    #[test]fn launch_profile_derives_from_argv_and_resolves_extensions(){let profile=host_launch_profile(&["--extension","a.js","--extension","./b.js","--multi-session","--session-runtime","worker"].map(str::to_owned),"/root").unwrap();let expected_a=if cfg!(windows){"\\root\\a.js"}else{"/root/a.js"};let expected_b=if cfg!(windows){"\\root\\b.js"}else{"/root/b.js"};assert_eq!(profile.core.extensions,vec![expected_a,expected_b]);assert!(profile.core.multi_session);assert_eq!(profile.core.session_runtime,crate::host_protocol_info::SessionRuntimeKind::Worker);assert_eq!(host_launch_profile(&[].map(str::to_owned),"/root").unwrap().core.session_runtime,crate::host_protocol_info::SessionRuntimeKind::Worker);assert_eq!(host_launch_profile(&["--mode","rpc","--multi-session","--listen","unix:///s"].map(str::to_owned),"/root").unwrap().core.session_runtime,crate::host_protocol_info::SessionRuntimeKind::InProcess);assert_eq!(host_launch_profile(&["--mode","rpc","--listen","stdio://"].map(str::to_owned),"/root").unwrap().core.session_runtime,crate::host_protocol_info::SessionRuntimeKind::Worker);}
-    #[test]fn generation_rejects_sign_whitespace_decimal_and_empty(){for value in ["-1"," 1","1.0","","+1"]{assert_eq!(host_generation(&HashMap::from([(HOST_GENERATION_ENV.into(),value.into())])),0.);}assert_eq!(host_generation(&HashMap::from([(HOST_GENERATION_ENV.into(),"0012".into())])),12.);}
-    #[test]fn instance_value_preserves_nonempty_spelling(){assert_eq!(resolve_instance_id(Some(" id "))," id ");assert!(uuid::Uuid::parse_str(&resolve_instance_id(Some(" "))).is_ok());assert_eq!(host_instance_id(),host_instance_id());}
-    #[test]fn canonical_profile_sorts_and_deduplicates(){use crate::host_protocol_info::SessionRuntimeKind;let profile=launch_profile_from_core(RpcLaunchProfileCore{extensions:vec!["b".into(),"a".into(),"a".into()],multi_session:true,session_runtime:SessionRuntimeKind::Worker}).unwrap();let canonical=br#"{"extensions":["a","b"],"multi_session":true,"session_runtime":"worker"}"#;assert_eq!(profile.profile_id,format!("{:x}",Sha256::digest(canonical)));}
-    #[test]fn socket_host_profile_is_multi_session_in_process_by_default(){let profile=socket_host_launch_profile(&["--extension".to_owned(),"/x.js".to_owned()],"/root").expect("profile");assert!(profile.core.multi_session);assert_eq!(profile.core.session_runtime,crate::host_protocol_info::SessionRuntimeKind::InProcess);let expected=if cfg!(windows){"\\x.js"}else{"/x.js"};assert_eq!(profile.core.extensions,vec![expected]);assert_eq!(profile,host_launch_profile(&["--mode","rpc","--multi-session","--listen","unix://","--extension","/x.js"].map(str::to_owned),"/root").expect("same"));}
+    #[test]
+    fn launch_profile_derives_from_argv_and_resolves_extensions() {
+        let profile = host_launch_profile(
+            &[
+                "--extension",
+                "a.js",
+                "--extension",
+                "./b.js",
+                "--multi-session",
+                "--session-runtime",
+                "worker",
+            ]
+            .map(str::to_owned),
+            "/root",
+        )
+        .unwrap();
+        let expected_a = if cfg!(windows) {
+            "\\root\\a.js"
+        } else {
+            "/root/a.js"
+        };
+        let expected_b = if cfg!(windows) {
+            "\\root\\b.js"
+        } else {
+            "/root/b.js"
+        };
+        assert_eq!(profile.core.extensions, vec![expected_a, expected_b]);
+        assert!(profile.core.multi_session);
+        assert_eq!(
+            profile.core.session_runtime,
+            crate::host_protocol_info::SessionRuntimeKind::Worker
+        );
+        assert_eq!(
+            host_launch_profile(&[].map(str::to_owned), "/root")
+                .unwrap()
+                .core
+                .session_runtime,
+            crate::host_protocol_info::SessionRuntimeKind::Worker
+        );
+        assert_eq!(
+            host_launch_profile(
+                &["--mode", "rpc", "--multi-session", "--listen", "unix:///s"].map(str::to_owned),
+                "/root"
+            )
+            .unwrap()
+            .core
+            .session_runtime,
+            crate::host_protocol_info::SessionRuntimeKind::InProcess
+        );
+        assert_eq!(
+            host_launch_profile(
+                &["--mode", "rpc", "--listen", "stdio://"].map(str::to_owned),
+                "/root"
+            )
+            .unwrap()
+            .core
+            .session_runtime,
+            crate::host_protocol_info::SessionRuntimeKind::Worker
+        );
+    }
+    #[test]
+    fn generation_rejects_sign_whitespace_decimal_and_empty() {
+        for value in ["-1", " 1", "1.0", "", "+1"] {
+            assert_eq!(
+                host_generation(&HashMap::from([(HOST_GENERATION_ENV.into(), value.into())])),
+                0.
+            );
+        }
+        assert_eq!(
+            host_generation(&HashMap::from([(
+                HOST_GENERATION_ENV.into(),
+                "0012".into()
+            )])),
+            12.
+        );
+    }
+    #[test]
+    fn instance_value_preserves_nonempty_spelling() {
+        assert_eq!(resolve_instance_id(Some(" id ")), " id ");
+        assert!(uuid::Uuid::parse_str(&resolve_instance_id(Some(" "))).is_ok());
+        assert_eq!(host_instance_id(), host_instance_id());
+    }
+    #[test]
+    fn canonical_profile_sorts_and_deduplicates() {
+        use crate::host_protocol_info::SessionRuntimeKind;
+        let profile = launch_profile_from_core(RpcLaunchProfileCore {
+            extensions: vec!["b".into(), "a".into(), "a".into()],
+            multi_session: true,
+            session_runtime: SessionRuntimeKind::Worker,
+        })
+        .unwrap();
+        let canonical =
+            br#"{"extensions":["a","b"],"multi_session":true,"session_runtime":"worker"}"#;
+        assert_eq!(
+            profile.profile_id,
+            format!("{:x}", Sha256::digest(canonical))
+        );
+    }
+    #[test]
+    fn socket_host_profile_is_multi_session_in_process_by_default() {
+        let profile =
+            socket_host_launch_profile(&["--extension".to_owned(), "/x.js".to_owned()], "/root")
+                .expect("profile");
+        assert!(profile.core.multi_session);
+        assert_eq!(
+            profile.core.session_runtime,
+            crate::host_protocol_info::SessionRuntimeKind::InProcess
+        );
+        let expected = if cfg!(windows) { "\\x.js" } else { "/x.js" };
+        assert_eq!(profile.core.extensions, vec![expected]);
+        assert_eq!(
+            profile,
+            host_launch_profile(
+                &[
+                    "--mode",
+                    "rpc",
+                    "--multi-session",
+                    "--listen",
+                    "unix://",
+                    "--extension",
+                    "/x.js"
+                ]
+                .map(str::to_owned),
+                "/root"
+            )
+            .expect("same")
+        );
+    }
 }

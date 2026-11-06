@@ -1,10 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use maho_ai::api::openai_completions::{
-    convert_messages, ConvertCompletionsMessagesOptions, ResolvedOpenAICompletionsCompat,
+    ConvertCompletionsMessagesOptions, ResolvedOpenAICompletionsCompat, convert_messages,
 };
-use maho_ai::types::{ContentBlock, MaxTokensField, SessionAffinityFormat, StopReason, ThinkingFormat};
-use serde_json::{json, Value};
+use maho_ai::types::{
+    ContentBlock, MaxTokensField, SessionAffinityFormat, StopReason, ThinkingFormat,
+};
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -137,7 +139,10 @@ fn serializes_same_model_thinking_plus_text_replay_as_assistant_text_parts() {
 fn serializes_same_model_thinking_only_replay_as_assistant_text_parts() {
     let messages = convert_messages(
         &build_model("http://127.0.0.1:1"),
-        &build_context(build_assistant(vec![thinking_block("internal reasoning", None)])),
+        &build_context(build_assistant(vec![thinking_block(
+            "internal reasoning",
+            None,
+        )])),
         &thinking_as_text_compat(),
         &ConvertCompletionsMessagesOptions::default(),
     )
@@ -158,11 +163,17 @@ fn omits_standalone_same_model_thinking_replay_when_thinking_is_off() {
             text_block("visible answer"),
         ])),
         &thinking_as_text_compat(),
-        &ConvertCompletionsMessagesOptions { preserve_thinking: Some(false), ..Default::default() },
+        &ConvertCompletionsMessagesOptions {
+            preserve_thinking: Some(false),
+            ..Default::default()
+        },
     )
     .expect("convert messages");
 
-    assert_eq!(messages[1], json!({ "role": "assistant", "content": "visible answer" }));
+    assert_eq!(
+        messages[1],
+        json!({ "role": "assistant", "content": "visible answer" })
+    );
 }
 
 #[tokio::test]
@@ -212,7 +223,10 @@ async fn reaches_the_endpoint_with_thinking_replay_when_reasoning_is_requested()
     let bodies = request_bodies.lock().expect("request lock").clone();
     assert_eq!(bodies.len(), 1);
     assert_eq!(
-        bodies[0].get("messages").and_then(Value::as_array).map(|messages| &messages[1]),
+        bodies[0]
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(|messages| &messages[1]),
         Some(&json!({
             "role": "assistant",
             "content": [
@@ -223,6 +237,9 @@ async fn reaches_the_endpoint_with_thinking_replay_when_reasoning_is_requested()
     );
 
     let terminal = events.last().expect("terminal event");
-    assert!(matches!(terminal, maho_ai::types::AssistantMessageEvent::Done { .. }));
+    assert!(matches!(
+        terminal,
+        maho_ai::types::AssistantMessageEvent::Done { .. }
+    ));
     server.shutdown();
 }

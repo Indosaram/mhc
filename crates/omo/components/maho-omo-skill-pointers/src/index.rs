@@ -107,9 +107,7 @@ pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
     LazyLock::new(|| SkillPointerTarget {
         skill_name: "ulw-research",
         custom_type: ULW_RESEARCH_CUSTOM_TYPE,
-        pattern: LazyLock::new(|| {
-            skill_name_pattern(r"ulw[\s-]*research")
-        }),
+        pattern: LazyLock::new(|| skill_name_pattern(r"ulw[\s-]*research")),
         expanded_block_pattern: LazyLock::new(|| {
             Regex::new(r#"(?i)<skill\s+name="ulw-research""#).expect("valid regex")
         }),
@@ -119,11 +117,7 @@ pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
     });
 
 pub fn get_targets() -> [&'static SkillPointerTarget; 3] {
-    [
-        &*TARGET_ULW_PLAN,
-        &*TARGET_ULW_LOOP,
-        &*TARGET_ULW_RESEARCH,
-    ]
+    [&*TARGET_ULW_PLAN, &*TARGET_ULW_LOOP, &*TARGET_ULW_RESEARCH]
 }
 
 pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
@@ -133,20 +127,15 @@ pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
 }
 
 pub fn binds(target: &SkillPointerTarget, visible: &str) -> bool {
-    static RESEARCH_BIND: LazyLock<FancyRegex> = LazyLock::new(|| {
-        binding_forms(r"ulw-research", r"ulw[\s-]*research")
-    });
+    static RESEARCH_BIND: LazyLock<FancyRegex> =
+        LazyLock::new(|| binding_forms(r"ulw-research", r"ulw[\s-]*research"));
     match target.skill_name {
         "ulw-research" => RESEARCH_BIND.is_match(visible).unwrap_or(false),
         _ => false,
     }
 }
 
-pub fn skill_mode(
-    target: &SkillPointerTarget,
-    scope: Option<&str>,
-    root: &str,
-) -> String {
+pub fn skill_mode(target: &SkillPointerTarget, scope: Option<&str>, root: &str) -> String {
     let reads = format!("{root}{}/SKILL.md", target.skill_name);
     let extra = target.extra.map(|f| f(scope)).unwrap_or_default();
     let name = target.skill_name;
@@ -234,7 +223,11 @@ pub fn ulw_loop_tool_sentence(session_scope: Option<&str>) -> String {
 /// exist, so it is withheld. When the root itself is not a readable directory the install
 /// layout is unknown and the pointer is kept.
 pub fn skill_is_shipped(skills_root: &str, skill_name: &str) -> bool {
-    let root = std::path::Path::new(if skills_root.is_empty() { "skills" } else { skills_root });
+    let root = std::path::Path::new(if skills_root.is_empty() {
+        "skills"
+    } else {
+        skills_root
+    });
     if !root.is_dir() {
         return true;
     }
@@ -369,7 +362,9 @@ impl Extension for SkillPointersComponent {
                         return Ok(EventResult::None);
                     };
 
-                    if runtime.get_flag(SKILL_POINTERS_DISABLED_FLAG) == Some(FlagValue::Boolean(true)) {
+                    if runtime.get_flag(SKILL_POINTERS_DISABLED_FLAG)
+                        == Some(FlagValue::Boolean(true))
+                    {
                         return Ok(EventResult::Input(InputEventResult::Continue));
                     }
 
@@ -377,8 +372,10 @@ impl Extension for SkillPointersComponent {
                     // a skill its brief names is context for the work, never a request (#9740).
                     // Mirrors `readSessionRole`: the session context role wins, the env is the fallback.
                     let delegated = role_delegated
-                        || std::env::var("SENPI_TASK_MEMBER").is_ok_and(|member| !member.is_empty())
-                        || std::env::var("OMO_SENPI_TASK_RPC_CHILD").is_ok_and(|child| child == "1");
+                        || std::env::var("SENPI_TASK_MEMBER")
+                            .is_ok_and(|member| !member.is_empty())
+                        || std::env::var("OMO_SENPI_TASK_RPC_CHILD")
+                            .is_ok_and(|child| child == "1");
                     if input.source == InputSource::Extension || delegated {
                         return Ok(EventResult::Input(InputEventResult::Continue));
                     }
@@ -393,7 +390,10 @@ impl Extension for SkillPointersComponent {
                     let targets = get_targets();
                     let invoked: Vec<&SkillPointerTarget> = targets
                         .into_iter()
-                        .filter(|target| target.pattern.is_match(&visible).unwrap_or(false) || binds(target, &visible))
+                        .filter(|target| {
+                            target.pattern.is_match(&visible).unwrap_or(false)
+                                || binds(target, &visible)
+                        })
                         .filter(|target| skill_is_shipped(&skills_root, target.skill_name))
                         .collect();
 
@@ -403,24 +403,47 @@ impl Extension for SkillPointersComponent {
 
                     let mut pointers: Vec<SkillPointerMessage> = invoked
                         .iter()
-                        .filter(|target| !already_loaded(target.skill_name, &target.expanded_block_pattern))
+                        .filter(|target| {
+                            !already_loaded(target.skill_name, &target.expanded_block_pattern)
+                        })
                         .map(|target| SkillPointerMessage {
                             custom_type: target.custom_type,
-                            content: if binds(target, &visible) { skill_mode(target, session_scope.as_deref(), &skills_root) } else { skill_pointer(target, session_scope.as_deref(), &skills_root) },
+                            content: if binds(target, &visible) {
+                                skill_mode(target, session_scope.as_deref(), &skills_root)
+                            } else {
+                                skill_pointer(target, session_scope.as_deref(), &skills_root)
+                            },
                         })
                         .collect();
 
                     for parent in invoked.iter() {
                         for companion in parent.companions.iter() {
-                            if already_loaded(companion.skill_name, &companion.expanded_block_pattern) {
+                            if already_loaded(
+                                companion.skill_name,
+                                &companion.expanded_block_pattern,
+                            ) {
                                 continue;
                             }
-                            if pointers.iter().any(|p| p.custom_type == companion.custom_type) {
+                            if pointers
+                                .iter()
+                                .any(|p| p.custom_type == companion.custom_type)
+                            {
                                 continue;
                             }
                             pointers.push(SkillPointerMessage {
                                 custom_type: companion.custom_type,
-                                content: if binds(parent, &visible) { format!("<omo-{}-pointer>{} {}. {}</omo-{}-pointer>", companion.skill_name, parent.skill_name, companion.role, companion_condition(parent, companion, &skills_root), companion.skill_name) } else { companion_pointer(parent, companion, &skills_root) },
+                                content: if binds(parent, &visible) {
+                                    format!(
+                                        "<omo-{}-pointer>{} {}. {}</omo-{}-pointer>",
+                                        companion.skill_name,
+                                        parent.skill_name,
+                                        companion.role,
+                                        companion_condition(parent, companion, &skills_root),
+                                        companion.skill_name
+                                    )
+                                } else {
+                                    companion_pointer(parent, companion, &skills_root)
+                                },
                             });
                         }
                     }
@@ -442,7 +465,11 @@ impl Extension for SkillPointersComponent {
                     }
 
                     let client_api = ExtensionApi::new(
-                        LoadedExtension::new("skill-pointers", std::path::PathBuf::new(), SourceInfo::default()),
+                        LoadedExtension::new(
+                            "skill-pointers",
+                            std::path::PathBuf::new(),
+                            SourceInfo::default(),
+                        ),
                         ExtensionSessionProfile::default(),
                         EventBus::default(),
                         runtime,
@@ -474,11 +501,23 @@ mod tests {
     #[test]
     fn positive_binding_forms_and_exclusions() {
         use super::*;
-        for text in ["/ulw-research fix", "/skill:ulw-research fix", "start ulw research now", "[Image #1] start ulw research now"] {
+        for text in [
+            "/ulw-research fix",
+            "/skill:ulw-research fix",
+            "start ulw research now",
+            "[Image #1] start ulw research now",
+        ] {
             let visible = strip_quoted_regions(text);
             assert!(binds(&TARGET_ULW_RESEARCH, &visible), "{text}");
         }
-        for text in ["ulw-research the fix", "run ulw research.ts again", "use ulw research?", "they run ulw research", "'run ulw research'", "don't use ulw research"] {
+        for text in [
+            "ulw-research the fix",
+            "run ulw research.ts again",
+            "use ulw research?",
+            "they run ulw research",
+            "'run ulw research'",
+            "don't use ulw research",
+        ] {
             let visible = strip_quoted_regions(text);
             assert!(!binds(&TARGET_ULW_RESEARCH, &visible), "{text}");
         }

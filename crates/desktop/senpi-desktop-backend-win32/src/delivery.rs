@@ -49,7 +49,10 @@ pub fn is_chromium_class(class: &str) -> bool {
 }
 
 pub fn is_uwp_frame_class(class: &str) -> bool {
-    matches!(class, "ApplicationFrameWindow" | "Windows.UI.Core.CoreWindow")
+    matches!(
+        class,
+        "ApplicationFrameWindow" | "Windows.UI.Core.CoreWindow"
+    )
 }
 
 pub fn is_terminal_class(class: &str) -> bool {
@@ -90,12 +93,17 @@ pub fn is_gtk_class(class: &str) -> bool {
 }
 
 pub fn is_vcl_class(class: &str) -> bool {
-    class.strip_prefix("SAL").is_some_and(|suffix| !suffix.is_empty())
+    class
+        .strip_prefix("SAL")
+        .is_some_and(|suffix| !suffix.is_empty())
 }
 
 /// Returns the empirical reason that a posted event would be accepted by
 /// Win32 but silently ignored by the target toolkit.
-pub fn would_be_silently_dropped(target: TargetTraits<'_>, kind: EventKind) -> Option<&'static str> {
+pub fn would_be_silently_dropped(
+    target: TargetTraits<'_>,
+    kind: EventKind,
+) -> Option<&'static str> {
     use EventKind::{KeyCombo, Keystroke, MouseClick, MouseMove, MouseScroll, TextInput};
 
     let class = target.class;
@@ -125,7 +133,9 @@ pub fn would_be_silently_dropped(target: TargetTraits<'_>, kind: EventKind) -> O
         );
     }
     if is_tk_class(class) && matches!(kind, MouseClick | Keystroke | KeyCombo | TextInput) {
-        return Some("Tk reads button and key state from GetKeyState, which posted input never sets");
+        return Some(
+            "Tk reads button and key state from GetKeyState, which posted input never sets",
+        );
     }
     if is_gtk_class(class) && matches!(kind, MouseClick) {
         return Some("GTK buttons ignore posted mouse-button messages");

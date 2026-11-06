@@ -317,12 +317,24 @@ fn test_refused_commit_rolls_back_every_command_and_leaves_repo_clean() {
     ];
     for params in &attempts {
         let err = run_memory_tool(&repo, &author, params, None).unwrap_err();
-        assert!(err.message.contains("refused by test hook"), "{}", err.message);
-        assert_eq!(porcelain(&repo), "", "{:?} left the repo dirty", params.command);
+        assert!(
+            err.message.contains("refused by test hook"),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            porcelain(&repo),
+            "",
+            "{:?} left the repo dirty",
+            params.command
+        );
     }
 
     assert_eq!(repo.head().expect("head"), head);
-    assert_eq!(fs::read_to_string(repo.dir.join("notes/kept.md")).expect("kept"), block);
+    assert_eq!(
+        fs::read_to_string(repo.dir.join("notes/kept.md")).expect("kept"),
+        block
+    );
     assert!(repo.dir.join("notes/dir/inner.md").exists());
     assert!(!repo.dir.join("notes/new/created.md").exists());
     assert!(!repo.dir.join("notes/moved/inner.md").exists());

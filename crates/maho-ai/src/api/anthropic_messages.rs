@@ -58,9 +58,7 @@ use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, append_assistant_message_diagnostic, now_ms,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
 use crate::utils::json_parse::{
     parse_json_with_repair, parse_streaming_json, should_reparse_streaming_json,
@@ -2676,7 +2674,11 @@ async fn send_request(
     let base_url = client.base_url.trim_end_matches('/');
     let url = format!("{base_url}/v1/messages");
     // PERF-DIVERGENCE(senpi anthropic.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
-    let http_client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
+    let http_client = options
+        .request
+        .fetch
+        .clone()
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut body = prepared.params.clone();
     let mut headers = request_headers(client, model, api_key);
     if let Some(betas) = body.remove("betas") {

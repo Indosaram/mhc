@@ -113,8 +113,14 @@ mod tests {
 
     #[test]
     fn accepts_only_defined_gif_signatures() {
-        assert_eq!(detect_supported_image_mime_type(b"GIF87a"), Some("image/gif"));
-        assert_eq!(detect_supported_image_mime_type(b"GIF89a"), Some("image/gif"));
+        assert_eq!(
+            detect_supported_image_mime_type(b"GIF87a"),
+            Some("image/gif")
+        );
+        assert_eq!(
+            detect_supported_image_mime_type(b"GIF89a"),
+            Some("image/gif")
+        );
         assert_eq!(detect_supported_image_mime_type(b"GIF"), None);
         assert_eq!(detect_supported_image_mime_type(b"GIF90a"), None);
     }

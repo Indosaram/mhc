@@ -20,7 +20,7 @@ fn write_shell_checker(dir: &Path, name: &str, body: &str) -> PathBuf {
 
 #[tokio::test]
 async fn given_checker_binary_exiting_without_reading_stdin_when_checked_then_host_survives_and_clean()
-{
+ {
     let temp = tempdir().expect("test assertion");
     let binary = write_shell_checker(temp.path(), "dead-checker", "exit 0");
 
@@ -62,7 +62,7 @@ async fn given_checker_binary_exiting_without_reading_stdin_when_checked_then_ho
 
 #[tokio::test]
 async fn given_checker_reading_all_stdin_and_reporting_comments_when_checked_then_exit_2_feedback_arrives()
-{
+ {
     let temp = tempdir().expect("test assertion");
     let binary = write_shell_checker(
         temp.path(),
@@ -99,7 +99,8 @@ async fn given_checker_reading_all_stdin_and_reporting_comments_when_checked_the
                 CheckResult {
                     has_comments: true,
                     message: "COMMENT/DOCSTRING DETECTED
-".to_string(),
+"
+                    .to_string(),
                     failure: None,
                 }
             );

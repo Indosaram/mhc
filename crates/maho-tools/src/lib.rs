@@ -2,10 +2,10 @@
 //! with their output truncation, diffing, filesystem policy and managed helper-binary resolution.
 
 pub mod ansi;
-pub mod bounded_realpath;
 pub mod bash;
-pub mod bash_sandbox;
 pub mod bash_executor;
+pub mod bash_sandbox;
+pub mod bounded_realpath;
 pub mod definition;
 pub mod edit;
 pub mod edit_diff;
@@ -19,8 +19,8 @@ pub mod json_usize;
 pub mod ls;
 pub mod managed_tools;
 pub mod model_only_text;
-pub mod path_utils;
 pub mod output_accumulator;
+pub mod path_utils;
 pub mod powershell;
 pub mod read;
 pub mod read_classifiers;
@@ -31,5 +31,10 @@ pub mod tool_definition_wrapper;
 pub mod truncate;
 pub mod unified_diff;
 pub mod write;
-pub use definition::{KernelPrelude, ToolContext, ToolDefinition, ToolError, ToolPermissionParser, ToolPermissionRequest};
-pub use filesystem_policy::{FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
+pub use definition::{
+    KernelPrelude, ToolContext, ToolDefinition, ToolError, ToolPermissionParser,
+    ToolPermissionRequest,
+};
+pub use filesystem_policy::{
+    FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest,
+};

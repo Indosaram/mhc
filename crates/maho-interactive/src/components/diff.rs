@@ -18,7 +18,9 @@ fn parse_diff_line(line: &str) -> Option<(char, String, String)> {
     }
     // PERF-DIVERGENCE(senpi components/diff.ts): upstream slices the line with a regex; this port slices past the one-byte ASCII prefix instead of collecting the rest into a new String. Output is identical.
     let rest = &line[1..];
-    let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let digits_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     let line_num = rest[..digits_end].to_owned();
     let remainder = &rest[digits_end..];
     if !remainder.starts_with(' ') {
@@ -31,7 +33,11 @@ fn replace_tabs(text: &str) -> String {
     text.replace('\t', "   ")
 }
 
-pub fn render_intra_line_diff_with_diff_words(old_content: &str, new_content: &str, theme: &Theme) -> IntraLineDiff {
+pub fn render_intra_line_diff_with_diff_words(
+    old_content: &str,
+    new_content: &str,
+    theme: &Theme,
+) -> IntraLineDiff {
     let word_diff = diff_words(old_content, new_content);
 
     let mut removed_line = String::new();
@@ -68,19 +74,30 @@ pub fn render_intra_line_diff_with_diff_words(old_content: &str, new_content: &s
         }
     }
 
-    IntraLineDiff { removed_line, added_line }
+    IntraLineDiff {
+        removed_line,
+        added_line,
+    }
 }
 
 fn leading_whitespace(text: &str) -> String {
     text.chars().take_while(|c| c.is_whitespace()).collect()
 }
 
-pub fn render_intra_line_diff(old_content: &str, new_content: &str, theme: &Theme) -> IntraLineDiff {
+pub fn render_intra_line_diff(
+    old_content: &str,
+    new_content: &str,
+    theme: &Theme,
+) -> IntraLineDiff {
     render_intra_line_diff_fast_path(old_content, new_content, theme)
         .unwrap_or_else(|| render_intra_line_diff_with_diff_words(old_content, new_content, theme))
 }
 
-pub fn render_intra_line_diff_fast_path(old_content: &str, new_content: &str, theme: &Theme) -> Option<IntraLineDiff> {
+pub fn render_intra_line_diff_fast_path(
+    old_content: &str,
+    new_content: &str,
+    theme: &Theme,
+) -> Option<IntraLineDiff> {
     if old_content == new_content {
         return Some(IntraLineDiff {
             removed_line: old_content.to_owned(),
@@ -90,11 +107,25 @@ pub fn render_intra_line_diff_fast_path(old_content: &str, new_content: &str, th
     render_single_span_intra_line_diff(old_content, new_content, theme)
 }
 
-fn render_single_span_intra_line_diff(old_content: &str, new_content: &str, theme: &Theme) -> Option<IntraLineDiff> {
+fn render_single_span_intra_line_diff(
+    old_content: &str,
+    new_content: &str,
+    theme: &Theme,
+) -> Option<IntraLineDiff> {
     let span = find_single_diff_words_replacement(old_content, new_content)?;
     Some(IntraLineDiff {
-        removed_line: format!("{}{}{}", span.prefix, theme.inverse(&span.removed), span.suffix),
-        added_line: format!("{}{}{}", span.prefix, theme.inverse(&span.added), span.suffix),
+        removed_line: format!(
+            "{}{}{}",
+            span.prefix,
+            theme.inverse(&span.removed),
+            span.suffix
+        ),
+        added_line: format!(
+            "{}{}{}",
+            span.prefix,
+            theme.inverse(&span.added),
+            span.suffix
+        ),
     })
 }
 
@@ -105,7 +136,10 @@ struct ReplacementSpan {
     suffix: String,
 }
 
-fn find_single_diff_words_replacement(old_content: &str, new_content: &str) -> Option<ReplacementSpan> {
+fn find_single_diff_words_replacement(
+    old_content: &str,
+    new_content: &str,
+) -> Option<ReplacementSpan> {
     let old: Vec<char> = old_content.chars().collect();
     let new: Vec<char> = new_content.chars().collect();
 
@@ -148,11 +182,19 @@ fn find_single_diff_words_replacement(old_content: &str, new_content: &str) -> O
     if !is_single_diff_words_replacement(&removed, &added) {
         return None;
     }
-    Some(ReplacementSpan { prefix, removed, added, suffix: old_suffix })
+    Some(ReplacementSpan {
+        prefix,
+        removed,
+        added,
+        suffix: old_suffix,
+    })
 }
 
 fn is_single_diff_words_replacement(removed: &str, added: &str) -> bool {
-    !removed.is_empty() && !added.is_empty() && is_simple_diff_token(removed) && is_simple_diff_token(added)
+    !removed.is_empty()
+        && !added.is_empty()
+        && is_simple_diff_token(removed)
+        && is_simple_diff_token(added)
 }
 
 fn is_simple_diff_token(value: &str) -> bool {
@@ -204,22 +246,44 @@ pub fn render_diff(diff_text: &str, theme: &Theme) -> String {
             if removed_lines.len() == 1 && added_lines.len() == 1 {
                 let (removed_num, removed_content) = &removed_lines[0];
                 let (added_num, added_content) = &added_lines[0];
-                let intra = render_intra_line_diff(&replace_tabs(removed_content), &replace_tabs(added_content), theme);
-                result.push(theme.fg(ThemeColor::ToolDiffRemoved, &format!("-{removed_num} {}", intra.removed_line)));
-                result.push(theme.fg(ThemeColor::ToolDiffAdded, &format!("+{added_num} {}", intra.added_line)));
+                let intra = render_intra_line_diff(
+                    &replace_tabs(removed_content),
+                    &replace_tabs(added_content),
+                    theme,
+                );
+                result.push(theme.fg(
+                    ThemeColor::ToolDiffRemoved,
+                    &format!("-{removed_num} {}", intra.removed_line),
+                ));
+                result.push(theme.fg(
+                    ThemeColor::ToolDiffAdded,
+                    &format!("+{added_num} {}", intra.added_line),
+                ));
             } else {
                 for (line_num, content) in &removed_lines {
-                    result.push(theme.fg(ThemeColor::ToolDiffRemoved, &format!("-{line_num} {}", replace_tabs(content))));
+                    result.push(theme.fg(
+                        ThemeColor::ToolDiffRemoved,
+                        &format!("-{line_num} {}", replace_tabs(content)),
+                    ));
                 }
                 for (line_num, content) in &added_lines {
-                    result.push(theme.fg(ThemeColor::ToolDiffAdded, &format!("+{line_num} {}", replace_tabs(content))));
+                    result.push(theme.fg(
+                        ThemeColor::ToolDiffAdded,
+                        &format!("+{line_num} {}", replace_tabs(content)),
+                    ));
                 }
             }
         } else if prefix == '+' {
-            result.push(theme.fg(ThemeColor::ToolDiffAdded, &format!("+{line_num} {}", replace_tabs(&content))));
+            result.push(theme.fg(
+                ThemeColor::ToolDiffAdded,
+                &format!("+{line_num} {}", replace_tabs(&content)),
+            ));
             index += 1;
         } else {
-            result.push(theme.fg(ThemeColor::ToolDiffContext, &format!(" {line_num} {}", replace_tabs(&content))));
+            result.push(theme.fg(
+                ThemeColor::ToolDiffContext,
+                &format!(" {line_num} {}", replace_tabs(&content)),
+            ));
             index += 1;
         }
     }

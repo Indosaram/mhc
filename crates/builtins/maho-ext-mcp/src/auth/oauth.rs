@@ -349,7 +349,7 @@ pub async fn trusted_discover(
 /// The discovery this process already trusts for the provider, without fetching (upstream `discoveryState()`):
 /// absent when nothing was discovered, the metadata names another issuer, or stored credentials are stamped for
 /// another authorization server.
-pub fn trusted_discovery_state(
+pub async fn trusted_discovery_state(
     provider: &McpOAuthProvider,
 ) -> Result<Option<(OAuthServerInfo, String)>, OAuthRequestError> {
     let Some(info) = locked(&DISCOVERY_CACHE)
@@ -364,14 +364,17 @@ pub fn trusted_discovery_state(
     ) else {
         return Ok(None);
     };
-    if !super::oauth_issuer::credentials_match_issuer(provider.store.read()?.as_ref(), &issuer) {
+    // `read_async`: claiming a legacy grant waits on the migration lock, which must not block the
+    // runtime this OAuth flow runs on.
+    let stored = provider.store.read_async().await?;
+    if !super::oauth_issuer::credentials_match_issuer(stored.as_ref(), &issuer) {
         return Ok(None);
     }
     Ok(Some((info, issuer)))
 }
 /// RFC 9207: an authorization response that names another authorization server, or that omits `iss` although this
 /// server promises to send it, may have been injected by a mix-up attack; never exchange its code.
-pub fn assert_authorization_response_issuer(
+pub async fn assert_authorization_response_issuer(
     provider: &McpOAuthProvider,
     iss: Option<&str>,
 ) -> Result<(), OAuthRequestError> {
@@ -382,7 +385,7 @@ pub fn assert_authorization_response_issuer(
             message,
         )))
     };
-    let Some((info, issuer)) = trusted_discovery_state(provider)? else {
+    let Some((info, issuer)) = trusted_discovery_state(provider).await? else {
         return Err(flow(format!(
             "MCP server {server} has no trusted authorization discovery; restart with /mcp auth-start {server}."
         )));
@@ -425,7 +428,7 @@ async fn begin_authorization_inner(
     force: bool,
 ) -> Result<BeginAuthResult, OAuthRequestError> {
     let (info, issuer) = trusted_discover(provider, client).await?;
-    provider.bind_issuer(&issuer)?;
+    provider.bind_issuer_async(&issuer).await?;
     assert_s256_supported(
         Some(&info.authorization_server_metadata),
         &provider.store.server_name,
@@ -433,7 +436,8 @@ async fn begin_authorization_inner(
     .map_err(OAuthRequestError::Flow)?;
     if !force
         && provider
-            .tokens(chrono::Utc::now().timestamp_millis() as f64)?
+            .tokens_async(chrono::Utc::now().timestamp_millis() as f64)
+            .await?
             .is_some()
     {
         return Ok(BeginAuthResult {
@@ -441,7 +445,7 @@ async fn begin_authorization_inner(
             authorization_url: None,
         });
     }
-    let client_info = match provider.client_information()? {
+    let client_info = match provider.client_information_async().await? {
         Some(info) => info,
         None => {
             let endpoint = info
@@ -461,7 +465,9 @@ async fn begin_authorization_inner(
                 .error_for_status()?
                 .json::<Value>()
                 .await?;
-            provider.save_client_information(registered.clone(), Some(issuer.as_str()))?;
+            provider
+                .save_client_information_async(registered.clone(), Some(issuer.as_str()))
+                .await?;
             registered
         }
     };
@@ -472,7 +478,7 @@ async fn begin_authorization_inner(
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| OAuthRequestError::Invalid(error.to_string()))?;
     let verifier = URL_SAFE_NO_PAD.encode(bytes);
-    provider.save_code_verifier(&verifier)?;
+    provider.save_code_verifier_async(&verifier).await?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let state = provider
         .state()
@@ -517,9 +523,12 @@ pub async fn complete_authorization(
     redirect: &str,
     client: &reqwest::Client,
 ) -> Result<(), OAuthRequestError> {
-    let (code, state, iss) = parse_redirect(redirect, &provider.store.server_name, |iss| {
-        assert_authorization_response_issuer(provider, iss)
-    })?;
+    // The issuer is checked BEFORE any server-supplied error text is read, so a mix-up response
+    // cannot speak for another authorization server. `parse_redirect` then trusts the already
+    // validated value.
+    let iss = authorization_response_issuer(redirect, &provider.store.server_name)?;
+    assert_authorization_response_issuer(provider, iss.as_deref()).await?;
+    let (code, state, _) = parse_redirect(redirect, &provider.store.server_name, |_| Ok(()))?;
     if !provider.consume_state(state.as_deref()) {
         return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(
             OAuthFailureKind::StateMismatch,
@@ -537,15 +546,19 @@ pub async fn finish_authorization(
     iss: Option<&str>,
     client: &reqwest::Client,
 ) -> Result<(), OAuthRequestError> {
-    assert_authorization_response_issuer(provider, iss)?;
+    assert_authorization_response_issuer(provider, iss).await?;
     let (info, issuer) = trusted_discover(provider, client).await?;
     let client_info = provider
-        .client_information()?
+        .client_information_async()
+        .await?
         .ok_or_else(|| OAuthRequestError::Invalid("OAuth client is not registered".into()))?;
     let mut form = vec![
         ("grant_type".into(), "authorization_code".into()),
         ("code".into(), code.into()),
-        ("code_verifier".into(), provider.code_verifier()?),
+        (
+            "code_verifier".into(),
+            provider.code_verifier_async().await?,
+        ),
     ];
     add_resource_param(
         &mut form,
@@ -556,18 +569,24 @@ pub async fn finish_authorization(
     }
     match request_tokens(client, &info, &client_info, form).await {
         Ok(tokens) => {
-            provider.save_tokens_with_issuer(
-                &tokens,
-                chrono::Utc::now().timestamp_millis() as f64,
-                Some(issuer.as_str()),
-            )?;
+            provider
+                .save_tokens_with_issuer_async(
+                    &tokens,
+                    chrono::Utc::now().timestamp_millis() as f64,
+                    Some(issuer.as_str()),
+                )
+                .await?;
             Ok(())
         }
         Err(OAuthRequestError::Flow(error))
             if error.oauth_kind == OAuthFailureKind::InvalidGrant =>
         {
-            provider.invalidate_credentials(CredentialScope::Tokens)?;
-            provider.invalidate_credentials(CredentialScope::Verifier)?;
+            provider
+                .invalidate_credentials_async(CredentialScope::Tokens)
+                .await?;
+            provider
+                .invalidate_credentials_async(CredentialScope::Verifier)
+                .await?;
             Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(
                 OAuthFailureKind::ExpiredCode,
                 format!(
@@ -679,8 +698,8 @@ pub async fn client_credentials_grant(
     client: &reqwest::Client,
 ) -> Result<(), OAuthRequestError> {
     let (info, issuer) = trusted_discover(provider, client).await?;
-    provider.bind_issuer(&issuer)?;
-    let information = provider.client_information()?.ok_or_else(|| {
+    provider.bind_issuer_async(&issuer).await?;
+    let information = provider.client_information_async().await?.ok_or_else(|| {
         OAuthRequestError::Flow(Box::new(OAuthFlowError::new(
             OAuthFailureKind::NeedsAuth,
             format!(
@@ -698,11 +717,13 @@ pub async fn client_credentials_grant(
         &normalize_resource_url(&provider.store.server_url),
     );
     let tokens = request_tokens(client, &info, &information, form).await?;
-    provider.save_tokens_with_issuer(
-        &tokens,
-        chrono::Utc::now().timestamp_millis() as f64,
-        Some(issuer.as_str()),
-    )?;
+    provider
+        .save_tokens_with_issuer_async(
+            &tokens,
+            chrono::Utc::now().timestamp_millis() as f64,
+            Some(issuer.as_str()),
+        )
+        .await?;
     Ok(())
 }
 pub fn logout(provider: &McpOAuthProvider) -> Result<(), OAuthRequestError> {
@@ -710,6 +731,24 @@ pub fn logout(provider: &McpOAuthProvider) -> Result<(), OAuthRequestError> {
     Ok(())
 }
 /// `(code, state, iss)`. `trust` checks the RFC 9207 `iss` before any server-supplied error text is exposed.
+/// The `iss` of an authorization response, read without trusting anything else in the URL. The
+/// caller checks it before any server-supplied error text is exposed (RFC 9207 mix-up defense).
+pub fn authorization_response_issuer(
+    input: &str,
+    server: &str,
+) -> Result<Option<String>, OAuthRequestError> {
+    let flow = |message: String| {
+        OAuthRequestError::Flow(Box::new(OAuthFlowError::new(
+            OAuthFailureKind::NeedsAuth,
+            message,
+        )))
+    };
+    let url=url::Url::parse(input.trim()).map_err(|_|flow(format!("MCP server {server} received a malformed redirect URL; paste the full http://127.0.0.1/... address from your browser.")))?;
+    Ok(url
+        .query_pairs()
+        .find(|(key, _)| key == "iss")
+        .map(|(_, value)| value.to_string()))
+}
 pub fn parse_redirect(
     input: &str,
     server: &str,

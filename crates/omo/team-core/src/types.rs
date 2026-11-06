@@ -118,7 +118,6 @@ fn is_uuid(value: &str) -> bool {
         })
 }
 
-
 pub(crate) fn is_member_name(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -1382,10 +1381,21 @@ mod uuid_tests {
 
     #[test]
     fn uuid_requires_rfc_version_and_variant_or_nil_or_max() {
-        for value in ["00000000-0000-0000-0000-000000000000", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "abcdefab-1234-1234-8123-abcdefabcdef", "abcdefab-1234-8234-B123-abcdefabcdef"] {
+        for value in [
+            "00000000-0000-0000-0000-000000000000",
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+            "abcdefab-1234-1234-8123-abcdefabcdef",
+            "abcdefab-1234-8234-B123-abcdefabcdef",
+        ] {
             assert!(is_uuid(value), "{value}");
         }
-        for value in ["abcdefab-1234-0234-8123-abcdefabcdef", "abcdefab-1234-9234-8123-abcdefabcdef", "abcdefab-1234-4234-7123-abcdefabcdef", "abcdefab-1234-4234-c123-abcdefabcdef", "abcdefab1234-4234-8123-abcdefabcdef"] {
+        for value in [
+            "abcdefab-1234-0234-8123-abcdefabcdef",
+            "abcdefab-1234-9234-8123-abcdefabcdef",
+            "abcdefab-1234-4234-7123-abcdefabcdef",
+            "abcdefab-1234-4234-c123-abcdefabcdef",
+            "abcdefab1234-4234-8123-abcdefabcdef",
+        ] {
             assert!(!is_uuid(value), "{value}");
         }
     }

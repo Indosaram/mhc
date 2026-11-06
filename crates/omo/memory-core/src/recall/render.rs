@@ -13,7 +13,11 @@ pub const RECALL_HINT_HEADER_KO: &str = "백그라운드 메모리 조언자 키
 
 /// Renders one judged nudge as a sourced, escaped `<recalled-memory>` block.
 pub fn render_nudge_block(nudge: &RecallNudge) -> String {
-    let header = if nudge.hint.chars().any(|ch| ('\u{AC00}'..='\u{D7A3}').contains(&ch)) {
+    let header = if nudge
+        .hint
+        .chars()
+        .any(|ch| ('\u{AC00}'..='\u{D7A3}').contains(&ch))
+    {
         RECALL_HINT_HEADER_KO
     } else {
         RECALL_HINT_HEADER

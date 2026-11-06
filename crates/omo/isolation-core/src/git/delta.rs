@@ -2,10 +2,10 @@ use std::path::Path;
 
 use crate::backend::{IsolationError, Result};
 use crate::git::baseline::{
-    capture_repo_baseline, BaselineCaptureOptions, RepoBaseline, WorktreeBaseline,
-    ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+    BaselineCaptureOptions, ISOLATION_BASELINE_MAX_CONTENT_BYTES, RepoBaseline, WorktreeBaseline,
+    capture_repo_baseline,
 };
-use crate::git::command::{exists, run_git, str_args, GitOptions};
+use crate::git::command::{GitOptions, exists, run_git, str_args};
 use crate::git::synthetic_tree::write_synthetic_tree;
 use crate::merge::shared::nested_path;
 

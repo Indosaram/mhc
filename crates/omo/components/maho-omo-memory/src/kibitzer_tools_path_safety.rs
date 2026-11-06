@@ -5,32 +5,58 @@ use std::path::{Component, Path, PathBuf};
 use crate::kibitzer_tools_result::KibitzerRejectionCode;
 
 pub enum PathCheck {
-    Ok { path: String },
-    Rejected { code: KibitzerRejectionCode, message: String },
+    Ok {
+        path: String,
+    },
+    Rejected {
+        code: KibitzerRejectionCode,
+        message: String,
+    },
 }
 
 /// Memory paths are repo-relative POSIX paths. The check is syntactic and fail-closed, and the
 /// reserved root `system/` tree is invisible (nested `x/system/` is ordinary).
 pub fn normalize_memory_path(input: &str) -> PathCheck {
     if input.trim().is_empty() {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::PathEmpty, message: "A memory path is required.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::PathEmpty,
+            message: "A memory path is required.".into(),
+        };
     }
     if input.contains('\\') {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::PathSeparator, message: "Memory paths use '/' separators.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::PathSeparator,
+            message: "Memory paths use '/' separators.".into(),
+        };
     }
     if input.starts_with('/') {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::PathAbsolute, message: "Memory paths are relative to the memory repo.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::PathAbsolute,
+            message: "Memory paths are relative to the memory repo.".into(),
+        };
     }
-    let segments: Vec<&str> = input.split('/').filter(|segment| !segment.is_empty() && *segment != ".").collect();
+    let segments: Vec<&str> = input
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
     if segments.contains(&"..") {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::PathTraversal, message: "Memory paths cannot contain '..' segments.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::PathTraversal,
+            message: "Memory paths cannot contain '..' segments.".into(),
+        };
     }
     if segments.is_empty() {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::PathEmpty, message: "A memory path is required.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::PathEmpty,
+            message: "A memory path is required.".into(),
+        };
     }
     let path = segments.join("/");
     if path == "system" || path.starts_with("system/") {
-        return PathCheck::Rejected { code: KibitzerRejectionCode::SystemPath, message: "The system/ tree is not readable by the sidecar.".into() };
+        return PathCheck::Rejected {
+            code: KibitzerRejectionCode::SystemPath,
+            message: "The system/ tree is not readable by the sidecar.".into(),
+        };
     }
     PathCheck::Ok { path }
 }
@@ -42,15 +68,25 @@ pub fn resolve_workspace_path(root: &Path, input: &str) -> PathCheck {
     let real_root = match std::fs::canonicalize(root) {
         Ok(real_root) => memory_core::support::paths::strip_verbatim_prefix(&real_root),
         Err(error) => {
-            return PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, message: format!("the workspace root could not be resolved: {error}") };
+            return PathCheck::Rejected {
+                code: KibitzerRejectionCode::PathEscape,
+                message: format!("the workspace root could not be resolved: {error}"),
+            };
         }
     };
     let lexical = lexical_resolve(&real_root, input);
-    let target = memory_core::support::paths::strip_verbatim_prefix(&canonicalize_existing_ancestor(&lexical));
+    let target = memory_core::support::paths::strip_verbatim_prefix(
+        &canonicalize_existing_ancestor(&lexical),
+    );
     if target.starts_with(&real_root) {
-        return PathCheck::Ok { path: target.to_string_lossy().into_owned() };
+        return PathCheck::Ok {
+            path: target.to_string_lossy().into_owned(),
+        };
     }
-    PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, message: format!("\"{input}\" resolves outside the workspace.") }
+    PathCheck::Rejected {
+        code: KibitzerRejectionCode::PathEscape,
+        message: format!("\"{input}\" resolves outside the workspace."),
+    }
 }
 
 fn canonicalize_existing_ancestor(path: &Path) -> PathBuf {
@@ -106,7 +142,10 @@ mod tests {
     #[test]
     fn given_a_dot_dot_segment_when_lexically_resolved_then_it_folds_before_realpath() {
         let root = tempfile::tempdir().unwrap();
-        assert_eq!(lexical_resolve(root.path(), "foo/../bar"), root.path().join("bar"));
+        assert_eq!(
+            lexical_resolve(root.path(), "foo/../bar"),
+            root.path().join("bar")
+        );
     }
 
     #[test]
@@ -115,7 +154,10 @@ mod tests {
         let missing = root.path().join("missing");
         assert!(matches!(
             resolve_workspace_path(&missing, "a.md"),
-            PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, .. }
+            PathCheck::Rejected {
+                code: KibitzerRejectionCode::PathEscape,
+                ..
+            }
         ));
     }
 
@@ -123,7 +165,10 @@ mod tests {
     fn given_an_absolute_path_inside_the_root_when_resolved_then_it_is_accepted() {
         let root = tempfile::tempdir().unwrap();
         let input = root.path().join("a.md").to_string_lossy().into_owned();
-        assert!(matches!(resolve_workspace_path(root.path(), &input), PathCheck::Ok { .. }));
+        assert!(matches!(
+            resolve_workspace_path(root.path(), &input),
+            PathCheck::Ok { .. }
+        ));
     }
 
     #[test]
@@ -133,7 +178,10 @@ mod tests {
         let input = outside.path().join("a.md").to_string_lossy().into_owned();
         assert!(matches!(
             resolve_workspace_path(root.path(), &input),
-            PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, .. }
+            PathCheck::Rejected {
+                code: KibitzerRejectionCode::PathEscape,
+                ..
+            }
         ));
     }
 
@@ -145,7 +193,10 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).expect("symlink");
         assert!(matches!(
             resolve_workspace_path(root.path(), "escape"),
-            PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, .. }
+            PathCheck::Rejected {
+                code: KibitzerRejectionCode::PathEscape,
+                ..
+            }
         ));
     }
 
@@ -153,7 +204,10 @@ mod tests {
     fn given_a_traversal_memory_path_when_normalized_then_it_is_rejected() {
         assert!(matches!(
             normalize_memory_path("a/../b.md"),
-            PathCheck::Rejected { code: KibitzerRejectionCode::PathTraversal, .. }
+            PathCheck::Rejected {
+                code: KibitzerRejectionCode::PathTraversal,
+                ..
+            }
         ));
     }
 
@@ -161,12 +215,18 @@ mod tests {
     fn given_the_system_tree_when_normalized_then_it_is_rejected() {
         assert!(matches!(
             normalize_memory_path("system/x.md"),
-            PathCheck::Rejected { code: KibitzerRejectionCode::SystemPath, .. }
+            PathCheck::Rejected {
+                code: KibitzerRejectionCode::SystemPath,
+                ..
+            }
         ));
     }
 
     #[test]
     fn given_a_plain_relative_path_when_normalized_then_it_is_accepted() {
-        assert!(matches!(normalize_memory_path("a/b.md"), PathCheck::Ok { .. }));
+        assert!(matches!(
+            normalize_memory_path("a/b.md"),
+            PathCheck::Ok { .. }
+        ));
     }
 }

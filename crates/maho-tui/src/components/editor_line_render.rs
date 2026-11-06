@@ -107,7 +107,10 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
     cut_ranges.extend(clamp_mentions(
         &keywords
             .iter()
-            .map(|range| MentionRange { start: range.start, end: range.end })
+            .map(|range| MentionRange {
+                start: range.start,
+                end: range.end,
+            })
             .collect::<Vec<_>>(),
         text.len(),
     ));

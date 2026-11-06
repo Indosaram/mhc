@@ -11,13 +11,13 @@ pub mod service;
 pub mod timeouts;
 
 pub use child::{
-    acquiring_engine_child_factory, default_engine_path, engine_child_factory,
     AcquiringEngineChildOptions, ChildFactory, EngineChild, EngineSpawnConfig,
+    acquiring_engine_child_factory, default_engine_path, engine_child_factory,
 };
 pub use notifications::{DesktopNotificationError, Listener, NotificationHub, Subscription};
 pub use parse::{
-    is_desktop_capabilities, is_stop_path_status, parse_audit_event, parse_error_data,
-    parse_hello, parse_permission, parse_session_opened, HelloHandshake, SessionOpened,
+    HelloHandshake, SessionOpened, is_desktop_capabilities, is_stop_path_status, parse_audit_event,
+    parse_error_data, parse_hello, parse_permission, parse_session_opened,
 };
 pub use rpc_client::{
     CallOptions, DesktopEngineRpcError, DesktopError, DesktopLaunchContextError,

@@ -1,6 +1,6 @@
 use senpi_desktop_core::backend::{Modifiers, MouseButton, PointerEvent};
 
-use super::{Coverage, PointOwner, coverage, event_points};
+use super::{coverage, event_points, Coverage, PointOwner};
 
 const fn owner(pid: libc::pid_t, window: Option<u32>) -> PointOwner {
     PointOwner { pid, window }

@@ -6,12 +6,11 @@ use std::sync::Arc;
 use maho_ext_api::{ExtensionApi, UserMessageContent};
 
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    require_identity, respond,
 };
 
-pub const REMEMBER_INSTRUCTION: &str =
-    "[MEMORY REQUEST] Persist this as long-term memory if appropriate. Use your memory tools: \
+pub const REMEMBER_INSTRUCTION: &str = "[MEMORY REQUEST] Persist this as long-term memory if appropriate. Use your memory tools: \
 choose the most appropriate memory file (create one if no relevant file exists), avoid \
 duplicates, match the existing formatting of the file, then briefly confirm what you \
 remembered and where you stored it.";
@@ -40,7 +39,11 @@ pub async fn handle_remember(
     ) {
         return respond(ctx, error.to_string(), NotifyLevel::Error);
     }
-    respond(ctx, format!("memory request sent for {}", identity.identity), NotifyLevel::Info)
+    respond(
+        ctx,
+        format!("memory request sent for {}", identity.identity),
+        NotifyLevel::Info,
+    )
 }
 
 pub fn register_remember_command(api: &mut ExtensionApi, deps: Arc<MemoryCommandDeps>) {
@@ -70,7 +73,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_bound_identity_when_invoked_with_text_then_wait_for_idle_precedes_a_remember_turn() {
+    async fn given_a_bound_identity_when_invoked_with_text_then_wait_for_idle_precedes_a_remember_turn()
+     {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let mut context = fake_command_context(FakeContextOptions::default());
@@ -79,13 +83,19 @@ mod tests {
         context.ctx.wait_for_idle = Some(Arc::new(move || {
             let order = order.clone();
             Box::pin(async move {
-                order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("waitForIdle".to_owned());
+                order
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("waitForIdle".to_owned());
             })
         }));
 
         let response = handle_remember(&fake.deps, &context.ctx, "I prefer tabs over spaces").await;
 
-        assert_eq!(order_of(&context), vec!["waitForIdle".to_owned(), "sendUserMessage".to_owned()]);
+        assert_eq!(
+            order_of(&context),
+            vec!["waitForIdle".to_owned(), "sendUserMessage".to_owned()]
+        );
         let messages = fake.actions.user_messages();
         assert_eq!(messages.len(), 1);
         let message = text_of(&messages[0]);
@@ -109,7 +119,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned_and_nothing_is_sent() {
+    async fn given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned_and_nothing_is_sent()
+     {
         let fake = fake_deps(None, FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 

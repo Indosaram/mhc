@@ -8,7 +8,9 @@
 //! setup-error stream the lazy boundary produces.
 
 use crate::providers::builtin_api_streams;
-use crate::types::{AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StreamOptions,
+};
 
 pub fn stream_openai_completions(
     model: &Model,

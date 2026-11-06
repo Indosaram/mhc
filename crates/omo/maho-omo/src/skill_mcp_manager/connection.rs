@@ -238,7 +238,10 @@ struct SkillStepUp {
     key: String,
 }
 impl maho_ext_mcp::auth::challenge::McpAuthChallengeHandler for SkillStepUp {
-    fn reauthorize(&self, required: Vec<String>) -> futures::future::BoxFuture<'_, Result<(), maho_ext_mcp::errors::McpError>> {
+    fn reauthorize(
+        &self,
+        required: Vec<String>,
+    ) -> futures::future::BoxFuture<'_, Result<(), maho_ext_mcp::errors::McpError>> {
         let config = {
             let mut config = self
                 .config
@@ -252,9 +255,8 @@ impl maho_ext_mcp::auth::challenge::McpAuthChallengeHandler for SkillStepUp {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            config["oauth"]["scopes"] = serde_json::json!(
-                super::oauth_compat::merge_scopes(&scopes, &required)
-            );
+            config["oauth"]["scopes"] =
+                serde_json::json!(super::oauth_compat::merge_scopes(&scopes, &required));
             config.clone()
         };
         let info = self.info.clone();
@@ -270,7 +272,10 @@ impl maho_ext_mcp::auth::challenge::McpAuthChallengeHandler for SkillStepUp {
                 })
         })
     }
-    fn renew(&self) -> futures::future::BoxFuture<'_, Result<Arc<McpClient>, maho_ext_mcp::errors::McpError>> {
+    fn renew(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<Arc<McpClient>, maho_ext_mcp::errors::McpError>>
+    {
         let state = self.state.upgrade();
         let policy = self.policy.upgrade();
         let info = self.info.clone();

@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 fn assistant(ids: &[&str]) -> Value {
     json!({"role":"assistant", "content":null, "tool_calls":ids.iter().map(|id| json!({"id":id,"type":"function","function":{"name":"bash","arguments":"{}"}})).collect::<Vec<_>>()})
 }
-fn output(id: &str) -> Value { json!({"role":"tool","tool_call_id":id,"content":"ok"}) }
+fn output(id: &str) -> Value {
+    json!({"role":"tool","tool_call_id":id,"content":"ok"})
+}
 
 #[test]
 fn chat_without_messages_when_unrelated_payload() {
@@ -14,7 +16,9 @@ fn chat_without_messages_when_unrelated_payload() {
 }
 #[test]
 fn chat_nonobjects_when_no_message_array() {
-    for payload in [Value::Null, json!("text"), json!(42)] { assert_eq!(chat(&payload), payload); }
+    for payload in [Value::Null, json!("text"), json!(42)] {
+        assert_eq!(chat(&payload), payload);
+    }
 }
 #[test]
 fn chat_valid_pairs_when_complete() {
@@ -36,7 +40,10 @@ fn chat_missing_result_when_orphan_follows() {
 #[test]
 fn chat_keeps_paired_when_orphan_present() {
     let payload = json!({"messages":[assistant(&["a"]),output("a"),output("b")]});
-    assert_eq!(chat(&payload)["messages"], json!([assistant(&["a"]),output("a")]));
+    assert_eq!(
+        chat(&payload)["messages"],
+        json!([assistant(&["a"]), output("a")])
+    );
 }
 #[test]
 fn chat_synthesizes_remaining_when_partial_results() {
@@ -55,12 +62,18 @@ fn chat_flushes_when_transcript_advances() {
 #[test]
 fn chat_removes_duplicates_when_result_repeated() {
     let payload = json!({"messages":[assistant(&["a"]),output("a"),output("a")]});
-    assert_eq!(chat(&payload)["messages"], json!([assistant(&["a"]),output("a")]));
+    assert_eq!(
+        chat(&payload)["messages"],
+        json!([assistant(&["a"]), output("a")])
+    );
 }
 #[test]
 fn chat_removes_invalid_ids_when_missing_or_empty() {
     let payload = json!({"messages":[assistant(&["a"]),{"role":"tool","content":"missing"},output(""),output("a")]});
-    assert_eq!(chat(&payload)["messages"], json!([assistant(&["a"]),output("a")]));
+    assert_eq!(
+        chat(&payload)["messages"],
+        json!([assistant(&["a"]), output("a")])
+    );
 }
 #[test]
 fn chat_preserves_input_when_changed() {
@@ -78,17 +91,22 @@ fn responses_without_input_when_chat_payload() {
 #[test]
 fn responses_orphan_function_when_missing_call() {
     let payload = json!({"input":[{"role":"user","content":[]},{"type":"function_call_output","call_id":"missing","output":"stale"}]});
-    assert_eq!(responses(&payload)["input"], json!([{"role":"user","content":[]}]));
+    assert_eq!(
+        responses(&payload)["input"],
+        json!([{"role":"user","content":[]}])
+    );
     assert_eq!(payload["input"].as_array().unwrap().len(), 2);
 }
 #[test]
 fn responses_orphan_custom_when_missing_call() {
-    let payload = json!({"input":[{"type":"custom_tool_call_output","call_id":"missing","output":"stale"}]});
+    let payload =
+        json!({"input":[{"type":"custom_tool_call_output","call_id":"missing","output":"stale"}]});
     assert_eq!(responses(&payload)["input"], json!([]));
 }
 #[test]
 fn responses_synthetic_function_when_missing_output() {
-    let payload = json!({"input":[{"type":"function_call","call_id":"a","name":"bash","arguments":"{}"}]});
+    let payload =
+        json!({"input":[{"type":"function_call","call_id":"a","name":"bash","arguments":"{}"}]});
     let result = responses(&payload);
     assert_eq!(result["input"][1]["type"], "function_call_output");
     assert_eq!(result["input"][1]["call_id"], "a");

@@ -231,35 +231,35 @@ impl EngineTurnHoldNotices {
                 .filter(|id| !wake.items.iter().any(|(item, _)| item == *id))
                 .cloned()
                 .collect();
-            if source != "goal" && !notice_ids.is_empty()
-                && let Some(message) = &wake.message {
-                    let mut message = message.clone();
-                    if source == "monitor" {
-                        let prefix = format!(
-                            "{} automatic monitor wakes held. Latest event:\n",
-                            notice_ids.len()
-                        );
-                        if let Some(object) = message.as_object_mut() {
-                            let content = match object.get("content") {
-                                Some(Value::String(text)) => {
-                                    Value::String(format!("{prefix}{text}"))
-                                }
-                                Some(Value::Array(blocks)) => {
-                                    let mut next = vec![json!({"type": "text", "text": prefix})];
-                                    next.extend(blocks.iter().cloned());
-                                    Value::Array(next)
-                                }
-                                _ => Value::Array(vec![json!({"type": "text", "text": prefix})]),
-                            };
-                            object.insert("content".into(), content);
-                        }
+            if source != "goal"
+                && !notice_ids.is_empty()
+                && let Some(message) = &wake.message
+            {
+                let mut message = message.clone();
+                if source == "monitor" {
+                    let prefix = format!(
+                        "{} automatic monitor wakes held. Latest event:\n",
+                        notice_ids.len()
+                    );
+                    if let Some(object) = message.as_object_mut() {
+                        let content = match object.get("content") {
+                            Some(Value::String(text)) => Value::String(format!("{prefix}{text}")),
+                            Some(Value::Array(blocks)) => {
+                                let mut next = vec![json!({"type": "text", "text": prefix})];
+                                next.extend(blocks.iter().cloned());
+                                Value::Array(next)
+                            }
+                            _ => Value::Array(vec![json!({"type": "text", "text": prefix})]),
+                        };
+                        object.insert("content".into(), content);
                     }
-                    out.push(HeldMessage {
-                        source: source.clone(),
-                        notice_ids,
-                        message,
-                    });
                 }
+                out.push(HeldMessage {
+                    source: source.clone(),
+                    notice_ids,
+                    message,
+                });
+            }
             out.extend(wake.items.iter().map(|(id, message)| HeldMessage {
                 source: source.clone(),
                 notice_ids: vec![id.clone()],
@@ -337,7 +337,10 @@ impl EngineTurnHoldNotices {
     }
 
     fn remember(&mut self, notice: &Value) {
-        let producer = notice.get("producer").and_then(Value::as_str).unwrap_or("unknown");
+        let producer = notice
+            .get("producer")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         let Some(id) = notice.get("noticeId").and_then(Value::as_str) else {
             return;
         };
@@ -477,18 +480,33 @@ mod itemized_tests {
     #[test]
     fn failed_batch_has_no_custody_and_successful_items_keep_own_payloads() {
         let notices = vec![
-            HeldItem { source: "task".into(), item_id: "a".into(), message: json!({"content":"one"}), run_ref: None },
-            HeldItem { source: "task".into(), item_id: "b".into(), message: json!({"content":"two"}), run_ref: None },
+            HeldItem {
+                source: "task".into(),
+                item_id: "a".into(),
+                message: json!({"content":"one"}),
+                run_ref: None,
+            },
+            HeldItem {
+                source: "task".into(),
+                item_id: "b".into(),
+                message: json!({"content":"two"}),
+                run_ref: None,
+            },
         ];
         let mut failed = EngineTurnHoldNotices::new(
             &[],
             Box::new(|_, _| Err("disk full".into())),
             Box::new(|_| {}),
         );
-        assert!(failed.note_items(1, &notices, false, |_| Err("disk full".into())).is_err());
+        assert!(
+            failed
+                .note_items(1, &notices, false, |_| Err("disk full".into()))
+                .is_err()
+        );
         assert_eq!(failed.notice_count(), 0);
         let mut held = EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
-        held.note_items(1, &notices, false, |_| Ok("entry".into())).expect("persist");
+        held.note_items(1, &notices, false, |_| Ok("entry".into()))
+            .expect("persist");
         assert_eq!(held.notice_count(), 2);
         let messages = held.messages();
         assert_eq!(messages.len(), 2);

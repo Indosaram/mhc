@@ -17,7 +17,9 @@ pub struct ModelRuntimeHandle {
 
 impl ModelRuntimeHandle {
     pub fn new(runtime: ModelRuntime) -> Arc<Self> {
-        Arc::new(Self { inner: tokio::sync::Mutex::new(runtime) })
+        Arc::new(Self {
+            inner: tokio::sync::Mutex::new(runtime),
+        })
     }
 
     pub async fn available(&self) -> Result<Vec<Model>, ModelsError> {
@@ -52,11 +54,28 @@ impl ModelRuntimeHandle {
         self.inner.lock().await.refresh(options).await
     }
 
-    pub async fn login(&self, provider_id: &str, auth_type: AuthType, interaction: Arc<dyn AuthInteraction>) -> Result<Credential, ModelsError> {
-        self.inner.lock().await.login(provider_id, auth_type, interaction).await
+    pub async fn login(
+        &self,
+        provider_id: &str,
+        auth_type: AuthType,
+        interaction: Arc<dyn AuthInteraction>,
+    ) -> Result<Credential, ModelsError> {
+        self.inner
+            .lock()
+            .await
+            .login(provider_id, auth_type, interaction)
+            .await
     }
 
-    pub async fn logout(&self, provider_id: &str, options: AuthOperationOptions) -> Result<(), ModelsError> {
-        self.inner.lock().await.logout(provider_id, None, options).await
+    pub async fn logout(
+        &self,
+        provider_id: &str,
+        options: AuthOperationOptions,
+    ) -> Result<(), ModelsError> {
+        self.inner
+            .lock()
+            .await
+            .logout(provider_id, None, options)
+            .await
     }
 }

@@ -94,8 +94,12 @@ impl Facts {
         };
         match wanted {
             Value::Seq(elements) if *set => elements.iter().all(|e| values.contains(e)),
-            Value::Null | Value::String(_) | Value::Atom(_) | Value::Seq(_)
-            | Value::Map(_) | Value::TypedMap(_) => values.contains(wanted),
+            Value::Null
+            | Value::String(_)
+            | Value::Atom(_)
+            | Value::Seq(_)
+            | Value::Map(_)
+            | Value::TypedMap(_) => values.contains(wanted),
         }
     }
 

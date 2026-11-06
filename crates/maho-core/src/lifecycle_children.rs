@@ -141,10 +141,12 @@ impl LifecycleChildren {
             records: IndexMap::new(),
         };
         for e in entries {
-            if e["type"] == "custom" && e["customType"] == "child-lifecycle"
-                && let Some(r) = read_child_report(&e["data"]) {
-                    let _ = s.accept(r, |_| Ok(()));
-                }
+            if e["type"] == "custom"
+                && e["customType"] == "child-lifecycle"
+                && let Some(r) = read_child_report(&e["data"])
+            {
+                let _ = s.accept(r, |_| Ok(()));
+            }
         }
         s
     }
@@ -219,7 +221,10 @@ mod tests {
             "childReportsOmitted": 2
         }))
         .expect("waits");
-        assert_eq!(waits["background"][0]["items"][0], json!({"id": "m", "label": "tail"}));
+        assert_eq!(
+            waits["background"][0]["items"][0],
+            json!({"id": "m", "label": "tail"})
+        );
         assert_eq!(waits["childSources"][0]["activeCount"], 2);
         assert_eq!(waits["childReports"][0]["taskId"], "a");
         assert_eq!(waits["childReports"][1]["label"], "B");

@@ -5,7 +5,8 @@ use senpi_desktop_core::protocol_params::TypeTextParams;
 use super::TransactionError;
 use crate::request::Op;
 use crate::test_support::{
-    click_window, delivery, foreground_click, foreground_click_mutation, harness, op_names, two_windows,
+    click_window, delivery, foreground_click, foreground_click_mutation, harness, op_names,
+    two_windows,
 };
 
 #[test]
@@ -29,7 +30,10 @@ fn foreground_click_restores_front_then_cursor_in_that_order() {
         .process(click_window(&frame, delivery("foreground")))
         .expect("clicks");
     // Then
-    assert_eq!(op_names(&harness), ["front", "pointer", "restore-front", "warp"]);
+    assert_eq!(
+        op_names(&harness),
+        ["front", "pointer", "restore-front", "warp"]
+    );
     let restored: Vec<_> = harness
         .sink
         .ops()
@@ -92,12 +96,15 @@ fn focus_restore_failure_after_a_failed_click_keeps_the_primary() {
         .faults
         .fail_next(FakeMethod::RestoreFrontWindow, ErrorCode::WindowNotFound);
     // When
-    let (result, _) = harness
-        .worker
-        .transaction(&foreground_click_mutation(), &|| false, foreground_click);
+    let (result, _) =
+        harness
+            .worker
+            .transaction(&foreground_click_mutation(), &|| false, foreground_click);
     // Then
     let primary = match result {
-        Err(TransactionError::FocusRestoreFailed { primary, .. }) => primary.map(|error| error.code),
+        Err(TransactionError::FocusRestoreFailed { primary, .. }) => {
+            primary.map(|error| error.code)
+        }
         other => panic!("expected FocusRestoreFailed, got {other:?}"),
     };
     assert_eq!(primary, Some(ErrorCode::InputFailed));
@@ -114,12 +121,15 @@ fn cursor_restore_failure_after_a_failed_click_keeps_the_primary() {
         .faults
         .fail_next(FakeMethod::WarpCursor, ErrorCode::InputFailed);
     // When
-    let (result, _) = harness
-        .worker
-        .transaction(&foreground_click_mutation(), &|| false, foreground_click);
+    let (result, _) =
+        harness
+            .worker
+            .transaction(&foreground_click_mutation(), &|| false, foreground_click);
     // Then
     let primary = match result {
-        Err(TransactionError::CursorRestoreFailed { primary, .. }) => primary.map(|error| error.code),
+        Err(TransactionError::CursorRestoreFailed { primary, .. }) => {
+            primary.map(|error| error.code)
+        }
         other => panic!("expected CursorRestoreFailed, got {other:?}"),
     };
     assert_eq!(primary, Some(ErrorCode::InputFailed));

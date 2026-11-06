@@ -81,10 +81,7 @@ mod tests {
     type Listeners = Arc<Mutex<Vec<(usize, Arc<ActivityListener>)>>>;
     type SubscribeFn = Box<dyn FnOnce(ActivityListener) -> Option<Unsubscribe>>;
 
-    fn host() -> (
-        Listeners,
-        impl Fn() -> SubscribeFn,
-    ) {
+    fn host() -> (Listeners, impl Fn() -> SubscribeFn) {
         let listeners: Listeners = Arc::default();
         let next = Arc::new(AtomicUsize::new(0));
         let shared = listeners.clone();

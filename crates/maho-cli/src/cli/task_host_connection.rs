@@ -92,9 +92,16 @@ impl LiveClient {
     pub fn outcome(&self) -> RunnerOutcome {
         let mut state = self.turn.0.lock().expect("host turn state lock poisoned");
         while state.outcome.is_none() {
-            state = self.turn.1.wait(state).expect("host turn state lock poisoned");
+            state = self
+                .turn
+                .1
+                .wait(state)
+                .expect("host turn state lock poisoned");
         }
-        state.outcome.clone().expect("completed host turn has an outcome")
+        state
+            .outcome
+            .clone()
+            .expect("completed host turn has an outcome")
     }
     pub fn watch(
         self: &Arc<Self>,
@@ -110,7 +117,6 @@ impl LiveClient {
         let cancel = self.turn.clone();
         senpi_task::runners::in_process::native_run_pause::EngineTurnWatch {
             outcome: Box::new(move || {
-
                 rx.recv().unwrap_or_else(|_| {
                     RunnerOutcome::error(
                         RunnerFailureKind::ChildTurnFailed,
@@ -119,7 +125,12 @@ impl LiveClient {
                 })
             }),
             cancel: Box::new(move || {
-                cancel.0.lock().expect("host turn state lock poisoned").watches.remove(&token);
+                cancel
+                    .0
+                    .lock()
+                    .expect("host turn state lock poisoned")
+                    .watches
+                    .remove(&token);
             }),
         }
     }
@@ -152,7 +163,11 @@ impl HostRpcClient for LiveClient {
             command["type"].as_str(),
             Some("prompt" | "followUp" | "steer")
         ) {
-            self.turn.0.lock().expect("host turn state lock poisoned").outcome = None;
+            self.turn
+                .0
+                .lock()
+                .expect("host turn state lock poisoned")
+                .outcome = None;
         }
         let client = self.client.clone();
         self.call(async move {
@@ -282,6 +297,9 @@ impl HostRunHoldClient for LiveClient {
 #[cfg(unix)]
 impl Drop for LiveClient {
     fn drop(&mut self) {
-        self.subscription.get_mut().expect("host subscription lock poisoned").take();
+        self.subscription
+            .get_mut()
+            .expect("host subscription lock poisoned")
+            .take();
     }
 }

@@ -1512,7 +1512,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_handle_captures_output_and_exit_across_disposal() -> Result<(), RuntimeError> {
+    async fn completion_handle_captures_output_and_exit_across_disposal() -> Result<(), RuntimeError>
+    {
         let runtime = TerminalRuntimeSession::start(
             "echo",
             crate::shared::test_sh_options("stty -echo; printf 'handle_output'; exit 0"),

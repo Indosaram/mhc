@@ -92,7 +92,9 @@ macro_rules! impl_from_error_view {
         impl From<ShutdownErrorView> for $target {
             fn from(view: ShutdownErrorView) -> Self {
                 match view {
-                    ShutdownErrorView::UnknownMember { member, reason } => Self::UnknownMember { member, reason },
+                    ShutdownErrorView::UnknownMember { member, reason } => {
+                        Self::UnknownMember { member, reason }
+                    }
                     ShutdownErrorView::NoPendingRequest { member, reason } => {
                         Self::NoPendingRequest { member, reason }
                     }
@@ -138,12 +140,19 @@ impl TeamRejectShutdownDetails {
 
 /// Carries a `SenpiShutdownError` across the service seam (`{ name, message }`).
 pub fn shutdown_error_to_service_error(error: &SenpiShutdownError) -> TeamToolServiceError {
-    TeamToolServiceError::with_code(SHUTDOWN_ERROR_NAME, error.message.clone(), error.code.as_str())
+    TeamToolServiceError::with_code(
+        SHUTDOWN_ERROR_NAME,
+        error.message.clone(),
+        error.code.as_str(),
+    )
 }
 
 // Maps the two lead-driven shutdown failures onto the shared error view; every other failure
 // propagates. The member is the one the lead named (the TS `error.memberName`).
-fn shutdown_error_view(error: TeamToolServiceError, member: &str) -> Result<ShutdownErrorView, TeamToolServiceError> {
+fn shutdown_error_view(
+    error: TeamToolServiceError,
+    member: &str,
+) -> Result<ShutdownErrorView, TeamToolServiceError> {
     if error.name == SHUTDOWN_ERROR_NAME {
         let code = error.code.clone();
         if code.as_deref() == Some("unknown_member")

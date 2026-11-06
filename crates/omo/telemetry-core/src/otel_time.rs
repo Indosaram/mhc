@@ -50,7 +50,11 @@ pub fn to_unix_nanos(input: Option<TimeInput>, clock: &OtelClock) -> UnixNanos {
     match input {
         TimeInput::Date(date) => {
             let millis = date.timestamp_millis();
-            if millis < 0 { 0 } else { millis as UnixNanos * 1_000_000 }
+            if millis < 0 {
+                0
+            } else {
+                millis as UnixNanos * 1_000_000
+            }
         }
         TimeInput::Number(millis) => {
             let rounded = millis.round();

@@ -77,7 +77,9 @@ fn bash_program() -> &'static str {
     let open = "<<'OMO_INSTALL_BASH'\n";
     let start = INSTALL_SH.find(open).expect("the heredoc opener") + open.len();
     let rest = &INSTALL_SH[start..];
-    let end = rest.find("\nOMO_INSTALL_BASH\n").expect("the heredoc closer");
+    let end = rest
+        .find("\nOMO_INSTALL_BASH\n")
+        .expect("the heredoc closer");
     &rest[..end]
 }
 
@@ -128,14 +130,20 @@ fn sh_hands_every_unread_line_and_every_argument_to_bash() {
         ),
     )
     .expect("write the fake bash");
-    fs::set_permissions(&fake_bash, fs::Permissions::from_mode(0o755)).expect("chmod the fake bash");
+    fs::set_permissions(&fake_bash, fs::Permissions::from_mode(0o755))
+        .expect("chmod the fake bash");
 
     let output = run_shell("/bin/sh", &["-s", "alpha", "beta"], &bin, root.path());
     assert_eq!(output.status.code(), Some(0));
     let captured_text = fs::read_to_string(&captured).expect("the captured body");
     assert!(captured_text.starts_with("#!/usr/bin/env bash\n# OmO native installer"));
-    assert!(captured_text.ends_with("if [[ \"${BASH_SOURCE[0]}\" == \"$0\" ]]; then main \"$@\"; fi\n"));
-    assert_eq!(fs::read_to_string(&args_file).expect("the captured args"), "alpha\nbeta\n");
+    assert!(
+        captured_text.ends_with("if [[ \"${BASH_SOURCE[0]}\" == \"$0\" ]]; then main \"$@\"; fi\n")
+    );
+    assert_eq!(
+        fs::read_to_string(&args_file).expect("the captured args"),
+        "alpha\nbeta\n"
+    );
 }
 
 #[test]

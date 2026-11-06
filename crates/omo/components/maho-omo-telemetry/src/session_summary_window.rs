@@ -264,16 +264,14 @@ pub fn summary_properties(session_hash: &str, window: &SummaryWindow, meta: &Sum
     ranked.sort_by(|left, right| {
         let turns = right.sums.get("turns").copied().unwrap_or(0.0);
         let left_turns = left.sums.get("turns").copied().unwrap_or(0.0);
-        turns
-            .total_cmp(&left_turns)
-            .then_with(|| {
-                right
-                    .sums
-                    .get("total_tokens")
-                    .copied()
-                    .unwrap_or(0.0)
-                    .total_cmp(&left.sums.get("total_tokens").copied().unwrap_or(0.0))
-            })
+        turns.total_cmp(&left_turns).then_with(|| {
+            right
+                .sums
+                .get("total_tokens")
+                .copied()
+                .unwrap_or(0.0)
+                .total_cmp(&left.sums.get("total_tokens").copied().unwrap_or(0.0))
+        })
     });
     let rest = ranked.get(MODEL_SLOTS..).unwrap_or_default();
     let rest_sum = |key: &str| -> f64 {
@@ -293,17 +291,28 @@ pub fn summary_properties(session_hash: &str, window: &SummaryWindow, meta: &Sum
     properties.insert("turns".into(), json!(window.totals.len()));
     properties.insert("first_turn_index".into(), json!(window.first_turn_index));
     properties.insert("last_turn_index".into(), json!(window.last_turn_index));
-    properties.insert("window_ms".into(), json!(window.last_at - window.started_at));
-    properties.insert("total_tokens_p50".into(), json!(percentile(&window.totals, 0.5)));
-    properties.insert("total_tokens_p95".into(), json!(percentile(&window.totals, 0.95)));
+    properties.insert(
+        "window_ms".into(),
+        json!(window.last_at - window.started_at),
+    );
+    properties.insert(
+        "total_tokens_p50".into(),
+        json!(percentile(&window.totals, 0.5)),
+    );
+    properties.insert(
+        "total_tokens_p95".into(),
+        json!(percentile(&window.totals, 0.95)),
+    );
     properties.insert(
         "total_tokens_max".into(),
-        json!(window
-            .totals
-            .iter()
-            .copied()
-            .fold(0.0_f64, f64::max)
-            .max(0.0)),
+        json!(
+            window
+                .totals
+                .iter()
+                .copied()
+                .fold(0.0_f64, f64::max)
+                .max(0.0)
+        ),
     );
     properties.insert("model_count".into(), json!(window.models.len()));
     properties.insert("other_turns".into(), json!(rest_sum("turns")));
@@ -311,10 +320,16 @@ pub fn summary_properties(session_hash: &str, window: &SummaryWindow, meta: &Sum
     properties.insert("other_cost_usd".into(), json!(usd_of(rest_sum("cost_1e4"))));
     properties.insert("dropped_events".into(), json!(meta.dropped_events));
     for (key, _) in SUMMED {
-        properties.insert(key.into(), json!(window.sums.get(key).copied().unwrap_or(0.0)));
+        properties.insert(
+            key.into(),
+            json!(window.sums.get(key).copied().unwrap_or(0.0)),
+        );
     }
     for (key, _) in COUNTED {
-        properties.insert(key.into(), json!(window.sums.get(key).copied().unwrap_or(0.0)));
+        properties.insert(
+            key.into(),
+            json!(window.sums.get(key).copied().unwrap_or(0.0)),
+        );
     }
     properties.insert(
         "cost_usd".into(),
@@ -336,7 +351,11 @@ pub fn summary_properties(session_hash: &str, window: &SummaryWindow, meta: &Sum
             }
             properties.insert(
                 format!("m{slot}_{key}"),
-                json!(model.and_then(|model| model.sums.get(key).copied()).unwrap_or(0.0)),
+                json!(
+                    model
+                        .and_then(|model| model.sums.get(key).copied())
+                        .unwrap_or(0.0)
+                ),
             );
         }
         properties.insert(
@@ -385,7 +404,12 @@ pub fn window_to_json(window: &SummaryWindow) -> Value {
 /// A window read back from disk is untrusted: an older build, a torn copy or a hand edit must be rejected
 /// rather than summed into a row that claims exact totals.
 pub fn parse_window(value: &Value) -> Option<SummaryWindow> {
-    let number = |key: &str| value.get(key).and_then(Value::as_f64).filter(|n| n.is_finite());
+    let number = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite())
+    };
     let sums = |raw: Option<&Value>| -> Option<BTreeMap<String, f64>> {
         let object = raw?.as_object()?;
         let mut parsed = BTreeMap::new();
@@ -460,9 +484,21 @@ mod tests {
     #[test]
     fn windows_aggregate_integers_and_publish_exact_usd() {
         let mut window = open_window(1000.0, 1.0);
-        add_turn(&mut window, &turn(1, "openai", "gpt-5.6-sol", 10.0, 1.0), 1500.0);
-        add_turn(&mut window, &turn(2, "openai", "gpt-5.6-sol", 90.0, 1.0), 2000.0);
-        add_turn(&mut window, &turn(3, "anthropic", "claude-x", 20.0, 2.0), 2500.0);
+        add_turn(
+            &mut window,
+            &turn(1, "openai", "gpt-5.6-sol", 10.0, 1.0),
+            1500.0,
+        );
+        add_turn(
+            &mut window,
+            &turn(2, "openai", "gpt-5.6-sol", 90.0, 1.0),
+            2000.0,
+        );
+        add_turn(
+            &mut window,
+            &turn(3, "anthropic", "claude-x", 20.0, 2.0),
+            2500.0,
+        );
         let props = summary_properties("hash", &window, &meta(EndedBy::Shutdown, 4, "root"));
         assert_eq!(props["turns"], 3);
         assert_eq!(props["cost_1e4"], 4.0);
@@ -490,11 +526,19 @@ mod tests {
         let costs = [1.0, 2.0, 3.0, 4.0, 5.0];
         let mut forward = open_window(0.0, 0.0);
         for (index, cost) in costs.iter().enumerate() {
-            add_turn(&mut forward, &turn(index as u64, "openai", "m", 1.0, *cost), 0.0);
+            add_turn(
+                &mut forward,
+                &turn(index as u64, "openai", "m", 1.0, *cost),
+                0.0,
+            );
         }
         let mut backward = open_window(0.0, 0.0);
         for (index, cost) in costs.iter().enumerate().rev() {
-            add_turn(&mut backward, &turn(index as u64, "openai", "m", 1.0, *cost), 0.0);
+            add_turn(
+                &mut backward,
+                &turn(index as u64, "openai", "m", 1.0, *cost),
+                0.0,
+            );
         }
         let forward = summary_properties("h", &forward, &meta(EndedBy::Checkpoint, 0, "root"));
         let backward = summary_properties("h", &backward, &meta(EndedBy::Checkpoint, 0, "root"));
@@ -514,7 +558,11 @@ mod tests {
         aborted.stop_reason = Some("aborted".into());
         add_turn(&mut window, &aborted, 0.0);
         for slot in 0..4 {
-            add_turn(&mut window, &turn(10 + slot, "p", &format!("m{slot}"), 1.0, 1.0), 0.0);
+            add_turn(
+                &mut window,
+                &turn(10 + slot, "p", &format!("m{slot}"), 1.0, 1.0),
+                0.0,
+            );
         }
         let props = summary_properties("h", &window, &meta(EndedBy::Checkpoint, 0, "root"));
         assert_eq!(props["invalid_usage_turns"], 1.0);

@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use maho_ai::types::ModelThinkingLevel as ThinkingLevel;
 
 use super::session::SessionError;
-use super::values::{ListElement, ListReadOptions, ListWrite, StoredValue, Value, ValueList, ValueWrite};
+use super::values::{
+    ListElement, ListReadOptions, ListWrite, StoredValue, Value, ValueList, ValueWrite,
+};
 use crate::harness::compaction::compaction::CompactionSettings;
 use crate::harness::context::Context;
 use crate::harness::types::AgentHarnessStreamOptions;
@@ -26,7 +28,11 @@ pub enum EntryType {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum EntryKind {
     Message {
         message: AgentMessage,
@@ -85,21 +91,27 @@ impl EntryKind {
 
     pub fn summary(&self) -> Option<&str> {
         match self {
-            EntryKind::Compaction { summary, .. } | EntryKind::BranchSummary { summary, .. } => Some(summary),
+            EntryKind::Compaction { summary, .. } | EntryKind::BranchSummary { summary, .. } => {
+                Some(summary)
+            }
             _ => None,
         }
     }
 
     pub fn details(&self) -> Option<&JsonValue> {
         match self {
-            EntryKind::Compaction { details, .. } | EntryKind::BranchSummary { details, .. } => details.as_ref(),
+            EntryKind::Compaction { details, .. } | EntryKind::BranchSummary { details, .. } => {
+                details.as_ref()
+            }
             _ => None,
         }
     }
 
     pub fn usage(&self) -> Option<&Usage> {
         match self {
-            EntryKind::Compaction { usage, .. } | EntryKind::BranchSummary { usage, .. } => usage.as_ref(),
+            EntryKind::Compaction { usage, .. } | EntryKind::BranchSummary { usage, .. } => {
+                usage.as_ref()
+            }
             _ => None,
         }
     }
@@ -137,7 +149,11 @@ pub struct NewEntry {
 }
 
 impl NewEntry {
-    pub fn message(id: impl Into<String>, parent_id: Option<String>, message: AgentMessage) -> Self {
+    pub fn message(
+        id: impl Into<String>,
+        parent_id: Option<String>,
+        message: AgentMessage,
+    ) -> Self {
         Self {
             id: id.into(),
             parent_id,
@@ -148,7 +164,11 @@ impl NewEntry {
         }
     }
 
-    pub fn custom(id: impl Into<String>, parent_id: Option<String>, custom_type: impl Into<String>) -> Self {
+    pub fn custom(
+        id: impl Into<String>,
+        parent_id: Option<String>,
+        custom_type: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             parent_id,
@@ -230,7 +250,10 @@ impl NewEntry {
 
 /// Convert an application-defined custom entry into model context.
 pub type EntryProjector = std::sync::Arc<
-    dyn for<'a> Fn(&'a Entry, &'a Context) -> maho_ai::types::BoxFuture<'a, Option<Vec<AgentMessage>>>
+    dyn for<'a> Fn(
+            &'a Entry,
+            &'a Context,
+        ) -> maho_ai::types::BoxFuture<'a, Option<Vec<AgentMessage>>>
         + Send
         + Sync,
 >;
@@ -261,7 +284,11 @@ pub struct OperationMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum OperationIntent {
     Run {
         prompt_entry_ids: Vec<String>,
@@ -302,7 +329,11 @@ pub enum OperationIntentKind {
 pub type OperationKind = OperationIntentKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Control {
     Running,
     CancelRequested { requested_at: i64 },
@@ -342,7 +373,11 @@ pub struct OperationResultRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Continuation {
     NeedAssistant { overflow_recovery_used: bool },
     MayFinish { include_final_assistant: bool },
@@ -399,7 +434,11 @@ pub enum ToolCallReplay {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ToolCall {
     Planned {
         source_index: usize,
@@ -434,10 +473,18 @@ impl ToolCall {
 
     pub fn result_entry_id(&self) -> &str {
         match self {
-            ToolCall::Planned { result_entry_id, .. }
-            | ToolCall::EffectPending { result_entry_id, .. }
-            | ToolCall::OutcomeReady { result_entry_id, .. }
-            | ToolCall::Completed { result_entry_id, .. } => result_entry_id,
+            ToolCall::Planned {
+                result_entry_id, ..
+            }
+            | ToolCall::EffectPending {
+                result_entry_id, ..
+            }
+            | ToolCall::OutcomeReady {
+                result_entry_id, ..
+            }
+            | ToolCall::Completed {
+                result_entry_id, ..
+            } => result_entry_id,
         }
     }
 }
@@ -507,7 +554,11 @@ pub struct AssistantGenerationScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ResultBoundary {
     ResumeCheckpoint {
         resume_after: CheckpointData,
@@ -831,7 +882,11 @@ pub struct LaneState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum PendingEntry {
     Message {
         payload: Box<AgentMessage>,
@@ -852,7 +907,11 @@ pub struct DurableFileOperations {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum DurableStructuralPreparation {
     Compaction {
         messages_to_summarize: Vec<AgentMessage>,
@@ -1329,7 +1388,11 @@ pub enum ForkPosition {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "scope", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "scope",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ForkOptions {
     Branch {
         branch: String,

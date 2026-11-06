@@ -30,10 +30,27 @@ pub const NOTICE_TYPE: &str = "workflow-update";
 /// subscriber is told how many events it missed and keeps going).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunEvent {
-    NodeStarted { run_id: String, node_id: String, task_id: String, attempt: u32 },
-    NodeRetryScheduled { run_id: String, node_id: String, retry: u32, delay_ms: u64 },
-    NodeSettled { run_id: String, node_id: String, state: NodeState },
-    RunSettled { run_id: String, status: RunStatus },
+    NodeStarted {
+        run_id: String,
+        node_id: String,
+        task_id: String,
+        attempt: u32,
+    },
+    NodeRetryScheduled {
+        run_id: String,
+        node_id: String,
+        retry: u32,
+        delay_ms: u64,
+    },
+    NodeSettled {
+        run_id: String,
+        node_id: String,
+        state: NodeState,
+    },
+    RunSettled {
+        run_id: String,
+        status: RunStatus,
+    },
 }
 
 /// A tool-level error (spec §4).
@@ -175,7 +192,9 @@ impl WorkflowScheduler {
 
     pub(crate) fn journal(&self, run_id: &str, kind: &str, node: Option<&str>, data: Value) {
         if let Err(error) = self.store.append(run_id, &event(kind, node, data)) {
-            maho_ext_api::diagnostic(&format!("workflow {run_id}: cannot append to the journal: {error}"));
+            maho_ext_api::diagnostic(&format!(
+                "workflow {run_id}: cannot append to the journal: {error}"
+            ));
         }
     }
 
@@ -189,7 +208,10 @@ impl WorkflowScheduler {
         run.lease_at = now;
         run.owner_pid = Some(std::process::id());
         if let Err(error) = self.store.save(run) {
-            maho_ext_api::diagnostic(&format!("workflow {}: cannot save the run record: {error}", run.run_id));
+            maho_ext_api::diagnostic(&format!(
+                "workflow {}: cannot save the run record: {error}",
+                run.run_id
+            ));
         }
         for event in events {
             let _ = self.events.send(event);
@@ -246,7 +268,11 @@ impl WorkflowScheduler {
     /// Runs of `parent_session`, newest first.
     pub fn list(&self, parent_session: &str) -> Vec<WorkflowRun> {
         let mut runs = self.runs_of(parent_session);
-        runs.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.run_id.cmp(&a.run_id)));
+        runs.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then(b.run_id.cmp(&a.run_id))
+        });
         runs
     }
 
@@ -254,9 +280,16 @@ impl WorkflowScheduler {
     ///
     /// # Errors
     /// `invalid_definition`, `invalid_arguments`, `definition_conflict`, `run_limit_exceeded`.
-    pub fn start(self: &Arc<Self>, caller: &Caller, definition: WorkflowDefinition) -> Result<StartOutcome, WorkflowError> {
+    pub fn start(
+        self: &Arc<Self>,
+        caller: &Caller,
+        definition: WorkflowDefinition,
+    ) -> Result<StartOutcome, WorkflowError> {
         if definition.key.trim().is_empty() {
-            return Err(WorkflowError::new("invalid_arguments", "definition.key is required"));
+            return Err(WorkflowError::new(
+                "invalid_arguments",
+                "definition.key is required",
+            ));
         }
         let issues = validate(
             &definition,
@@ -268,9 +301,17 @@ impl WorkflowScheduler {
         if !issues.is_empty() {
             let mut error = WorkflowError::new(
                 "invalid_definition",
-                format!("the workflow definition has {} problem(s); no run was created", issues.len()),
+                format!(
+                    "the workflow definition has {} problem(s); no run was created",
+                    issues.len()
+                ),
             );
-            error.node_ids = issues.iter().filter_map(|i| i.node_id.clone()).collect::<BTreeSet<_>>().into_iter().collect();
+            error.node_ids = issues
+                .iter()
+                .filter_map(|i| i.node_id.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             error.errors = issues;
             return Err(error);
         }
@@ -279,7 +320,12 @@ impl WorkflowScheduler {
         let _guard = self
             .store
             .try_lock(&key_hash, Duration::from_secs(60))
-            .ok_or_else(|| WorkflowError::new("definition_conflict", "another start with this key is in progress"))?;
+            .ok_or_else(|| {
+                WorkflowError::new(
+                    "definition_conflict",
+                    "another start with this key is in progress",
+                )
+            })?;
         if let Some(entry) = self.store.lookup_key(&caller.session_id, &definition.key) {
             let existing = self
                 .live_run(&entry.run_id)
@@ -356,8 +402,18 @@ impl WorkflowScheduler {
                 parent_session: run.parent_session.clone(),
                 run_id: run_id.clone(),
             })
-            .map_err(|error| WorkflowError::new("start_failed", format!("cannot write the key index: {error}")))?;
-        self.journal(&run_id, "created", None, json!({"key": run.key, "nodes": run.nodes.len()}));
+            .map_err(|error| {
+                WorkflowError::new(
+                    "start_failed",
+                    format!("cannot write the key index: {error}"),
+                )
+            })?;
+        self.journal(
+            &run_id,
+            "created",
+            None,
+            json!({"key": run.key, "nodes": run.nodes.len()}),
+        );
         let live = self.insert_live(run, true);
         self.pump(&live);
         let run = lock(&live.run).clone();
@@ -385,12 +441,16 @@ impl WorkflowScheduler {
             loop {
                 let mut progressed = false;
                 for id in &order {
-                    let Some(state) = run.nodes.get(id).map(|n| n.state) else { continue };
+                    let Some(state) = run.nodes.get(id).map(|n| n.state) else {
+                        continue;
+                    };
                     if !matches!(state, NodeState::Pending | NodeState::Blocked) {
                         continue;
                     }
                     let ready = deps.get(id).into_iter().flatten().all(|dep| {
-                        run.nodes.get(dep).is_some_and(|n| n.state == NodeState::Completed)
+                        run.nodes
+                            .get(dep)
+                            .is_some_and(|n| n.state == NodeState::Completed)
                     });
                     if ready {
                         self.dispatch(live, &mut run, id, &mut notices);
@@ -420,7 +480,11 @@ impl WorkflowScheduler {
                         node.state = NodeState::Skipped;
                         node.finished_at = Some(now_ms());
                         self.journal(&run_id, "node_skipped", Some(id.as_str()), Value::Null);
-                        self.emit(RunEvent::NodeSettled { run_id: run_id.clone(), node_id: id.clone(), state: NodeState::Skipped });
+                        self.emit(RunEvent::NodeSettled {
+                            run_id: run_id.clone(),
+                            node_id: id.clone(),
+                            state: NodeState::Skipped,
+                        });
                     }
                 }
                 if run.nodes.values().all(|n| n.state.is_terminal()) {
@@ -447,31 +511,58 @@ impl WorkflowScheduler {
             RunStatus::Completed
         };
         run.finished_at = Some(now_ms());
-        self.journal(&run.run_id, "run_settled", None, json!({"status": run.status.as_str()}));
-        self.emit(RunEvent::RunSettled { run_id: run.run_id.clone(), status: run.status });
+        self.journal(
+            &run.run_id,
+            "run_settled",
+            None,
+            json!({"status": run.status.as_str()}),
+        );
+        self.emit(RunEvent::RunSettled {
+            run_id: run.run_id.clone(),
+            status: run.status,
+        });
         live.settled.send_replace(true);
         if let Some(waker) = lock(&live.waker).take() {
             let (done, total, _, failed) = run.counts();
             let mut text = format!(
                 "Workflow {} ({}) {}: {done}/{total} nodes completed",
-                run.name, run.run_id, run.status.as_str()
+                run.name,
+                run.run_id,
+                run.status.as_str()
             );
             if failed > 0 {
                 text.push_str(&format!(", {failed} failed"));
             }
             if let Some(error) = &run.error {
-                text.push_str(&format!(" (first failure: {}: {})", error.code, error.message));
+                text.push_str(&format!(
+                    " (first failure: {}: {})",
+                    error.code, error.message
+                ));
             }
             text.push_str(". Use workflow action=snapshot for details.");
-            notices.push((waker.notifier, text, json!({"run_id": run.run_id, "status": run.status.as_str(), "kind": "run_settled"})));
+            notices.push((
+                waker.notifier,
+                text,
+                json!({"run_id": run.run_id, "status": run.status.as_str(), "kind": "run_settled"}),
+            ));
         }
     }
 
-    fn dispatch(self: &Arc<Self>, live: &Arc<LiveRun>, run: &mut WorkflowRun, id: &str, notices: &mut Vec<Notice>) {
-        let Some(spec) = run.definition.nodes.iter().find(|n| n.id == id).cloned() else { return };
+    fn dispatch(
+        self: &Arc<Self>,
+        live: &Arc<LiveRun>,
+        run: &mut WorkflowRun,
+        id: &str,
+        notices: &mut Vec<Notice>,
+    ) {
+        let Some(spec) = run.definition.nodes.iter().find(|n| n.id == id).cloned() else {
+            return;
+        };
         let run_id = run.run_id.clone();
         let parent_model = run.parent_model.clone();
-        let Some(node) = run.nodes.get_mut(id) else { return };
+        let Some(node) = run.nodes.get_mut(id) else {
+            return;
+        };
         let mut prompt = node.prompt.clone();
         if !node.pending_guidance.is_empty() {
             prompt.push_str("\n\n# Guidance from the user\n\n");
@@ -496,16 +587,35 @@ impl WorkflowScheduler {
                 node.task_id = Some(task_id.clone());
                 node.started_at.get_or_insert(now);
                 node.last_activity_at = Some(now);
-                self.journal(&run_id, "node_started", Some(id), json!({"task_id": task_id, "attempt": node.attempt}));
-                self.emit(RunEvent::NodeStarted { run_id, node_id: id.to_owned(), task_id: task_id.clone(), attempt: node.attempt });
+                self.journal(
+                    &run_id,
+                    "node_started",
+                    Some(id),
+                    json!({"task_id": task_id, "attempt": node.attempt}),
+                );
+                self.emit(RunEvent::NodeStarted {
+                    run_id,
+                    node_id: id.to_owned(),
+                    task_id: task_id.clone(),
+                    attempt: node.attempt,
+                });
                 self.watch(live, id, &task_id);
             }
             Err(error) => {
                 node.state = NodeState::Failed;
                 node.error = Some(NodeError::new(&error.code, error.message));
                 node.finished_at = Some(now);
-                self.journal(&run_id, "node_failed", Some(id), json!({"code": error.code}));
-                self.emit(RunEvent::NodeSettled { run_id: run_id.clone(), node_id: id.to_owned(), state: NodeState::Failed });
+                self.journal(
+                    &run_id,
+                    "node_failed",
+                    Some(id),
+                    json!({"code": error.code}),
+                );
+                self.emit(RunEvent::NodeSettled {
+                    run_id: run_id.clone(),
+                    node_id: id.to_owned(),
+                    state: NodeState::Failed,
+                });
                 if let Some(notice) = node_notice(live, run_id.as_str(), node) {
                     notices.push(notice);
                 }
@@ -526,7 +636,13 @@ impl WorkflowScheduler {
     }
 
     /// Applies a child's outcome to its node (ignored when the node moved on meanwhile).
-    pub(crate) fn on_child_settled(self: &Arc<Self>, live: &Arc<LiveRun>, node_id: &str, task_id: &str, outcome: ChildOutcome) {
+    pub(crate) fn on_child_settled(
+        self: &Arc<Self>,
+        live: &Arc<LiveRun>,
+        node_id: &str,
+        task_id: &str,
+        outcome: ChildOutcome,
+    ) {
         if self.is_stopped() {
             return;
         }
@@ -535,7 +651,9 @@ impl WorkflowScheduler {
             let mut run = lock(&live.run);
             let run_id = run.run_id.clone();
             let cancelled_run = run.status == RunStatus::Cancelled;
-            let Some(node) = run.nodes.get_mut(node_id) else { return };
+            let Some(node) = run.nodes.get_mut(node_id) else {
+                return;
+            };
             if node.task_id.as_deref() != Some(task_id) || !node.state.is_active() {
                 return;
             }
@@ -543,7 +661,10 @@ impl WorkflowScheduler {
             node.last_activity_at = Some(now);
             let infrastructure = matches!(
                 outcome,
-                ChildOutcome::Failed { infrastructure: true, .. } | ChildOutcome::Interrupted { .. }
+                ChildOutcome::Failed {
+                    infrastructure: true,
+                    ..
+                } | ChildOutcome::Interrupted { .. }
             );
             if infrastructure && !cancelled_run && node.infra_retries < MAX_INFRA_RETRIES {
                 node.infra_retries += 1;
@@ -553,8 +674,18 @@ impl WorkflowScheduler {
                 node.task_id = None;
                 let delay = self.retry_base.saturating_mul(1 << (retry - 1));
                 let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
-                self.journal(&run_id, "node_retry_scheduled", Some(node_id), json!({"retry": retry, "delay_ms": delay_ms}));
-                self.emit(RunEvent::NodeRetryScheduled { run_id, node_id: node_id.to_owned(), retry, delay_ms });
+                self.journal(
+                    &run_id,
+                    "node_retry_scheduled",
+                    Some(node_id),
+                    json!({"retry": retry, "delay_ms": delay_ms}),
+                );
+                self.emit(RunEvent::NodeRetryScheduled {
+                    run_id,
+                    node_id: node_id.to_owned(),
+                    retry,
+                    delay_ms,
+                });
                 self.persist(&mut run);
                 drop(run);
                 let this = Arc::clone(self);
@@ -568,16 +699,30 @@ impl WorkflowScheduler {
             }
             match outcome {
                 ChildOutcome::Completed { output } => {
-                    let stats = ResultStats { bytes: output.len(), attempt: node.attempt, task_id: Some(task_id.to_owned()), finished_at: now };
+                    let stats = ResultStats {
+                        bytes: output.len(),
+                        attempt: node.attempt,
+                        task_id: Some(task_id.to_owned()),
+                        finished_at: now,
+                    };
                     if let Err(error) = self.store.write_result(&run_id, node_id, &output, &stats) {
-                        maho_ext_api::diagnostic(&format!("workflow {run_id}: cannot store the result of {node_id}: {error}"));
+                        maho_ext_api::diagnostic(&format!(
+                            "workflow {run_id}: cannot store the result of {node_id}: {error}"
+                        ));
                     }
                     node.output_preview = Some(preview(&output));
                     node.output_bytes = Some(output.len());
                     node.state = NodeState::Completed;
                 }
-                ChildOutcome::Failed { message, infrastructure } => {
-                    let code = if infrastructure { codes::TASK_LOST } else { codes::TASK_ERROR };
+                ChildOutcome::Failed {
+                    message,
+                    infrastructure,
+                } => {
+                    let code = if infrastructure {
+                        codes::TASK_LOST
+                    } else {
+                        codes::TASK_ERROR
+                    };
                     node.error = Some(NodeError::new(code, message));
                     node.state = NodeState::Failed;
                 }
@@ -586,15 +731,31 @@ impl WorkflowScheduler {
                     node.state = NodeState::Failed;
                 }
                 ChildOutcome::Cancelled => {
-                    node.error = Some(NodeError::new(codes::TASK_CANCELLED, "the child task was cancelled"));
+                    node.error = Some(NodeError::new(
+                        codes::TASK_CANCELLED,
+                        "the child task was cancelled",
+                    ));
                     node.state = NodeState::Cancelled;
                 }
             }
             node.finished_at = Some(now);
             let state = node.state;
-            self.journal(&run_id, "node_settled", Some(node_id), json!({"state": state.as_str()}));
-            self.emit(RunEvent::NodeSettled { run_id: run_id.clone(), node_id: node_id.to_owned(), state });
-            if let Some(notice) = run.nodes.get(node_id).and_then(|node| node_notice(live, &run_id, node)) {
+            self.journal(
+                &run_id,
+                "node_settled",
+                Some(node_id),
+                json!({"state": state.as_str()}),
+            );
+            self.emit(RunEvent::NodeSettled {
+                run_id: run_id.clone(),
+                node_id: node_id.to_owned(),
+                state,
+            });
+            if let Some(notice) = run
+                .nodes
+                .get(node_id)
+                .and_then(|node| node_notice(live, &run_id, node))
+            {
                 notices.push(notice);
             }
             self.persist(&mut run);
@@ -611,8 +772,14 @@ impl WorkflowScheduler {
         {
             let mut run = lock(&live.run);
             let status = run.status;
-            let Some(node) = run.nodes.get_mut(node_id) else { return };
-            if node.state != NodeState::Scheduled || node.attempt != attempt || node.infra_retries != retry || node.task_id.is_some() {
+            let Some(node) = run.nodes.get_mut(node_id) else {
+                return;
+            };
+            if node.state != NodeState::Scheduled
+                || node.attempt != attempt
+                || node.infra_retries != retry
+                || node.task_id.is_some()
+            {
                 return;
             }
             if status != RunStatus::Running {
@@ -640,7 +807,10 @@ impl WorkflowScheduler {
     pub fn recover(self: &Arc<Self>, parent_session: &str) -> Vec<String> {
         let mut recovered = Vec::new();
         for run in self.store.list() {
-            if run.parent_session != parent_session || run.status.is_terminal() || !self.owner_gone(&run) {
+            if run.parent_session != parent_session
+                || run.status.is_terminal()
+                || !self.owner_gone(&run)
+            {
                 continue;
             }
             recovered.push(run.run_id.clone());
@@ -656,10 +826,17 @@ impl WorkflowScheduler {
             let mut run = lock(&live.run);
             let run_id = run.run_id.clone();
             let paused = run.user_paused;
-            self.journal(&run_id, "recovered", None, json!({"pid": std::process::id()}));
+            self.journal(
+                &run_id,
+                "recovered",
+                None,
+                json!({"pid": std::process::id()}),
+            );
             let ids: Vec<String> = run.nodes.keys().cloned().collect();
             for id in ids {
-                let Some(node) = run.nodes.get_mut(&id) else { continue };
+                let Some(node) = run.nodes.get_mut(&id) else {
+                    continue;
+                };
                 if !node.state.is_active() {
                     continue;
                 }
@@ -670,14 +847,29 @@ impl WorkflowScheduler {
                 };
                 let lost = |node: &mut NodeRecord, code: &str, message: &str| {
                     node.state = NodeState::Failed;
-                    node.error = Some(NodeError::new(if paused { codes::LOST_WHILE_PAUSED } else { code }, message));
+                    node.error = Some(NodeError::new(
+                        if paused {
+                            codes::LOST_WHILE_PAUSED
+                        } else {
+                            code
+                        },
+                        message,
+                    ));
                     node.finished_at = Some(now_ms());
                 };
                 match self.executor.probe(&task_id) {
                     ChildProbe::Running => self.watch(&live, &id, &task_id),
                     ChildProbe::Settled(outcome) => settled.push((id.clone(), task_id, outcome)),
-                    ChildProbe::Lost => lost(node, codes::TASK_LOST, "the child task ended without a result while its owner was gone"),
-                    ChildProbe::Missing => lost(node, codes::RESUME_TASK_MISSING, "the child task no longer exists"),
+                    ChildProbe::Lost => lost(
+                        node,
+                        codes::TASK_LOST,
+                        "the child task ended without a result while its owner was gone",
+                    ),
+                    ChildProbe::Missing => lost(
+                        node,
+                        codes::RESUME_TASK_MISSING,
+                        "the child task no longer exists",
+                    ),
                 }
             }
             self.persist(&mut run);
@@ -728,7 +920,11 @@ fn owner_dead(_pid: u32, lease_at: u64, heartbeat_ms: u64) -> bool {
 fn node_notice(live: &LiveRun, run_id: &str, node: &NodeRecord) -> Option<Notice> {
     let waker = lock(&live.waker);
     let waker = waker.as_ref().filter(|w| w.each_node)?;
-    let mut text = format!("Workflow {run_id}: node {} {}", node.id, node.state.as_str());
+    let mut text = format!(
+        "Workflow {run_id}: node {} {}",
+        node.id,
+        node.state.as_str()
+    );
     if let Some(error) = &node.error {
         text.push_str(&format!(" ({}: {})", error.code, error.message));
     }
@@ -755,7 +951,10 @@ fn warnings(definition: &WorkflowDefinition) -> Vec<String> {
     for node in &definition.nodes {
         let unique: BTreeSet<&String> = node.depends_on.iter().collect();
         if unique.len() != node.depends_on.len() {
-            warnings.push(format!("node \"{}\" lists a dependency more than once", node.id));
+            warnings.push(format!(
+                "node \"{}\" lists a dependency more than once",
+                node.id
+            ));
         }
         if node.prompt.trim().is_empty() {
             warnings.push(format!("node \"{}\" has an empty prompt", node.id));

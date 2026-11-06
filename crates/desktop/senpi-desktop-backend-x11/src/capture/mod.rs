@@ -17,7 +17,7 @@ mod tests;
 #[cfg(test)]
 mod windows_tests;
 
-use ::image::{RgbaImage, imageops};
+use ::image::{imageops, RgbaImage};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
@@ -25,7 +25,7 @@ use x11rb::protocol::xproto::Window;
 
 pub use self::connection::X11Connection;
 pub use self::connection::XServer;
-use self::image::{RootRect, clip_to_root, to_rgba};
+use self::image::{clip_to_root, to_rgba, RootRect};
 
 pub struct X11Capture<S = X11Connection> {
     server: S,

@@ -12,11 +12,13 @@ use memory_core::facts::{
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::facts_status::{ReadFactsOverviewInput, format_facts_status, read_facts_overview};
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    command_context_from, finish, require_identity, respond,
 };
 
-fn conversations_in(records: &[memory_core::facts::failures_schema::FactsFailureRecord]) -> Vec<String> {
+fn conversations_in(
+    records: &[memory_core::facts::failures_schema::FactsFailureRecord],
+) -> Vec<String> {
     records
         .iter()
         .map(|record| record.conversation_id.clone())
@@ -160,10 +162,8 @@ mod tests {
     use super::*;
     use crate::commands::test_support::*;
     use memory_core::facts::{
-        failures_backoff::FactsFailureTarget,
-        failures_schema::FactsFailureReason,
-        failures_store::RecordFailureRequest,
-        schema::facts_queue_paths,
+        failures_backoff::FactsFailureTarget, failures_schema::FactsFailureReason,
+        failures_store::RecordFailureRequest, schema::facts_queue_paths,
     };
 
     const NOW_MS: i64 = 1_786_968_000_000;
@@ -206,13 +206,21 @@ mod tests {
     fn seed_queue_artifacts(identity: &MemoryCommandIdentity) -> Vec<std::path::PathBuf> {
         let layout = facts_queue_paths(&identity.identity_paths);
         std::fs::create_dir_all(&layout.cursor_dir).expect("cursor dir");
-        let entry_path = layout.queue_dir.join("20260816T115900000Z-aaaaaaaaaaaa-bbbbbbbb.json");
+        let entry_path = layout
+            .queue_dir
+            .join("20260816T115900000Z-aaaaaaaaaaaa-bbbbbbbb.json");
         std::fs::write(&entry_path, "{\n  \"version\": 1,\n  \"entries\": []\n}\n").expect("entry");
-        std::fs::write(&layout.consumed_path, "{\n  \"version\": 1,\n  \"consumed\": {}\n}\n")
-            .expect("consumed");
+        std::fs::write(
+            &layout.consumed_path,
+            "{\n  \"version\": 1,\n  \"consumed\": {}\n}\n",
+        )
+        .expect("consumed");
         let cursor_path = layout.cursor_path("conv-a");
-        std::fs::write(&cursor_path, "{\n  \"version\": 1,\n  \"enqueued_through_snapshot_line\": 4\n}\n")
-            .expect("cursor");
+        std::fs::write(
+            &cursor_path,
+            "{\n  \"version\": 1,\n  \"enqueued_through_snapshot_line\": 4\n}\n",
+        )
+        .expect("cursor");
         vec![entry_path, layout.consumed_path, cursor_path]
     }
 
@@ -229,13 +237,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_parked_and_backoff_records_when_invoked_then_the_status_view_reports_both_plus_queue_depth() {
+    async fn given_parked_and_backoff_records_when_invoked_then_the_status_view_reports_both_plus_queue_depth()
+     {
         let (_root, identity) = temp_identity();
         seed_failures(&identity).await;
         seed_queue_artifacts(&identity);
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         let response = invoke_facts(&fake, "").await;
@@ -248,14 +260,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_corrupt_failures_json_when_invoked_then_the_status_view_says_corrupt_rather_than_zeros() {
+    async fn given_a_corrupt_failures_json_when_invoked_then_the_status_view_says_corrupt_rather_than_zeros()
+     {
         let (_root, identity) = temp_identity();
         let layout = facts_queue_paths(&identity.identity_paths);
         std::fs::create_dir_all(&layout.queue_dir).expect("queue dir");
         std::fs::write(&layout.failures_path, "{ not json").expect("corrupt");
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         let response = invoke_facts(&fake, "").await;
@@ -266,25 +282,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_records_for_two_conversations_when_retrying_one_then_only_its_records_are_cleared() {
+    async fn given_records_for_two_conversations_when_retrying_one_then_only_its_records_are_cleared()
+     {
         let (_root, identity) = temp_identity();
         let store = seed_failures(&identity).await;
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         let response = invoke_facts(&fake, "retry --conversation conv-a").await;
 
         let remaining = store.read_failures().expect("read");
-        let ids: Vec<String> = remaining.entries.iter().map(|r| r.conversation_id.clone()).collect();
+        let ids: Vec<String> = remaining
+            .entries
+            .iter()
+            .map(|r| r.conversation_id.clone())
+            .collect();
         assert_eq!(ids, vec!["conv-b".to_owned()]);
         assert!(response.text.contains("conv-a"));
         assert!(response.text.contains("1 record"));
     }
 
     #[tokio::test]
-    async fn given_queue_files_and_watermarks_when_retrying_then_every_queue_artifact_is_byte_identical() {
+    async fn given_queue_files_and_watermarks_when_retrying_then_every_queue_artifact_is_byte_identical()
+     {
         let (_root, identity) = temp_identity();
         seed_failures(&identity).await;
         let paths = seed_queue_artifacts(&identity);
@@ -298,7 +323,10 @@ mod tests {
         names_before.sort();
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         invoke_facts(&fake, "retry").await;
@@ -314,12 +342,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_parked_records_when_retrying_without_a_filter_then_all_conversations_are_named_and_one_launch_triggers() {
+    async fn given_parked_records_when_retrying_without_a_filter_then_all_conversations_are_named_and_one_launch_triggers()
+     {
         let (_root, identity) = temp_identity();
         let store = seed_failures(&identity).await;
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         let response = invoke_facts(&fake, "retry").await;
@@ -331,12 +363,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_no_records_for_the_requested_conversation_when_retrying_then_it_is_a_noop_with_a_clear_message() {
+    async fn given_no_records_for_the_requested_conversation_when_retrying_then_it_is_a_noop_with_a_clear_message()
+     {
         let (_root, identity) = temp_identity();
         let store = seed_failures(&identity).await;
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { now_ms: Some(NOW_MS), ..Default::default() },
+            FakeDepsOverrides {
+                now_ms: Some(NOW_MS),
+                ..Default::default()
+            },
         );
 
         let response = invoke_facts(&fake, "retry --conversation unknown-conv").await;

@@ -117,9 +117,7 @@ pub fn comment_checker_cache_dir(input: &CommentCheckerCacheDirInput<'_>) -> Pat
             .get("LOCALAPPDATA")
             .or_else(|| input.env.get("APPDATA"))
             .map(PathBuf::from);
-        let base = local_app_data.unwrap_or_else(|| {
-            input.homedir.join("AppData").join("Local")
-        });
+        let base = local_app_data.unwrap_or_else(|| input.homedir.join("AppData").join("Local"));
         return base.join(input.cache_dir_name).join("bin");
     }
     let base = input

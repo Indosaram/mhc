@@ -31,7 +31,11 @@ pub fn parse(text: &str) -> Result<Node, ItemError> {
         events.push(event.map_err(|e| ItemError::Yaml(e.to_string()))?);
     }
     // Parser markers count Unicode scalars; disk splices index UTF-8 bytes.
-    let offsets: Vec<_> = text.char_indices().map(|(at, _)| at).chain([text.len()]).collect();
+    let offsets: Vec<_> = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([text.len()])
+        .collect();
     let mut at = 0;
     while matches!(
         events.get(at),
@@ -309,17 +313,14 @@ pub fn source(value: &Value) -> String {
             let safe = !s.is_empty()
                 && s.trim() == s
                 && !s.contains([
-                    '\n', '\r', '\t', '\u{2028}', '\u{2029}', ':', '#', '[', ']', '{', '}', ',', '"', '\'',
+                    '\n', '\r', '\t', '\u{2028}', '\u{2029}', ':', '#', '[', ']', '{', '}', ',',
+                    '"', '\'',
                 ])
                 && !s.starts_with(['-', '?', '!', '&', '*', '|', '>', '%', '@', '`'])
                 && s.chars().all(|c| !c.is_control())
                 && scalar(s, TScalarStyle::Plain, None)
                     .is_ok_and(|v| v == Value::String(s.clone()));
-            if safe {
-                s.clone()
-            } else {
-                double_quoted(s)
-            }
+            if safe { s.clone() } else { double_quoted(s) }
         }
         Value::Seq(v) => {
             if v.is_empty() {

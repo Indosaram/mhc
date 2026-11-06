@@ -9,6 +9,8 @@ use std::sync::LazyLock;
 
 pub const IMAGE_MODELS_JSON: &str = include_str!("../data/image-models.json");
 
-pub static IMAGE_MODELS: LazyLock<IndexMap<String, IndexMap<String, ImagesModel>>> = LazyLock::new(|| {
-    serde_json::from_str(IMAGE_MODELS_JSON).unwrap_or_else(|error| panic!("embedded image-models.json is invalid: {error}"))
-});
+pub static IMAGE_MODELS: LazyLock<IndexMap<String, IndexMap<String, ImagesModel>>> =
+    LazyLock::new(|| {
+        serde_json::from_str(IMAGE_MODELS_JSON)
+            .unwrap_or_else(|error| panic!("embedded image-models.json is invalid: {error}"))
+    });

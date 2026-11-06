@@ -92,7 +92,9 @@ fn commit_all(exec: &dyn GitExec, dir: &Path, message: &str) -> String {
 }
 
 fn show(dir: &Path, exec: &dyn GitExec, spec: &str) -> String {
-    let result = exec.run_in(dir, &["cat-file", "blob", spec]).expect("cat-file");
+    let result = exec
+        .run_in(dir, &["cat-file", "blob", spec])
+        .expect("cat-file");
     assert_eq!(result.code, 0, "{}", result.stderr);
     result.stdout
 }
@@ -101,10 +103,14 @@ fn show(dir: &Path, exec: &dyn GitExec, spec: &str) -> String {
 fn given_one_dropped_entry_when_described_then_it_is_singular_and_redacted() {
     let note = describe_dropped_entries(&[DroppedEntry {
         path: "reference/token=abc123456.md".to_string(),
-        reason: "secret_like_content: reference/token=*** (credential_assignment, file name)".to_string(),
+        reason: "secret_like_content: reference/token=*** (credential_assignment, file name)"
+            .to_string(),
     }]);
 
-    assert!(note.starts_with("Dropped 1 invalid memory entry: "), "{note}");
+    assert!(
+        note.starts_with("Dropped 1 invalid memory entry: "),
+        "{note}"
+    );
     assert!(!note.contains("abc123456"), "{note}");
 }
 
@@ -121,8 +127,14 @@ fn given_two_dropped_entries_when_described_then_it_is_plural_and_redacted() {
         },
     ]);
 
-    assert!(note.starts_with("Dropped 2 invalid memory entries: "), "{note}");
-    assert!(!note.contains("Ab3dEf5hJ7kL9mN1pQ3rS5tU7vW9xY1zB3C5"), "{note}");
+    assert!(
+        note.starts_with("Dropped 2 invalid memory entries: "),
+        "{note}"
+    );
+    assert!(
+        !note.contains("Ab3dEf5hJ7kL9mN1pQ3rS5tU7vW9xY1zB3C5"),
+        "{note}"
+    );
     assert!(note.contains("reference/leak.md"), "{note}");
 }
 
@@ -134,13 +146,8 @@ fn given_a_multi_commit_branch_when_counted_then_every_commit_counts() {
     write_files(&fixture.dir, &[("reference/keep.md", GOOD)]);
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "second");
 
-    let count = commit_count(
-        fixture.exec.as_ref(),
-        &fixture.dir,
-        &fixture.base,
-        &tip,
-    )
-    .expect("commit count");
+    let count = commit_count(fixture.exec.as_ref(), &fixture.dir, &fixture.base, &tip)
+        .expect("commit count");
 
     assert_eq!(count, 2);
 }
@@ -153,7 +160,10 @@ fn given_a_dropped_path_when_squashed_then_it_returns_to_its_base_content_and_th
         &fixture.dir,
         &[
             ("reference/keep.md", edited.as_str()),
-            ("reference/leak.md", LEAK.replace("leak body", "new leak").as_str()),
+            (
+                "reference/leak.md",
+                LEAK.replace("leak body", "new leak").as_str(),
+            ),
         ],
     );
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "edit both");
@@ -171,15 +181,29 @@ fn given_a_dropped_path_when_squashed_then_it_returns_to_its_base_content_and_th
 
     assert_ne!(squashed, tip);
     assert_eq!(
-        show(&fixture.dir, fixture.exec.as_ref(), &format!("{squashed}:reference/keep.md")),
+        show(
+            &fixture.dir,
+            fixture.exec.as_ref(),
+            &format!("{squashed}:reference/keep.md")
+        ),
         edited
     );
     assert_eq!(
-        show(&fixture.dir, fixture.exec.as_ref(), &format!("{squashed}:reference/leak.md")),
+        show(
+            &fixture.dir,
+            fixture.exec.as_ref(),
+            &format!("{squashed}:reference/leak.md")
+        ),
         LEAK
     );
     assert_eq!(
-        commit_count(fixture.exec.as_ref(), &fixture.dir, &fixture.base, &squashed).expect("count"),
+        commit_count(
+            fixture.exec.as_ref(),
+            &fixture.dir,
+            &fixture.base,
+            &squashed
+        )
+        .expect("count"),
         1
     );
     let parent = fixture
@@ -218,7 +242,10 @@ fn given_a_dropped_rename_destination_when_squashed_then_the_source_is_restored(
     std::fs::create_dir_all(fixture.dir.join("reference")).expect("reference dir");
     let moved = fixture
         .exec
-        .run_in(&fixture.dir, &["mv", "notes-dump.md", "reference/notes-dump.md"])
+        .run_in(
+            &fixture.dir,
+            &["mv", "notes-dump.md", "reference/notes-dump.md"],
+        )
         .expect("git mv");
     assert_eq!(moved.code, 0, "{}", moved.stderr);
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "move it");
@@ -235,12 +262,23 @@ fn given_a_dropped_rename_destination_when_squashed_then_the_source_is_restored(
     .expect("squash");
 
     assert_eq!(
-        show(&fixture.dir, fixture.exec.as_ref(), &format!("{squashed}:notes-dump.md")),
+        show(
+            &fixture.dir,
+            fixture.exec.as_ref(),
+            &format!("{squashed}:notes-dump.md")
+        ),
         "# Title\n\nno frontmatter\n"
     );
     let moved_back = fixture
         .exec
-        .run_in(&fixture.dir, &["cat-file", "-e", &format!("{squashed}:reference/notes-dump.md")])
+        .run_in(
+            &fixture.dir,
+            &[
+                "cat-file",
+                "-e",
+                &format!("{squashed}:reference/notes-dump.md"),
+            ],
+        )
         .expect("cat-file -e");
     assert_ne!(moved_back.code, 0);
 }
@@ -252,7 +290,10 @@ fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_v
     let fixture = fixture(&[("reference/keep.md", GOOD)]);
     // Match upstream completion-validation-partial.test.ts: keep a valid change so the
     // repaired tip has a commit on which the dropped-entry trailer can be recorded.
-    write_files(&fixture.dir, &[("reference/a | b.md", LEAK), ("reference/good.md", GOOD)]);
+    write_files(
+        &fixture.dir,
+        &[("reference/a | b.md", LEAK), ("reference/good.md", GOOD)],
+    );
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "add leak");
     let dropped = BTreeSet::from(["reference/a | b.md".to_string()]);
     let record = vec![DroppedEntry {
@@ -269,8 +310,13 @@ fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_v
         &record,
     )
     .expect("squash");
-    let read_back = read_dropped_trailers(fixture.exec.as_ref(), &fixture.dir, &fixture.base, &squashed)
-        .expect("read trailers");
+    let read_back = read_dropped_trailers(
+        fixture.exec.as_ref(),
+        &fixture.dir,
+        &fixture.base,
+        &squashed,
+    )
+    .expect("read trailers");
 
     assert_eq!(read_back, record);
 }
@@ -278,7 +324,10 @@ fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_v
 #[test]
 fn given_a_tip_without_recorded_drops_when_read_back_then_nothing_is_reported() {
     let fixture = fixture(&[("reference/keep.md", GOOD)]);
-    write_files(&fixture.dir, &[("reference/keep.md", GOOD.replace("body", "edited").as_str())]);
+    write_files(
+        &fixture.dir,
+        &[("reference/keep.md", GOOD.replace("body", "edited").as_str())],
+    );
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "edit");
 
     let read_back = read_dropped_trailers(fixture.exec.as_ref(), &fixture.dir, &fixture.base, &tip)
@@ -290,24 +339,62 @@ fn given_a_tip_without_recorded_drops_when_read_back_then_nothing_is_reported() 
 /// The squash commit is a memory commit: it runs with the commit budget and without auto
 /// maintenance (`repo.ts`), while the reads around it keep the git budget.
 #[test]
-fn given_a_dropped_path_when_squashed_then_the_commit_gets_the_commit_budget_without_auto_maintenance() {
+fn given_a_dropped_path_when_squashed_then_the_commit_gets_the_commit_budget_without_auto_maintenance()
+ {
     let fixture = fixture(&[("reference/keep.md", GOOD), ("reference/leak.md", LEAK)]);
-    write_files(&fixture.dir, &[("reference/keep.md", GOOD.replace("body", "edited body").as_str())]);
-    write_files(&fixture.dir, &[("reference/leak.md", LEAK.replace("leak body", "new leak").as_str())]);
+    write_files(
+        &fixture.dir,
+        &[(
+            "reference/keep.md",
+            GOOD.replace("body", "edited body").as_str(),
+        )],
+    );
+    write_files(
+        &fixture.dir,
+        &[(
+            "reference/leak.md",
+            LEAK.replace("leak body", "new leak").as_str(),
+        )],
+    );
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "edit both");
     let dropped = BTreeSet::from(["reference/leak.md".to_string()]);
     let recording = RecordingExec::system();
 
-    squash_without_paths(recording.as_ref(), &fixture.dir, &fixture.base, &tip, &dropped, &[])
-        .expect("squash");
+    squash_without_paths(
+        recording.as_ref(),
+        &fixture.dir,
+        &fixture.base,
+        &tip,
+        &dropped,
+        &[],
+    )
+    .expect("squash");
 
     let (argv, timeout) = recording.call_with("commit");
-    assert_eq!(&argv[..4], &NO_AUTO_MAINTENANCE.map(str::to_string)[..], "{argv:?}");
+    assert_eq!(
+        &argv[..4],
+        &NO_AUTO_MAINTENANCE.map(str::to_string)[..],
+        "{argv:?}"
+    );
     assert_eq!(
         &argv[4..],
-        &["-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "--no-verify", "-m", "edit both (kept valid entries)\n"]
-            .map(str::to_string)[..],
+        &[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "edit both (kept valid entries)\n"
+        ]
+        .map(str::to_string)[..],
     );
     assert_eq!(timeout, COMMIT_TIMEOUT_MS, "{argv:?}");
-    assert_eq!(recording.call_with("reset").1, 30_000, "reads keep the git budget");
+    assert_eq!(
+        recording.call_with("reset").1,
+        30_000,
+        "reads keep the git budget"
+    );
 }

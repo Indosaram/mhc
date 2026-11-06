@@ -18,6 +18,8 @@ pub const CLI_TIPS: &[TipDefinition] = &[
         id: "tool-flags",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Limit a run's tools with -t read,bash, or drop a few with -xt write,edit.".to_string(),
+        render: |_keys| {
+            "Limit a run's tools with -t read,bash, or drop a few with -xt write,edit.".to_string()
+        },
     },
 ];

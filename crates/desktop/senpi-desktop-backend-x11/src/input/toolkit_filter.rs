@@ -47,7 +47,12 @@ pub fn filtering_toolkit(wm_class: &[u8]) -> Option<Toolkit> {
 
 /// Why background `kind` input to `window` is refused; names the toolkit and
 /// the `WM_CLASS` it was recognised by.
-pub fn background_unavailable(window: &str, kind: &str, toolkit: Toolkit, wm_class: &[u8]) -> DesktopError {
+pub fn background_unavailable(
+    window: &str,
+    kind: &str,
+    toolkit: Toolkit,
+    wm_class: &[u8],
+) -> DesktopError {
     let class = String::from_utf8_lossy(wm_class)
         .split('\0')
         .filter(|part| !part.is_empty())

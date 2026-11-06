@@ -146,7 +146,11 @@ pub fn query_analytics(
             status: Some(response.status),
         });
     }
-    parse_rollup_rows(&response.json().map_err(|error| RollupError::new(error.message))?)
+    parse_rollup_rows(
+        &response
+            .json()
+            .map_err(|error| RollupError::new(error.message))?,
+    )
 }
 
 /// `storeRollup`: an upsert per day so an hourly rerun replaces counts instead of

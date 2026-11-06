@@ -10,7 +10,8 @@ use crate::completion::{
 };
 use crate::host::HostError;
 use crate::state::{
-    ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskNotification, TaskRecord, TaskStatus,
+    ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskNotification, TaskRecord,
+    TaskStatus,
 };
 use crate::test_support::{MemoryStore, base_record};
 
@@ -64,7 +65,11 @@ struct CapturingNotifier {
 }
 
 impl ParentNotifier for CapturingNotifier {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: crate::completion::DeliveryCallbacks,
+    ) -> Result<(), HostError> {
         self.messages.lock().expect("lock").push(message.clone());
         callbacks.delivered();
         Ok(())

@@ -4,7 +4,7 @@ use maho_ext_api::{Extension, ExtensionApi};
 
 use crate::index::MemoryComponent;
 use crate::wiring::MemoryWiring;
-use crate::wiring_static::{register_memory_static, MemoryStaticOptions};
+use crate::wiring_static::{MemoryStaticOptions, register_memory_static};
 use crate::wiring_types::NativeMemoryWiringOptions;
 
 pub struct MemoryExtensionOptions {
@@ -40,9 +40,15 @@ impl Extension for MemoryExtension {
     fn register(&self, api: &mut ExtensionApi) {
         crate::native_badge::register_native_badge(api);
         let static_options = self.static_options.clone();
-        let result = MemoryWiring::register_native(self.wiring.clone(), &self.component, api, self.wiring_options.clone(), |api| {
-            register_memory_static(api, static_options);
-        });
+        let result = MemoryWiring::register_native(
+            self.wiring.clone(),
+            &self.component,
+            api,
+            self.wiring_options.clone(),
+            |api| {
+                register_memory_static(api, static_options);
+            },
+        );
         if let Err(error) = result {
             std::panic::panic_any(format!("memory registration failed: {error}"));
         }

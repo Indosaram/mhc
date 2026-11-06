@@ -1,5 +1,11 @@
-use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, verification::build_test_discipline_section, workstation::WorkstationDialect};
 use crate::test_decision::TEST_DECISION;
+use maho_core::dynamic_prompt::{
+    build::{
+        BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
+    },
+    verification::build_test_discipline_section,
+    workstation::WorkstationDialect,
+};
 
 const INITIATIVE_BIAS: &str = "The request sets the scope; deliver all of it and only it. Fill routine gaps from the codebase and the conversation, and carry the task to completion through failed tool calls, long turns, and the urge to hand back a draft; when one part is blocked by something outside your reach, finish every other part and say exactly what you left out and why.";
 const APPROVAL_LAST: &str = "Authorization persists across the session, and read-only actions, reversible local edits, in-scope fixes, and non-destructive validation never need it. Ask only for an answer the session cannot supply that would change the outcome, after finishing everything that does not depend on it, so the user approves a concrete, reviewable result: a deploy, an external write, a merge, or a destructive command is the last step. Stopping to ask costs the user more than a reversible wrong guess costs you. Ask through request_user_input when it is available, with wait_for_answer false so the question rides along while you keep working - true only when an irreversible next step turns on the answer; if it returns no answers, proceed on best judgment. Never use it for permission requests - state those directly.";
@@ -10,7 +16,8 @@ const INSTRUCTION_PRECEDENCE: &str = "Explicit user instructions outrank instruc
 const PAUSE_TRANSPARENCY: &str = "When an instruction in a skill or project file makes you pause, ask for confirmation, or diverge from the user's intent, name the file, quote the line, and say whether it is an explicit requirement or your interpretation; an inferred requirement leaves you free to proceed within the authorized scope. An exception written in a skill or project file is not by itself a request for approval: check the authorization already in the session and whether the rule applies before asking.";
 const EVAL_FIRST_ROUTING: &str = "When `eval` is available, batch the independent reads, searches, symbol lookups, and probes of a step in one js cell and inspect every result. Edits, side-effecting commands, approvals, waits, and any call whose input you have not seen yet stay sequential, one action observed before the next.";
 const PERCEIVED_STATE_LOOP: &str = "When the result must be seen rather than read - a page, a component, an image, a 3D scene, a layout - make one change, render or screenshot it, look, then make the next; check a 3D scene from several angles and a page at desktop and mobile widths for blank, misframed, or overlapping output. Compare what you see with the reference or the stated intent, and ask only where two readings of that intent diverge.";
-const BUN_RUNTIME: &str = "Default to js on Bun and reach for Bun builtins before adding a dependency.";
+const BUN_RUNTIME: &str =
+    "Default to js on Bun and reach for Bun builtins before adding a dependency.";
 const STAY_DIRECT_EXCEPTIONS: &str = "Skip the cell when it buys nothing: a lone call, an already-small result, a result you must read before choosing the next call, a judgment call between steps, or an action that needs approval.";
 const LSP_SYMBOL_ROUTING: &str = "Where LSP tools exist, let the language server answer symbol questions - a definition, its callers, the blast radius of a rename, the diagnostics on a file you just touched. Plain text search earns its place on literal strings, filenames, and commit history.";
 const DELEGATION: &str = "Do the work yourself by default: reading, lookups, and checks on your own change are yours however many calls they take, and a follow-up on work you delegated is yours to take back, not to forward. A subagent is for a track that runs beside yours and lands the task sooner - a wide investigation across many files, or an implementation unit beyond one coherent edit in files you are not touching; spawn such tracks together in the background, each brief naming its output, allowed edit paths, stop condition, and returned evidence.";
@@ -29,36 +36,152 @@ const SLOP_BAN: &str = "Leave out stock phrases and filler: \"delve\", \"leverag
 const DIRECT_STATEMENTS: &str = "State the action or finding directly and connect it to its purpose or consequence. Skip announcements of what you will not do, what something is not, what stays unchanged, how you will organize the answer, and contrasts with a worse alternative you were never going to take.";
 const FINAL_MESSAGE_SHAPE: &str = "The final message of a change is the handoff block and stands alone: the outcome first, then in its You need slot what a reader needs to trust it - the checks that ran, summarized rather than listed, anything left unverified, and any pre-existing problem you left in place - ordered so the conclusion is easiest to check rather than in the order you worked. Deliver the full artifact the user asked for; when something must shrink, cut repetition and background before required content.";
 
-pub struct ExecutionRule { pub id: &'static str, pub concern: &'static str, pub directive: &'static str }
+pub struct ExecutionRule {
+    pub id: &'static str,
+    pub concern: &'static str,
+    pub directive: &'static str,
+}
 pub const GPT6_ASTRA_RULES: &[ExecutionRule] = &[
-    ExecutionRule { id: "initiative-bias", concern: "initiative", directive: INITIATIVE_BIAS },
-    ExecutionRule { id: "approval-last", concern: "initiative", directive: APPROVAL_LAST },
-    ExecutionRule { id: "steering", concern: "initiative", directive: STEERING },
-    ExecutionRule { id: "no-unsolicited-caution", concern: "initiative", directive: NO_UNSOLICITED_CAUTION },
-    ExecutionRule { id: "memory-first", concern: "initiative", directive: MEMORY_FIRST },
-    ExecutionRule { id: "instruction-precedence", concern: "instruction-precedence", directive: INSTRUCTION_PRECEDENCE },
-    ExecutionRule { id: "pause-transparency", concern: "instruction-precedence", directive: PAUSE_TRANSPARENCY },
-    ExecutionRule { id: "eval-first-routing", concern: "tool-orchestration", directive: EVAL_FIRST_ROUTING },
-    ExecutionRule { id: "perceived-state-loop", concern: "tool-orchestration", directive: PERCEIVED_STATE_LOOP },
-    ExecutionRule { id: "bun-runtime", concern: "tool-orchestration", directive: BUN_RUNTIME },
-    ExecutionRule { id: "stay-direct-exceptions", concern: "tool-orchestration", directive: STAY_DIRECT_EXCEPTIONS },
-    ExecutionRule { id: "lsp-symbol-routing", concern: "symbol-routing", directive: LSP_SYMBOL_ROUTING },
-    ExecutionRule { id: "delegation", concern: "delegation", directive: DELEGATION },
-    ExecutionRule { id: "legible-messages", concern: "delegation", directive: LEGIBLE_MESSAGES },
-    ExecutionRule { id: "todo-granularity", concern: "todo-discipline", directive: TODO_GRANULARITY },
-    ExecutionRule { id: "async-default", concern: "async-work", directive: ASYNC_DEFAULT },
-    ExecutionRule { id: "foreground-exception", concern: "async-work", directive: FOREGROUND_EXCEPTION },
-    ExecutionRule { id: "turn-end-is-wait", concern: "async-work", directive: TURN_END_IS_WAIT },
-    ExecutionRule { id: "monitor-conditions", concern: "async-work", directive: MONITOR_CONDITIONS },
-    ExecutionRule { id: "verification-once", concern: "verification", directive: VERIFICATION_ONCE },
-    ExecutionRule { id: "test-decision", concern: "tests", directive: TEST_DECISION },
-    ExecutionRule { id: "unbounded-retry", concern: "failure-recovery", directive: UNBOUNDED_RETRY },
-    ExecutionRule { id: "atomic-commits", concern: "commit-discipline", directive: ATOMIC_COMMITS },
-    ExecutionRule { id: "no-external-messaging", concern: "external-side-effects", directive: NO_EXTERNAL_MESSAGING },
-    ExecutionRule { id: "plain-prose", concern: "writing-style", directive: PLAIN_PROSE },
-    ExecutionRule { id: "slop-ban", concern: "writing-style", directive: SLOP_BAN },
-    ExecutionRule { id: "direct-statements", concern: "writing-style", directive: DIRECT_STATEMENTS },
-    ExecutionRule { id: "final-message-shape", concern: "reporting", directive: FINAL_MESSAGE_SHAPE },
+    ExecutionRule {
+        id: "initiative-bias",
+        concern: "initiative",
+        directive: INITIATIVE_BIAS,
+    },
+    ExecutionRule {
+        id: "approval-last",
+        concern: "initiative",
+        directive: APPROVAL_LAST,
+    },
+    ExecutionRule {
+        id: "steering",
+        concern: "initiative",
+        directive: STEERING,
+    },
+    ExecutionRule {
+        id: "no-unsolicited-caution",
+        concern: "initiative",
+        directive: NO_UNSOLICITED_CAUTION,
+    },
+    ExecutionRule {
+        id: "memory-first",
+        concern: "initiative",
+        directive: MEMORY_FIRST,
+    },
+    ExecutionRule {
+        id: "instruction-precedence",
+        concern: "instruction-precedence",
+        directive: INSTRUCTION_PRECEDENCE,
+    },
+    ExecutionRule {
+        id: "pause-transparency",
+        concern: "instruction-precedence",
+        directive: PAUSE_TRANSPARENCY,
+    },
+    ExecutionRule {
+        id: "eval-first-routing",
+        concern: "tool-orchestration",
+        directive: EVAL_FIRST_ROUTING,
+    },
+    ExecutionRule {
+        id: "perceived-state-loop",
+        concern: "tool-orchestration",
+        directive: PERCEIVED_STATE_LOOP,
+    },
+    ExecutionRule {
+        id: "bun-runtime",
+        concern: "tool-orchestration",
+        directive: BUN_RUNTIME,
+    },
+    ExecutionRule {
+        id: "stay-direct-exceptions",
+        concern: "tool-orchestration",
+        directive: STAY_DIRECT_EXCEPTIONS,
+    },
+    ExecutionRule {
+        id: "lsp-symbol-routing",
+        concern: "symbol-routing",
+        directive: LSP_SYMBOL_ROUTING,
+    },
+    ExecutionRule {
+        id: "delegation",
+        concern: "delegation",
+        directive: DELEGATION,
+    },
+    ExecutionRule {
+        id: "legible-messages",
+        concern: "delegation",
+        directive: LEGIBLE_MESSAGES,
+    },
+    ExecutionRule {
+        id: "todo-granularity",
+        concern: "todo-discipline",
+        directive: TODO_GRANULARITY,
+    },
+    ExecutionRule {
+        id: "async-default",
+        concern: "async-work",
+        directive: ASYNC_DEFAULT,
+    },
+    ExecutionRule {
+        id: "foreground-exception",
+        concern: "async-work",
+        directive: FOREGROUND_EXCEPTION,
+    },
+    ExecutionRule {
+        id: "turn-end-is-wait",
+        concern: "async-work",
+        directive: TURN_END_IS_WAIT,
+    },
+    ExecutionRule {
+        id: "monitor-conditions",
+        concern: "async-work",
+        directive: MONITOR_CONDITIONS,
+    },
+    ExecutionRule {
+        id: "verification-once",
+        concern: "verification",
+        directive: VERIFICATION_ONCE,
+    },
+    ExecutionRule {
+        id: "test-decision",
+        concern: "tests",
+        directive: TEST_DECISION,
+    },
+    ExecutionRule {
+        id: "unbounded-retry",
+        concern: "failure-recovery",
+        directive: UNBOUNDED_RETRY,
+    },
+    ExecutionRule {
+        id: "atomic-commits",
+        concern: "commit-discipline",
+        directive: ATOMIC_COMMITS,
+    },
+    ExecutionRule {
+        id: "no-external-messaging",
+        concern: "external-side-effects",
+        directive: NO_EXTERNAL_MESSAGING,
+    },
+    ExecutionRule {
+        id: "plain-prose",
+        concern: "writing-style",
+        directive: PLAIN_PROSE,
+    },
+    ExecutionRule {
+        id: "slop-ban",
+        concern: "writing-style",
+        directive: SLOP_BAN,
+    },
+    ExecutionRule {
+        id: "direct-statements",
+        concern: "writing-style",
+        directive: DIRECT_STATEMENTS,
+    },
+    ExecutionRule {
+        id: "final-message-shape",
+        concern: "reporting",
+        directive: FINAL_MESSAGE_SHAPE,
+    },
 ];
 
 fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {

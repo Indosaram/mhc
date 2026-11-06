@@ -11,7 +11,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse as kbm;
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
 use super::held::{HeldKey, Route};
-use super::{Win32Input, keys, messages};
+use super::{keys, messages, Win32Input};
 use crate::integrity;
 use crate::stop_path::chord;
 

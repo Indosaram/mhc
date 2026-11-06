@@ -31,7 +31,8 @@ impl Hotkey {
         let mut modifiers = Modifiers::default();
         let mut trigger = None;
         for name in chord.keys() {
-            let key = parse_key(if name == "opt" { "option" } else { name }).map_err(|_| invalid())?;
+            let key =
+                parse_key(if name == "opt" { "option" } else { name }).map_err(|_| invalid())?;
             if key.is_modifier() {
                 update_modifier(&mut modifiers, key, true);
             } else if trigger.replace(key).is_some() {

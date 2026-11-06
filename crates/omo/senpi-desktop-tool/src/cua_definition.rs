@@ -1,10 +1,10 @@
 //! OpenAI CUA tool definition matching upstream `src/cua-definition.ts`.
 
-use std::sync::Arc;
 use maho_tools::definition::{
     ToolDefinition, ToolExecutionMode, ToolExposure, ToolPermissionRequest,
 };
 use serde_json::json;
+use std::sync::Arc;
 
 use crate::cua_actions::is_read_only_actions;
 use crate::permission::COMPUTER_PERMISSION;
@@ -20,7 +20,16 @@ pub const CUA_DESCRIPTION: &[&str] = &[
 
 pub fn computer_actions_params_schema() -> serde_json::Value {
     let action_names = json!([
-        "screenshot", "click", "double_click", "move", "drag", "scroll", "type", "keypress", "wait", "batch"
+        "screenshot",
+        "click",
+        "double_click",
+        "move",
+        "drag",
+        "scroll",
+        "type",
+        "keypress",
+        "wait",
+        "batch"
     ]);
 
     json!({
@@ -82,7 +91,11 @@ pub fn computer_actions_permission_parser(
     input: &serde_json::Value,
     _cwd: &std::path::Path,
 ) -> Vec<ToolPermissionRequest> {
-    let tier = if is_read_only_actions(input) { "read" } else { "exec" };
+    let tier = if is_read_only_actions(input) {
+        "read"
+    } else {
+        "exec"
+    };
     vec![ToolPermissionRequest::new(
         COMPUTER_PERMISSION,
         vec![tier.to_string()],
@@ -91,11 +104,19 @@ pub fn computer_actions_permission_parser(
 }
 
 pub fn computer_actions_tool_definition() -> ToolDefinition {
-    let execute_stub: maho_tools::definition::ToolExecutor = Arc::new(|_| Box::pin(async { Err(maho_tools::ToolError::Message("computer_actions implementation is not bound".into())) }));
+    let execute_stub: maho_tools::definition::ToolExecutor = Arc::new(|_| {
+        Box::pin(async {
+            Err(maho_tools::ToolError::Message(
+                "computer_actions implementation is not bound".into(),
+            ))
+        })
+    });
     let mut def = ToolDefinition::new(
         COMPUTER_ACTIONS_TOOL_NAME,
-        &CUA_DESCRIPTION.join("
-"),
+        &CUA_DESCRIPTION.join(
+            "
+",
+        ),
         computer_actions_params_schema(),
         execute_stub,
     );

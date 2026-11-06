@@ -116,14 +116,30 @@ fn request_user_input_label_match() {
 /// 5. Label word boundary rules.
 #[test]
 fn label_first_word_boundaries() {
-    for label in ["approve", "Authorise now", "APPROVE: all", "approve2", "Authorizeü"] {
+    for label in [
+        "approve",
+        "Authorise now",
+        "APPROVE: all",
+        "approve2",
+        "Authorizeü",
+    ] {
         assert!(is_approval_label(label), "{label:?} should match");
         let input = claude_input(vec![claude_question("Plan", &[label, "Other choice"])]);
         let (output, diagnostic) = forced("ask_user_question", &input);
         assert_eq!(output["required"], json!(true), "{label:?}");
-        assert_eq!(diagnostic.map(|d| d.rule), Some(GateRule::Label), "{label:?}");
+        assert_eq!(
+            diagnostic.map(|d| d.rule),
+            Some(GateRule::Label),
+            "{label:?}"
+        );
     }
-    for label in ["Approval", "Approving", "Authorised", "Unapprove", "Please authorize"] {
+    for label in [
+        "Approval",
+        "Approving",
+        "Authorised",
+        "Unapprove",
+        "Please authorize",
+    ] {
         assert!(!is_approval_label(label), "{label:?} should not match");
         let input = claude_input(vec![claude_question("Plan", &[label, "Other choice"])]);
         let (output, diagnostic) = forced("ask_user_question", &input);

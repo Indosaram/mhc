@@ -2,7 +2,7 @@
 
 use crate::process_env::Env;
 use crate::terminal_capabilities::CellDimensions;
-use crate::tmux_cursor_query::{exec_file_sync, TmuxExecFile};
+use crate::tmux_cursor_query::{TmuxExecFile, exec_file_sync};
 
 const PROBE_TIMEOUT_MS: u64 = 250;
 
@@ -82,8 +82,7 @@ impl TmuxImageState {
     }
 }
 
-pub const TMUX_IMAGE_FORMAT: &str =
-    "#{version}|#{allow-passthrough}|#{focus-events}|#{pane_active}|#{window_active}|#{session_attached}|#{client_termname}|#{client_cell_width}|#{client_cell_height}|#{client_termfeatures}";
+pub const TMUX_IMAGE_FORMAT: &str = "#{version}|#{allow-passthrough}|#{focus-events}|#{pane_active}|#{window_active}|#{session_attached}|#{client_termname}|#{client_cell_width}|#{client_cell_height}|#{client_termfeatures}";
 
 fn disabled_state() -> TmuxBaseState {
     TmuxBaseState::default()
@@ -98,7 +97,9 @@ fn parse_tmux_version(version: &str) -> Option<(u32, u32)> {
     if major.is_empty() || minor.is_empty() {
         return None;
     }
-    let major_end = major.find(|c: char| !c.is_ascii_digit()).unwrap_or(major.len());
+    let major_end = major
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(major.len());
     let minor_end = minor
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(minor.len());
@@ -194,7 +195,10 @@ pub fn parse_tmux_image_state(output: &str) -> TmuxImageState {
     let width_px = parse_positive_integer(raw_cell_width);
     let height_px = parse_positive_integer(raw_cell_height);
     let cell_dimensions = match (width_px, height_px) {
-        (Some(width_px), Some(height_px)) => Some(CellDimensions { width_px, height_px }),
+        (Some(width_px), Some(height_px)) => Some(CellDimensions {
+            width_px,
+            height_px,
+        }),
         _ => None,
     };
 
@@ -220,7 +224,10 @@ pub fn parse_tmux_image_state(output: &str) -> TmuxImageState {
 }
 
 pub fn probe_tmux_image_state(env: &Env, exec_file: Option<&TmuxExecFile>) -> TmuxImageState {
-    let term = env.get("TERM").map(|v| v.to_lowercase()).unwrap_or_default();
+    let term = env
+        .get("TERM")
+        .map(|v| v.to_lowercase())
+        .unwrap_or_default();
     let has_tmux = env.get("TMUX").is_some_and(|value| !value.is_empty());
     if !has_tmux && !term.starts_with("tmux") {
         return TmuxImageState::Outside(disabled_state());

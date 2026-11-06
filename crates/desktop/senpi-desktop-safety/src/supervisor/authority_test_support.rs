@@ -1,14 +1,14 @@
 use super::Supervisor;
 use crate::{
-    AuthorityReset, FakeClock, FrameContext, FrameId, GateError, LockState, MutatingAction,
-    PermissionGate, StopPathId, StopPolicy, gate,
+    gate, AuthorityReset, FakeClock, FrameContext, FrameId, GateError, LockState, MutatingAction,
+    PermissionGate, StopPathId, StopPolicy,
 };
 use senpi_desktop_backend_fake::{FakeBackend, FakeScenario};
 use senpi_desktop_core::{
     backend::{Backend, DeliveryMode},
     types::Target,
 };
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{atomic::Ordering, Arc};
 
 pub(super) fn supervisor(commit: impl Fn(u64) + Send + Sync + 'static) -> Arc<Supervisor> {
     let supervisor = Arc::new(Supervisor::with_stop_authority(

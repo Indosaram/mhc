@@ -10,11 +10,15 @@ use crate::test_support::harness;
 const SECRET: &str = "senpi-clipboard-secret";
 
 fn write(text: &str) -> Op {
-    Op::ClipboardWrite(ClipboardText { text: text.to_owned() })
+    Op::ClipboardWrite(ClipboardText {
+        text: text.to_owned(),
+    })
 }
 
 fn clipboard_writes(ops: &[SinkOp]) -> usize {
-    ops.iter().filter(|op| matches!(op, SinkOp::ClipboardWrite { .. })).count()
+    ops.iter()
+        .filter(|op| matches!(op, SinkOp::ClipboardWrite { .. }))
+        .count()
 }
 
 #[test]
@@ -27,7 +31,9 @@ fn a_written_text_reads_back() {
     // Then
     assert_eq!(
         read.expect("reads"),
-        Response::Clipboard(ClipboardText { text: SECRET.to_owned() })
+        Response::Clipboard(ClipboardText {
+            text: SECRET.to_owned()
+        })
     );
 }
 
@@ -42,7 +48,12 @@ fn a_write_is_audited_by_length_and_digest_never_its_text() {
     assert_eq!(audits.len(), 1);
     let audit = &audits[0];
     assert_eq!(
-        (audit.target.as_str(), audit.text_length, audit.text_delivered, audit.text_sha256.as_deref()),
+        (
+            audit.target.as_str(),
+            audit.text_length,
+            audit.text_delivered,
+            audit.text_sha256.as_deref()
+        ),
         ("desktop", Some(3), Some(3), Some("ba7816bf8f01cfea"))
     );
     let serialized = serde_json::to_string(audit).expect("audit serializes");
@@ -82,6 +93,9 @@ fn denied_input_permission_refuses_the_write() {
     // When
     let reply = harness.process(write(SECRET));
     // Then
-    assert_eq!(reply.map_err(|error| error.code), Err(ErrorCode::PermissionDenied));
+    assert_eq!(
+        reply.map_err(|error| error.code),
+        Err(ErrorCode::PermissionDenied)
+    );
     assert_eq!(clipboard_writes(&harness.sink.ops()), 0);
 }

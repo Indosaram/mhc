@@ -34,13 +34,20 @@ pub struct StartError {
 /// How a child ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChildOutcome {
-    Completed { output: String },
+    Completed {
+        output: String,
+    },
     /// `infrastructure` marks problems outside the child's own work (child unresponsive, host
     /// unavailable, session could not be resumed); only those are retried automatically.
-    Failed { message: String, infrastructure: bool },
+    Failed {
+        message: String,
+        infrastructure: bool,
+    },
     Cancelled,
     /// The process that ran the child ended before it reported back.
-    Interrupted { message: String },
+    Interrupted {
+        message: String,
+    },
 }
 
 /// What recovery finds for a child id.

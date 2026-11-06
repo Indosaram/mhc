@@ -1,5 +1,8 @@
 //! Port of senpi's compaction `context-reduction-handoff.ts`.
-use maho_ext_api::{AbortSource, CompactOptions, CustomMessage, DeliverAs, ExtensionApi, ExtensionContext, ExtensionFailure, SendMessageOptions, ToolContent};
+use maho_ext_api::{
+    AbortSource, CompactOptions, CustomMessage, DeliverAs, ExtensionApi, ExtensionContext,
+    ExtensionFailure, SendMessageOptions, ToolContent,
+};
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub const CONTEXT_REDUCTION_RESUME_TYPE: &str = "senpi.context-reduction.resume";
@@ -18,13 +21,23 @@ pub struct ReductionHandoff {
     active: Arc<Mutex<Option<ActiveHandoff>>>,
 }
 
-pub fn create_reduction_handoff(api: Arc<ExtensionApi>, custom_instructions: &str) -> ReductionHandoff {
-    ReductionHandoff { api, custom_instructions: custom_instructions.to_owned(), active: Arc::default() }
+pub fn create_reduction_handoff(
+    api: Arc<ExtensionApi>,
+    custom_instructions: &str,
+) -> ReductionHandoff {
+    ReductionHandoff {
+        api,
+        custom_instructions: custom_instructions.to_owned(),
+        active: Arc::default(),
+    }
 }
 
 impl ReductionHandoff {
     pub fn is_pending(&self) -> bool {
-        self.active.lock().unwrap_or_else(PoisonError::into_inner).is_some()
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
     }
 
     pub fn reset(&self) {
@@ -38,7 +51,10 @@ impl ReductionHandoff {
                 drop(active);
                 return context.abort(Some(AbortSource::System));
             }
-            let request = ActiveHandoff { session_id: context.session_manager.session_id().to_owned(), leaf: context.session_manager.get_leaf_id() };
+            let request = ActiveHandoff {
+                session_id: context.session_manager.session_id().to_owned(),
+                leaf: context.session_manager.get_leaf_id(),
+            };
             *active = Some(request.clone());
             request
         };
@@ -52,7 +68,11 @@ impl ReductionHandoff {
             })
         };
         let on_complete = {
-            let (active, api, context) = (Arc::clone(&self.active), Arc::clone(&self.api), context.clone());
+            let (active, api, context) = (
+                Arc::clone(&self.active),
+                Arc::clone(&self.api),
+                context.clone(),
+            );
             Arc::new(move |_: maho_ext_api::CompactionResult| {
                 {
                     let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
@@ -62,7 +82,13 @@ impl ReductionHandoff {
                     *active = None;
                 }
                 let moved = context.session_manager.session_id() != request.session_id
-                    || request.leaf.as_ref().is_some_and(|leaf| !context.session_manager.get_branch().iter().any(|entry| &entry.id == leaf));
+                    || request.leaf.as_ref().is_some_and(|leaf| {
+                        !context
+                            .session_manager
+                            .get_branch()
+                            .iter()
+                            .any(|entry| &entry.id == leaf)
+                    });
                 if moved || context.has_pending_messages().unwrap_or(true) {
                     return;
                 }
@@ -71,11 +97,16 @@ impl ReductionHandoff {
                 let _ = api.send_message(
                     CustomMessage {
                         custom_type: CONTEXT_REDUCTION_RESUME_TYPE.into(),
-                        content: vec![ToolContent::text("Continue the current task using the compacted context.")],
+                        content: vec![ToolContent::text(
+                            "Continue the current task using the compacted context.",
+                        )],
                         display: false,
                         details: None,
                     },
-                    SendMessageOptions { trigger_turn: true, deliver_as: Some(DeliverAs::FollowUp) },
+                    SendMessageOptions {
+                        trigger_turn: true,
+                        deliver_as: Some(DeliverAs::FollowUp),
+                    },
                 );
             })
         };

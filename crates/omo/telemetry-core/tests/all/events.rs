@@ -8,8 +8,8 @@ use serde_json::Value;
 use serde_json::json;
 use telemetry_core::CreateEventTelemetryClientInput;
 use telemetry_core::CreateTelemetryClientInput;
-use telemetry_core::EventTelemetryCaptureOptions;
 use telemetry_core::EventPropertyAllowlist;
+use telemetry_core::EventTelemetryCaptureOptions;
 use telemetry_core::EventTelemetryClient;
 use telemetry_core::TelemetryDiagnosticEvent;
 use telemetry_core::TelemetryEnv;
@@ -129,16 +129,35 @@ fn event_capture_options_preserve_valid_uuid_timestamp_and_reject_invalid_uuid()
 
     let messages = recorder.messages();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].uuid.as_deref(), Some("01234567-89ab-cdef-0123-456789abcdef"));
+    assert_eq!(
+        messages[0].uuid.as_deref(),
+        Some("01234567-89ab-cdef-0123-456789abcdef")
+    );
     assert_eq!(messages[0].timestamp.as_deref(), Some(timestamp.as_str()));
-    assert_eq!(messages[0].properties.get("event_id").and_then(Value::as_str), messages[0].uuid.as_deref());
-    assert!(messages[1].uuid.as_deref().is_some_and(|uuid| uuid.len() == 36));
+    assert_eq!(
+        messages[0]
+            .properties
+            .get("event_id")
+            .and_then(Value::as_str),
+        messages[0].uuid.as_deref()
+    );
+    assert!(
+        messages[1]
+            .uuid
+            .as_deref()
+            .is_some_and(|uuid| uuid.len() == 36)
+    );
     // A capture without an explicit timestamp is stamped now, never left absent.
-    assert!(messages[1]
-        .timestamp
-        .as_deref()
-        .is_some_and(|value| value.ends_with('Z') && value.len() == 24));
-    assert_eq!(diagnostics.events(), [TelemetryDiagnosticEvent::TelemetryEventPropertyRejected]);
+    assert!(
+        messages[1]
+            .timestamp
+            .as_deref()
+            .is_some_and(|value| value.ends_with('Z') && value.len() == 24)
+    );
+    assert_eq!(
+        diagnostics.events(),
+        [TelemetryDiagnosticEvent::TelemetryEventPropertyRejected]
+    );
 }
 
 #[test]
@@ -184,7 +203,10 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
         "count": 3,
         "label": "x".repeat(64),
     })));
-    expected.insert("event_id".into(), messages[0].uuid.clone().expect("event uuid").into());
+    expected.insert(
+        "event_id".into(),
+        messages[0].uuid.clone().expect("event uuid").into(),
+    );
     assert_eq!(
         Value::Object(messages[0].properties.clone()),
         Value::Object(expected)
@@ -230,10 +252,22 @@ fn additional_properties_ride_on_shared_block_without_overriding_fixed_keys() {
     let messages = recorder.messages();
     assert_eq!(messages.len(), 1);
     let properties = &messages[0].properties;
-    assert_eq!(properties.get("install_id"), Some(&Value::String("a".repeat(64))));
-    assert_eq!(properties.get("surface"), Some(&Value::String("desktop".into())));
-    assert_eq!(properties.get("platform"), Some(&Value::String("omo-senpi".into())));
-    assert_eq!(properties.get("product_name"), Some(&Value::String("omo-native".into())));
+    assert_eq!(
+        properties.get("install_id"),
+        Some(&Value::String("a".repeat(64)))
+    );
+    assert_eq!(
+        properties.get("surface"),
+        Some(&Value::String("desktop".into()))
+    );
+    assert_eq!(
+        properties.get("platform"),
+        Some(&Value::String("omo-senpi".into()))
+    );
+    assert_eq!(
+        properties.get("product_name"),
+        Some(&Value::String("omo-native".into()))
+    );
     assert_eq!(properties.get("schema_version"), Some(&Value::from(3)));
 }
 
@@ -254,7 +288,16 @@ fn native_events_client_effective_transport_options_disable_geoip_true_while_gua
     };
     let allowlist = allowlist(
         "session_started",
-        &["$session_id", "$ip", "$lib", "reason", "count", "prompt_text", "file_path", "user_prompt"],
+        &[
+            "$session_id",
+            "$ip",
+            "$lib",
+            "reason",
+            "count",
+            "prompt_text",
+            "file_path",
+            "user_prompt",
+        ],
     );
     let client = create_event_telemetry_client(&CreateEventTelemetryClientInput {
         diagnostics: Some(diagnostics.sink()),

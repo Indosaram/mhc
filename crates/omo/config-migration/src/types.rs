@@ -144,7 +144,9 @@ impl ConfigMigrationDiscoveryFileSystem for StdDiscoveryFileSystem {
 
     fn realpath(&self, path: &str) -> Result<String, DiscoveryFsError> {
         let clean = crate::discovery_paths::strip_verbatim_prefix(path);
-        let canonical = std::fs::canonicalize(&clean)?.to_string_lossy().into_owned();
+        let canonical = std::fs::canonicalize(&clean)?
+            .to_string_lossy()
+            .into_owned();
         Ok(crate::discovery_paths::strip_verbatim_prefix(&canonical))
     }
 }

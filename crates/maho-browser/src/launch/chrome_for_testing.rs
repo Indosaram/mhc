@@ -82,7 +82,6 @@ impl BrowserPlatform {
             Self::Win64 => "win64",
         }
     }
-
 }
 
 /// `detectBrowserPlatform` for `(os, arch)` as Rust names them; `None` elsewhere.

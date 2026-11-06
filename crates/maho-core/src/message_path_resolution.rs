@@ -84,7 +84,10 @@ pub fn message_path_project_root(cwd: &str) -> Option<String> {
     let candidate =
         find_project_root(cwd, &[".git"]).or_else(|| find_project_root(cwd, PROJECT_MARKERS))?;
     let home = PathBuf::from(crate::config::home_dir());
-    let home = home.canonicalize().map(strip_verbatim_prefix).unwrap_or(home);
+    let home = home
+        .canonicalize()
+        .map(strip_verbatim_prefix)
+        .unwrap_or(home);
     (candidate != home).then(|| candidate.to_string_lossy().into_owned())
 }
 

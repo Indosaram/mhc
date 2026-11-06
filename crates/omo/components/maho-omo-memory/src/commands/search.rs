@@ -11,8 +11,8 @@ use memory_core::search::{
 
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::types::{
-    command_context_from, finish, respond, CommandContext, CommandResponse, MemoryCommandDeps,
-    NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, NotifyLevel, command_context_from, finish,
+    respond,
 };
 
 const SNIPPET_BEFORE: usize = 60;
@@ -83,7 +83,10 @@ fn safe_slice(value: &str, start: usize, end: usize) -> &str {
     &value[start..end]
 }
 
-fn resolve_sessions_dir(deps: &MemoryCommandDeps, ctx: &CommandContext) -> Option<std::path::PathBuf> {
+fn resolve_sessions_dir(
+    deps: &MemoryCommandDeps,
+    ctx: &CommandContext,
+) -> Option<std::path::PathBuf> {
     deps.sessions_root(ctx)
 }
 
@@ -94,11 +97,17 @@ pub async fn handle_search(
 ) -> CommandResponse {
     let parsed = parse_command_args_full(
         args,
-        ParseCommandArgsOptions { booleans: &["include-hidden"] },
+        ParseCommandArgsOptions {
+            booleans: &["include-hidden"],
+        },
     );
     let query = parsed.positionals.join(" ").trim().to_owned();
     if query.is_empty() {
-        return respond(ctx, "usage: /search <query> [--include-hidden]", NotifyLevel::Error);
+        return respond(
+            ctx,
+            "usage: /search <query> [--include-hidden]",
+            NotifyLevel::Error,
+        );
     }
 
     let sessions_dir = resolve_sessions_dir(deps, ctx);
@@ -127,7 +136,11 @@ pub async fn handle_search(
     };
     let results = search_transcripts(&provider, &query, &options);
     if results.is_empty() {
-        return respond(ctx, format!("No matches for \"{query}\"."), NotifyLevel::Info);
+        return respond(
+            ctx,
+            format!("No matches for \"{query}\"."),
+            NotifyLevel::Info,
+        );
     }
 
     let parsed_query = parse_query(&query);
@@ -184,12 +197,14 @@ mod tests {
     ) -> std::path::PathBuf {
         let dir = sessions_dir.join(dir_name);
         std::fs::create_dir_all(&dir).expect("session dir");
-        let mut lines = vec![serde_json::json!({
-            "type": "session",
-            "id": session_id,
-            "timestamp": messages.first().map(|message| message.3),
-        })
-        .to_string()];
+        let mut lines = vec![
+            serde_json::json!({
+                "type": "session",
+                "id": session_id,
+                "timestamp": messages.first().map(|message| message.3),
+            })
+            .to_string(),
+        ];
         for (id, role, text, timestamp) in messages {
             lines.push(
                 serde_json::json!({
@@ -214,41 +229,69 @@ mod tests {
             "sess-a",
             "sess-a",
             &[
-                ("msg-1", "user", "how do I run the linter before committing", "2026-08-01T10:00:01.000Z"),
-                ("msg-2", "assistant", "run bun run lint first, then commit", "2026-08-01T10:00:02.000Z"),
+                (
+                    "msg-1",
+                    "user",
+                    "how do I run the linter before committing",
+                    "2026-08-01T10:00:01.000Z",
+                ),
+                (
+                    "msg-2",
+                    "assistant",
+                    "run bun run lint first, then commit",
+                    "2026-08-01T10:00:02.000Z",
+                ),
             ],
         );
         write_session(
             &sessions_dir,
             "sess-b",
             "sess-b",
-            &[("msg-9", "user", "tabs versus spaces preference", "2026-08-02T09:00:00.000Z")],
+            &[(
+                "msg-9",
+                "user",
+                "tabs versus spaces preference",
+                "2026-08-02T09:00:00.000Z",
+            )],
         );
         let hidden = write_session(
             &sessions_dir,
             "sess-hidden",
             "sess-hidden",
-            &[("msg-h", "user", "linter notes from a hidden session", "2026-08-03T09:00:00.000Z")],
+            &[(
+                "msg-h",
+                "user",
+                "linter notes from a hidden session",
+                "2026-08-03T09:00:00.000Z",
+            )],
         );
         std::fs::write(format!("{}.archived", hidden.display()), "").expect("archived marker");
 
         let (_root, identity) = temp_identity();
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { sessions_dir: Some(sessions_dir), ..Default::default() },
+            FakeDepsOverrides {
+                sessions_dir: Some(sessions_dir),
+                ..Default::default()
+            },
         );
         let dir = root.path().to_path_buf();
         (root, dir, fake)
     }
 
     #[tokio::test]
-    async fn given_sessions_on_disk_when_queried_then_numbered_results_carry_session_date_role_snippet_and_entry() {
+    async fn given_sessions_on_disk_when_queried_then_numbered_results_carry_session_date_role_snippet_and_entry()
+     {
         let (_root, _dir, fake) = setup();
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_search(&fake.deps, &context.ctx, "linter").await;
 
-        assert!(response.text.contains("1. session sess-a · 2026-08-01T10:00:01.000Z · user"));
+        assert!(
+            response
+                .text
+                .contains("1. session sess-a · 2026-08-01T10:00:01.000Z · user")
+        );
         assert!(response.text.contains("**linter**"));
         assert!(response.text.contains("entry msg-1"));
         assert!(!response.text.contains("sess-hidden"));
@@ -287,7 +330,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_missing_sessions_directory_when_invoked_then_an_actionable_error_is_returned() {
+    async fn given_a_missing_sessions_directory_when_invoked_then_an_actionable_error_is_returned()
+    {
         let fake = fake_deps(
             None,
             FakeDepsOverrides {

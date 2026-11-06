@@ -1,8 +1,22 @@
 use maho_ai::utils::abort::AbortSignal;
 use tokio::io::AsyncReadExt;
-pub struct WaitForChildProcessOptions<'a> { pub signal: Option<&'a AbortSignal>, pub abort_exit_grace_ms: u64 }
-impl Default for WaitForChildProcessOptions<'_> { fn default() -> Self { Self { signal: None, abort_exit_grace_ms: 5000 } } }
-pub async fn wait_for_child_process(child: &mut tokio::process::Child, options: WaitForChildProcessOptions<'_>, mut on_output: impl FnMut(bool, &[u8])) -> std::io::Result<Option<i32>> {
+pub struct WaitForChildProcessOptions<'a> {
+    pub signal: Option<&'a AbortSignal>,
+    pub abort_exit_grace_ms: u64,
+}
+impl Default for WaitForChildProcessOptions<'_> {
+    fn default() -> Self {
+        Self {
+            signal: None,
+            abort_exit_grace_ms: 5000,
+        }
+    }
+}
+pub async fn wait_for_child_process(
+    child: &mut tokio::process::Child,
+    options: WaitForChildProcessOptions<'_>,
+    mut on_output: impl FnMut(bool, &[u8]),
+) -> std::io::Result<Option<i32>> {
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out = [0u8; 8192];
@@ -12,7 +26,12 @@ pub async fn wait_for_child_process(child: &mut tokio::process::Child, options: 
     let mut abort_deadline = None;
     let mut aborted = false;
     loop {
-        if stdout.is_none() && stderr.is_none() && let Some(code) = exit { return Ok(code); }
+        if stdout.is_none()
+            && stderr.is_none()
+            && let Some(code) = exit
+        {
+            return Ok(code);
+        }
         tokio::select! {
             _ = async { if let Some(signal) = options.signal { signal.cancelled().await } else { std::future::pending().await } }, if !aborted => {
                 aborted = true;

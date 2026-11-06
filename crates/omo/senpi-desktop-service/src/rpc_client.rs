@@ -2,14 +2,14 @@
 //! Matches `src/service/rpc-client.ts`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tokio::time::sleep;
 
 use senpi_desktop_protocol::JsonRpcErrorData;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::child::EngineChild;
 use crate::parse::{is_record, parse_error_data};
@@ -32,7 +32,11 @@ pub struct DesktopServiceError {
 }
 
 impl DesktopServiceError {
-    pub fn new(code: DesktopServiceErrorCode, message: impl Into<String>, engine_restarted: bool) -> Self {
+    pub fn new(
+        code: DesktopServiceErrorCode,
+        message: impl Into<String>,
+        engine_restarted: bool,
+    ) -> Self {
         Self {
             code,
             message: message.into(),
@@ -144,8 +148,9 @@ impl RpcClient {
             }
 
             if let Some(exit) = exit_rx
-                && let Ok(reason) = exit.await {
-                    client_clone.handle_exit(reason).await;
+                && let Ok(reason) = exit.await
+            {
+                client_clone.handle_exit(reason).await;
             }
         });
 
@@ -294,11 +299,12 @@ impl RpcClient {
             if let Some(p) = pending.remove(&id) {
                 client_clone.alive.store(false, Ordering::SeqCst);
                 client_clone.child.kill();
-                let _ = p.tx.send(Err(DesktopError::Service(DesktopServiceError::new(
-                    code,
-                    format!("{message}; {RESTART_MESSAGE}"),
-                    true,
-                ))));
+                let _ =
+                    p.tx.send(Err(DesktopError::Service(DesktopServiceError::new(
+                        code,
+                        format!("{message}; {RESTART_MESSAGE}"),
+                        true,
+                    ))));
             }
         });
     }
@@ -333,12 +339,13 @@ impl RpcClient {
             return;
         };
         if let Some(method_val) = obj.get("method")
-            && obj.get("id").is_none() {
-                if let Some(method) = method_val.as_str() {
-                    let params = obj.get("params").cloned().unwrap_or(Value::Null);
-                    (self.hooks.on_notification)(method.to_string(), params);
-                }
-                return;
+            && obj.get("id").is_none()
+        {
+            if let Some(method) = method_val.as_str() {
+                let params = obj.get("params").cloned().unwrap_or(Value::Null);
+                (self.hooks.on_notification)(method.to_string(), params);
+            }
+            return;
         }
 
         let id = match obj.get("id").and_then(|v| v.as_u64()) {
@@ -361,16 +368,23 @@ impl RpcClient {
             {
                 let message = message.to_string();
                 let data = error.get("data").and_then(parse_error_data);
-                let _ = pending.tx.send(Err(DesktopError::Rpc(Box::new(DesktopEngineRpcError {
-                    method: pending.method,
-                    rpc_code: code,
-                    message,
-                    data,
-                }))));
+                let _ = pending
+                    .tx
+                    .send(Err(DesktopError::Rpc(Box::new(DesktopEngineRpcError {
+                        method: pending.method,
+                        rpc_code: code,
+                        message,
+                        data,
+                    }))));
             } else {
-                let _ = pending.tx.send(Err(DesktopError::Service(DesktopServiceError::internal(
-                    format!("desktop engine sent a malformed reply to {}", pending.method),
-                ))));
+                let _ = pending
+                    .tx
+                    .send(Err(DesktopError::Service(DesktopServiceError::internal(
+                        format!(
+                            "desktop engine sent a malformed reply to {}",
+                            pending.method
+                        ),
+                    ))));
             }
         }
     }

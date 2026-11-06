@@ -278,7 +278,8 @@ pub fn register_session_hooks(
                 if service.needs_history_scan()? {
                     let mut candidates = Vec::new();
                     ctx.session_manager.for_each_entry(&mut |entry| {
-                        if crate::engine::marker_candidates::may_hold_activation_marker(&entry.data) {
+                        if crate::engine::marker_candidates::may_hold_activation_marker(&entry.data)
+                        {
                             candidates.push(entry.data);
                         }
                     });

@@ -1,7 +1,7 @@
 //! Port of senpi packages/ai/src/providers/opencode.ts.
 
-use crate::auth::types::ProviderAuth;
 use crate::auth::helpers::env_api_key_auth;
+use crate::auth::types::ProviderAuth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::{builtin_api_streams, opencode_headers::with_open_code_session_header};
 use indexmap::IndexMap;
@@ -9,15 +9,29 @@ use std::sync::Arc;
 
 pub fn opencode_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
-    for id in ["anthropic-messages", "google-generative-ai", "openai-completions", "openai-responses"] {
-        api.insert(id.to_owned(), with_open_code_session_header(builtin_api_streams(id)));
+    for id in [
+        "anthropic-messages",
+        "google-generative-ai",
+        "openai-completions",
+        "openai-responses",
+    ] {
+        api.insert(
+            id.to_owned(),
+            with_open_code_session_header(builtin_api_streams(id)),
+        );
     }
     create_provider(CreateProviderOptions {
         id: "opencode".into(),
         name: Some("OpenCode Zen".into()),
         base_url: None,
         headers: None,
-        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("OpenCode API key", &["OPENCODE_API_KEY"]))), oauth: None }),
+        auth: Some(ProviderAuth {
+            api_key: Some(Arc::new(env_api_key_auth(
+                "OpenCode API key",
+                &["OPENCODE_API_KEY"],
+            ))),
+            oauth: None,
+        }),
         models: super::opencode_models::opencode_models(),
         fetch_models: None,
         restore_models: None,

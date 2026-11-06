@@ -17,7 +17,10 @@ pub async fn run_omo_status(cwd: &Path, session_id: Option<&str>) -> CommandResu
                 "message": ulw_loop_core::plan_missing_recovery::session_scope_required_message("--session-id", &existing),
             }
         });
-        return CommandResult { code: 1, stdout: serde_json::to_string(&val).unwrap_or_default() };
+        return CommandResult {
+            code: 1,
+            stdout: serde_json::to_string(&val).unwrap_or_default(),
+        };
     };
     let scope = ulw_loop_core::paths::UlwLoopScope::new(session_id);
     match ulw_loop_core::plan_io::read_ulw_loop_plan(cwd, Some(&scope)) {

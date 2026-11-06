@@ -7,7 +7,8 @@ pub const DEVIN_DEFAULT_BASE_URL: &str = "https://server.codeium.com";
 /// `DEVIN_CHAT_MESSAGE_PATH`.
 pub const DEVIN_CHAT_MESSAGE_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 /// `DEVIN_CLI_MODEL_CONFIGS_PATH`.
-pub const DEVIN_CLI_MODEL_CONFIGS_PATH: &str = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
+pub const DEVIN_CLI_MODEL_CONFIGS_PATH: &str =
+    "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 /// `DEVIN_ASSIGN_MODEL_PATH`.
 pub const DEVIN_ASSIGN_MODEL_PATH: &str = "/exa.api_server_pb.ApiServerService/AssignModel";
 /// `DEVIN_USER_JWT_PATH`.
@@ -25,8 +26,11 @@ pub const DEVIN_CHAT_HEADERS: [(&str, &str); 6] = [
 ];
 
 /// `DEVIN_UNARY_HEADERS`: unary Connect calls carry a bare protobuf body, not the 5-byte frame.
-pub const DEVIN_UNARY_HEADERS: [(&str, &str); 3] =
-    [("content-type", "application/proto"), ("connect-protocol-version", "1"), ("accept", "*/*")];
+pub const DEVIN_UNARY_HEADERS: [(&str, &str); 3] = [
+    ("content-type", "application/proto"),
+    ("connect-protocol-version", "1"),
+    ("accept", "*/*"),
+];
 
 /// `DEVIN_COMPRESSED_FLAG`: bit 0 marks a gzipped payload.
 pub const DEVIN_COMPRESSED_FLAG: u8 = 0x01;

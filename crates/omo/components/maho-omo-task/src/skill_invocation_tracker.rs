@@ -206,32 +206,67 @@ impl SkillInvocationTracker {
         }
     }
     pub fn replay(&self, session: &str, entries: &[maho_ext_api::SessionEntry]) {
-        if session.is_empty() { return; }
+        if session.is_empty() {
+            return;
+        }
         self.adopt_handoff(session);
-        let kept = self.sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(session).unwrap_or_default();
+        let kept = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session)
+            .unwrap_or_default();
         let mut calls = BTreeMap::<String, (String, Value)>::new();
         for entry in entries {
             let data = &entry.data;
-            if entry.kind != "message" { continue; }
-            let Some(message) = data.get("message") else { continue; };
+            if entry.kind != "message" {
+                continue;
+            }
+            let Some(message) = data.get("message") else {
+                continue;
+            };
             match message.get("role").and_then(Value::as_str) {
-                Some("user") if matches!(data.get("inputSource").and_then(Value::as_str), Some("interactive" | "rpc")) => {
+                Some("user")
+                    if matches!(
+                        data.get("inputSource").and_then(Value::as_str),
+                        Some("interactive" | "rpc")
+                    ) =>
+                {
                     let content = &message["content"];
-                    let text = content.as_str().map(str::to_owned).unwrap_or_else(|| content.as_array().map(|blocks| blocks.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
+                    let text = content.as_str().map(str::to_owned).unwrap_or_else(|| {
+                        content
+                            .as_array()
+                            .map(|blocks| {
+                                blocks
+                                    .iter()
+                                    .filter(|block| block["type"] == "text")
+                                    .filter_map(|block| block["text"].as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_default()
+                    });
                     self.input(session, &text, InputSource::Interactive);
                 }
                 Some("assistant") => {
                     if let Some(blocks) = message["content"].as_array() {
                         for block in blocks {
                             if block["type"] == "toolCall"
-                                && let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
-                                calls.insert(id.to_owned(), (name.to_owned(), block["arguments"].clone()));
+                                && let (Some(id), Some(name)) =
+                                    (block["id"].as_str(), block["name"].as_str())
+                            {
+                                calls.insert(
+                                    id.to_owned(),
+                                    (name.to_owned(), block["arguments"].clone()),
+                                );
                             }
                         }
                     }
                 }
                 Some("toolResult") => {
-                    if let Some((name, args)) = message["toolCallId"].as_str().and_then(|id| calls.get(id)) {
+                    if let Some((name, args)) =
+                        message["toolCallId"].as_str().and_then(|id| calls.get(id))
+                    {
                         self.tool_result(session, name, args, message["isError"] == true);
                     }
                 }
@@ -242,7 +277,9 @@ impl SkillInvocationTracker {
         let state = sessions.entry(session.to_owned()).or_default();
         state.invoked.extend(kept.invoked);
         state.requested.extend(kept.requested);
-        for (path, touch) in kept.touches { state.touches.entry(path).or_insert(touch); }
+        for (path, touch) in kept.touches {
+            state.touches.entry(path).or_insert(touch);
+        }
     }
     pub fn shutdown(&self, session: &str, reason: SessionReason) {
         let removed = self
@@ -285,7 +322,9 @@ impl SkillInvocationTracker {
                     let session = context.session_manager.session_id().to_owned();
                     Box::pin(async move {
                         match event {
-                            ExtensionEvent::SessionStart(_) => tracker.replay(&session, &context.session_manager.get_branch()),
+                            ExtensionEvent::SessionStart(_) => {
+                                tracker.replay(&session, &context.session_manager.get_branch())
+                            }
                             ExtensionEvent::Input(input) => {
                                 tracker.input(&session, &input.text, input.source)
                             }

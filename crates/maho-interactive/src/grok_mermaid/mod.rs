@@ -5,9 +5,9 @@ pub mod ansi;
 pub mod canvas;
 pub mod graph;
 pub mod labels;
-pub mod parse;
 pub mod layout;
 pub mod layout_seq;
+pub mod parse;
 pub mod source_box;
 pub mod width;
 pub mod width_data;
@@ -69,16 +69,21 @@ fn attempt(src: &str) -> Option<Drawn> {
     let dropped = body[cut + 1..].trim();
     Some(Drawn {
         canvas: salvaged.canvas,
-        warnings: [salvaged.warnings, vec![format!("dropped, unreadable final line: \"{dropped}\"")]]
-            .concat(),
+        warnings: [
+            salvaged.warnings,
+            vec![format!("dropped, unreadable final line: \"{dropped}\"")],
+        ]
+        .concat(),
     })
 }
 
 fn draw(src: &str) -> Option<Drawn> {
-    let plain = |canvas: layout::CanvasResult| canvas.map(|canvas| Drawn {
-        canvas,
-        warnings: Vec::new(),
-    });
+    let plain = |canvas: layout::CanvasResult| {
+        canvas.map(|canvas| Drawn {
+            canvas,
+            warnings: Vec::new(),
+        })
+    };
 
     match parse::diagram_kind(src)? {
         "flowchart" => {

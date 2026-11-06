@@ -31,8 +31,12 @@ fn golden_events(case: &str) -> Vec<AssistantMessageEvent> {
             path.display()
         )
     });
-    serde_json::from_str(&text)
-        .unwrap_or_else(|error| panic!("golden {} does not match the Rust event types: {error}", path.display()))
+    serde_json::from_str(&text).unwrap_or_else(|error| {
+        panic!(
+            "golden {} does not match the Rust event types: {error}",
+            path.display()
+        )
+    })
 }
 
 #[tokio::test]
@@ -42,34 +46,50 @@ async fn serves_fixture_bytes_verbatim() {
         (None, "[DONE]"),
     ]))
     .await;
-    let response = with_timeout(10, reqwest::get(format!("{}/chat/completions", server.base_url())))
-        .await
-        .expect("mock fixture server responds");
+    let response = with_timeout(
+        10,
+        reqwest::get(format!("{}/chat/completions", server.base_url())),
+    )
+    .await
+    .expect("mock fixture server responds");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        response.headers()["content-type"].to_str().expect("content-type is ASCII"),
+        response.headers()["content-type"]
+            .to_str()
+            .expect("content-type is ASCII"),
         "text/event-stream"
     );
-    let body = with_timeout(10, response.text()).await.expect("read fixture body");
+    let body = with_timeout(10, response.text())
+        .await
+        .expect("read fixture body");
     assert_eq!(body, BASIC_SSE);
 }
 
 #[tokio::test]
 async fn ends_the_stream_mid_way() {
-    let cut = BASIC_SSE.find("[DONE]").expect("fixture carries a terminator frame");
+    let cut = BASIC_SSE
+        .find("[DONE]")
+        .expect("fixture carries a terminator frame");
     let server = MockFixtureServer::start(
         Fixture::sse([(None, "{\"id\":\"chatcmpl-basic\"}"), (None, "[DONE]")]).closed_after(cut),
     )
     .await;
-    let response = with_timeout(10, reqwest::get(format!("{}/chat/completions", server.base_url())))
-        .await
-        .expect("mock fixture server responds");
+    let response = with_timeout(
+        10,
+        reqwest::get(format!("{}/chat/completions", server.base_url())),
+    )
+    .await
+    .expect("mock fixture server responds");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        response.headers()["content-type"].to_str().expect("content-type is ASCII"),
+        response.headers()["content-type"]
+            .to_str()
+            .expect("content-type is ASCII"),
         "text/event-stream"
     );
-    let body = with_timeout(10, response.text()).await.expect("read truncated body");
+    let body = with_timeout(10, response.text())
+        .await
+        .expect("read truncated body");
     assert_eq!(body, &BASIC_SSE[..cut]);
     assert!(
         !body.contains("[DONE]"),
@@ -79,18 +99,26 @@ async fn ends_the_stream_mid_way() {
 
 #[tokio::test]
 async fn serves_json_error_body_with_its_status() {
-    const ERROR_BODY: &str = "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}";
+    const ERROR_BODY: &str =
+        "{\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}";
     let server =
         MockFixtureServer::start(Fixture::json(StatusCode::TOO_MANY_REQUESTS, ERROR_BODY)).await;
-    let response = with_timeout(10, reqwest::get(format!("{}/chat/completions", server.base_url())))
-        .await
-        .expect("mock fixture server responds");
+    let response = with_timeout(
+        10,
+        reqwest::get(format!("{}/chat/completions", server.base_url())),
+    )
+    .await
+    .expect("mock fixture server responds");
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        response.headers()["content-type"].to_str().expect("content-type is ASCII"),
+        response.headers()["content-type"]
+            .to_str()
+            .expect("content-type is ASCII"),
         "application/json"
     );
-    let body = with_timeout(10, response.text()).await.expect("read error body");
+    let body = with_timeout(10, response.text())
+        .await
+        .expect("read error body");
     assert_eq!(body, ERROR_BODY);
 }
 

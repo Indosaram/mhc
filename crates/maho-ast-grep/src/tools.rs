@@ -1,7 +1,7 @@
 //! The three tools: argument handling, program invocation, result shaping (spec §5, §6).
 
 use crate::error::{
-    PATH_NOT_FOUND, PATH_UNREADABLE, PREVIEW_TRUNCATED, PATTERN_PARSE_FAILED, Phase,
+    PATH_NOT_FOUND, PATH_UNREADABLE, PATTERN_PARSE_FAILED, PREVIEW_TRUNCATED, Phase,
     REWRITE_STALE_PREVIEW, RULE_PARSE_FAILED, SG_FAILED, TIMEOUT, ToolError,
 };
 use crate::exec::{
@@ -249,7 +249,11 @@ fn effective_workdir(context: &Context, request: &Request) -> Result<PathBuf, To
         (Some(dir), _) => PathBuf::from(dir),
         (None, Some(dir)) => dir.clone(),
         (None, None) => std::env::current_dir().map_err(|error| {
-            ToolError::new(PATH_UNREADABLE, Phase::Preflight, format!("No working directory: {error}"))
+            ToolError::new(
+                PATH_UNREADABLE,
+                Phase::Preflight,
+                format!("No working directory: {error}"),
+            )
         })?,
     };
     match std::fs::metadata(&chosen) {
@@ -339,7 +343,11 @@ pub fn build_args(request: &Request, preview: bool) -> Vec<String> {
     }
     push(
         &mut args,
-        &[if preview { "--json=stream" } else { "--update-all" }],
+        &[if preview {
+            "--json=stream"
+        } else {
+            "--update-all"
+        }],
     );
     for glob in &request.globs {
         push(&mut args, &["--globs", glob]);
@@ -360,7 +368,8 @@ pub fn build_args(request: &Request, preview: bool) -> Vec<String> {
 fn empty_config() -> Option<String> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {
-        let path = std::env::temp_dir().join(format!("mhc-ast-grep-{}-empty.yml", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("mhc-ast-grep-{}-empty.yml", std::process::id()));
         std::fs::write(&path, "ruleDirs: []\n").ok()?;
         Some(path.to_string_lossy().into_owned())
     })
@@ -371,13 +380,19 @@ fn sg_failed(phase: Phase, exit_code: i32, stderr: &str) -> ToolError {
     ToolError::new(
         SG_FAILED,
         phase,
-        format!("ast-grep exited with code {exit_code}: {}", first_line(stderr)),
+        format!(
+            "ast-grep exited with code {exit_code}: {}",
+            first_line(stderr)
+        ),
     )
     .with_details(json!({ "exitCode": exit_code, "stderr": stderr }))
 }
 
 fn first_line(text: &str) -> &str {
-    text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim()
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
 }
 
 fn stderr_has_error_line(stderr: &str) -> bool {
@@ -402,7 +417,9 @@ fn check_exit(request: &Request, collected: &Collected, phase: Phase) -> Result<
             )
             .with_details(json!({ "stderr": stderr })));
         }
-    } else if stderr.to_ascii_lowercase().contains("error node") || stderr.contains("Cannot parse query") {
+    } else if stderr.to_ascii_lowercase().contains("error node")
+        || stderr.contains("Cannot parse query")
+    {
         return Err(ToolError::new(
             PATTERN_PARSE_FAILED,
             phase,
@@ -411,7 +428,9 @@ fn check_exit(request: &Request, collected: &Collected, phase: Phase) -> Result<
         .with_language(&request.language)
         .with_details(json!({ "stderr": stderr })));
     }
-    let early = collected.truncation.is_some_and(|t| t != Truncation::SgOutputTruncated);
+    let early = collected
+        .truncation
+        .is_some_and(|t| t != Truncation::SgOutputTruncated);
     if early {
         return Ok(());
     }
@@ -474,7 +493,10 @@ fn multi_text(nodes: &[Value], match_text: &str, match_start: u64) -> String {
 
 fn shape_match(kind: Kind, workdir: &str, language: &str, record: &Map<String, Value>) -> Value {
     let get = |key: &str| record.get(key).cloned().unwrap_or(Value::Null);
-    let file = record.get("file").and_then(Value::as_str).unwrap_or_default();
+    let file = record
+        .get("file")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let full = if crate::paths::is_absolute(&file.replace('\\', "/")) {
         file.to_owned()
     } else {
@@ -483,7 +505,10 @@ fn shape_match(kind: Kind, workdir: &str, language: &str, record: &Map<String, V
     let path = relative_to(workdir, &full);
     let range = get("range");
     let offsets = &range["byteOffset"];
-    let match_text = record.get("text").and_then(Value::as_str).unwrap_or_default();
+    let match_text = record
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let match_start = offsets["start"].as_u64().unwrap_or(0);
 
     let mut single = Map::new();
@@ -491,13 +516,19 @@ fn shape_match(kind: Kind, workdir: &str, language: &str, record: &Map<String, V
     let meta = &record.get("metaVariables").cloned().unwrap_or(Value::Null);
     if let Some(items) = meta["single"].as_object() {
         for (name, node) in items {
-            single.insert(name.clone(), json!(node["text"].as_str().unwrap_or_default()));
+            single.insert(
+                name.clone(),
+                json!(node["text"].as_str().unwrap_or_default()),
+            );
         }
     }
     if let Some(items) = meta["multi"].as_object() {
         for (name, nodes) in items {
             let nodes = nodes.as_array().map_or(&[][..], Vec::as_slice);
-            multi.insert(name.clone(), json!(multi_text(nodes, match_text, match_start)));
+            multi.insert(
+                name.clone(),
+                json!(multi_text(nodes, match_text, match_start)),
+            );
         }
     }
 
@@ -524,7 +555,9 @@ fn shape_match(kind: Kind, workdir: &str, language: &str, record: &Map<String, V
         "metavariables".into(),
         json!({ "single": single, "multi": multi }),
     );
-    let scan_keys = ["ruleId", "severity", "note", "message", "labels", "metadata"];
+    let scan_keys = [
+        "ruleId", "severity", "note", "message", "labels", "metadata",
+    ];
     for (key, value) in record {
         let consumed = matches!(
             key.as_str(),
@@ -537,7 +570,12 @@ fn shape_match(kind: Kind, workdir: &str, language: &str, record: &Map<String, V
     if kind != Kind::Search {
         out.insert(
             "replacement".into(),
-            json!(record.get("replacement").and_then(Value::as_str).unwrap_or_default()),
+            json!(
+                record
+                    .get("replacement")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
         );
     }
     if kind == Kind::Scan {

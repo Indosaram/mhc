@@ -415,7 +415,8 @@ fn with_usage_estimate(
     }
 
     AssistantMessage {
-        usage: Usage { context_usage: None,
+        usage: Usage {
+            context_usage: None,
             input,
             output: output_tokens,
             cache_read,
@@ -2005,6 +2006,10 @@ mod capture_tests {
             panic!("done event");
         };
         assert_eq!(message.stop_reason, StopReason::ToolUse);
-        assert!(records.iter().all(|record| matches!(record, Record::Event(_))));
+        assert!(
+            records
+                .iter()
+                .all(|record| matches!(record, Record::Event(_)))
+        );
     }
 }

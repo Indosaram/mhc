@@ -1,8 +1,8 @@
 //! Output formatting for ulw-loop CLI.
 
-use serde_json::Value;
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan};
 use crate::runtime::UlwLoopError;
+use serde_json::Value;
 
 pub const ULW_LOOP_HELP: &str = "Usage:\n\
   mhc ulw-loop <command> [options]\n\
@@ -40,7 +40,10 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 pub fn print_json_error(error: &UlwLoopError) {
-    println!("{}", serde_json::to_string_pretty(&json_error(error)).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json_error(error)).unwrap_or_default()
+    );
 }
 
 pub fn json_error(error: &UlwLoopError) -> Value {
@@ -74,7 +77,11 @@ pub fn print_status(plan: &UlwLoopPlan) {
 pub fn render_status(plan: &UlwLoopPlan) -> String {
     let mut total_criteria = 0;
     let mut pass_criteria = 0;
-    let mut lines = vec!["ulw-loop status".to_string(), String::new(), "goals:".to_string()];
+    let mut lines = vec![
+        "ulw-loop status".to_string(),
+        String::new(),
+        "goals:".to_string(),
+    ];
 
     for goal in &plan.goals {
         let (pass, total) = criteria_counts(goal);
@@ -85,7 +92,10 @@ pub fn render_status(plan: &UlwLoopPlan) -> String {
         } else {
             "-"
         };
-        lines.push(format!("{marker} {} [{}] {} (criteria: {pass}/{total})", goal.id, goal.status, goal.title));
+        lines.push(format!(
+            "{marker} {} [{}] {} (criteria: {pass}/{total})",
+            goal.id, goal.status, goal.title
+        ));
     }
 
     lines.push(String::new());
@@ -96,12 +106,18 @@ pub fn render_status(plan: &UlwLoopPlan) -> String {
 }
 
 pub fn blocked_decision_handoff(plan: &UlwLoopPlan) -> String {
-    let blocked = plan.goals.iter().find(|g| g.status == "needs_user_decision" && g.non_retriable == Some(true));
+    let blocked = plan
+        .goals
+        .iter()
+        .find(|g| g.status == "needs_user_decision" && g.non_retriable == Some(true));
     let Some(blocked) = blocked else {
         return String::new();
     };
 
-    let req = blocked.required_external_decision.as_deref().unwrap_or("provide the missing authorization or choose a different unblock path");
+    let req = blocked
+        .required_external_decision
+        .as_deref()
+        .unwrap_or("provide the missing authorization or choose a different unblock path");
     vec![
         "ulw-loop: blocked on repeated external authorization; no retryable failed goals remain.".to_string(),
         format!("Goal: {} - {}", blocked.id, blocked.title),

@@ -16,8 +16,8 @@ use super::skill_frontmatter::{
     format_skill_name_frontmatter_repair_report, repair_missing_skill_name_frontmatter,
 };
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    command_context_from, finish, require_identity, respond,
 };
 
 fn level_order(level: CheckLevel) -> u8 {
@@ -38,10 +38,7 @@ fn worst_level(checks: &[DoctorCheck]) -> CheckLevel {
     })
 }
 
-fn check_facts(
-    deps: &MemoryCommandDeps,
-    identity: &MemoryCommandIdentity,
-) -> Option<DoctorCheck> {
+fn check_facts(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentity) -> Option<DoctorCheck> {
     let overview = read_facts_overview(ReadFactsOverviewInput {
         identity_paths: &identity.identity_paths,
         now_ms: deps.now_ms(),
@@ -55,7 +52,11 @@ fn check_facts(
     );
     Some(DoctorCheck {
         name: "facts".to_owned(),
-        level: if overview.corrupt.is_none() { CheckLevel::Warn } else { CheckLevel::Fail },
+        level: if overview.corrupt.is_none() {
+            CheckLevel::Warn
+        } else {
+            CheckLevel::Fail
+        },
         detail,
     })
 }
@@ -82,12 +83,16 @@ pub async fn handle_doctor(
             .ok()
             .and_then(|settings| settings["compile_warn_tokens"].as_u64())
             .unwrap_or(0) as usize;
-        let (receipts_check, receipts_map) = match super::doctor_receipts::check_receipts(&identity.identity_paths.runtime, deps.now_ms()) {
+        let (receipts_check, receipts_map) = match super::doctor_receipts::check_receipts(
+            &identity.identity_paths.runtime,
+            deps.now_ms(),
+        ) {
             Ok(result) => result,
             Err(error) => return respond(ctx, error, NotifyLevel::Error),
         };
         receipts_summary = Some(receipts_map);
-        let (quarantine_check, quarantine_list) = super::doctor_receipts::check_quarantined_runs(&identity.identity_paths.reflection);
+        let (quarantine_check, quarantine_list) =
+            super::doctor_receipts::check_quarantined_runs(&identity.identity_paths.reflection);
         quarantined_runs = quarantine_list;
 
         checks.extend(check_frontmatter(&identity.identity_paths.repo));
@@ -97,7 +102,10 @@ pub async fn handle_doctor(
         checks.push(check_abandoned_runs(&identity.identity_paths.reflection));
         checks.push(quarantine_check);
         checks.push(receipts_check);
-        checks.push(check_reflection_health(&identity.identity_paths.reflection, deps.now_ms()));
+        checks.push(check_reflection_health(
+            &identity.identity_paths.reflection,
+            deps.now_ms(),
+        ));
         checks.push(check_tokens(&identity.identity_paths.repo, warn_tokens));
 
         if let Some(facts) = check_facts(deps, &identity) {
@@ -106,11 +114,19 @@ pub async fn handle_doctor(
 
         // The skill frontmatter repair writes into the memory repository: a memory-write-denied
         // session runs every read-only check but never the repair (`crate::write_policy`).
-        let write_denied = ctx.session_id.as_deref().and_then(|session| (deps.resolve_context)(session)).is_some_and(|context| context.memory_write_denied);
+        let write_denied = ctx
+            .session_id
+            .as_deref()
+            .and_then(|session| (deps.resolve_context)(session))
+            .is_some_and(|context| context.memory_write_denied);
         if write_denied {
-            extra.push(format!("[info] skills: frontmatter repair skipped; {}", crate::write_policy::memory_write_denied_message("skill frontmatter repair")));
+            extra.push(format!(
+                "[info] skills: frontmatter repair skipped; {}",
+                crate::write_policy::memory_write_denied_message("skill frontmatter repair")
+            ));
         } else {
-            let repaired = repair_missing_skill_name_frontmatter(Some(&identity.identity_paths.repo));
+            let repaired =
+                repair_missing_skill_name_frontmatter(Some(&identity.identity_paths.repo));
             let report = format_skill_name_frontmatter_repair_report(&repaired);
             extra.push(format!(
                 "[info] skills: scanned {} skill file{}",
@@ -149,18 +165,25 @@ pub async fn handle_doctor(
             "receipts": receipts_summary,
             "quarantinedRuns": quarantined_runs,
         });
-        return respond(ctx, serde_json::to_string_pretty(&json_report).unwrap_or_default(), notify);
+        return respond(
+            ctx,
+            serde_json::to_string_pretty(&json_report).unwrap_or_default(),
+            notify,
+        );
     }
 
     let mut lines = vec![
         format!("# Memory doctor: {}", identity.identity),
         String::new(),
     ];
-    lines.extend(
-        checks
-            .iter()
-            .map(|check| format!("[{}] {}: {}", check.level.as_str(), check.name, check.detail)),
-    );
+    lines.extend(checks.iter().map(|check| {
+        format!(
+            "[{}] {}: {}",
+            check.level.as_str(),
+            check.name,
+            check.detail
+        )
+    }));
     lines.extend(extra);
     match level {
         CheckLevel::Fail => {
@@ -169,7 +192,9 @@ pub async fn handle_doctor(
         }
         CheckLevel::Warn => {
             lines.push(String::new());
-            lines.push("warnings do not block memory; re-run /doctor after addressing them".to_owned());
+            lines.push(
+                "warnings do not block memory; re-run /doctor after addressing them".to_owned(),
+            );
         }
         CheckLevel::Ok => {}
     }
@@ -204,7 +229,10 @@ mod tests {
     };
 
     fn seeds() -> Vec<memory_core::git::GitSeedFile> {
-        vec![seed("system/persona.md", "---\ndescription: Persona\n---\nseeded persona\n")]
+        vec![seed(
+            "system/persona.md",
+            "---\ndescription: Persona\n---\nseeded persona\n",
+        )]
     }
 
     const V1_PERSONA_BODY: &str = concat!(
@@ -245,9 +273,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_persona_still_equal_to_the_v1_seed_when_doctor_runs_then_a_soul_seed_advisory_is_reported() {
+    async fn given_a_persona_still_equal_to_the_v1_seed_when_doctor_runs_then_a_soul_seed_advisory_is_reported()
+     {
         let (_root, identity) = temp_identity();
-        let v1 = format!("---\ndescription: Persona - who I am\n---\n{}", V1_PERSONA_BODY);
+        let v1 = format!(
+            "---\ndescription: Persona - who I am\n---\n{}",
+            V1_PERSONA_BODY
+        );
         seeded_repo(&identity, vec![seed("system/persona.md", &v1)]);
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
@@ -258,7 +290,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_persona_that_diverged_from_the_v1_seed_when_doctor_runs_then_no_soul_seed_advisory_fires() {
+    async fn given_a_persona_that_diverged_from_the_v1_seed_when_doctor_runs_then_no_soul_seed_advisory_fires()
+     {
         let (_root, _identity, fake) = harness(true);
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -268,7 +301,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_no_repository_when_doctor_runs_then_the_repository_check_fails_with_an_actionable_hint() {
+    async fn given_no_repository_when_doctor_runs_then_the_repository_check_fails_with_an_actionable_hint()
+     {
         let (_root, _identity, fake) = harness(false);
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -280,10 +314,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_memory_file_with_invalid_frontmatter_when_doctor_runs_then_the_sweep_fails_and_names_the_file() {
+    async fn given_a_memory_file_with_invalid_frontmatter_when_doctor_runs_then_the_sweep_fails_and_names_the_file()
+     {
         let (_root, identity, fake) = harness(true);
-        std::fs::write(identity.identity_paths.repo.join("system").join("broken.md"), "no frontmatter here\n")
-            .expect("broken");
+        std::fs::write(
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("broken.md"),
+            "no frontmatter here\n",
+        )
+        .expect("broken");
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_doctor(&fake.deps, &context.ctx, "").await;
@@ -307,7 +349,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_lock_owned_by_a_dead_pid_when_doctor_runs_then_the_stale_lock_is_reported_with_its_path() {
+    async fn given_a_lock_owned_by_a_dead_pid_when_doctor_runs_then_the_stale_lock_is_reported_with_its_path()
+     {
         let (_root, identity, fake) = harness(true);
         std::fs::create_dir_all(&identity.identity_paths.locks).expect("locks dir");
         let lock_path = memory_writer_lock_path(&identity.identity_paths.locks);
@@ -355,7 +398,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_repeated_model_not_found_reflection_failures_when_doctor_runs_then_health_and_remediation_are_reported() {
+    async fn given_repeated_model_not_found_reflection_failures_when_doctor_runs_then_health_and_remediation_are_reported()
+     {
         let (_root, identity, fake) = harness(true);
         let completions = identity.identity_paths.reflection.join("completions");
         std::fs::create_dir_all(&completions).expect("completions");
@@ -374,8 +418,11 @@ mod tests {
                 "finishedAt": format!("2026-08-12T0{index}:01:00.000Z"),
                 "delivery": { "status": if index == 2 { "pending" } else { "consumed" } },
             });
-            std::fs::write(completions.join(format!("run-{index}.json")), format!("{record}\n"))
-                .expect("health record");
+            std::fs::write(
+                completions.join(format!("run-{index}.json")),
+                format!("{record}\n"),
+            )
+            .expect("health record");
         }
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -384,13 +431,22 @@ mod tests {
         assert!(response.text.contains("[warn] reflection-health"));
         assert!(response.text.contains("streak 3"));
         assert!(response.text.contains("pending 1"));
-        assert!(response.text.contains("adjust memory.reflection category/model in your omo config"));
+        assert!(
+            response
+                .text
+                .contains("adjust memory.reflection category/model in your omo config")
+        );
     }
 
     #[tokio::test]
-    async fn given_an_abandoned_reservation_run_when_doctor_runs_then_manual_disposal_paths_are_reported() {
+    async fn given_an_abandoned_reservation_run_when_doctor_runs_then_manual_disposal_paths_are_reported()
+     {
         let (_root, identity, fake) = harness(true);
-        let run_dir = identity.identity_paths.reflection.join("runs").join("run-abandoned");
+        let run_dir = identity
+            .identity_paths
+            .reflection
+            .join("runs")
+            .join("run-abandoned");
         std::fs::create_dir_all(&run_dir).expect("run dir");
         let abandoned = serde_json::json!({
             "version": 1,
@@ -398,7 +454,8 @@ mod tests {
             "outcome": "abandoned_unknown",
             "abandonedAt": "2026-08-10T00:00:00.000Z",
         });
-        std::fs::write(run_dir.join("abandoned.json"), format!("{abandoned}\n")).expect("abandoned");
+        std::fs::write(run_dir.join("abandoned.json"), format!("{abandoned}\n"))
+            .expect("abandoned");
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_doctor(&fake.deps, &context.ctx, "").await;
@@ -409,9 +466,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_an_unregistered_worktree_directory_when_doctor_runs_then_the_orphan_is_reported() {
+    async fn given_an_unregistered_worktree_directory_when_doctor_runs_then_the_orphan_is_reported()
+    {
         let (_root, identity, fake) = harness(true);
-        std::fs::create_dir_all(identity.identity_paths.worktrees.join("orphan-run")).expect("worktree");
+        std::fs::create_dir_all(identity.identity_paths.worktrees.join("orphan-run"))
+            .expect("worktree");
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_doctor(&fake.deps, &context.ctx, "").await;
@@ -421,14 +480,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_system_estimate_over_the_warn_threshold_when_doctor_runs_then_a_token_advisory_is_reported() {
+    async fn given_a_system_estimate_over_the_warn_threshold_when_doctor_runs_then_a_token_advisory_is_reported()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         let mut settings = memory_settings();
         settings["compile_warn_tokens"] = serde_json::json!(1);
         let fake = fake_deps(
             Some(identity),
-            FakeDepsOverrides { settings: Some(settings), ..Default::default() },
+            FakeDepsOverrides {
+                settings: Some(settings),
+                ..Default::default()
+            },
         );
         let context = fake_command_context(FakeContextOptions::default());
 
@@ -439,11 +502,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_skill_missing_name_frontmatter_when_doctor_runs_then_the_repair_helper_reports_the_fix() {
+    async fn given_a_skill_missing_name_frontmatter_when_doctor_runs_then_the_repair_helper_reports_the_fix()
+     {
         let (_root, identity, fake) = harness(true);
-        std::fs::create_dir_all(identity.identity_paths.repo.join("skills").join("commit")).expect("dir");
+        std::fs::create_dir_all(identity.identity_paths.repo.join("skills").join("commit"))
+            .expect("dir");
         std::fs::write(
-            identity.identity_paths.repo.join("skills").join("commit").join("SKILL.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("skills")
+                .join("commit")
+                .join("SKILL.md"),
             "---\ndescription: x\n---\n",
         )
         .expect("skill");
@@ -456,24 +526,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn given_a_memory_write_denied_session_when_doctor_runs_then_checks_run_and_no_skill_file_is_rewritten() {
+    async fn given_a_memory_write_denied_session_when_doctor_runs_then_checks_run_and_no_skill_file_is_rewritten()
+     {
         let (_root, identity, mut fake) = harness(true);
-        let skill = identity.identity_paths.repo.join("skills").join("commit").join("SKILL.md");
+        let skill = identity
+            .identity_paths
+            .repo
+            .join("skills")
+            .join("commit")
+            .join("SKILL.md");
         std::fs::create_dir_all(skill.parent().expect("skill dir")).expect("dir");
         std::fs::write(&skill, "---\ndescription: x\n---\n").expect("skill");
         let bound = fake.deps.resolve_context.clone();
-        fake.deps.resolve_context = Arc::new(move |session: &str| bound(session).map(|context| context.with_memory_write_denied(true)));
+        fake.deps.resolve_context = Arc::new(move |session: &str| {
+            bound(session).map(|context| context.with_memory_write_denied(true))
+        });
         let context = fake_command_context(FakeContextOptions::default());
 
         let response = handle_doctor(&fake.deps, &context.ctx, "").await;
 
-        assert!(response.text.contains("[ok] repository"), "read-only checks still run: {}", response.text);
-        assert!(response.text.contains("memory_write_denied"), "{}", response.text);
-        assert_eq!(std::fs::read_to_string(&skill).expect("skill"), "---\ndescription: x\n---\n", "the denied session leaves the repo untouched");
+        assert!(
+            response.text.contains("[ok] repository"),
+            "read-only checks still run: {}",
+            response.text
+        );
+        assert!(
+            response.text.contains("memory_write_denied"),
+            "{}",
+            response.text
+        );
+        assert_eq!(
+            std::fs::read_to_string(&skill).expect("skill"),
+            "---\ndescription: x\n---\n",
+            "the denied session leaves the repo untouched"
+        );
     }
 
     #[tokio::test]
-    async fn given_parked_facts_batches_when_doctor_runs_then_one_bounded_advisory_line_names_facts_retry() {
+    async fn given_parked_facts_batches_when_doctor_runs_then_one_bounded_advisory_line_names_facts_retry()
+     {
         let (_root, identity, fake) = harness(true);
         let store = FactsFailureStore::new(FactsFailureStoreOptions {
             identity_paths: identity.identity_paths.clone(),
@@ -516,7 +607,11 @@ mod tests {
         let response = handle_doctor(&fake.deps, &context.ctx, "").await;
 
         assert_eq!(
-            response.text.lines().filter(|line| line.contains("] facts:")).count(),
+            response
+                .text
+                .lines()
+                .filter(|line| line.contains("] facts:"))
+                .count(),
             0
         );
     }

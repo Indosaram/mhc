@@ -1,10 +1,10 @@
 //! Surface resolution and reviewer roles for ulw-loop.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -87,7 +87,9 @@ pub fn resolve_toolkit_surface() -> UlwLoopToolkitSurface {
     resolve_toolkit_surface_with_env(|key| env::var(key).ok())
 }
 
-pub fn resolve_toolkit_surface_with_env(get_env: impl FnOnce(&str) -> Option<String>) -> UlwLoopToolkitSurface {
+pub fn resolve_toolkit_surface_with_env(
+    get_env: impl FnOnce(&str) -> Option<String>,
+) -> UlwLoopToolkitSurface {
     if let Some(v) = get_env("OMO_AGENT_TOOLKIT_SURFACE") {
         if let Some(s) = UlwLoopToolkitSurface::parse(&v) {
             return s;

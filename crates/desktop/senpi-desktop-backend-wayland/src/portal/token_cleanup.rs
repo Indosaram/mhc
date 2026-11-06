@@ -12,7 +12,9 @@ const ORPHANED_REMOTE_DESKTOP_TOKEN: &str = "remote-desktop-token";
 fn omp_state_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))?;
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
     Some(base.join("omp"))
 }
 
@@ -56,7 +58,10 @@ mod tests {
         let first = remove_token_in(dir.path());
         let second = remove_token_in(dir.path());
 
-        assert!(first.is_ok() && !token.exists(), "orphaned token must be removed");
+        assert!(
+            first.is_ok() && !token.exists(),
+            "orphaned token must be removed"
+        );
         assert!(second.is_ok(), "a missing token is not an error");
     }
 }

@@ -9,11 +9,19 @@ pub struct WakeBounds {
 
 impl WakeBounds {
     pub fn new(started_at: i64) -> Self {
-        Self { started_at, deadline_ms: KIBITZER_WAKE_DEADLINE_MS, max_total_ms: KIBITZER_WAKE_MAX_TOTAL_MS }
+        Self {
+            started_at,
+            deadline_ms: KIBITZER_WAKE_DEADLINE_MS,
+            max_total_ms: KIBITZER_WAKE_MAX_TOTAL_MS,
+        }
     }
 
     pub fn with_limits(started_at: i64, deadline_ms: i64, max_total_ms: i64) -> Self {
-        Self { started_at, deadline_ms, max_total_ms }
+        Self {
+            started_at,
+            deadline_ms,
+            max_total_ms,
+        }
     }
 
     pub fn deadline_at(&self, now: i64) -> i64 {

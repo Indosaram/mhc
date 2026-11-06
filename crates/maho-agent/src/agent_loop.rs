@@ -1382,7 +1382,8 @@ async fn stream_assistant_response(
                 })
             {
                 let partial = partial_message.cloned();
-                let final_message = AssistantMessage { credential_served_recently: None,
+                let final_message = AssistantMessage {
+                    credential_served_recently: None,
                     content: partial
                         .as_ref()
                         .map(|message| message.content.clone())

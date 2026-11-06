@@ -7,7 +7,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::state::TaskStatus;
 use crate::tools::control::cancel::TaskCancelInput;
 use crate::tools::control::renderers::{
-    ToolRenderResultOptions, render_task_cancel_call, render_task_cancel_result, render_task_send_call,
+    ToolRenderResultOptions, render_task_cancel_call, render_task_cancel_result,
+    render_task_send_call,
 };
 use crate::tools::control::send_schema::{StructuredMessageInput, TaskSendInput, TaskSendMessage};
 use crate::tools::control::tool_result::tool_result;
@@ -57,7 +58,11 @@ const RESULT_OPTIONS: ToolRenderResultOptions = ToolRenderResultOptions {
 };
 
 fn first_line(component: &dyn LinesComponent, width: usize) -> String {
-    component.render(width).into_iter().next().unwrap_or_default()
+    component
+        .render(width)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 fn visible_width(value: &str) -> usize {
@@ -65,7 +70,11 @@ fn visible_width(value: &str) -> usize {
     UnicodeWidthStr::width(ansi.replace_all(value, "").as_ref())
 }
 
-fn send_input(to: &str, message: Option<TaskSendMessage>, team_run_id: Option<&str>) -> TaskSendInput {
+fn send_input(
+    to: &str,
+    message: Option<TaskSendMessage>,
+    team_run_id: Option<&str>,
+) -> TaskSendInput {
     TaskSendInput {
         to: to.to_string(),
         message,
@@ -80,20 +89,32 @@ fn plain(text: &str) -> Option<TaskSendMessage> {
 }
 
 fn shutdown_request(reason: Option<&str>) -> Option<TaskSendMessage> {
-    Some(TaskSendMessage::Structured(StructuredMessageInput::ShutdownRequest {
-        reason: reason.map(str::to_string),
-    }))
+    Some(TaskSendMessage::Structured(
+        StructuredMessageInput::ShutdownRequest {
+            reason: reason.map(str::to_string),
+        },
+    ))
 }
 
-fn shutdown_response(request_id: &str, approve: bool, reason: Option<&str>) -> Option<TaskSendMessage> {
-    Some(TaskSendMessage::Structured(StructuredMessageInput::ShutdownResponse {
-        request_id: Some(request_id.to_string()),
-        approve,
-        reason: reason.map(str::to_string),
-    }))
+fn shutdown_response(
+    request_id: &str,
+    approve: bool,
+    reason: Option<&str>,
+) -> Option<TaskSendMessage> {
+    Some(TaskSendMessage::Structured(
+        StructuredMessageInput::ShutdownResponse {
+            request_id: Some(request_id.to_string()),
+            approve,
+            reason: reason.map(str::to_string),
+        },
+    ))
 }
 
-fn cancel_input(task_id: Option<&str>, name: Option<&str>, reason: Option<&str>) -> TaskCancelInput {
+fn cancel_input(
+    task_id: Option<&str>,
+    name: Option<&str>,
+    reason: Option<&str>,
+) -> TaskCancelInput {
     TaskCancelInput {
         task_id: task_id.map(str::to_string),
         name: name.map(str::to_string),
@@ -102,7 +123,8 @@ fn cancel_input(task_id: Option<&str>, name: Option<&str>, reason: Option<&str>)
 }
 
 #[test]
-fn given_plain_task_send_message_when_rendering_call_then_shows_concise_target_and_width_safe_excerpt() {
+fn given_plain_task_send_message_when_rendering_call_then_shows_concise_target_and_width_safe_excerpt()
+ {
     let theme = AnsiTheme;
     let input = send_input(
         "st_00000001",
@@ -121,11 +143,14 @@ fn given_plain_task_send_message_when_rendering_call_then_shows_concise_target_a
 }
 
 #[test]
-fn given_long_multiline_korean_and_english_when_rendering_with_ansi_at_width_72_then_normalized_truncated_column_safe() {
+fn given_long_multiline_korean_and_english_when_rendering_with_ansi_at_width_72_then_normalized_truncated_column_safe()
+ {
     let theme = AnsiTheme;
     let input = send_input(
         "atlas",
-        plain("한국어 안내가 아주 길게 이어집니다.\nEnglish guidance also continues long enough to require truncation safely."),
+        plain(
+            "한국어 안내가 아주 길게 이어집니다.\nEnglish guidance also continues long enough to require truncation safely.",
+        ),
         None,
     );
     let line = first_line(&render_task_send_call(&input, &theme), 72);
@@ -148,38 +173,62 @@ fn given_long_korean_continuation_when_rendering_task_send_then_excerpt_ends_at_
     let line = first_line(&render_task_send_call(&input, &theme), 72);
 
     // then
-    assert!(line.contains("\"한국어로 긴 후속 작업 지시를 작성하고...\""), "{line}");
+    assert!(
+        line.contains("\"한국어로 긴 후속 작업 지시를 작성하고...\""),
+        "{line}"
+    );
     assert!(!line.contains("지..."), "{line}");
     assert!(visible_width(&line) <= 72, "{line}");
 }
 
 #[test]
-fn given_structured_shutdown_messages_when_rendering_calls_then_summaries_name_request_approve_reject_and_reason() {
+fn given_structured_shutdown_messages_when_rendering_calls_then_summaries_name_request_approve_reject_and_reason()
+ {
     let theme = TestTheme;
     let request = first_line(
         &render_task_send_call(
-            &send_input("atlas", shutdown_request(Some("done for today")), Some("team-9")),
+            &send_input(
+                "atlas",
+                shutdown_request(Some("done for today")),
+                Some("team-9"),
+            ),
             &theme,
         ),
         120,
     );
     let approve = first_line(
-        &render_task_send_call(&send_input("atlas", shutdown_response("req-1", true, None), None), &theme),
+        &render_task_send_call(
+            &send_input("atlas", shutdown_response("req-1", true, None), None),
+            &theme,
+        ),
         120,
     );
     let reject = first_line(
         &render_task_send_call(
-            &send_input("atlas", shutdown_response("req-2", false, Some("still testing")), None),
+            &send_input(
+                "atlas",
+                shutdown_response("req-2", false, Some("still testing")),
+                None,
+            ),
             &theme,
         ),
         120,
     );
 
-    assert!(request.contains("task_send shutdown:request to:atlas team:team-9"), "{request}");
+    assert!(
+        request.contains("task_send shutdown:request to:atlas team:team-9"),
+        "{request}"
+    );
     assert!(request.contains("reason:"), "{request}");
-    assert!(approve.contains("task_send shutdown:approve to:atlas"), "{approve}");
+    assert!(
+        approve.contains("task_send shutdown:approve to:atlas"),
+        "{approve}"
+    );
     assert!(approve.contains("request:req-1"), "{approve}");
-    assert!(reject.contains("task_send shutdown:reject to:atlas"), "{reject}");
+    assert!(
+        reject.contains("task_send shutdown:reject to:atlas"),
+        "{reject}"
+    );
     assert!(reject.contains("reason:"), "{reject}");
     let joined = [request, approve, reject].join("\n");
     assert!(!joined.contains("deliver:"));
@@ -187,28 +236,37 @@ fn given_structured_shutdown_messages_when_rendering_calls_then_summaries_name_r
 }
 
 #[test]
-fn given_shutdown_request_with_meaningful_reason_when_rendering_at_normal_width_then_reason_visible() {
+fn given_shutdown_request_with_meaningful_reason_when_rendering_at_normal_width_then_reason_visible()
+ {
     let theme = TestTheme;
     let input = send_input(
         "member-with-long-readable-name",
-        shutdown_request(Some("Renderer QA request after the mixed Korean and English edge pass")),
+        shutdown_request(Some(
+            "Renderer QA request after the mixed Korean and English edge pass",
+        )),
         Some("team-run-with-readable-context"),
     );
     let line = first_line(&render_task_send_call(&input, &theme), 160);
 
     assert!(line.contains("task_send shutdown:request"), "{line}");
     assert!(line.contains("to:member-with-long-readable-name"), "{line}");
-    assert!(line.contains("team:team-run-with-readable-context"), "{line}");
+    assert!(
+        line.contains("team:team-run-with-readable-context"),
+        "{line}"
+    );
     assert!(line.contains("reason:"), "{line}");
     assert!(line.contains("Renderer QA request"), "{line}");
 }
 
 #[test]
-fn given_shutdown_request_with_no_room_for_reason_when_rendering_at_edge_width_then_reason_omitted() {
+fn given_shutdown_request_with_no_room_for_reason_when_rendering_at_edge_width_then_reason_omitted()
+{
     let theme = AnsiTheme;
     let input = send_input(
         "edge-member",
-        shutdown_request(Some("Renderer QA request after the mixed Korean and English edge pass")),
+        shutdown_request(Some(
+            "Renderer QA request after the mixed Korean and English edge pass",
+        )),
         Some("edge-team-72"),
     );
     let line = first_line(&render_task_send_call(&input, &theme), 73);
@@ -222,9 +280,13 @@ fn given_shutdown_request_with_no_room_for_reason_when_rendering_at_edge_width_t
 }
 
 #[test]
-fn given_task_send_without_message_when_rendering_call_then_meaningful_without_empty_message_label() {
+fn given_task_send_without_message_when_rendering_call_then_meaningful_without_empty_message_label()
+{
     let theme = TestTheme;
-    let line = first_line(&render_task_send_call(&send_input("atlas", None, None), &theme), 80);
+    let line = first_line(
+        &render_task_send_call(&send_input("atlas", None, None), &theme),
+        80,
+    );
 
     assert!(line.contains("task_send to:atlas"), "{line}");
     assert!(!line.contains("deliver:"));
@@ -232,11 +294,18 @@ fn given_task_send_without_message_when_rendering_call_then_meaningful_without_e
 }
 
 #[test]
-fn given_whitespace_only_control_text_when_rendering_calls_then_empty_message_and_reason_labels_omitted() {
+fn given_whitespace_only_control_text_when_rendering_calls_then_empty_message_and_reason_labels_omitted()
+ {
     let theme = TestTheme;
-    let send = first_line(&render_task_send_call(&send_input("atlas", plain(" \n\t "), None), &theme), 80);
+    let send = first_line(
+        &render_task_send_call(&send_input("atlas", plain(" \n\t "), None), &theme),
+        80,
+    );
     let shutdown = first_line(
-        &render_task_send_call(&send_input("atlas", shutdown_request(Some(" \n\t ")), None), &theme),
+        &render_task_send_call(
+            &send_input("atlas", shutdown_request(Some(" \n\t ")), None),
+            &theme,
+        ),
         80,
     );
     let cancel = first_line(
@@ -254,7 +323,10 @@ fn given_whitespace_only_control_text_when_rendering_calls_then_empty_message_an
 fn given_task_cancel_arguments_and_result_variants_when_rendering_then_rows_concise() {
     let theme = TestTheme;
     let call = first_line(
-        &render_task_cancel_call(&cancel_input(None, Some("alpha"), Some("no longer needed")), &theme),
+        &render_task_cancel_call(
+            &cancel_input(None, Some("alpha"), Some("no longer needed")),
+            &theme,
+        ),
         80,
     );
     let details = vec![

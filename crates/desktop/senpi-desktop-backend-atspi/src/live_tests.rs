@@ -12,7 +12,7 @@
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{AxRegistry, snapshot};
+use senpi_desktop_core::ax::{snapshot, AxRegistry};
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
 use crate::{AtSpiAx, AxPermission, LiveBus, WindowIds};

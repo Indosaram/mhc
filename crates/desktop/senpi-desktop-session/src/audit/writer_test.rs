@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use senpi_desktop_core::methods::Method;
 use senpi_desktop_core::protocol_params::TypeTextParams;
 use senpi_desktop_core::types::DesktopSessionOptions;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{append, append_rotating};
 use crate::audit::{AuditRecord, AuditStatus};
@@ -75,11 +75,9 @@ fn audit_writes_one_json_line_per_action() {
         assert_eq!(line["target"], "101");
         assert!(line["sessionId"].as_str().is_some_and(|id| !id.is_empty()));
         assert!(line["runId"].as_str().is_some_and(|id| !id.is_empty()));
-        assert!(
-            line["timestamp"]
-                .as_str()
-                .is_some_and(|ts| ts.ends_with('Z'))
-        );
+        assert!(line["timestamp"]
+            .as_str()
+            .is_some_and(|ts| ts.ends_with('Z')));
     }
 }
 

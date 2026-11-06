@@ -8,8 +8,8 @@ use memory_core::memfs::parse_memory_file;
 
 use super::repo::{has_git_repo, open_repo, short_sha};
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    command_context_from, finish, require_identity, respond,
 };
 
 fn is_system_markdown(path: &str) -> bool {
@@ -25,8 +25,10 @@ fn render_system_section(
     head: &str,
     paths: &[String],
 ) -> Vec<String> {
-    let mut system_paths: Vec<&String> =
-        paths.iter().filter(|path| is_system_markdown(path)).collect();
+    let mut system_paths: Vec<&String> = paths
+        .iter()
+        .filter(|path| is_system_markdown(path))
+        .collect();
     system_paths.sort();
     if system_paths.is_empty() {
         return vec![
@@ -149,7 +151,10 @@ fn render_memory_view(
         String::new(),
     ];
     lines.extend(render_system_section(&repo, &head, &paths));
-    lines.extend(render_name_section("External memory (committed)", &external_paths));
+    lines.extend(render_name_section(
+        "External memory (committed)",
+        &external_paths,
+    ));
     lines.extend(render_name_section("Skills (committed)", &skill_paths));
 
     if !porcelain.is_empty() {
@@ -185,19 +190,25 @@ mod tests {
 
     fn seeds() -> Vec<memory_core::git::GitSeedFile> {
         vec![
-            seed("system/persona.md", "---\ndescription: Persona\n---\nI am the test persona.\n"),
+            seed(
+                "system/persona.md",
+                "---\ndescription: Persona\n---\nI am the test persona.\n",
+            ),
             seed(
                 "system/projects/index.md",
                 "---\ndescription: Project index\n---\nSee [[external/notes]].\n",
             ),
             seed("external/notes.md", "scratch notes\n"),
-            seed("skills/commit/SKILL.md", "---\nname: commit\ndescription: Commit helper\n---\n"),
+            seed(
+                "skills/commit/SKILL.md",
+                "---\nname: commit\ndescription: Commit helper\n---\n",
+            ),
         ]
     }
 
     #[tokio::test]
-    async fn given_a_clean_committed_repo_when_invoked_then_the_viewer_lists_head_system_bodies_and_external_names(
-    ) {
+    async fn given_a_clean_committed_repo_when_invoked_then_the_viewer_lists_head_system_bodies_and_external_names()
+     {
         let (_root, identity) = temp_identity();
         let repo = seeded_repo(&identity, seeds());
         let head = repo.head().expect("head").expect("some head");
@@ -206,33 +217,56 @@ mod tests {
 
         let response = handle_memory(&fake.deps, &context.ctx, "").await;
 
-        assert!(response.text.contains(&format!("HEAD: {}", short_sha(&head))));
+        assert!(
+            response
+                .text
+                .contains(&format!("HEAD: {}", short_sha(&head)))
+        );
         assert!(response.text.contains("clean"));
         assert!(response.text.contains("### system/persona.md — Persona"));
         assert!(response.text.contains("I am the test persona."));
-        assert!(response.text.contains("### system/projects/index.md — Project index"));
+        assert!(
+            response
+                .text
+                .contains("### system/projects/index.md — Project index")
+        );
         assert!(response.text.contains("- external/notes.md"));
         assert!(response.text.contains("- skills/commit/SKILL.md"));
         assert!(!response.text.contains("Uncommitted"));
         assert_eq!(
-            context.ui.notifications().last().map(|(message, _)| message.clone()),
+            context
+                .ui
+                .notifications()
+                .last()
+                .map(|(message, _)| message.clone()),
             Some(response.text.clone())
         );
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Info));
     }
 
     #[tokio::test]
-    async fn given_a_dirty_working_tree_when_invoked_then_uncommitted_changes_render_in_a_separate_section(
-    ) {
+    async fn given_a_dirty_working_tree_when_invoked_then_uncommitted_changes_render_in_a_separate_section()
+     {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
         std::fs::write(
-            identity.identity_paths.repo.join("system").join("persona.md"),
+            identity
+                .identity_paths
+                .repo
+                .join("system")
+                .join("persona.md"),
             "---\ndescription: Persona\n---\nchanged\n",
         )
         .expect("dirty persona");
-        std::fs::write(identity.identity_paths.repo.join("external").join("fresh.md"), "untracked\n")
-            .expect("untracked");
+        std::fs::write(
+            identity
+                .identity_paths
+                .repo
+                .join("external")
+                .join("fresh.md"),
+            "untracked\n",
+        )
+        .expect("untracked");
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 

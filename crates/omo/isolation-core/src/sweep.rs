@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::backend::{BackendKind, IsolationBackend, Result, BACKEND_FILE};
-use crate::owner::{read_owner_liveness, OwnerLiveness, OwnerProbe};
+use crate::backend::{BACKEND_FILE, BackendKind, IsolationBackend, Result};
+use crate::owner::{OwnerLiveness, OwnerProbe, read_owner_liveness};
 use crate::process_identity::process_owner_probe;
 use crate::util::now_ms;
 
@@ -97,7 +97,10 @@ fn sweep_entry(
     Ok(())
 }
 
-pub fn sweep_stale_isolations(root_dirs: &[PathBuf], options: &SweepOptions) -> Result<SweepResult> {
+pub fn sweep_stale_isolations(
+    root_dirs: &[PathBuf],
+    options: &SweepOptions,
+) -> Result<SweepResult> {
     let mut result = SweepResult::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let default_probe = process_owner_probe();

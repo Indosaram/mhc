@@ -55,7 +55,10 @@ pub struct TranscriptMentionInput<'a, D = MentionDocument> {
 
 /// Corpus paths mentioned anywhere in the last [`RECALL_PATH_ENTRY_WINDOW`] branch entries.
 pub trait TranscriptMentionIndex {
-    fn excluded_paths<D: MentionPath>(&mut self, input: TranscriptMentionInput<'_, D>) -> BTreeSet<String>;
+    fn excluded_paths<D: MentionPath>(
+        &mut self,
+        input: TranscriptMentionInput<'_, D>,
+    ) -> BTreeSet<String>;
 }
 
 #[derive(Clone, Debug)]
@@ -101,7 +104,10 @@ fn delimiter_follows(after: &str) -> bool {
         return true;
     };
     if is_js_whitespace(first)
-        || matches!(first, '"' | '\'' | '`' | ']' | ')' | '}' | '>' | ':' | ';' | ',' | '!' | '?')
+        || matches!(
+            first,
+            '"' | '\'' | '`' | ']' | ')' | '}' | '>' | ':' | ';' | ',' | '!' | '?'
+        )
     {
         return true;
     }
@@ -134,12 +140,19 @@ fn mentions(json: &str, matcher: &str) -> bool {
 }
 
 fn build_matcher_set<D: MentionPath>(documents: &[D]) -> MatcherSet {
-    let paths: Vec<String> = documents.iter().map(|document| document.mention_path().to_string()).collect();
+    let paths: Vec<String> = documents
+        .iter()
+        .map(|document| document.mention_path().to_string())
+        .collect();
     let matchers: Vec<String> = paths.iter().map(|path| json_inner(path)).collect();
     let per_entry_safe = paths
         .iter()
         .all(|path| !ARRAY_SEAMS.iter().any(|seam| path.contains(seam)));
-    MatcherSet { documents: paths, matchers, per_entry_safe }
+    MatcherSet {
+        documents: paths,
+        matchers,
+        per_entry_safe,
+    }
 }
 
 fn mentions_in(json: &str, set: &MatcherSet) -> BTreeSet<String> {
@@ -191,7 +204,11 @@ impl BranchMentionIndex {
     fn matchers_for<D: MentionPath>(&mut self, documents: &[D]) -> Arc<MatcherSet> {
         if let Some(set) = &self.matcher_set
             && set.documents.len() == documents.len()
-            && set.documents.iter().zip(documents).all(|(cached, document)| cached == document.mention_path())
+            && set
+                .documents
+                .iter()
+                .zip(documents)
+                .all(|(cached, document)| cached == document.mention_path())
         {
             return Arc::clone(set);
         }
@@ -214,8 +231,7 @@ impl BranchMentionIndex {
         while self.sessions.len() > MAX_TRACKED_SESSIONS {
             self.sessions.remove(0);
         }
-        self
-            .sessions
+        self.sessions
             .last_mut()
             .map(|(_, session)| session)
             .expect("the session was just pushed")
@@ -223,7 +239,10 @@ impl BranchMentionIndex {
 }
 
 impl TranscriptMentionIndex for BranchMentionIndex {
-    fn excluded_paths<D: MentionPath>(&mut self, input: TranscriptMentionInput<'_, D>) -> BTreeSet<String> {
+    fn excluded_paths<D: MentionPath>(
+        &mut self,
+        input: TranscriptMentionInput<'_, D>,
+    ) -> BTreeSet<String> {
         let set = self.matchers_for(input.documents);
         let start = input.entries.len().saturating_sub(RECALL_PATH_ENTRY_WINDOW);
         let window = &input.entries[start..];

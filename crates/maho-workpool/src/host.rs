@@ -117,7 +117,13 @@ pub struct WorkerIndex {
 
 fn file_safe(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -132,7 +138,11 @@ impl WorkerIndex {
     }
 
     fn path(&self, root_session: &str, task_id: &str) -> PathBuf {
-        self.dir.join(format!("{}__{}.json", file_safe(root_session), file_safe(task_id)))
+        self.dir.join(format!(
+            "{}__{}.json",
+            file_safe(root_session),
+            file_safe(task_id)
+        ))
     }
 
     /// Records that `task_id` (started under `root_session`) is a pool worker.
@@ -141,7 +151,9 @@ impl WorkerIndex {
     /// Filesystem failures.
     pub fn write(&self, root_session: &str, entry: &WorkerEntry) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
+        let tmp = self
+            .dir
+            .join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
         let bytes = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
         let written = std::fs::File::create(&tmp).and_then(|mut file| {
             file.write_all(&bytes)?;

@@ -98,7 +98,9 @@ pub fn decode_log_record(bytes: &[u8]) -> Result<LogRecord, ProtoError> {
             (2, WIRE_VARINT) => record.severity_number = reader.read_varint()? as i32,
             (3, WIRE_LEN) => record.severity_text = reader.read_string()?,
             (5, WIRE_LEN) => record.body = Some(decode_any_value(reader.read_len()?)?),
-            (6, WIRE_LEN) => record.attributes.push(decode_key_value(reader.read_len()?)?),
+            (6, WIRE_LEN) => record
+                .attributes
+                .push(decode_key_value(reader.read_len()?)?),
             (7, WIRE_VARINT) => {
                 record.dropped_attributes_count =
                     u32::try_from(reader.read_varint()?).unwrap_or(u32::MAX);
@@ -134,7 +136,9 @@ pub fn decode_scope_logs(bytes: &[u8]) -> Result<ScopeLogs, ProtoError> {
             (1, WIRE_LEN) => {
                 scope_logs.scope = Some(decode_instrumentation_scope(reader.read_len()?)?);
             }
-            (2, WIRE_LEN) => scope_logs.log_records.push(decode_log_record(reader.read_len()?)?),
+            (2, WIRE_LEN) => scope_logs
+                .log_records
+                .push(decode_log_record(reader.read_len()?)?),
             (3, WIRE_LEN) => scope_logs.schema_url = reader.read_string()?,
             (_, wire) => reader.skip(wire)?,
         }
@@ -163,7 +167,9 @@ pub fn decode_resource_logs(bytes: &[u8]) -> Result<ResourceLogs, ProtoError> {
             (1, WIRE_LEN) => {
                 resource_logs.resource = Some(decode_resource_message(reader.read_len()?)?);
             }
-            (2, WIRE_LEN) => resource_logs.scope_logs.push(decode_scope_logs(reader.read_len()?)?),
+            (2, WIRE_LEN) => resource_logs
+                .scope_logs
+                .push(decode_scope_logs(reader.read_len()?)?),
             (3, WIRE_LEN) => resource_logs.schema_url = reader.read_string()?,
             (_, wire) => reader.skip(wire)?,
         }

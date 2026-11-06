@@ -1,12 +1,12 @@
 use crate::imagegen_support;
 
-use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope};
+use maho_ai::node::provider_scope::{ProviderScope, run_with_provider_scope_async};
 use maho_ext_api::*;
 use maho_ext_host::loader::NativeExtensionFactory;
 use maho_ext_imagegen::state::set_image_gen_registry_override;
 use maho_test_support::faux::{FauxResponse, FauxScript};
 use maho_test_support::faux_session::{FauxSession, NativeSession};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 // `imagegen_support::FixtureRegistry` is a foreign crate's type, so this crate cannot implement
@@ -19,27 +19,52 @@ struct AuthFixture {
 }
 
 impl maho_ext_imagegen::auth::ImageGenAuthRegistry for AuthFixture {
-    fn stored_openai_is_api_key(&self) -> bool { self.stored_api_key }
-    fn get_all(&self) -> Vec<Model> { self.models.clone() }
+    fn stored_openai_is_api_key(&self) -> bool {
+        self.stored_api_key
+    }
+    fn get_all(&self) -> Vec<Model> {
+        self.models.clone()
+    }
     fn get_provider_auth(&self, _: &str) -> maho_ext_imagegen::auth::AuthFuture<'_> {
         let key = self.provider_api_key.clone();
         let headers = self.provider_headers.clone().unwrap_or_default();
-        Box::pin(async move { Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials { api_key: Some(api_key), headers, base_url: None })) })
+        Box::pin(async move {
+            Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials {
+                api_key: Some(api_key),
+                headers,
+                base_url: None,
+            }))
+        })
     }
-    fn get_api_key_and_headers<'a>(&'a self, _: &'a Model) -> maho_ext_imagegen::auth::AuthFuture<'a> {
+    fn get_api_key_and_headers<'a>(
+        &'a self,
+        _: &'a Model,
+    ) -> maho_ext_imagegen::auth::AuthFuture<'a> {
         self.get_provider_auth("")
     }
 }
 
 fn script() -> FauxScript {
-    FauxScript { name: "imagegen-extension".into(), prompt: "draw".into(), responses: vec![FauxResponse { content: "ok".into(), stop_reason: "stop".into() }] }
+    FauxScript {
+        name: "imagegen-extension".into(),
+        prompt: "draw".into(),
+        responses: vec![FauxResponse {
+            content: "ok".into(),
+            stop_reason: "stop".into(),
+        }],
+    }
 }
 
 fn model(api: &str, provider: &str, base_url: &str) -> maho_ai::types::Model {
     serde_json::from_value(json!({"id":"gpt-5.5","name":"GPT-5.5","api":api,"provider":provider,"baseUrl":base_url,"reasoning":false,"input":["text"],"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0},"contextWindow":128000,"maxTokens":16384})).expect("model")
 }
 
-fn compat_model(api: &str, provider: &str, base_url: &str, supports: bool) -> maho_ai::types::Model {
+fn compat_model(
+    api: &str,
+    provider: &str,
+    base_url: &str,
+    supports: bool,
+) -> maho_ai::types::Model {
     let mut value = json!({"id":"gpt-5.5","name":"GPT-5.5","api":api,"provider":provider,"baseUrl":base_url,"reasoning":false,"input":["text"],"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0},"contextWindow":128000,"maxTokens":16384});
     value["compat"] = json!({"supportsImageGeneration": supports});
     serde_json::from_value(value).expect("model")
@@ -49,24 +74,46 @@ fn official() -> maho_ai::types::Model {
     model("openai-responses", "openai", "https://api.openai.com/v1")
 }
 fn proxied() -> maho_ai::types::Model {
-    model("openai-responses", "quotio-openai", "https://gateway.example/openai/v1")
+    model(
+        "openai-responses",
+        "quotio-openai",
+        "https://gateway.example/openai/v1",
+    )
 }
 fn completions() -> maho_ai::types::Model {
     model("openai-completions", "openai", "https://api.openai.com/v1")
 }
 
 fn credentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(AuthFixture { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] })
+    Arc::new(AuthFixture {
+        stored_api_key: false,
+        provider_api_key: Some("gateway-secret".into()),
+        provider_headers: None,
+        models: vec![imagegen_support::gateway_model()],
+    })
 }
 
 fn uncredentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(AuthFixture { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() })
+    Arc::new(AuthFixture {
+        stored_api_key: false,
+        provider_api_key: None,
+        provider_headers: None,
+        models: Vec::new(),
+    })
 }
 
 async fn boot() -> NativeSession {
     FauxSession::new(script())
-        .with_native_extension(NativeExtensionFactory { path: "imagegen".into(), source_info: SourceInfo::default(), extension: Box::new(maho_ext_imagegen::ImageGen::default()) })
-        .with_native_extension(NativeExtensionFactory { path: "openai-image-gen".into(), source_info: SourceInfo::default(), extension: Box::new(maho_ext_openai_image_gen::OpenAiImageGen) })
+        .with_native_extension(NativeExtensionFactory {
+            path: "imagegen".into(),
+            source_info: SourceInfo::default(),
+            extension: Box::new(maho_ext_imagegen::ImageGen::default()),
+        })
+        .with_native_extension(NativeExtensionFactory {
+            path: "openai-image-gen".into(),
+            source_info: SourceInfo::default(),
+            extension: Box::new(maho_ext_openai_image_gen::OpenAiImageGen),
+        })
         .run_native_handle()
         .await
         .expect("native session")
@@ -77,22 +124,47 @@ fn request_payload() -> Value {
 }
 
 fn tool_names(payload: &Value) -> Vec<String> {
-    payload["tools"].as_array().map(|tools| tools.iter().filter_map(|tool| tool["name"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    payload["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn native_tools(payload: &Value) -> usize {
-    payload["tools"].as_array().map(|tools| tools.iter().filter(|tool| tool["type"] == "image_generation").count()).unwrap_or(0)
+    payload["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter(|tool| tool["type"] == "image_generation")
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 async fn payload(session: &NativeSession, model: maho_ai::types::Model) -> Value {
-    session.emit_before_provider_request(request_payload(), Some(model)).await.expect("payload")
+    session
+        .emit_before_provider_request(request_payload(), Some(model))
+        .await
+        .expect("payload")
 }
 
 async fn execute(session: &NativeSession, stub: Arc<imagegen_support::StubImages>) -> Value {
     let scope = ProviderScope::new();
     let outcome = run_with_provider_scope_async(&scope, async {
-        maho_ai::images_api_registry::register_images_api_provider("openai-images", stub.clone(), Some("session-stub"))?;
-        let result = session.execute_tool("generate_image", json!({"prompt":"a fox"})).await?;
+        maho_ai::images_api_registry::register_images_api_provider(
+            "openai-images",
+            stub.clone(),
+            Some("session-stub"),
+        )?;
+        let result = session
+            .execute_tool("generate_image", json!({"prompt":"a fox"}))
+            .await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(result)
     })
     .await;
@@ -139,7 +211,9 @@ async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
     let session = boot().await;
     let initial = payload(&session, proxied()).await;
     assert_eq!(native_tools(&initial), 0);
-    session.configure_provider_key(&official().provider, "fixture-key").expect("configured provider");
+    session
+        .configure_provider_key(&official().provider, "fixture-key")
+        .expect("configured provider");
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -153,7 +227,9 @@ async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
     let session = boot().await;
     let initial = payload(&session, official()).await;
     assert_eq!(native_tools(&initial), 1);
-    session.configure_provider_key(&proxied().provider, "fixture-key").expect("configured provider");
+    session
+        .configure_provider_key(&proxied().provider, "fixture-key")
+        .expect("configured provider");
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -169,7 +245,9 @@ async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endp
     let session = boot().await;
     let initial = payload(&session, official()).await;
     assert_eq!(native_tools(&initial), 1);
-    session.configure_provider_key(&proxied().provider, "fixture-key").expect("configured provider");
+    session
+        .configure_provider_key(&proxied().provider, "fixture-key")
+        .expect("configured provider");
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -183,7 +261,9 @@ async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint()
     let session = boot().await;
     let initial = payload(&session, proxied()).await;
     assert_eq!(native_tools(&initial), 0);
-    session.configure_provider_key(&official().provider, "fixture-key").expect("configured provider");
+    session
+        .configure_provider_key(&official().provider, "fixture-key")
+        .expect("configured provider");
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -193,9 +273,21 @@ async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint()
 
 #[test]
 fn proxied_and_azure_responses_default_to_the_client_tool() {
-    use maho_ext_openai_image_gen::gate::{supports_native_image_generation, NativeImageGenModel};
-    let proxied = NativeImageGenModel { id: "gpt-5.5", provider: "quotio-openai", api: "openai-responses", base_url: "https://gateway.example/openai/v1", compat: None };
-    let azure = NativeImageGenModel { id: "gpt-5.5", provider: "azure", api: "azure-openai-responses", base_url: "https://contoso.openai.azure.com/openai/v1", compat: None };
+    use maho_ext_openai_image_gen::gate::{NativeImageGenModel, supports_native_image_generation};
+    let proxied = NativeImageGenModel {
+        id: "gpt-5.5",
+        provider: "quotio-openai",
+        api: "openai-responses",
+        base_url: "https://gateway.example/openai/v1",
+        compat: None,
+    };
+    let azure = NativeImageGenModel {
+        id: "gpt-5.5",
+        provider: "azure",
+        api: "azure-openai-responses",
+        base_url: "https://contoso.openai.azure.com/openai/v1",
+        compat: None,
+    };
     assert!(!supports_native_image_generation(Some(&proxied)));
     assert!(!supports_native_image_generation(Some(&azure)));
 }
@@ -204,7 +296,16 @@ fn proxied_and_azure_responses_default_to_the_client_tool() {
 async fn a_proxied_endpoint_with_compat_opt_in_injects_the_server_tool() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, compat_model("openai-responses", "quotio-openai", "https://gateway.example/openai/v1", true)).await;
+    let payload = payload(
+        &session,
+        compat_model(
+            "openai-responses",
+            "quotio-openai",
+            "https://gateway.example/openai/v1",
+            true,
+        ),
+    )
+    .await;
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
     session.close().await;
@@ -214,7 +315,16 @@ async fn a_proxied_endpoint_with_compat_opt_in_injects_the_server_tool() {
 async fn the_official_endpoint_with_compat_disabled_keeps_the_client_tool() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, compat_model("openai-responses", "openai", "https://api.openai.com/v1", false)).await;
+    let payload = payload(
+        &session,
+        compat_model(
+            "openai-responses",
+            "openai",
+            "https://api.openai.com/v1",
+            false,
+        ),
+    )
+    .await;
     assert_eq!(native_tools(&payload), 0);
     assert!(tool_names(&payload).contains(&"generate_image".to_owned()));
     session.close().await;
@@ -254,7 +364,10 @@ async fn a_cached_client_model_refreshes_when_the_request_model_differs() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let _ = payload(&session, proxied()).await;
-    let payload = session.emit_before_provider_request(request_payload(), Some(official())).await.expect("payload");
+    let payload = session
+        .emit_before_provider_request(request_payload(), Some(official()))
+        .await
+        .expect("payload");
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
     session.close().await;
@@ -272,8 +385,12 @@ fn the_enable_env_off_keeps_the_client_tool_active() {
 async fn an_unchanged_client_payload_is_returned_unchanged() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
-    let input = json!({"model":"gpt-5.5","tools":[{"type":"function","name":"read","parameters":{}}]});
-    let result = session.emit_before_provider_request(input.clone(), Some(proxied())).await.expect("payload");
+    let input =
+        json!({"model":"gpt-5.5","tools":[{"type":"function","name":"read","parameters":{}}]});
+    let result = session
+        .emit_before_provider_request(input.clone(), Some(proxied()))
+        .await
+        .expect("payload");
     assert_eq!(result, input);
     session.close().await;
 }

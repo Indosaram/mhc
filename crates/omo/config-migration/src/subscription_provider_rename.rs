@@ -70,9 +70,7 @@ fn rewrite_value(
             entries
                 .iter()
                 .enumerate()
-                .map(|(index, entry)| {
-                    rewrite_value(entry, &format!("{path}[{index}]"), rewrites)
-                })
+                .map(|(index, entry)| rewrite_value(entry, &format!("{path}[{index}]"), rewrites))
                 .collect(),
         ),
         Value::Object(map) => {

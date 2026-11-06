@@ -1,15 +1,23 @@
+use idle_injection::{IdleInjection, IdleInjectionSource};
+use maho_ext_api::{
+    DeliverAs, EventBus, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile,
+    FlagValue, LoadedExtension, SourceInfo, ToolDefinition,
+};
+use maho_omo::{
+    DeferredScheduler, Delivery, IdleInjectionDelivery, IdleInjectionMessage, IdleInjectionQueue,
+    TurnBarrier,
+};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use idle_injection::{IdleInjection, IdleInjectionSource};
-use maho_ext_api::{DeliverAs, EventBus, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, FlagValue, LoadedExtension, SourceInfo, ToolDefinition};
-use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDelivery, IdleInjectionMessage, IdleInjectionQueue, TurnBarrier};
 pub struct FakeComponent {
     register: Box<dyn Fn(&mut ExtensionApi) + Send + Sync>,
 }
 
 impl FakeComponent {
     pub fn new(register: impl Fn(&mut ExtensionApi) + Send + Sync + 'static) -> Self {
-        Self { register: Box::new(register) }
+        Self {
+            register: Box::new(register),
+        }
     }
 }
 
@@ -29,15 +37,27 @@ pub fn new_api() -> ExtensionApi {
 }
 
 pub fn flag_names(api: &ExtensionApi) -> Vec<String> {
-    api.registered.flags.iter().map(|flag| flag.name.clone()).collect()
+    api.registered
+        .flags
+        .iter()
+        .map(|flag| flag.name.clone())
+        .collect()
 }
 
 pub fn tool_names(api: &ExtensionApi) -> Vec<String> {
-    api.registered.tools.iter().map(|tool| tool.definition.name.clone()).collect()
+    api.registered
+        .tools
+        .iter()
+        .map(|tool| tool.definition.name.clone())
+        .collect()
 }
 
 pub fn command_names(api: &ExtensionApi) -> Vec<String> {
-    api.registered.commands.iter().map(|command| command.name.clone()).collect()
+    api.registered
+        .commands
+        .iter()
+        .map(|command| command.name.clone())
+        .collect()
 }
 
 pub fn fake_tool(name: &str) -> ToolDefinition {
@@ -70,16 +90,22 @@ impl DeliveryLog {
     }
 
     pub fn calls(&self) -> Vec<Delivered> {
-        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn delivery(&self) -> IdleInjectionDelivery {
         let calls = Arc::clone(&self.calls);
         Arc::new(move |message, deliver_as| {
-            calls.lock().unwrap_or_else(PoisonError::into_inner).push(Delivered {
-                message: message.clone(),
-                deliver_as,
-            });
+            calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(Delivered {
+                    message: message.clone(),
+                    deliver_as,
+                });
             Delivery::Delivered
         })
     }
@@ -102,7 +128,10 @@ pub fn injection(key: &str, source: IdleInjectionSource, content: &str) -> IdleI
 
 /// A `passive: true` entry: rides a non-passive flush, never causes one.
 pub fn passive_injection(key: &str, source: IdleInjectionSource, content: &str) -> IdleInjection {
-    IdleInjection { passive: Some(true), ..injection(key, source, content) }
+    IdleInjection {
+        passive: Some(true),
+        ..injection(key, source, content)
+    }
 }
 
 /// A coordinator whose deferred flush is captured (upstream's manual `scheduleFlush`).
@@ -113,7 +142,9 @@ pub fn manual_coordinator() -> (IdleInjectionQueue, DeliveryLog, DeferredSchedul
     (coordinator, log, scheduler)
 }
 
-pub fn manual_runtime_options(logger: Arc<dyn maho_ext_api::ComponentLogger>) -> maho_omo::OmoRuntimeOptions {
+pub fn manual_runtime_options(
+    logger: Arc<dyn maho_ext_api::ComponentLogger>,
+) -> maho_omo::OmoRuntimeOptions {
     maho_omo::OmoRuntimeOptions {
         logger: Some(logger),
         flush_scheduler: Some(DeferredScheduler::manual(TurnBarrier::new())),

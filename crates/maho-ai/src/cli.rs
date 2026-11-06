@@ -6,7 +6,9 @@
 //! provider display names.
 
 use crate::auth::oauth::load::{BUILTIN_OAUTH_PROVIDERS, load_builtin_oauth};
-use crate::auth::types::{AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, ProviderAuthInteraction};
+use crate::auth::types::{
+    AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, ProviderAuthInteraction,
+};
 use crate::utils::abort::{AbortController, AbortSignal};
 use async_trait::async_trait;
 use serde_json::{Map, Value};
@@ -23,8 +25,15 @@ struct CliProvider {
 fn providers() -> Result<Vec<CliProvider>, crate::models::ModelsError> {
     Ok(crate::providers::all::builtin_providers()?
         .into_iter()
-        .filter(|provider| BUILTIN_OAUTH_PROVIDERS.iter().any(|(id, _)| *id == provider.id()))
-        .map(|provider| CliProvider { id: provider.id().to_owned(), name: provider.name().to_owned() })
+        .filter(|provider| {
+            BUILTIN_OAUTH_PROVIDERS
+                .iter()
+                .any(|(id, _)| *id == provider.id())
+        })
+        .map(|provider| CliProvider {
+            id: provider.id().to_owned(),
+            name: provider.name().to_owned(),
+        })
         .collect())
 }
 
@@ -56,7 +65,9 @@ fn selection_index(answer: &str, len: usize) -> Option<usize> {
 }
 
 fn load_auth() -> Map<String, Value> {
-    let Ok(raw) = std::fs::read_to_string(AUTH_FILE) else { return Map::new() };
+    let Ok(raw) = std::fs::read_to_string(AUTH_FILE) else {
+        return Map::new();
+    };
     serde_json::from_str::<Map<String, Value>>(&raw).unwrap_or_default()
 }
 
@@ -81,13 +92,25 @@ impl AuthInteraction for CliInteraction {
                     println!("  {}. {}", index + 1, option.label);
                 }
                 let answer = prompt(format!("Enter number (1-{}): ", options.len())).await?;
-                let index = selection_index(&answer, options.len()).ok_or_else(|| anyhow::anyhow!("Invalid selection"))?;
+                let index = selection_index(&answer, options.len())
+                    .ok_or_else(|| anyhow::anyhow!("Invalid selection"))?;
                 Ok(options[index].id.clone())
             }
-            AuthPromptKind::Text { message, placeholder }
-            | AuthPromptKind::Secret { message, placeholder }
-            | AuthPromptKind::ManualCode { message, placeholder } => {
-                let suffix = placeholder.map(|placeholder| format!(" ({placeholder})")).unwrap_or_default();
+            AuthPromptKind::Text {
+                message,
+                placeholder,
+            }
+            | AuthPromptKind::Secret {
+                message,
+                placeholder,
+            }
+            | AuthPromptKind::ManualCode {
+                message,
+                placeholder,
+            } => {
+                let suffix = placeholder
+                    .map(|placeholder| format!(" ({placeholder})"))
+                    .unwrap_or_default();
                 prompt(format!("{message}{suffix}: ")).await
             }
         }
@@ -101,29 +124,44 @@ impl AuthInteraction for CliInteraction {
                     println!("{instructions}");
                 }
             }
-            AuthEvent::DeviceCode { user_code, verification_uri, .. } => {
+            AuthEvent::DeviceCode {
+                user_code,
+                verification_uri,
+                ..
+            } => {
                 println!("\nOpen this URL in your browser:\n{verification_uri}");
                 println!("Enter code: {user_code}");
             }
-            AuthEvent::Info { message, .. } | AuthEvent::Progress { message } => println!("{message}"),
+            AuthEvent::Info { message, .. } | AuthEvent::Progress { message } => {
+                println!("{message}")
+            }
         }
     }
 }
 
 async fn login(provider_id: &str) -> anyhow::Result<()> {
-    let oauth = load_builtin_oauth(provider_id).await?.ok_or_else(|| anyhow::anyhow!("Unknown provider: {provider_id}"))?;
-    let interaction = ProviderAuthInteraction::new(AbortController::new().signal(), Arc::new(CliInteraction));
+    let oauth = load_builtin_oauth(provider_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {provider_id}"))?;
+    let interaction =
+        ProviderAuthInteraction::new(AbortController::new().signal(), Arc::new(CliInteraction));
     let credential = oauth.login(&interaction).await?;
     let mut auth = load_auth();
-    auth.insert(provider_id.to_owned(), serde_json::to_value(Credential::OAuth(credential))?);
+    auth.insert(
+        provider_id.to_owned(),
+        serde_json::to_value(Credential::OAuth(credential))?,
+    );
     save_auth(&auth)?;
     println!("\nCredentials saved to {AUTH_FILE}");
     Ok(())
 }
 
 fn usage(providers: &[CliProvider]) -> String {
-    let provider_list =
-        providers.iter().map(|provider| format!("  {:<20} {}", provider.id, provider.name)).collect::<Vec<_>>().join("\n");
+    let provider_list = providers
+        .iter()
+        .map(|provider| format!("  {:<20} {}", provider.id, provider.name))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         "Usage: npx @earendil-works/pi-ai <command> [provider]\n\nCommands:\n  login [provider]  Login to an OAuth provider\n  list              List available providers\n\nProviders:\n{provider_list}"
     )
@@ -150,11 +188,16 @@ pub async fn main(args: &[String]) -> anyhow::Result<()> {
                     println!("  {}. {}", index + 1, provider.name);
                 }
                 let answer = prompt(format!("Enter number (1-{}): ", providers.len())).await?;
-                provider_id = selection_index(&answer, providers.len()).map(|index| providers[index].id.clone());
+                provider_id = selection_index(&answer, providers.len())
+                    .map(|index| providers[index].id.clone());
             }
-            let provider_id = provider_id.filter(|id| providers.iter().any(|provider| &provider.id == id));
+            let provider_id =
+                provider_id.filter(|id| providers.iter().any(|provider| &provider.id == id));
             let Some(provider_id) = provider_id else {
-                return Err(anyhow::anyhow!("Unknown provider: {}", args.get(1).map(String::as_str).unwrap_or("")));
+                return Err(anyhow::anyhow!(
+                    "Unknown provider: {}",
+                    args.get(1).map(String::as_str).unwrap_or("")
+                ));
             };
             login(&provider_id).await
         }
@@ -177,8 +220,16 @@ mod tests {
 
     #[test]
     fn lists_only_oauth_capable_builtin_providers() {
-        let ids: Vec<String> = providers().expect("providers").into_iter().map(|provider| provider.id).collect();
-        assert!(ids.iter().all(|id| BUILTIN_OAUTH_PROVIDERS.iter().any(|(oauth_id, _)| oauth_id == id)));
+        let ids: Vec<String> = providers()
+            .expect("providers")
+            .into_iter()
+            .map(|provider| provider.id)
+            .collect();
+        assert!(ids.iter().all(|id| {
+            BUILTIN_OAUTH_PROVIDERS
+                .iter()
+                .any(|(oauth_id, _)| oauth_id == id)
+        }));
         assert!(ids.contains(&"anthropic".to_owned()));
     }
 }

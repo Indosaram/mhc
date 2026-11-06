@@ -61,7 +61,10 @@ async fn runner_honours_workdir_and_returns_large_output_whole() {
 
     let size = 2 * 1024 * 1024 + 7;
     let big = run(
-        &request(&format!("head -c {size} /dev/zero | tr '\\000' 'a'"), 30_000),
+        &request(
+            &format!("head -c {size} /dev/zero | tr '\\000' 'a'"),
+            30_000,
+        ),
         &root,
     )
     .await;

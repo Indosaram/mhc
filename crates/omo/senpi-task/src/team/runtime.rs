@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 use team_core::TeamCoreError;
-use utils::logger::log;
-use team_core::team_state_store::{create_runtime_state, load_runtime_state, transition_runtime_state};
+use team_core::team_state_store::{
+    create_runtime_state, load_runtime_state, transition_runtime_state,
+};
 use team_core::types::{RuntimeState, RuntimeStatus, TeamSpec};
+use utils::logger::log;
 
 use crate::lifecycle::port::DestroyCause;
 use crate::team::member_map::{MemberTaskMap, read_member_task_map, write_member_task_map};
@@ -16,14 +18,16 @@ use crate::team::member_respawn::build_team_config_json;
 use crate::team::registry::TeamSpecSource;
 use crate::team::runtime_config::{TeamCoreConfig, to_team_core_config, to_team_core_spec_source};
 use crate::team::runtime_types::{
-    CreateTeamDeps, CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamDeps, DeleteTeamResult,
-    SenpiTeamRuntimeError, SenpiTeamRuntimeErrorCode, SpawnMemberExtensionConfig, TeamCancelOutcome,
-    TeamMemberReadPort, TeamNowFn,
+    CreateTeamDeps, CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamDeps,
+    DeleteTeamResult, SenpiTeamRuntimeError, SenpiTeamRuntimeErrorCode, SpawnMemberExtensionConfig,
+    TeamCancelOutcome, TeamMemberReadPort, TeamNowFn,
 };
 use crate::team::spawn_members::{
     SpawnMembersInput, SpawnMembersResult, SpawnedMember, member_task_name, spawn_team_members,
 };
-use crate::team::storage::{TeamStorageError, ensure_team_runtime_dirs, resolve_team_runtime_dirs, team_storage_base_dir};
+use crate::team::storage::{
+    TeamStorageError, ensure_team_runtime_dirs, resolve_team_runtime_dirs, team_storage_base_dir,
+};
 
 const MS_PER_MINUTE: i64 = 60_000;
 const PROMPT_EXCERPT_MAX: usize = 120;
@@ -44,8 +48,13 @@ pub enum TeamRuntimeError {
     Destruction(String),
 }
 
-fn team_core_config(deps_state_dir: &crate::store::StateDirConfig, bounds: &crate::team::runtime_config::TeamTaskBounds) -> Result<TeamCoreConfig, TeamRuntimeError> {
-    let base_dir = team_storage_base_dir(deps_state_dir).to_string_lossy().into_owned();
+fn team_core_config(
+    deps_state_dir: &crate::store::StateDirConfig,
+    bounds: &crate::team::runtime_config::TeamTaskBounds,
+) -> Result<TeamCoreConfig, TeamRuntimeError> {
+    let base_dir = team_storage_base_dir(deps_state_dir)
+        .to_string_lossy()
+        .into_owned();
     to_team_core_config(bounds, &base_dir).map_err(TeamRuntimeError::Config)
 }
 
@@ -85,14 +94,21 @@ pub fn create_team(
         &config,
     )?;
     let team_run_id = runtime_state.team_run_id.clone();
-    let member_names: Vec<String> = spec.members.iter().map(|member| member.name.clone()).collect();
+    let member_names: Vec<String> = spec
+        .members
+        .iter()
+        .map(|member| member.name.clone())
+        .collect();
     ensure_team_runtime_dirs(&deps.state_dir, &team_run_id, &member_names)?;
 
-    let member_extension = deps.member_extension.as_ref().map(|extension| SpawnMemberExtensionConfig {
-        entry_path: extension.entry_path.clone(),
-        inherited_extensions: extension.inherited_extensions.clone(),
-        team_config: build_team_config_json(&config, &deps.state_dir, &member_names),
-    });
+    let member_extension =
+        deps.member_extension
+            .as_ref()
+            .map(|extension| SpawnMemberExtensionConfig {
+                entry_path: extension.entry_path.clone(),
+                inherited_extensions: extension.inherited_extensions.clone(),
+                team_config: build_team_config_json(&config, &deps.state_dir, &member_names),
+            });
     let wall_clock_ms = i64::try_from(deps.team_bounds.max_wall_clock_minutes)
         .unwrap_or(i64::MAX / MS_PER_MINUTE)
         .saturating_mul(MS_PER_MINUTE);
@@ -135,7 +151,10 @@ pub fn create_team(
     if let Err(message) = write_outcome {
         rollback_failed_create(&team_run_id, &result, deps, &config)?;
         return Err(SenpiTeamRuntimeError::new(
-            format!("team '{}' member sidecar write failed: {message}", spec.name),
+            format!(
+                "team '{}' member sidecar write failed: {message}",
+                spec.name
+            ),
             SenpiTeamRuntimeErrorCode::SidecarWriteFailed,
             spec.name.clone(),
         )
@@ -165,12 +184,19 @@ pub fn excerpt_prompt(prompt: &str) -> String {
 // Builds the caller-facing per-member views from the spec (role, prompt), the spawn outcomes (task
 // id, resolved model), and the activated runtime state (live status). Spawn success guarantees every
 // spec member has an outcome; a member missing from the map is skipped defensively.
-fn to_created_member_infos(spec: &TeamSpec, spawned: &SpawnMembersResult, state: &RuntimeState) -> Vec<CreatedMemberInfo> {
+fn to_created_member_infos(
+    spec: &TeamSpec,
+    spawned: &SpawnMembersResult,
+    state: &RuntimeState,
+) -> Vec<CreatedMemberInfo> {
     spec.members
         .iter()
         .filter_map(|member| {
             let outcome = spawned.get(&member.name)?;
-            let state_member = state.members.iter().find(|candidate| candidate.name == member.name);
+            let state_member = state
+                .members
+                .iter()
+                .find(|candidate| candidate.name == member.name);
             let role = if member.kind.as_str() == "category" {
                 CreatedMemberRole::Category {
                     category: member.category.clone().unwrap_or_default(),
@@ -244,7 +270,9 @@ fn rollback_failed_create(
         if outcome.kind() != "cancelled" {
             log(
                 "senpi-task team create rollback cancel skipped",
-                Some(&json!({ "teamRunId": team_run_id, "taskId": member.task_id, "outcome": outcome.kind() })),
+                Some(
+                    &json!({ "teamRunId": team_run_id, "taskId": member.task_id, "outcome": outcome.kind() }),
+                ),
             );
         }
     }
@@ -274,7 +302,10 @@ fn to_member_task_map(spawned: &[(String, SpawnedMember)]) -> MemberTaskMap {
 ///
 /// The manager and destruction ports are synchronous and not `Send`, so a delete runs to completion
 /// on the calling thread; there is no concurrent in-flight operation to coalesce onto.
-pub fn delete_team(team_run_id: &str, deps: &DeleteTeamDeps) -> Result<DeleteTeamResult, TeamRuntimeError> {
+pub fn delete_team(
+    team_run_id: &str,
+    deps: &DeleteTeamDeps,
+) -> Result<DeleteTeamResult, TeamRuntimeError> {
     let config = team_core_config(&deps.state_dir, &deps.team_bounds)?;
     let runtime_dir = resolve_team_runtime_dirs(&deps.state_dir, team_run_id)?.runtime_dir;
 
@@ -364,10 +395,13 @@ fn cancel_member_tasks(
             TeamCancelOutcome::Noop { status, .. } if status.as_str() != "cancelled"
         );
         if noop_not_cancelled && observed_resident {
-            let current_destroyable = TeamMemberReadPort::get(manager, task_id).is_some_and(|current| {
-                let status = current.status.as_str();
-                status != "pending" && status != "running" && current.residency_state.as_str() == "resident"
-            });
+            let current_destroyable =
+                TeamMemberReadPort::get(manager, task_id).is_some_and(|current| {
+                    let status = current.status.as_str();
+                    status != "pending"
+                        && status != "running"
+                        && current.residency_state.as_str() == "resident"
+                });
             if current_destroyable {
                 deps.destruction
                     .destroy_resident_task(task_id, DestroyCause::Cancel)

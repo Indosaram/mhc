@@ -320,7 +320,9 @@ async fn run_retrying_stream(
             outer_stream.fail(error);
             return;
         }
-        if signal.aborted() { return; }
+        if signal.aborted() {
+            return;
+        }
         retrying = true;
         stream = create_stream();
         *active.lock().unwrap_or_else(|error| error.into_inner()) = stream.clone();
@@ -356,10 +358,12 @@ pub fn with_empty_assistant_recovery(model: &Model, stream_function: StreamFn) -
         let outer_stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let controller = maho_ai::utils::abort::AbortController::new();
         let signal = controller.signal();
-        outer_stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            controller.abort(None);
-            Ok(())
-        })));
+        outer_stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                controller.abort(None);
+                Ok(())
+            })
+        }));
         let active = Arc::new(std::sync::Mutex::new(first_stream.clone()));
         let task_outer = outer_stream.clone();
         let create_stream_for_task = create_stream.clone();
@@ -369,7 +373,10 @@ pub fn with_empty_assistant_recovery(model: &Model, stream_function: StreamFn) -
                 _ = signal.cancelled() => {},
                 _ = run_retrying_stream(task_outer.clone(), first_stream, create_stream_for_task, policy, active.clone(), signal.clone()) => {},
             }
-            let stream = active.lock().unwrap_or_else(|error| error.into_inner()).clone();
+            let stream = active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             if let Err(error) = stream.cancel().await {
                 task_outer.fail(error);
             } else if let Some(result) = stream.result_if_ready() {
@@ -387,7 +394,10 @@ pub fn with_empty_assistant_recovery(model: &Model, stream_function: StreamFn) -
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
-    use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::Duration;
 
     #[tokio::test]
@@ -396,40 +406,70 @@ mod cancellation_tests {
         model.recover_text_tool_calls = Some(true);
         let first = AssistantMessageEventStream::assistant();
         let message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
-            &model, maho_ai::types::StopReason::Stop,
-            &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable { message: String::new() }, None,
+            &model,
+            maho_ai::types::StopReason::Stop,
+            &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable {
+                message: String::new(),
+            },
+            None,
         );
         let mut message = message;
         message.content.clear();
-        first.push(AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+        first.push(AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message,
+        });
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let closed = Arc::new(AtomicUsize::new(0));
         let task_closed = closed.clone();
-        first.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("cleanup entered");
-            release_rx.await.expect("release cleanup");
-            task_closed.store(1, Ordering::SeqCst);
-            Ok(())
-        })));
+        first.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("cleanup entered");
+                release_rx.await.expect("release cleanup");
+                task_closed.store(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }));
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
         let source: StreamFn = Arc::new(move |_, _, _| {
             count.fetch_add(1, Ordering::SeqCst);
             first.clone()
         });
-        let context = maho_ai::types::Context { system_prompt: None, messages: Vec::new(), tools: None, active_tool_names: None };
+        let context = maho_ai::types::Context {
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+            active_tool_names: None,
+        };
         let first = source(&model, &context, None);
         let active = Arc::new(Mutex::new(first.clone()));
         let outer = AssistantMessageEventStream::assistant();
         let controller = maho_ai::utils::abort::AbortController::new();
         let signal = controller.signal();
-        let create: Arc<dyn Fn() -> AssistantMessageEventStream + Send + Sync> = Arc::new(move || source(&model, &context, None));
-        let task = tokio::spawn(run_retrying_stream(outer, first, create, CommitPolicy { thinking_commits: true }, active, signal));
-        tokio::time::timeout(Duration::from_secs(1), entered_rx).await.expect("cleanup starts").expect("entered");
+        let create: Arc<dyn Fn() -> AssistantMessageEventStream + Send + Sync> =
+            Arc::new(move || source(&model, &context, None));
+        let task = tokio::spawn(run_retrying_stream(
+            outer,
+            first,
+            create,
+            CommitPolicy {
+                thinking_commits: true,
+            },
+            active,
+            signal,
+        ));
+        tokio::time::timeout(Duration::from_secs(1), entered_rx)
+            .await
+            .expect("cleanup starts")
+            .expect("entered");
         controller.abort(None);
         release_tx.send(()).expect("release");
-        tokio::time::timeout(Duration::from_secs(1), task).await.expect("acknowledged").expect("relay exits");
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("acknowledged")
+            .expect("relay exits");
         assert_eq!(closed.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -439,31 +479,60 @@ mod cancellation_tests {
         let mut model = crate::agent::default_model();
         model.recover_text_tool_calls = Some(true);
         let first = AssistantMessageEventStream::assistant();
-        let mut message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
-            &model, maho_ai::types::StopReason::Stop,
-            &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable { message: String::new() }, None,
-        );
+        let mut message =
+            crate::assistant_terminal_state::create_terminal_failure_assistant_message(
+                &model,
+                maho_ai::types::StopReason::Stop,
+                &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable {
+                    message: String::new(),
+                },
+                None,
+            );
         message.content.clear();
-        first.push(AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+        first.push(AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message,
+        });
         let second = AssistantMessageEventStream::assistant();
         let closed = Arc::new(AtomicUsize::new(0));
         let task_closed = closed.clone();
-        second.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            task_closed.store(1, Ordering::SeqCst);
-            Ok(())
-        })));
+        second.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                task_closed.store(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }));
         let (created_tx, created_rx) = tokio::sync::oneshot::channel();
         let created_tx = Mutex::new(Some(created_tx));
         let calls = AtomicUsize::new(0);
         let source: StreamFn = Arc::new(move |_, _, _| {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 { return first.clone(); }
-            created_tx.lock().expect("sender").take().expect("one retry").send(()).expect("created");
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return first.clone();
+            }
+            created_tx
+                .lock()
+                .expect("sender")
+                .take()
+                .expect("one retry")
+                .send(())
+                .expect("created");
             second.clone()
         });
-        let context = maho_ai::types::Context { system_prompt: None, messages: Vec::new(), tools: None, active_tool_names: None };
+        let context = maho_ai::types::Context {
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+            active_tool_names: None,
+        };
         let outer = with_empty_assistant_recovery(&model, source)(&model, &context, None);
-        tokio::time::timeout(Duration::from_secs(1), created_rx).await.expect("retry created").expect("created");
-        tokio::time::timeout(Duration::from_secs(1), outer.cancel()).await.expect("acknowledged").expect("cancel");
+        tokio::time::timeout(Duration::from_secs(1), created_rx)
+            .await
+            .expect("retry created")
+            .expect("created");
+        tokio::time::timeout(Duration::from_secs(1), outer.cancel())
+            .await
+            .expect("acknowledged")
+            .expect("cancel");
         assert_eq!(closed.load(Ordering::SeqCst), 1);
     }
 
@@ -474,29 +543,58 @@ mod cancellation_tests {
         model.id = "gpt-6-astra".to_owned();
         model.recover_text_tool_calls = Some(false);
         let empty = |text: Option<&str>| {
-            let mut message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
-                &model, maho_ai::types::StopReason::Stop,
-                &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable { message: String::new() }, None,
-            );
+            let mut message =
+                crate::assistant_terminal_state::create_terminal_failure_assistant_message(
+                    &model,
+                    maho_ai::types::StopReason::Stop,
+                    &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable {
+                        message: String::new(),
+                    },
+                    None,
+                );
             message.stop_reason = maho_ai::types::StopReason::Stop;
             message.error_message = None;
-            message.content = text.map(|text| vec![maho_ai::types::ContentBlock::text(text)]).unwrap_or_default();
+            message.content = text
+                .map(|text| vec![maho_ai::types::ContentBlock::text(text)])
+                .unwrap_or_default();
             let stream = AssistantMessageEventStream::assistant();
-            stream.push(AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+            stream.push(AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message,
+            });
             stream
         };
         let (first, second) = (empty(None), empty(Some("done")));
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
         let source: StreamFn = Arc::new(move |_, _, _| {
-            if count.fetch_add(1, Ordering::SeqCst) == 0 { first.clone() } else { second.clone() }
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                first.clone()
+            } else {
+                second.clone()
+            }
         });
-        let context = maho_ai::types::Context { system_prompt: None, messages: Vec::new(), tools: None, active_tool_names: None };
+        let context = maho_ai::types::Context {
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+            active_tool_names: None,
+        };
         let outer = with_empty_assistant_recovery(&model, source)(&model, &context, None);
-        let events = tokio::time::timeout(Duration::from_secs(5), outer.collect()).await.expect("settled").expect("collected");
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "the empty stop must trigger one retry");
+        let events = tokio::time::timeout(Duration::from_secs(5), outer.collect())
+            .await
+            .expect("settled")
+            .expect("collected");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the empty stop must trigger one retry"
+        );
         let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
-            panic!("the retried attempt must finish the turn, got {:?}", events.last())
+            panic!(
+                "the retried attempt must finish the turn, got {:?}",
+                events.last()
+            )
         };
         assert!(has_visible_assistant_content(message));
     }

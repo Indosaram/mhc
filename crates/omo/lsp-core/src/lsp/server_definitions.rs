@@ -27,7 +27,10 @@ impl BuiltinServer {
 }
 
 pub const LSP_LOCAL_INSTALL_HINTS: &[(&str, &str)] = &[
-    ("typescript", "bun add -d typescript-language-server typescript"),
+    (
+        "typescript",
+        "bun add -d typescript-language-server typescript",
+    ),
     ("vue", "bun add -d @vue/language-server"),
     ("eslint", "bun add -d vscode-langservers-extracted"),
     ("oxlint", "bun add -d oxlint"),

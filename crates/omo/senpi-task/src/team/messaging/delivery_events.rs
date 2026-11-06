@@ -42,7 +42,12 @@ pub fn append_delivered_event(deps: &LeadPollerDeps, message: &Message) {
         deps,
         message,
         "team_message_delivered",
-        &[("message_id", "messageId"), ("from", "from"), ("to", "to"), ("kind", "kind")],
+        &[
+            ("message_id", "messageId"),
+            ("from", "from"),
+            ("to", "to"),
+            ("kind", "kind"),
+        ],
     );
 }
 
@@ -51,6 +56,10 @@ pub fn append_waited_event(deps: &LeadPollerDeps, message: &Message) {
         deps,
         message,
         "team_message_waited",
-        &[("message_id", "messageId"), ("from", "from"), ("body", "body")],
+        &[
+            ("message_id", "messageId"),
+            ("from", "from"),
+            ("body", "body"),
+        ],
     );
 }

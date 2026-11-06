@@ -755,13 +755,33 @@ mod nested_event_tests {
     fn lifecycle_events_round_trip_parent_attribution_and_omit_top_level_parent() {
         for parent in [None, Some("root".to_owned())] {
             let events = [
-                AgentEvent::ToolExecutionStart { tool_call_id: "root/1".into(), tool_name: "read".into(), args: Value::Null, parent_tool_call_id: parent.clone() },
-                AgentEvent::ToolExecutionUpdate { tool_call_id: "root/1".into(), tool_name: "read".into(), args: Value::Null, partial_result: Value::Null, parent_tool_call_id: parent.clone() },
-                AgentEvent::ToolExecutionEnd { tool_call_id: "root/1".into(), tool_name: "read".into(), result: Value::Null, is_error: false, parent_tool_call_id: parent.clone() },
+                AgentEvent::ToolExecutionStart {
+                    tool_call_id: "root/1".into(),
+                    tool_name: "read".into(),
+                    args: Value::Null,
+                    parent_tool_call_id: parent.clone(),
+                },
+                AgentEvent::ToolExecutionUpdate {
+                    tool_call_id: "root/1".into(),
+                    tool_name: "read".into(),
+                    args: Value::Null,
+                    partial_result: Value::Null,
+                    parent_tool_call_id: parent.clone(),
+                },
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id: "root/1".into(),
+                    tool_name: "read".into(),
+                    result: Value::Null,
+                    is_error: false,
+                    parent_tool_call_id: parent.clone(),
+                },
             ];
             for event in events {
                 let wire = serde_json::to_value(&event).expect("serialize event");
-                assert_eq!(wire.get("parentToolCallId").and_then(Value::as_str), parent.as_deref());
+                assert_eq!(
+                    wire.get("parentToolCallId").and_then(Value::as_str),
+                    parent.as_deref()
+                );
                 let restored: AgentEvent = serde_json::from_value(wire).expect("deserialize event");
                 assert_eq!(restored, event);
             }

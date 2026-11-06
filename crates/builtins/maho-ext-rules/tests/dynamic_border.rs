@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use maho_tui::tui::Component;
 use maho_ext_rules::ui::dynamic_border::DynamicBorder;
+use maho_tui::tui::Component;
+use std::sync::Arc;
 
 #[test]
 fn border_has_one_line_and_minimum_one_cell() {

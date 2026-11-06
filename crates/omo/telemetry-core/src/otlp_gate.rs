@@ -26,25 +26,24 @@ pub fn safe_consent(input: &CreateOtlpTelemetryTransportInput) -> Consent {
     };
     let consent = Arc::clone(consent);
     let diagnostics = input.diagnostics.clone();
-    let source = input
-        .source
-        .clone()
-        .unwrap_or_else(|| "otlp".to_string());
-    Arc::new(move || match std::panic::catch_unwind(AssertUnwindSafe(|| consent())) {
-        Ok(value) => value,
-        Err(_) => {
-            if let Some(diagnostics) = &diagnostics {
-                diagnostics(&TelemetryDiagnosticInput {
-                    event: TelemetryDiagnosticEvent::TelemetryConsentFailed,
-                    source: source.clone(),
-                    error: Some(TelemetryError::new("consent callback failed")),
-                    error_kind: Some(crate::types::TelemetryDiagnosticErrorKind::Error),
-                    entry_kind: None,
-                    error_code: None,
-                    count: None,
-                });
+    let source = input.source.clone().unwrap_or_else(|| "otlp".to_string());
+    Arc::new(
+        move || match std::panic::catch_unwind(AssertUnwindSafe(|| consent())) {
+            Ok(value) => value,
+            Err(_) => {
+                if let Some(diagnostics) = &diagnostics {
+                    diagnostics(&TelemetryDiagnosticInput {
+                        event: TelemetryDiagnosticEvent::TelemetryConsentFailed,
+                        source: source.clone(),
+                        error: Some(TelemetryError::new("consent callback failed")),
+                        error_kind: Some(crate::types::TelemetryDiagnosticErrorKind::Error),
+                        entry_kind: None,
+                        error_code: None,
+                        count: None,
+                    });
+                }
+                false
             }
-            false
-        }
-    })
+        },
+    )
 }

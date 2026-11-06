@@ -48,7 +48,10 @@ fn given_every_slot_held_when_acquired_with_no_wait_then_busy() {
         KibitzerWakeAdmission::Acquired { lease, .. } => lease,
         _ => panic!("expected the first lease"),
     };
-    assert!(matches!(slot.acquire(None).unwrap(), KibitzerWakeAdmission::Busy { .. }));
+    assert!(matches!(
+        slot.acquire(None).unwrap(),
+        KibitzerWakeAdmission::Busy { .. }
+    ));
 }
 
 #[test]
@@ -60,5 +63,8 @@ fn given_a_released_slot_when_acquired_again_then_it_succeeds() {
     } else {
         panic!("expected the first lease");
     }
-    assert!(matches!(slot.acquire(None).unwrap(), KibitzerWakeAdmission::Acquired { .. }));
+    assert!(matches!(
+        slot.acquire(None).unwrap(),
+        KibitzerWakeAdmission::Acquired { .. }
+    ));
 }

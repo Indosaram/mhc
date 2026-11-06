@@ -177,7 +177,10 @@ fn simultaneous_agent_and_category_are_both_rendered() {
 
 #[test]
 fn empty_turn_token_is_omitted_and_failed_turn_is_reported() {
-    let stats = StatusLineStats { failed_turns: 2, ..StatusLineStats::default() };
+    let stats = StatusLineStats {
+        failed_turns: 2,
+        ..StatusLineStats::default()
+    };
     assert_eq!(
         compose_status_line(&StatusLineInput {
             identity: "task",

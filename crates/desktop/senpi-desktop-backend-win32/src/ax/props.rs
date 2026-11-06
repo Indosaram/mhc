@@ -1,14 +1,14 @@
 //! Element properties: the normalized props the snapshot walker renders and
 //! the raw UIA property dump behind `ax.attributes`.
 
-use senpi_desktop_core::ax::{AxBounds, AxProps, normalize_role_uia};
+use senpi_desktop_core::ax::{normalize_role_uia, AxBounds, AxProps};
 use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::types::DesktopDisplay;
 use uiautomation::types::{Rect, UIProperty};
 use uiautomation::{UIElement, UITreeWalker};
 
 use super::{patterns, uia_error};
-use crate::capture::{PhysicalRect, logical_bounds};
+use crate::capture::{logical_bounds, PhysicalRect};
 
 const MAX_ATTRIBUTE_CHARS: usize = 200;
 

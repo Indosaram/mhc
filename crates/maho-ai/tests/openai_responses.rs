@@ -560,9 +560,16 @@ async fn openai_responses_body_outliving_the_request_timeout_still_completes() {
             assert!(read > 0, "request ended before its headers");
             buffer.extend_from_slice(&chunk[..read]);
         }
-        let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
-        socket.write_all(header.as_bytes()).await.expect("write headers");
-        socket.write_all(&body[..split]).await.expect("write first frame");
+        let header =
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+        socket
+            .write_all(header.as_bytes())
+            .await
+            .expect("write headers");
+        socket
+            .write_all(&body[..split])
+            .await
+            .expect("write first frame");
         socket.flush().await.expect("flush");
         tokio::time::sleep(Duration::from_millis(TIMEOUT_MS * 3 / 2)).await;
         socket.write_all(&body[split..]).await.expect("write rest");
@@ -571,7 +578,12 @@ async fn openai_responses_body_outliving_the_request_timeout_still_completes() {
     let model = replay_model(case, format!("http://{addr}/v1"));
     let mut options = responses_options();
     options.request.timeout_ms = Some(TIMEOUT_MS);
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(options))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(options),
+    ))
+    .await;
     let last = events.last().expect("a terminal event");
     assert!(
         matches!(last, AssistantMessageEvent::Done { .. }),
@@ -846,7 +858,9 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
 
     let same_model = convert_responses_messages(
         &target_model,
-        &context_with(vec![Message::Assistant(std::sync::Arc::new(produced.clone()))]),
+        &context_with(vec![Message::Assistant(std::sync::Arc::new(
+            produced.clone(),
+        ))]),
         &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
         &options,
     );
@@ -873,7 +887,9 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
     for target in [other_model, other_provider, other_api] {
         let replayed = convert_responses_messages(
             &target,
-            &context_with(vec![Message::Assistant(std::sync::Arc::new(produced.clone()))]),
+            &context_with(vec![Message::Assistant(std::sync::Arc::new(
+                produced.clone(),
+            ))]),
             &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
             &options,
         );

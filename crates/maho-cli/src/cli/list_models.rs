@@ -1,23 +1,84 @@
 use maho_core::model_runtime::ModelRuntime;
 pub fn format_token_count(count: u64) -> String {
     let count = count as f64;
-    let (value, suffix) = if count >= 1_000_000.0 { (count / 1_000_000.0, "M") } else if count >= 1_000.0 { (count / 1_000.0, "K") } else { return count.to_string(); };
-    if value.fract() == 0.0 { return format!("{value}{suffix}"); }
+    let (value, suffix) = if count >= 1_000_000.0 {
+        (count / 1_000_000.0, "M")
+    } else if count >= 1_000.0 {
+        (count / 1_000.0, "K")
+    } else {
+        return count.to_string();
+    };
+    if value.fract() == 0.0 {
+        return format!("{value}{suffix}");
+    }
     // JS `toFixed(1)` rounds an exact decimal tie up where Rust's formatter rounds it to even; at
     // one decimal an exact binary tie only occurs on quarters (x.25, x.75).
-    if (value * 4.0).fract() == 0.0 && (value * 10.0).fract() == 0.5 { return format!("{:.1}{suffix}", (value * 10.0).ceil() / 10.0); }
+    if (value * 4.0).fract() == 0.0 && (value * 10.0).fract() == 0.5 {
+        return format!("{:.1}{suffix}", (value * 10.0).ceil() / 10.0);
+    }
     format!("{value:.1}{suffix}")
 }
 pub fn list_models(runtime: &ModelRuntime, search: Option<&str>) -> String {
     let mut models = runtime.get_models(None);
     // senpi `listModels`: an empty catalog answers the no-models guidance before any search applies.
-    if models.is_empty() { return maho_core::auth_guidance::format_no_models_available_message(); }
-    if let Some(search) = search.filter(|s| !s.is_empty()) { models = maho_tui::fuzzy::fuzzy_filter(&models, search, |model| format!("{} {}", model.provider, model.id)); }
-    if models.is_empty() { return format!("No models matching \"{}\"", search.unwrap_or_default()); }
-    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
-    models.sort_by(|left, right| collator.compare(&left.provider, &right.provider).then_with(|| collator.compare(&left.id, &right.id)));
-    let mut rows = vec![["provider".to_owned(), "model".to_owned(), "context".to_owned(), "max-out".to_owned(), "thinking".to_owned(), "images".to_owned()]];
-    for model in models { rows.push([model.provider, model.id, format_token_count(model.context_window), format_token_count(model.max_tokens), if model.reasoning { "yes" } else { "no" }.to_owned(), if model.input.contains(&maho_ai::types::InputModality::Image) { "yes" } else { "no" }.to_owned()]); }
-    let widths: [usize; 6] = std::array::from_fn(|i| rows.iter().map(|row| row[i].encode_utf16().count()).max().unwrap_or(0));
-    rows.into_iter().map(|row| row.into_iter().enumerate().map(|(i, cell)| { let padding = widths[i].saturating_sub(cell.encode_utf16().count()); format!("{cell}{}", " ".repeat(padding)) }).collect::<Vec<_>>().join("  ")).collect::<Vec<_>>().join("\n")
+    if models.is_empty() {
+        return maho_core::auth_guidance::format_no_models_available_message();
+    }
+    if let Some(search) = search.filter(|s| !s.is_empty()) {
+        models = maho_tui::fuzzy::fuzzy_filter(&models, search, |model| {
+            format!("{} {}", model.provider, model.id)
+        });
+    }
+    if models.is_empty() {
+        return format!("No models matching \"{}\"", search.unwrap_or_default());
+    }
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+        .expect("compiled collation data is available");
+    models.sort_by(|left, right| {
+        collator
+            .compare(&left.provider, &right.provider)
+            .then_with(|| collator.compare(&left.id, &right.id))
+    });
+    let mut rows = vec![[
+        "provider".to_owned(),
+        "model".to_owned(),
+        "context".to_owned(),
+        "max-out".to_owned(),
+        "thinking".to_owned(),
+        "images".to_owned(),
+    ]];
+    for model in models {
+        rows.push([
+            model.provider,
+            model.id,
+            format_token_count(model.context_window),
+            format_token_count(model.max_tokens),
+            if model.reasoning { "yes" } else { "no" }.to_owned(),
+            if model.input.contains(&maho_ai::types::InputModality::Image) {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_owned(),
+        ]);
+    }
+    let widths: [usize; 6] = std::array::from_fn(|i| {
+        rows.iter()
+            .map(|row| row[i].encode_utf16().count())
+            .max()
+            .unwrap_or(0)
+    });
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    let padding = widths[i].saturating_sub(cell.encode_utf16().count());
+                    format!("{cell}{}", " ".repeat(padding))
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

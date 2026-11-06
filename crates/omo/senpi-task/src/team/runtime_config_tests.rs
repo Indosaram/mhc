@@ -4,15 +4,20 @@ use pretty_assertions::assert_eq;
 use regex::Regex;
 
 use crate::team::registry::TeamSpecSource;
-use crate::team::runtime_config::{TeamCoreConfig, TeamCoreSpecSource, to_team_core_config, to_team_core_spec_source};
+use crate::team::runtime_config::{
+    TeamCoreConfig, TeamCoreSpecSource, to_team_core_config, to_team_core_spec_source,
+};
 use crate::team::runtime_fakes::{TeamBoundsOverrides, team_bounds};
 
 /// Reads a field's rendered value from the config's Debug output, unwrapping `Some(..)` and string
 /// quotes so the assertion is independent of whether team-core stores the field as optional.
 fn field(config: &TeamCoreConfig, name: &str) -> String {
     let rendered = format!("{config:?}");
-    let pattern = Regex::new(&format!(r#"(?:^|[ {{,]){}: (?:Some\()?("[^"]*"|[^,}}()\s]+)"#, regex::escape(name)))
-        .expect("valid field regex");
+    let pattern = Regex::new(&format!(
+        r#"(?:^|[ {{,]){}: (?:Some\()?("[^"]*"|[^,}}()\s]+)"#,
+        regex::escape(name)
+    ))
+    .expect("valid field regex");
     let captures = pattern
         .captures(&rendered)
         .unwrap_or_else(|| panic!("field {name} not found in {rendered}"));
@@ -20,7 +25,8 @@ fn field(config: &TeamCoreConfig, name: &str) -> String {
 }
 
 #[test]
-fn given_omo_task_team_bounds_when_converted_then_the_team_core_config_carries_the_bounds_and_base_dir() {
+fn given_omo_task_team_bounds_when_converted_then_the_team_core_config_carries_the_bounds_and_base_dir()
+ {
     // given
     let settings = team_bounds(TeamBoundsOverrides {
         max_members: Some(5),

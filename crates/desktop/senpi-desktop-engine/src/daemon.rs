@@ -56,7 +56,8 @@ pub async fn open_daemon_session(
         .stop_chord
         .clone()
         .unwrap_or_else(|| default_stop_chord().to_owned());
-    let chord = Chord::parse(&chord_text).map_err(|error| format!("--stop-chord {chord_text}: {error}"))?;
+    let chord =
+        Chord::parse(&chord_text).map_err(|error| format!("--stop-chord {chord_text}: {error}"))?;
     engine.stop_paths().set_policy(StopPolicy {
         allow_host_relay_only: options.allow_host_relay_only_stop,
     });
@@ -67,8 +68,12 @@ pub async fn open_daemon_session(
         .map_err(|failure| format!("the daemon session did not open: {failure:?}"))?;
     engine.stop_paths().start(&chord);
     engine.announce_stop_path();
-    write_token(token_file, engine.stop_paths().resume_token())
-        .map_err(|error| format!("cannot write the resume token {}: {error}", token_file.display()))
+    write_token(token_file, engine.stop_paths().resume_token()).map_err(|error| {
+        format!(
+            "cannot write the resume token {}: {error}",
+            token_file.display()
+        )
+    })
 }
 
 /// The per-OS default stop chord (the `computer.stopHotkey` default).

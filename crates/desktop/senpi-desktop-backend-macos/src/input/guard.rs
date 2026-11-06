@@ -14,9 +14,15 @@ const RIGHT_CLICK_COERCERS: [&str; 6] = ["chrome", "chromium", "electron", "brav
 const CANVAS_OR_GAME: [&str; 5] = ["blender", "unity", "godot", "unreal", "ghost"];
 
 /// Refuses background delivery the target app is known to mishandle.
-pub(super) fn guard(window: &DesktopWindow, kind: &str, button: Option<MouseButton>) -> CoreResult<()> {
+pub(super) fn guard(
+    window: &DesktopWindow,
+    kind: &str,
+    button: Option<MouseButton>,
+) -> CoreResult<()> {
     let app = window.app.to_ascii_lowercase();
-    if RIGHT_CLICK_COERCERS.iter().any(|name| app.contains(name)) && button == Some(MouseButton::Right) {
+    if RIGHT_CLICK_COERCERS.iter().any(|name| app.contains(name))
+        && button == Some(MouseButton::Right)
+    {
         return Err(DesktopError::background_unavailable(format!(
             "window {} ({}) coerces synthetic background right-click events to left-clicks; retry \
              with delivery:\"foreground\" or use ax actions",

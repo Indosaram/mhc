@@ -1,91 +1,722 @@
-use maho_ext_pi_rules::rules::{matcher::*,types::*,picomatch::{self as grammar,Options as GrammarOptions}};
-#[test]fn pinned_range_and_punctuation_boundaries(){let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-range-punct.json")).expect("pinned corpus");for case in cases.as_array().expect("cases"){let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");let f=RuleFrontmatter{globs:Some(PatternList::Single(pattern.into())),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");}}
+use maho_ext_pi_rules::rules::{
+    matcher::*,
+    picomatch::{self as grammar, Options as GrammarOptions},
+    types::*,
+};
 #[test]
-fn pinned_nested_brace_and_class_boundaries_match(){
-    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-matcher-boundary-delta.json")).expect("pinned source corpus");
-    for case in cases.as_array().expect("cases"){
-        let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");
-        let f=RuleFrontmatter{globs:Some(PatternList::Single(pattern.into())),..Default::default()};
-        let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("source accepts pattern");
-        assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");
+fn pinned_range_and_punctuation_boundaries() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/pinned-range-punct.json"))
+            .expect("pinned corpus");
+    for case in cases.as_array().expect("cases") {
+        let pattern = case["pattern"].as_str().expect("pattern");
+        let path = case["path"].as_str().expect("path");
+        let f = RuleFrontmatter {
+            globs: Some(PatternList::Single(pattern.into())),
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .expect("matcher");
+        assert_eq!(
+            result.matched,
+            case["matched"].as_bool().expect("matched"),
+            "{pattern}: {path}"
+        );
     }
 }
-fn patterns(values:&[&str])->Option<PatternList>{Some(PatternList::Multiple(values.iter().map(|v|(*v).into()).collect()))}
 #[test]
-fn negative_extglob_slash_body_anchors_before_suffix(){
+fn pinned_nested_brace_and_class_boundaries_match() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/pinned-matcher-boundary-delta.json"))
+            .expect("pinned source corpus");
+    for case in cases.as_array().expect("cases") {
+        let pattern = case["pattern"].as_str().expect("pattern");
+        let path = case["path"].as_str().expect("path");
+        let f = RuleFrontmatter {
+            globs: Some(PatternList::Single(pattern.into())),
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .expect("source accepts pattern");
+        assert_eq!(
+            result.matched,
+            case["matched"].as_bool().expect("matched"),
+            "{pattern}: {path}"
+        );
+    }
+}
+fn patterns(values: &[&str]) -> Option<PatternList> {
+    Some(PatternList::Multiple(
+        values.iter().map(|v| (*v).into()).collect(),
+    ))
+}
+#[test]
+fn negative_extglob_slash_body_anchors_before_suffix() {
     // Pinned picomatch 4.0.5 uses a segment-local star after this negative lookahead.
-    let f=RuleFrontmatter{globs:patterns(&["**","!!(foo/bar).ts"]),..Default::default()};
-    let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"foo/bar.ts",scope_relative:None,basename:"foo/bar.ts"}).expect("slash body extglob");
+    let f = RuleFrontmatter {
+        globs: patterns(&["**", "!!(foo/bar).ts"]),
+        ..Default::default()
+    };
+    let result = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "foo/bar.ts",
+            scope_relative: None,
+            basename: "foo/bar.ts",
+        })
+        .expect("slash body extglob");
     assert!(result.matched);
-    let boundary=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"bar.ts",scope_relative:None,basename:"bar.ts"}).expect("slash body extglob");
+    let boundary = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "bar.ts",
+            scope_relative: None,
+            basename: "bar.ts",
+        })
+        .expect("slash body extglob");
     assert!(!boundary.matched);
 }
 #[test]
-fn bash_negative_extglob_consumes_slashes(){
+fn bash_negative_extglob_consumes_slashes() {
     // Pinned picomatch crosses slashes only when the extglob's star body selects globstar.
-    let f=RuleFrontmatter{globs:patterns(&["**","!!(foo).ts"]),..Default::default()};
-    let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"dir/bar.ts",scope_relative:None,basename:"dir/bar.ts"}).expect("bash negative matcher");
+    let f = RuleFrontmatter {
+        globs: patterns(&["**", "!!(foo).ts"]),
+        ..Default::default()
+    };
+    let result = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "dir/bar.ts",
+            scope_relative: None,
+            basename: "dir/bar.ts",
+        })
+        .expect("bash negative matcher");
     assert!(result.matched);
-    let star=RuleFrontmatter{globs:patterns(&["**","!!(*.d).ts"]),..Default::default()};
-    let boundary=Matcher::default().match_rule(MatcherInput{frontmatter:&star,is_single_file:false,project_relative:"dir/a.ts",scope_relative:None,basename:"dir/a.ts"}).expect("bash negative matcher");
+    let star = RuleFrontmatter {
+        globs: patterns(&["**", "!!(*.d).ts"]),
+        ..Default::default()
+    };
+    let boundary = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &star,
+            is_single_file: false,
+            project_relative: "dir/a.ts",
+            scope_relative: None,
+            basename: "dir/a.ts",
+        })
+        .expect("bash negative matcher");
     assert!(!boundary.matched);
 }
-#[test]fn oversized_patterns_retain_source_exception(){let pattern="a".repeat(65537);let f=RuleFrontmatter{globs:patterns(&[&pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects oversized pattern");assert_eq!(error.to_string(),"Input length: 65537, exceeds maximum allowed length: 65536");}
-#[test]fn invalid_empty_patterns_retain_source_exception(){for pattern in ["","!"]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects empty compiled pattern");assert_eq!(error.to_string(),"Expected pattern to be a non-empty string");}}
 #[test]
-fn matcher_matches_generated_extglob_and_malformed_matrix(){
-    let path=concat!(env!("CARGO_MANIFEST_DIR"),"/tests/latest-omo-rules-matcher.json");
-    let text=std::fs::read_to_string(path).unwrap_or_else(|error|panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));
-    let corpus:serde_json::Value=serde_json::from_str(&text).expect("owned generated corpus");
-    let cases=corpus["cases"].as_array().expect("cases");
-    assert!(!cases.is_empty(),"source-generated corpus must not be empty");
-    for case in cases{
-        let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");
-        let f=RuleFrontmatter{globs:if case["exclusion"]==true{patterns(&["**",pattern])}else{patterns(&[pattern])},..Default::default()};
-        let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");
-        assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");
+fn oversized_patterns_retain_source_exception() {
+    let pattern = "a".repeat(65537);
+    let f = RuleFrontmatter {
+        globs: patterns(&[&pattern]),
+        ..Default::default()
+    };
+    let error = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "a",
+            scope_relative: None,
+            basename: "a",
+        })
+        .expect_err("source rejects oversized pattern");
+    assert_eq!(
+        error.to_string(),
+        "Input length: 65537, exceeds maximum allowed length: 65536"
+    );
+}
+#[test]
+fn invalid_empty_patterns_retain_source_exception() {
+    for pattern in ["", "!"] {
+        let f = RuleFrontmatter {
+            globs: patterns(&[pattern]),
+            ..Default::default()
+        };
+        let error = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: "a",
+                scope_relative: None,
+                basename: "a",
+            })
+            .expect_err("source rejects empty compiled pattern");
+        assert_eq!(
+            error.to_string(),
+            "Expected pattern to be a non-empty string"
+        );
     }
 }
-#[test]fn character_brace_ranges_match_source(){for (pattern,path) in [("{1..3}","2"),("{3..1}","2"),("{a..c}","b")]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("brace range");assert!(result.matched,"{pattern}");}}
-#[test]fn malformed_and_single_alternative_braces_are_literal(){for pattern in ["a{b","a{b,c","a{b}","a}b"]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:pattern,scope_relative:None,basename:pattern}).expect("literal brace");assert!(result.matched,"{pattern}");}}
-fn run(frontmatter:&RuleFrontmatter,single:bool)->MatchResult {Matcher::default().match_rule(MatcherInput{frontmatter,is_single_file:single,project_relative:"src/rules/foo.ts",scope_relative:Some("rules/foo.ts"),basename:"foo.ts"}).unwrap_or_else(|error|panic!("matcher: {error}"))}
-#[test]fn compiled_once(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","!**/*.test.ts"]),..Default::default()};let mut m=Matcher::default();for _ in 0..20{assert!(m.match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"src/rules/foo.ts",scope_relative:Some("rules/foo.ts"),basename:"foo.ts"}).unwrap().matched);}assert_eq!(m.cache_stats(),MatcherCacheStats{entries:1,compiled_patterns:2});}
-#[test]fn cache_bounded(){let mut m=Matcher::default();for i in 0..300{let p=format!("src/file-{i}.ts");let f=RuleFrontmatter{globs:Some(PatternList::Single(p.clone())),..Default::default()};m.match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:&p,scope_relative:None,basename:&p}).unwrap();}assert!(m.cache_stats().entries<=256);}
-#[test]fn single_file(){let f=RuleFrontmatter{globs:patterns(&["never-matches"]),..Default::default()};assert_eq!(run(&f,true),MatchResult{matched:true,reason:MatchReason::SingleFile});}
-#[test]fn always_apply(){let f=RuleFrontmatter{globs:patterns(&["never-matches"]),always_apply:Some(true),..Default::default()};assert_eq!(run(&f,false),MatchResult{matched:true,reason:MatchReason::AlwaysApply});}
-#[test]fn false_always_glob(){let f=RuleFrontmatter{globs:patterns(&["src/**/*.ts"]),always_apply:Some(false),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"src/**/*.ts".into()});}
-#[test]fn single_pattern(){let f=RuleFrontmatter{globs:Some(PatternList::Single("**/*.ts".into())),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"**/*.ts".into()});}
-#[test]fn first_matching_positive(){let f=RuleFrontmatter{globs:patterns(&["**/*.md","src/**/*.ts","**/*.ts"]),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"src/**/*.ts".into()});}
-#[test]fn only_negative(){let f=RuleFrontmatter{globs:patterns(&["!**/foo.ts","!src/**/*.ts"]),..Default::default()};assert!(!run(&f,false).matched);}
-#[test]fn excluded_file(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","!**/foo.ts"]),..Default::default()};assert!(!run(&f,false).matched);}
-#[test]fn paths_alias(){let f=RuleFrontmatter{paths:patterns(&["src/**/*.ts"]),..Default::default()};assert_eq!(normalize_globs(&f),["src/**/*.ts"]);}
-#[test]fn apply_to_alias(){let f=RuleFrontmatter{apply_to:patterns(&["**/*.md","**/*.ts"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.md","**/*.ts"]);}
-#[test]fn aliases_merged(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts"]),paths:patterns(&["src/**"]),apply_to:patterns(&["test/**"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.ts","src/**","test/**"]);}
-#[test]fn empty_patterns(){let f=RuleFrontmatter{globs:patterns(&[]),..Default::default()};assert!(!run(&f,false).matched);}
-#[test]fn basename_pattern(){let f=RuleFrontmatter{globs:patterns(&["foo.ts"]),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"foo.ts".into()});}
-#[test]fn windows_path_normalized(){let f=RuleFrontmatter{globs:patterns(&["src/**/*.ts"]),..Default::default()};let r=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"src\\rules\\foo.ts",scope_relative:Some("rules\\foo.ts"),basename:"foo.ts"}).unwrap();assert!(r.matched);}
-#[test]fn duplicate_patterns(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","src/**"]),paths:patterns(&["**/*.ts"]),apply_to:patterns(&["src/**","test/**"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.ts","src/**","test/**"]);}
-#[test]fn deterministic_hash(){let a=hash_content("Use strict TypeScript.");let b=hash_content("Use strict TypeScript.");assert_eq!(a,b);assert_eq!(a.len(),64);assert!(a.bytes().all(|v|v.is_ascii_hexdigit()));}
-#[test]fn empty_hash(){assert_eq!(hash_content(""),"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");}
-#[test]fn unclosed_character_class_matches_literal(){let f=RuleFrontmatter{globs:patterns(&["[abc"]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"[abc",scope_relative:None,basename:"[abc"}).expect("literal unclosed class");assert!(result.matched);}
-#[test]fn empty_brace_alternative_matches_empty_suffix(){let f=RuleFrontmatter{globs:patterns(&["foo{,.txt}"]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"foo",scope_relative:None,basename:"foo"}).expect("empty alternative");assert!(result.matched);}
+#[test]
+fn matcher_matches_generated_extglob_and_malformed_matrix() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/latest-omo-rules-matcher.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}")
+    });
+    let corpus: serde_json::Value = serde_json::from_str(&text).expect("owned generated corpus");
+    let cases = corpus["cases"].as_array().expect("cases");
+    assert!(
+        !cases.is_empty(),
+        "source-generated corpus must not be empty"
+    );
+    for case in cases {
+        let pattern = case["pattern"].as_str().expect("pattern");
+        let path = case["path"].as_str().expect("path");
+        let f = RuleFrontmatter {
+            globs: if case["exclusion"] == true {
+                patterns(&["**", pattern])
+            } else {
+                patterns(&[pattern])
+            },
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .expect("matcher");
+        assert_eq!(
+            result.matched,
+            case["matched"].as_bool().expect("matched"),
+            "{pattern}: {path}"
+        );
+    }
+}
+#[test]
+fn character_brace_ranges_match_source() {
+    for (pattern, path) in [("{1..3}", "2"), ("{3..1}", "2"), ("{a..c}", "b")] {
+        let f = RuleFrontmatter {
+            globs: patterns(&[pattern]),
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .expect("brace range");
+        assert!(result.matched, "{pattern}");
+    }
+}
+#[test]
+fn malformed_and_single_alternative_braces_are_literal() {
+    for pattern in ["a{b", "a{b,c", "a{b}", "a}b"] {
+        let f = RuleFrontmatter {
+            globs: patterns(&[pattern]),
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: pattern,
+                scope_relative: None,
+                basename: pattern,
+            })
+            .expect("literal brace");
+        assert!(result.matched, "{pattern}");
+    }
+}
+fn run(frontmatter: &RuleFrontmatter, single: bool) -> MatchResult {
+    Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter,
+            is_single_file: single,
+            project_relative: "src/rules/foo.ts",
+            scope_relative: Some("rules/foo.ts"),
+            basename: "foo.ts",
+        })
+        .unwrap_or_else(|error| panic!("matcher: {error}"))
+}
+#[test]
+fn compiled_once() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**/*.ts", "!**/*.test.ts"]),
+        ..Default::default()
+    };
+    let mut m = Matcher::default();
+    for _ in 0..20 {
+        assert!(
+            m.match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: "src/rules/foo.ts",
+                scope_relative: Some("rules/foo.ts"),
+                basename: "foo.ts"
+            })
+            .unwrap()
+            .matched
+        );
+    }
+    assert_eq!(
+        m.cache_stats(),
+        MatcherCacheStats {
+            entries: 1,
+            compiled_patterns: 2
+        }
+    );
+}
+#[test]
+fn cache_bounded() {
+    let mut m = Matcher::default();
+    for i in 0..300 {
+        let p = format!("src/file-{i}.ts");
+        let f = RuleFrontmatter {
+            globs: Some(PatternList::Single(p.clone())),
+            ..Default::default()
+        };
+        m.match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: &p,
+            scope_relative: None,
+            basename: &p,
+        })
+        .unwrap();
+    }
+    assert!(m.cache_stats().entries <= 256);
+}
+#[test]
+fn single_file() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["never-matches"]),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, true),
+        MatchResult {
+            matched: true,
+            reason: MatchReason::SingleFile
+        }
+    );
+}
+#[test]
+fn always_apply() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["never-matches"]),
+        always_apply: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, false),
+        MatchResult {
+            matched: true,
+            reason: MatchReason::AlwaysApply
+        }
+    );
+}
+#[test]
+fn false_always_glob() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["src/**/*.ts"]),
+        always_apply: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, false).reason,
+        MatchReason::Glob {
+            pattern: "src/**/*.ts".into()
+        }
+    );
+}
+#[test]
+fn single_pattern() {
+    let f = RuleFrontmatter {
+        globs: Some(PatternList::Single("**/*.ts".into())),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, false).reason,
+        MatchReason::Glob {
+            pattern: "**/*.ts".into()
+        }
+    );
+}
+#[test]
+fn first_matching_positive() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**/*.md", "src/**/*.ts", "**/*.ts"]),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, false).reason,
+        MatchReason::Glob {
+            pattern: "src/**/*.ts".into()
+        }
+    );
+}
+#[test]
+fn only_negative() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["!**/foo.ts", "!src/**/*.ts"]),
+        ..Default::default()
+    };
+    assert!(!run(&f, false).matched);
+}
+#[test]
+fn excluded_file() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**/*.ts", "!**/foo.ts"]),
+        ..Default::default()
+    };
+    assert!(!run(&f, false).matched);
+}
+#[test]
+fn paths_alias() {
+    let f = RuleFrontmatter {
+        paths: patterns(&["src/**/*.ts"]),
+        ..Default::default()
+    };
+    assert_eq!(normalize_globs(&f), ["src/**/*.ts"]);
+}
+#[test]
+fn apply_to_alias() {
+    let f = RuleFrontmatter {
+        apply_to: patterns(&["**/*.md", "**/*.ts"]),
+        ..Default::default()
+    };
+    assert_eq!(normalize_globs(&f), ["**/*.md", "**/*.ts"]);
+}
+#[test]
+fn aliases_merged() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**/*.ts"]),
+        paths: patterns(&["src/**"]),
+        apply_to: patterns(&["test/**"]),
+        ..Default::default()
+    };
+    assert_eq!(normalize_globs(&f), ["**/*.ts", "src/**", "test/**"]);
+}
+#[test]
+fn empty_patterns() {
+    let f = RuleFrontmatter {
+        globs: patterns(&[]),
+        ..Default::default()
+    };
+    assert!(!run(&f, false).matched);
+}
+#[test]
+fn basename_pattern() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["foo.ts"]),
+        ..Default::default()
+    };
+    assert_eq!(
+        run(&f, false).reason,
+        MatchReason::Glob {
+            pattern: "foo.ts".into()
+        }
+    );
+}
+#[test]
+fn windows_path_normalized() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["src/**/*.ts"]),
+        ..Default::default()
+    };
+    let r = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "src\\rules\\foo.ts",
+            scope_relative: Some("rules\\foo.ts"),
+            basename: "foo.ts",
+        })
+        .unwrap();
+    assert!(r.matched);
+}
+#[test]
+fn duplicate_patterns() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**/*.ts", "src/**"]),
+        paths: patterns(&["**/*.ts"]),
+        apply_to: patterns(&["src/**", "test/**"]),
+        ..Default::default()
+    };
+    assert_eq!(normalize_globs(&f), ["**/*.ts", "src/**", "test/**"]);
+}
+#[test]
+fn deterministic_hash() {
+    let a = hash_content("Use strict TypeScript.");
+    let b = hash_content("Use strict TypeScript.");
+    assert_eq!(a, b);
+    assert_eq!(a.len(), 64);
+    assert!(a.bytes().all(|v| v.is_ascii_hexdigit()));
+}
+#[test]
+fn empty_hash() {
+    assert_eq!(
+        hash_content(""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+#[test]
+fn unclosed_character_class_matches_literal() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["[abc"]),
+        ..Default::default()
+    };
+    let result = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "[abc",
+            scope_relative: None,
+            basename: "[abc",
+        })
+        .expect("literal unclosed class");
+    assert!(result.matched);
+}
+#[test]
+fn empty_brace_alternative_matches_empty_suffix() {
+    let f = RuleFrontmatter {
+        globs: patterns(&["foo{,.txt}"]),
+        ..Default::default()
+    };
+    let result = Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: "foo",
+            scope_relative: None,
+            basename: "foo",
+        })
+        .expect("empty alternative");
+    assert!(result.matched);
+}
 
-fn one(pattern:&str,path:&str)->bool{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher").matched}
-fn excluded(pattern:&str,path:&str)->bool{let f=RuleFrontmatter{globs:patterns(&["**",pattern]),..Default::default()};Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher").matched}
-#[test]fn pinned_extglob_quantifiers_match_source_verdicts(){assert!(one("@(foo|bar).ts","foo.ts"));assert!(one("@(foo|bar).ts","bar.ts"));assert!(!one("@(foo|bar).ts","baz.ts"));assert!(one("+(foo|bar).ts","foobar.ts"));assert!(!one("+(foo|bar).ts",".ts"));assert!(one("?(foo|bar).ts",".ts"));assert!(one("*(foo|bar).ts","foofoo.ts"));assert!(one("src/@(foo|bar).ts","src/bar.ts"));}
-#[test]fn pinned_globstar_and_dot_true_cross_directories(){assert!(one("a/**/b","a/x/b"));assert!(one("a/**/b","a/b"));assert!(!one("a/**/b","a/x/c"));assert!(one("**","a/b/c"));assert!(one("*",".hidden"));assert!(one("src/**/*.ts","src/deep/nested/file.ts"));}
-#[test]fn pinned_quoting_and_posix_classes_match_source(){assert!(one("\"*\"","*"));assert!(!one("\"*\"","abc"));assert!(one("[[:alpha:]]","a"));assert!(!one("[[:alpha:]]","1"));assert!(one("[[:digit:]]","7"));assert!(one("@(a|b)[[:digit:]]","a3"));}
-#[test]fn pinned_negative_globs_exclude_positives(){assert!(!excluded("!foo","foo"));assert!(excluded("!foo","bar"));assert!(!excluded("!**/foo.ts","src/foo.ts"));assert!(excluded("!**/foo.ts","src/bar.ts"));}
-#[test]fn pinned_js_utf16_unit_semantics(){assert!(one("\u{1F600}","\u{1F600}"));assert!(one("??","\u{1F600}"));assert!(!one("?","\u{1F600}"));assert!(one("?","a"));}
-#[test]fn pinned_fastpath_patterns_match_source(){assert!(one("foo.ts","foo.ts"));assert!(one("a?b","axb"));assert!(!one("a?b","ab"));assert!(one("a.b","a.b"));assert!(one("a*b","axb"));assert!(one("a*b","a/b"));}
-#[test]fn native_matcher_matches_source_generated_corpus(){let path=concat!(env!("CARGO_MANIFEST_DIR"),"/tests/latest-omo-rules-matcher.json");let text=std::fs::read_to_string(path).unwrap_or_else(|error|panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));let corpus:serde_json::Value=serde_json::from_str(&text).expect("corpus");let cases=corpus["cases"].as_array().expect("cases");assert!(!cases.is_empty(),"source-generated corpus must not be empty");for case in cases{let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");let expected=case["matched"].as_bool().expect("matched");let exclusion=case["exclusion"].as_bool().unwrap_or(false);let globs=if exclusion{Some(PatternList::Multiple(vec!["**".into(),pattern.into()]))}else{Some(PatternList::Single(pattern.into()))};let f=RuleFrontmatter{globs,..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");assert_eq!(result.matched,expected,"{pattern}: {path}");}}
+fn one(pattern: &str, path: &str) -> bool {
+    let f = RuleFrontmatter {
+        globs: patterns(&[pattern]),
+        ..Default::default()
+    };
+    Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: path,
+            scope_relative: None,
+            basename: path,
+        })
+        .expect("matcher")
+        .matched
+}
+fn excluded(pattern: &str, path: &str) -> bool {
+    let f = RuleFrontmatter {
+        globs: patterns(&["**", pattern]),
+        ..Default::default()
+    };
+    Matcher::default()
+        .match_rule(MatcherInput {
+            frontmatter: &f,
+            is_single_file: false,
+            project_relative: path,
+            scope_relative: None,
+            basename: path,
+        })
+        .expect("matcher")
+        .matched
+}
+#[test]
+fn pinned_extglob_quantifiers_match_source_verdicts() {
+    assert!(one("@(foo|bar).ts", "foo.ts"));
+    assert!(one("@(foo|bar).ts", "bar.ts"));
+    assert!(!one("@(foo|bar).ts", "baz.ts"));
+    assert!(one("+(foo|bar).ts", "foobar.ts"));
+    assert!(!one("+(foo|bar).ts", ".ts"));
+    assert!(one("?(foo|bar).ts", ".ts"));
+    assert!(one("*(foo|bar).ts", "foofoo.ts"));
+    assert!(one("src/@(foo|bar).ts", "src/bar.ts"));
+}
+#[test]
+fn pinned_globstar_and_dot_true_cross_directories() {
+    assert!(one("a/**/b", "a/x/b"));
+    assert!(one("a/**/b", "a/b"));
+    assert!(!one("a/**/b", "a/x/c"));
+    assert!(one("**", "a/b/c"));
+    assert!(one("*", ".hidden"));
+    assert!(one("src/**/*.ts", "src/deep/nested/file.ts"));
+}
+#[test]
+fn pinned_quoting_and_posix_classes_match_source() {
+    assert!(one("\"*\"", "*"));
+    assert!(!one("\"*\"", "abc"));
+    assert!(one("[[:alpha:]]", "a"));
+    assert!(!one("[[:alpha:]]", "1"));
+    assert!(one("[[:digit:]]", "7"));
+    assert!(one("@(a|b)[[:digit:]]", "a3"));
+}
+#[test]
+fn pinned_negative_globs_exclude_positives() {
+    assert!(!excluded("!foo", "foo"));
+    assert!(excluded("!foo", "bar"));
+    assert!(!excluded("!**/foo.ts", "src/foo.ts"));
+    assert!(excluded("!**/foo.ts", "src/bar.ts"));
+}
+#[test]
+fn pinned_js_utf16_unit_semantics() {
+    assert!(one("\u{1F600}", "\u{1F600}"));
+    assert!(one("??", "\u{1F600}"));
+    assert!(!one("?", "\u{1F600}"));
+    assert!(one("?", "a"));
+}
+#[test]
+fn pinned_fastpath_patterns_match_source() {
+    assert!(one("foo.ts", "foo.ts"));
+    assert!(one("a?b", "axb"));
+    assert!(!one("a?b", "ab"));
+    assert!(one("a.b", "a.b"));
+    assert!(one("a*b", "axb"));
+    assert!(one("a*b", "a/b"));
+}
+#[test]
+fn native_matcher_matches_source_generated_corpus() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/latest-omo-rules-matcher.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}")
+    });
+    let corpus: serde_json::Value = serde_json::from_str(&text).expect("corpus");
+    let cases = corpus["cases"].as_array().expect("cases");
+    assert!(
+        !cases.is_empty(),
+        "source-generated corpus must not be empty"
+    );
+    for case in cases {
+        let pattern = case["pattern"].as_str().expect("pattern");
+        let path = case["path"].as_str().expect("path");
+        let expected = case["matched"].as_bool().expect("matched");
+        let exclusion = case["exclusion"].as_bool().unwrap_or(false);
+        let globs = if exclusion {
+            Some(PatternList::Multiple(vec!["**".into(), pattern.into()]))
+        } else {
+            Some(PatternList::Single(pattern.into()))
+        };
+        let f = RuleFrontmatter {
+            globs,
+            ..Default::default()
+        };
+        let result = Matcher::default()
+            .match_rule(MatcherInput {
+                frontmatter: &f,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .expect("matcher");
+        assert_eq!(result.matched, expected, "{pattern}: {path}");
+    }
+}
 // The pinned `analyzeRepeatedExtglob` measures branches with `String#length` (UTF-16 code units), so an
 // astral branch is never a single-character branch: no flat `[...]*` safe output, no repeated-prefix
 // collapse, and the astral literal still matches unit by unit through the shared grammar.
-#[test]fn pinned_extglob_astral_bodies_keep_utf16_unit_lengths(){assert!(!one("+(*(a)|\u{1F600})","a\u{1F600}"));assert!(!one("+(*(a)|\u{1F600})","\u{1F600}"));assert!(!one("+(*(a)|\u{1F600})","a"));assert!(!one("+(*(a)|\u{1F600})","aa"));assert!(!one("+(*(\u{1F600}))","\u{1F600}"));assert!(!one("+(*(\u{1F600}))","\u{1F600}\u{1F600}"));assert!(one("+(\u{1F600}|\u{1F600})","\u{1F600}"));assert!(one("+(\u{1F600}|\u{1F600})","\u{1F600}\u{1F600}"));assert!(!one("+(\u{1F600}|\u{1F600})","a"));assert!(one("+(*(a)|b)","ab"));assert!(one("+(*(a)|b)","ba"));assert!(!one("+(*(a)|b)","c"));assert!(one("@(a|\u{1F600})","\u{1F600}"));assert!(one("+(a|\u{1F600})","a\u{1F600}"));assert!(one("@(a|b)\u{1F600}","b\u{1F600}"));assert!(!one("@(a|b)\u{1F600}","b"));assert!(one("a\u{1F600}?","a\u{1F600}x"));}
+#[test]
+fn pinned_extglob_astral_bodies_keep_utf16_unit_lengths() {
+    assert!(!one("+(*(a)|\u{1F600})", "a\u{1F600}"));
+    assert!(!one("+(*(a)|\u{1F600})", "\u{1F600}"));
+    assert!(!one("+(*(a)|\u{1F600})", "a"));
+    assert!(!one("+(*(a)|\u{1F600})", "aa"));
+    assert!(!one("+(*(\u{1F600}))", "\u{1F600}"));
+    assert!(!one("+(*(\u{1F600}))", "\u{1F600}\u{1F600}"));
+    assert!(one("+(\u{1F600}|\u{1F600})", "\u{1F600}"));
+    assert!(one("+(\u{1F600}|\u{1F600})", "\u{1F600}\u{1F600}"));
+    assert!(!one("+(\u{1F600}|\u{1F600})", "a"));
+    assert!(one("+(*(a)|b)", "ab"));
+    assert!(one("+(*(a)|b)", "ba"));
+    assert!(!one("+(*(a)|b)", "c"));
+    assert!(one("@(a|\u{1F600})", "\u{1F600}"));
+    assert!(one("+(a|\u{1F600})", "a\u{1F600}"));
+    assert!(one("@(a|b)\u{1F600}", "b\u{1F600}"));
+    assert!(!one("@(a|b)\u{1F600}", "b"));
+    assert!(one("a\u{1F600}?", "a\u{1F600}x"));
+}
 // The pinned `normalizeGlobs` rewrites every `\` to `/` before a glob reaches picomatch, so
 // backslash-escape behavior is observable only through the ported grammar module directly.
-fn grammar_match(pattern:&str,path:&str)->bool{grammar::is_match(pattern,path,&GrammarOptions::bash_dot())}
-#[test]fn pinned_identity_and_octal_escapes_match_the_js_unit(){assert!(grammar_match("\\a","a"));assert!(!grammar_match("\\a","\u{7}"));assert!(grammar_match("\\z","z"));assert!(!grammar_match("\\z","y"));assert!(grammar_match("\\A","A"));assert!(grammar_match("\\e","e"));assert!(grammar_match("\\8","8"));assert!(grammar_match("\\<","<"));assert!(grammar_match("\\>",">"));assert!(grammar_match("\\3","\u{3}"));assert!(!grammar_match("\\3","3"));assert!(grammar_match("\\12","\n"));assert!(grammar_match("\\cA","\u{1}"));assert!(grammar_match("\\x41","A"));assert!(grammar_match("a\\z\\3b","az\u{3}b"));}
-#[test]fn native_grammar_matches_source_generated_escape_corpus(){let path=concat!(env!("CARGO_MANIFEST_DIR"),"/tests/latest-omo-rules-matcher.json");let text=std::fs::read_to_string(path).unwrap_or_else(|error|panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));let corpus:serde_json::Value=serde_json::from_str(&text).expect("corpus");let cases=corpus["grammarCases"].as_array().unwrap_or_else(||panic!("regenerate: `bun tools/golden/latest-omo-rules-matcher.mjs` writes grammarCases"));assert!(!cases.is_empty(),"source-generated grammar corpus must not be empty");for case in cases{let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");let expected=case["matched"].as_bool().expect("matched");assert_eq!(grammar_match(pattern,path),expected,"{pattern}: {path}");}}
-#[test]fn pinned_expand_range_sorts_by_utf16_code_units(){assert!(one("{\u{1F600}..\u{E000}}","\u{E000}"));assert!(one("{\u{E000}..\u{1F600}}","\u{E000}"));assert!(!one("{\u{1F600}..\u{E000}}","\u{1F600}"));assert!(!one("{\u{1F600}..\u{E000}}","a"));assert!(one("{\u{1F600}..a}","z"));assert!(one("{a..\u{1F600}}","z"));assert!(!one("{\u{1F600}..a}","\u{E000}"));}
+fn grammar_match(pattern: &str, path: &str) -> bool {
+    grammar::is_match(pattern, path, &GrammarOptions::bash_dot())
+}
+#[test]
+fn pinned_identity_and_octal_escapes_match_the_js_unit() {
+    assert!(grammar_match("\\a", "a"));
+    assert!(!grammar_match("\\a", "\u{7}"));
+    assert!(grammar_match("\\z", "z"));
+    assert!(!grammar_match("\\z", "y"));
+    assert!(grammar_match("\\A", "A"));
+    assert!(grammar_match("\\e", "e"));
+    assert!(grammar_match("\\8", "8"));
+    assert!(grammar_match("\\<", "<"));
+    assert!(grammar_match("\\>", ">"));
+    assert!(grammar_match("\\3", "\u{3}"));
+    assert!(!grammar_match("\\3", "3"));
+    assert!(grammar_match("\\12", "\n"));
+    assert!(grammar_match("\\cA", "\u{1}"));
+    assert!(grammar_match("\\x41", "A"));
+    assert!(grammar_match("a\\z\\3b", "az\u{3}b"));
+}
+#[test]
+fn native_grammar_matches_source_generated_escape_corpus() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/latest-omo-rules-matcher.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}")
+    });
+    let corpus: serde_json::Value = serde_json::from_str(&text).expect("corpus");
+    let cases = corpus["grammarCases"].as_array().unwrap_or_else(|| {
+        panic!("regenerate: `bun tools/golden/latest-omo-rules-matcher.mjs` writes grammarCases")
+    });
+    assert!(
+        !cases.is_empty(),
+        "source-generated grammar corpus must not be empty"
+    );
+    for case in cases {
+        let pattern = case["pattern"].as_str().expect("pattern");
+        let path = case["path"].as_str().expect("path");
+        let expected = case["matched"].as_bool().expect("matched");
+        assert_eq!(grammar_match(pattern, path), expected, "{pattern}: {path}");
+    }
+}
+#[test]
+fn pinned_expand_range_sorts_by_utf16_code_units() {
+    assert!(one("{\u{1F600}..\u{E000}}", "\u{E000}"));
+    assert!(one("{\u{E000}..\u{1F600}}", "\u{E000}"));
+    assert!(!one("{\u{1F600}..\u{E000}}", "\u{1F600}"));
+    assert!(!one("{\u{1F600}..\u{E000}}", "a"));
+    assert!(one("{\u{1F600}..a}", "z"));
+    assert!(one("{a..\u{1F600}}", "z"));
+    assert!(!one("{\u{1F600}..a}", "\u{E000}"));
+}

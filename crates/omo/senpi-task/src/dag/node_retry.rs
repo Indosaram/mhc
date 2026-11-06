@@ -44,7 +44,11 @@ pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, Da
             )
         })?
         .unwrap_or_else(|| options.initial_record.clone());
-    if current.pause.as_ref().is_some_and(|p| p.reason == "user_stop") {
+    if current
+        .pause
+        .as_ref()
+        .is_some_and(|p| p.reason == "user_stop")
+    {
         return Err(control_error(
             DagNodeControlErrorCode::RunPausedByUser,
             "only the user's Resume may restart this run".to_string(),
@@ -57,24 +61,27 @@ pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, Da
         current.status,
         DagRunStatus::Completed | DagRunStatus::Failed | DagRunStatus::Cancelled
     ) {
-        let journal = control_journal(&options, current.clone(), Default::default()).map_err(|error| {
-            control_error(
-                DagNodeControlErrorCode::InvalidArguments,
-                error.to_string(),
-                &run_id,
-                vec![],
-            )
-        })?;
-        journal.append(DagRunEventPayload::RunResumed {
-            generation: current.generation + 1,
-        }).map_err(|error| {
-            control_error(
-                DagNodeControlErrorCode::InvalidArguments,
-                error.to_string(),
-                &run_id,
-                vec![],
-            )
-        })?;
+        let journal =
+            control_journal(&options, current.clone(), Default::default()).map_err(|error| {
+                control_error(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                    &run_id,
+                    vec![],
+                )
+            })?;
+        journal
+            .append(DagRunEventPayload::RunResumed {
+                generation: current.generation + 1,
+            })
+            .map_err(|error| {
+                control_error(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                    &run_id,
+                    vec![],
+                )
+            })?;
         record = journal.snapshot();
     }
     let scheduler = create_dag_scheduler(DagSchedulerOptions {
@@ -82,7 +89,8 @@ pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, Da
         pre_attached_tasks: None,
         schedule_retry: None,
         ..options
-    }).map_err(|error| {
+    })
+    .map_err(|error| {
         control_error(
             DagNodeControlErrorCode::InvalidArguments,
             error.to_string(),
@@ -151,7 +159,10 @@ pub fn retry_dag_nodes(
         }
     }
     if current.status == DagRunStatus::Paused
-        && current.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
+        && current
+            .pause
+            .as_ref()
+            .is_some_and(|p| p.reason == "user_stop")
     {
         let journal = control_journal(&options, current, Default::default()).map_err(|error| {
             control_error(

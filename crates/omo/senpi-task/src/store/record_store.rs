@@ -1,4 +1,6 @@
-pub type RecordListenerCallback = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>>>;
+pub type RecordListenerCallback = std::sync::Arc<
+    std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>>,
+>;
 pub type ListenerCallback = Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -30,7 +32,10 @@ pub struct TaskRecordStoreResidentFigures {
 /// Encode paused records additively so rollback readers retain a valid status.
 pub fn to_storable_task_record(record: &TaskRecord) -> Result<Value, serde_json::Error> {
     let mut stored = serde_json::to_value(record)?;
-    if let Some(fallback) = stored.get_mut("parent_model_fallback").and_then(Value::as_object_mut) {
+    if let Some(fallback) = stored
+        .get_mut("parent_model_fallback")
+        .and_then(Value::as_object_mut)
+    {
         fallback.remove("phase");
     }
     if record.status == TaskStatus::Paused {
@@ -70,7 +75,13 @@ impl CachedRecord {
         let mut record = record.clone();
         record.spawn_spec = None;
         record.final_response = None;
-        Self { len, hash, record, slimmed, warnings }
+        Self {
+            len,
+            hash,
+            record,
+            slimmed,
+            warnings,
+        }
     }
 
     fn matches(&self, text: &str) -> bool {
@@ -81,8 +92,8 @@ impl CachedRecord {
     fn full_record(&self, text: &str) -> Result<TaskRecord, StoreError> {
         let mut record = self.record.clone();
         if self.slimmed {
-            let (spawn_spec, final_response) = super::record_parse::parse_heavy_fields(text)
-                .map_err(StoreError::Parse)?;
+            let (spawn_spec, final_response) =
+                super::record_parse::parse_heavy_fields(text).map_err(StoreError::Parse)?;
             record.spawn_spec = spawn_spec;
             record.final_response = final_response;
         }
@@ -122,8 +133,15 @@ pub struct TaskRecordStore {
     record_listener: RecordListenerCallback,
     mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
     write_listener: std::sync::Arc<std::sync::Mutex<Option<WriteListener>>>,
+    /// Per-task commit counters, so a caller can park until ONE task changes instead of sleeping
+    /// out a fixed window. Entries are created by waiters, never by ordinary writes.
+    task_changes:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TaskChangeSignal>>>,
     list_cache: ListCache,
 }
+
+/// A task's commit sequence plus the condvar that wakes its waiters.
+type TaskChangeSignal = std::sync::Arc<(std::sync::Mutex<u64>, std::sync::Condvar)>;
 
 impl std::fmt::Debug for TaskRecordStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -147,6 +165,7 @@ impl TaskRecordStore {
             record_listener: Default::default(),
             mutation_listener: Default::default(),
             write_listener: Default::default(),
+            task_changes: Default::default(),
         }
     }
 
@@ -169,11 +188,20 @@ impl TaskRecordStore {
 
     /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
     pub fn set_record_listener(&self, listener: ListenerCallback) {
-        *self.record_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+        *self
+            .record_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
     }
     fn notify_record(&self, id: &str, record: Option<&TaskRecord>) {
-        let listener = self.record_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if let Some(listener) = listener { listener(id, record); }
+        let listener = self
+            .record_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener(id, record);
+        }
     }
     pub fn set_mutation_listener(&self, listener: Option<MutationListener>) {
         *self
@@ -190,7 +218,67 @@ impl TaskRecordStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
     }
 
+    /// The task's current commit sequence. Capture this BEFORE reading the record: a commit that
+    /// lands in between then makes [`Self::wait_task_change`] return at once instead of parking.
+    pub fn task_change_seq(&self, task_id: &str) -> u64 {
+        let signal = self
+            .task_changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(task_id.to_string())
+            .or_default()
+            .clone();
+        *signal
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Parks until `task_id` commits past `since` or `timeout` elapses. Returns whether a commit was
+    /// observed. A task other than `task_id` never wakes this waiter.
+    pub fn wait_task_change(
+        &self,
+        task_id: &str,
+        since: u64,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let signal = self
+            .task_changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(task_id.to_string())
+            .or_default()
+            .clone();
+        let (lock, condvar) = &*signal;
+        let guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (guard, _) = condvar
+            .wait_timeout_while(guard, timeout, |seq| *seq <= since)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard > since
+    }
+
+    fn notify_task_change(&self, task_id: &str) {
+        // Only tasks with a parked waiter own a signal; an ordinary write must not grow the map.
+        let signal = self
+            .task_changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(task_id)
+            .cloned();
+        let Some(signal) = signal else {
+            return;
+        };
+        *signal
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        signal.1.notify_all();
+    }
+
     fn notify_write(&self, record: &TaskRecord, previous_status: Option<TaskStatus>) {
+        self.notify_task_change(&record.task_id);
         let listener = self
             .write_listener
             .lock()
@@ -535,6 +623,7 @@ impl TaskRecordStore {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
         with_task_record_lock(&path, || self.remove_record(parsed))?;
+        self.forget_task_change(task_id);
         self.notify_record(task_id, None);
         self.notify_mutation();
         Ok(())
@@ -571,9 +660,28 @@ impl TaskRecordStore {
         let parsed = parse_task_id(task_id)?;
         self.remove_record(parsed)?;
         remove_if_present(&self.tombstone_path(parsed))?;
+        self.forget_task_change(task_id);
         self.notify_record(task_id, None);
         self.notify_mutation();
         Ok(())
+    }
+
+    /// A removed task can never commit again, and its id is never reused, so a parked waiter would
+    /// only time out. Drop the signal instead of keeping one entry per task for the daemon's lifetime.
+    fn forget_task_change(&self, task_id: &str) {
+        self.task_changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(task_id);
+    }
+
+    /// Whether a signal entry exists for `task_id`. Test-only: the map is an implementation detail.
+    #[cfg(test)]
+    pub(crate) fn waits_on(&self, task_id: &str) -> bool {
+        self.task_changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(task_id)
     }
 
     pub fn restore_expunging(&self, task_id: &str) -> Result<(), StoreError> {

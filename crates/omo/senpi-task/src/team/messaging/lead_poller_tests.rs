@@ -8,9 +8,13 @@ use serde_json::json;
 use team_core::TeamModeConfig;
 use team_core::types::Message;
 
-use crate::team::messaging::delivery_journal::{LeadDeliveryJournalOptions, create_lead_delivery_journal};
+use crate::team::messaging::delivery_journal::{
+    LeadDeliveryJournalOptions, create_lead_delivery_journal,
+};
 use crate::team::messaging::lead_poller::{TeamLeadPoller, create_lead_poller};
-use crate::team::messaging::lead_poller_types::{LeadInjection, LeadInjectionSink, LeadPoller, LeadPollerDeps};
+use crate::team::messaging::lead_poller_types::{
+    LeadInjection, LeadInjectionSink, LeadPoller, LeadPollerDeps,
+};
 use crate::team::messaging::message::build_peer_message_envelope;
 
 const TEAM_RUN_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -21,7 +25,10 @@ struct RecordingSink {
 
 impl LeadInjectionSink for RecordingSink {
     fn enqueue(&self, injection: LeadInjection) {
-        self.injections.lock().expect("injections lock").push(injection);
+        self.injections
+            .lock()
+            .expect("injections lock")
+            .push(injection);
     }
 }
 
@@ -40,8 +47,13 @@ fn create_harness(session_available: bool) -> Harness {
     let session_dir = root.path().join("sessions");
     let session_file = session_dir.join("20260712_lead.jsonl");
     std::fs::create_dir_all(&session_dir).expect("create session dir");
-    let config = TeamModeConfig::parse(&json!({ "base_dir": base_dir.to_string_lossy() })).expect("config parses");
-    let inbox_dir = base_dir.join("runtime").join(TEAM_RUN_ID).join("inboxes").join("lead");
+    let config = TeamModeConfig::parse(&json!({ "base_dir": base_dir.to_string_lossy() }))
+        .expect("config parses");
+    let inbox_dir = base_dir
+        .join("runtime")
+        .join(TEAM_RUN_ID)
+        .join("inboxes")
+        .join("lead");
     Harness {
         _root: root,
         config,
@@ -85,7 +97,9 @@ fn poller(harness: &Harness) -> TeamLeadPoller {
         coordinator: Arc::new(RecordingSink {
             injections: Arc::clone(&harness.injections),
         }),
-        delivery_journal: Some(Arc::new(create_lead_delivery_journal(LeadDeliveryJournalOptions::default()))),
+        delivery_journal: Some(Arc::new(create_lead_delivery_journal(
+            LeadDeliveryJournalOptions::default(),
+        ))),
         append_event: Some(Box::new(|_, _| {})),
         event_task_id: Box::new(|value: &Message| {
             if value.from == "alpha" {
@@ -111,7 +125,9 @@ fn persist_envelope(harness: &Harness, value: &Message) {
 fn flush_latest(harness: &Harness) {
     let callback = {
         let mut injections = harness.injections.lock().expect("injections lock");
-        let injection = injections.last_mut().expect("expected a pending lead injection");
+        let injection = injections
+            .last_mut()
+            .expect("expected a pending lead injection");
         injection.on_flushed.take()
     };
     if let Some(callback) = callback {
@@ -120,7 +136,10 @@ fn flush_latest(harness: &Harness) {
 }
 
 fn processed_path(harness: &Harness, value: &Message) -> PathBuf {
-    harness.inbox_dir.join("processed").join(format!("{}.json", value.message_id))
+    harness
+        .inbox_dir
+        .join("processed")
+        .join(format!("{}.json", value.message_id))
 }
 
 fn injection_count(harness: &Harness) -> usize {
@@ -134,10 +153,23 @@ fn rejected_wake_restores_unread_reservation_and_allows_redelivery() {
     seed(&harness, &value);
     let lead_poller = poller(&harness);
     lead_poller.poll_once(None).expect("poll");
-    let callback = harness.injections.lock().expect("injections")[0].on_delivery_failed.take().expect("failure callback");
+    let callback = harness.injections.lock().expect("injections")[0]
+        .on_delivery_failed
+        .take()
+        .expect("failure callback");
     callback("wake rejected");
-    assert!(harness.inbox_dir.join(format!("{}.json", value.message_id)).exists());
-    assert!(!harness.inbox_dir.join(format!(".delivering-{}.json", value.message_id)).exists());
+    assert!(
+        harness
+            .inbox_dir
+            .join(format!("{}.json", value.message_id))
+            .exists()
+    );
+    assert!(
+        !harness
+            .inbox_dir
+            .join(format!(".delivering-{}.json", value.message_id))
+            .exists()
+    );
     assert!(!processed_path(&harness, &value).exists());
     lead_poller.poll_once(None).expect("redelivery");
     assert_eq!(injection_count(&harness), 2);
@@ -148,7 +180,8 @@ fn exists(path: &Path) -> bool {
 }
 
 #[test]
-fn given_member_mail_when_the_lead_polls_then_it_injects_the_peer_envelope_without_a_blocking_tool() {
+fn given_member_mail_when_the_lead_polls_then_it_injects_the_peer_envelope_without_a_blocking_tool()
+{
     // given
     let harness = create_harness(true);
     let value = message("22222222-2222-4222-8222-222222222222", "member report");
@@ -179,7 +212,8 @@ fn given_member_mail_when_the_lead_polls_then_it_injects_the_peer_envelope_witho
 }
 
 #[test]
-fn given_a_crash_before_the_lead_injection_flushes_when_a_fresh_poller_resumes_then_the_durable_mailbox_redelivers() {
+fn given_a_crash_before_the_lead_injection_flushes_when_a_fresh_poller_resumes_then_the_durable_mailbox_redelivers()
+ {
     // given
     let harness = create_harness(true);
     let value = message("33333333-3333-4333-8333-333333333333", "ready");
@@ -192,14 +226,19 @@ fn given_a_crash_before_the_lead_injection_flushes_when_a_fresh_poller_resumes_t
     // then
     assert_eq!(injection_count(&harness), 2);
     assert_eq!(
-        exists(&harness.inbox_dir.join(format!(".delivering-{}.json", value.message_id))),
+        exists(
+            &harness
+                .inbox_dir
+                .join(format!(".delivering-{}.json", value.message_id))
+        ),
         true
     );
     assert_eq!(exists(&processed_path(&harness, &value)), false);
 }
 
 #[test]
-fn given_a_crash_after_lead_transcript_persistence_when_a_fresh_poller_resumes_then_it_commits_without_reinjecting() {
+fn given_a_crash_after_lead_transcript_persistence_when_a_fresh_poller_resumes_then_it_commits_without_reinjecting()
+ {
     // given
     let harness = create_harness(true);
     let value = message("44444444-4444-4444-8444-444444444444", "ready");
@@ -216,7 +255,8 @@ fn given_a_crash_after_lead_transcript_persistence_when_a_fresh_poller_resumes_t
 }
 
 #[test]
-fn given_no_captured_lead_transcript_when_mail_flushes_then_the_reservation_holds_until_persistence_becomes_observable() {
+fn given_no_captured_lead_transcript_when_mail_flushes_then_the_reservation_holds_until_persistence_becomes_observable()
+ {
     // given
     let harness = create_harness(false);
     let value = message("55555555-5555-4555-8555-555555555555", "ready");
@@ -232,7 +272,8 @@ fn given_no_captured_lead_transcript_when_mail_flushes_then_the_reservation_hold
     assert_eq!(exists(&processed_path(&harness, &value)), false);
 
     // when a transcript is captured and records the injected envelope
-    *harness.session_file_path.lock().expect("session path lock") = Some(harness.session_file.clone());
+    *harness.session_file_path.lock().expect("session path lock") =
+        Some(harness.session_file.clone());
     persist_envelope(&harness, &value);
     lead_poller.poll_once(None).expect("poll");
 

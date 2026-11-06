@@ -1,6 +1,10 @@
 use super::types::Goal;
-pub fn build_continuation_prompt(goal:&Goal)->String{
-    let objective=goal.objective.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
+pub fn build_continuation_prompt(goal: &Goal) -> String {
+    let objective = goal
+        .objective
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     [
         "Continue working toward the active thread goal.".to_owned(),
         String::new(),

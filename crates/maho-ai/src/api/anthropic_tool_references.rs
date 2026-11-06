@@ -68,9 +68,7 @@ pub fn demote_tool_reference_replay(params: &Map<String, Value>) -> Map<String, 
         changed |= message_changed;
         !message_changed || !content.is_empty()
     });
-    if changed
-        && let Some(tools) = out.get_mut("tools").and_then(Value::as_array_mut)
-    {
+    if changed && let Some(tools) = out.get_mut("tools").and_then(Value::as_array_mut) {
         for tool in tools {
             if tool["defer_loading"] == true
                 && tool["name"]

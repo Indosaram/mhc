@@ -2338,7 +2338,11 @@ mod tests {
             api.registered.handlers[&EventKind::SessionShutdown].len(),
             5
         );
-        assert!(api.registered.message_renderers.contains_key(crate::restore_digest::RESTORE_DIGEST_CUSTOM_TYPE));
+        assert!(
+            api.registered
+                .message_renderers
+                .contains_key(crate::restore_digest::RESTORE_DIGEST_CUSTOM_TYPE)
+        );
     }
     #[tokio::test]
     async fn monitor_ending_reaches_native_event_bus_and_rpc() {
@@ -2462,7 +2466,9 @@ mod tests {
             .unwrap()
             .create(
                 "cmd1",
-                crate::shared::test_sh_options("stty -echo; printf 'first_completion_tail'; exit 0"),
+                crate::shared::test_sh_options(
+                    "stty -echo; printf 'first_completion_tail'; exit 0",
+                ),
             )
             .unwrap();
         let backgrounds: Backgrounds = Arc::new(Mutex::new(indexmap::IndexMap::new()));
@@ -2515,7 +2521,10 @@ mod tests {
             .expect("session creation succeeds without capacity error");
         assert_ne!(id2, id1);
         assert_eq!(manager.lock().unwrap().size(), 1);
-        assert!(manager.lock().unwrap().get(&id1).is_none(), "id1 is evicted from manager");
+        assert!(
+            manager.lock().unwrap().get(&id1).is_none(),
+            "id1 is evicted from manager"
+        );
 
         // Release the lifecycle gate so completion callback can proceed to view reading and notice sending.
         drop(gate);
@@ -2528,7 +2537,11 @@ mod tests {
 
         // Assert actual sent notification was delivered and contains the session output tail.
         let messages = sent_messages.lock().unwrap();
-        assert_eq!(messages.len(), 1, "exactly one completion message must be sent");
+        assert_eq!(
+            messages.len(),
+            1,
+            "exactly one completion message must be sent"
+        );
         assert_eq!(
             messages[0].custom_type,
             crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
@@ -3937,7 +3950,13 @@ mod persistence_tests {
         );
         assert_eq!(fixture.context.manager.lock().unwrap().size(), 0);
         assert!(fixture.context.state.lock().await.is_some());
-        assert!(ui.notes.lock().unwrap().iter().any(|note| note.contains("Terminal restore failed")));
+        assert!(
+            ui.notes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|note| note.contains("Terminal restore failed"))
+        );
 
         teardown(&fixture);
     }

@@ -16,12 +16,8 @@ pub const ULW_LOOP_STEERING_MUTATION_KINDS: &[&str] = &[
     "mark_blocked_superseded",
 ];
 
-pub const ULW_LOOP_SUCCESS_CRITERION_USER_MODELS: &[&str] = &[
-    "happy",
-    "edge",
-    "regression",
-    "adversarial",
-];
+pub const ULW_LOOP_SUCCESS_CRITERION_USER_MODELS: &[&str] =
+    &["happy", "edge", "regression", "adversarial"];
 
 pub const ULW_LOOP_CRITERION_STATUSES: &[&str] = &["pending", "pass", "fail", "blocked"];
 

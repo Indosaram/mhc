@@ -1,12 +1,12 @@
 pub mod containment;
-pub mod types;
 pub mod errors;
-pub mod reporter;
 pub mod find_agents_md_up;
 pub mod format;
-pub mod injection_cache;
-pub mod truncate;
-pub mod inject_directory_context;
-pub mod session_key;
 mod index;
+pub mod inject_directory_context;
+pub mod injection_cache;
+pub mod reporter;
+pub mod session_key;
+pub mod truncate;
+pub mod types;
 pub use index::NestedAgentsMd;

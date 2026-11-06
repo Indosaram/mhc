@@ -23,7 +23,12 @@ fn holding(inputs: &[Input]) -> UserHolds {
 }
 
 fn hid_press(id: u32, code: u16) -> Open {
-    Open { id, route: Route::Hid, input: Input::Key(code), text: None }
+    Open {
+        id,
+        route: Route::Hid,
+        input: Input::Key(code),
+        text: None,
+    }
 }
 
 #[test]
@@ -32,24 +37,57 @@ fn transitions_read_the_engines_and_the_users_modifier_events() {
     let fresh = |kind, code, flags| transition(kind, code, flags, 0, |_| false);
     let shift = Input::Key(SHIFT);
     // A process's own events carry only the shared flag.
-    assert_eq!(fresh(FLAGS_CHANGED, SHIFT, 0x20000), Some(Transition::Press(shift)));
-    assert_eq!(released(FLAGS_CHANGED, SHIFT, 0), Some(Transition::Release(shift)));
+    assert_eq!(
+        fresh(FLAGS_CHANGED, SHIFT, 0x20000),
+        Some(Transition::Press(shift))
+    );
+    assert_eq!(
+        released(FLAGS_CHANGED, SHIFT, 0),
+        Some(Transition::Release(shift))
+    );
     // Releasing Shift while Option stays down still releases Shift.
-    assert_eq!(released(FLAGS_CHANGED, SHIFT, 0x80000), Some(Transition::Release(shift)));
+    assert_eq!(
+        released(FLAGS_CHANGED, SHIFT, 0x80000),
+        Some(Transition::Release(shift))
+    );
     // A modifier posted with no flags is up, even one not yet held.
-    assert_eq!(fresh(FLAGS_CHANGED, SHIFT, 0), Some(Transition::Release(shift)));
+    assert_eq!(
+        fresh(FLAGS_CHANGED, SHIFT, 0),
+        Some(Transition::Release(shift))
+    );
     // Caps Lock has no modifier flag of its own, so it toggles.
-    assert_eq!(fresh(FLAGS_CHANGED, 57, 0), Some(Transition::Press(Input::Key(57))));
-    assert_eq!(released(FLAGS_CHANGED, 57, 0), Some(Transition::Release(Input::Key(57))));
+    assert_eq!(
+        fresh(FLAGS_CHANGED, 57, 0),
+        Some(Transition::Press(Input::Key(57)))
+    );
+    assert_eq!(
+        released(FLAGS_CHANGED, 57, 0),
+        Some(Transition::Release(Input::Key(57)))
+    );
     // Hardware: right Shift goes up while left Shift stays down, so the
     // shared flag is still set.
-    assert_eq!(released(FLAGS_CHANGED, RIGHT_SHIFT, 0x20102), Some(Transition::Release(Input::Key(RIGHT_SHIFT))));
-    assert_eq!(released(FLAGS_CHANGED, SHIFT, 0x20102), Some(Transition::Press(shift)));
-    assert_eq!(fresh(KEY_DOWN, A, 0), Some(Transition::Press(Input::Key(A))));
-    assert_eq!(fresh(KEY_UP, A, 0), Some(Transition::Release(Input::Key(A))));
+    assert_eq!(
+        released(FLAGS_CHANGED, RIGHT_SHIFT, 0x20102),
+        Some(Transition::Release(Input::Key(RIGHT_SHIFT)))
+    );
+    assert_eq!(
+        released(FLAGS_CHANGED, SHIFT, 0x20102),
+        Some(Transition::Press(shift))
+    );
+    assert_eq!(
+        fresh(KEY_DOWN, A, 0),
+        Some(Transition::Press(Input::Key(A)))
+    );
+    assert_eq!(
+        fresh(KEY_UP, A, 0),
+        Some(Transition::Release(Input::Key(A)))
+    );
     assert_eq!(fresh(6, 0, 0), Some(Transition::Move(Input::Button(0))));
     assert_eq!(fresh(4, 0, 0), Some(Transition::Release(Input::Button(1))));
-    assert_eq!(transition(25, 0, 0, 3, |_| false), Some(Transition::Press(Input::Button(3))));
+    assert_eq!(
+        transition(25, 0, 0, 3, |_| false),
+        Some(Transition::Press(Input::Button(3)))
+    );
     assert_eq!(fresh(5, 0, 0), None);
 }
 
@@ -101,14 +139,24 @@ fn holds_read_back_after_the_tap_missed_events_are_the_users_unless_a_press_hold
     // The user held Option when the tap stopped. Unseen, they let go of it and
     // pressed right Shift, while this request pressed Shift and A.
     holds.set(Input::Key(OPTION), true);
-    holds.resync(holding(&[Input::Key(RIGHT_SHIFT), Input::Key(SHIFT), Input::Key(A)]));
+    holds.resync(holding(&[
+        Input::Key(RIGHT_SHIFT),
+        Input::Key(SHIFT),
+        Input::Key(A),
+    ]));
     // The user's right Shift keeps Shift, whose release would cut it short; A,
     // which only this request may hold, is released with the user's Shift and
     // without the Option they let go of.
-    assert_eq!(plan(&open, holds.for_plan(hid_inputs(&open))), [
-        Step::Post { id: 2, flags: Some(0x20000) },
-        Step::Leave { id: 1 },
-    ]);
+    assert_eq!(
+        plan(&open, holds.for_plan(hid_inputs(&open))),
+        [
+            Step::Post {
+                id: 2,
+                flags: Some(0x20000)
+            },
+            Step::Leave { id: 1 },
+        ]
+    );
     // A read-back hold whose release a process posts was that process's.
     let mut holds = holding(&[]);
     holds.resync(holding(&[Input::Key(OPTION)]));
@@ -119,7 +167,13 @@ fn holds_read_back_after_the_tap_missed_events_are_the_users_unless_a_press_hold
     let open = [hid_press(3, A)];
     let mut holds = holding(&[Input::Key(A)]);
     holds.resync(holding(&[Input::Key(A)]));
-    assert_eq!(plan(&open, holds.for_plan(hid_inputs(&open))), [Step::Post { id: 3, flags: Some(0) }]);
+    assert_eq!(
+        plan(&open, holds.for_plan(hid_inputs(&open))),
+        [Step::Post {
+            id: 3,
+            flags: Some(0)
+        }]
+    );
     // A hold still down with no press of this request on it stays the user's.
     let mut holds = holding(&[Input::Key(A)]);
     holds.resync(holding(&[Input::Key(A)]));

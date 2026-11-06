@@ -142,8 +142,12 @@ pub struct PendingInputChange {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingInputRead {
-    Admitted { projection: Box<PendingInputProjection> },
-    NotAdmitted { client_message_id: String },
+    Admitted {
+        projection: Box<PendingInputProjection>,
+    },
+    NotAdmitted {
+        client_message_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

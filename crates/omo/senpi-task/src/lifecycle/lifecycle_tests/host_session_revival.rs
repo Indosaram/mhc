@@ -6,17 +6,17 @@ use std::time::Duration;
 use super::*;
 use crate::host::HostError;
 use crate::lifecycle::host_session::{
-    HostEndpointEnsure, HostEndpointNotice, HostEndpointPort,
-    HostSessionLiveness, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
-    canonical_session_path,
+    HostEndpointEnsure, HostEndpointNotice, HostEndpointPort, HostSessionLiveness,
+    HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint, canonical_session_path,
 };
 use crate::lifecycle::host_session_revive::{HostSessionParkOptions, HostSessionParkOutcome};
-use crate::manager::child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
 use crate::lifecycle::port::{ReattachResult, RespawnResult};
 use crate::lifecycle::{LifecycleDeps, ReconcileOutcomeKind, TaskLifecycle, create_task_lifecycle};
+use crate::manager::child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
 use crate::runners::RunnerOutcome;
 use crate::state::{
-    HostSessionIdentity, ResidencyState, RunnerKind, SuspensionReason, TaskRecord, TaskStatus, TaskTransition,
+    HostSessionIdentity, ResidencyState, RunnerKind, SuspensionReason, TaskRecord, TaskStatus,
+    TaskTransition,
 };
 use crate::store::TaskRecordStore;
 
@@ -298,30 +298,24 @@ fn build_fixture(store: Arc<TaskRecordStore>, options: FixtureOptions) -> Fixtur
 
     let respawned_for_deps = respawned.clone();
     let on_respawn_hook = options.on_respawn;
-    let respawn = Arc::new(
-        move |record: &TaskRecord, path: Option<&std::path::Path>| {
-            let path_str = path.map(|p| p.to_string_lossy().into_owned());
-            respawned_for_deps
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(RespawnEntry {
-                    task_id: record.task_id.clone(),
-                    session_path: path_str.clone(),
-                });
-            if let Some(ref hook) = on_respawn_hook {
-                hook(&record.task_id, path_str.as_deref());
-            }
-            RespawnResult::Ok(Arc::new(TestHandle {
+    let respawn = Arc::new(move |record: &TaskRecord, path: Option<&std::path::Path>| {
+        let path_str = path.map(|p| p.to_string_lossy().into_owned());
+        respawned_for_deps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(RespawnEntry {
                 task_id: record.task_id.clone(),
-            }))
-        },
-    );
+                session_path: path_str.clone(),
+            });
+        if let Some(ref hook) = on_respawn_hook {
+            hook(&record.task_id, path_str.as_deref());
+        }
+        RespawnResult::Ok(Arc::new(TestHandle {
+            task_id: record.task_id.clone(),
+        }))
+    });
 
-    let mut deps = LifecycleDeps::new(
-        store,
-        Arc::new(FakeRegistry::default()),
-        default_settings(),
-    );
+    let mut deps = LifecycleDeps::new(store, Arc::new(FakeRegistry::default()), default_settings());
     deps.host_pid = Some(options.host_pid);
     deps.signaller = Some(signaller.clone());
     deps.orphan_kill_delay_ms = Some(0);
@@ -368,7 +362,11 @@ fn live_host_session_owned_by_other_session_deferred_without_respawn() {
         .lifecycle
         .reconcile_on_session_start(Some("parent-1"))
         .expect("reconcile");
-    let record = temp.store.load("st_0b000001").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b000001")
+        .expect("load")
+        .expect("record");
     assert_ne!(record.status, TaskStatus::Lost);
     assert!(result.outcomes.iter().any(|o| o.task_id == "st_0b000001"
         && o.kind == ReconcileOutcomeKind::Deferred
@@ -411,7 +409,11 @@ fn own_live_host_session_whose_host_died_reclaims_and_resumes() {
         respawned[0].session_path.as_deref(),
         Some(identity.session_path.as_str())
     );
-    let record = temp.store.load("st_0b00000a").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b00000a")
+        .expect("load")
+        .expect("record");
     assert_eq!(record.host_pid, Some(HOST_PID));
     assert_eq!(record.residency_state, ResidencyState::Resident);
 }
@@ -465,8 +467,12 @@ fn parked_host_session_resumes_recorded_path() {
         .lifecycle
         .reconcile_on_session_start(Some("parent-1"))
         .expect("reconcile");
-    assert!(result.outcomes.iter().any(|o| o.task_id == "st_0b000002"
-        && o.kind == ReconcileOutcomeKind::Resumed));
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .any(|o| o.task_id == "st_0b000002" && o.kind == ReconcileOutcomeKind::Resumed)
+    );
     let respawned = fixture.respawned.lock().unwrap().clone();
     assert_eq!(respawned.len(), 1);
     assert_eq!(respawned[0].task_id, "st_0b000002");
@@ -474,7 +480,11 @@ fn parked_host_session_resumes_recorded_path() {
         respawned[0].session_path.as_deref(),
         Some(identity.session_path.as_str())
     );
-    let record = temp.store.load("st_0b000002").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b000002")
+        .expect("load")
+        .expect("record");
     assert_ne!(record.status, TaskStatus::Lost);
 }
 
@@ -509,7 +519,11 @@ fn daemon_loss_bounded_reconcile_stays_rpc_detached() {
         }
     );
     assert_eq!(*fixture.waits.lock().unwrap(), vec![1_000, 4_000, 16_000]);
-    let record = temp.store.load("st_0b000005").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b000005")
+        .expect("load")
+        .expect("record");
     assert_eq!(record.residency_state, ResidencyState::RpcDetached);
     assert_eq!(record.status, TaskStatus::Running);
     assert_eq!(
@@ -558,7 +572,11 @@ fn daemon_returns_during_bounded_reconcile_revived() {
         respawned[0].session_path.as_deref(),
         Some(identity.session_path.as_str())
     );
-    let record = temp.store.load("st_0b000006").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b000006")
+        .expect("load")
+        .expect("record");
     assert_eq!(record.suspension_reason, None);
 }
 
@@ -632,7 +650,11 @@ fn daemon_loss_incompatible_host_stops_retrying() {
         *endpoint.ensures.lock().unwrap(),
         vec![OTHER_SHARD.to_string()]
     );
-    let record = temp.store.load("st_0c000023").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0c000023")
+        .expect("load")
+        .expect("record");
     assert_eq!(
         record.suspension_reason,
         Some(SuspensionReason::HostIncompatible)
@@ -673,7 +695,11 @@ fn daemon_loss_own_shard_silent_stays_suspended_own_host_unreachable() {
     );
     assert_eq!(endpoint.ensures.lock().unwrap().len(), 0);
     assert_eq!(fixture.respawned.lock().unwrap().len(), 0);
-    let record = temp.store.load("st_0c000021").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0c000021")
+        .expect("load")
+        .expect("record");
     assert_eq!(
         record.suspension_reason,
         Some(SuspensionReason::OwnHostUnreachable)
@@ -755,7 +781,8 @@ fn deferred_child_retried_in_background_when_daemon_answers() {
     let daemon_holder_for_wait = daemon_holder.clone();
     let on_wait: OnWaitFn = Arc::new(move |ms| {
         if ms == 15_000
-            && let Some(daemon) = daemon_holder_for_wait.lock().unwrap().as_ref() {
+            && let Some(daemon) = daemon_holder_for_wait.lock().unwrap().as_ref()
+        {
             daemon.alive.store(true, Ordering::SeqCst);
         }
     });
@@ -811,14 +838,16 @@ fn deferred_child_cancelled_meanwhile_nothing_respawned() {
     let daemon_holder: Arc<Mutex<Option<Arc<FakeDaemon>>>> = Arc::new(Mutex::new(None));
     let daemon_holder_for_wait = daemon_holder.clone();
     let on_wait: OnWaitFn = Arc::new(move |_ms| {
-        store_for_wait.transition(
-            "st_0b000008",
-            &TaskTransition::Cancel {
-                timestamp: crate::shared::iso_from_ms(1_000),
-                error_message: Some("test cancel".to_string()),
-                run_stats: None,
-            },
-        ).expect("cancel during retry");
+        store_for_wait
+            .transition(
+                "st_0b000008",
+                &TaskTransition::Cancel {
+                    timestamp: crate::shared::iso_from_ms(1_000),
+                    error_message: Some("test cancel".to_string()),
+                    run_stats: None,
+                },
+            )
+            .expect("cancel during retry");
         if let Some(daemon) = daemon_holder_for_wait.lock().unwrap().as_ref() {
             daemon.alive.store(true, Ordering::SeqCst);
         }
@@ -847,13 +876,21 @@ fn deferred_child_cancelled_meanwhile_nothing_respawned() {
         .lifecycle
         .reconcile_on_session_start(Some("parent-1"))
         .expect("reconcile");
-    assert!(result.outcomes.iter().any(|o| o.task_id == "st_0b000008"
-        && o.kind == ReconcileOutcomeKind::Deferred));
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .any(|o| o.task_id == "st_0b000008" && o.kind == ReconcileOutcomeKind::Deferred)
+    );
     rx.recv_timeout(Duration::from_secs(5))
         .expect("wait callback reached");
     fixture.lifecycle.context().scoped_retries.wait_until_idle();
     assert_eq!(fixture.respawned.lock().unwrap().len(), 0);
-    let record = temp.store.load("st_0b000008").expect("load").expect("record");
+    let record = temp
+        .store
+        .load("st_0b000008")
+        .expect("load")
+        .expect("record");
     assert_eq!(record.status, TaskStatus::Cancelled);
 }
 

@@ -75,11 +75,7 @@ pub fn verification_scopes(message: &Value) -> Vec<DagVerificationScope> {
 }
 
 /// `selectDirectives`: rewrite the directive already present at each scope, back to front.
-pub fn select_directives(
-    content: &str,
-    scopes: &[DagVerificationScope],
-    astra: bool,
-) -> String {
+pub fn select_directives(content: &str, scopes: &[DagVerificationScope], astra: bool) -> String {
     let mut content = content.to_string();
     let mut cursor = content.len();
     for scope in scopes.iter().rev() {
@@ -138,7 +134,8 @@ mod tests {
             "details": [{"task_id": "st_1", "dag": {"run_id": "dag_1"}}],
         });
         let legacy = json!({"customType": "omo-senpi:wake", "details": [completion]});
-        let structured = json!({"customType": "omo-senpi:wake", "details": {"items": [completion]}});
+        let structured =
+            json!({"customType": "omo-senpi:wake", "details": {"items": [completion]}});
         assert_eq!(
             verification_scopes(&legacy),
             vec![DagVerificationScope::Node]
@@ -178,11 +175,7 @@ mod tests {
     #[test]
     fn the_astra_selection_rewrites_the_directive_in_place() {
         let content = format!("summary\n\n{DAG_VERIFICATION_DIRECTIVE}");
-        let selected = select_directives(
-            &content,
-            &[DagVerificationScope::Node],
-            true,
-        );
+        let selected = select_directives(&content, &[DagVerificationScope::Node], true);
         assert!(selected.ends_with(ASTRA_DAG_VERIFICATION_DIRECTIVE));
         assert!(selected.starts_with("summary"));
         let standard = select_directives(&content, &[DagVerificationScope::Node], false);

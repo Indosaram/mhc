@@ -536,12 +536,17 @@ pub async fn execute_lsp_rename(
 fn describe_format_result(file_path: &str, result: &FormatDocumentResult) -> String {
     match result {
         FormatDocumentResult::Unavailable { .. } => {
-            format!("Formatting unavailable for {file_path}: the language server does not advertise documentFormattingProvider.")
+            format!(
+                "Formatting unavailable for {file_path}: the language server does not advertise documentFormattingProvider."
+            )
         }
         FormatDocumentResult::Unchanged { .. } => {
             format!("Already formatted: {file_path}")
         }
-        FormatDocumentResult::Formatted { lines_added, lines_removed } => {
+        FormatDocumentResult::Formatted {
+            lines_added,
+            lines_removed,
+        } => {
             format!("Formatted {file_path} (+{lines_added}/-{lines_removed} lines)")
         }
     }
@@ -556,13 +561,19 @@ fn format_details(file_path: &str, result: &FormatDocumentResult) -> Map<String,
             "linesAdded": 0,
             "linesRemoved": 0,
         })),
-        FormatDocumentResult::Unchanged { lines_added, lines_removed } => details(json!({
+        FormatDocumentResult::Unchanged {
+            lines_added,
+            lines_removed,
+        } => details(json!({
             "filePath": file_path,
             "status": "unchanged",
             "linesAdded": lines_added,
             "linesRemoved": lines_removed,
         })),
-        FormatDocumentResult::Formatted { lines_added, lines_removed } => details(json!({
+        FormatDocumentResult::Formatted {
+            lines_added,
+            lines_removed,
+        } => details(json!({
             "filePath": file_path,
             "status": "formatted",
             "linesAdded": lines_added,

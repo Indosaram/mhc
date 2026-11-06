@@ -47,7 +47,9 @@ pub fn compose_shell_command(command: &str, working_directory: Option<&str>) -> 
 }
 
 pub fn omit_undefined_args(args: Map<String, Value>) -> Map<String, Value> {
-    args.into_iter().filter(|(_, value)| !value.is_null()).collect()
+    args.into_iter()
+        .filter(|(_, value)| !value.is_null())
+        .collect()
 }
 
 #[cfg(test)]
@@ -59,7 +61,11 @@ mod tests {
     fn given_offset_and_limit_when_building_read_args_then_maps_directly() {
         assert_eq!(
             pi_read_args("a.ts", Some(3.0), Some(10.0)),
-            Some(PiReadArgs { path: "a.ts".to_string(), offset: Some(3), limit: Some(10) })
+            Some(PiReadArgs {
+                path: "a.ts".to_string(),
+                offset: Some(3),
+                limit: Some(10)
+            })
         );
     }
 
@@ -72,7 +78,11 @@ mod tests {
     fn given_zero_offset_when_building_read_args_then_clamps_to_one() {
         assert_eq!(
             pi_read_args("a.ts", Some(0.0), None),
-            Some(PiReadArgs { path: "a.ts".to_string(), offset: Some(1), limit: None })
+            Some(PiReadArgs {
+                path: "a.ts".to_string(),
+                offset: Some(1),
+                limit: None
+            })
         );
     }
 

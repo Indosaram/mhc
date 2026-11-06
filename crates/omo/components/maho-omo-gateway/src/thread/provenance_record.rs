@@ -11,13 +11,21 @@ pub fn is_provenance(value: &Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    let non_empty = |key: &str| object.get(key).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty());
+    let non_empty = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    };
     let optional_non_empty = |key: &str| match object.get(key) {
         None => true,
         Some(Value::String(text)) => !text.trim().is_empty(),
         Some(_) => false,
     };
-    non_empty("workspace") && non_empty("project") && optional_non_empty("lane") && optional_non_empty("session")
+    non_empty("workspace")
+        && non_empty("project")
+        && optional_non_empty("lane")
+        && optional_non_empty("session")
 }
 
 /// A validated provenance from JSON, or none when the shape is not one.
@@ -52,16 +60,30 @@ mod tests {
 
     #[test]
     fn required_labels_must_be_non_empty_strings() {
-        for invalid in [json!(null), json!({}), json!({ "workspace": "Example" }), json!({ "workspace": "", "project": "project" }), json!({ "workspace": "Example", "project": 1 }), json!({ "workspace": "Example", "project": "project", "lane": null })] {
+        for invalid in [
+            json!(null),
+            json!({}),
+            json!({ "workspace": "Example" }),
+            json!({ "workspace": "", "project": "project" }),
+            json!({ "workspace": "Example", "project": 1 }),
+            json!({ "workspace": "Example", "project": "project", "lane": null }),
+        ] {
             assert!(!is_provenance(&invalid), "{invalid}");
         }
-        assert!(is_provenance(&json!({ "workspace": "Example", "project": "project" })));
-        assert!(is_provenance(&json!({ "workspace": "Example", "project": "project", "lane": "review", "session": "planner" })));
+        assert!(is_provenance(
+            &json!({ "workspace": "Example", "project": "project" })
+        ));
+        assert!(is_provenance(
+            &json!({ "workspace": "Example", "project": "project", "lane": "review", "session": "planner" })
+        ));
     }
 
     #[test]
     fn validated_provenance_round_trips() {
-        let provenance = provenance_from_value(&json!({ "workspace": "Example", "project": "project", "lane": "review" })).expect("valid");
+        let provenance = provenance_from_value(
+            &json!({ "workspace": "Example", "project": "project", "lane": "review" }),
+        )
+        .expect("valid");
         assert_eq!(provenance.workspace, "Example");
         assert_eq!(provenance.lane.as_deref(), Some("review"));
         assert!(provenance.session.is_none());

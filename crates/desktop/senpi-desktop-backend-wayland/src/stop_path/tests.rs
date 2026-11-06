@@ -8,8 +8,8 @@ use senpi_desktop_safety::{Chord, FakeClock, StopPathError, StopPathListener, Su
 use super::global_shortcuts::Control;
 use super::{GlobalShortcutsListener, STOP_SHORTCUT_ID, UNAVAILABLE};
 use crate::test_support::fake_eis::EisConfig;
-use crate::test_support::fake_portal::{FakeBus, Mode, Reply, Shot, fake_bus};
-use crate::test_support::{HANG_GUARD, env_lock};
+use crate::test_support::fake_portal::{fake_bus, FakeBus, Mode, Reply, Shot};
+use crate::test_support::{env_lock, HANG_GUARD};
 
 const CHORD: &str = "ctrl+alt+shift+escape";
 

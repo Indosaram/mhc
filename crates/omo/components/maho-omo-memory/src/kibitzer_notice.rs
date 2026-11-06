@@ -10,9 +10,7 @@ use memory_core::recall::{NUDGE_HINT_MAX_CHARS, is_valid_hint};
 use memory_core::sync::redact::contains_secret_like_material;
 
 use crate::worker::completion_renderers::ResolveEntryTheme;
-use crate::worker::entry_renderers::{
-    NoticeComponent, NoticeExtraLine, NoticeSpec, join_fields,
-};
+use crate::worker::entry_renderers::{NoticeComponent, NoticeExtraLine, NoticeSpec, join_fields};
 
 pub const NUDGED_ENTRY_TYPE: &str = "omo-kibitzer:nudged";
 pub const GATE_ENTRY_TYPE: &str = "omo-kibitzer:gate";
@@ -103,22 +101,33 @@ pub fn kibitzer_nudged_spec(record: &KibitzerNudgedRecord) -> Option<NoticeSpec>
     let mut extra: Vec<NoticeExtraLine> = nudges
         .iter()
         .skip(1)
-        .map(|nudge| NoticeExtraLine { text: format!("recalled memory: {}", nudge.hint), tone: Some("dim".into()) })
+        .map(|nudge| NoticeExtraLine {
+            text: format!("recalled memory: {}", nudge.hint),
+            tone: Some("dim".into()),
+        })
         .collect();
-    extra.extend(nudges.iter().map(|nudge| NoticeExtraLine { text: nudge.path.clone(), tone: Some("dim".into()) }));
+    extra.extend(nudges.iter().map(|nudge| NoticeExtraLine {
+        text: nudge.path.clone(),
+        tone: Some("dim".into()),
+    }));
     Some(NoticeSpec {
         glyph: "\u{2726}".into(),
         title: "Kibitzer !".into(),
         tone: "accent".into(),
         why: format!("recalled memory: {}", first.hint),
         extra,
-        detail: Some("Kibitzer surfaced this from stored memory; it is a hint, not current state.".into()),
+        detail: Some(
+            "Kibitzer surfaced this from stored memory; it is a hint, not current state.".into(),
+        ),
     })
 }
 
 fn valid_gate_reason(value: &str) -> Option<String> {
     let normalized = normalize(value);
-    if normalized.is_empty() || normalized.chars().count() > GATE_REASON_MAX_CHARS || contains_secret_like_material(value) {
+    if normalized.is_empty()
+        || normalized.chars().count() > GATE_REASON_MAX_CHARS
+        || contains_secret_like_material(value)
+    {
         return None;
     }
     if value.contains('\r') || value.contains('\n') {
@@ -142,7 +151,9 @@ fn valid_gate_field(value: &str, max_chars: usize) -> Option<String> {
 fn valid_run_id(value: &str) -> Option<String> {
     let ok = !value.is_empty()
         && value.chars().count() <= 64
-        && value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
     ok.then(|| value.to_string())
 }
 
@@ -158,36 +169,79 @@ pub fn kibitzer_gate_spec(record: &KibitzerGateRecord) -> Option<NoticeSpec> {
         return None;
     }
     let consecutive = record.consecutive_failures.filter(|count| *count >= 1)?;
-    let cause = record.cause.as_deref().map(normalize).filter(|cause| !cause.is_empty());
+    let cause = record
+        .cause
+        .as_deref()
+        .map(normalize)
+        .filter(|cause| !cause.is_empty());
     let reason = record.reason.as_deref().and_then(valid_gate_reason);
     let run_id = record.run_id.as_deref().and_then(valid_run_id);
-    let model = record.model.as_deref().and_then(|model| valid_gate_field(model, GATE_MODEL_MAX_CHARS));
-    let category = record.category.as_deref().and_then(|category| valid_gate_field(category, UNAVAILABLE_CATEGORY_MAX_CHARS));
+    let model = record
+        .model
+        .as_deref()
+        .and_then(|model| valid_gate_field(model, GATE_MODEL_MAX_CHARS));
+    let category = record
+        .category
+        .as_deref()
+        .and_then(|category| valid_gate_field(category, UNAVAILABLE_CATEGORY_MAX_CHARS));
     let fix = match &category {
         None => "check Kibitzer model/provider settings".to_string(),
-        Some(category) => format!("set categories.{category}.model (or memory.recall.category) in omo.json to a model that answers"),
+        Some(category) => format!(
+            "set categories.{category}.model (or memory.recall.category) in omo.json to a model that answers"
+        ),
     };
     let mut extra: Vec<NoticeExtraLine> = Vec::new();
     if let Some(reason) = reason {
-        extra.push(NoticeExtraLine { text: reason, tone: Some("dim".into()) });
+        extra.push(NoticeExtraLine {
+            text: reason,
+            tone: Some("dim".into()),
+        });
     }
     if let Some(run_id) = run_id {
-        extra.push(NoticeExtraLine { text: format!("run {run_id}"), tone: Some("dim".into()) });
+        extra.push(NoticeExtraLine {
+            text: format!("run {run_id}"),
+            tone: Some("dim".into()),
+        });
     }
     if let Some(model) = model {
-        let suffix = category.as_deref().map(|category| format!(" (memory recall category \"{category}\")")).unwrap_or_default();
-        extra.push(NoticeExtraLine { text: format!("last failed model: {model}{suffix}"), tone: Some("dim".into()) });
+        let suffix = category
+            .as_deref()
+            .map(|category| format!(" (memory recall category \"{category}\")"))
+            .unwrap_or_default();
+        extra.push(NoticeExtraLine {
+            text: format!("last failed model: {model}{suffix}"),
+            tone: Some("dim".into()),
+        });
     }
-    extra.push(NoticeExtraLine { text: format!("after {consecutive} consecutive failures; {fix}"), tone: Some("dim".into()) });
+    extra.push(NoticeExtraLine {
+        text: format!("after {consecutive} consecutive failures; {fix}"),
+        tone: Some("dim".into()),
+    });
     let skipped = record.status == "skipped";
     Some(NoticeSpec {
-        glyph: if skipped { "\u{26a0}".into() } else { "\u{2717}".to_string() },
-        title: join_fields(&[Some(if skipped { "Kibitzer gate skipped" } else { "Kibitzer gate failed" }), cause.as_deref()]),
-        tone: if skipped { "warning".into() } else { "error".into() },
+        glyph: if skipped {
+            "\u{26a0}".into()
+        } else {
+            "\u{2717}".to_string()
+        },
+        title: join_fields(&[
+            Some(if skipped {
+                "Kibitzer gate skipped"
+            } else {
+                "Kibitzer gate failed"
+            }),
+            cause.as_deref(),
+        ]),
+        tone: if skipped {
+            "warning".into()
+        } else {
+            "error".into()
+        },
         why: if skipped {
             "Kibitzer could not judge the recalled memory candidates for the previous turn.".into()
         } else {
-            "Kibitzer failed while judging the recalled memory candidates for the previous turn.".into()
+            "Kibitzer failed while judging the recalled memory candidates for the previous turn."
+                .into()
         },
         extra,
         detail: None,
@@ -201,7 +255,10 @@ fn unavailable_providers(value: Option<&Vec<String>>) -> Option<Vec<String>> {
     let mut result = Vec::new();
     for entry in providers {
         let normalized = normalize(entry);
-        let bounded: String = normalized.chars().take(UNAVAILABLE_PROVIDER_MAX_CHARS).collect();
+        let bounded: String = normalized
+            .chars()
+            .take(UNAVAILABLE_PROVIDER_MAX_CHARS)
+            .collect();
         if !bounded.is_empty() {
             result.push(bounded);
         }
@@ -214,25 +271,50 @@ fn unavailable_providers(value: Option<&Vec<String>>) -> Option<Vec<String>> {
 
 /// `renderKibitzerUnavailableEntry`: the once-per-session category-unavailable notice.
 pub fn kibitzer_unavailable_spec(record: &KibitzerUnavailableRecord) -> Option<NoticeSpec> {
-    if record.version != 1 || record.cause != "category_unavailable" && record.cause != "beyond_category" {
+    if record.version != 1
+        || record.cause != "category_unavailable" && record.cause != "beyond_category"
+    {
         return None;
     }
-    let category: String = normalize(&record.category).chars().take(UNAVAILABLE_CATEGORY_MAX_CHARS).collect();
+    let category: String = normalize(&record.category)
+        .chars()
+        .take(UNAVAILABLE_CATEGORY_MAX_CHARS)
+        .collect();
     if category.is_empty() {
         return None;
     }
     let providers = unavailable_providers(record.missing_providers.as_ref())?;
     let why = if record.cause == "category_unavailable" {
-        format!("No connected provider serves the \"{category}\" category chain, so recalled-memory judging is off; it resumes by itself once one is connected.")
+        format!(
+            "No connected provider serves the \"{category}\" category chain, so recalled-memory judging is off; it resumes by itself once one is connected."
+        )
     } else {
-        format!("The \"{category}\" category chain has no connected model and Kibitzer never falls back beyond the category, so recalled-memory judging is off.")
+        format!(
+            "The \"{category}\" category chain has no connected model and Kibitzer never falls back beyond the category, so recalled-memory judging is off."
+        )
     };
     let extra = if providers.is_empty() {
-        vec![NoticeExtraLine { text: format!("pin categories.{category}.model (or memory.recall.category) in omo.json to a connected model"), tone: Some("dim".into()) }]
+        vec![NoticeExtraLine {
+            text: format!(
+                "pin categories.{category}.model (or memory.recall.category) in omo.json to a connected model"
+            ),
+            tone: Some("dim".into()),
+        }]
     } else {
         vec![
-            NoticeExtraLine { text: format!("connect one of: {} (run /login <provider>)", providers.join(", ")), tone: Some("dim".into()) },
-            NoticeExtraLine { text: format!("or pin categories.{category}.model (or memory.recall.category) in omo.json"), tone: Some("dim".into()) },
+            NoticeExtraLine {
+                text: format!(
+                    "connect one of: {} (run /login <provider>)",
+                    providers.join(", ")
+                ),
+                tone: Some("dim".into()),
+            },
+            NoticeExtraLine {
+                text: format!(
+                    "or pin categories.{category}.model (or memory.recall.category) in omo.json"
+                ),
+                tone: Some("dim".into()),
+            },
         ]
     };
     Some(NoticeSpec {
@@ -246,10 +328,25 @@ pub fn kibitzer_unavailable_spec(record: &KibitzerUnavailableRecord) -> Option<N
 }
 
 /// Registers the three Kibitzer entry renderers.
-pub fn register_kibitzer_notice_renderers(api: &mut maho_ext_api::ExtensionApi, theme: ResolveEntryTheme) {
-    register_spec_renderer(api, NUDGED_ENTRY_TYPE, theme.clone(), |data| serde_json::from_value::<KibitzerNudgedRecord>(data).ok().and_then(|record| kibitzer_nudged_spec(&record)));
-    register_spec_renderer(api, GATE_ENTRY_TYPE, theme.clone(), |data| serde_json::from_value::<KibitzerGateRecord>(data).ok().and_then(|record| kibitzer_gate_spec(&record)));
-    register_spec_renderer(api, UNAVAILABLE_ENTRY_TYPE, theme, |data| serde_json::from_value::<KibitzerUnavailableRecord>(data).ok().and_then(|record| kibitzer_unavailable_spec(&record)));
+pub fn register_kibitzer_notice_renderers(
+    api: &mut maho_ext_api::ExtensionApi,
+    theme: ResolveEntryTheme,
+) {
+    register_spec_renderer(api, NUDGED_ENTRY_TYPE, theme.clone(), |data| {
+        serde_json::from_value::<KibitzerNudgedRecord>(data)
+            .ok()
+            .and_then(|record| kibitzer_nudged_spec(&record))
+    });
+    register_spec_renderer(api, GATE_ENTRY_TYPE, theme.clone(), |data| {
+        serde_json::from_value::<KibitzerGateRecord>(data)
+            .ok()
+            .and_then(|record| kibitzer_gate_spec(&record))
+    });
+    register_spec_renderer(api, UNAVAILABLE_ENTRY_TYPE, theme, |data| {
+        serde_json::from_value::<KibitzerUnavailableRecord>(data)
+            .ok()
+            .and_then(|record| kibitzer_unavailable_spec(&record))
+    });
 }
 
 fn register_spec_renderer(
@@ -263,7 +360,11 @@ fn register_spec_renderer(
         std::sync::Arc::new(move |entry, options, native_theme| {
             let data = entry.data.get("data")?.clone();
             let spec = spec_of(data)?;
-            Some(Box::new(NoticeComponent { spec, expanded: options.expanded, theme: theme(native_theme) }) as Box<dyn maho_ext_api::Component>)
+            Some(Box::new(NoticeComponent {
+                spec,
+                expanded: options.expanded,
+                theme: theme(native_theme),
+            }) as Box<dyn maho_ext_api::Component>)
         }),
         Default::default(),
     );

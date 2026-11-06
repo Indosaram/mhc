@@ -152,7 +152,11 @@ impl LoginDialogComponent {
             0,
         )));
 
-        let click_hint = if self.is_darwin { "Cmd+click to open" } else { "Ctrl+click to open" };
+        let click_hint = if self.is_darwin {
+            "Cmd+click to open"
+        } else {
+            "Ctrl+click to open"
+        };
         let hyperlink = format!("\u{1b}]8;;{url}\u{7}{click_hint}\u{1b}]8;;\u{7}");
         self.content.push(Slot::Text(Text::with_padding(
             self.theme.fg(ThemeColor::Dim, &hyperlink),
@@ -189,7 +193,11 @@ impl LoginDialogComponent {
             0,
         )));
 
-        let click_hint = if self.is_darwin { "Cmd+click to open" } else { "Ctrl+click to open" };
+        let click_hint = if self.is_darwin {
+            "Cmd+click to open"
+        } else {
+            "Ctrl+click to open"
+        };
         let hyperlink = format!(
             "\u{1b}]8;;{}\u{7}{click_hint}\u{1b}]8;;\u{7}",
             info.verification_uri
@@ -201,7 +209,10 @@ impl LoginDialogComponent {
         )));
         self.content.push(Slot::Blank);
         self.content.push(Slot::Text(Text::with_padding(
-            self.theme.fg(ThemeColor::Warning, &format!("Enter code: {}", info.user_code)),
+            self.theme.fg(
+                ThemeColor::Warning,
+                &format!("Enter code: {}", info.user_code),
+            ),
             1,
             0,
         )));
@@ -219,7 +230,10 @@ impl LoginDialogComponent {
             0,
         )));
         let hint = Text::with_padding(
-            format!("({})", key_hint("tui.select.cancel", "to cancel", &self.theme)),
+            format!(
+                "({})",
+                key_hint("tui.select.cancel", "to cancel", &self.theme)
+            ),
             1,
             0,
         );
@@ -229,7 +243,11 @@ impl LoginDialogComponent {
     }
 
     /// Called by the onPrompt callback - show prompt and wait for input. Does NOT clear content.
-    pub fn show_prompt(&mut self, message: &str, placeholder: Option<&str>) -> oneshot::Receiver<String> {
+    pub fn show_prompt(
+        &mut self,
+        message: &str,
+        placeholder: Option<&str>,
+    ) -> oneshot::Receiver<String> {
         self.content.push(Slot::Blank);
         self.content.push(Slot::Text(Text::with_padding(
             self.theme.fg(ThemeColor::Text, message),
@@ -238,7 +256,8 @@ impl LoginDialogComponent {
         )));
         if let Some(placeholder) = placeholder {
             self.content.push(Slot::Text(Text::with_padding(
-                self.theme.fg(ThemeColor::Dim, &format!("e.g., {placeholder}")),
+                self.theme
+                    .fg(ThemeColor::Dim, &format!("e.g., {placeholder}")),
                 1,
                 0,
             )));
@@ -269,7 +288,8 @@ impl LoginDialogComponent {
         self.reset_content();
         self.content.push(Slot::Blank);
         for line in lines {
-            self.content.push(Slot::Text(Text::with_padding(line.clone(), 1, 0)));
+            self.content
+                .push(Slot::Text(Text::with_padding(line.clone(), 1, 0)));
         }
         self.request_render();
     }
@@ -297,7 +317,10 @@ impl LoginDialogComponent {
         if show_close_hint {
             self.content.push(Slot::Blank);
             let hint = Text::with_padding(
-                format!("({})", key_hint("tui.select.cancel", "to close", &self.theme)),
+                format!(
+                    "({})",
+                    key_hint("tui.select.cancel", "to close", &self.theme)
+                ),
                 1,
                 0,
             );
@@ -315,7 +338,10 @@ impl LoginDialogComponent {
             0,
         )));
         let hint = Text::with_padding(
-            format!("({})", key_hint("tui.select.cancel", "to cancel", &self.theme)),
+            format!(
+                "({})",
+                key_hint("tui.select.cancel", "to cancel", &self.theme)
+            ),
             1,
             0,
         );

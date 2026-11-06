@@ -81,13 +81,21 @@ fn settings(overrides: Value) -> TaskSettings {
 }
 
 fn read_events(store: &TaskRecordStore, task_id: &str) -> Vec<String> {
-    let path = store.state_dir().join("logs").join(format!("{task_id}.jsonl"));
+    let path = store
+        .state_dir()
+        .join("logs")
+        .join(format!("{task_id}.jsonl"));
     std::fs::read_to_string(path)
         .map(|text| {
             text.lines()
                 .filter(|line| !line.is_empty())
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .filter_map(|event| event.get("type").and_then(Value::as_str).map(str::to_string))
+                .filter_map(|event| {
+                    event
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -95,7 +103,10 @@ fn read_events(store: &TaskRecordStore, task_id: &str) -> Vec<String> {
 
 fn persist_session(store: &TaskRecordStore, task_id: &str) -> PathBuf {
     let children = store.state_dir().join("children").join(task_id);
-    let directory = PathBuf::from(resolve_child_session_dir(&children.to_string_lossy(), task_id));
+    let directory = PathBuf::from(resolve_child_session_dir(
+        &children.to_string_lossy(),
+        task_id,
+    ));
     std::fs::create_dir_all(&directory).expect("create session dir");
     let session_path = directory.join("2026-07-12_session.jsonl");
     std::fs::write(&session_path, "{}\n").expect("write session");
@@ -144,7 +155,11 @@ impl Harness {
     }
 
     fn assert_still_suspended(&self) {
-        let record = self.store.load(TASK_ID).expect("load").expect("record present");
+        let record = self
+            .store
+            .load(TASK_ID)
+            .expect("load")
+            .expect("record present");
         assert_eq!(record.status.as_str(), "running");
         assert_eq!(record.residency_state.as_str(), "rpc_detached");
         assert_eq!(record.host_pid, None);
@@ -178,12 +193,17 @@ fn given_team_with_suspended_member() -> Harness {
         },
     )
     .expect("team created");
-    assert!(created.member_task_ids.contains_key("alpha"), "expected alpha task id");
+    assert!(
+        created.member_task_ids.contains_key("alpha"),
+        "expected alpha task id"
+    );
     let team_run_id = created.runtime_state.team_run_id.clone();
     let runtime_dir = resolve_team_runtime_dirs(&state_dir_config(&project_dir), &team_run_id)
         .expect("runtime dirs")
         .runtime_dir;
-    let map: MemberTaskMap = [("alpha".to_string(), TASK_ID.to_string())].into_iter().collect();
+    let map: MemberTaskMap = [("alpha".to_string(), TASK_ID.to_string())]
+        .into_iter()
+        .collect();
     write_member_task_map(&runtime_dir, &map).expect("write member map");
 
     let store_dir = tempfile::tempdir().expect("tempdir");
@@ -199,7 +219,10 @@ fn given_team_with_suspended_member() -> Harness {
     store.save(&record).expect("seed record");
 
     // Persisted spawn spec carrying untrusted launch inputs.
-    let record_path = store.state_dir().join("tasks").join(format!("{TASK_ID}.json"));
+    let record_path = store
+        .state_dir()
+        .join("tasks")
+        .join(format!("{TASK_ID}.json"));
     let raw = std::fs::read_to_string(&record_path).expect("read record");
     let mut value: Value = serde_json::from_str(&raw).expect("record json");
     if let Some(object) = value.as_object_mut() {
@@ -213,7 +236,10 @@ fn given_team_with_suspended_member() -> Harness {
         );
     }
     std::fs::write(&record_path, value.to_string()).expect("write record");
-    assert!(store.load(TASK_ID).expect("load").is_some(), "expected seeded member record");
+    assert!(
+        store.load(TASK_ID).expect("load").is_some(),
+        "expected seeded member record"
+    );
 
     let session_path = persist_session(&store, TASK_ID);
     Harness {
@@ -251,7 +277,10 @@ fn completed_resident_member_with_dead_process_is_recorded_lost_when_reattach_di
     // then
     let rendered = format!("{result:?}");
     assert!(rendered.contains(TASK_ID), "{rendered}");
-    assert!(rendered.contains("reattach disabled for crashed resident"), "{rendered}");
+    assert!(
+        rendered.contains("reattach disabled for crashed resident"),
+        "{rendered}"
+    );
     assert!(rendered.to_lowercase().contains("lost"), "{rendered}");
     let record = h.store.load(TASK_ID).expect("load").expect("record");
     assert_eq!(record.status.as_str(), "completed");
@@ -303,7 +332,9 @@ fn suspended_member_of_inactive_team_stays_suspended_with_team_inactive() {
     let h = given_team_with_suspended_member();
     let mut failed = h.runtime_state.clone();
     failed.status = RuntimeStatus::Failed;
-    let base_dir = team_storage_base_dir(&h.state_dir()).to_string_lossy().into_owned();
+    let base_dir = team_storage_base_dir(&h.state_dir())
+        .to_string_lossy()
+        .into_owned();
     let config = to_team_core_config(&h.bounds, &base_dir).expect("config");
     save_runtime_state(&failed, &config).expect("save runtime state");
 
@@ -314,7 +345,10 @@ fn suspended_member_of_inactive_team_stays_suspended_with_team_inactive() {
         .expect_err("inactive team must not revive");
 
     // then the member is NOT revived and NOT lost
-    assert_eq!(error.code, TeamMemberRespawnLaunchErrorCode::RuntimeInactive);
+    assert_eq!(
+        error.code,
+        TeamMemberRespawnLaunchErrorCode::RuntimeInactive
+    );
     assert_eq!(
         error.message,
         "Cannot respawn team member 'alpha': runtime_inactive"
@@ -338,7 +372,10 @@ fn suspended_member_of_deleted_team_stays_suspended_with_team_inactive() {
         .expect_err("deleted team must not revive");
 
     // then the member is NOT revived and NOT lost
-    assert_eq!(error.code, TeamMemberRespawnLaunchErrorCode::RuntimeUnavailable);
+    assert_eq!(
+        error.code,
+        TeamMemberRespawnLaunchErrorCode::RuntimeUnavailable
+    );
     assert_eq!(
         error.message,
         "Cannot respawn team member 'alpha': runtime_unavailable"

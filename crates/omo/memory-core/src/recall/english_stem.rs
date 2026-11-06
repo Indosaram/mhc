@@ -8,7 +8,8 @@ fn is_ascii_word(token: &str) -> bool {
 }
 
 fn has_vowel(word: &str) -> bool {
-    word.chars().any(|ch| matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
+    word.chars()
+        .any(|ch| matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
 }
 
 /// A doubled final consonant left by a stripped suffix; l, s and z stay doubled.
@@ -18,7 +19,9 @@ fn has_doubled_consonant(word: &str) -> bool {
         return false;
     }
     let last = chars[chars.len() - 1];
-    if chars[chars.len() - 2] != last || matches!(last, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'l' | 's' | 'z') {
+    if chars[chars.len() - 2] != last
+        || matches!(last, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'l' | 's' | 'z')
+    {
         return false;
     }
     true
@@ -34,7 +37,11 @@ fn strip_plural(word: &str) -> String {
     if ends_with_sibilant_es(word) {
         return word[..word.len() - 2].to_string();
     }
-    if word.ends_with('s') && !word.ends_with("ss") && !word.ends_with("us") && !word.ends_with("is") {
+    if word.ends_with('s')
+        && !word.ends_with("ss")
+        && !word.ends_with("us")
+        && !word.ends_with("is")
+    {
         return word[..word.len() - 1].to_string();
     }
     word.to_string()
@@ -45,7 +52,11 @@ fn ends_with_sibilant_es(word: &str) -> bool {
         Some(body) => body,
         None => return false,
     };
-    body.ends_with("ch") || body.ends_with("sh") || body.ends_with('x') || body.ends_with('z') || body.ends_with("ss")
+    body.ends_with("ch")
+        || body.ends_with("sh")
+        || body.ends_with('x')
+        || body.ends_with('z')
+        || body.ends_with("ss")
 }
 
 fn strip_suffix(word: &str, suffix: &str) -> Option<String> {

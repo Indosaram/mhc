@@ -1,5 +1,12 @@
 use maho_cli::utils::duration::format_duration;
-macro_rules! case { ($name:ident, $milliseconds:expr, $expected:expr) => { #[test] fn $name() { assert_eq!(format_duration($milliseconds as f64), $expected); } }; }
+macro_rules! case {
+    ($name:ident, $milliseconds:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            assert_eq!(format_duration($milliseconds as f64), $expected);
+        }
+    };
+}
 case!(zero, 0, "0ms");
 case!(milliseconds, 999, "999ms");
 case!(second, 1000, "1.0s");

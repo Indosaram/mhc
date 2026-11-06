@@ -103,12 +103,13 @@ impl RpcProcessRunner {
     pub fn start(&self, spec_input: &RpcRunnerSpec) -> Result<Arc<RpcChildHandle>, RunnerFailure> {
         let mut spec = spec_input.clone();
         if let Some(resolve) = &self.exclude_models
-            && let Some(chain) = &spec.fallback_models {
-                spec.fallback_models = Some(crate::manager::runner::without_excluded_selectors(
-                    chain,
-                    &resolve(),
-                ));
-            }
+            && let Some(chain) = &spec.fallback_models
+        {
+            spec.fallback_models = Some(crate::manager::runner::without_excluded_selectors(
+                chain,
+                &resolve(),
+            ));
+        }
         if spec.extensions.is_none() && !self.inherited_extensions.is_empty() {
             spec.extensions = Some(self.inherited_extensions.clone());
         }
@@ -136,10 +137,11 @@ impl RpcProcessRunner {
             }),
         });
         if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
-            && !chain.is_empty() {
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
-                let configured = protocol.request(json!({"type":"get_protocol_info"}))
+            && !chain.is_empty()
+        {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+            let configured = protocol.request(json!({"type":"get_protocol_info"}))
                     .and_then(|pending| pending.wait_until(deadline))
                     .and_then(|response| {
                         let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
@@ -156,13 +158,13 @@ impl RpcProcessRunner {
                             if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
                         })
                     });
-                if let Err(error) = configured {
-                    utils::logger::log(
-                        "senpi-task child fallback configuration unavailable; retaining manager fallback",
-                        Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
-                    );
-                }
+            if let Err(error) = configured {
+                utils::logger::log(
+                    "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                    Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
+                );
             }
+        }
         let started = match &spec.resume_session_path {
             None => handle
                 .start_initial_prompt(&spec.prompt)

@@ -253,7 +253,6 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-
 impl BranchSummaryMessage {
     pub fn to_llm(&self) -> Message {
         summary_to_llm(

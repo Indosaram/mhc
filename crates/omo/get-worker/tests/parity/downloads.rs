@@ -1,8 +1,8 @@
 //! Port of `test/downloads.test.ts`.
 
 use get_worker::{
-    parse_rollup_rows, read_download_stats, rollup_query, route, run_downloads_rollup,
-    DownloadStats, FetchResponse, Method, Request,
+    DownloadStats, FetchResponse, Method, Request, parse_rollup_rows, read_download_stats,
+    rollup_query, route, run_downloads_rollup,
 };
 
 use crate::fakes::{Harness, StaticFetcher};
@@ -32,7 +32,10 @@ fn answer(rows: &[serde_json::Value]) -> StaticFetcher {
 #[test]
 fn rollup_query_covers_whole_utc_days_only_and_weights_by_the_sample_interval() {
     let sql = rollup_query("omo_downloads").expect("a valid dataset");
-    assert!(sql.contains("toStartOfDay(NOW() - INTERVAL '6' DAY)"), "{sql}");
+    assert!(
+        sql.contains("toStartOfDay(NOW() - INTERVAL '6' DAY)"),
+        "{sql}"
+    );
     assert!(sql.contains("SUM(_sample_interval * double1)"));
     assert!(sql.contains("blob6 != 'qa'"));
     assert!(rollup_query("omo; DROP TABLE x").is_err());
@@ -95,11 +98,13 @@ fn github_redirects_never_add_to_the_uncounted_total_and_adjustments_subtract_qa
         &h.context(),
     )
     .expect("route");
-    let body: serde_json::Value =
-        serde_json::from_str(&response.body_text()).expect("stats json");
+    let body: serde_json::Value = serde_json::from_str(&response.body_text()).expect("stats json");
     assert_eq!(body["uncountedByGitHub"], serde_json::json!(2));
     assert_eq!(body["redirectedToGitHub"], serde_json::json!(40));
-    assert_eq!(response.headers.get("Cache-Control"), Some("public, max-age=300"));
+    assert_eq!(
+        response.headers.get("Cache-Control"),
+        Some("public, max-age=300")
+    );
 }
 
 #[test]
@@ -111,5 +116,10 @@ fn a_failed_analytics_engine_call_leaves_the_stored_counts_untouched() {
     let denied = StaticFetcher::new().with(ANALYTICS_SQL, FetchResponse::new(403, "denied"));
     let error = run_downloads_rollup(h.env(), &denied).expect_err("denied");
     assert_eq!(error.message, "Analytics Engine SQL returned 403");
-    assert_eq!(read_download_stats(&h.db).expect("stats").served_from_mirror, 7);
+    assert_eq!(
+        read_download_stats(&h.db)
+            .expect("stats")
+            .served_from_mirror,
+        7
+    );
 }

@@ -48,7 +48,11 @@ impl CopyBudget {
     }
 }
 
-pub fn copy_budget(base: &Path, max_bytes: Option<u64>, space: Option<SpaceFn>) -> Result<CopyBudget> {
+pub fn copy_budget(
+    base: &Path,
+    max_bytes: Option<u64>,
+    space: Option<SpaceFn>,
+) -> Result<CopyBudget> {
     let (bavail, bsize) = match &space {
         Some(space) => space(base)?,
         None => default_space(base)?,
@@ -64,7 +68,10 @@ pub fn apply_metadata(path: &Path, info: &std::fs::Metadata) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(info.permissions().mode()))?;
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(info.permissions().mode()),
+        )?;
     }
     let atime = filetime::FileTime::from_last_access_time(info);
     let mtime = filetime::FileTime::from_last_modification_time(info);

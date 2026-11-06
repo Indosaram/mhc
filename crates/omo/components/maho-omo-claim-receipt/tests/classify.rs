@@ -1,6 +1,6 @@
 //! Port of `claim-receipt/classify.test.ts`.
 
-use maho_omo_claim_receipt::classify::{classify_claims, Claim, ClaimKind, ClaimStrength};
+use maho_omo_claim_receipt::classify::{Claim, ClaimKind, ClaimStrength, classify_claims};
 
 fn only(text: &str) -> Claim {
     let claims = classify_claims(text);

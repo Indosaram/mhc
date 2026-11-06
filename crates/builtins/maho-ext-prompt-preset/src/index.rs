@@ -128,7 +128,9 @@ fn refresh_header(ctx: &ExtensionContext, model: Option<&Model>) {
         })));
 }
 pub fn resolve_home_with(lookup: impl Fn(&str) -> Result<String, std::env::VarError>) -> String {
-    lookup("HOME").or_else(|_| lookup("USERPROFILE")).unwrap_or_default()
+    lookup("HOME")
+        .or_else(|_| lookup("USERPROFILE"))
+        .unwrap_or_default()
 }
 
 pub fn resolve_home() -> String {

@@ -7,7 +7,10 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use super::lock_publish::publish_lock_record;
-use super::lock_record::{build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released, read_lock_record};
+use super::lock_record::{
+    build_lock_record, is_lock_record_stale, is_path_absence_error, mark_lock_record_released,
+    read_lock_record,
+};
 
 type DelayFn<'a> = Box<dyn Fn(u64) + 'a>;
 type UnlinkFn<'a> = Box<dyn Fn(&Path) -> io::Result<()> + 'a>;
@@ -43,7 +46,9 @@ fn unlink_with_retry(path: &Path, deps: &LockReclaimDeps<'_>) -> LockReclaimOutc
             Some(unlink) => unlink(path),
             None => fs::remove_file(path),
         };
-        let Err(error) = result else { return LockReclaimOutcome::Removed; };
+        let Err(error) = result else {
+            return LockReclaimOutcome::Removed;
+        };
         if is_path_absence_error(&error) {
             return LockReclaimOutcome::Absent;
         }
@@ -82,7 +87,12 @@ pub fn remove_lock_record_if_unchanged(
     }
     let outcome = match read_lock_record(lock_path) {
         None => LockReclaimOutcome::Absent,
-        Some(current) if current.content != expected_record || !is_lock_record_stale(&current, stale_after_ms) => LockReclaimOutcome::Changed,
+        Some(current)
+            if current.content != expected_record
+                || !is_lock_record_stale(&current, stale_after_ms) =>
+        {
+            LockReclaimOutcome::Changed
+        }
         Some(_) => unlink_with_retry(lock_path, deps),
     };
     mark_lock_record_released(&guard_record);
@@ -115,12 +125,22 @@ mod tests {
                 let path = &path;
                 handles.push(scope.spawn(move || {
                     barrier.wait();
-                    remove_lock_record_if_unchanged(path, "", 300_000, &LockReclaimDeps::default()).expect("reclaim")
+                    remove_lock_record_if_unchanged(path, "", 300_000, &LockReclaimDeps::default())
+                        .expect("reclaim")
                 }));
             }
-            handles.into_iter().map(|handle| handle.join().expect("join")).collect::<Vec<_>>()
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("join"))
+                .collect::<Vec<_>>()
         });
-        assert_eq!(outcomes.iter().filter(|outcome| **outcome == LockReclaimOutcome::Removed).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == LockReclaimOutcome::Removed)
+                .count(),
+            1
+        );
         assert_eq!(fs::read_dir(root.path()).expect("read dir").count(), 0);
     }
 
@@ -133,19 +153,41 @@ mod tests {
         let deps = LockReclaimDeps {
             unlink: Some(Box::new(|target| {
                 if target == path {
-                    assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default()).expect("race"), LockReclaimOutcome::Busy);
-                    assert!(fs::OpenOptions::new().write(true).create_new(true).open(&path).is_err());
+                    assert_eq!(
+                        remove_lock_record_if_unchanged(
+                            &path,
+                            "",
+                            300_000,
+                            &LockReclaimDeps::default()
+                        )
+                        .expect("race"),
+                        LockReclaimOutcome::Busy
+                    );
+                    assert!(
+                        fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)
+                            .is_err()
+                    );
                     raced.set(true);
                 }
                 fs::remove_file(target)
             })),
             delay: Some(Box::new(|_| panic!("no retries expected"))),
         };
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &deps).expect("reclaim"), LockReclaimOutcome::Removed);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &deps).expect("reclaim"),
+            LockReclaimOutcome::Removed
+        );
         assert!(raced.get());
         let replacement = build_lock_record("replacement");
         assert!(publish_lock_record(&path, &replacement).expect("publish"));
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default()).expect("late observer"), LockReclaimOutcome::Changed);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default())
+                .expect("late observer"),
+            LockReclaimOutcome::Changed
+        );
         assert_eq!(fs::read_to_string(&path).expect("read"), replacement);
         mark_lock_record_released(&replacement);
     }
@@ -162,23 +204,39 @@ mod tests {
             unlink: Some(Box::new(|target| {
                 if target == path {
                     calls.set(calls.get() + 1);
-                    if calls.get() < 3 { return Err(io::Error::from_raw_os_error(libc::EPERM)); }
+                    if calls.get() < 3 {
+                        return Err(io::Error::from_raw_os_error(libc::EPERM));
+                    }
                 }
                 fs::remove_file(target)
             })),
         };
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &deps).expect("reclaim"), LockReclaimOutcome::Removed);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &deps).expect("reclaim"),
+            LockReclaimOutcome::Removed
+        );
         assert_eq!(calls.get(), 3);
         assert_eq!(*delays.borrow(), [25, 25]);
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default()).expect("absent"), LockReclaimOutcome::Absent);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default())
+                .expect("absent"),
+            LockReclaimOutcome::Absent
+        );
         torn_lock(&path);
         let stuck = LockReclaimDeps {
             unlink: Some(Box::new(|target| {
-                if target == path { Err(io::Error::other("unlink failed")) } else { fs::remove_file(target) }
+                if target == path {
+                    Err(io::Error::other("unlink failed"))
+                } else {
+                    fs::remove_file(target)
+                }
             })),
             delay: Some(Box::new(|_| panic!("nonretryable"))),
         };
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &stuck).expect("stuck"), LockReclaimOutcome::Stuck);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &stuck).expect("stuck"),
+            LockReclaimOutcome::Stuck
+        );
         assert!(path.exists());
     }
 
@@ -189,9 +247,16 @@ mod tests {
         torn_lock(&path);
         let guard = reclaim_guard_path(&path, "");
         torn_lock(&guard);
-        assert_eq!(remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default()).expect("busy"), LockReclaimOutcome::Busy);
+        assert_eq!(
+            remove_lock_record_if_unchanged(&path, "", 300_000, &LockReclaimDeps::default())
+                .expect("busy"),
+            LockReclaimOutcome::Busy
+        );
         assert!(!guard.exists());
         assert!(path.exists());
-        assert_eq!(reclaim_guard_path(Path::new("lock"), "").to_string_lossy(), "lock.reclaim-e3b0c44298fc1c14");
+        assert_eq!(
+            reclaim_guard_path(Path::new("lock"), "").to_string_lossy(),
+            "lock.reclaim-e3b0c44298fc1c14"
+        );
     }
 }

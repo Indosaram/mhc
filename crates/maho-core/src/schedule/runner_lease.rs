@@ -50,52 +50,103 @@ pub(crate) struct Holder {
 
 pub(crate) fn native_identity() -> std::result::Result<(u64, u64), String> {
     static IDENTITY: OnceLock<std::result::Result<(u64, u64), String>> = OnceLock::new();
-    IDENTITY.get_or_init(|| {
-        #[cfg(target_os = "linux")]
-        {
-            let stat = fs::read_to_string("/proc/stat").map_err(|error| error.to_string())?;
-            let boot = stat.lines().find_map(|line| line.strip_prefix("btime ").and_then(|value| value.parse::<u64>().ok()))
-                .and_then(|seconds| seconds.checked_mul(1000)).ok_or("cannot read boot instant")?;
-            let stat = fs::read_to_string("/proc/self/stat").map_err(|error| error.to_string())?;
-            let ticks = stat.rsplit_once(") ").and_then(|(_, fields)| fields.split_whitespace().nth(19))
-                .and_then(|ticks| ticks.parse::<u64>().ok()).ok_or("cannot read process start")?;
-            let hz = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK).map_err(|error| error.to_string())?
-                .and_then(|hz| u64::try_from(hz).ok()).filter(|hz| *hz > 0).ok_or("cannot read clock ticks")?;
-            let start = ticks.checked_mul(1000).and_then(|ticks| boot.checked_add(ticks / hz)).ok_or("process start overflow")?;
-            Ok((boot, start / 1000 * 1000))
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let run = |program: &str, args: &[&str]| -> std::result::Result<String, String> {
-                let output = std::process::Command::new(program).args(args).env("LC_ALL", "C").output().map_err(|error| error.to_string())?;
-                if !output.status.success() { return Err(format!("{program}: {}", output.status)); }
-                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            };
-            let boot = run("/usr/sbin/sysctl", &["-n", "kern.boottime"])?;
-            let boot = boot.split("sec = ").nth(1).and_then(|tail| tail.split(',').next()).and_then(|value| value.trim().parse::<u64>().ok())
-                .and_then(|seconds| seconds.checked_mul(1000)).ok_or("cannot read boot instant")?;
-            let start = run("/bin/ps", &["-o", "lstart=", "-p", &std::process::id().to_string()])?;
-            let start = run("/bin/date", &["-j", "-f", "%a %b %e %T %Y", &start, "+%s"])?;
-            let start = start.parse::<u64>().ok().and_then(|seconds| seconds.checked_mul(1000)).ok_or("cannot read process start")?;
-            Ok((boot, start))
-        }
-        #[cfg(windows)]
-        {
-            // In process, never a `powershell`/WMI probe: that fork ran on every session open before the
-            // first write and took up to a minute on a loaded machine. Boot is wall clock minus uptime
-            // (`same_boot` tolerates the jitter); start is this process's creation FILETIME.
-            const FILETIME_UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
-            let now = u64::try_from(std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis())
+    IDENTITY
+        .get_or_init(|| {
+            #[cfg(target_os = "linux")]
+            {
+                let stat = fs::read_to_string("/proc/stat").map_err(|error| error.to_string())?;
+                let boot = stat
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("btime ")
+                            .and_then(|value| value.parse::<u64>().ok())
+                    })
+                    .and_then(|seconds| seconds.checked_mul(1000))
+                    .ok_or("cannot read boot instant")?;
+                let stat =
+                    fs::read_to_string("/proc/self/stat").map_err(|error| error.to_string())?;
+                let ticks = stat
+                    .rsplit_once(") ")
+                    .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+                    .and_then(|ticks| ticks.parse::<u64>().ok())
+                    .ok_or("cannot read process start")?;
+                let hz = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+                    .map_err(|error| error.to_string())?
+                    .and_then(|hz| u64::try_from(hz).ok())
+                    .filter(|hz| *hz > 0)
+                    .ok_or("cannot read clock ticks")?;
+                let start = ticks
+                    .checked_mul(1000)
+                    .and_then(|ticks| boot.checked_add(ticks / hz))
+                    .ok_or("process start overflow")?;
+                Ok((boot, start / 1000 * 1000))
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let run = |program: &str, args: &[&str]| -> std::result::Result<String, String> {
+                    let output = std::process::Command::new(program)
+                        .args(args)
+                        .env("LC_ALL", "C")
+                        .output()
+                        .map_err(|error| error.to_string())?;
+                    if !output.status.success() {
+                        return Err(format!("{program}: {}", output.status));
+                    }
+                    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                };
+                let boot = run("/usr/sbin/sysctl", &["-n", "kern.boottime"])?;
+                let boot = boot
+                    .split("sec = ")
+                    .nth(1)
+                    .and_then(|tail| tail.split(',').next())
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .and_then(|seconds| seconds.checked_mul(1000))
+                    .ok_or("cannot read boot instant")?;
+                let start = run(
+                    "/bin/ps",
+                    &["-o", "lstart=", "-p", &std::process::id().to_string()],
+                )?;
+                let start = run("/bin/date", &["-j", "-f", "%a %b %e %T %Y", &start, "+%s"])?;
+                let start = start
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|seconds| seconds.checked_mul(1000))
+                    .ok_or("cannot read process start")?;
+                Ok((boot, start))
+            }
+            #[cfg(windows)]
+            {
+                // In process, never a `powershell`/WMI probe: that fork ran on every session open before the
+                // first write and took up to a minute on a loaded machine. Boot is wall clock minus uptime
+                // (`same_boot` tolerates the jitter); start is this process's creation FILETIME.
+                const FILETIME_UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+                let now = u64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|error| error.to_string())?
+                        .as_millis(),
+                )
                 .map_err(|error| error.to_string())?;
-            let boot = now.checked_sub(winsafe::GetTickCount64()).ok_or("cannot read boot instant")?;
-            let (created, _, _, _) = winsafe::HPROCESS::GetCurrentProcess().GetProcessTimes().map_err(|error| format!("process identity: {error}"))?;
-            let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
-            let start = ticks.checked_sub(FILETIME_UNIX_EPOCH_TICKS).ok_or("invalid process start")? / 10_000;
-            Ok((boot, start / 1000 * 1000))
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        { Err("session holder identity is unsupported on this platform".into()) }
-    }).clone()
+                let boot = now
+                    .checked_sub(winsafe::GetTickCount64())
+                    .ok_or("cannot read boot instant")?;
+                let (created, _, _, _) = winsafe::HPROCESS::GetCurrentProcess()
+                    .GetProcessTimes()
+                    .map_err(|error| format!("process identity: {error}"))?;
+                let ticks =
+                    (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+                let start = ticks
+                    .checked_sub(FILETIME_UNIX_EPOCH_TICKS)
+                    .ok_or("invalid process start")?
+                    / 10_000;
+                Ok((boot, start / 1000 * 1000))
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+            {
+                Err("session holder identity is unsupported on this platform".into())
+            }
+        })
+        .clone()
 }
 
 #[derive(Debug)]
@@ -191,9 +242,15 @@ fn hold_session_file_with_identity(
 ) -> Result<SessionHold> {
     let directory = session_holders_dir(session_file, session_id)?;
     ensure_dir(&directory)?;
-    let admission = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+    let admission = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
         .open(directory.join("move-admission"))?;
-    admission.try_lock_shared().map_err(|error| ScheduleError::Invalid(format!("session is being moved: {error}")))?;
+    admission
+        .try_lock_shared()
+        .map_err(|error| ScheduleError::Invalid(format!("session is being moved: {error}")))?;
     let path = directory.join(format!("{}.json", identity.pid));
     let mut records = holder_records()
         .lock()
@@ -699,7 +756,11 @@ mod holder_tests {
             hold_session_file_with_identity(&file, "session", "/work", true, identity(), 0, None);
         // Then
         assert!(result.is_err());
-        assert!(!session_holders_dir(&file, "session")?.join("101.json").exists());
+        assert!(
+            !session_holders_dir(&file, "session")?
+                .join("101.json")
+                .exists()
+        );
         Ok(())
     }
 

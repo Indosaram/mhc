@@ -7,11 +7,11 @@ use std::{
     sync::Arc,
 };
 
+use crate::worker::spawn_supervisor_support::install_memory_hooks as install_hooks;
 use memory_core::git::{
     GitError, GitExec, GitExecOptions, GitExecResult, GitHookInstaller, GitMemoryRepo,
     GitMemoryRepoOptions, system_git_exec,
 };
-use crate::worker::spawn_supervisor_support::install_memory_hooks as install_hooks;
 
 use super::types::{MemoryCommandDeps, MemoryCommandIdentity};
 

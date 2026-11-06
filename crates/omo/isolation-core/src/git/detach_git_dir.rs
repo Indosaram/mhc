@@ -289,7 +289,10 @@ pub fn detach_git_dir(worktree_root: &Path, source_common_dir: &Path) -> Result<
                 &private_dir.join("refs").join(&name),
             )?;
         }
-        copy_optional(&common.join("packed-refs"), &private_dir.join("packed-refs"))?;
+        copy_optional(
+            &common.join("packed-refs"),
+            &private_dir.join("packed-refs"),
+        )?;
         let mut names: Vec<String> = vec![
             "index".to_string(),
             "info/sparse-checkout".to_string(),
@@ -346,7 +349,14 @@ pub struct NestedGitResult {
 pub fn scan_nested_git_dirs(merged: &Path) -> Result<NestedGitResult> {
     let mut result = NestedGitResult::default();
     let root = canonical(merged)?;
-    fn walk(dir: &Path, rel: &Path, depth: usize, root: &Path, merged: &Path, result: &mut NestedGitResult) -> Result<()> {
+    fn walk(
+        dir: &Path,
+        rel: &Path,
+        depth: usize,
+        root: &Path,
+        merged: &Path,
+        result: &mut NestedGitResult,
+    ) -> Result<()> {
         if depth > 0 {
             let entry = dir.join(".git");
             if exists(&entry)? {
@@ -386,7 +396,14 @@ pub fn scan_nested_git_dirs(merged: &Path) -> Result<NestedGitResult> {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type()?.is_dir() && name != ".git" && name != "node_modules" {
-                walk(&entry.path(), &rel.join(&name), depth + 1, root, merged, result)?;
+                walk(
+                    &entry.path(),
+                    &rel.join(&name),
+                    depth + 1,
+                    root,
+                    merged,
+                    result,
+                )?;
             }
         }
         Ok(())

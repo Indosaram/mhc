@@ -108,7 +108,9 @@ pub fn write_file_atomically_with(
             Some(fsync) => fsync(&directory),
             None => directory.sync_all(),
         });
-    if let Err(error) = synced && !is_tolerated_fsync_error(&error) {
+    if let Err(error) = synced
+        && !is_tolerated_fsync_error(&error)
+    {
         return Err(error);
     }
     Ok(())

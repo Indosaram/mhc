@@ -25,7 +25,8 @@ pub fn read_session_ancestry(
 ) -> Option<SessionAncestry> {
     if let Some(ctx) = session_context
         && let Some(role) = ctx.get("role")
-        && !role.is_empty() {
+        && !role.is_empty()
+    {
         let depth = ctx
             .get("depth")
             .and_then(|d| d.parse::<u32>().ok())
@@ -70,7 +71,10 @@ pub fn parse_child_extension_event(value: &JsonValue) -> Option<ChildExtensionEv
     if permission != "screen_recording" && permission != "accessibility" {
         return None;
     }
-    let app = obj.get("app").and_then(JsonValue::as_str).map(ToString::to_string);
+    let app = obj
+        .get("app")
+        .and_then(JsonValue::as_str)
+        .map(ToString::to_string);
     Some(ChildExtensionEvent {
         r#type: event_type.to_string(),
         permission: permission.to_string(),
@@ -98,13 +102,16 @@ pub fn parse_forwarded_child_event(value: &JsonValue) -> Option<ForwardedChildEv
 }
 
 pub type ReportPermissionFn = Arc<dyn Fn(PermissionDeniedData) + Send + Sync>;
-type InternalReportFn = Arc<dyn Fn(String, Option<String>, Option<Arc<dyn ComponentLogger>>) + Send + Sync>;
+type InternalReportFn =
+    Arc<dyn Fn(String, Option<String>, Option<Arc<dyn ComponentLogger>>) + Send + Sync>;
 
 pub fn wire_computer_permission_events(
     api: &mut ExtensionApi,
     env: &BTreeMap<String, String>,
 ) -> ReportPermissionFn {
-    let latches = Arc::new(Mutex::new(std::collections::HashSet::<(String, String)>::new()));
+    let latches = Arc::new(Mutex::new(
+        std::collections::HashSet::<(String, String)>::new(),
+    ));
     let current_session_id = Arc::new(Mutex::new(Option::<String>::None));
     let unsubscribe_slot: Arc<Mutex<Option<BusSubscription>>> = Arc::new(Mutex::new(None));
     let env_captured = env.clone();
@@ -120,7 +127,12 @@ pub fn wire_computer_permission_events(
         let events = api.events.clone();
         let runtime = api.runtime.clone();
         Arc::new(move || {
-            ExtensionApi::new(loaded.clone(), profile.clone(), events.clone(), runtime.clone())
+            ExtensionApi::new(
+                loaded.clone(),
+                profile.clone(),
+                events.clone(),
+                runtime.clone(),
+            )
         })
     };
 
@@ -134,56 +146,79 @@ pub fn wire_computer_permission_events(
         let logger_slot_reporter = Arc::clone(&logger_slot);
         let latches_clone = Arc::clone(&latches);
 
-        Arc::new(move |permission: String, app: Option<String>, logger: Option<Arc<dyn ComponentLogger>>| {
-            let sid = sess_id_reporter.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let Some(session_id) = sid else {
-                return;
-            };
+        Arc::new(
+            move |permission: String,
+                  app: Option<String>,
+                  logger: Option<Arc<dyn ComponentLogger>>| {
+                let sid = sess_id_reporter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let Some(session_id) = sid else {
+                    return;
+                };
 
-            if read_session_ancestry(None, &env_captured).is_some() {
-                let mut event_obj = serde_json::Map::new();
-                event_obj.insert("type".to_string(), JsonValue::String(CHILD_PERMISSION_EVENT.to_string()));
-                event_obj.insert("permission".to_string(), JsonValue::String(permission));
-                if let Some(app_name) = app {
-                    event_obj.insert("app".to_string(), JsonValue::String(app_name));
-                }
-                let payload = JsonValue::Object(event_obj);
-                api_events.emit(CHILD_PERMISSION_EVENT, &payload);
-                return;
-            }
-
-            {
-                let mut map = latches_clone.lock().unwrap_or_else(|e| e.into_inner());
-                let key = (session_id.clone(), permission.clone());
-                if map.contains(&key) {
+                if read_session_ancestry(None, &env_captured).is_some() {
+                    let mut event_obj = serde_json::Map::new();
+                    event_obj.insert(
+                        "type".to_string(),
+                        JsonValue::String(CHILD_PERMISSION_EVENT.to_string()),
+                    );
+                    event_obj.insert("permission".to_string(), JsonValue::String(permission));
+                    if let Some(app_name) = app {
+                        event_obj.insert("app".to_string(), JsonValue::String(app_name));
+                    }
+                    let payload = JsonValue::Object(event_obj);
+                    api_events.emit(CHILD_PERMISSION_EVENT, &payload);
                     return;
                 }
-                map.insert(key);
-            }
 
-            let mut data = serde_json::Map::new();
-            data.insert("session_id".to_string(), JsonValue::String(session_id.clone()));
-            data.insert("permission".to_string(), JsonValue::String(permission.clone()));
-            if let Some(app_name) = app {
-                data.insert("app".to_string(), JsonValue::String(app_name));
-            }
-            let payload = JsonValue::Object(data);
-            api_events.emit(ROOT_PERMISSION_EVENT, &payload);
+                {
+                    let mut map = latches_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let key = (session_id.clone(), permission.clone());
+                    if map.contains(&key) {
+                        return;
+                    }
+                    map.insert(key);
+                }
 
-            let mut entry = serde_json::Map::new();
-            entry.insert("session_id".to_string(), JsonValue::String(session_id));
-            entry.insert("permission".to_string(), JsonValue::String(permission));
-            let api_inst = api_appender();
-            if let Err(e) = api_inst.append_entry(ROOT_PERMISSION_EVENT, Some(JsonValue::Object(entry))) {
-                let active_logger = logger.or_else(|| logger_slot_reporter.lock().unwrap_or_else(|e| e.into_inner()).clone());
-                if let Some(l) = active_logger {
-                    l.warn(
+                let mut data = serde_json::Map::new();
+                data.insert(
+                    "session_id".to_string(),
+                    JsonValue::String(session_id.clone()),
+                );
+                data.insert(
+                    "permission".to_string(),
+                    JsonValue::String(permission.clone()),
+                );
+                if let Some(app_name) = app {
+                    data.insert("app".to_string(), JsonValue::String(app_name));
+                }
+                let payload = JsonValue::Object(data);
+                api_events.emit(ROOT_PERMISSION_EVENT, &payload);
+
+                let mut entry = serde_json::Map::new();
+                entry.insert("session_id".to_string(), JsonValue::String(session_id));
+                entry.insert("permission".to_string(), JsonValue::String(permission));
+                let api_inst = api_appender();
+                if let Err(e) =
+                    api_inst.append_entry(ROOT_PERMISSION_EVENT, Some(JsonValue::Object(entry)))
+                {
+                    let active_logger = logger.or_else(|| {
+                        logger_slot_reporter
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone()
+                    });
+                    if let Some(l) = active_logger {
+                        l.warn(
                         &format!("Computer permission event emitted, but its session marker could not be persisted: {e}"),
                         None,
                     );
+                    }
                 }
-            }
-        })
+            },
+        )
     };
 
     let logger_slot_for_start = Arc::clone(&logger_slot);
@@ -233,24 +268,30 @@ pub fn wire_computer_permission_events(
 
     let sess_raw = Arc::clone(&current_session_id);
     let setup_child_on_raw = Arc::clone(&setup_child_listener);
-    let raw_sub_start = api.events.on("session_start", Arc::new(move |payload| {
-        let sid = payload
-            .get("session_id")
-            .or_else(|| payload.get("sessionId"))
-            .and_then(|v| v.as_str());
-        if let Some(id) = sid {
-            *sess_raw.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
-            setup_child_on_raw();
-        }
-    }));
+    let raw_sub_start = api.events.on(
+        "session_start",
+        Arc::new(move |payload| {
+            let sid = payload
+                .get("session_id")
+                .or_else(|| payload.get("sessionId"))
+                .and_then(|v| v.as_str());
+            if let Some(id) = sid {
+                *sess_raw.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
+                setup_child_on_raw();
+            }
+        }),
+    );
     std::mem::forget(raw_sub_start);
 
     let sess_raw_shut = Arc::clone(&current_session_id);
     let unsub_on_raw = Arc::clone(&unsubscribe_slot);
-    let raw_sub_shut = api.events.on("session_shutdown", Arc::new(move |_payload| {
-        *sess_raw_shut.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *unsub_on_raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }));
+    let raw_sub_shut = api.events.on(
+        "session_shutdown",
+        Arc::new(move |_payload| {
+            *sess_raw_shut.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *unsub_on_raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }),
+    );
     std::mem::forget(raw_sub_shut);
 
     let setup_child_on_evt = Arc::clone(&setup_child_listener);
@@ -262,7 +303,9 @@ pub fn wire_computer_permission_events(
                 return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
             }
             *sess_id_clone.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
-            *logger_slot_for_start.lock().unwrap_or_else(|e| e.into_inner()) = ctx.logger.clone();
+            *logger_slot_for_start
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = ctx.logger.clone();
 
             setup_child_on_evt();
 
@@ -277,7 +320,9 @@ pub fn wire_computer_permission_events(
         maho_ext_api::EventKind::SessionShutdown,
         Arc::new(move |_event, _ctx| {
             *sess_id_clone.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            *logger_slot_for_shutdown.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *logger_slot_for_shutdown
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             let mut slot = unsub_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = None;
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })

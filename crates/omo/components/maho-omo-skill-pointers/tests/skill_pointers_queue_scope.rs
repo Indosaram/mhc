@@ -5,7 +5,8 @@ use maho_omo_skill_pointers::*;
 use support::*;
 
 #[tokio::test]
-async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_ride_inside_the_same_message() {
+async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_ride_inside_the_same_message()
+ {
     let harness = setup_harness("/skills/");
     let result = dispatch_input(
         &harness,
@@ -13,7 +14,8 @@ async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_
         InputSource::Interactive,
         Some(StreamingBehavior::Steer),
         "test-session",
-    ).await;
+    )
+    .await;
 
     let EventResult::Input(InputEventResult::Transform { text, .. }) = result else {
         panic!("expected Transform");
@@ -24,7 +26,8 @@ async fn given_a_queued_prompt_when_streaming_behavior_is_set_then_all_pointers_
 }
 
 #[tokio::test]
-async fn given_ulw_loop_session_scope_when_the_input_session_id_is_known_then_the_pointer_carries_its_normalized_scope() {
+async fn given_ulw_loop_session_scope_when_the_input_session_id_is_known_then_the_pointer_carries_its_normalized_scope()
+ {
     let harness = setup_harness("/skills/");
     let result = dispatch_input(
         &harness,
@@ -32,18 +35,25 @@ async fn given_ulw_loop_session_scope_when_the_input_session_id_is_known_then_th
         InputSource::Interactive,
         None,
         "session/a weird",
-    ).await;
+    )
+    .await;
 
-    expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
-    ]);
+    expect_pointer_injections(
+        &harness,
+        &result,
+        &[ExpectedPointer {
+            custom_type: ULW_LOOP_CUSTOM_TYPE,
+            skill_name: "ulw-loop",
+        }],
+    );
     let content = injected_content(&harness, ULW_LOOP_CUSTOM_TYPE);
     assert!(content.contains("`mhc ulw-loop <subcommand> --json`"));
     assert!(content.contains(".omo/ulw-loop/session-a-weird/"));
 }
 
 #[tokio::test]
-async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_then_the_pointer_uses_that_events_scope() {
+async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_then_the_pointer_uses_that_events_scope()
+ {
     let harness = setup_harness("/skills/");
     let _ = dispatch_input(
         &harness,
@@ -51,7 +61,8 @@ async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_t
         InputSource::Interactive,
         None,
         "previous-session",
-    ).await;
+    )
+    .await;
 
     let prompt = "/skill:ulw-plan then ulw-loop";
     let result = dispatch_input(
@@ -60,7 +71,8 @@ async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_t
         InputSource::Rpc,
         Some(StreamingBehavior::Steer),
         "new/session",
-    ).await;
+    )
+    .await;
 
     let EventResult::Input(InputEventResult::Transform { text, .. }) = result else {
         panic!("expected Transform");
@@ -72,19 +84,19 @@ async fn given_ulw_loop_session_scope_when_a_queued_rpc_input_changes_sessions_t
 }
 
 #[tokio::test]
-async fn given_ulw_loop_session_scope_when_the_input_session_id_is_unknown_then_the_pointer_omits_the_session_flag() {
+async fn given_ulw_loop_session_scope_when_the_input_session_id_is_unknown_then_the_pointer_omits_the_session_flag()
+ {
     let harness = setup_harness("/skills/");
-    let result = dispatch_input(
-        &harness,
-        "run ulw-loop",
-        InputSource::Interactive,
-        None,
-        "",
-    ).await;
+    let result = dispatch_input(&harness, "run ulw-loop", InputSource::Interactive, None, "").await;
 
-    expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
-    ]);
+    expect_pointer_injections(
+        &harness,
+        &result,
+        &[ExpectedPointer {
+            custom_type: ULW_LOOP_CUSTOM_TYPE,
+            skill_name: "ulw-loop",
+        }],
+    );
     let content = injected_content(&harness, ULW_LOOP_CUSTOM_TYPE);
     assert!(!content.contains("--session-id"));
     assert!(!content.contains(".omo/ulw-loop/"));

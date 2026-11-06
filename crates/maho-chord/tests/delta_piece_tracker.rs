@@ -1,6 +1,6 @@
-use maho_chord::{delta::*, JsonValue};
-use std::result::Result;
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
+use std::result::Result;
 
 fn replay(prepared: &Prepared) -> Result<(), DeltaError> {
     assert_eq!(

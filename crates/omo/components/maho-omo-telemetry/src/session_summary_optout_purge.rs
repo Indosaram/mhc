@@ -271,7 +271,8 @@ mod tests {
         std::fs::create_dir_all(&owners).unwrap();
         std::fs::write(
             owners.join("2.json"),
-            json!({"pid": 2, "bootId": "boot-live", "startTime": null, "heartbeatAt": 0.0}).to_string(),
+            json!({"pid": 2, "bootId": "boot-live", "startTime": null, "heartbeatAt": 0.0})
+                .to_string(),
         )
         .unwrap();
         fixture.alive.store(true, Ordering::SeqCst);

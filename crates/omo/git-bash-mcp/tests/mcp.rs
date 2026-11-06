@@ -272,7 +272,10 @@ fn run_rejects_blank_command_without_spawning() {
     let response = call("run", json!({ "command": "   " }), &options);
 
     assert!(is_error(&response));
-    assert_eq!(text_of(&response), "run.command must be a non-empty string.");
+    assert_eq!(
+        text_of(&response),
+        "run.command must be a non-empty string."
+    );
     assert_eq!(*sink.lock().expect("capture"), CapturedRun::default());
 }
 
@@ -327,7 +330,10 @@ fn stdio_server_serves_on_windows_with_git_bash_and_disables_idle_timeout() {
     );
 
     assert!(matches!(outcome, GitBashServerOutcome::Served(_)));
-    assert!(output.contains("\"serverInfo\":{\"name\":\"git_bash\""), "{output}");
+    assert!(
+        output.contains("\"serverInfo\":{\"name\":\"git_bash\""),
+        "{output}"
+    );
     let events = lifecycle.lock().expect("lifecycle").clone();
     let started = events
         .iter()
@@ -411,7 +417,10 @@ fn run_schema_matches_shell_command_conventions() {
         &windows_options(),
     );
 
-    let tools = response["result"]["tools"].as_array().expect("tools").clone();
+    let tools = response["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .clone();
     let run = tools
         .iter()
         .find(|tool| tool["name"] == json!("run"))
@@ -441,10 +450,7 @@ fn run_schema_matches_shell_command_conventions() {
     );
     assert_eq!(schema["required"], json!(["command"]));
     assert_eq!(schema["additionalProperties"], json!(false));
-    assert_eq!(
-        tool_names(&response),
-        vec!["run", "which_bash", "diagnose"]
-    );
+    assert_eq!(tool_names(&response), vec!["run", "which_bash", "diagnose"]);
 }
 
 #[test]
@@ -522,7 +528,11 @@ fn malformed_stdio_line_writes_method_not_found_envelope() {
 
 #[test]
 fn run_off_windows_returns_native_windows_error() {
-    let response = call("run", json!({ "command": "printf ok" }), &non_windows_options("linux"));
+    let response = call(
+        "run",
+        json!({ "command": "printf ok" }),
+        &non_windows_options("linux"),
+    );
 
     assert!(is_error(&response));
     assert_eq!(
@@ -701,7 +711,10 @@ fn stdio_server_writes_responses_for_a_windows_handshake() {
         .map(|line| serde_json::from_str(line).expect("json line"))
         .collect();
     assert_eq!(responses.len(), 2);
-    assert_eq!(responses[0]["result"]["serverInfo"]["name"], json!("git_bash"));
+    assert_eq!(
+        responses[0]["result"]["serverInfo"]["name"],
+        json!("git_bash")
+    );
     assert_eq!(
         tool_names(&responses[1]),
         vec!["run", "which_bash", "diagnose"]

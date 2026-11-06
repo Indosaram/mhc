@@ -38,26 +38,52 @@ pub fn source_box(src: &str, max_width: Option<usize>) -> MermaidArt {
     let rule = "─".repeat(sat(inner, string_width(&title)));
     plain.push(format!("╭{title}{rule}╮"));
     styled.push(vec![
-        Span { text: String::from("╭"), cls: Cls::Border },
-        Span { text: title.clone(), cls: Cls::Title },
-        Span { text: format!("{rule}╮"), cls: Cls::Border },
+        Span {
+            text: String::from("╭"),
+            cls: Cls::Border,
+        },
+        Span {
+            text: title.clone(),
+            cls: Cls::Title,
+        },
+        Span {
+            text: format!("{rule}╮"),
+            cls: Cls::Border,
+        },
     ]);
 
     for line in &body {
         let pad = " ".repeat(sat(content_width, string_width(line)));
         plain.push(format!("│ {line}{pad} │"));
         styled.push(vec![
-            Span { text: String::from("│ "), cls: Cls::Border },
-            Span { text: line.clone(), cls: Cls::Text },
-            Span { text: format!("{pad} │"), cls: Cls::Border },
+            Span {
+                text: String::from("│ "),
+                cls: Cls::Border,
+            },
+            Span {
+                text: line.clone(),
+                cls: Cls::Text,
+            },
+            Span {
+                text: format!("{pad} │"),
+                cls: Cls::Border,
+            },
         ]);
     }
 
     let bottom = format!("╰{}╯", "─".repeat(inner));
     plain.push(bottom.clone());
-    styled.push(vec![Span { text: bottom, cls: Cls::Border }]);
+    styled.push(vec![Span {
+        text: bottom,
+        cls: Cls::Border,
+    }]);
 
-    MermaidArt { plain, styled, width: inner + 2, warnings: Vec::new() }
+    MermaidArt {
+        plain,
+        styled,
+        width: inner + 2,
+        warnings: Vec::new(),
+    }
 }
 
 fn chunk_line(line: &str, limit: Option<usize>) -> Vec<String> {

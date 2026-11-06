@@ -43,7 +43,11 @@ pub struct SessionSummaryLru {
 
 impl SessionSummaryLru {
     pub fn new(budget: SummaryCacheBudget) -> Self {
-        Self { entries: IndexMap::new(), budget, retained_text_bytes: 0 }
+        Self {
+            entries: IndexMap::new(),
+            budget,
+            retained_text_bytes: 0,
+        }
     }
 
     pub fn size(&self) -> usize {
@@ -58,7 +62,9 @@ impl SessionSummaryLru {
         let index = self.entries.get_index_of(key)?;
         let last = self.entries.len() - 1;
         self.entries.move_index(index, last);
-        self.entries.get_index(last).map(|(_, retained)| retained.entry.clone())
+        self.entries
+            .get_index(last)
+            .map(|(_, retained)| retained.entry.clone())
     }
 
     pub fn drop_key(&mut self, key: &str) {
@@ -75,7 +81,8 @@ impl SessionSummaryLru {
         if text_bytes > self.budget.max_text_bytes {
             return;
         }
-        self.entries.insert(key.to_owned(), RetainedEntry { entry, text_bytes });
+        self.entries
+            .insert(key.to_owned(), RetainedEntry { entry, text_bytes });
         self.retained_text_bytes += text_bytes;
         self.evict_until_within_budget();
     }
@@ -86,8 +93,12 @@ impl SessionSummaryLru {
     }
 
     fn evict_until_within_budget(&mut self) {
-        while self.entries.len() > self.budget.max_entries || self.retained_text_bytes > self.budget.max_text_bytes {
-            let Some((_, oldest)) = self.entries.shift_remove_index(0) else { break };
+        while self.entries.len() > self.budget.max_entries
+            || self.retained_text_bytes > self.budget.max_text_bytes
+        {
+            let Some((_, oldest)) = self.entries.shift_remove_index(0) else {
+                break;
+            };
             self.retained_text_bytes = self.retained_text_bytes.saturating_sub(oldest.text_bytes);
         }
     }
@@ -100,7 +111,10 @@ mod tests {
 
     fn entry(text: &str) -> SummaryEntry {
         SummaryEntry {
-            stamp: FileStamp { size: 1, mtime_ms: 1.0 },
+            stamp: FileStamp {
+                size: 1,
+                mtime_ms: 1.0,
+            },
             summary: Arc::new(SessionSummary {
                 header: json!({ "type": "session", "id": "s" }),
                 name: None,
@@ -116,15 +130,24 @@ mod tests {
 
     #[test]
     fn retaining_and_getting_round_trips() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 4, max_text_bytes: 1024 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 4,
+            max_text_bytes: 1024,
+        });
         lru.retain("a", entry("hello"));
         assert_eq!(lru.size(), 1);
-        assert_eq!(lru.get("a").expect("entry").summary.all_messages_text, "hello");
+        assert_eq!(
+            lru.get("a").expect("entry").summary.all_messages_text,
+            "hello"
+        );
     }
 
     #[test]
     fn the_entry_ceiling_evicts_the_least_recently_used() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 2, max_text_bytes: 1024 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 2,
+            max_text_bytes: 1024,
+        });
         lru.retain("a", entry("a"));
         lru.retain("b", entry("b"));
         lru.get("a");
@@ -135,7 +158,10 @@ mod tests {
 
     #[test]
     fn the_byte_ceiling_evicts_until_it_holds() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 100, max_text_bytes: 5 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 100,
+            max_text_bytes: 5,
+        });
         lru.retain("a", entry("abc"));
         lru.retain("b", entry("de"));
         assert!(lru.text_bytes() <= 5);
@@ -143,7 +169,10 @@ mod tests {
 
     #[test]
     fn an_oversized_summary_is_never_retained() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 100, max_text_bytes: 3 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 100,
+            max_text_bytes: 3,
+        });
         lru.retain("big", entry("way too long"));
         assert!(lru.get("big").is_none());
         assert_eq!(lru.size(), 0);
@@ -151,7 +180,10 @@ mod tests {
 
     #[test]
     fn a_hit_promotes_and_re_retaining_moves_to_the_end() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 3, max_text_bytes: 1024 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 3,
+            max_text_bytes: 1024,
+        });
         lru.retain("a", entry("a"));
         lru.retain("b", entry("b"));
         lru.retain("c", entry("c"));
@@ -167,7 +199,10 @@ mod tests {
 
     #[test]
     fn clear_drops_everything() {
-        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 4, max_text_bytes: 1024 });
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget {
+            max_entries: 4,
+            max_text_bytes: 1024,
+        });
         lru.retain("a", entry("x"));
         lru.clear();
         assert_eq!(lru.size(), 0);

@@ -130,10 +130,7 @@ impl SessionSummaryRecorder {
             now,
             this: Mutex::new(Weak::new()),
         });
-        *recorder
-            .this
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&recorder);
+        *recorder.this.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&recorder);
         recorder
     }
 
@@ -470,7 +467,13 @@ impl SessionSummaryRecorder {
         entry
     }
 
-    async fn close(&self, session_hash: &str, entry: LiveWindow, ended_by: EndedBy, keep_file: bool) {
+    async fn close(
+        &self,
+        session_hash: &str,
+        entry: LiveWindow,
+        ended_by: EndedBy,
+        keep_file: bool,
+    ) {
         let window = entry
             .window
             .clone()
@@ -743,7 +746,10 @@ mod tests {
         let hash = "c".repeat(64);
         recorder.record_turn(&hash, turn(1)).await;
         recorder.finish(&hash, Some("reload")).await;
-        assert_eq!(fixture.sent.lock().unwrap()[0].properties["ended_by"], "reload");
+        assert_eq!(
+            fixture.sent.lock().unwrap()[0].properties["ended_by"],
+            "reload"
+        );
         assert_eq!(stored(&fixture, &hash)["seq"], 1);
         recorder.record_turn(&hash, turn(2)).await;
         recorder.finish(&hash, Some("shutdown")).await;

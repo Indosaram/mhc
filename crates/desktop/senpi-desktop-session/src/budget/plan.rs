@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
-use senpi_desktop_core::frame::{FrameGeometry, apply_capture_caps};
+use senpi_desktop_core::frame::{apply_capture_caps, FrameGeometry};
 use senpi_desktop_core::types::CaptureCaps;
 
-use super::encode::{JPEG_QUALITY, format_bytes, jpeg, png, write_artifact};
+use super::encode::{format_bytes, jpeg, png, write_artifact, JPEG_QUALITY};
 use super::{Delivery, ScreenshotResult};
 
 /// Host caps when `session.open` names no size: senpi's own default, not a

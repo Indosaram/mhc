@@ -17,13 +17,19 @@ pub fn resolve_openai_client_auth(
     headers: Option<&ProviderHeaders>,
 ) -> Result<OpenAiClientAuth, String> {
     if let Some(api_key) = api_key.filter(|key| !key.is_empty()) {
-        return Ok(OpenAiClientAuth { api_key: api_key.to_owned(), headers: headers.cloned() });
+        return Ok(OpenAiClientAuth {
+            api_key: api_key.to_owned(),
+            headers: headers.cloned(),
+        });
     }
     if !has_credential_headers(headers) {
         return Err(format!("No API key for provider: {provider}"));
     }
     if has_header(headers, "authorization") || has_header(headers, "cf-aig-authorization") {
-        return Ok(OpenAiClientAuth { api_key: "unused".into(), headers: headers.cloned() });
+        return Ok(OpenAiClientAuth {
+            api_key: "unused".into(),
+            headers: headers.cloned(),
+        });
     }
     let mut merged: ProviderHeaders = ProviderHeaders::new();
     merged.insert("Authorization".into(), None);
@@ -32,5 +38,8 @@ pub fn resolve_openai_client_auth(
             merged.insert(name.clone(), value.clone());
         }
     }
-    Ok(OpenAiClientAuth { api_key: "unused".into(), headers: Some(merged) })
+    Ok(OpenAiClientAuth {
+        api_key: "unused".into(),
+        headers: Some(merged),
+    })
 }

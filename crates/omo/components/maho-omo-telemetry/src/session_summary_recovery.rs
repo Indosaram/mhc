@@ -13,9 +13,9 @@ use crate::session_summary_files::{remove_file, rename_if_present};
 use crate::session_summary_owner::{ProcessOwner, current_process_owner};
 use crate::session_summary_publisher::{ClosedWindow, SummaryPublisher};
 use crate::session_summary_store::{
-    ConsentScope, LeftoverKind, OWNER_STALE_MS, PendingRecord, Probes, ReadResult,
-    RecoveryStorage, SUMMARY_TTL_MS, SummaryStorage, WindowRecord, create_summary_storage,
-    is_record_sendable, with_recovery_ops,
+    ConsentScope, LeftoverKind, OWNER_STALE_MS, PendingRecord, Probes, ReadResult, RecoveryStorage,
+    SUMMARY_TTL_MS, SummaryStorage, WindowRecord, create_summary_storage, is_record_sendable,
+    with_recovery_ops,
 };
 use crate::session_summary_window::{EndedBy, new_summary_epoch};
 
@@ -78,11 +78,19 @@ impl SummaryRecovery {
     }
 
     fn sendable(&self, record: &WindowRecord) -> bool {
-        is_record_sendable(record.consent, record.scope.as_ref(), self.is_scope_consented.as_ref())
+        is_record_sendable(
+            record.consent,
+            record.scope.as_ref(),
+            self.is_scope_consented.as_ref(),
+        )
     }
 
     fn pending_sendable(&self, record: &PendingRecord) -> bool {
-        is_record_sendable(record.consent, record.scope.as_ref(), self.is_scope_consented.as_ref())
+        is_record_sendable(
+            record.consent,
+            record.scope.as_ref(),
+            self.is_scope_consented.as_ref(),
+        )
     }
 
     fn is_self(&self, owner: &ProcessOwner) -> bool {
@@ -166,9 +174,10 @@ impl SummaryRecovery {
             epoch: epoch.clone(),
             seq: record.seq,
             window_id: record.window_id.clone().unwrap_or_default(),
-            window: record.window.clone().unwrap_or_else(|| {
-                crate::session_summary_window::open_window(self.now(), 0.0)
-            }),
+            window: record
+                .window
+                .clone()
+                .unwrap_or_else(|| crate::session_summary_window::open_window(self.now(), 0.0)),
             ended_by: EndedBy::Recovered,
         };
         self.publisher.publish_window(&closed, keep_numbering).await;
@@ -391,7 +400,9 @@ impl SummaryRecovery {
         own_copy: &str,
         stored: &WindowRecord,
         is_scope_consented: &(dyn Fn(&ConsentScope) -> bool + Send + Sync),
-        fresh: &dyn Fn(crate::session_summary_adopt::FreshArgs) -> crate::omo_native_session_summary::LiveWindow,
+        fresh: &dyn Fn(
+            crate::session_summary_adopt::FreshArgs,
+        ) -> crate::omo_native_session_summary::LiveWindow,
         persist: &dyn Fn(&crate::omo_native_session_summary::LiveWindow),
     ) -> crate::omo_native_session_summary::LiveWindow {
         adopt_foreign_window(AdoptForeignWindowInput {
@@ -471,10 +482,10 @@ pub fn create_recovery_runtime(
 mod tests {
     use super::*;
     use crate::session_summary_publisher::SummaryPublish;
-    use crate::session_summary_store::{RecordConsent, PendingRecord};
+    use crate::session_summary_store::{PendingRecord, RecordConsent};
     use crate::session_summary_window::{open_window, summary_properties};
-    use futures::future::BoxFuture;
     use futures::FutureExt;
+    use futures::future::BoxFuture;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -568,7 +579,10 @@ mod tests {
         let fixture = fixture();
         fixture
             .storage
-            .write_window("session", &record(RecordConsent::Enabled, 2, "boot-peer", STALE_HEARTBEAT))
+            .write_window(
+                "session",
+                &record(RecordConsent::Enabled, 2, "boot-peer", STALE_HEARTBEAT),
+            )
             .unwrap();
         let recovery = recovery(&fixture);
         recovery.sweep().await;
@@ -597,12 +611,16 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             path,
-            json!({"pid": 2, "bootId": "boot-peer", "startTime": null, "heartbeatAt": 0.0}).to_string(),
+            json!({"pid": 2, "bootId": "boot-peer", "startTime": null, "heartbeatAt": 0.0})
+                .to_string(),
         )
         .unwrap();
         fixture
             .storage
-            .write_window("session", &record(RecordConsent::Enabled, 2, "boot-peer", STALE_HEARTBEAT))
+            .write_window(
+                "session",
+                &record(RecordConsent::Enabled, 2, "boot-peer", STALE_HEARTBEAT),
+            )
             .unwrap();
         recovery(&fixture).sweep().await;
         assert_eq!(fixture.published.load(Ordering::SeqCst), 0);
@@ -665,7 +683,12 @@ mod tests {
             .storage
             .write_window(
                 "stale",
-                &record(RecordConsent::Enabled, 1, "boot-self", -2.0 * SUMMARY_TTL_MS),
+                &record(
+                    RecordConsent::Enabled,
+                    1,
+                    "boot-self",
+                    -2.0 * SUMMARY_TTL_MS,
+                ),
             )
             .unwrap();
         let recovery = recovery(&fixture);

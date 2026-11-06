@@ -186,7 +186,9 @@ mod tests {
     fn second_render_shows_in_place_child_text_change() {
         let text = Rc::new(Cell::new("before"));
         let mut transcript = container(60, 100);
-        transcript.add_child(Rc::new(RefCell::new(LiveProbe { text: Rc::clone(&text) })));
+        transcript.add_child(Rc::new(RefCell::new(LiveProbe {
+            text: Rc::clone(&text),
+        })));
         assert_eq!(transcript.render(48), vec!["before".to_owned()]);
         text.set("after");
         assert_eq!(transcript.render(48), vec!["after".to_owned()]);

@@ -3,11 +3,19 @@
 
 use crate::support;
 
-use maho_agent::harness::context::{BACKGROUND_CONTEXT, TODO_CONTEXT, get_telemetry_context, with_telemetry_context};
-use maho_agent::harness::messages::{BRANCH_SUMMARY_PREFIX, COMPACTION_SUMMARY_PREFIX, convert_to_llm};
-use maho_agent::harness::session::context::{build_context_entries, build_session_context, session_entry_to_context_messages};
+use maho_agent::harness::context::{
+    BACKGROUND_CONTEXT, TODO_CONTEXT, get_telemetry_context, with_telemetry_context,
+};
+use maho_agent::harness::messages::{
+    BRANCH_SUMMARY_PREFIX, COMPACTION_SUMMARY_PREFIX, convert_to_llm,
+};
+use maho_agent::harness::session::context::{
+    build_context_entries, build_session_context, session_entry_to_context_messages,
+};
 use maho_agent::harness::session::types::{Entry, EntryKind, NewEntry};
-use maho_agent::harness::telemetry::{InMemoryTelemetryContext, SpanOptions, TelemetryContext, noop_telemetry_context};
+use maho_agent::harness::telemetry::{
+    InMemoryTelemetryContext, SpanOptions, TelemetryContext, noop_telemetry_context,
+};
 use maho_agent::types::{AgentMessage, CustomAgentMessage};
 use maho_ai::types::{ContentBlock, Message, StopReason, UserContent, UserMessage};
 use serde_json::Map;
@@ -51,8 +59,14 @@ fn compaction_entry(id: &str, summary: &str, retained_tail: Vec<AgentMessage>, s
 #[test]
 fn uses_no_op_telemetry_when_none_is_attached() {
     let noop = noop_telemetry_context();
-    assert!(std::sync::Arc::ptr_eq(get_telemetry_context(&BACKGROUND_CONTEXT).backend(), noop.backend()));
-    assert!(std::sync::Arc::ptr_eq(get_telemetry_context(&TODO_CONTEXT).backend(), noop.backend()));
+    assert!(std::sync::Arc::ptr_eq(
+        get_telemetry_context(&BACKGROUND_CONTEXT).backend(),
+        noop.backend()
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        get_telemetry_context(&TODO_CONTEXT).backend(),
+        noop.backend()
+    ));
 }
 
 #[tokio::test]
@@ -62,13 +76,20 @@ async fn carries_telemetry_as_an_ordinary_context_value() {
     let parent_context = context.clone();
     get_telemetry_context(&context)
         .start_span(
-            SpanOptions { name: "parent".to_owned(), attributes: Map::new() },
+            SpanOptions {
+                name: "parent".to_owned(),
+                attributes: Map::new(),
+            },
             move |span| {
-                let child_context = with_telemetry_context(TelemetryContext::from_span(&span), &parent_context);
+                let child_context =
+                    with_telemetry_context(TelemetryContext::from_span(&span), &parent_context);
                 Box::pin(async move {
                     get_telemetry_context(&child_context)
                         .start_span(
-                            SpanOptions { name: "child".to_owned(), attributes: Map::new() },
+                            SpanOptions {
+                                name: "child".to_owned(),
+                                attributes: Map::new(),
+                            },
                             |_span| Box::pin(async {}),
                         )
                         .await;
@@ -77,7 +98,13 @@ async fn carries_telemetry_as_an_ordinary_context_value() {
         )
         .await;
     let spans = telemetry.get_spans();
-    assert_eq!(spans.iter().map(|span| span.name.as_str()).collect::<Vec<_>>(), vec!["parent", "child"]);
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["parent", "child"]
+    );
     assert_eq!(spans[1].parent_id, Some(spans[0].id));
 }
 
@@ -92,7 +119,10 @@ fn build_context_entries_keeps_the_newest_compaction_and_everything_after_it() {
     ];
     let context = build_context_entries(&entries);
     assert_eq!(
-        context.iter().map(|entry| entry.id.as_str()).collect::<Vec<&str>>(),
+        context
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<&str>>(),
         vec!["c2", "u3"]
     );
 }
@@ -121,7 +151,10 @@ async fn build_session_context_projects_the_compaction_summary_first() {
             let ContentBlock::Text(text) = &blocks[0] else {
                 panic!("expected text");
             };
-            assert_eq!(text.text, format!("{COMPACTION_SUMMARY_PREFIX}summary text\n</summary>"));
+            assert_eq!(
+                text.text,
+                format!("{COMPACTION_SUMMARY_PREFIX}summary text\n</summary>")
+            );
         }
         other => panic!("expected user message, got {other:?}"),
     }
@@ -166,7 +199,10 @@ fn drops_error_and_aborted_assistant_messages_from_context() {
             let ContentBlock::Text(text) = &blocks[0] else {
                 panic!("expected text");
             };
-            assert_eq!(text.text, format!("{BRANCH_SUMMARY_PREFIX}branch text</summary>"));
+            assert_eq!(
+                text.text,
+                format!("{BRANCH_SUMMARY_PREFIX}branch text</summary>")
+            );
         }
         other => panic!("expected user message, got {other:?}"),
     }

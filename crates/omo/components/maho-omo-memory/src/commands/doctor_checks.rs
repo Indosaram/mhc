@@ -61,7 +61,9 @@ fn list_markdown(root: &Path, prefix: &str) -> Vec<String> {
         } else {
             format!("{prefix}/{name}")
         };
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if file_type.is_dir() {
             files.extend(list_markdown(root, &relative));
         } else if file_type.is_file() && name.ends_with(".md") {
@@ -77,7 +79,10 @@ pub fn check_repository(identity: &MemoryCommandIdentity) -> DoctorCheck {
         return DoctorCheck {
             name: "repository".to_owned(),
             level: CheckLevel::Fail,
-            detail: format!("missing at {}; run /memfs init to create it", repo.display()),
+            detail: format!(
+                "missing at {}; run /memfs init to create it",
+                repo.display()
+            ),
         };
     }
     DoctorCheck {
@@ -192,7 +197,11 @@ pub fn check_locks(deps: &MemoryCommandDeps, locks_dir: &Path) -> DoctorCheck {
         if deps.process_alive(record.pid) {
             continue;
         }
-        stale.push(format!("{} (pid {} is not running)", path.display(), record.pid));
+        stale.push(format!(
+            "{} (pid {} is not running)",
+            path.display(),
+            record.pid
+        ));
     }
 
     if stale.is_empty() {
@@ -277,7 +286,11 @@ pub fn check_worktrees(deps: &MemoryCommandDeps, identity: &MemoryCommandIdentit
         .collect();
 
     let mut problems: Vec<String> = Vec::new();
-    problems.extend(orphans.iter().map(|path| format!("{path} (not registered with git)")));
+    problems.extend(
+        orphans
+            .iter()
+            .map(|path| format!("{path} (not registered with git)")),
+    );
     problems.extend(
         missing
             .iter()
@@ -326,7 +339,12 @@ pub fn check_abandoned_runs(reflection_dir: &Path) -> DoctorCheck {
             };
             serde_json::from_str::<serde_json::Value>(&content)
                 .ok()
-                .and_then(|value| value.get("reason").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .and_then(|value| {
+                    value
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
                 .as_deref()
                 != Some("launch_interrupted")
         })
@@ -358,7 +376,10 @@ pub fn check_reflection_health(reflection_dir: &Path, now_ms: i64) -> DoctorChec
         100,
         now_ms,
     );
-    let last_success = health.last_success_at.clone().unwrap_or_else(|| "never".to_owned());
+    let last_success = health
+        .last_success_at
+        .clone()
+        .unwrap_or_else(|| "never".to_owned());
     if health.streak == 0 && health.pending_count == 0 {
         return DoctorCheck {
             name: "reflection-health".to_owned(),
@@ -373,11 +394,19 @@ pub fn check_reflection_health(reflection_dir: &Path, now_ms: i64) -> DoctorChec
     );
     DoctorCheck {
         name: "reflection-health".to_owned(),
-        level: if health.streak >= 3 { CheckLevel::Warn } else { CheckLevel::Ok },
+        level: if health.streak >= 3 {
+            CheckLevel::Warn
+        } else {
+            CheckLevel::Ok
+        },
         detail: format!(
             "streak {}; fingerprint {}; pending {}; last success {last_success}; {hint}",
             health.streak,
-            if health.fingerprint.is_empty() { "none" } else { health.fingerprint.as_str() },
+            if health.fingerprint.is_empty() {
+                "none"
+            } else {
+                health.fingerprint.as_str()
+            },
             health.pending_count
         ),
     }

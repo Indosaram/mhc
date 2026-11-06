@@ -87,15 +87,8 @@ fn strict_policy_checks_nested_schema_nodes() {
         output_schema: None,
         freeform: None,
     };
-    let converted = convert_tools(
-        std::slice::from_ref(&tool),
-        false,
-        false,
-        true,
-        None,
-        false,
-    )
-    .expect("prefer falls back");
+    let converted = convert_tools(std::slice::from_ref(&tool), false, false, true, None, false)
+        .expect("prefer falls back");
     assert!(converted[0].get("strict").is_none());
     let required = Tool {
         constrained_sampling: Some(ConstrainedSampling::Config(

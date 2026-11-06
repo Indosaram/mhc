@@ -66,7 +66,10 @@ impl Storage for ControlledLandingStorage {
         &'a self,
         address: &'a maho_agent::harness::session::values::Value,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Option<maho_agent::harness::session::values::StoredValue>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Option<maho_agent::harness::session::values::StoredValue>>,
+    > {
         self.inner.get_value(address, context)
     }
 
@@ -74,7 +77,10 @@ impl Storage for ControlledLandingStorage {
         &'a self,
         prefix: &'a maho_agent::harness::session::values::Value,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::values::StoredValue>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::values::StoredValue>>,
+    > {
         self.inner.scan_values(prefix, context)
     }
 
@@ -83,7 +89,10 @@ impl Storage for ControlledLandingStorage {
         address: &'a maho_agent::harness::session::values::ValueList,
         options: Option<maho_agent::harness::session::values::ListReadOptions>,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::values::ListElement>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::values::ListElement>>,
+    > {
         self.inner.read_list(address, options, context)
     }
 
@@ -99,7 +108,10 @@ impl Storage for ControlledLandingStorage {
         &'a self,
         query: StorageBranchScan,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::types::EntryStructure>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::types::EntryStructure>>,
+    > {
         self.inner.scan_branch_structure(query, context)
     }
 
@@ -115,14 +127,20 @@ impl Storage for ControlledLandingStorage {
         &'a self,
         query: maho_agent::harness::session::types::UsageScan,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::types::UsageRow>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::types::UsageRow>>,
+    > {
         self.inner.scan_usage(query, context)
     }
 
     fn get_stats<'a>(
         &'a self,
         context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<maho_agent::harness::session::types::SessionStats>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<maho_agent::harness::session::types::SessionStats>,
+    > {
         self.inner.get_stats(context)
     }
 
@@ -207,11 +225,17 @@ async fn releases_in_fifo_order_and_next_resolves_only_after_the_backend_write_l
     assert_eq!(storage.pending(), 2);
 
     let mut next = Box::pin(storage.next(1));
-    assert!(futures::poll!(next.as_mut()).is_pending(), "next must await the backend landing");
-    let started = tokio::time::timeout(std::time::Duration::from_secs(5), delegate.started.acquire())
-        .await
-        .expect("the first commit reached the backend")
-        .expect("started permit");
+    assert!(
+        futures::poll!(next.as_mut()).is_pending(),
+        "next must await the backend landing"
+    );
+    let started = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        delegate.started.acquire(),
+    )
+    .await
+    .expect("the first commit reached the backend")
+    .expect("started permit");
     started.forget();
     assert!(
         futures::poll!(next.as_mut()).is_pending(),
@@ -232,11 +256,17 @@ async fn releases_in_fifo_order_and_next_resolves_only_after_the_backend_write_l
     );
 
     let mut next = Box::pin(storage.next(1));
-    assert!(futures::poll!(next.as_mut()).is_pending(), "next must await the second landing");
-    let started = tokio::time::timeout(std::time::Duration::from_secs(5), delegate.started.acquire())
-        .await
-        .expect("the second commit reached the backend")
-        .expect("started permit");
+    assert!(
+        futures::poll!(next.as_mut()).is_pending(),
+        "next must await the second landing"
+    );
+    let started = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        delegate.started.acquire(),
+    )
+    .await
+    .expect("the second commit reached the backend")
+    .expect("started permit");
     started.forget();
     assert!(
         futures::poll!(next.as_mut()).is_pending(),
@@ -277,7 +307,11 @@ async fn permanently_rejects_parked_waiting_and_later_commits_after_discard() {
     storage.discard();
     assert_eq!(storage.pending(), 0);
     assert_eq!(
-        parked.await.expect("parked task").expect_err("parked discarded").kind,
+        parked
+            .await
+            .expect("parked task")
+            .expect_err("parked discarded")
+            .kind,
         SessionErrorKind::CommitDiscarded
     );
     assert_eq!(

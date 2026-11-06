@@ -21,27 +21,55 @@ fn described() -> serde_json::Value {
 
 #[test]
 fn invoke_scope_grants_empty_allowlist_with_deny() {
-    let mut r = request(KernelToolsCapability { capabilities: Some(KernelToolCapabilities { invoke_scope: true }) });
+    let mut r = request(KernelToolsCapability {
+        capabilities: Some(KernelToolCapabilities { invoke_scope: true }),
+    });
     r.tool_allowlist = Some(vec![]);
     r.tool_denylist = Some(vec!["write".into()]);
-    let KernelToolGrantResolution::Granted(grant) = resolve_kernel_tool_grant(&r, Some(&described())) else { panic!("expected grant") };
+    let KernelToolGrantResolution::Granted(grant) =
+        resolve_kernel_tool_grant(&r, Some(&described()))
+    else {
+        panic!("expected grant")
+    };
     assert_eq!(grant.requested_names, vec!["fixture_write"]);
     assert_eq!(grant.scope.unwrap().tools.unwrap().allow, Some(vec![]));
 }
 
 #[test]
 fn invoke_scope_grant_carries_child_effective_policy() {
-    let mut r = request(KernelToolsCapability { capabilities: Some(KernelToolCapabilities { invoke_scope: true }) });
+    let mut r = request(KernelToolsCapability {
+        capabilities: Some(KernelToolCapabilities { invoke_scope: true }),
+    });
     r.tool_denylist = Some(vec!["write".into()]);
-    let KernelToolGrantResolution::Granted(grant) = resolve_kernel_tool_grant(&r, Some(&described())) else { panic!("expected grant") };
+    let KernelToolGrantResolution::Granted(grant) =
+        resolve_kernel_tool_grant(&r, Some(&described()))
+    else {
+        panic!("expected grant")
+    };
     let scope = grant.scope.unwrap().tools.unwrap();
-    assert_eq!(scope.allow, Some(vec!["read", "bash", "edit", "grep"] .into_iter().map(String::from).collect()));
+    assert_eq!(
+        scope.allow,
+        Some(
+            vec!["read", "bash", "edit", "grep"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        )
+    );
     assert_eq!(scope.deny, Some(vec!["write".into()]));
 }
 
 #[test]
 fn curated_agent_refuses_parent_tool_before_describe() {
-    let mut r = request(KernelToolsCapability { capabilities: Some(KernelToolCapabilities { invoke_scope: true }) });
+    let mut r = request(KernelToolsCapability {
+        capabilities: Some(KernelToolCapabilities { invoke_scope: true }),
+    });
     r.agent_type = Some("explore".into());
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::CuratedPolicyDenied, .. }));
+    assert!(matches!(
+        resolve_kernel_tool_grant(&r, None),
+        KernelToolGrantResolution::Denied {
+            code: KernelToolErrorCode::CuratedPolicyDenied,
+            ..
+        }
+    ));
 }

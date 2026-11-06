@@ -15,7 +15,13 @@ pub fn describe_stop_path(status: &StopPathStatus) -> String {
     };
     format!(
         "stopPath={} suspended={}{}",
-        match status.stop_path { senpi_desktop_protocol::StopPathKind::Global => "global", senpi_desktop_protocol::StopPathKind::HostRelay => "host-relay", senpi_desktop_protocol::StopPathKind::None => "none" }, status.suspended, reason_part
+        match status.stop_path {
+            senpi_desktop_protocol::StopPathKind::Global => "global",
+            senpi_desktop_protocol::StopPathKind::HostRelay => "host-relay",
+            senpi_desktop_protocol::StopPathKind::None => "none",
+        },
+        status.suspended,
+        reason_part
     )
 }
 
@@ -70,13 +76,20 @@ pub async fn run_computer_command(
     context: &ComputerHostContext,
 ) -> String {
     let word = args.trim().to_lowercase();
-    let subcommand = if word.is_empty() { "status" } else { word.as_str() };
+    let subcommand = if word.is_empty() {
+        "status"
+    } else {
+        word.as_str()
+    };
 
     match subcommand {
         "on" => {
             handle.set_enabled(true).await;
             match handle.activate(context).await {
-                Ok(armed) => format!("Computer use on for this session: {}", describe_stop_path(&armed)),
+                Ok(armed) => format!(
+                    "Computer use on for this session: {}",
+                    describe_stop_path(&armed)
+                ),
                 Err(e) => format!("Failed to turn computer use on: {e}"),
             }
         }
@@ -86,18 +99,18 @@ pub async fn run_computer_command(
             "Computer use off for this session.".to_string()
         }
         "status" => status(handle).await,
-        "stop" => {
-            match handle.stop().await {
-                Ok(Some(stopped)) => format!("Computer input stopped: {}", describe_stop_path(&stopped)),
-                _ => "Computer use is not running; nothing to stop.".to_string(),
+        "stop" => match handle.stop().await {
+            Ok(Some(stopped)) => {
+                format!("Computer input stopped: {}", describe_stop_path(&stopped))
             }
-        }
-        "resume" => {
-            match handle.resume().await {
-                Ok(Some(resumed)) => format!("Computer input resumed: {}", describe_stop_path(&resumed)),
-                _ => "Computer use is not running; nothing to resume.".to_string(),
+            _ => "Computer use is not running; nothing to stop.".to_string(),
+        },
+        "resume" => match handle.resume().await {
+            Ok(Some(resumed)) => {
+                format!("Computer input resumed: {}", describe_stop_path(&resumed))
             }
-        }
+            _ => "Computer use is not running; nothing to resume.".to_string(),
+        },
         _ => COMPUTER_COMMAND_USAGE.to_string(),
     }
 }

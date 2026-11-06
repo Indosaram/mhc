@@ -34,7 +34,6 @@ enum LegacyHostVerdict {
 
 const LEGACY_PROBE_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_LEGACY_DRAIN_TIMEOUT_MS: u64 = LEGACY_PROBE_TIMEOUT_MS;
-const DRAIN_POLL_MS: u64 = 50;
 
 /// An ensure's whole dealing with a legacy host: nothing to do, or drain an idle one and wait until it is
 /// gone. Returns the refusal detail when the ensure must refuse `legacy_host` instead. `probe(pid)` reads a
@@ -207,13 +206,14 @@ async fn drain_and_wait(
 ) -> std::io::Result<bool> {
     signal(record.pid)?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    while record_matches(record, probe) != Some(false) {
-        if tokio::time::Instant::now() > deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(DRAIN_POLL_MS)).await;
-    }
-    Ok(true)
+    // An unreadable identity is NOT gone, so only `Some(false)` (the probe proved the process is
+    // not this record) ends the wait; the shared helper polls once more at the deadline.
+    Ok(
+        crate::deadline::wait_until(deadline, crate::deadline::POLL_INTERVAL, || {
+            record_matches(record, probe) == Some(false)
+        })
+        .await,
+    )
 }
 
 #[cfg(test)]

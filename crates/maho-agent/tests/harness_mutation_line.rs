@@ -6,15 +6,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use maho_agent::harness::session::session::{SessionError, SessionErrorKind};
 use maho_agent::harness::session::MutationLine;
+use maho_agent::harness::session::session::{SessionError, SessionErrorKind};
 use tokio::sync::Semaphore;
 
 /// Poll `condition` until it holds, bounded by a wall-clock deadline (never a fixed sleep).
 async fn wait_until<F: Fn() -> bool>(condition: F) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !condition() {
-        assert!(std::time::Instant::now() < deadline, "condition was never satisfied");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition was never satisfied"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 }
@@ -55,13 +58,20 @@ async fn serializes_every_session_mutation() {
 
     let order_for_wait = order.clone();
     wait_until(move || !order_for_wait.lock().expect("order").is_empty()).await;
-    assert_eq!(order.lock().expect("order").clone(), vec!["first:start".to_owned()]);
+    assert_eq!(
+        order.lock().expect("order").clone(),
+        vec!["first:start".to_owned()]
+    );
     gate.add_permits(1);
     assert_eq!(first.await.expect("join").expect("first"), "first");
     assert_eq!(second.await.expect("join").expect("second"), "second");
     assert_eq!(
         order.lock().expect("order").clone(),
-        vec!["first:start".to_owned(), "first:end".to_owned(), "second".to_owned()]
+        vec![
+            "first:start".to_owned(),
+            "first:end".to_owned(),
+            "second".to_owned()
+        ]
     );
 }
 
@@ -69,12 +79,19 @@ async fn serializes_every_session_mutation() {
 async fn continues_after_a_failed_job_while_preserving_the_original_failure() {
     let line = MutationLine::new();
     let failed = line
-        .run(|| async { Err::<(), _>(SessionError::new(SessionErrorKind::Invariant, "mutation failed")) })
+        .run(|| async {
+            Err::<(), _>(SessionError::new(
+                SessionErrorKind::Invariant,
+                "mutation failed",
+            ))
+        })
         .await
         .expect_err("failure");
     assert_eq!(failed.message, "mutation failed");
     assert_eq!(
-        line.run(|| async { Ok::<_, SessionError>("next") }).await.expect("next"),
+        line.run(|| async { Ok::<_, SessionError>("next") })
+            .await
+            .expect("next"),
         "next"
     );
 }
@@ -97,16 +114,28 @@ async fn seals_queued_and_future_jobs_while_draining_the_running_job() {
         }
     }));
     assert!(futures::poll!(running.as_mut()).is_pending());
-    assert_eq!(order.lock().expect("order").clone(), vec!["running".to_owned()]);
+    assert_eq!(
+        order.lock().expect("order").clone(),
+        vec!["running".to_owned()]
+    );
 
     let mut queued = Box::pin(line.run(|| async { Ok::<_, SessionError>("queued") }));
-    assert!(futures::poll!(queued.as_mut()).is_pending(), "a queued job waits for the line");
+    assert!(
+        futures::poll!(queued.as_mut()).is_pending(),
+        "a queued job waits for the line"
+    );
 
     let closed = SessionError::new(SessionErrorKind::Closed, "closed");
     let mut drain = Box::pin(line.seal(closed.clone()));
-    assert!(futures::poll!(drain.as_mut()).is_pending(), "seal drains the running job");
+    assert!(
+        futures::poll!(drain.as_mut()).is_pending(),
+        "seal drains the running job"
+    );
 
-    let late = line.run(|| async { Ok::<_, SessionError>("late") }).await.expect_err("late");
+    let late = line
+        .run(|| async { Ok::<_, SessionError>("late") })
+        .await
+        .expect_err("late");
     assert_eq!(late.message, "closed");
 
     gate.add_permits(1);

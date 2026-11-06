@@ -7,7 +7,7 @@ use senpi_desktop_core::types::DesktopWindow;
 use super::composite;
 use super::lib::loadable;
 use super::pixels::to_rgba;
-use super::pod::{Negotiated, VideoFormat, enum_format, parse_format};
+use super::pod::{enum_format, parse_format, Negotiated, VideoFormat};
 use super::screencast::MonitorStream;
 use super::window::{crop_window, window_crop};
 

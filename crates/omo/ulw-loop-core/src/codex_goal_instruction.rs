@@ -3,8 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
-use crate::goal_status::{codex_goal_mode, expected_codex_objective, is_essential_criterion, is_final_run_completion_candidate};
-use crate::surface::{resolve_toolkit_surface, reviewer_roles_for, UlwLoopToolkitSurface};
+use crate::goal_status::{
+    codex_goal_mode, expected_codex_objective, is_essential_criterion,
+    is_final_run_completion_candidate,
+};
+use crate::surface::{UlwLoopToolkitSurface, resolve_toolkit_surface, reviewer_roles_for};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexCreateGoalPayload {
@@ -32,7 +35,10 @@ pub fn build_codex_goal_instruction(args: BuildCodexGoalInstructionArgs) -> UlwL
         .unwrap_or_else(|| is_final_run_completion_candidate(args.plan, args.goal));
     let surface = args.surface.unwrap_or_else(resolve_toolkit_surface);
     let text = build_text(mode, args.plan, args.goal, &create_goal, is_final, surface);
-    UlwLoopGoalInstruction { text, json: create_goal }
+    UlwLoopGoalInstruction {
+        text,
+        json: create_goal,
+    }
 }
 
 fn build_create_goal_payload(plan: &UlwLoopPlan, goal: &UlwLoopItem) -> CodexCreateGoalPayload {
@@ -73,7 +79,13 @@ fn build_text(
     lines.push("- Goals are unlimited. Do not add numeric limits.".to_string());
     lines.extend(mode_constraint_lines(mode, is_final));
     lines.extend(evidence_layout_lines(plan));
-    lines.push(final_section(plan, goal, is_final, mode == "aggregate", surface));
+    lines.push(final_section(
+        plan,
+        goal,
+        is_final,
+        mode == "aggregate",
+        surface,
+    ));
     lines.extend(checkpoint_lines(plan, mode));
     lines.push(String::new());
     lines.push("create_goal payload:".to_string());
@@ -153,7 +165,11 @@ fn format_criterion_line(criterion: &UlwLoopSuccessCriterion) -> String {
     };
     format!(
         "-{remaining_work} [{}] [{marker}] ({}) {} — expect: {} — status: {}",
-        criterion.id, criterion.user_model, criterion.scenario, criterion.expected_evidence, criterion.status
+        criterion.id,
+        criterion.user_model,
+        criterion.scenario,
+        criterion.expected_evidence,
+        criterion.status
     )
 }
 

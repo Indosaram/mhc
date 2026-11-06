@@ -16,13 +16,17 @@ async fn native_session_switch_exposes_overridden_cwd_to_recreated_factory() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
     let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
-        path: "rpc-cwd-fixture".into(), source_info: Default::default(),
+        path: "rpc-cwd-fixture".into(),
+        source_info: Default::default(),
         factory: Arc::new(move |api| {
             let seen = captured.clone();
-            api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
-                seen.lock().expect("startup cwd").push(context.cwd.clone());
-                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
-            }));
+            api.on(
+                maho_ext_api::EventKind::SessionStart,
+                Arc::new(move |_, context| {
+                    seen.lock().expect("startup cwd").push(context.cwd.clone());
+                    Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+                }),
+            );
             Box::pin(async { Ok(()) })
         }),
     };
@@ -30,21 +34,46 @@ async fn native_session_switch_exposes_overridden_cwd_to_recreated_factory() {
         "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
         "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
         "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
-    })).expect("model");
-    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        providers: Some(Vec::new()), ..Default::default()
-    }).expect("valid model runtime");
+    }))
+    .expect("model");
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        },
+    )
+    .expect("valid model runtime");
     let shared = runtime.credentials.clone();
-    let host = maho_core::sdk::HostRuntimeFactory { model_registry: maho_core::model_registry::ModelRegistry::new(runtime.clone()),
-        model_runtime: runtime, extension_factories: vec![factory] };
-    let session = host.create(maho_core::sdk::CreateAgentSessionOptions {
-        cwd: Some(original.clone()), agent_dir: Some(directory.path().join("agent").to_string_lossy().into_owned()),
-        model: Some(model), tools: Some(Vec::new()),
-        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&original, None, None)),
-        ..Default::default()
-    }).await.expect("SDK session").session;
-    let switched = tokio::time::timeout(std::time::Duration::from_secs(5),
-        session.switch_session_with_cwd(&session_path.to_string_lossy(), Some(&replacement))).await;
+    let host = maho_core::sdk::HostRuntimeFactory {
+        model_registry: maho_core::model_registry::ModelRegistry::new(runtime.clone()),
+        model_runtime: runtime,
+        extension_factories: vec![factory],
+    };
+    let session = host
+        .create(maho_core::sdk::CreateAgentSessionOptions {
+            cwd: Some(original.clone()),
+            agent_dir: Some(
+                directory
+                    .path()
+                    .join("agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            model: Some(model),
+            tools: Some(Vec::new()),
+            session_manager: Some(maho_core::session_manager::SessionManager::in_memory(
+                &original, None, None,
+            )),
+            ..Default::default()
+        })
+        .await
+        .expect("SDK session")
+        .session;
+    let switched = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.switch_session_with_cwd(&session_path.to_string_lossy(), Some(&replacement)),
+    )
+    .await;
     let cwd = session.cwd();
     let manager_cwd = session.with_session_manager(|manager| manager.cwd().to_owned());
     let session_id = session.session_id();
@@ -55,7 +84,10 @@ async fn native_session_switch_exposes_overridden_cwd_to_recreated_factory() {
     assert_eq!(manager_cwd, replacement);
     assert_eq!(session_id, "rpc-resume-fixture");
     assert!(same_store);
-    assert_eq!(seen.lock().expect("startup cwd").last(), Some(&std::path::PathBuf::from(replacement)));
+    assert_eq!(
+        seen.lock().expect("startup cwd").last(),
+        Some(&std::path::PathBuf::from(replacement))
+    );
 }
 
 #[tokio::test]
@@ -67,7 +99,11 @@ async fn native_session_switch_to_new_cwd_keeps_resource_loader_inputs() {
     std::fs::create_dir(&replacement).expect("replacement cwd");
     let skill = directory.path().join("cli-skill").join("SKILL.md");
     std::fs::create_dir_all(skill.parent().expect("skill dir")).expect("skill dir");
-    std::fs::write(&skill, "---\nname: cli-skill\ndescription: CLI skill fixture\n---\nRead the fixture.").expect("skill");
+    std::fs::write(
+        &skill,
+        "---\nname: cli-skill\ndescription: CLI skill fixture\n---\nRead the fixture.",
+    )
+    .expect("skill");
     let original = original.to_string_lossy().into_owned();
     let replacement = replacement.to_string_lossy().into_owned();
     let session_path = directory.path().join("resume.jsonl");
@@ -78,22 +114,43 @@ async fn native_session_switch_to_new_cwd_keeps_resource_loader_inputs() {
         "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
         "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
         "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
-    })).expect("model");
+    }))
+    .expect("model");
     let session = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
-        cwd: Some(original.clone()), agent_dir: Some(directory.path().join("agent").to_string_lossy().into_owned()),
-        model: Some(model), tools: Some(Vec::new()),
-        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&original, None, None)),
+        cwd: Some(original.clone()),
+        agent_dir: Some(
+            directory
+                .path()
+                .join("agent")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        model: Some(model),
+        tools: Some(Vec::new()),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(
+            &original, None, None,
+        )),
         resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
-            additional_skill_paths: vec![skill.to_string_lossy().into_owned()], ..Default::default()
+            additional_skill_paths: vec![skill.to_string_lossy().into_owned()],
+            ..Default::default()
         },
         ..Default::default()
-    }).await.expect("SDK session").session;
-    let switched = tokio::time::timeout(std::time::Duration::from_secs(5),
-        session.switch_session_with_cwd(&session_path.to_string_lossy(), Some(&replacement))).await;
+    })
+    .await
+    .expect("SDK session")
+    .session;
+    let switched = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.switch_session_with_cwd(&session_path.to_string_lossy(), Some(&replacement)),
+    )
+    .await;
     let skills = session.loaded_skills().unwrap_or_default().skills;
     let cwd = session.cwd();
     session.dispose().await;
     assert!(switched.expect("bounded switch").expect("switch"));
     assert_eq!(cwd, replacement);
-    assert!(skills.iter().any(|loaded| loaded.name == "cli-skill"), "CLI --skill input survives the cwd change");
+    assert!(
+        skills.iter().any(|loaded| loaded.name == "cli-skill"),
+        "CLI --skill input survives the cwd change"
+    );
 }

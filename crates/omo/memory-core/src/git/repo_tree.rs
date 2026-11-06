@@ -74,8 +74,11 @@ pub fn parse_cat_file_batch(output: &[u8]) -> Result<BTreeMap<String, String>, G
         let Some(size_text) = parts.next() else {
             continue;
         };
-        let malformed =
-            || GitError::Other(format!("git cat-file --batch output is malformed at \"{header}\""));
+        let malformed = || {
+            GitError::Other(format!(
+                "git cat-file --batch output is malformed at \"{header}\""
+            ))
+        };
         let size = size_text.parse::<usize>().map_err(|_| malformed())?;
         let oid = oid.ok_or_else(malformed)?;
         if offset + size > output.len() {

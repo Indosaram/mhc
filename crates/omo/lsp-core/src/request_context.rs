@@ -141,7 +141,13 @@ pub fn create_standalone_mcp_request_context(
         .clone()
         .or_else(|| std::env::var("HOME").ok())
         .or_else(|| std::env::var("USERPROFILE").ok())
-        .unwrap_or_else(|| if cfg!(windows) { "C:\\".to_string() } else { "/".to_string() });
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "C:\\".to_string()
+            } else {
+                "/".to_string()
+            }
+        });
     let project_config_paths =
         translate_project_config_env(env_value("LSP_TOOLS_MCP_PROJECT_CONFIG"), &cwd);
     let user_config_path = translate_home_config_env(
@@ -279,7 +285,8 @@ pub fn canonicalize_existing_or_nearest_ancestor(path: &str) -> std::io::Result<
     loop {
         match std::fs::canonicalize(&current) {
             Ok(existing) => {
-                let mut existing = PathBuf::from(strip_verbatim_prefix(&existing.to_string_lossy()));
+                let mut existing =
+                    PathBuf::from(strip_verbatim_prefix(&existing.to_string_lossy()));
                 for part in suffix.iter().rev() {
                     existing.push(part);
                 }

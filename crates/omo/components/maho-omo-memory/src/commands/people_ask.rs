@@ -101,14 +101,13 @@ pub fn create_people_ask_runner(options: PeopleAskOptions) -> PeopleAskRunner {
         let launcher = options.launcher.clone();
         let deadline_ms = options.deadline_ms.unwrap_or(DEFAULT_DEADLINE_MS);
         Box::pin(async move {
-            let resolution = resolve_reflection_model(
-                QUICK_CATEGORY,
-                &config,
-                registry.as_deref(),
-                None,
-            )
-            .map_err(|error| error.to_string())?;
-            let ReflectionModelResolution::Resolved { model, thinking, .. } = resolution else {
+            let resolution =
+                resolve_reflection_model(QUICK_CATEGORY, &config, registry.as_deref(), None)
+                    .map_err(|error| error.to_string())?;
+            let ReflectionModelResolution::Resolved {
+                model, thinking, ..
+            } = resolution
+            else {
                 return Ok(ABSTENTION_LINE.to_owned());
             };
             let Some(launcher) = launcher else {
@@ -137,7 +136,12 @@ pub fn create_people_ask_runner(options: PeopleAskOptions) -> PeopleAskRunner {
 
             let env = env
                 .into_iter()
-                .filter(|(name, _)| !matches!(name.as_str(), "OMO_PACKAGE_DIR" | "SENPI_PACKAGE_DIR" | "PI_PACKAGE_DIR"))
+                .filter(|(name, _)| {
+                    !matches!(
+                        name.as_str(),
+                        "OMO_PACKAGE_DIR" | "SENPI_PACKAGE_DIR" | "PI_PACKAGE_DIR"
+                    )
+                })
                 .collect();
             run_child(&launcher.command, &args, &env, deadline_ms).await
         })

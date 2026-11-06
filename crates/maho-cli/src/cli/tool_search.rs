@@ -21,7 +21,11 @@ pub struct SharedToolSearch {
 
 impl SharedToolSearch {
     pub fn new(runtime: ExtensionRuntime, actions: Arc<dyn ExtensionActions>) -> Self {
-        Self { service: Arc::new(tokio::sync::Mutex::new(ToolSearchService::new(runtime, actions))) }
+        Self {
+            service: Arc::new(tokio::sync::Mutex::new(ToolSearchService::new(
+                runtime, actions,
+            ))),
+        }
     }
 
     pub fn service(&self) -> &SharedToolSearchService {

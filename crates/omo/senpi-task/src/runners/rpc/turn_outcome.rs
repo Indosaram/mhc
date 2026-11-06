@@ -5,8 +5,8 @@
 
 use serde_json::Value;
 
-use crate::runners::rpc::exit_mapping::map_exit_outcome_to_error;
 use crate::runners::in_process::child_handle::RunnerExit;
+use crate::runners::rpc::exit_mapping::map_exit_outcome_to_error;
 use crate::runners::types::ChildExitOutcome;
 use crate::runners::{RunnerFailure, RunnerFailureKind, RunnerOutcome};
 
@@ -60,12 +60,21 @@ pub fn exit_turn_outcome(exit: &ChildExitOutcome, final_text: Option<&str>) -> R
         return match final_text {
             Some(text) if !text.is_empty() => RunnerOutcome::completed(text),
             _ => {
-                let mut failure = RunnerFailure::new(RunnerFailureKind::ChildTurnFailed,
-                    "RPC child exited without assistant output");
+                let mut failure = RunnerFailure::new(
+                    RunnerFailureKind::ChildTurnFailed,
+                    "RPC child exited without assistant output",
+                );
                 if facts.pid.is_some() {
-                    failure = failure.with_exit(RunnerExit { kind: "clean", code: facts.code, signal: facts.signal.clone() });
+                    failure = failure.with_exit(RunnerExit {
+                        kind: "clean",
+                        code: facts.code,
+                        signal: facts.signal.clone(),
+                    });
                 }
-                RunnerOutcome::Error { failure, killed: false }
+                RunnerOutcome::Error {
+                    failure,
+                    killed: false,
+                }
             }
         };
     }

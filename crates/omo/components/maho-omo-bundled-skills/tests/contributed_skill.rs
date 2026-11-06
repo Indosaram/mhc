@@ -18,7 +18,13 @@ fn skill_command(name: &str, owner_path: Option<&Path>) -> HostCommandInfo {
     }
 }
 
-fn resolve(name: &str, path: &Path, home: &Path, env: &BTreeMap<String, String>, commands: Option<&[HostCommandInfo]>) -> ContributedSkill {
+fn resolve(
+    name: &str,
+    path: &Path,
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    commands: Option<&[HostCommandInfo]>,
+) -> ContributedSkill {
     resolve_contributed_skill(ResolveContributedSkillOptions {
         commands,
         name,
@@ -33,11 +39,18 @@ fn given_disabled_skills_hides_the_name_when_resolved_then_the_skill_is_disabled
     let root = tempfile::tempdir().expect("temp");
     let home = root.path().join("home");
     std::fs::create_dir_all(home.join(".omo")).expect("config dir");
-    std::fs::write(home.join(".omo/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
+    std::fs::write(
+        home.join(".omo/omo.jsonc"),
+        "{\"disabled_skills\":[\"computer-use\"]}",
+    )
+    .expect("config");
     let env = support::env_for_home(&home);
     let path = root.path().join("computer-use/SKILL.md");
 
-    assert_eq!(resolve("computer-use", &path, &home, &env, None), ContributedSkill::Disabled);
+    assert_eq!(
+        resolve("computer-use", &path, &home, &env, None),
+        ContributedSkill::Disabled
+    );
 }
 
 #[test]
@@ -69,12 +82,15 @@ fn given_a_same_name_skill_is_loaded_from_elsewhere_when_resolved_then_it_yields
 
     assert_eq!(
         resolve("x-search", &ours, &home, &env, Some(commands.as_slice())),
-        ContributedSkill::Yielded { owner_path: Some(theirs.to_string_lossy().into_owned()) }
+        ContributedSkill::Yielded {
+            owner_path: Some(theirs.to_string_lossy().into_owned())
+        }
     );
 }
 
 #[test]
-fn given_a_loaded_skill_command_without_a_source_path_when_resolved_then_it_yields_without_an_owner() {
+fn given_a_loaded_skill_command_without_a_source_path_when_resolved_then_it_yields_without_an_owner()
+ {
     let root = tempfile::tempdir().expect("temp");
     let home = root.path().join("home");
     std::fs::create_dir_all(&home).expect("home");
@@ -109,7 +125,12 @@ fn given_no_skill_command_for_the_name_when_resolved_then_the_skill_is_contribut
     std::fs::create_dir_all(&home).expect("home");
     let env = support::env_for_home(&home);
     let path = root.path().join("x-search/SKILL.md");
-    let commands = [HostCommandInfo { name: "tasks".to_owned(), description: None, source: "extension".to_owned(), source_info_path: None }];
+    let commands = [HostCommandInfo {
+        name: "tasks".to_owned(),
+        description: None,
+        source: "extension".to_owned(),
+        source_info_path: None,
+    }];
 
     assert_eq!(
         resolve("x-search", &path, &home, &env, Some(commands.as_slice())),
@@ -123,7 +144,11 @@ fn given_a_host_command_when_mapped_then_name_description_source_and_path_are_ca
         name: "skill:ulw-plan".to_owned(),
         description: Some("Plans first.".to_owned()),
         argument_hint: Some("[request]".to_owned()),
-        source_info: Some(SourceInfo { path: "/skills/ulw-plan/SKILL.md".to_owned(), source: "skill".to_owned(), ..Default::default() }),
+        source_info: Some(SourceInfo {
+            path: "/skills/ulw-plan/SKILL.md".to_owned(),
+            source: "skill".to_owned(),
+            ..Default::default()
+        }),
     };
 
     assert_eq!(
@@ -138,10 +163,19 @@ fn given_a_host_command_when_mapped_then_name_description_source_and_path_are_ca
 }
 
 #[test]
-fn given_a_discover_event_when_the_cwd_is_read_then_a_set_cwd_is_returned_and_an_empty_one_is_absent() {
-    let set = ResourcesDiscoverEvent { cwd: PathBuf::from("/project"), reason: SessionReason::Startup, scoped_entries: true };
+fn given_a_discover_event_when_the_cwd_is_read_then_a_set_cwd_is_returned_and_an_empty_one_is_absent()
+ {
+    let set = ResourcesDiscoverEvent {
+        cwd: PathBuf::from("/project"),
+        reason: SessionReason::Startup,
+        scoped_entries: true,
+    };
     assert_eq!(read_discover_cwd(&set), Some(PathBuf::from("/project")));
 
-    let empty = ResourcesDiscoverEvent { cwd: PathBuf::new(), reason: SessionReason::Reload, scoped_entries: true };
+    let empty = ResourcesDiscoverEvent {
+        cwd: PathBuf::new(),
+        reason: SessionReason::Reload,
+        scoped_entries: true,
+    };
     assert_eq!(read_discover_cwd(&empty), None);
 }

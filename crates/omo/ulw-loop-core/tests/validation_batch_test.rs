@@ -26,7 +26,10 @@ fn test_valid_validation_batch_is_stored_on_plan() {
     )
     .expect("create plan");
 
-    assert_eq!(plan.validation_batches.expect("batches")[0].batch_id, "VB001");
+    assert_eq!(
+        plan.validation_batches.expect("batches")[0].batch_id,
+        "VB001"
+    );
 }
 
 #[test]
@@ -111,5 +114,8 @@ fn test_validation_batch_file_is_read_from_disk() {
     .expect("create plan");
 
     let stored = read_ulw_loop_plan(repo.path(), None).expect("read plan");
-    assert_eq!(stored.validation_batches.expect("batches")[0].batch_id, "VB001");
+    assert_eq!(
+        stored.validation_batches.expect("batches")[0].batch_id,
+        "VB001"
+    );
 }

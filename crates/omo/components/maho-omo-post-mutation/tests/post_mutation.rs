@@ -1,7 +1,7 @@
 use maho_omo_post_mutation::*;
 use serde_json::json;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn make_event(input: serde_json::Value, tool_name: &str) -> PostMutationEvent {
     PostMutationEvent::new(tool_name, input, None)
@@ -64,26 +64,29 @@ async fn test_coalesces_duplicate_in_flight_paths() {
 
     let runs1 = Arc::clone(&runs);
     let mut first = Box::pin(sf.run("a.ts", || async move {
-            runs1.fetch_add(1, Ordering::SeqCst);
-            release_rx.await.expect("test releases the leader");
-            42
-        }));
+        runs1.fetch_add(1, Ordering::SeqCst);
+        release_rx.await.expect("test releases the leader");
+        42
+    }));
 
     let runs2 = Arc::clone(&runs);
     let mut second = Box::pin(sf.run("a.ts", || async move {
-            runs2.fetch_add(1, Ordering::SeqCst);
-            7
-        }));
+        runs2.fetch_add(1, Ordering::SeqCst);
+        7
+    }));
 
     std::future::poll_fn(|cx| {
         assert!(std::future::Future::poll(first.as_mut(), cx).is_pending());
         assert!(std::future::Future::poll(second.as_mut(), cx).is_pending());
         std::task::Poll::Ready(())
-    }).await;
+    })
+    .await;
     release_tx.send(()).expect("leader still awaits release");
     let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(first, second)
-    }).await.expect("both callers receive the completed result");
+    })
+    .await
+    .expect("both callers receive the completed result");
     assert_eq!(results, (42, 42));
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
@@ -96,13 +99,15 @@ async fn test_single_flight_leader_abort_cleans_map_and_permits_reuse() {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let sf_clone = Arc::clone(&sf);
     let handle = tokio::spawn(async move {
-        sf_clone.run("target.ts", || async move {
-            let _ = started_tx.send(());
-            // Await a signal that never completes until cancelled
-            let pending: std::future::Pending<()> = std::future::pending();
-            pending.await;
-            100
-        }).await
+        sf_clone
+            .run("target.ts", || async move {
+                let _ = started_tx.send(());
+                // Await a signal that never completes until cancelled
+                let pending: std::future::Pending<()> = std::future::pending();
+                pending.await;
+                100
+            })
+            .await
     });
 
     // Wait until leader has started and registered the flight
@@ -114,9 +119,7 @@ async fn test_single_flight_leader_abort_cleans_map_and_permits_reuse() {
 
     // Task 2: calling run on the same key must NOT panic or hang on closed channel;
     // RAII leader guard removed the stale key so Task 2 becomes the new leader and finishes!
-    let res = sf.run("target.ts", || async {
-        200
-    }).await;
+    let res = sf.run("target.ts", || async { 200 }).await;
 
     assert_eq!(res, 200);
 }

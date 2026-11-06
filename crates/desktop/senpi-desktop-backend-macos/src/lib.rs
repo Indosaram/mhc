@@ -17,7 +17,7 @@ mod responsible;
 mod skylight;
 mod stop_path;
 
-pub use ax::{MacAx, is_trusted};
+pub use ax::{is_trusted, MacAx};
 pub use backend::MacosBackend;
 pub use input::{CanaryMode, CanaryResult};
 pub use stop_path::{CgEventTapListener, DEFAULT_STOP_CHORD};

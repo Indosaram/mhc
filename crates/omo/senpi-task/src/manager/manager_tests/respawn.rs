@@ -895,9 +895,18 @@ fn host_draining_open_error_retains_typed_code_and_retry_after() {
     assert!(result.is_host_draining());
     assert_eq!(result.retry_after_ms(), Some(4500));
     match result {
-        RespawnResult::Failed { disposition, code, reason } => {
+        RespawnResult::Failed {
+            disposition,
+            code,
+            reason,
+        } => {
             assert_eq!(disposition, RespawnDisposition::Retryable);
-            assert_eq!(code, RespawnFailureCode::HostDraining { retry_after_ms: Some(4500) });
+            assert_eq!(
+                code,
+                RespawnFailureCode::HostDraining {
+                    retry_after_ms: Some(4500)
+                }
+            );
             assert!(reason.contains("session_path_in_use"));
         }
         RespawnResult::Ok(_) => panic!("expected failed respawn"),
@@ -939,7 +948,9 @@ fn non_drain_open_error_does_not_produce_host_draining() {
     assert!(!result.is_host_draining());
     assert_eq!(result.retry_after_ms(), None);
     match result {
-        RespawnResult::Failed { disposition, code, .. } => {
+        RespawnResult::Failed {
+            disposition, code, ..
+        } => {
             assert_eq!(disposition, RespawnDisposition::Retryable);
             assert_eq!(code, RespawnFailureCode::RespawnFailed);
         }

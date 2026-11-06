@@ -141,7 +141,11 @@ fn windows_stable_path(file: &str, workdir: &str) -> String {
     {
         return relative;
     }
-    format!("{}/{}", file_prefix.replace('\\', "/"), file_segments.join("/"))
+    format!(
+        "{}/{}",
+        file_prefix.replace('\\', "/"),
+        file_segments.join("/")
+    )
 }
 
 fn stable_path(file: &str, workdir: &str) -> String {

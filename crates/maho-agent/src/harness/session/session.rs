@@ -13,13 +13,13 @@ use super::commit::insert_entry;
 use super::mutation_line::MutationLine;
 use super::types::{
     Branch, BranchScan, CommitResult, Entry, EntryQuery, IdGenerator, JsonValue, NewEntry, Session,
-    SessionCreateOptions, SessionMetadata, SessionMutation, SessionMutationCallback, SessionReader, SessionStats,
-    Storage, StorageBranchScan, Write,
+    SessionCreateOptions, SessionMetadata, SessionMutation, SessionMutationCallback, SessionReader,
+    SessionStats, Storage, StorageBranchScan, Write,
 };
 use super::values::{
-    ListElement, ListReadOptions, StoredValue, Value, ValueList,
-    append_list as append_list_write, branch_tip, delete_list as delete_list_write,
-    delete_value as delete_value_write, entry_label, session_name, set_value as set_value_write,
+    ListElement, ListReadOptions, StoredValue, Value, ValueList, append_list as append_list_write,
+    branch_tip, delete_list as delete_list_write, delete_value as delete_value_write, entry_label,
+    session_name, set_value as set_value_write,
 };
 
 pub type SessionResult<T> = Result<T, SessionError>;
@@ -93,7 +93,10 @@ pub fn session_invalid_branch_error(branch: &str, reason: &str) -> SessionError 
 }
 
 pub fn session_branch_exists_error(branch: &str) -> SessionError {
-    let mut error = SessionError::new(SessionErrorKind::BranchExists, format!("Branch already exists: {branch}"));
+    let mut error = SessionError::new(
+        SessionErrorKind::BranchExists,
+        format!("Branch already exists: {branch}"),
+    );
     error.branch = Some(branch.to_owned());
     error
 }
@@ -106,7 +109,10 @@ pub fn session_pending_assistant_message_error() -> SessionError {
 }
 
 pub fn session_unknown_target_error(target_id: &str) -> SessionError {
-    let mut error = SessionError::new(SessionErrorKind::UnknownTarget, format!("Unknown target: {target_id}"));
+    let mut error = SessionError::new(
+        SessionErrorKind::UnknownTarget,
+        format!("Unknown target: {target_id}"),
+    );
     error.target_id = Some(target_id.to_owned());
     error
 }
@@ -126,7 +132,8 @@ pub struct StorageBackedSessionOptions {
 
 pub fn default_id_generator() -> IdGenerator {
     Arc::new(|timestamp_ms: Option<i64>| {
-        maho_ai::utils::uuid::uuidv7(timestamp_ms.map(|t| t as f64)).unwrap_or_else(|_| uuid_like_fallback(timestamp_ms))
+        maho_ai::utils::uuid::uuidv7(timestamp_ms.map(|t| t as f64))
+            .unwrap_or_else(|_| uuid_like_fallback(timestamp_ms))
     })
 }
 
@@ -191,7 +198,9 @@ impl StorageBackedSessionMutation {
     }
 
     async fn settle(&self) {
-        while self.state.commit_started.load(Ordering::SeqCst) && !self.state.commit_done.load(Ordering::SeqCst) {
+        while self.state.commit_started.load(Ordering::SeqCst)
+            && !self.state.commit_done.load(Ordering::SeqCst)
+        {
             if self.state.settled.acquire().await.is_err() {
                 return;
             }
@@ -283,12 +292,14 @@ impl SessionMutation for StorageBackedSessionMutation {
             }
             for write in &writes {
                 if let Write::Entry(entry_write) = write
-                    && let super::types::EntryKind::Message { message, .. } = &entry_write.entry.kind
-                        && is_pending_assistant(message) {
-                            self.state.commit_done.store(true, Ordering::SeqCst);
-                            self.state.settled.add_permits(1);
-                            return Err(session_pending_assistant_message_error());
-                        }
+                    && let super::types::EntryKind::Message { message, .. } =
+                        &entry_write.entry.kind
+                    && is_pending_assistant(message)
+                {
+                    self.state.commit_done.store(true, Ordering::SeqCst);
+                    self.state.settled.add_permits(1);
+                    return Err(session_pending_assistant_message_error());
+                }
             }
             let result = self.storage.commit(writes, context).await;
             self.state.commit_done.store(true, Ordering::SeqCst);
@@ -386,7 +397,11 @@ impl Branch for StorageBackedBranch {
                         stop_at_id: query.stop_at_id,
                         entry_type: query.entry_type,
                         custom_type: query.custom_type,
-                        order: Some(query.order.unwrap_or(super::types::BranchOrder::NewestFirst)),
+                        order: Some(
+                            query
+                                .order
+                                .unwrap_or(super::types::BranchOrder::NewestFirst),
+                        ),
                         limit: query.limit,
                         cursor: query.cursor,
                     },
@@ -424,7 +439,13 @@ impl Branch for StorageBackedBranch {
     ) -> BoxFuture<'a, SessionResult<String>> {
         Box::pin(async move {
             let session = self.session()?;
-            session.append_to_branch(&self.state.name, NewEntry::message(String::new(), None, message), context).await
+            session
+                .append_to_branch(
+                    &self.state.name,
+                    NewEntry::message(String::new(), None, message),
+                    context,
+                )
+                .await
         })
     }
 
@@ -440,7 +461,9 @@ impl Branch for StorageBackedBranch {
                 Some(data) => NewEntry::custom_with_data(String::new(), None, custom_type, data),
                 None => NewEntry::custom(String::new(), None, custom_type),
             };
-            session.append_to_branch(&self.state.name, entry, context).await
+            session
+                .append_to_branch(&self.state.name, entry, context)
+                .await
         })
     }
 }
@@ -465,7 +488,11 @@ pub struct StorageBackedSession {
 }
 
 impl StorageBackedSession {
-    pub fn new(metadata: SessionMetadata, storage: Arc<dyn Storage>, options: StorageBackedSessionOptions) -> Self {
+    pub fn new(
+        metadata: SessionMetadata,
+        storage: Arc<dyn Storage>,
+        options: StorageBackedSessionOptions,
+    ) -> Self {
         Self {
             metadata,
             id_generator: options.id_generator.unwrap_or_else(default_id_generator),
@@ -520,9 +547,10 @@ impl StorageBackedSession {
     ) -> SessionResult<String> {
         self.assert_open()?;
         if let super::types::EntryKind::Message { message, .. } = &entry.kind
-            && is_pending_assistant(message) {
-                return Err(session_pending_assistant_message_error());
-            }
+            && is_pending_assistant(message)
+        {
+            return Err(session_pending_assistant_message_error());
+        }
         let id = (self.id_generator)(None);
         let mut entry = entry;
         entry.id = id.clone();
@@ -539,14 +567,18 @@ impl StorageBackedSession {
                         let Some(tip) = tip else {
                             return Err(session_invariant_error(format!("Unknown branch: {name}")));
                         };
-                        let parent_id = serde_json::from_value::<Option<String>>(tip.value).unwrap_or(None);
+                        let parent_id =
+                            serde_json::from_value::<Option<String>>(tip.value).unwrap_or(None);
                         let mut entry = entry;
                         entry.parent_id = parent_id;
                         mutator
                             .commit(
                                 vec![
                                     insert_entry(entry),
-                                    Write::Value(set_value_write(&branch_tip(&name), JsonValue::String(id.clone()))),
+                                    Write::Value(set_value_write(
+                                        &branch_tip(&name),
+                                        JsonValue::String(id.clone()),
+                                    )),
                                 ],
                                 context,
                             )
@@ -578,7 +610,10 @@ impl StorageBackedSession {
 
     fn assert_valid_branch_name(name: &str) -> SessionResult<()> {
         if name.is_empty() {
-            return Err(session_invalid_branch_error(name, "branch name must not be empty"));
+            return Err(session_invalid_branch_error(
+                name,
+                "branch name must not be empty",
+            ));
         }
         if name.contains(super::values::NUL) {
             return Err(session_invalid_branch_error(
@@ -680,7 +715,12 @@ impl Session for StorageBackedSession {
         id: &'a str,
         context: &'a crate::harness::context::Context,
     ) -> BoxFuture<'a, SessionResult<Option<Entry>>> {
-        Box::pin(async move { Ok(self.get_entries(vec![id.to_owned()], context).await?.remove(id)) })
+        Box::pin(async move {
+            Ok(self
+                .get_entries(vec![id.to_owned()], context)
+                .await?
+                .remove(id))
+        })
     }
 
     fn get_name<'a>(
@@ -784,7 +824,8 @@ impl Session for StorageBackedSession {
                 return Ok(None);
             }
             Ok(Some(
-                Box::new(BranchHandle(session.get_or_create_branch_object(name))) as Box<dyn Branch>
+                Box::new(BranchHandle(session.get_or_create_branch_object(name)))
+                    as Box<dyn Branch>,
             ))
         })
     }
@@ -805,7 +846,11 @@ impl Session for StorageBackedSession {
                     let name_owned = name_owned.clone();
                     let at = at.clone();
                     Box::pin(async move {
-                        if mutator.get_value(&branch_tip(&name_owned), context).await?.is_some() {
+                        if mutator
+                            .get_value(&branch_tip(&name_owned), context)
+                            .await?
+                            .is_some()
+                        {
                             return Err(session_branch_exists_error(&name_owned));
                         }
                         if let Some(at) = &at
@@ -813,9 +858,9 @@ impl Session for StorageBackedSession {
                                 .get_entries(vec![at.clone()], context)
                                 .await?
                                 .contains_key(at)
-                            {
-                                return Err(session_unknown_target_error(at));
-                            }
+                        {
+                            return Err(session_unknown_target_error(at));
+                        }
                         mutator
                             .commit(
                                 vec![Write::Value(set_value_write(
@@ -834,7 +879,10 @@ impl Session for StorageBackedSession {
                 context,
             )
             .await?;
-            Ok(Box::new(BranchHandle(session.get_or_create_branch_object(name))) as Box<dyn Branch>)
+            Ok(
+                Box::new(BranchHandle(session.get_or_create_branch_object(name)))
+                    as Box<dyn Branch>,
+            )
         })
     }
 
@@ -927,7 +975,10 @@ impl Session for StorageBackedSession {
                     let element = element.clone();
                     Box::pin(async move {
                         mutator
-                            .commit(vec![Write::List(append_list_write(&address, element))], context)
+                            .commit(
+                                vec![Write::List(append_list_write(&address, element))],
+                                context,
+                            )
                             .await?;
                         Ok(JsonValue::Null)
                     })
@@ -971,7 +1022,10 @@ impl Session for StorageBackedSession {
         Box::pin(async move {
             match name {
                 None => self.delete_value(&session_name(), context).await,
-                Some(name) => self.set_value(&session_name(), JsonValue::String(name), context).await,
+                Some(name) => {
+                    self.set_value(&session_name(), JsonValue::String(name), context)
+                        .await
+                }
             }
         })
     }
@@ -986,7 +1040,10 @@ impl Session for StorageBackedSession {
             let address = entry_label(target_id);
             match label {
                 None => self.delete_value(&address, context).await,
-                Some(label) => self.set_value(&address, JsonValue::String(label), context).await,
+                Some(label) => {
+                    self.set_value(&address, JsonValue::String(label), context)
+                        .await
+                }
             }
         })
     }

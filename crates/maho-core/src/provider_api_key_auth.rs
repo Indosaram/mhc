@@ -35,8 +35,11 @@ pub fn try_configured_api_key<'a>(
     extension: Option<&'a ModelsJsonProvider>,
 ) -> Result<Option<&'a ConfigValue>, String> {
     if let Some(value) = extension.and_then(|c| c.api_key.as_ref()) {
-        assert_config_reference_authority(value, Some(&ConfigReferenceContext::extension("extension.apiKey")))
-            .map_err(|error| error.to_string())?;
+        assert_config_reference_authority(
+            value,
+            Some(&ConfigReferenceContext::extension("extension.apiKey")),
+        )
+        .map_err(|error| error.to_string())?;
     }
     if let Some(value) = config.and_then(|c| c.api_key.as_ref()) {
         assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
@@ -63,17 +66,35 @@ pub fn assert_configured_header_authority(
     config: Option<&ModelsJsonProvider>,
     extension: Option<&ModelsJsonProvider>,
 ) -> Result<(), String> {
-    for model in extension.and_then(|c| c.models.as_ref()).into_iter().flatten() {
+    for model in extension
+        .and_then(|c| c.models.as_ref())
+        .into_iter()
+        .flatten()
+    {
         for (name, value) in model.headers.iter().flatten() {
-            let context = ConfigReferenceContext::extension(format!("extension.models.{}.headers.{name}", model.id));
-            assert_config_reference_authority(value, Some(&context)).map_err(|error| error.to_string())?;
+            let context = ConfigReferenceContext::extension(format!(
+                "extension.models.{}.headers.{name}",
+                model.id
+            ));
+            assert_config_reference_authority(value, Some(&context))
+                .map_err(|error| error.to_string())?;
         }
     }
-    for (name, value) in extension.and_then(|c| c.headers.as_ref()).into_iter().flatten() {
+    for (name, value) in extension
+        .and_then(|c| c.headers.as_ref())
+        .into_iter()
+        .flatten()
+    {
         let context = ConfigReferenceContext::extension(format!("extension.headers.{name}"));
-        assert_config_reference_authority(value, Some(&context)).map_err(|error| error.to_string())?;
+        assert_config_reference_authority(value, Some(&context))
+            .map_err(|error| error.to_string())?;
     }
-    for value in config.and_then(|c| c.headers.as_ref()).into_iter().flatten().map(|(_, v)| v) {
+    for value in config
+        .and_then(|c| c.headers.as_ref())
+        .into_iter()
+        .flatten()
+        .map(|(_, v)| v)
+    {
         assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -517,12 +538,8 @@ impl ComposedApiKeyAuth {
                 None => Ok(None),
             };
         };
-        let env = config_context_env(
-            &[raw_key],
-            ctx,
-            credential.and_then(|c| c.env.as_ref()),
-        )
-        .await;
+        let env =
+            config_context_env(&[raw_key], ctx, credential.and_then(|c| c.env.as_ref())).await;
         let key = resolve_config_value_or_throw(
             raw_key,
             &format!("API key for provider \"{}\"", self.provider_id),
@@ -555,7 +572,9 @@ impl ComposedApiKeyAuth {
 #[async_trait]
 impl ApiKeyAuth for ComposedApiKeyAuth {
     fn key_optional(&self) -> bool {
-        self.inherited.as_ref().is_some_and(|auth| auth.key_optional())
+        self.inherited
+            .as_ref()
+            .is_some_and(|auth| auth.key_optional())
     }
     fn name(&self) -> &str {
         self.inherited
@@ -848,7 +867,10 @@ mod reference_tests {
     fn extension_reference_keys_are_forbidden() {
         let reference: ConfigValue =
             serde_json::from_value(serde_json::json!({"$env": "KEY"})).expect("reference");
-        let extension = ModelsJsonProvider { api_key: Some(reference.clone()), ..Default::default() };
+        let extension = ModelsJsonProvider {
+            api_key: Some(reference.clone()),
+            ..Default::default()
+        };
         let error = try_configured_api_key(None, Some(&extension)).expect_err("forbidden");
         assert_eq!(error, "extension.apiKey: configuration reference forbidden");
         let mut trusted = reference;
@@ -856,8 +878,15 @@ mod reference_tests {
             &mut trusted,
             ConfigReferenceContext::trusted("/m.json", "providers.p.apiKey"),
         );
-        let config = ModelsJsonProvider { api_key: Some(trusted), ..Default::default() };
-        assert!(try_configured_api_key(Some(&config), None).expect("trusted").is_some());
+        let config = ModelsJsonProvider {
+            api_key: Some(trusted),
+            ..Default::default()
+        };
+        assert!(
+            try_configured_api_key(Some(&config), None)
+                .expect("trusted")
+                .is_some()
+        );
     }
 
     #[test]
@@ -868,7 +897,10 @@ mod reference_tests {
             &mut trusted,
             ConfigReferenceContext::trusted("/m.json", "providers.p.apiKey"),
         );
-        let config = ModelsJsonProvider { api_key: Some(trusted), ..Default::default() };
+        let config = ModelsJsonProvider {
+            api_key: Some(trusted),
+            ..Default::default()
+        };
         let status = configured_request_auth_status(Some(&config), None).expect("status");
         assert!(status.configured);
         assert_eq!(status.source.as_deref(), Some("models_json_key"));
@@ -881,13 +913,35 @@ mod optionality_tests {
     struct OptionalAuth;
     #[async_trait]
     impl ApiKeyAuth for OptionalAuth {
-        fn name(&self)->&str { "optional" }
-        fn key_optional(&self)->bool { true }
-        async fn resolve(&self,_:&dyn AuthContext,_:Option<&ApiKeyCredential>,_:&AbortSignal)->anyhow::Result<Option<AuthResult>> { Ok(None) }
+        fn name(&self) -> &str {
+            "optional"
+        }
+        fn key_optional(&self) -> bool {
+            true
+        }
+        async fn resolve(
+            &self,
+            _: &dyn AuthContext,
+            _: Option<&ApiKeyCredential>,
+            _: &AbortSignal,
+        ) -> anyhow::Result<Option<AuthResult>> {
+            Ok(None)
+        }
     }
     #[test]
     fn inherits_optional_key_semantics() {
-        let config=ModelsJsonProvider { base_url:Some("http://localhost".into()), ..Default::default() };
-        let auth=compose_api_key_auth("optional",Some(Arc::new(OptionalAuth)),None,Some(&config),None).expect("composed"); assert!(auth.key_optional());
+        let config = ModelsJsonProvider {
+            base_url: Some("http://localhost".into()),
+            ..Default::default()
+        };
+        let auth = compose_api_key_auth(
+            "optional",
+            Some(Arc::new(OptionalAuth)),
+            None,
+            Some(&config),
+            None,
+        )
+        .expect("composed");
+        assert!(auth.key_optional());
     }
 }

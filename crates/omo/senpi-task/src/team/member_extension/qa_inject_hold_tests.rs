@@ -24,7 +24,10 @@ fn message() -> Message {
 
 #[test]
 fn given_a_hold_path_outside_qa_when_resolved_then_the_test_hook_stays_disabled() {
-    let env = HashMap::from([(QA_HOLD_AFTER_INJECT_ENV.to_string(), "/tmp/hold".to_string())]);
+    let env = HashMap::from([(
+        QA_HOLD_AFTER_INJECT_ENV.to_string(),
+        "/tmp/hold".to_string(),
+    )]);
 
     let hook = create_qa_after_inject_hold(&env);
 
@@ -51,5 +54,8 @@ fn given_a_qa_release_file_when_an_injected_message_enters_the_hook_then_a_marke
     hook(&message()).unwrap();
 
     let content = fs::read_to_string(&marker_path).unwrap();
-    assert_eq!(content.contains("22222222-2222-4222-8222-222222222222"), true);
+    assert_eq!(
+        content.contains("22222222-2222-4222-8222-222222222222"),
+        true
+    );
 }

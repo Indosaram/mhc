@@ -39,7 +39,10 @@ fn params(prompt: &str) -> SpawnParamsInput {
 }
 
 /// `makeDeps(manager)`: deps with default tool/policy seams.
-fn make_deps<'a>(manager: &'a crate::manager::TaskManager, tool: &'a TaskToolDeps) -> TaskExecuteDeps<'a> {
+fn make_deps<'a>(
+    manager: &'a crate::manager::TaskManager,
+    tool: &'a TaskToolDeps,
+) -> TaskExecuteDeps<'a> {
     TaskExecuteDeps {
         manager,
         tool,

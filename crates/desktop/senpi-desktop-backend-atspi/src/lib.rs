@@ -46,10 +46,7 @@ pub struct AtSpiAx<B: AtSpiBus = LiveBus> {
 impl AtSpiAx<LiveBus> {
     /// Connects to the accessibility bus; fails when there is none.
     pub fn new(window_ids: WindowIds) -> CoreResult<Self> {
-        LiveBus::connect().map(|bus| Self {
-            bus,
-            window_ids,
-        })
+        LiveBus::connect().map(|bus| Self { bus, window_ids })
     }
 }
 
@@ -103,7 +100,10 @@ impl<B: AtSpiBus> AxBackend for AtSpiAx<B> {
     }
 
     fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>> {
-        let parent = self.bus.parent(Self::node(h)?).map_err(DesktopError::ax_failed)?;
+        let parent = self
+            .bus
+            .parent(Self::node(h)?)
+            .map_err(DesktopError::ax_failed)?;
         Ok((!self.bus.is_null(&parent)).then(|| AxHandle::native(parent)))
     }
 

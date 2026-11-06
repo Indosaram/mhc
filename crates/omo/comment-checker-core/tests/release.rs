@@ -99,7 +99,7 @@ fn release_descriptor_given_xdg_cache_home_on_posix_when_locating_cache_then_it_
 
 #[test]
 fn release_descriptor_given_no_xdg_cache_home_on_posix_when_locating_cache_then_falls_back_to_dot_cache()
-{
+ {
     let env = BTreeMap::new();
     let dir = comment_checker_cache_dir(&CommentCheckerCacheDirInput {
         platform: "darwin",
@@ -112,7 +112,7 @@ fn release_descriptor_given_no_xdg_cache_home_on_posix_when_locating_cache_then_
 
 #[test]
 fn release_descriptor_given_win32_when_locating_cache_then_localappdata_wins_then_appdata_then_appdata_local()
-{
+ {
     let name = "oh-my-opencode";
     let homedir = Path::new("H");
 
@@ -149,10 +149,6 @@ fn release_descriptor_given_win32_when_locating_cache_then_localappdata_wins_the
             homedir,
             cache_dir_name: name,
         }),
-        homedir
-            .join("AppData")
-            .join("Local")
-            .join(name)
-            .join("bin")
+        homedir.join("AppData").join("Local").join(name).join("bin")
     );
 }

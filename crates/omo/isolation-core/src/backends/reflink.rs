@@ -103,7 +103,10 @@ impl ReflinkBackend {
         #[cfg(unix)]
         let (dst_fd, src_fd) = (dst.as_raw_fd(), src.as_raw_fd());
         #[cfg(windows)]
-        let (dst_fd, src_fd) = (dst.as_raw_handle() as usize as i32, src.as_raw_handle() as usize as i32);
+        let (dst_fd, src_fd) = (
+            dst.as_raw_handle() as usize as i32,
+            src.as_raw_handle() as usize as i32,
+        );
         #[cfg(not(any(unix, windows)))]
         let (dst_fd, src_fd) = (0, 0);
         if ffi.ioctl(dst_fd, FICLONE, src_fd) != 0 {
@@ -113,7 +116,9 @@ impl ReflinkBackend {
                     "FICLONE unavailable: errno {errno}"
                 )));
             }
-            return Err(IsolationError::other(format!("FICLONE failed: errno {errno}")));
+            return Err(IsolationError::other(format!(
+                "FICLONE failed: errno {errno}"
+            )));
         }
         Ok(())
     }
@@ -237,10 +242,10 @@ impl IsolationBackend for ReflinkBackend {
         if let Some(parent) = merged.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if ctx.cross_device
-            || self.io.device(lower)? != self.io.device(&dirname(merged))?
-        {
-            return Err(IsolationError::unavailable("reflink requires the same device"));
+        if ctx.cross_device || self.io.device(lower)? != self.io.device(&dirname(merged))? {
+            return Err(IsolationError::unavailable(
+                "reflink requires the same device",
+            ));
         }
         // Direct start callers get the same lazy initialization as probe callers.
         if !lock(&self.state).loaded {
@@ -262,9 +267,7 @@ impl IsolationBackend for ReflinkBackend {
                     copy_tree(
                         lower,
                         merged,
-                        &mut |source, destination, _size| {
-                            self.clone_file(ffi, source, destination)
-                        },
+                        &mut |source, destination, _size| self.clone_file(ffi, source, destination),
                         &mut |size| budget.consume(size),
                     )?;
                 }

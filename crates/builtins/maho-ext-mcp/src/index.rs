@@ -70,8 +70,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
     );
     // The deferred attach publisher outlives `session_start`; shutdown (which precedes every reload
     // or replacement invalidation) aborts it so the old runtime's work stops with the runtime.
-    let attach_publisher: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
-        Arc::default();
+    let attach_publisher: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> = Arc::default();
     let start_publisher = attach_publisher.clone();
     let start = service.clone();
     let start_registrar = registrar.clone();

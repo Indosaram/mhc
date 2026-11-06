@@ -211,10 +211,7 @@ impl TaskRunner for ProcessRunner {
             let mut child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
-                    return failed(format!(
-                        "cannot start {}: {error}",
-                        self.exe.display()
-                    ));
+                    return failed(format!("cannot start {}: {error}", self.exe.display()));
                 }
             };
             on_start(child.id());
@@ -270,7 +267,11 @@ mod tests {
         let env = run.child_env();
         let get = |key: &str| env.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone());
         assert_eq!(get(PARENT_SESSION_ENV).as_deref(), Some("P"));
-        assert_eq!(get(ROOT_SESSION_ENV).as_deref(), Some("P"), "root falls back to the parent");
+        assert_eq!(
+            get(ROOT_SESSION_ENV).as_deref(),
+            Some("P"),
+            "root falls back to the parent"
+        );
         assert_eq!(get(TASK_ID_ENV).as_deref(), Some("T"));
         assert_eq!(get(DEPTH_ENV).as_deref(), Some("1"));
         run.root_session = Some("R".into());
@@ -292,9 +293,26 @@ mod tests {
         assert_eq!(
             args,
             [
-                "-p", "--mode", "text", "--session-dir", &sessions, "--session-id", "sid",
-                "--name", "T", "--model", "a/b", "--thinking", "low", "--append-system-prompt",
-                &prompt_file, "--tools", "read,grep", "--exclude-tools", "bash", "--",
+                "-p",
+                "--mode",
+                "text",
+                "--session-dir",
+                &sessions,
+                "--session-id",
+                "sid",
+                "--name",
+                "T",
+                "--model",
+                "a/b",
+                "--thinking",
+                "low",
+                "--append-system-prompt",
+                &prompt_file,
+                "--tools",
+                "read,grep",
+                "--exclude-tools",
+                "bash",
+                "--",
                 "-starts with a dash"
             ]
         );
@@ -318,12 +336,19 @@ mod tests {
         run.prompt = "hello".into();
         run.parent_session = Some("P".into());
         let outcome = runner
-            .run(&run, CancelToken::default(), Box::new(|pid| assert!(pid.is_some())))
+            .run(
+                &run,
+                CancelToken::default(),
+                Box::new(|pid| assert!(pid.is_some())),
+            )
             .await;
         assert!(outcome.succeeded(), "{outcome:?}");
         let out = std::fs::read_to_string(&run.output_path).expect("out");
         assert_eq!(out.trim(), "depth=1 id=T parent=P last=hello");
-        assert_eq!(std::fs::read_to_string(&run.log_path).expect("log").trim(), "log");
+        assert_eq!(
+            std::fs::read_to_string(&run.log_path).expect("log").trim(),
+            "log"
+        );
 
         run.prompt = "sleep".into();
         let cancel = CancelToken::default();

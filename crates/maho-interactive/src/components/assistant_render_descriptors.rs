@@ -1,12 +1,29 @@
-use std::collections::BTreeMap;
-use serde_json::Value;
 use crate::theme::{Theme, ThemeColor};
-use maho_ai::utils::{provider_failure_description::{describe_provider_failure_for_user, strip_turn_retry_suppression_prefix}, retry::ProviderStallDescriptionOptions};
+use maho_ai::utils::{
+    provider_failure_description::{
+        describe_provider_failure_for_user, strip_turn_retry_suppression_prefix,
+    },
+    retry::ProviderStallDescriptionOptions,
+};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DescriptorKind { Spacer, TextMarkdown, ThinkingMarkdown, ThinkingLabel, ProviderNativeSummary, ProviderNativeBody, ErrorText }
+pub enum DescriptorKind {
+    Spacer,
+    TextMarkdown,
+    ThinkingMarkdown,
+    ThinkingLabel,
+    ProviderNativeSummary,
+    ProviderNativeBody,
+    ErrorText,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AssistantRenderDescriptor { pub kind: DescriptorKind, pub text: String, pub thinking_run: Option<usize> }
+pub struct AssistantRenderDescriptor {
+    pub kind: DescriptorKind,
+    pub text: String,
+    pub thinking_run: Option<usize>,
+}
 pub struct AssistantRenderDescriptorOptions<'a> {
     pub expanded: bool,
     pub provider_error_owned: bool,
@@ -17,35 +34,75 @@ pub struct AssistantRenderDescriptorOptions<'a> {
 }
 fn visible(content: &Value, provider_native: bool) -> bool {
     match content["type"].as_str() {
-        Some("text") => content["text"].as_str().is_some_and(|text| !text.trim().is_empty()),
-        Some("thinking") => content["thinking"].as_str().is_some_and(|text| !text.trim().is_empty()),
+        Some("text") => content["text"]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty()),
+        Some("thinking") => content["thinking"]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty()),
         Some("providerNative") => provider_native,
         _ => false,
     }
 }
 fn duration(ms: f64) -> String {
-    if ms < 1000. { format!("{ms}ms") }
-    else if ms < 60000. { format!("{:.1}s", ms / 1000.) }
-    else if ms < 3600000. { format!("{}m {}s", (ms / 60000.).floor(), ((ms % 60000.) / 1000.).floor()) }
-    else if ms < 86400000. { format!("{}h {}m", (ms / 3600000.).floor(), ((ms % 3600000.) / 60000.).floor()) }
-    else { format!("{}d {}h", (ms / 86400000.).floor(), ((ms % 86400000.) / 3600000.).floor()) }
+    if ms < 1000. {
+        format!("{ms}ms")
+    } else if ms < 60000. {
+        format!("{:.1}s", ms / 1000.)
+    } else if ms < 3600000. {
+        format!(
+            "{}m {}s",
+            (ms / 60000.).floor(),
+            ((ms % 60000.) / 1000.).floor()
+        )
+    } else if ms < 86400000. {
+        format!(
+            "{}h {}m",
+            (ms / 3600000.).floor(),
+            ((ms % 3600000.) / 60000.).floor()
+        )
+    } else {
+        format!(
+            "{}d {}h",
+            (ms / 86400000.).floor(),
+            ((ms % 86400000.) / 3600000.).floor()
+        )
+    }
 }
-fn descriptor(kind: DescriptorKind, text: String, thinking_run: Option<usize>) -> AssistantRenderDescriptor {
-    AssistantRenderDescriptor { kind, text, thinking_run }
+fn descriptor(
+    kind: DescriptorKind,
+    text: String,
+    thinking_run: Option<usize>,
+) -> AssistantRenderDescriptor {
+    AssistantRenderDescriptor {
+        kind,
+        text,
+        thinking_run,
+    }
 }
-fn spacer() -> AssistantRenderDescriptor { descriptor(DescriptorKind::Spacer, String::new(), None) }
+fn spacer() -> AssistantRenderDescriptor {
+    descriptor(DescriptorKind::Spacer, String::new(), None)
+}
 
-pub fn create_assistant_render_descriptors(message: &Value, options: &AssistantRenderDescriptorOptions<'_>, theme: &Theme) -> Vec<AssistantRenderDescriptor> {
+pub fn create_assistant_render_descriptors(
+    message: &Value,
+    options: &AssistantRenderDescriptorOptions<'_>,
+    theme: &Theme,
+) -> Vec<AssistantRenderDescriptor> {
     let content = message["content"].as_array().map_or(&[][..], Vec::as_slice);
     let mut descriptors = Vec::new();
-    if content.iter().any(|c| visible(c, true)) { descriptors.push(spacer()); }
+    if content.iter().any(|c| visible(c, true)) {
+        descriptors.push(spacer());
+    }
     let mut index = 0;
     let mut thinking_run = 0;
     while let Some(part) = content.get(index) {
         match part["type"].as_str() {
             Some("text") => {
                 let text = part["text"].as_str().unwrap_or_default().trim();
-                if !text.is_empty() { descriptors.push(descriptor(DescriptorKind::TextMarkdown, text.into(), None)); }
+                if !text.is_empty() {
+                    descriptors.push(descriptor(DescriptorKind::TextMarkdown, text.into(), None));
+                }
             }
             Some("thinking") => {
                 let mut blocks = Vec::new();
@@ -53,32 +110,66 @@ pub fn create_assistant_render_descriptors(message: &Value, options: &AssistantR
                 let mut done = true;
                 let mut start = f64::INFINITY;
                 let mut end = f64::NEG_INFINITY;
-                while let Some(part) = content.get(index).filter(|part| part["type"] == "thinking") {
+                while let Some(part) = content.get(index).filter(|part| part["type"] == "thinking")
+                {
                     if let Some(started) = part["startedAt"].as_f64() {
                         timing = true;
                         start = start.min(started);
-                        if let Some(ended) = part["endedAt"].as_f64() { end = end.max(ended); } else { done = false; }
+                        if let Some(ended) = part["endedAt"].as_f64() {
+                            end = end.max(ended);
+                        } else {
+                            done = false;
+                        }
                     }
                     let text = part["thinking"].as_str().unwrap_or_default().trim();
-                    if !text.is_empty() { blocks.push(text); }
+                    if !text.is_empty() {
+                        blocks.push(text);
+                    }
                     index += 1;
                 }
-                if blocks.is_empty() { continue; }
+                if blocks.is_empty() {
+                    continue;
+                }
                 let run = thinking_run;
                 thinking_run += 1;
-                let hidden = options.thinking_visibility_overrides.get(&run).copied().unwrap_or(options.hide_thinking_block);
-                let label = if timing && done { format!("Thought: {}", duration((end - start).max(0.))) } else { options.hidden_thinking_label.to_owned() };
+                let hidden = options
+                    .thinking_visibility_overrides
+                    .get(&run)
+                    .copied()
+                    .unwrap_or(options.hide_thinking_block);
+                let label = if timing && done {
+                    format!("Thought: {}", duration((end - start).max(0.)))
+                } else {
+                    options.hidden_thinking_label.to_owned()
+                };
                 let label = theme.italic(&theme.fg(ThemeColor::ThinkingText, &label));
-                if hidden || timing { descriptors.push(descriptor(DescriptorKind::ThinkingLabel, label, Some(run))); }
-                if !hidden { descriptors.push(descriptor(DescriptorKind::ThinkingMarkdown, blocks.join("\n\n"), Some(run))); }
-                if content[index..].iter().any(|c| visible(c, false)) { descriptors.push(spacer()); }
+                if hidden || timing {
+                    descriptors.push(descriptor(DescriptorKind::ThinkingLabel, label, Some(run)));
+                }
+                if !hidden {
+                    descriptors.push(descriptor(
+                        DescriptorKind::ThinkingMarkdown,
+                        blocks.join("\n\n"),
+                        Some(run),
+                    ));
+                }
+                if content[index..].iter().any(|c| visible(c, false)) {
+                    descriptors.push(spacer());
+                }
                 continue;
             }
             Some("providerNative") => {
                 let marker = if options.expanded { "▾" } else { "▸" };
-                let provider = message["provider"].as_str().filter(|p| !p.is_empty()).map_or_else(String::new, |p| format!("{p} · "));
-                let summary = format!("{marker} {provider}providerNative · {}", part["subtype"].as_str().unwrap_or_default());
-                let body = serde_json::to_string_pretty(&part["raw"]).unwrap_or_else(|_| "null".into());
+                let provider = message["provider"]
+                    .as_str()
+                    .filter(|p| !p.is_empty())
+                    .map_or_else(String::new, |p| format!("{p} · "));
+                let summary = format!(
+                    "{marker} {provider}providerNative · {}",
+                    part["subtype"].as_str().unwrap_or_default()
+                );
+                let body =
+                    serde_json::to_string_pretty(&part["raw"]).unwrap_or_else(|_| "null".into());
                 // senpi slices at 2000 UTF-16 code units, so a cut can land between a surrogate
                 // pair; `from_utf16_lossy` yields the U+FFFD a terminal shows for that lone
                 // surrogate, which is the closest representable match.
@@ -88,9 +179,19 @@ pub fn create_assistant_render_descriptors(message: &Value, options: &AssistantR
                 } else {
                     body
                 };
-                descriptors.push(descriptor(DescriptorKind::ProviderNativeSummary, theme.fg(ThemeColor::Muted, &summary), None));
-                descriptors.push(descriptor(DescriptorKind::ProviderNativeBody, theme.fg(ThemeColor::Dim, &body), None));
-                if content[index + 1..].iter().any(|c| visible(c, true)) { descriptors.push(spacer()); }
+                descriptors.push(descriptor(
+                    DescriptorKind::ProviderNativeSummary,
+                    theme.fg(ThemeColor::Muted, &summary),
+                    None,
+                ));
+                descriptors.push(descriptor(
+                    DescriptorKind::ProviderNativeBody,
+                    theme.fg(ThemeColor::Dim, &body),
+                    None,
+                ));
+                if content[index + 1..].iter().any(|c| visible(c, true)) {
+                    descriptors.push(spacer());
+                }
             }
             _ => {}
         }
@@ -108,6 +209,13 @@ pub fn create_assistant_render_descriptors(message: &Value, options: &AssistantR
         }
         _ => None,
     };
-    if let Some(error) = error { descriptors.push(spacer()); descriptors.push(descriptor(DescriptorKind::ErrorText, theme.fg(ThemeColor::Error, &error), None)); }
+    if let Some(error) = error {
+        descriptors.push(spacer());
+        descriptors.push(descriptor(
+            DescriptorKind::ErrorText,
+            theme.fg(ThemeColor::Error, &error),
+            None,
+        ));
+    }
     descriptors
 }

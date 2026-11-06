@@ -3,13 +3,37 @@ use rusqlite::types::Value;
 #[test]
 fn query_iteration_is_lazy_and_stops_before_unrequested_row_decode() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
-    let query = SqlQuery::new("SELECT ? UNION ALL SELECT 'invalid'",vec![Value::Integer(7)]);
+    let query = SqlQuery::new(
+        "SELECT ? UNION ALL SELECT 'invalid'",
+        vec![Value::Integer(7)],
+    );
     let mut decoded = 0;
-    let first = query.iterate(&db,|row| {decoded += 1;row.get::<_,i64>(0)},|rows| rows.next().transpose()).unwrap();
+    let first = query
+        .iterate(
+            &db,
+            |row| {
+                decoded += 1;
+                row.get::<_, i64>(0)
+            },
+            |rows| rows.next().transpose(),
+        )
+        .unwrap();
     assert_eq!(first, Some(7));
     assert_eq!(decoded, 1);
-    assert!(query.iterate(&db,|row|row.get::<_,i64>(0),|rows|rows.collect::<rusqlite::Result<Vec<_>>>()).is_err());
-    assert_eq!(db.query_row("SELECT 1",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    assert!(
+        query
+            .iterate(
+                &db,
+                |row| row.get::<_, i64>(0),
+                |rows| rows.collect::<rusqlite::Result<Vec<_>>>()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        db.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -137,9 +161,28 @@ fn initial_schema_is_idempotent_and_enforces_shared_id_integrity() {
 
 #[test]
 fn immediate_transaction_rolls_back_failed_callback() {
-    let mut db=rusqlite::Connection::open_in_memory().unwrap();db.execute_batch("CREATE TABLE test (value INTEGER)").unwrap();
-    let failure=transaction(&mut db,|tx|{tx.execute("INSERT INTO test VALUES (1)",[])?;tx.execute("INSERT INTO missing VALUES (2)",[])?;Ok(())});
-    assert!(failure.is_err());assert_eq!(db.query_row("SELECT COUNT(*) FROM test",[],|row|row.get::<_,i64>(0)).unwrap(),0);
-    transaction(&mut db,|tx|{tx.execute("INSERT INTO test VALUES (3)",[])?;Ok(())}).unwrap();
-    assert_eq!(db.query_row("SELECT value FROM test",[],|row|row.get::<_,i64>(0)).unwrap(),3);
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE test (value INTEGER)")
+        .unwrap();
+    let failure = transaction(&mut db, |tx| {
+        tx.execute("INSERT INTO test VALUES (1)", [])?;
+        tx.execute("INSERT INTO missing VALUES (2)", [])?;
+        Ok(())
+    });
+    assert!(failure.is_err());
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM test", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    transaction(&mut db, |tx| {
+        tx.execute("INSERT INTO test VALUES (3)", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT value FROM test", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
 }

@@ -5,8 +5,8 @@ use atspi::{Interface, Role};
 use senpi_desktop_core::ax::AxBackend;
 use senpi_desktop_core::error::ErrorCode;
 
+use crate::fake::{editor, node, FakeNode};
 use crate::AtSpiAx;
-use crate::fake::{FakeNode, editor, node};
 
 #[test]
 fn press_invokes_the_default_action_not_the_literal_press() {

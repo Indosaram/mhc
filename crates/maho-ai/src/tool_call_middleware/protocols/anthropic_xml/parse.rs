@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::invoke_match::find_next_invoke_match;
-use super::invoke_protocol::{InvokeProtocolConfig, ANTHROPIC_XML_INVOKE_CONFIG};
+use super::invoke_protocol::{ANTHROPIC_XML_INVOKE_CONFIG, InvokeProtocolConfig};
 use super::invoke_tag_scanner::{find_invoke_open_tag, scan_invoke_block};
 use super::tool_resolver::ToolResolver;
 use crate::tool_call_middleware::types::{ParsedToolCall, ParserOptions};
@@ -26,16 +26,23 @@ pub fn parse_invoke_generated_text(
     let mut cursor = 0usize;
 
     while cursor < text.len() {
-        let Some(opening_tag) = find_invoke_open_tag(text, cursor) else { break };
+        let Some(opening_tag) = find_invoke_open_tag(text, cursor) else {
+            break;
+        };
 
         let tool = resolver.resolve(&opening_tag.tool_name);
         let block = scan_invoke_block(text, &opening_tag);
         if tool.is_none() {
             let next_known_invoke =
-                find_next_invoke_match(text, opening_tag.index + opening_tag.length, |name| resolver.resolve(name).is_some());
+                find_next_invoke_match(text, opening_tag.index + opening_tag.length, |name| {
+                    resolver.resolve(name).is_some()
+                });
             if let Some(next_known_invoke) = &next_known_invoke
                 && (block.is_none()
-                    || next_known_invoke.block.as_ref().is_some_and(|nb| Some(nb.end) == block.as_ref().map(|b| b.end)))
+                    || next_known_invoke
+                        .block
+                        .as_ref()
+                        .is_some_and(|nb| Some(nb.end) == block.as_ref().map(|b| b.end)))
             {
                 cursor = next_known_invoke.opening_tag.index;
                 continue;
@@ -48,23 +55,42 @@ pub fn parse_invoke_generated_text(
 
         let Some(tool) = tool else { continue };
 
-        let arguments_record = block.parameters.as_deref().and_then(|params| (config.coerce)(params, tool));
+        let arguments_record = block
+            .parameters
+            .as_deref()
+            .and_then(|params| (config.coerce)(params, tool));
         let Some(arguments_record) = arguments_record else {
             if let Some(options) = options {
                 let mut metadata = HashMap::new();
-                metadata.insert("toolCall".to_string(), Value::String(original_call_text.to_string()));
-                options.report_error(&format!("Could not process {} tool call, keeping original text.", config.protocol), Some(metadata));
+                metadata.insert(
+                    "toolCall".to_string(),
+                    Value::String(original_call_text.to_string()),
+                );
+                options.report_error(
+                    &format!(
+                        "Could not process {} tool call, keeping original text.",
+                        config.protocol
+                    ),
+                    Some(metadata),
+                );
             }
             continue;
         };
 
-        parsed_tool_calls.push(ParsedToolCall { name: tool.name.clone(), arguments: arguments_record });
+        parsed_tool_calls.push(ParsedToolCall {
+            name: tool.name.clone(),
+            arguments: arguments_record,
+        });
     }
 
     parsed_tool_calls
 }
 
-pub fn parse_anthropic_xml_generated_text(text: &str, tools: &[Tool], options: Option<&ParserOptions>) -> Vec<ParsedToolCall> {
+pub fn parse_anthropic_xml_generated_text(
+    text: &str,
+    tools: &[Tool],
+    options: Option<&ParserOptions>,
+) -> Vec<ParsedToolCall> {
     parse_invoke_generated_text(text, tools, &ANTHROPIC_XML_INVOKE_CONFIG, options)
 }
 
@@ -98,17 +124,24 @@ mod tests {
 
     #[test]
     fn parses_a_single_well_formed_invoke() {
-        let text = r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#;
+        let text =
+            r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#;
         let calls = parse_anthropic_xml_generated_text(text, &[tool("get_weather")], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_weather");
-        assert_eq!(calls[0].arguments.get("city"), Some(&Value::String("Seoul".into())));
+        assert_eq!(
+            calls[0].arguments.get("city"),
+            Some(&Value::String("Seoul".into()))
+        );
     }
 
     #[test]
     fn empty_text_or_no_tools_yields_no_calls() {
         assert!(parse_anthropic_xml_generated_text("", &[tool("t")], None).is_empty());
-        assert!(parse_anthropic_xml_generated_text("<invoke name=\"t\"></invoke>", &[], None).is_empty());
+        assert!(
+            parse_anthropic_xml_generated_text("<invoke name=\"t\"></invoke>", &[], None)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -139,19 +172,29 @@ mod tests {
         let calls = parse_anthropic_xml_generated_text(&text, &[inspect_tool()], Some(&options));
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "inspect");
-        assert_eq!(calls[0].arguments.get("label"), Some(&Value::String("good".into())));
+        assert_eq!(
+            calls[0].arguments.get("label"),
+            Some(&Value::String("good".into()))
+        );
         assert_eq!(calls[0].arguments.get("count"), Some(&json!(2)));
-        assert_eq!(seen.lock().unwrap().as_slice(), ["Could not process anthropic-xml tool call, keeping original text."]);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["Could not process anthropic-xml tool call, keeping original text."]
+        );
     }
 
     #[test]
     fn an_undeclared_parameter_is_coerced_as_an_unknown_value_and_kept() {
         // senpi's coerceParameters falls back to coerceUnknownValue for a property the tool schema
         // does not declare, so the call survives; it is not a coercion failure.
-        let text = r#"<invoke name="get_weather"><parameter name="unknown_param">x</parameter></invoke>"#;
+        let text =
+            r#"<invoke name="get_weather"><parameter name="unknown_param">x</parameter></invoke>"#;
         let calls = parse_anthropic_xml_generated_text(text, &[tool("get_weather")], None);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].arguments.get("unknown_param"), Some(&Value::String("x".into())));
+        assert_eq!(
+            calls[0].arguments.get("unknown_param"),
+            Some(&Value::String("x".into()))
+        );
     }
 
     #[test]
@@ -160,38 +203,84 @@ mod tests {
         assert!(parse_anthropic_xml_generated_text(text, &[tool("get_weather")], None).is_empty());
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "Bash".into(),
+            description: "Run a shell command".into(),
+            parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn canonical_bash_tool() -> Tool {
-        Tool { name: "bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "bash".into(),
+            description: "Run a shell command".into(),
+            parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn noop_tool() -> Tool {
-        Tool { name: "noop".into(), description: "Do nothing".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "noop".into(),
+            description: "Do nothing".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn optional_tool() -> Tool {
-        Tool { name: "optional".into(), description: "Accept an optional note".into(), parameters: json!({"type": "object", "properties": {"note": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "optional".into(),
+            description: "Accept an optional note".into(),
+            parameters: json!({"type": "object", "properties": {"note": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn flag_tool() -> Tool {
-        Tool { name: "Flag".into(), description: "Toggle a flag".into(), parameters: json!({"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "Flag".into(),
+            description: "Toggle a flag".into(),
+            parameters: json!({"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn xml_sensitive_tool() -> Tool {
-        Tool { name: "probe<&\"".into(), description: "Probe XML-sensitive values".into(), parameters: json!({"type": "object", "required": ["message"], "properties": {"message": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: "probe<&\"".into(),
+            description: "Probe XML-sensitive values".into(),
+            parameters: json!({"type": "object", "required": ["message"], "properties": {"message": {"type": "string"}}}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
-    fn error_messages(handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, ParserOptions) {
+    fn error_messages(
+        handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static,
+    ) -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, ParserOptions) {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
         let options = ParserOptions {
             emit_raw_tool_call_text_on_error: false,
-            on_error: Some(std::sync::Arc::new(move |message: &str, metadata: Option<&HashMap<String, Value>>| {
-                handler(message, metadata);
-                sink.lock().expect("error sink").push(message.to_string());
-            })),
+            on_error: Some(std::sync::Arc::new(
+                move |message: &str, metadata: Option<&HashMap<String, Value>>| {
+                    handler(message, metadata);
+                    sink.lock().expect("error sink").push(message.to_string());
+                },
+            )),
         };
         (seen, options)
     }
@@ -207,7 +296,8 @@ mod tests {
 
     #[test]
     fn parses_a_pretty_printed_boolean_parameter() {
-        let text = "<invoke name=\"Flag\"><parameter name=\"enabled\">\ntrue\n</parameter></invoke>";
+        let text =
+            "<invoke name=\"Flag\"><parameter name=\"enabled\">\ntrue\n</parameter></invoke>";
         let calls = parse_anthropic_xml_generated_text(text, &[flag_tool()], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments.get("enabled"), Some(&json!(true)));
@@ -225,23 +315,37 @@ mod tests {
         .join(" ");
         let calls = parse_anthropic_xml_generated_text(&text, &[bash_tool()], None);
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].arguments.get("command"), Some(&json!("echo first")));
-        assert_eq!(calls[1].arguments.get("command"), Some(&json!("echo second")));
+        assert_eq!(
+            calls[0].arguments.get("command"),
+            Some(&json!("echo first"))
+        );
+        assert_eq!(
+            calls[1].arguments.get("command"),
+            Some(&json!("echo second"))
+        );
     }
 
     #[test]
     fn canonicalizes_a_unique_case_insensitive_tool_name_match_to_the_declared_tool_name() {
-        let text = r#"<invoke name="Bash"><parameter name="command">echo ulwqa</parameter></invoke>"#;
+        let text =
+            r#"<invoke name="Bash"><parameter name="command">echo ulwqa</parameter></invoke>"#;
         let calls = parse_anthropic_xml_generated_text(text, &[canonical_bash_tool()], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "bash");
-        assert_eq!(calls[0].arguments.get("command"), Some(&json!("echo ulwqa")));
+        assert_eq!(
+            calls[0].arguments.get("command"),
+            Some(&json!("echo ulwqa"))
+        );
     }
 
     #[test]
     fn does_not_guess_an_ambiguous_case_insensitive_tool_name_match() {
-        let text = r#"<invoke name="BaSh"><parameter name="command">echo ulwqa</parameter></invoke>"#;
-        assert!(parse_anthropic_xml_generated_text(text, &[canonical_bash_tool(), bash_tool()], None).is_empty());
+        let text =
+            r#"<invoke name="BaSh"><parameter name="command">echo ulwqa</parameter></invoke>"#;
+        assert!(
+            parse_anthropic_xml_generated_text(text, &[canonical_bash_tool(), bash_tool()], None)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -256,7 +360,9 @@ mod tests {
     #[test]
     fn preserves_embedded_angle_brackets_and_multiline_string_values() {
         let command = "printf '<value> & keep'\nline two";
-        let text = format!("<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>");
+        let text = format!(
+            "<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>"
+        );
         let calls = parse_anthropic_xml_generated_text(&text, &[bash_tool()], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments.get("command"), Some(&json!(command)));
@@ -279,7 +385,9 @@ mod tests {
     #[test]
     fn preserves_prompt_like_invoke_markup_inside_a_parameter_value() {
         let command = "Show <invoke name=\"Other\"><parameter name=\"example\">raw</parameter></invoke> exactly as text";
-        let text = format!("<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>");
+        let text = format!(
+            "<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>"
+        );
         let calls = parse_anthropic_xml_generated_text(&text, &[bash_tool()], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments.get("command"), Some(&json!(command)));
@@ -288,7 +396,9 @@ mod tests {
     #[test]
     fn preserves_an_unbalanced_nested_invoke_opening_tag_inside_a_parameter_value() {
         let command = "prefix <invoke name=\"Other\"> literally";
-        let text = format!("<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>");
+        let text = format!(
+            "<invoke name=\"Bash\"><parameter name=\"command\">{command}</parameter></invoke>"
+        );
         let calls = parse_anthropic_xml_generated_text(&text, &[bash_tool()], None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments.get("command"), Some(&json!(command)));
@@ -303,7 +413,10 @@ mod tests {
         .join("\n");
         let calls = parse_anthropic_xml_generated_text(&text, &[bash_tool()], None);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].arguments.get("command"), Some(&json!("echo known")));
+        assert_eq!(
+            calls[0].arguments.get("command"),
+            Some(&json!("echo known"))
+        );
     }
 
     #[test]
@@ -314,7 +427,10 @@ mod tests {
         );
         let calls = parse_anthropic_xml_generated_text(text, &[bash_tool()], None);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].arguments.get("command"), Some(&json!("echo recovered")));
+        assert_eq!(
+            calls[0].arguments.get("command"),
+            Some(&json!("echo recovered"))
+        );
     }
 
     #[test]
@@ -334,7 +450,11 @@ mod tests {
 
     #[test]
     fn returns_an_empty_argument_object_for_a_known_invoke_without_parameters() {
-        let calls = parse_anthropic_xml_generated_text("<invoke name=\"noop\">\n</invoke>", &[noop_tool()], None);
+        let calls = parse_anthropic_xml_generated_text(
+            "<invoke name=\"noop\">\n</invoke>",
+            &[noop_tool()],
+            None,
+        );
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "noop");
         assert!(calls[0].arguments.is_empty());
@@ -344,16 +464,26 @@ mod tests {
     fn reports_malformed_parameter_markup_for_a_no_parameter_tool() {
         let (seen, options) = error_messages(|_, _| {});
         let text = "<invoke name=\"noop\"><parameter name=\"ignored\">unterminated</invoke>";
-        assert!(parse_anthropic_xml_generated_text(text, &[noop_tool()], Some(&options)).is_empty());
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not process anthropic-xml tool call, keeping original text."]);
+        assert!(
+            parse_anthropic_xml_generated_text(text, &[noop_tool()], Some(&options)).is_empty()
+        );
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not process anthropic-xml tool call, keeping original text."]
+        );
     }
 
     #[test]
     fn reports_malformed_parameter_markup_for_an_optional_parameter_tool() {
         let (seen, options) = error_messages(|_, _| {});
         let text = "<invoke name=\"optional\"><parameter name=\"ignored\">unterminated</invoke>";
-        assert!(parse_anthropic_xml_generated_text(text, &[optional_tool()], Some(&options)).is_empty());
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not process anthropic-xml tool call, keeping original text."]);
+        assert!(
+            parse_anthropic_xml_generated_text(text, &[optional_tool()], Some(&options)).is_empty()
+        );
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not process anthropic-xml tool call, keeping original text."]
+        );
     }
 
     #[test]
@@ -363,5 +493,4 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "noop");
     }
-
 }

@@ -2,8 +2,8 @@
 //!
 //! Port of senpi `packages/coding-agent/src/core/session-thinking-memory.ts`.
 
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Where the thinking level in force came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -47,7 +47,10 @@ pub fn derive_session_model_thinking_levels(path: &[Value]) -> HashMap<String, S
             Some(l) if is_thinking_level(l) => l,
             _ => continue,
         };
-        levels.insert(model_thinking_key(provider, model_id), thinking_level.to_owned());
+        levels.insert(
+            model_thinking_key(provider, model_id),
+            thinking_level.to_owned(),
+        );
     }
     levels
 }
@@ -118,21 +121,27 @@ mod tests {
         ];
 
         let levels = derive_session_model_thinking_levels(&entries);
-        assert_eq!(levels.get("anthropic/claude-3-7-sonnet").map(String::as_str), Some("minimal"));
-        assert_eq!(levels.get("openai/o3-mini").map(String::as_str), Some("low"));
+        assert_eq!(
+            levels
+                .get("anthropic/claude-3-7-sonnet")
+                .map(String::as_str),
+            Some("minimal")
+        );
+        assert_eq!(
+            levels.get("openai/o3-mini").map(String::as_str),
+            Some("low")
+        );
     }
 
     #[test]
     fn memory_caches_by_leaf_id() {
         let mut memory = SessionThinkingMemory::new();
-        let entries = vec![
-            json!({
-                "type": "thinking_level_change",
-                "thinkingLevel": "high",
-                "provider": "anthropic",
-                "modelId": "claude-3-7-sonnet"
-            }),
-        ];
+        let entries = vec![json!({
+            "type": "thinking_level_change",
+            "thinkingLevel": "high",
+            "provider": "anthropic",
+            "modelId": "claude-3-7-sonnet"
+        })];
 
         let level = memory.level_for(&entries, Some("leaf-1"), "anthropic", "claude-3-7-sonnet");
         assert_eq!(level.as_deref(), Some("high"));

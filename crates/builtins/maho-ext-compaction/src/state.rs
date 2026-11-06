@@ -10,10 +10,15 @@ pub struct CompactionExtensionState {
     pub turn_id: Option<String>,
     pub restoration: Option<crate::restoration_tracker::RestorationTrackerState>,
 }
-pub fn create_initial_state() -> CompactionExtensionState { CompactionExtensionState::default() }
-pub fn reset_turn_counter(mut state: CompactionExtensionState, turn_id: &str) -> CompactionExtensionState {
-    state.accepted_this_turn=0;
-    state.ineffective_attempts_this_turn=0;
-    state.turn_id=Some(turn_id.to_owned());
+pub fn create_initial_state() -> CompactionExtensionState {
+    CompactionExtensionState::default()
+}
+pub fn reset_turn_counter(
+    mut state: CompactionExtensionState,
+    turn_id: &str,
+) -> CompactionExtensionState {
+    state.accepted_this_turn = 0;
+    state.ineffective_attempts_this_turn = 0;
+    state.turn_id = Some(turn_id.to_owned());
     state
 }

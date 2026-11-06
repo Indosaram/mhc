@@ -130,7 +130,10 @@ mod tests {
         assert_ne!(repaired, first);
         let repaired_raw = fs::read_to_string(&path)?;
         assert!(is_install_id(repaired_raw.trim()));
-        assert_eq!(repaired, hex::encode(Sha256::digest(repaired_raw.trim().as_bytes())));
+        assert_eq!(
+            repaired,
+            hex::encode(Sha256::digest(repaired_raw.trim().as_bytes()))
+        );
         assert_eq!(get_telemetry_install_distinct_id(dir.path()), repaired);
         Ok(())
     }

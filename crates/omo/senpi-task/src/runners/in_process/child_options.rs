@@ -151,11 +151,16 @@ pub fn build_child_session_options(
     ChildSessionOptions {
         cwd: spec.cwd.clone(),
         session_manager: Arc::new(session_manager),
-        workpool_identity: spec.workpool_run_epoch.map(|run_epoch| WorkpoolChildIdentity {
-            task_id: spec.task_id.clone(),
-            state_dir: spec.workpool_state_dir.clone().unwrap_or_else(|| spec.state_dir.clone()),
-            run_epoch,
-        }),
+        workpool_identity: spec
+            .workpool_run_epoch
+            .map(|run_epoch| WorkpoolChildIdentity {
+                task_id: spec.task_id.clone(),
+                state_dir: spec
+                    .workpool_state_dir
+                    .clone()
+                    .unwrap_or_else(|| spec.state_dir.clone()),
+                run_epoch,
+            }),
         resource_loader: ChildResourceLoader::Minimal,
         system_prompt: spec.system_prompt.clone(),
         custom_tools,

@@ -11,8 +11,8 @@ use crate::{
         EndedBy, SummaryMeta, SummaryTurn, add_turn, open_window, summary_properties, usd_of,
     },
 };
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use serde_json::json;
 use std::sync::{
     Arc, Mutex,
@@ -92,7 +92,9 @@ fn recorder(
     rows: Arc<Mutex<Vec<serde_json::Value>>>,
 ) -> Arc<Recorder> {
     let publish: SummaryPublish = Arc::new(move |publication| {
-        rows.lock().unwrap().push(serde_json::Value::Object(publication.properties));
+        rows.lock()
+            .unwrap()
+            .push(serde_json::Value::Object(publication.properties));
         async { Ok(()) }.boxed() as BoxFuture<'static, _>
     });
     let storage = create_summary_storage(
@@ -154,11 +156,12 @@ async fn checkpoint_reload_and_opt_out_preserve_sequence_without_sending_revoked
     for index in 1..=50 {
         recorder.record_turn(&hash, summary_turn(index)).await;
     }
-    assert!(dir
-        .path()
-        .join("session-summary")
-        .join(format!("{hash}.json"))
-        .exists());
+    assert!(
+        dir.path()
+            .join("session-summary")
+            .join(format!("{hash}.json"))
+            .exists()
+    );
     assert_eq!(rows.lock().unwrap().len(), 1);
     assert_eq!(rows.lock().unwrap()[0]["summary_seq"], 0);
     assert_eq!(rows.lock().unwrap()[0]["turns"], 50);
@@ -166,11 +169,12 @@ async fn checkpoint_reload_and_opt_out_preserve_sequence_without_sending_revoked
     // An opt-out mid-session deletes the window and sends nothing for it.
     consented.store(false, Ordering::SeqCst);
     recorder.purge_if_opted_out();
-    assert!(!dir
-        .path()
-        .join("session-summary")
-        .join(format!("{hash}.json"))
-        .exists());
+    assert!(
+        !dir.path()
+            .join("session-summary")
+            .join(format!("{hash}.json"))
+            .exists()
+    );
     consented.store(true, Ordering::SeqCst);
 
     recorder.record_turn(&hash, summary_turn(51)).await;
@@ -284,7 +288,10 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     let before = rows.lock().unwrap().len();
     opted_in.store(false, Ordering::SeqCst);
     // Upstream omo-native-component.test.ts advances the injected clock past the consent cache.
-    consent_clock.fetch_add(crate::omo_native_consent::CONSENT_CACHE_MS as u64 + 1, Ordering::SeqCst);
+    consent_clock.fetch_add(
+        crate::omo_native_consent::CONSENT_CACHE_MS as u64 + 1,
+        Ordering::SeqCst,
+    );
     dispatch(
         &api,
         ExtensionEvent::ToolResult(ToolResultEvent {

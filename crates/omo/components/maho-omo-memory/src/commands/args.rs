@@ -57,7 +57,10 @@ pub struct ParseCommandArgsOptions<'a> {
 }
 
 /// Parse `--flag value`, `--flag=value`, and declared boolean flags.
-pub fn parse_command_args_full(args: &str, options: ParseCommandArgsOptions<'_>) -> ParsedCommandArgs {
+pub fn parse_command_args_full(
+    args: &str,
+    options: ParseCommandArgsOptions<'_>,
+) -> ParsedCommandArgs {
     let booleans = options.booleans;
     let tokens: Vec<&str> = args.split_whitespace().collect();
     let mut positionals = Vec::new();
@@ -116,7 +119,8 @@ mod tests {
 
     #[test]
     fn equals_values_and_boolean_flags_do_not_consume_focus() {
-        let (words, flags) = parse_command_args("--force focus --recent=3 --conversation a,b", &["force"]);
+        let (words, flags) =
+            parse_command_args("--force focus --recent=3 --conversation a,b", &["force"]);
         assert_eq!(words, ["focus"]);
         assert_eq!(flags["force"], None);
         assert_eq!(flags["recent"].as_deref(), Some("3"));
@@ -132,14 +136,20 @@ mod tests {
 
     #[test]
     fn given_positionals_and_a_valued_flag_when_parsed_then_flag_captures_the_next_token() {
-        let parsed = parse_command_args_full("status --recent 3 extra", ParseCommandArgsOptions::default());
+        let parsed = parse_command_args_full(
+            "status --recent 3 extra",
+            ParseCommandArgsOptions::default(),
+        );
         assert_eq!(parsed.positionals, ["status", "extra"]);
         assert_eq!(parsed.flag_value("recent"), Some("3"));
     }
 
     #[test]
     fn given_an_equals_style_flag_when_parsed_then_the_inline_value_is_used() {
-        let parsed = parse_command_args_full("--conversation=abc123 focus", ParseCommandArgsOptions::default());
+        let parsed = parse_command_args_full(
+            "--conversation=abc123 focus",
+            ParseCommandArgsOptions::default(),
+        );
         assert_eq!(parsed.flag_value("conversation"), Some("abc123"));
         assert_eq!(parsed.positionals, ["focus"]);
     }
@@ -148,7 +158,9 @@ mod tests {
     fn given_a_declared_boolean_before_a_positional_when_parsed_then_it_is_not_swallowed() {
         let parsed = parse_command_args_full(
             "--include-hidden cats",
-            ParseCommandArgsOptions { booleans: &["include-hidden"] },
+            ParseCommandArgsOptions {
+                booleans: &["include-hidden"],
+            },
         );
         assert!(parsed.flag_is_true("include-hidden"));
         assert_eq!(parsed.positionals, ["cats"]);
