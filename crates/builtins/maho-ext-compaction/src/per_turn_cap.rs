@@ -12,7 +12,9 @@ pub fn increment_ineffective(mut state:CompactionExtensionState)->CompactionExte
 /// admission is refused. A compaction that saves nothing leaves the context above the ceiling that
 /// asked for it, so the very next provider request asks again; without this bound a summarizer that
 /// returns a summary the size of its input loops until the repeated handoffs abort the session.
-/// The counter resets with the turn, and an explicit `/compact` is never refused by it.
+/// The counter deliberately survives a turn end (see `state::end_turn`): the compaction fires after
+/// the turn ended, so clearing it there would refill its own budget. Only a compaction that actually
+/// saved context clears it, and an explicit `/compact` is never refused by it.
 pub const INEFFECTIVE_ADMISSION_LIMIT: u64 = 4;
 #[derive(Debug, PartialEq, Eq)]
 pub struct CapDecision {
