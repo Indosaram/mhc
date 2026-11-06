@@ -126,3 +126,57 @@ fn given_injected_scheduler_when_scheduled_then_prune_runs_once_and_reports_recl
         })
         .expect("remove fixture");
 }
+
+#[test]
+fn given_deferred_sweep_when_joined_then_store_directory_is_removable_afterwards() {
+    let root = std::env::temp_dir().join(format!(
+        "dag-retention-deferred-join-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let store = Arc::new(
+        senpi_task::dag::store::create_dag_file_store(
+            &senpi_task::dag::store::DagStoreConfig::new(&root),
+            senpi_task::dag::store::DagStoreOptions::default(),
+        )
+        .expect("create store"),
+    );
+    let run_id = "expired-deferred";
+    let old = "2000-01-01T00:00:00.000Z";
+    store
+        .write_checkpoint(
+            run_id,
+            &serde_json::json!({"schemaVersion":1,"runId":run_id,"parentSessionId":"p","status":"completed","completedAt":old,"updatedAt":old,"nodes":[]}),
+        )
+        .expect("seed terminal run");
+    let logger = Arc::new(Log::default());
+    let sweep = schedule_dag_retention_sweep(
+        store,
+        DagRetentionSweepOptions {
+            schedule: None,
+            logger: logger.clone(),
+        },
+    );
+    // The default scheduler defers onto a worker thread; joining it is what makes the directory
+    // reclaimable, so a sweep still running here would race the removal below.
+    sweep.join();
+    assert!(
+        logger
+            .0
+            .lock()
+            .expect("log mutex")
+            .iter()
+            .any(|line| line.contains("reclaimed 1 expired run")),
+        "the joined sweep must have completed its prune"
+    );
+    std::fs::remove_dir_all(&root)
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .expect("remove fixture after the sweep settled");
+}

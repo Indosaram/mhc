@@ -1176,6 +1176,8 @@ impl TaskComponent {
             return;
         }
         self.set_team_routing(None);
+        // Stop the lifecycle's recovery worker before the store owner may reclaim its directory.
+        self.engine.lifecycle.dispose();
         self.engine.store.set_record_listener(None);
         self.engine.store.set_mutation_listener(None);
         self.engine.store.set_write_listener(None);

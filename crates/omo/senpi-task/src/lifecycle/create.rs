@@ -81,6 +81,9 @@ impl TaskLifecycle {
     /// Parent shutdown: every startup pass in flight is invalidated for good.
     pub fn dispose(&self) {
         self.disposed.store(true, Ordering::Release);
+        // The recovery worker scans the store on a timer, so shut it down before the caller may
+        // reclaim the store directory.
+        self._recovery.close();
         super::deferred_revival::dispose_scoped_retries(&self.context);
     }
 

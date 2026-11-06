@@ -164,23 +164,41 @@ impl LiveParentRecovery {
 
 pub struct RecoverySubscription {
     stop: std::sync::mpsc::Sender<bool>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     unsubscribe: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
-impl Drop for RecoverySubscription {
-    fn drop(&mut self) {
+
+impl RecoverySubscription {
+    /// Stops and joins the scan worker.
+    ///
+    /// A live worker calls `store.list_matching`, which materializes the task store directory, so a
+    /// parent that disposes while the worker is still ticking leaves files behind for whoever is
+    /// about to remove that directory. [`Drop`] still does this for holders that just drop the
+    /// subscription, but an explicit close lets dispose guarantee it in-order.
+    pub fn close(&self) {
         if let Some(unsubscribe) = self
             .unsubscribe
-            .get_mut()
+            .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             unsubscribe();
         }
         let _ = self.stop.send(true);
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             let _ = worker.join();
         }
+    }
+}
+
+impl Drop for RecoverySubscription {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 /// When the recovery worker scans: on every store mutation and each `Every` interval, or never.
@@ -209,7 +227,7 @@ pub fn start_live_parent_recovery_with(
     let RecoverySchedule::Every(interval) = schedule else {
         return Arc::new(RecoverySubscription {
             stop,
-            worker: None,
+            worker: Mutex::new(None),
             unsubscribe: Mutex::new(None),
         });
     };
@@ -243,7 +261,7 @@ pub fn start_live_parent_recovery_with(
     });
     Arc::new(RecoverySubscription {
         stop,
-        worker: Some(worker),
+        worker: Mutex::new(Some(worker)),
         unsubscribe: Mutex::new(unsubscribe),
     })
 }
