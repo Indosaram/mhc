@@ -22103,7 +22103,7 @@ fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
     }
 }
 
-    pub(super) fn empty_source_info() -> SourceInfo {
+fn empty_source_info() -> SourceInfo {
     SourceInfo {
         path: String::new(),
         source: String::new(),
@@ -38938,8 +38938,7 @@ mod tests {
     }
 
     mod compaction_log_attempts {
-        use crate::agent_session::tests::{empty_source_info, test_definition, test_session, test_tool};
-use crate::session_work_barrier::ToolWorkspaceEffect;
+        use super::*;
 
         fn fixture() -> (tempfile::TempDir, AgentSession) {
             fixture_with_settings(SettingsManager::from_storage(
