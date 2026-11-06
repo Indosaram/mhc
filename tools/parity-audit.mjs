@@ -132,7 +132,7 @@ function walkTs(dir) {
 }
 
 /** Non-test .ts files of a crate, as paths relative to their declared root (first root wins). */
-const OMO_PIN = "77f3067f157a4f88e6d8ed48b3a6c338654402ed";
+const OMO_PIN = "354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9";
 let omoChecked = false;
 /** oh-my-openagent checkout for `omo` roots: $OMO_SRC (default /Users/indo/code/oh-my-openagent), pinned like senpi. */
 function omoSrc() {

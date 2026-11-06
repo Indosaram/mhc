@@ -174,6 +174,7 @@ pub fn create_tool_search_tool(
             })
         }),
     );
+    tool.workspace_effect = Some(maho_tools::definition::ToolWorkspaceEffect::Read);
     tool.label = "Tool search".into();
     tool.execution_mode = Some(ToolExecutionMode::Parallel);
     tool.prepare_arguments = Some(Arc::new(|args| Ok(prepare_tool_search_arguments(args))));

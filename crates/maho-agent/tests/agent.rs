@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maho_agent::{
     Agent, AgentContinuationOptions, AgentMessage, AgentOptions, AgentPromptInput, AgentTool,
-    PartialAgentState, StreamFn,
+    AgentTurnDecision, PartialAgentState, StreamFn,
 };
 use maho_ai::types::{ModelThinkingLevel, StopReason, Usage};
 use maho_ai::utils::abort::AbortSignal;
@@ -322,4 +322,44 @@ async fn peek_and_remove_queued_messages() {
     assert!(agent.remove_queued_message(&follow_up));
     assert_eq!(agent.peek_queued_messages(true), Vec::<AgentMessage>::new());
     assert!(!agent.has_queued_messages());
+}
+
+#[tokio::test]
+async fn finish_turn_end_suppresses_queue_drain() {
+    // Steering is consumed as input to the first turn, so it is not the observable
+    // marker here. The follow-up message is: without suppression the post-run drain
+    // would start a second turn and consume it.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let scripted = scripted_stream_fn(vec![assistant(
+        vec![text_block("assistant response")],
+        StopReason::Stop,
+    )]);
+    let stream_fn: StreamFn = {
+        let calls = calls.clone();
+        Arc::new(move |model, context, options| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            scripted(model, context, options)
+        })
+    };
+    let agent = Agent::new(AgentOptions {
+        stream_fn: Some(stream_fn),
+        finish_turn: Some(Arc::new(|_context, _signal| {
+            Box::pin(async { Some(AgentTurnDecision::End) })
+        })),
+        ..AgentOptions::default()
+    });
+
+    agent.steer(user_message("steering"));
+    let follow_up = user_message("follow_up");
+    agent.follow_up(follow_up.clone());
+
+    agent.prompt(AgentPromptInput::text("user prompt")).await;
+
+    // AgentTurnDecision::End suppressed the post-run queue drain, so no second turn
+    // ran and the follow-up message is still owned by the queue.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(agent.has_queued_messages());
+    assert_eq!(agent.peek_queued_messages(true), vec![follow_up.clone()]);
+    // The steering queue is empty, so the next batch is the follow-up queue.
+    assert_eq!(agent.peek_queued_messages(false), vec![follow_up]);
 }

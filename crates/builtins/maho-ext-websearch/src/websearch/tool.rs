@@ -331,6 +331,7 @@ pub fn create_web_search_tool_with_registry(
             })
         }),
     );
+    tool.workspace_effect = Some(maho_tools::definition::ToolWorkspaceEffect::Read);
     tool.label = "Web Search".into();
     tool.prompt_snippet = Some(
         "Search the web for current information, documentation, news, or external facts.".into(),

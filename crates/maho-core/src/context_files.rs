@@ -5,6 +5,8 @@
 //! the bound on what context files add to every request: budget is given nearest-first, oversized
 //! files are cut at a line (closing an open code fence), and every cut or skipped file is named.
 
+use serde::{Deserialize, Serialize};
+
 use crate::diagnostics::{ResourceDiagnostic, ResourceDiagnosticType};
 use crate::system_prompt::ContextFile;
 
@@ -13,7 +15,8 @@ pub const DEFAULT_CONTEXT_FILES_MAX_TOTAL_BYTES: usize = 128 * 1024;
 const MIN_USEFUL_BYTES: usize = 1024;
 
 /// Size limits for AGENTS.md / CLAUDE.md context files (`contextFiles.*` settings).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ContextFileLimits {
     pub max_bytes_per_file: Option<f64>,
     pub max_total_bytes: Option<f64>,
@@ -23,6 +26,33 @@ pub struct ContextFileLimits {
 pub struct ContextFiles {
     pub files: Vec<ContextFile>,
     pub diagnostics: Vec<ResourceDiagnostic>,
+}
+
+impl std::ops::Deref for ContextFiles {
+    type Target = [ContextFile];
+    fn deref(&self) -> &Self::Target {
+        &self.files
+    }
+}
+
+impl std::ops::DerefMut for ContextFiles {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.files
+    }
+}
+
+impl IntoIterator for ContextFiles {
+    type Item = ContextFile;
+    type IntoIter = std::vec::IntoIter<ContextFile>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.files.into_iter()
+    }
+}
+
+impl AsRef<[ContextFile]> for ContextFiles {
+    fn as_ref(&self) -> &[ContextFile] {
+        &self.files
+    }
 }
 
 fn kib(bytes: usize) -> String {
@@ -182,18 +212,6 @@ pub fn apply_context_file_limits(
     }
 }
 
-/// `loadProjectContextFiles` with its size limits applied.
-pub fn load_project_context_files_limited(
-    cwd: &str,
-    agent_dir: &str,
-    limits: ContextFileLimits,
-) -> ContextFiles {
-    apply_context_file_limits(
-        crate::resource_loader::load_project_context_files(cwd, agent_dir),
-        limits,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +222,96 @@ mod tests {
             content,
             scope: None,
         }
+    }
+
+    /// Name the plan's IS-2 row cites. It runs the same assertions as
+    /// `settings_context_files_limits_reach_the_loader`, which owns the body.
+    #[test]
+    fn context_file_limits_bound_the_live_loader() {
+        settings_context_files_limits_reach_the_loader();
+    }
+
+    #[test]
+    fn settings_context_files_limits_reach_the_loader() {
+        let dir = crate::test_support::isolated_tempdir();
+        let project = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::create_dir_all(&agent).expect("agent dir");
+        std::fs::write(project.join("AGENTS.md"), "x\n".repeat(2048)).expect("context file");
+
+        let settings_val = serde_json::json!({
+            "maxBytesPerFile": 2048.0,
+            "maxTotalBytes": 2048.0,
+        });
+        let limits: ContextFileLimits =
+            serde_json::from_value(settings_val).expect("deserialize limits");
+
+        let limited = crate::resource_loader::load_project_context_files(
+            &project.to_string_lossy(),
+            &agent.to_string_lossy(),
+            Some(limits),
+        );
+        assert_eq!(limited.files.len(), 1);
+        assert!(limited.files[0].content.len() <= 2048);
+        assert!(
+            limited.files[0]
+                .content
+                .contains("[This file was truncated from 4 KiB.]")
+        );
+        assert!(!limited.diagnostics.is_empty());
+        assert_eq!(
+            limited.diagnostics[0].category.as_deref(),
+            Some("size-limit")
+        );
+
+        let unlimited = crate::resource_loader::load_project_context_files(
+            &project.to_string_lossy(),
+            &agent.to_string_lossy(),
+            None,
+        );
+        assert_eq!(unlimited.files.len(), 1);
+        assert_eq!(unlimited.files[0].content.len(), 4096);
+        assert!(unlimited.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn context_file_scope_tagging_is_unchanged_by_limits() {
+        let mut user = file("/agent/AGENTS.md", "u\n".repeat(1024));
+        user.scope = Some(crate::system_prompt::ContextFileScope::User);
+        let project = file("/project/AGENTS.md", "p\n".repeat(1024));
+
+        let unlimited = apply_context_file_limits(
+            vec![user.clone(), project.clone()],
+            ContextFileLimits::default(),
+        );
+        let limits = ContextFileLimits {
+            max_bytes_per_file: Some(1200.0),
+            max_total_bytes: Some(2400.0),
+        };
+        let limited = apply_context_file_limits(vec![user, project], limits);
+
+        assert_eq!(limited.files.len(), 2);
+        assert_eq!(unlimited.files.len(), 2);
+        assert_eq!(
+            limited.files[0].scope,
+            Some(crate::system_prompt::ContextFileScope::User)
+        );
+        assert_eq!(limited.files[0].scope, unlimited.files[0].scope);
+        assert_eq!(limited.files[1].scope, None);
+        assert_eq!(limited.files[1].scope, unlimited.files[1].scope);
+        assert!(limited.files[0].content.len() <= 1200);
+        assert!(limited.files[1].content.len() <= 1200);
+        assert!(
+            limited.files[0]
+                .content
+                .contains("[This file was truncated from 2 KiB.]")
+        );
+        assert!(
+            limited.files[1]
+                .content
+                .contains("[This file was truncated from 2 KiB.]")
+        );
     }
 
     #[test]

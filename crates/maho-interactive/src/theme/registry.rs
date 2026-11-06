@@ -1,4 +1,8 @@
+use super::system_theme::{
+    SYSTEM_THEME_NAME, SystemColor, SystemThemeInput, generate_system_theme_colors,
+};
 use super::{ColorMode, Theme, theme_json::ThemeError};
+use super::theme_json::{ColorValue, ThemeJson};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -74,6 +78,11 @@ impl ThemeRegistry {
         self.builtin_directory = directory;
     }
     pub fn load_theme(&self, name: &str) -> Result<Theme, ThemeError> {
+        // senpi `loadTheme`: the system theme name is reserved and takes precedence over registered
+        // or custom themes of the same name; it is generated, never read from a file.
+        if name == SYSTEM_THEME_NAME {
+            return self.generate_system_theme();
+        }
         if let Some(theme) = self.registered.get(name) {
             return Ok(theme.clone());
         }
@@ -87,6 +96,39 @@ impl ThemeRegistry {
             }
             Theme::load_from_path(&path, self.current.get_color_mode())
         }
+    }
+    /// senpi `createSystemTheme`: the `system` theme generated from the terminal's reported colors.
+    /// The registry has no terminal-colors channel (the interactive mode owns the OSC query and the
+    /// cached hint), so it generates from no reported colors - the generator's ANSI-index tier - and
+    /// uses the current theme's appearance as the hint. That tier is terminal-independent, so loading
+    /// `system` cannot fail for an environment reason.
+    fn generate_system_theme(&self) -> Result<Theme, ThemeError> {
+        let generated = generate_system_theme_colors(&SystemThemeInput {
+            appearance_hint: self.current.appearance,
+            ..SystemThemeInput::default()
+        });
+        let mut colors = BTreeMap::new();
+        for (token, color) in generated.colors {
+            let value = match color {
+                SystemColor::Hex(hex) => ColorValue::Text(hex),
+                SystemColor::Index(index) => ColorValue::Index(
+                    u8::try_from(index)
+                        .map_err(|error| ThemeError::Invalid(error.to_string()))?,
+                ),
+                SystemColor::Default => ColorValue::Text(String::new()),
+            };
+            colors.insert(token, value);
+        }
+        Theme::from_json(
+            ThemeJson {
+                name: SYSTEM_THEME_NAME.to_owned(),
+                appearance: generated.appearance,
+                vars: BTreeMap::new(),
+                colors,
+                export_colors: BTreeMap::new(),
+            },
+            self.current.get_color_mode(),
+        )
     }
     pub fn get_available_themes_with_paths(&self) -> Vec<ThemeInfo> {
         let key = self.theme_list_cache_key();
@@ -195,7 +237,9 @@ impl ThemeRegistry {
     }
     pub fn start_theme_watcher(&mut self) {
         self.stop_theme_watcher();
-        if matches!(self.current_name.as_str(), "dark" | "light") {
+        // senpi `startThemeWatcher`: only a custom theme has a file to watch; the generated system
+        // theme and the builtin file-less ones never do.
+        if matches!(self.current_name.as_str(), "dark" | "light" | SYSTEM_THEME_NAME) {
             return;
         }
         if self
@@ -304,6 +348,72 @@ impl ThemeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// senpi offers the generated `system` theme in the picker (`getAvailableThemesWithPaths`
+    /// adds it with no path, `theme.ts:491-492`, and `settings-selector.ts:255-261` lists it) and
+    /// reserves the name in `loadTheme` (`theme.ts:639-641`). On a8ac6196 the picker list came only
+    /// from the file scan and `load_theme` resolved four builtin names plus custom files, so
+    /// `system` was neither offered nor loadable. The generator's no-reported-colors tier is
+    /// terminal-independent, so `Ok` here cannot depend on the environment.
+    #[test]
+    fn system_theme_is_offered_and_loads() {
+        use crate::components::settings_selector::{single_mode_theme_items, theme_items};
+
+        let dir = tempfile::tempdir().expect("temp themes dir");
+        // A valid custom theme squatting on the reserved name: upstream's `loadTheme` checks the
+        // reserved name before registered/custom themes (`theme.ts:639-641`), and its list adds
+        // `system` before the custom scan dedupes.
+        let mut squatter: serde_json::Value =
+            serde_json::from_str(include_str!("dark.json")).expect("dark theme json");
+        squatter["name"] = serde_json::json!(SYSTEM_THEME_NAME);
+        std::fs::write(
+            dir.path().join(format!("{SYSTEM_THEME_NAME}.json")),
+            serde_json::to_string(&squatter).expect("theme json"),
+        )
+        .expect("write squatting theme");
+        let registry = ThemeRegistry::new(
+            dir.path().to_path_buf(),
+            "dark",
+            crate::theme::ColorMode::Truecolor,
+        )
+        .expect("theme registry");
+        // The list production feeds the pickers: `/settings` takes these names into
+        // `available_themes` and `theme_items`/`single_mode_theme_items` build the rows.
+        let available: Vec<String> = registry
+            .get_available_themes_with_paths()
+            .into_iter()
+            .map(|theme| theme.name)
+            .collect();
+        let items = theme_items(&available, "dark");
+        assert!(
+            items.iter().any(|item| item.value == SYSTEM_THEME_NAME),
+            "the picker does not offer the system theme: {items:?}"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.value == SYSTEM_THEME_NAME)
+                .count(),
+            1,
+            "the picker must offer the system theme once: {items:?}"
+        );
+        let single = single_mode_theme_items(&available, "dark");
+        assert_eq!(
+            single.first().map(|item| item.value.as_str()),
+            Some(SYSTEM_THEME_NAME),
+            "the system theme must come first in single mode: {single:?}"
+        );
+
+        // Generated, not loaded from the squatting file:
+        let theme = registry
+            .load_theme(SYSTEM_THEME_NAME)
+            .expect("system theme loads");
+        assert_eq!(theme.name, SYSTEM_THEME_NAME);
+        assert_eq!(
+            theme.source_path, None,
+            "the system theme is generated and must not be file-backed"
+        );
+    }
 
     /// On a8ac6196 `get_available_themes_with_paths` `read_dir`s and parses every custom theme
     /// json on each call, so rewriting a theme file changes the returned name before this function

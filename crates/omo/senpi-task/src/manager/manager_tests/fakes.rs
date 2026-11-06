@@ -371,6 +371,7 @@ pub(crate) struct FakeRunner {
     pub start_error: Mutex<Option<ManagedRunnerError>>,
     pub child_pid: Mutex<Option<i64>>,
     pub hook: Mutex<Option<StartHook>>,
+    pub resumed_specs: Mutex<Vec<ManagedStartSpec>>,
 }
 
 impl FakeRunner {
@@ -404,6 +405,11 @@ impl FakeRunner {
 }
 
 impl ManagedRunner for FakeRunner {
+    fn resume(&self, spec: &ManagedStartSpec, _session_path: &str) -> Option<ManagedRunnerResult> {
+        lock(&self.resumed_specs).push(spec.clone());
+        Some(self.start(spec))
+    }
+
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
         // `started_count() >= call` is how tests detect a launch happened; if it became visible
         // before the corresponding handle was resolvable via `handles`, a concurrent
@@ -445,6 +451,7 @@ pub(crate) fn config(default_concurrency: usize, max_depth: u32) -> ManagerConfi
             default_concurrency: Some(default_concurrency),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth,
         default_execution_mode: ExecutionMode::InProcess,

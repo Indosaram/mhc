@@ -5,6 +5,7 @@ use std::path::Path;
 #[tokio::test]
 async fn parsed_tools_persist_always_approval_across_service_reconstruction() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
+    let agent = tempfile::tempdir()?;
     let outcome = async {
         for (name, input, permission) in [
             ("bash", json!({"command":"git commit"}), "bash"),
@@ -23,8 +24,8 @@ async fn parsed_tools_persist_always_approval_across_service_reconstruction() ->
             completion.await?;
             let approved = service.get_approved();
             assert_eq!(approved, request.always.iter().map(|pattern| Rule { permission: permission.into(), pattern: pattern.clone(), action: Action::Allow }).collect::<Vec<_>>());
-            append_approved(directory.path(), &approved)?;
-            let persisted = load_approved(directory.path())?;
+            append_approved(agent.path(), directory.path(), &approved)?;
+            let persisted = load_approved(agent.path(), directory.path());
             assert!(approved.iter().all(|rule| persisted.contains(rule)));
             let mut reopened = PermissionService::new(vec![], persisted, PermissionEventEmitter::default());
             let mut next = request;
