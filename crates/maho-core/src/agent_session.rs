@@ -527,6 +527,61 @@ impl std::fmt::Display for MissingModelAccessError {
 
 impl std::error::Error for MissingModelAccessError {}
 
+/// The reason a compaction ran, as the internal `reason` string its callers pass (`compact`, the
+/// automatic routes) and the extension API sees.
+fn compaction_reason_from_str(reason: &str) -> maho_ext_api::CompactionReason {
+    use maho_ext_api::CompactionReason;
+    match reason {
+        "manual" => CompactionReason::Manual,
+        "extension" => CompactionReason::Extension,
+        "overflow" => CompactionReason::Overflow,
+        "pre-prompt" => CompactionReason::PrePrompt,
+        _ => CompactionReason::Threshold,
+    }
+}
+
+/// The `details.structuralYield` block senpi's speculative route embeds at generation time: the
+/// tokens the summarized prefix and the turn prefix held, minus the summary that replaced them.
+/// The compaction extension counts an ineffective summary from it, and the core route produced none,
+/// so a summary the size of the context it replaced never counted and repeated until the session
+/// aborted itself.
+fn structural_yield_details(
+    details: Option<Value>,
+    preparation: &crate::compaction::compaction::CompactionPreparation,
+    summary: &str,
+    tokens_before: f64,
+) -> Value {
+    let text_tokens = |text: &str| {
+        crate::compaction::compaction::estimate_tokens(&serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+        })) as f64
+    };
+    let summarized: u64 = preparation
+        .messages_to_summarize
+        .iter()
+        .map(crate::compaction::compaction::estimate_tokens)
+        .sum::<u64>()
+        + preparation
+            .turn_prefix_messages
+            .iter()
+            .map(crate::compaction::compaction::estimate_tokens)
+            .sum::<u64>();
+    let replaced = text_tokens(preparation.previous_summary.as_deref().unwrap_or_default())
+        + summarized as f64;
+    let saved_tokens = replaced - text_tokens(summary);
+    let mut details = match details {
+        Some(Value::Object(object)) => Value::Object(object),
+        _ => Value::Object(Map::new()),
+    };
+    details["structuralYield"] = serde_json::json!({
+        "savedTokens": saved_tokens,
+        "savingsRatio": if tokens_before > 0.0 { saved_tokens / tokens_before } else { 0.0 },
+        "tokensBefore": tokens_before,
+    });
+    details
+}
+
 /// Human-readable message for a rejection cause; exhaustive over the union so a new cause cannot
 /// reintroduce a silent failure at the `compaction_end` UI seam.
 pub fn describe_compaction_rejection(cause: CompactionRejectionCause) -> &'static str {
@@ -543,7 +598,7 @@ pub fn describe_compaction_rejection(cause: CompactionRejectionCause) -> &'stati
             "Compaction rejected: the compaction circuit breaker is open after repeated failures. Wait for the cooldown and retry."
         }
         Cause::PerTurnCap => {
-            "Compaction rejected: absolute compaction cap reached for this session."
+            "Compaction rejected: automatic compaction refused after repeated ineffective attempts this turn. Run /compact to force one."
         }
         Cause::StaleRevision => {
             "Compaction rejected: the session changed while the summary was being prepared. Retry compaction against the latest context."
@@ -2425,7 +2480,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         if let Ok(session) = self.session() {
             tokio::spawn(async move {
                 match session
-                    .compact(options.custom_instructions.as_deref())
+                    .compact_from_extension(options.custom_instructions.as_deref())
                     .await
                 {
                     Ok(result) => {
@@ -8352,9 +8407,27 @@ impl AgentSession {
         }
     }
 
+    /// The user's explicit entry point (`/compact`, RPC): aborts the active turn and never retries.
     pub async fn compact(
         &self,
         instructions: Option<&str>,
+    ) -> Result<crate::compaction::compaction::CompactionResult, String> {
+        self.compact_with_reason(instructions, "manual").await
+    }
+
+    /// An extension's `ctx.compact` (senpi's `compaction` context action): same admission, but labeled
+    /// `extension`, so the log names the real trigger and the circuit breaker keeps governing it.
+    pub async fn compact_from_extension(
+        &self,
+        instructions: Option<&str>,
+    ) -> Result<crate::compaction::compaction::CompactionResult, String> {
+        self.compact_with_reason(instructions, "extension").await
+    }
+
+    async fn compact_with_reason(
+        &self,
+        instructions: Option<&str>,
+        reason: &str,
     ) -> Result<crate::compaction::compaction::CompactionResult, String> {
         let pending = crate::compaction::lifecycle::CompactionAbortController::new();
         let pending_outcome = Arc::new(PendingCompactionAdmission {
@@ -8419,7 +8492,7 @@ impl AgentSession {
         let result = if pending.aborted() {
             Err("Compaction cancelled".to_owned())
         } else {
-            self.compact_for_model(instructions, &self.model(), "manual")
+            self.compact_for_model(instructions, &self.model(), reason)
                 .await
         };
         pending_outcome
@@ -8451,7 +8524,7 @@ impl AgentSession {
             instructions,
             budget_model,
             reason,
-            reason != "manual",
+            !matches!(reason, "manual" | "extension"),
             false,
             None,
         )
@@ -8525,15 +8598,7 @@ impl AgentSession {
             } else {
                 "Nothing to compact (session too small)"
             };
-            let compact_reason = if reason == "manual" {
-                maho_ext_api::CompactionReason::Manual
-            } else if reason == "overflow" {
-                maho_ext_api::CompactionReason::Overflow
-            } else if reason == "pre-prompt" {
-                maho_ext_api::CompactionReason::PrePrompt
-            } else {
-                maho_ext_api::CompactionReason::Threshold
-            };
+            let compact_reason = compaction_reason_from_str(reason);
             self.emit(AgentSessionEvent::CompactionStart {
                 reason: compact_reason,
                 request_id: Some(request_id.clone()),
@@ -8563,15 +8628,7 @@ impl AgentSession {
         let extension_signal = maho_ext_api::AbortSignal::default();
         self.state().compaction_extension_signal = Some(extension_signal.clone());
         self.set_compaction_abort_controller(Some(controller.clone()));
-        let compact_reason = if reason == "manual" {
-            maho_ext_api::CompactionReason::Manual
-        } else if reason == "overflow" {
-            maho_ext_api::CompactionReason::Overflow
-        } else if reason == "pre-prompt" {
-            maho_ext_api::CompactionReason::PrePrompt
-        } else {
-            maho_ext_api::CompactionReason::Threshold
-        };
+        let compact_reason = compaction_reason_from_str(reason);
         self.emit(AgentSessionEvent::CompactionStart {
             reason: compact_reason,
             request_id: Some(request_id.clone()),
@@ -8769,6 +8826,12 @@ impl AgentSession {
                     )
                 }
             };
+            result.details = Some(structural_yield_details(
+                result.details.take(),
+                &preparation,
+                &result.summary,
+                result.tokens_before as f64,
+            ));
             signal
                 .throw_if_aborted()
                 .map_err(|error| error.to_string())?;
@@ -32042,6 +32105,50 @@ mod tests {
 
     #[tokio::test]
     async fn manual_compaction_runs_faux_summary_and_records_file_details() {
+        let (session, provider) = faux_compaction_session().await;
+        let result = session.compact(None).await.expect("compaction");
+        assert_eq!(
+            result.summary,
+            "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest"
+        );
+        assert!(result.details.expect("file details")["readFiles"].is_array());
+        assert!(result.usage.is_some());
+        assert_eq!(
+            result.estimated_tokens_after,
+            Some(
+                session
+                    .with_session_manager(|manager| manager.current_context())
+                    .messages
+                    .iter()
+                    .map(crate::compaction::compaction::estimate_tokens)
+                    .sum::<u64>() as i64
+            )
+        );
+        assert!(!session.is_compacting());
+        assert_eq!(session.compaction_state().status(), "completed");
+        assert_eq!(session.compaction_state().generation(), 1);
+        assert_eq!(session.model().id, "faux-1");
+        assert_eq!(
+            provider
+                .get_call_log()
+                .iter()
+                .map(|call| call.model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["summary", "summary"]
+        );
+        assert_eq!(
+            session.with_session_manager(|manager| {
+                manager.entries().last().expect("entry")["type"].clone()
+            }),
+            "compaction"
+        );
+    }
+
+    /// A faux session with two summary responses and a context big enough to compact.
+    async fn faux_compaction_session() -> (
+        AgentSession,
+        maho_ai::providers::faux::FauxProviderHandle,
+    ) {
         use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
         let provider = faux_provider(RegisterFauxProviderOptions {
             tokens_per_second: Some(0.0),
@@ -32108,41 +32215,33 @@ mod tests {
             )
         });
         session.rebuild_session_context().expect("context");
-        let result = session.compact(None).await.expect("compaction");
+        (session, provider)
+    }
+
+    /// An extension's `ctx.compact` reaches the log as `extension`, so an automatic trigger is never
+    /// reported as the user's `/compact` and the circuit breaker keeps governing it.
+    #[tokio::test]
+    async fn extension_compaction_is_labeled_extension() {
+        let (session, _provider) = faux_compaction_session().await;
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&reasons);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionStart { reason, .. }
+            | AgentSessionEvent::CompactionEnd { reason, .. } = event
+            {
+                lock(&seen).push(*reason);
+            }
+        }));
+        session
+            .compact_from_extension(None)
+            .await
+            .expect("extension compaction");
         assert_eq!(
-            result.summary,
-            "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest"
-        );
-        assert!(result.details.expect("file details")["readFiles"].is_array());
-        assert!(result.usage.is_some());
-        assert_eq!(
-            result.estimated_tokens_after,
-            Some(
-                session
-                    .with_session_manager(|manager| manager.current_context())
-                    .messages
-                    .iter()
-                    .map(crate::compaction::compaction::estimate_tokens)
-                    .sum::<u64>() as i64
-            )
-        );
-        assert!(!session.is_compacting());
-        assert_eq!(session.compaction_state().status(), "completed");
-        assert_eq!(session.compaction_state().generation(), 1);
-        assert_eq!(session.model().id, "faux-1");
-        assert_eq!(
-            provider
-                .get_call_log()
-                .iter()
-                .map(|call| call.model_id.as_str())
-                .collect::<Vec<_>>(),
-            ["summary", "summary"]
-        );
-        assert_eq!(
-            session.with_session_manager(|manager| {
-                manager.entries().last().expect("entry")["type"].clone()
-            }),
-            "compaction"
+            lock(&reasons).clone(),
+            [
+                maho_ext_api::CompactionReason::Extension,
+                maho_ext_api::CompactionReason::Extension
+            ]
         );
     }
 
