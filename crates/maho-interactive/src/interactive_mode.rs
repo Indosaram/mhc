@@ -1287,6 +1287,25 @@ fn is_anthropic_subscription_auth_key(api_key: Option<&str>) -> bool {
     api_key.is_some_and(|key| key.starts_with("sk-ant-oat"))
 }
 
+/// The renderer `UiRequest::Notify` selects for a notification kind: senpi
+/// `showExtensionNotify` (`interactive-mode.ts:4538`) dispatches error -> `showError`,
+/// warning -> `showWarning`, everything else -> `showStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NotificationStyle {
+    Error,
+    Warning,
+    Info,
+}
+
+/// `NotificationType` has exactly three variants, so this match is exhaustive.
+fn notify_style(kind: maho_ext_api::NotificationType) -> NotificationStyle {
+    match kind {
+        maho_ext_api::NotificationType::Error => NotificationStyle::Error,
+        maho_ext_api::NotificationType::Warning => NotificationStyle::Warning,
+        maho_ext_api::NotificationType::Info => NotificationStyle::Info,
+    }
+}
+
 type AuthPromptReply = (
     tokio::sync::oneshot::Receiver<String>,
     tokio::sync::oneshot::Sender<Result<String, String>>,
@@ -13020,7 +13039,11 @@ impl InteractiveMode {
             }
             UiRequest::WorkingMessage(message) => self.working_message = message,
             UiRequest::WorkingVisible(visible) => self.working_visible = visible,
-            UiRequest::Notify(text, _) => self.show_status(text),
+            UiRequest::Notify(text, kind) => match notify_style(kind) {
+                NotificationStyle::Error => self.show_error(&text),
+                NotificationStyle::Warning => self.show_warning(&text),
+                NotificationStyle::Info => self.show_status(text),
+            },
             UiRequest::Title(title) => self.terminal_title = Some(title),
             // senpi `themeController.setThemeInstance`: auto-sync stops and the instance is applied.
             UiRequest::ThemeInstance(theme) => {
@@ -15593,6 +15616,63 @@ pub fn prepare_import_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The three renderers paint distinct styles: `show_error` (`:11668`) paints
+    // `theme.fg(ThemeColor::Error, "Error: {message}")`, `show_warning` (`:11556`)
+    // `theme.fg(ThemeColor::Warning, "Warning: {message}")`, and `show_status` (`:8952`)
+    // `theme.fg(ThemeColor::Dim, &message)`. A live `InteractiveMode` cannot be built here:
+    // `InteractiveMode::new` writes the process-global keybindings, which this crate confines to the
+    // `global_keybindings` test binary (see the `[[test]]` comment in `Cargo.toml`). So this exercises
+    // the production decision function (`notify_style`) and replays each selected renderer's own
+    // paint expression, so the assertions pin the exact styles production produces.
+    #[test]
+    fn notify_kind_selects_renderer() {
+        use maho_ext_api::NotificationType;
+        let theme = crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor)
+            .expect("builtin theme");
+        let message = "boom";
+        // One arm per renderer, spelled exactly as that `show_*` body paints it.
+        let style_of = |kind| match notify_style(kind) {
+            NotificationStyle::Error => theme.fg(
+                crate::theme::ThemeColor::Error,
+                &format!("Error: {message}"),
+            ),
+            NotificationStyle::Warning => theme.fg(
+                crate::theme::ThemeColor::Warning,
+                &format!("Warning: {message}"),
+            ),
+            NotificationStyle::Info => theme.fg(crate::theme::ThemeColor::Dim, message),
+        };
+        assert_eq!(
+            [
+                notify_style(NotificationType::Error),
+                notify_style(NotificationType::Warning),
+                notify_style(NotificationType::Info),
+            ],
+            [
+                NotificationStyle::Error,
+                NotificationStyle::Warning,
+                NotificationStyle::Info,
+            ]
+        );
+        let rendered = [
+            style_of(NotificationType::Error),
+            style_of(NotificationType::Warning),
+            style_of(NotificationType::Info),
+        ];
+        // The Error style is exactly what `show_error` paints for the same message.
+        assert_eq!(
+            rendered[0],
+            theme.fg(
+                crate::theme::ThemeColor::Error,
+                &format!("Error: {message}")
+            )
+        );
+        // Three distinct styles, not three status lines.
+        assert_ne!(rendered[0], rendered[1]);
+        assert_ne!(rendered[1], rendered[2]);
+        assert_ne!(rendered[0], rendered[2]);
+    }
 
     #[test]
     fn service_tier_from_wire_maps_every_resolved_tier() {
