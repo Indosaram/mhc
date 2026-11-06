@@ -2,7 +2,7 @@
 //! across a handle, runner, store-transition or steering call, so child listeners may re-enter.
 
 pub type FailedTurnsState = HashMap<String, Arc<Mutex<(Option<String>, Vec<String>)>>>;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -281,6 +281,9 @@ struct Inner {
     parked: Mutex<HashMap<String, crate::manager::concurrency::ParkedLease>>,
     stops_pending: PendingStops,
     residency: ResidencySignal,
+    workpool_worker_tools: Arc<
+        Mutex<BTreeMap<String, Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>>>,
+    >,
     this: Weak<Inner>,
 }
 
@@ -589,6 +592,7 @@ impl TaskManager {
                 parked: Mutex::default(),
                 stops_pending: PendingStops::default(),
                 residency: ResidencySignal::default(),
+                workpool_worker_tools: Arc::new(Mutex::new(BTreeMap::new())),
                 this: this.clone(),
             }
         });
@@ -684,6 +688,34 @@ impl TaskManager {
 
     pub fn workpool_worker_record(&self, task_id: &str) -> Option<TaskRecord> {
         self.inner.try_load(task_id)
+    }
+
+    pub fn workpool_worker_tools(
+        &self,
+    ) -> Arc<
+        Mutex<BTreeMap<String, Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>>>,
+    > {
+        Arc::clone(&self.inner.workpool_worker_tools)
+    }
+
+    pub fn bind_workpool_worker_tools(
+        &self,
+        pool_id: &str,
+        tools: Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>,
+    ) {
+        self.inner
+            .workpool_worker_tools
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(pool_id.to_string(), tools);
+    }
+
+    pub fn release_workpool_worker_tools(&self, pool_id: &str) {
+        self.inner
+            .workpool_worker_tools
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(pool_id);
     }
 
     pub fn reserve_slot(&self, model: &str, task_id: &str, epoch: i64) -> bool {
@@ -2852,13 +2884,101 @@ impl TaskManager {
                 }),
             }
         };
+        let workpools = crate::workpool::engine::WorkpoolEngine::new(
+            self.inner.store.state_dir(),
+            Arc::new(crate::manager::workpool_admission::ManagerWorkpoolAdmission::new(Arc::new(self.clone()))),
+        );
+        if !workpools.owns_task(&record.task_id) {
+            return respawn_managed_task(&RespawnInput {
+                record,
+                session_path: resume_session_path,
+                state_dir: self.inner.store.state_dir(),
+                runners: &self.inner.runners,
+                rpc_runner: self.inner.rpc_respawn_runner.as_ref(),
+                trusted_launch: self.inner.trusted_respawn_launch.as_ref(),
+                before_launch: &before_launch,
+            });
+        }
+
+        if !is_terminal_record(record)
+            || resume_session_path.is_none()
+            || record.revive_delivery_uncertain.is_some()
+        {
+            return RespawnResult::Failed {
+                disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                code: crate::lifecycle::port::RespawnFailureCode::ToolsUnavailable,
+                reason: "Pool workers resume only terminal recorded turns without unresolved delivery; running work is never replayed.".to_string(),
+            };
+        }
+
+        let mut member_scoped_tools = Vec::new();
+        if let Ok(pools) = workpools.store.list_result() {
+            if let Some(pool) = pools.into_iter().find(|p| {
+                p.workers.iter().any(|w| w.task_id == record.task_id)
+                    || p.items.iter().any(|i| {
+                        i.binding
+                            .as_ref()
+                            .is_some_and(|b| b.task_id == record.task_id)
+                    })
+            }) {
+                let grants = self
+                    .inner
+                    .workpool_worker_tools
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(tools) = grants.get(&pool.pool_id) {
+                    member_scoped_tools.extend(tools.clone());
+                }
+            }
+        }
+        if !member_scoped_tools.iter().any(|t| t.name() == "workpool") {
+            let epoch = u32::try_from(record.notification.run_epoch).unwrap_or_default();
+            member_scoped_tools.push(create_workpool_worker_tool(
+                workpools.store.clone(),
+                self.inner.store.clone(),
+                &record.task_id,
+                epoch,
+            ));
+        }
+
+        let runner = Arc::clone(&self.inner.runners.in_process);
+        let wrapped_runner = Arc::new(InProcessWithMemberScopedTools {
+            inner: runner,
+            tools: member_scoped_tools,
+        });
+        let runners = crate::manager::types::ManagedRunners {
+            in_process: wrapped_runner,
+            process: Arc::clone(&self.inner.runners.process),
+        };
+
+        let original_trusted = self.inner.trusted_respawn_launch.clone();
+        let state_dir_str = self.inner.store.state_dir().to_string_lossy().into_owned();
+        let task_id_str = record.task_id.clone();
+        let workpool_trusted: crate::manager::types::TrustedRespawnLaunchResolver =
+            Arc::new(move |rec: &TaskRecord| {
+                let mut launch = match &original_trusted {
+                    Some(resolver) => resolver(rec)?.unwrap_or_default(),
+                    None => crate::manager::types::TrustedRespawnLaunch::default(),
+                };
+                let env = launch.member_env.get_or_insert_with(BTreeMap::new);
+                env.insert(
+                    crate::workpool::process_worker::WORKPOOL_STATE_DIR_ENV.to_string(),
+                    state_dir_str.clone(),
+                );
+                env.insert(
+                    crate::workpool::process_worker::WORKPOOL_TASK_ID_ENV.to_string(),
+                    task_id_str.clone(),
+                );
+                Ok(Some(launch))
+            });
+
         respawn_managed_task(&RespawnInput {
             record,
             session_path: resume_session_path,
             state_dir: self.inner.store.state_dir(),
-            runners: &self.inner.runners,
+            runners: &runners,
             rpc_runner: self.inner.rpc_respawn_runner.as_ref(),
-            trusted_launch: self.inner.trusted_respawn_launch.as_ref(),
+            trusted_launch: Some(&workpool_trusted),
             before_launch: &before_launch,
         })
     }
@@ -2870,6 +2990,138 @@ impl TaskManager {
     ) -> ReattachResult {
         self.inner.reattach(record, handle)
     }
+}
+
+struct InProcessWithMemberScopedTools {
+    inner: Arc<dyn crate::manager::types::ManagedRunner>,
+    tools: Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>,
+}
+
+impl crate::manager::types::ManagedRunner for InProcessWithMemberScopedTools {
+    fn start(
+        &self,
+        spec: &crate::manager::types::ManagedStartSpec,
+    ) -> crate::manager::types::ManagedRunnerResult {
+        self.inner.start(spec)
+    }
+
+    fn start_staged(
+        &self,
+        spec: &crate::manager::types::ManagedStartSpec,
+    ) -> Option<Result<crate::manager::types::StagedManagedChild, crate::manager::types::ManagedRunnerError>>
+    {
+        self.inner.start_staged(spec)
+    }
+
+    fn settle_teardowns(&self) -> Result<(), crate::manager::types::ManagedRunnerError> {
+        self.inner.settle_teardowns()
+    }
+
+    fn resume(
+        &self,
+        spec: &crate::manager::types::ManagedStartSpec,
+        session_path: &str,
+    ) -> Option<crate::manager::types::ManagedRunnerResult> {
+        let mut modified = spec.clone();
+        let mut tools = modified.member_scoped_tools.take().unwrap_or_default();
+        for tool in &self.tools {
+            if !tools.iter().any(|t| t.name() == tool.name()) {
+                tools.push(tool.clone());
+            }
+        }
+        modified.member_scoped_tools = Some(tools);
+        self.inner.resume(&modified, session_path)
+    }
+}
+
+struct WorkpoolWorkerChildTool {
+    _task_id: String,
+    capability: Box<
+        dyn Fn(
+                serde_json::Value,
+            ) -> Result<
+                (
+                    crate::workpool::types::PoolId,
+                    u32,
+                    Vec<crate::workpool::worker_capability::WorkpoolYieldReceipt>,
+                ),
+                crate::workpool::types::WorkpoolError,
+            > + Send
+            + Sync,
+    >,
+}
+
+impl crate::runners::in_process::shared_tool_filter::ChildTool for WorkpoolWorkerChildTool {
+    fn name(&self) -> &str {
+        "workpool"
+    }
+
+    fn description(&self) -> &str {
+        "Yield keyed results for this worker's current assignment."
+    }
+
+    fn parameters(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "results"],
+            "properties": {
+                "op": { "const": "yield" },
+                "results": { "type": "array", "items": {} }
+            }
+        }))
+    }
+
+    fn execute(
+        &self,
+        _tool_call_id: &str,
+        input: &serde_json::Value,
+    ) -> Result<serde_json::Value, crate::host::HostError> {
+        let (pool_id, generation, receipts) = (self.capability)(input.clone())
+            .map_err(|error| crate::host::HostError {
+                message: error.to_string(),
+            })?;
+        let results = receipts
+            .into_iter()
+            .map(|receipt| match receipt {
+                crate::workpool::worker_capability::WorkpoolYieldReceipt::Accepted { key, item_id } => {
+                    serde_json::json!({ "key": key, "item_id": item_id, "accepted": true })
+                }
+                crate::workpool::worker_capability::WorkpoolYieldReceipt::Duplicate { key, item_id } => {
+                    serde_json::json!({ "key": key, "item_id": item_id, "accepted": true, "duplicate": true })
+                }
+                crate::workpool::worker_capability::WorkpoolYieldReceipt::Refused(error) => {
+                    serde_json::json!({ "accepted": false, "code": error.code, "message": error.message, "key": error.key })
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "pool_id": pool_id,
+            "generation": generation,
+            "results": results,
+        }))
+    }
+}
+
+pub fn create_workpool_worker_tool(
+    store: crate::workpool::store::WorkpoolStore,
+    tasks: crate::store::TaskRecordStore,
+    task_id: &str,
+    run_epoch: u32,
+) -> crate::runners::in_process::shared_tool_filter::ChildToolRef {
+    let capability = Box::new(
+        crate::workpool::worker_capability::create_workpool_yield_capability(
+            store,
+            tasks,
+            task_id,
+            run_epoch,
+            None,
+        ),
+    );
+    Arc::new(WorkpoolWorkerChildTool {
+        _task_id: task_id.to_string(),
+        capability,
+    })
 }
 
 fn member_kernel_tool_refusal(spec: &ManagerStartSpec) -> Option<StartResult> {
