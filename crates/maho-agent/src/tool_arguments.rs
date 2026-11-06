@@ -69,6 +69,30 @@ mod tests {
         }
     }
 
+    /// `AgentTool` has no `Default` (it carries a label, an executor and the provider-facing
+    /// definition), so a shim-only tool is spelled out here instead of spread from a default.
+    fn tool_with(shim: Option<ToolArgumentShim>) -> AgentTool {
+        let execute: crate::types::AgentToolExecute =
+            Arc::new(|_id, _args, _signal, _on_update| {
+                Box::pin(async { crate::types::AgentToolResult::text("") })
+            });
+        AgentTool {
+            label: "Test tool".into(),
+            prepare_arguments: shim,
+            execute,
+            replay: None,
+            execution_mode: None,
+            tool: maho_ai::types::Tool {
+                name: "test-tool".into(),
+                description: "Exercises the argument shim path.".into(),
+                parameters: json!({"type": "object"}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+        }
+    }
+
     #[test]
     fn shim_output_class_matches_upstream() {
         let classes = [
@@ -81,10 +105,7 @@ mod tests {
         ];
         for (shim_output, kind) in classes {
             let shim: ToolArgumentShim = Arc::new(move |_| Ok(shim_output.clone()));
-            let tool = AgentTool {
-                prepare_arguments: Some(shim),
-                ..Default::default()
-            };
+            let tool = tool_with(Some(shim));
             let mut original = call();
             original.name = "test-tool".into();
             let result = prepare_agent_tool_call_arguments(&tool, &original);
@@ -108,10 +129,7 @@ mod tests {
             args["original"] = json!(false);
             Ok(args)
         });
-        let tool = AgentTool {
-            prepare_arguments: Some(shim),
-            ..Default::default()
-        };
+        let tool = tool_with(Some(shim));
         let original = call();
         let _prepared = prepare_agent_tool_call_arguments(&tool, &original).unwrap();
         assert_eq!(original.arguments["original"], json!(true));
