@@ -90,7 +90,10 @@ mod tests {
             let result = prepare_agent_tool_call_arguments(&tool, &original);
             if kind == "object" {
                 let prepared = result.unwrap();
-                assert_eq!(Value::Object(prepared.arguments), json!({"normalized": true}));
+                assert_eq!(
+                    Value::Object(prepared.arguments),
+                    json!({"normalized": true})
+                );
             } else {
                 let error = result.unwrap_err();
                 assert!(error.contains("test-tool"), "{error}");

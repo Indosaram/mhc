@@ -112,10 +112,18 @@ impl PermissionService {
         approved_target: &str,
         ancestry: Option<&dyn Fn(&str) -> String>,
     ) -> Decision {
-        if self.protected_store_path.as_deref().is_some_and(|store| targets.iter().any(|target| target_is_protected_store(target, store))) {
+        if self.protected_store_path.as_deref().is_some_and(|store| {
+            targets
+                .iter()
+                .any(|target| target_is_protected_store(target, store))
+        }) {
             return Decision {
                 action: Action::Deny,
-                rules: vec![Rule { permission: permission.into(), pattern: "*".into(), action: Action::Deny }],
+                rules: vec![Rule {
+                    permission: permission.into(),
+                    pattern: "*".into(),
+                    action: Action::Deny,
+                }],
             };
         }
         let configured = match ancestry {
@@ -307,7 +315,10 @@ impl PermissionService {
     ) -> Self {
         self.agent_dir = Some(agent_dir.to_path_buf());
         self.project_dir = Some(project_dir.to_path_buf());
-        self.protected_store_path = Some(crate::storage::approved_store_real_path(agent_dir, project_dir));
+        self.protected_store_path = Some(crate::storage::approved_store_real_path(
+            agent_dir,
+            project_dir,
+        ));
         let approved_version = crate::storage::approved_file_version(agent_dir, project_dir);
         *self.approved_version.borrow_mut() = approved_version;
         self

@@ -206,10 +206,9 @@ mod tests {
 
     #[test]
     fn context_file_limits_deserialize_camel_case() {
-        let limits: ContextFileLimits = serde_json::from_str(
-            r#"{"maxBytesPerFile":2048,"maxTotalBytes":4096}"#,
-        )
-        .expect("limits");
+        let limits: ContextFileLimits =
+            serde_json::from_str(r#"{"maxBytesPerFile":2048,"maxTotalBytes":4096}"#)
+                .expect("limits");
         assert_eq!(limits.max_bytes_per_file, Some(2048.0));
         assert_eq!(limits.max_total_bytes, Some(4096.0));
         assert_eq!(
