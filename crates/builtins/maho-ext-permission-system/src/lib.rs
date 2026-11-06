@@ -115,13 +115,13 @@ impl Extension for PermissionSystem{
                 };
                 let resolved=settings::resolve_permission_config(&manager,&cli,&home,preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let preset_bound=resolved.preset==types::PermissionPresetName::Auto;let rules=resolved.rules;
-                let approved=storage::load_approved(&ctx.cwd).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                let approved=storage::load_approved(&ctx.agent_dir,&ctx.cwd);
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
                 let disabled=config::disabled(&active,&rules);actions.set_active_tools(active.into_iter().filter(|name|!disabled.contains(name)).collect())?;
                 let mut registry = parsers::create_builtin_parser_registry_in(&ctx.agent_dir);
                 let rt = runtime.clone();
                 registry.set_definition_resolver(Arc::new(move |name: &str| rt.live_tool_definition(name)));
-                *lock_state(&state)=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry,preset_bound,initial_approved});
+                *lock_state(&state)=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}).with_store_paths(&ctx.agent_dir,&ctx.cwd),registry,preset_bound,initial_approved});
                 let previous=retirement.lock().expect("dispatch retirement lock").replace(dispatch::register_dispatch_authorizer(&ctx.session_manager,authorizer));
                 if let Some(previous)=previous{previous.retire();}
                 Ok(EventResult::None)
@@ -149,7 +149,7 @@ impl Extension for PermissionSystem{
             Box::pin(async move{
                 if let Some(retirement)=retirement.lock().expect("dispatch retirement lock").take(){retirement.retire();}
                 let mut guard=lock_state(&state);if let Some(policy)=guard.as_mut(){
-                    let approved=policy.service.get_approved();storage::append_approved(&ctx.cwd,&approved[policy.initial_approved..]).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    let approved=policy.service.get_approved();storage::append_approved(&ctx.agent_dir,&ctx.cwd,&approved[policy.initial_approved..]).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                     for request in policy.service.list(){policy.service.reply(types::ReplyInput{request_id:request.id,reply:types::Reply::Reject,message:None,always:None});}
                 }
                 Ok(EventResult::None)

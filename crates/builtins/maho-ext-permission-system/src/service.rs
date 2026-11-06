@@ -6,7 +6,12 @@ use crate::{
         Action, PermissionDecision, PermissionError, Reply, ReplyInput, Request, Rule, Ruleset,
     },
 };
-use std::future::Future;
+use std::{
+    cell::{Cell, RefCell},
+    fs,
+    future::Future,
+    path::Path,
+};
 use tokio::sync::oneshot;
 
 /// How one request is decided (TS `DecisionOptions` plus the `ask` options that shape it).
@@ -33,10 +38,20 @@ struct PendingEntry {
 }
 pub struct PermissionService {
     pending: Vec<PendingEntry>,
-    approved: Ruleset,
+    approved: RefCell<Ruleset>,
     static_ruleset: Ruleset,
+    agent_dir: Option<std::path::PathBuf>,
+    project_dir: Option<std::path::PathBuf>,
+    protected_store_path: Option<std::path::PathBuf>,
+    approved_version: RefCell<Option<String>>,
+    persisted_approved_count: Cell<usize>,
     emitter: PermissionEventEmitter,
     id_counter: u64,
+}
+fn target_is_protected_store(target: &str, store: &Path) -> bool {
+    let target = Path::new(target);
+    fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
+        == fs::canonicalize(store).unwrap_or_else(|_| store.to_path_buf())
 }
 impl PermissionService {
     pub fn new(
@@ -46,7 +61,12 @@ impl PermissionService {
     ) -> Self {
         Self {
             pending: Vec::new(),
-            approved,
+            persisted_approved_count: Cell::new(approved.len()),
+            approved_version: RefCell::new(None),
+            protected_store_path: None,
+            agent_dir: None,
+            project_dir: None,
+            approved: RefCell::new(approved),
             static_ruleset,
             emitter,
             id_counter: 0,
@@ -59,6 +79,7 @@ impl PermissionService {
     /// and more than 16 spellings or 40 hops asks instead (senpi#4351). Remembered approvals match
     /// only the resolved target, so they cannot override a deny from any spelling.
     pub fn decide(&self, permission: &str, pattern: &str, options: &DecisionOptions) -> Decision {
+        self.refresh_approved();
         let aliases = options.rule_aliases.clone().unwrap_or_default();
         if permission == "external_directory" {
             return decide_external_paths(
@@ -91,6 +112,12 @@ impl PermissionService {
         approved_target: &str,
         ancestry: Option<&dyn Fn(&str) -> String>,
     ) -> Decision {
+        if self.protected_store_path.as_deref().is_some_and(|store| targets.iter().any(|target| target_is_protected_store(target, store))) {
+            return Decision {
+                action: Action::Deny,
+                rules: vec![Rule { permission: permission.into(), pattern: "*".into(), action: Action::Deny }],
+            };
+        }
         let configured = match ancestry {
             Some(canonical_case) => {
                 evaluate_external_spelling(targets, &self.static_ruleset, Some(canonical_case))
@@ -111,8 +138,12 @@ impl PermissionService {
             } else {
                 targets.to_vec()
             };
-        let remembered = evaluate_patterns(permission, &approved_targets, &[&self.approved]);
-        if self.approved.contains(&remembered) {
+        let remembered = {
+            let approved = self.approved.borrow();
+            let remembered = evaluate_patterns(permission, &approved_targets, &[&approved]);
+            approved.contains(&remembered).then_some(remembered)
+        };
+        if let Some(remembered) = remembered {
             return Decision {
                 action: remembered.action,
                 rules: vec![remembered],
@@ -230,7 +261,7 @@ impl PermissionService {
             }
             Reply::Always => {
                 for pattern in input.always.as_ref().unwrap_or(&entry.info.always) {
-                    self.approved.push(Rule {
+                    self.approved.borrow_mut().push(Rule {
                         permission: entry.info.permission.clone(),
                         pattern: pattern.clone(),
                         action: Action::Allow,
@@ -269,7 +300,37 @@ impl PermissionService {
             .map(|entry| entry.info.clone())
             .collect()
     }
+    pub fn with_store_paths(
+        mut self,
+        agent_dir: &std::path::Path,
+        project_dir: &std::path::Path,
+    ) -> Self {
+        self.agent_dir = Some(agent_dir.to_path_buf());
+        self.project_dir = Some(project_dir.to_path_buf());
+        self.protected_store_path = Some(crate::storage::approved_store_real_path(agent_dir, project_dir));
+        let approved_version = crate::storage::approved_file_version(agent_dir, project_dir);
+        *self.approved_version.borrow_mut() = approved_version;
+        self
+    }
+    fn refresh_approved(&self) {
+        let (Some(agent_dir), Some(project_dir)) = (&self.agent_dir, &self.project_dir) else {
+            return;
+        };
+        let version = crate::storage::approved_file_version(agent_dir, project_dir);
+        if version == *self.approved_version.borrow() {
+            return;
+        }
+        let fresh = crate::storage::load_approved(agent_dir, project_dir);
+        let persisted = self.persisted_approved_count.get();
+        let current = self.approved.borrow();
+        let local = current.get(persisted..).unwrap_or_default().to_vec();
+        drop(current);
+        let updated = [fresh.clone(), local].concat();
+        *self.approved.borrow_mut() = updated;
+        self.persisted_approved_count.set(fresh.len());
+        *self.approved_version.borrow_mut() = version;
+    }
     pub fn get_approved(&self) -> Ruleset {
-        self.approved.clone()
+        self.approved.borrow().clone()
     }
 }
