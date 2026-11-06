@@ -1268,6 +1268,7 @@ pub fn session_worker_spawner(
 ) -> maho_rpc::session_worker_client::SpawnSessionWorker {
     Arc::new(move || {
         let mut command = tokio::process::Command::new(&executable);
+        let stderr = crate::utils::child_stderr::ChildStderrRelay::attach(&mut command);
         command
             .env(
                 crate::experimental::process::INTERNAL_PROCESS_ENV,
@@ -1275,9 +1276,10 @@ pub fn session_worker_spawner(
             )
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true);
-        command.spawn()
+        let mut child = command.spawn()?;
+        stderr.start(&mut child);
+        Ok(child)
     })
 }
 
