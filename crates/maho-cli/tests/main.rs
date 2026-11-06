@@ -44,6 +44,8 @@ pub mod doctor;
 pub mod duration;
 #[path = "experimental_commands.rs"]
 pub mod experimental_commands;
+#[path = "every_documented_read_tool_declares_read.rs"]
+pub mod every_documented_read_tool_declares_read;
 #[path = "extension_registry.rs"]
 pub mod extension_registry;
 #[cfg(feature = "omo")]
