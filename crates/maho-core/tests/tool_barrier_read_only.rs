@@ -22,9 +22,10 @@ async fn session_with_barrier() -> (tempfile::TempDir, maho_core::agent_session:
     (dir, session)
 }
 
-// Only the tools this crate registers itself. `todo`, `web_search`, `webfetch` and
-// `tool_search` declare the same effect in their own extension crates, which depend on
-// `maho-core` and therefore cannot be linked from a `maho-core` test.
+// Only the tools this crate registers itself. `todo` and `web_search` declare the same effect
+// in extension crates that depend on `maho-core`, so linking them here would be a cycle;
+// `webfetch` and `tool_search` reach only `maho-tools` but are not registered by this crate's
+// own session either, so they are out of scope for this test.
 #[tokio::test]
 async fn read_only_tools_barrier_writes() {
     let (_dir, session) = session_with_barrier().await;
