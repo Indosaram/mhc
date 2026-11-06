@@ -27,6 +27,9 @@ fn mode_selection_respects_explicit_protocols_and_terminal_state() {
     assert_eq!(resolve_app_mode(&Args::default(), false, true), AppMode::Print);
     assert_eq!(resolve_app_mode(&Args { mode: Some(Mode::Rpc), print: true, ..Default::default() }, false, false), AppMode::Rpc);
     assert_eq!(resolve_app_mode(&Args { mode: Some(Mode::Json), ..Default::default() }, true, true), AppMode::Json);
+    // A report flag is never interactive: on a terminal the JSON report would otherwise share
+    // stdout with first-time setup prompts and the loading indicator.
+    assert_eq!(resolve_app_mode(&Args { print_prompt_sizes: true, ..Default::default() }, true, true), AppMode::Print);
 }
 #[test]
 fn auto_title_preserves_context_and_session_override_precedence() {

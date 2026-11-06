@@ -2,7 +2,7 @@ use super::{args::{Args, Mode}, initial_message::{build_initial_message, Initial
 use maho_core::project_trust::AppMode;
 pub fn resolve_app_mode(parsed: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> AppMode {
     match parsed.mode { Some(Mode::Rpc) => AppMode::Rpc, Some(Mode::Json) => AppMode::Json, Some(Mode::Text) | None => {
-        if parsed.print || !stdin_is_tty || !stdout_is_tty { AppMode::Print } else { AppMode::Interactive }
+        if parsed.print || parsed.print_prompt_sizes || !stdin_is_tty || !stdout_is_tty { AppMode::Print } else { AppMode::Interactive }
     } }
 }
 pub fn resolve_auto_title_sessions(mode: AppMode, parsed: &Args, has_context_messages: bool, capabilities: &[String], session_auto_title: Option<bool>) -> bool {
