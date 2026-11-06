@@ -25,6 +25,8 @@ mod sdk_custom_tools;
 mod sdk_extension_resources;
 #[path = "sdk_filesystem_policy.rs"]
 mod sdk_filesystem_policy;
+#[path = "tool_barrier_read_only.rs"]
+mod tool_barrier_read_only;
 #[path = "sdk_minimal_resources.rs"]
 mod sdk_minimal_resources;
 #[path = "sdk_model_auth.rs"]
