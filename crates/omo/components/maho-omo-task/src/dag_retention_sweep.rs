@@ -14,11 +14,47 @@ pub struct DagRetentionSweepOptions {
     pub logger: Arc<dyn DagRetentionSweepLogger>,
 }
 
-fn defer_past_session_start(sweep: Box<dyn FnOnce() + Send>) {
-    std::thread::spawn(sweep);
+/// A deferred sweep that outlives `schedule_dag_retention_sweep` for as long as the store is live.
+///
+/// The sweep writes DAG store artifacts, so a caller that owns the store's directory must be able
+/// to await it before tearing that directory down: otherwise the detached worker publishes
+/// `runs/`, `results/` or `events/` entries into a directory the owner already removed.
+pub struct DagRetentionSweep {
+    done: Option<std::thread::JoinHandle<()>>,
 }
 
-pub fn schedule_dag_retention_sweep(store: Arc<DagFileStore>, options: DagRetentionSweepOptions) {
+impl DagRetentionSweep {
+    fn deferred(sweep: Box<dyn FnOnce() + Send>) -> Self {
+        Self {
+            done: Some(std::thread::spawn(move || sweep())),
+        }
+    }
+
+    fn completed() -> Self {
+        Self { done: None }
+    }
+
+    /// Blocks until the deferred sweep has finished publishing to the store.
+    pub fn join(mut self) {
+        if let Some(done) = self.done.take() {
+            // A panicking sweep already reports through its logger; joining must not double-panic.
+            let _ = done.join();
+        }
+    }
+}
+
+impl Drop for DagRetentionSweep {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            let _ = done.join();
+        }
+    }
+}
+
+pub fn schedule_dag_retention_sweep(
+    store: Arc<DagFileStore>,
+    options: DagRetentionSweepOptions,
+) -> DagRetentionSweep {
     let logger = options.logger;
     let sweep = Box::new(move || match store.prune_expired(None) {
         Ok(pruned) if !pruned.is_empty() => logger.info(&format!(
@@ -29,8 +65,11 @@ pub fn schedule_dag_retention_sweep(store: Arc<DagFileStore>, options: DagRetent
         Err(error) => logger.warn(&format!("DAG retention sweep failed: {error}")),
     });
     match options.schedule {
-        Some(schedule) => schedule(sweep),
-        None => defer_past_session_start(sweep),
+        Some(schedule) => {
+            schedule(sweep);
+            DagRetentionSweep::completed()
+        }
+        None => DagRetentionSweep::deferred(sweep),
     }
 }
 
