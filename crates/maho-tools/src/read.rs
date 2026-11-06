@@ -566,7 +566,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
         json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}),
         execute,
     );
-    tool.workspace_effect = Some(maho_tools::definition::ToolWorkspaceEffect::Read);
+    tool.workspace_effect = Some(crate::definition::ToolWorkspaceEffect::Read);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(
         maho_ai::types::ConstrainedSamplingConfig::JsonSchema {
             strict: maho_ai::types::JsonSchemaStrictness::Prefer,

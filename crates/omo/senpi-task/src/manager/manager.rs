@@ -2912,23 +2912,23 @@ impl TaskManager {
         }
 
         let mut member_scoped_tools = Vec::new();
-        if let Ok(pools) = workpools.store.list_result() {
-            if let Some(pool) = pools.into_iter().find(|p| {
+        if let Ok(pools) = workpools.store.list_result()
+            && let Some(pool) = pools.into_iter().find(|p| {
                 p.workers.iter().any(|w| w.task_id == record.task_id)
                     || p.items.iter().any(|i| {
                         i.binding
                             .as_ref()
                             .is_some_and(|b| b.task_id == record.task_id)
                     })
-            }) {
-                let grants = self
-                    .inner
-                    .workpool_worker_tools
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                if let Some(tools) = grants.get(&pool.pool_id) {
-                    member_scoped_tools.extend(tools.clone());
-                }
+            })
+        {
+            let grants = self
+                .inner
+                .workpool_worker_tools
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(tools) = grants.get(&pool.pool_id) {
+                member_scoped_tools.extend(tools.clone());
             }
         }
         if !member_scoped_tools.iter().any(|t| t.name() == "workpool") {
@@ -3034,21 +3034,21 @@ impl crate::manager::types::ManagedRunner for InProcessWithMemberScopedTools {
     }
 }
 
+type WorkpoolYieldFn = dyn Fn(
+        serde_json::Value,
+    ) -> Result<
+        (
+            crate::workpool::types::PoolId,
+            u32,
+            Vec<crate::workpool::worker_capability::WorkpoolYieldReceipt>,
+        ),
+        crate::workpool::types::WorkpoolError,
+    > + Send
+    + Sync;
+
 struct WorkpoolWorkerChildTool {
     _task_id: String,
-    capability: Box<
-        dyn Fn(
-                serde_json::Value,
-            ) -> Result<
-                (
-                    crate::workpool::types::PoolId,
-                    u32,
-                    Vec<crate::workpool::worker_capability::WorkpoolYieldReceipt>,
-                ),
-                crate::workpool::types::WorkpoolError,
-            > + Send
-            + Sync,
-    >,
+    capability: Box<WorkpoolYieldFn>,
 }
 
 impl crate::runners::in_process::shared_tool_filter::ChildTool for WorkpoolWorkerChildTool {
@@ -3109,17 +3109,18 @@ pub fn create_workpool_worker_tool(
     task_id: &str,
     run_epoch: u32,
 ) -> crate::runners::in_process::shared_tool_filter::ChildToolRef {
+    let task_id = task_id.to_string();
     let capability = Box::new(
         crate::workpool::worker_capability::create_workpool_yield_capability(
             store,
             tasks,
-            task_id,
+            task_id.clone(),
             run_epoch,
             None,
         ),
     );
     Arc::new(WorkpoolWorkerChildTool {
-        _task_id: task_id.to_string(),
+        _task_id: task_id,
         capability,
     })
 }
