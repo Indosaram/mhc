@@ -662,8 +662,8 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !event.signal.is_aborted() && !owns {
                         Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::ExternalOwner), reason: Some(lane_policy::SDK_NATIVE_LANE_REJECTION_REASON.into()), ..Default::default() })
-                    } else if !event.signal.is_aborted() && per_turn_cap::should_reject_by_cap(&state).cancel {
-                        Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::PerTurnCap), reason: Some("absolute compaction cap reached for this session".into()), ..Default::default() })
+                    } else if !event.signal.is_aborted() && event.reason != maho_ext_api::CompactionReason::Manual && per_turn_cap::should_reject_by_cap(&state).cancel {
+                        Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::PerTurnCap), reason: Some("automatic compaction refused after repeated ineffective attempts; run /compact to force one".into()), ..Default::default() })
                     } else if !event.signal.is_aborted() && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64) && !circuit_breaker::should_bypass(&state, false, Some(event.reason)) {
                         Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CircuitBreaker), ..Default::default() })
                     } else { None }
@@ -915,54 +915,17 @@ impl maho_ext_api::Extension for CompactionExtension {
                         *state = match event {
                             maho_ext_api::ExtensionEvent::TurnEnd { .. }
                             | maho_ext_api::ExtensionEvent::AgentEnd { .. } => {
-                                state::reset_turn_counter(previous, "")
+                                state::end_turn(previous)
                             }
                             maho_ext_api::ExtensionEvent::SessionCompact(
                                 maho_ext_api::SessionCompactEvent::Accepted {
                                     compaction_entry,
                                     ..
                                 },
-                            ) => {
-                                let mut next = circuit_breaker::record_success(
-                                    per_turn_cap::increment_accepted(previous),
-                                );
-                                if let Some(yield_data) = compaction_entry
-                                    .data
-                                    .get("details")
-                                    .and_then(|details| details.get("structuralYield"))
-                                    && let (
-                                        Some(saved_tokens),
-                                        Some(savings_ratio),
-                                        Some(tokens_before),
-                                    ) = (
-                                        yield_data
-                                            .get("savedTokens")
-                                            .and_then(serde_json::Value::as_f64),
-                                        yield_data
-                                            .get("savingsRatio")
-                                            .and_then(serde_json::Value::as_f64),
-                                        compaction_entry
-                                            .data
-                                            .get("tokensBefore")
-                                            .and_then(serde_json::Value::as_f64),
-                                    )
-                                {
-                                    next.last_yield = Some(policy::CompactionYield {
-                                        saved_tokens,
-                                        tokens_before,
-                                    });
-                                    if r#yield::is_ineffective_compaction(
-                                        r#yield::StructuralYield {
-                                            saved_tokens,
-                                            savings_ratio,
-                                            tokens_before,
-                                        },
-                                    ) {
-                                        next = per_turn_cap::increment_ineffective(next);
-                                    }
-                                }
-                                next
-                            }
+                            ) => per_turn_cap::record_accepted_compaction(
+                                previous,
+                                r#yield::recorded_yield(compaction_entry),
+                            ),
                             maho_ext_api::ExtensionEvent::SessionCompact(
                                 maho_ext_api::SessionCompactEvent::Rejected {
                                     reason,

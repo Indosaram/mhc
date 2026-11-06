@@ -37,6 +37,16 @@ pub fn compute_structural_yield(
         tokens_before,
     }
 }
+/// The structural yield an accepted compaction recorded in `details.structuralYield`. The core
+/// `session.compact` route now writes it too, so both routes are measurable here.
+pub fn recorded_yield(entry: &maho_ext_api::SessionEntry) -> Option<StructuralYield> {
+    let recorded = entry.data.get("details")?.get("structuralYield")?;
+    Some(StructuralYield {
+        saved_tokens: recorded.get("savedTokens").and_then(serde_json::Value::as_f64)?,
+        savings_ratio: recorded.get("savingsRatio").and_then(serde_json::Value::as_f64)?,
+        tokens_before: entry.data.get("tokensBefore").and_then(serde_json::Value::as_f64)?,
+    })
+}
 pub fn is_ineffective_compaction(value: StructuralYield) -> bool {
     value.tokens_before <= 0.0 || value.saved_tokens < 1024.0 || value.savings_ratio < 0.1
 }
