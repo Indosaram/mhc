@@ -35,11 +35,20 @@ impl ManagerWorkpoolAdmission {
         manager: Arc<TaskManager>,
         barrier: crate::pause::admission_barrier::AdmissionBarrier,
     ) -> Self {
+        let worker_tools = manager.workpool_worker_tools();
         Self {
             manager,
-            worker_tools: Arc::new(Mutex::new(BTreeMap::new())),
+            worker_tools,
             barrier,
         }
+    }
+
+    pub fn worker_tools(
+        &self,
+    ) -> &Arc<
+        Mutex<BTreeMap<String, Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>>>,
+    > {
+        &self.worker_tools
     }
 
     pub fn barrier(&self) -> &crate::pause::admission_barrier::AdmissionBarrier {

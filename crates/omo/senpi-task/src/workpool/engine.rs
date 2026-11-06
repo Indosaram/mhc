@@ -54,6 +54,22 @@ impl WorkpoolEngine {
         }).collect())
     }
 
+    pub fn owns_task(&self, task_id: &str) -> bool {
+        self.store
+            .list_result()
+            .map(|pools| {
+                pools.iter().any(|pool| {
+                    pool.workers.iter().any(|worker| worker.task_id == task_id)
+                        || pool.items.iter().any(|item| {
+                            item.binding
+                                .as_ref()
+                                .is_some_and(|binding| binding.task_id == task_id)
+                        })
+                })
+            })
+            .unwrap_or(false)
+    }
+
     pub fn pause_for_run(&self, caller: &WorkpoolCaller, pool_id: &str, pause_seq: u64) -> Result<(), WorkpoolError> {
         super::run_pause::PoolRunPause { store: &self.store, admission: self.admission.as_ref(), dispatcher: &self.dispatcher }.pause_for_run(caller, pool_id, pause_seq)
     }
@@ -395,5 +411,48 @@ mod tests {
 
         engine.cancel(&caller(), &pool.pool_id).await.expect("pool cancellation");
         assert!(admission.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn owns_task_matches_workers_and_item_bindings() {
+        let root = tempfile::tempdir().expect("temporary state directory");
+        let mut engine = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
+        let pool = engine.create(&caller(), &input()).expect("pool creation");
+        assert!(!engine.owns_task("st_worker_01"));
+        assert!(!engine.owns_task("st_item_01"));
+
+        engine
+            .store
+            .mutate(&pool.pool_id, |pool| {
+                let mut next = pool.clone();
+                next.workers.push(WorkpoolWorker {
+                    task_id: "st_worker_01".into(),
+                    run_epoch: 1,
+                    status: WorkpoolWorkerStatus::Busy,
+                    completed_turns: 0,
+                    idle_since: 0,
+                });
+                next.items.push(super::types::WorkpoolItem {
+                    key: "k1".into(),
+                    input: serde_json::Value::Null,
+                    item_id: "item_01".into(),
+                    status: super::types::WorkpoolItemStatus::Assigned,
+                    binding: Some(super::types::WorkpoolBinding {
+                        task_id: "st_item_01".into(),
+                        run_epoch: 1,
+                        generation: 1,
+                    }),
+                    delivery: None,
+                    data: None,
+                    error: None,
+                    yield_sha256: None,
+                });
+                next
+            })
+            .expect("mutation");
+
+        assert!(engine.owns_task("st_worker_01"));
+        assert!(engine.owns_task("st_item_01"));
+        assert!(!engine.owns_task("st_other"));
     }
 }
