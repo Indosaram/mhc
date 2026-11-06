@@ -8,7 +8,15 @@ use maho_core::session_manager::SessionManager;
 use maho_core::session_work_barrier::ToolWorkspaceEffect;
 
 const READ_ONLY: [&str; 9] = [
-    "read", "grep", "find", "glob", "ls", "todo", "web_search", "webfetch", "tool_search",
+    "read",
+    "grep",
+    "find",
+    "glob",
+    "ls",
+    "todo",
+    "web_search",
+    "webfetch",
+    "tool_search",
 ];
 
 #[tokio::test]
@@ -18,10 +26,8 @@ async fn every_documented_read_tool_declares_read() {
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-    let factories = maho_cli::cli::default_extensions::factories(
-        sender,
-        Arc::new(std::sync::OnceLock::new()),
-    );
+    let factories =
+        maho_cli::cli::default_extensions::factories(sender, Arc::new(std::sync::OnceLock::new()));
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()),
         agent_dir: Some(agent_dir.to_string_lossy().into_owned()),
