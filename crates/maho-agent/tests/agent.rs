@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maho_agent::{
     Agent, AgentContinuationOptions, AgentMessage, AgentOptions, AgentPromptInput, AgentTool,
-    PartialAgentState, StreamFn,
+    AgentTurnDecision, PartialAgentState, StreamFn,
 };
 use maho_ai::types::{ModelThinkingLevel, StopReason, Usage};
 use maho_ai::utils::abort::AbortSignal;
@@ -322,4 +322,35 @@ async fn peek_and_remove_queued_messages() {
     assert!(agent.remove_queued_message(&follow_up));
     assert_eq!(agent.peek_queued_messages(true), Vec::<AgentMessage>::new());
     assert!(!agent.has_queued_messages());
+}
+
+#[tokio::test]
+async fn finish_turn_end_suppresses_queue_drain() {
+    let stream_fn = scripted_stream_fn(vec![assistant(
+        vec![text_block("assistant response")],
+        StopReason::Stop,
+    )]);
+    let agent = Agent::new(AgentOptions {
+        stream_fn: Some(stream_fn),
+        finish_turn: Some(Arc::new(|_context, _signal| {
+            Box::pin(async { Some(AgentTurnDecision::End) })
+        })),
+        ..AgentOptions::default()
+    });
+
+    let steering = user_message("steering");
+    let follow_up = user_message("follow_up");
+    agent.steer(steering.clone());
+    agent.follow_up(follow_up.clone());
+
+    agent.prompt(AgentPromptInput::text("user prompt")).await;
+
+    // Observable state: queued steering and follow-up messages remain in their queues
+    // because finish_turn returning AgentTurnDecision::End suppressed the post-run drain.
+    assert!(agent.has_queued_messages());
+    assert_eq!(
+        agent.peek_queued_messages(true),
+        vec![steering.clone(), follow_up.clone()]
+    );
+    assert_eq!(agent.peek_queued_messages(false), vec![steering]);
 }
