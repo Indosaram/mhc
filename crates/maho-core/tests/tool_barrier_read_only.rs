@@ -1,5 +1,5 @@
-use maho_core::session_work_barrier::{ToolBarrierSpec, ToolWorkspaceEffect};
 use maho_core::session_manager::SessionManager;
+use maho_core::session_work_barrier::{ToolBarrierSpec, ToolWorkspaceEffect};
 
 async fn session_with_barrier() -> (tempfile::TempDir, maho_core::agent_session::AgentSession) {
     let dir = tempfile::tempdir().expect("temporary workspace");
