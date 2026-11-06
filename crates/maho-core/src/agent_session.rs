@@ -1079,8 +1079,6 @@ pub struct AgentSessionInner {
     session_control:
         Mutex<Option<Arc<crate::session_control_actions::GenerationSessionControlActions>>>,
     tool_barrier: crate::session_work_barrier::ToolBarrier,
-    tool_workspace_effects:
-        Mutex<BTreeMap<String, crate::session_work_barrier::ToolWorkspaceEffect>>,
     session_thinking_memory: Mutex<crate::session_thinking_memory::SessionThinkingMemory>,
     settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
@@ -4670,28 +4668,6 @@ impl AgentSession {
                         }
                     }
                 }),
-                tool_workspace_effects: Mutex::new(BTreeMap::from_iter([
-                    (
-                        "find".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "glob".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "grep".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "ls".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "read".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                ])),
                 session_thinking_memory: Mutex::new(
                     crate::session_thinking_memory::SessionThinkingMemory::new(),
                 ),
@@ -21841,26 +21817,11 @@ impl AgentSession {
         &self,
         tool_name: &str,
     ) -> crate::session_work_barrier::ToolWorkspaceEffect {
-        if let Some(effect) = self
-            .state()
+        self.state()
             .tool_definitions
             .get(tool_name)
             .and_then(|entry| entry.definition.workspace_effect)
-        {
-            return effect;
-        }
-        lock(&self.tool_workspace_effects)
-            .get(tool_name)
-            .copied()
             .unwrap_or(crate::session_work_barrier::ToolWorkspaceEffect::Write)
-    }
-
-    pub fn register_tool_workspace_effect(
-        &self,
-        tool_name: impl Into<String>,
-        effect: crate::session_work_barrier::ToolWorkspaceEffect,
-    ) {
-        lock(&self.tool_workspace_effects).insert(tool_name.into(), effect);
     }
 
     pub async fn wait_for_tool_barrier(
@@ -22140,7 +22101,7 @@ fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
     }
 }
 
-fn empty_source_info() -> SourceInfo {
+    pub(super) fn empty_source_info() -> SourceInfo {
     SourceInfo {
         path: String::new(),
         source: String::new(),
@@ -38975,7 +38936,8 @@ mod tests {
     }
 
     mod compaction_log_attempts {
-        use super::*;
+        use crate::agent_session::tests::{empty_source_info, test_definition, test_session, test_tool};
+use crate::session_work_barrier::ToolWorkspaceEffect;
 
         fn fixture() -> (tempfile::TempDir, AgentSession) {
             fixture_with_settings(SettingsManager::from_storage(

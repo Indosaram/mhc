@@ -239,6 +239,7 @@ pub fn create_todo_tool(
             })
         }),
     );
+    tool.workspace_effect = Some(maho_tools::definition::ToolWorkspaceEffect::Read);
     tool.label = "Todo".into();
     tool.execution_mode = Some(ToolExecutionMode::Sequential);
     tool.prompt_snippet = Some(
