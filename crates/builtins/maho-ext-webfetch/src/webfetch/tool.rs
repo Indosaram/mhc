@@ -194,6 +194,7 @@ pub fn create_webfetch_tool() -> maho_tools::definition::ToolDefinition {
             })
         }),
     );
+    tool.workspace_effect = Some(maho_tools::definition::ToolWorkspaceEffect::Read);
     tool.label = "Web Fetch".into();
     tool.prompt_snippet = Some("webfetch: retrieve URL content as markdown, text, or html".into());
     tool.prompt_guidelines = Some(vec![

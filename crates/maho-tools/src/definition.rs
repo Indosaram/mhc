@@ -381,4 +381,9 @@ impl ToolDefinition {
             child_job: None,
         }
     }
+
+    pub fn with_workspace_effect(mut self, effect: ToolWorkspaceEffect) -> Self {
+        self.workspace_effect = Some(effect);
+        self
+    }
 }

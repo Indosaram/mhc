@@ -30,7 +30,24 @@ pub fn prepare_agent_tool_call_arguments(
             let prepared =
                 prepare_tool_arguments(Some(shim), Value::Object(tool_call.arguments.clone()))?;
             let mut tool_call = tool_call.clone();
-            tool_call.arguments = prepared.as_object().cloned().unwrap_or_default();
+            tool_call.arguments = match prepared {
+                Value::Object(arguments) => arguments,
+                other => {
+                    let kind = match other {
+                        Value::Array(_) => "array",
+                        Value::String(_) => "string",
+                        Value::Number(_) => "number",
+                        Value::Bool(_) => "boolean",
+                        Value::Null => "null",
+                        Value::Object(_) => unreachable!(),
+                    };
+                    // SAFETY-DIVERGENCE(packages/agent/src/tool-arguments.ts:17-23): upstream's unchecked cast leaves non-objects in place, where downstream reads yield undefined; mhc returns a visible error instead of silently losing arguments.
+                    return Err(format!(
+                        "tool argument shim for `{}` returned {kind}, expected an object",
+                        tool_call.name
+                    ));
+                }
+            };
             Ok(tool_call)
         }
     }
@@ -38,10 +55,85 @@ pub fn prepare_agent_tool_call_arguments(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_tool_arguments;
-    use crate::types::ToolArgumentShim;
+    use super::{prepare_agent_tool_call_arguments, prepare_tool_arguments};
+    use crate::types::{AgentTool, AgentToolCall, ToolArgumentShim};
     use serde_json::{Value, json};
     use std::sync::Arc;
+
+    fn call() -> AgentToolCall {
+        AgentToolCall {
+            id: "call-1".into(),
+            name: "tool".into(),
+            arguments: json!({"original": true}).as_object().unwrap().clone(),
+            ..Default::default()
+        }
+    }
+
+    /// `AgentTool` has no `Default` (it carries a label, an executor and the provider-facing
+    /// definition), so a shim-only tool is spelled out here instead of spread from a default.
+    fn tool_with(shim: Option<ToolArgumentShim>) -> AgentTool {
+        let execute: crate::types::AgentToolExecute =
+            Arc::new(|_id, _args, _signal, _on_update| {
+                Box::pin(async { crate::types::AgentToolResult::text("") })
+            });
+        AgentTool {
+            label: "Test tool".into(),
+            prepare_arguments: shim,
+            execute,
+            replay: None,
+            execution_mode: None,
+            tool: maho_ai::types::Tool {
+                name: "test-tool".into(),
+                description: "Exercises the argument shim path.".into(),
+                parameters: json!({"type": "object"}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+        }
+    }
+
+    #[test]
+    fn shim_output_class_matches_upstream() {
+        let classes = [
+            (json!({"normalized": true}), "object"),
+            (json!([1, 2]), "array"),
+            (json!("text"), "string"),
+            (json!(3), "number"),
+            (json!(false), "boolean"),
+            (Value::Null, "null"),
+        ];
+        for (shim_output, kind) in classes {
+            let shim: ToolArgumentShim = Arc::new(move |_| Ok(shim_output.clone()));
+            let tool = tool_with(Some(shim));
+            let mut original = call();
+            original.name = "test-tool".into();
+            let result = prepare_agent_tool_call_arguments(&tool, &original);
+            if kind == "object" {
+                let prepared = result.unwrap();
+                assert_eq!(
+                    Value::Object(prepared.arguments),
+                    json!({"normalized": true})
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("test-tool"), "{error}");
+                assert!(error.contains(kind), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn mutating_shim_does_not_alter_original_tool_call() {
+        let shim: ToolArgumentShim = Arc::new(|mut args| {
+            args["original"] = json!(false);
+            Ok(args)
+        });
+        let tool = tool_with(Some(shim));
+        let original = call();
+        let _prepared = prepare_agent_tool_call_arguments(&tool, &original).unwrap();
+        assert_eq!(original.arguments["original"], json!(true));
+    }
 
     #[test]
     fn preserves_prepared_non_object_values_until_call_shape_conversion() {

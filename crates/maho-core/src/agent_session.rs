@@ -1134,8 +1134,6 @@ pub struct AgentSessionInner {
     session_control:
         Mutex<Option<Arc<crate::session_control_actions::GenerationSessionControlActions>>>,
     tool_barrier: crate::session_work_barrier::ToolBarrier,
-    tool_workspace_effects:
-        Mutex<BTreeMap<String, crate::session_work_barrier::ToolWorkspaceEffect>>,
     session_thinking_memory: Mutex<crate::session_thinking_memory::SessionThinkingMemory>,
     settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
@@ -4725,28 +4723,6 @@ impl AgentSession {
                         }
                     }
                 }),
-                tool_workspace_effects: Mutex::new(BTreeMap::from_iter([
-                    (
-                        "find".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "glob".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "grep".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "ls".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                    (
-                        "read".to_owned(),
-                        crate::session_work_barrier::ToolWorkspaceEffect::Read,
-                    ),
-                ])),
                 session_thinking_memory: Mutex::new(
                     crate::session_thinking_memory::SessionThinkingMemory::new(),
                 ),
@@ -15010,7 +14986,9 @@ impl AgentSession {
             return files;
         }
         let agent_dir = self.agent_dir();
-        let mut files = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir);
+        let limits = self.with_settings_manager(|manager| manager.get_context_files_limits());
+        let loaded = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir, limits);
+        let mut files = loaded.files;
         // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
         // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
         // lane owns, so the scope is applied here until it produces it itself.
@@ -21904,26 +21882,11 @@ impl AgentSession {
         &self,
         tool_name: &str,
     ) -> crate::session_work_barrier::ToolWorkspaceEffect {
-        if let Some(effect) = self
-            .state()
+        self.state()
             .tool_definitions
             .get(tool_name)
             .and_then(|entry| entry.definition.workspace_effect)
-        {
-            return effect;
-        }
-        lock(&self.tool_workspace_effects)
-            .get(tool_name)
-            .copied()
             .unwrap_or(crate::session_work_barrier::ToolWorkspaceEffect::Write)
-    }
-
-    pub fn register_tool_workspace_effect(
-        &self,
-        tool_name: impl Into<String>,
-        effect: crate::session_work_barrier::ToolWorkspaceEffect,
-    ) {
-        lock(&self.tool_workspace_effects).insert(tool_name.into(), effect);
     }
 
     pub async fn wait_for_tool_barrier(

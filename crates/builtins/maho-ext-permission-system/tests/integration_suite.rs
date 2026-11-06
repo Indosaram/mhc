@@ -656,30 +656,32 @@ fn cli_flag_parses_and_later_configured_allow_wins() {
     .expect("later allow wins");
 }
 
-// 15. JSONL persistence. DIVERGENCE: mhc keys the store by project (`.omo/permissions-approved.jsonl`), not agent dir.
+// 15. JSONL persistence. The store lives in the agent dir, keyed by the project's real path.
 #[test]
 fn approved_rules_persist_across_service_reconstruction() {
     let dir = tempfile::tempdir().expect("project");
     let project = dir.path();
-    assert!(load_approved(project).expect("load").is_empty());
+    let agent = tempfile::tempdir().expect("agent");
+    let agent = agent.path();
+    assert!(load_approved(agent, project).is_empty());
     let rules = vec![
         rule("bash", "git *", Action::Allow),
         rule("edit", "src/*", Action::Allow),
     ];
-    append_approved(project, &rules[..1]).expect("append");
-    append_approved(project, &rules[1..]).expect("append");
-    assert_eq!(load_approved(project).expect("load"), rules);
-    clear_approved(project).expect("clear");
-    assert!(load_approved(project).expect("load").is_empty());
+    append_approved(agent, project, &rules[..1]).expect("append");
+    append_approved(agent, project, &rules[1..]).expect("append");
+    assert_eq!(load_approved(agent, project), rules);
+    clear_approved(agent, project).expect("clear");
+    assert!(load_approved(agent, project).is_empty());
 
     let mut h = harness(vec![rule("bash", "*", Action::Ask)], vec![]);
     let pending = h.service.ask(bash("req-persist", &["git commit"]));
     h.reply("req-persist", Reply::Always, None);
     settled(pending).expect("always");
-    append_approved(project, &h.service.get_approved()).expect("append");
+    append_approved(agent, project, &h.service.get_approved()).expect("append");
     let mut reopened = harness(
         vec![rule("bash", "*", Action::Ask)],
-        load_approved(project).expect("load"),
+        load_approved(agent, project),
     );
     settled(reopened.service.ask(bash("req-second", &["git push"]))).expect("persisted approval");
     assert_eq!(reopened.asked(), 0);
@@ -690,7 +692,11 @@ fn approved_store_loads_even_when_project_settings_name_a_session_dir() {
     let dir = tempfile::tempdir().expect("project");
     let project = dir.path();
     let session_dir = tempfile::tempdir().expect("session dir");
-    append_approved(project, &[rule("bash", "git *", Action::Allow)]).expect("append");
+    let agent = tempfile::tempdir().expect("agent");
+    let agent = agent.path();
+    append_approved(agent, project, &[rule("bash", "git *", Action::Allow)]).expect("append");
+    // The project settings file lives under .omo/, which a bare tempdir does not contain.
+    std::fs::create_dir_all(project.join(".omo")).expect("project settings dir");
     std::fs::write(
         project.join(".omo/settings.json"),
         json!({"sessionDir": session_dir.path()}).to_string(),
@@ -706,6 +712,7 @@ fn approved_store_loads_even_when_project_settings_name_a_session_dir() {
     let (_, approved) = maho_ext_permission_system::settings::load_permission_settings(
         &manager,
         &[],
+        agent,
         (project, &*text),
         None,
     )

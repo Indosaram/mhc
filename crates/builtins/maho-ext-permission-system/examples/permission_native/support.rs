@@ -103,7 +103,7 @@ pub async fn run() -> Result<(), Failure> {
     let permission = "edit:blocked.txt=deny";
     let first = execute(project, true, "apply_patch", patch, permission).await?;
     assert_eq!(std::fs::read_to_string(project.join("allowed.txt"))?, "native mutation\n");
-    let approved = storage::load_approved(project)?;
+    let approved = storage::load_approved(project, project);
     println!("{}", json!({"stage":"first","result":first,"approved":approved}));
     assert!(approved.iter().any(|rule| rule.permission == "edit" && rule.pattern == "allowed.txt"));
     let second = execute(project, false, "apply_patch", json!({"input":"*** Begin Patch\n*** Update File: allowed.txt\n@@\n-native mutation\n+persisted mutation\n*** End Patch"}), permission).await?;
