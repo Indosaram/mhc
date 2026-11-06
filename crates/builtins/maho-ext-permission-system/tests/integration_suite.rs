@@ -695,6 +695,8 @@ fn approved_store_loads_even_when_project_settings_name_a_session_dir() {
     let agent = tempfile::tempdir().expect("agent");
     let agent = agent.path();
     append_approved(agent, project, &[rule("bash", "git *", Action::Allow)]).expect("append");
+    // The project settings file lives under .omo/, which a bare tempdir does not contain.
+    std::fs::create_dir_all(project.join(".omo")).expect("project settings dir");
     std::fs::write(
         project.join(".omo/settings.json"),
         json!({"sessionDir": session_dir.path()}).to_string(),
