@@ -351,6 +351,7 @@ pub fn build_harness(options: ChaosHarnessOptions) -> ChaosHarness {
             default_concurrency: Some(options.concurrency),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth: options.max_depth,
         default_execution_mode: crate::manager::execution_mode::ExecutionMode::InProcess,

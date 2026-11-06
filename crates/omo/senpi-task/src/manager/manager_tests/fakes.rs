@@ -445,6 +445,7 @@ pub(crate) fn config(default_concurrency: usize, max_depth: u32) -> ManagerConfi
             default_concurrency: Some(default_concurrency),
             provider_concurrency: None,
             model_concurrency: None,
+            global_concurrency: None,
         },
         max_depth,
         default_execution_mode: ExecutionMode::InProcess,
