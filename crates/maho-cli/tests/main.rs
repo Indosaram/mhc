@@ -42,10 +42,10 @@ pub mod deferred_commands;
 pub mod doctor;
 #[path = "duration.rs"]
 pub mod duration;
-#[path = "experimental_commands.rs"]
-pub mod experimental_commands;
 #[path = "every_documented_read_tool_declares_read.rs"]
 pub mod every_documented_read_tool_declares_read;
+#[path = "experimental_commands.rs"]
+pub mod experimental_commands;
 #[path = "extension_registry.rs"]
 pub mod extension_registry;
 #[cfg(feature = "omo")]
@@ -53,10 +53,10 @@ pub mod extension_registry;
 pub mod facts_child;
 #[path = "fast_mode.rs"]
 pub mod fast_mode;
-#[path = "first_time_setup.rs"]
-pub mod first_time_setup;
 #[path = "file_processor.rs"]
 pub mod file_processor;
+#[path = "first_time_setup.rs"]
+pub mod first_time_setup;
 #[path = "fork_session.rs"]
 pub mod fork_session;
 #[path = "fs_watch.rs"]
@@ -95,10 +95,10 @@ pub mod kibitzer_child;
 #[cfg(feature = "omo")]
 #[path = "kibitzer_tools.rs"]
 pub mod kibitzer_tools;
-#[path = "list_models.rs"]
-pub mod list_models;
 #[path = "lane38_process_boundary_probe.rs"]
 pub mod lane38_process_boundary_probe;
+#[path = "list_models.rs"]
+pub mod list_models;
 #[path = "management_http.rs"]
 pub mod management_http;
 #[path = "mcp_local_presenter.rs"]
@@ -149,8 +149,12 @@ pub mod paths;
 pub mod permission_default;
 #[path = "print_entry.rs"]
 pub mod print_entry;
+#[path = "print_prompt_sizes_report.rs"]
+pub mod print_prompt_sizes_report;
 #[path = "project_trust.rs"]
 pub mod project_trust;
+#[path = "provider_consent.rs"]
+pub mod provider_consent;
 #[path = "radius_auth.rs"]
 pub mod radius_auth;
 #[path = "radius_relay.rs"]
@@ -199,8 +203,6 @@ pub mod ulw_loop_entry;
 pub mod utilities;
 #[path = "version_check.rs"]
 pub mod version_check;
-#[path = "provider_consent.rs"]
-pub mod provider_consent;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "native_update_support/mod.rs"]
