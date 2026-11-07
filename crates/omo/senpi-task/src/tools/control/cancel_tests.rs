@@ -25,10 +25,16 @@ fn start_running(harness: &Harness) -> String {
 }
 
 fn status_str(harness: &Harness, task_id: &str) -> Option<&'static str> {
-    harness.manager.get(task_id).map(|record| record.status.as_str())
+    harness
+        .manager
+        .get(task_id)
+        .map(|record| record.status.as_str())
 }
 
-fn cancel_by_id(harness: &Harness, task_id: &str) -> crate::tools::control::types::CancelToolResult {
+fn cancel_by_id(
+    harness: &Harness,
+    task_id: &str,
+) -> crate::tools::control::types::CancelToolResult {
     run_task_cancel(
         &harness.manager,
         &TaskCancelInput {
@@ -110,7 +116,8 @@ fn given_a_cancelled_child_when_task_send_follows_up_then_the_child_is_not_conti
 }
 
 #[test]
-fn given_an_already_cancelled_child_when_cancelled_again_then_it_is_a_noop_with_the_cancelled_status() {
+fn given_an_already_cancelled_child_when_cancelled_again_then_it_is_a_noop_with_the_cancelled_status()
+ {
     let harness = default_manager();
     let task_id = start_running(&harness);
     cancel_by_id(&harness, &task_id);
@@ -152,7 +159,10 @@ fn dropped_steering_notice_formats_singular_plural_and_zero_counts() {
         with_dropped_steering_notice("Cancelled task.", 2),
         "Cancelled task.\n2 queued messages were not delivered. Resend them to a new task."
     );
-    assert_eq!(with_dropped_steering_notice("Cancelled task.", 0), "Cancelled task.");
+    assert_eq!(
+        with_dropped_steering_notice("Cancelled task.", 0),
+        "Cancelled task."
+    );
 }
 
 #[test]

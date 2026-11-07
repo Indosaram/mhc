@@ -4,9 +4,7 @@
 
 use std::path::Path;
 
-use boulder_state::{
-    get_work_by_id, read_boulder_state, select_active_work, write_boulder_state,
-};
+use boulder_state::{get_work_by_id, read_boulder_state, select_active_work, write_boulder_state};
 use pretty_assertions::assert_eq;
 
 fn fixture(name: &str) -> String {

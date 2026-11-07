@@ -226,7 +226,12 @@ pub fn prune_invalid_config_paths(
             return PruneResult::NotOk { dropped };
         }
         match validate(&current) {
-            Ok(()) => return PruneResult::Ok { config: current, dropped },
+            Ok(()) => {
+                return PruneResult::Ok {
+                    config: current,
+                    dropped,
+                };
+            }
             Err(next_issues) => pending = next_issues,
         }
     }

@@ -33,8 +33,7 @@ pub struct OmoNativeInventoryDiagnostic {
     pub source: &'static str,
 }
 
-pub type InventoryDiagnostics =
-    std::sync::Arc<dyn Fn(&OmoNativeInventoryDiagnostic) + Send + Sync>;
+pub type InventoryDiagnostics = std::sync::Arc<dyn Fn(&OmoNativeInventoryDiagnostic) + Send + Sync>;
 
 /// Subscription ids the engine renamed; installs that predate the rename still carry the old key.
 pub const RETIRED_PROVIDER_IDS: &[(&str, &str)] = &[
@@ -242,7 +241,11 @@ mod tests {
     #[test]
     fn signed_in_only_counts_without_a_configured_inventory() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "auth.json", json!({"anthropic": {"key": "secret"}}));
+        write(
+            dir.path(),
+            "auth.json",
+            json!({"anthropic": {"key": "secret"}}),
+        );
         let (sink, recorded) = diagnostics();
         let inventory = read_omo_native_inventory(dir.path(), Some(&sink));
         assert_eq!(inventory.provider_count, 1);
@@ -257,7 +260,11 @@ mod tests {
     #[test]
     fn overlap_counts_each_provider_once() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "auth.json", json!({"anthropic": {}, "openai": {}}));
+        write(
+            dir.path(),
+            "auth.json",
+            json!({"anthropic": {}, "openai": {}}),
+        );
         write(
             dir.path(),
             "models.json",
@@ -299,7 +306,11 @@ mod tests {
     #[test]
     fn malformed_models_keep_the_signed_in_counts() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "auth.json", json!({"anthropic": {}, "openai": {}}));
+        write(
+            dir.path(),
+            "auth.json",
+            json!({"anthropic": {}, "openai": {}}),
+        );
         write(dir.path(), "models.json", json!("[]"));
         write(dir.path(), "settings.json", json!({}));
         let (sink, recorded) = diagnostics();
@@ -322,7 +333,10 @@ mod tests {
         assert_eq!(inventory.providers, "anthropic");
         let recorded = recorded.lock().unwrap();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].1, "models.json or settings.json is not valid JSON");
+        assert_eq!(
+            recorded[0].1,
+            "models.json or settings.json is not valid JSON"
+        );
         assert!(!recorded[0].1.contains("sk-secret"));
     }
 

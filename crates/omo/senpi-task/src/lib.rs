@@ -44,8 +44,8 @@ pub use completion::{
     describe_parent_model_fallback,
 };
 pub use manager::start_admission::{
-    AdmissionHeld, HELD_START_KIND, HeldStart, StartAdmission, StartAdmissionError, StartAdmissions,
-    StartOutcome, admission_held_result, enter_start_admission,
+    AdmissionHeld, HELD_START_KIND, HeldStart, StartAdmission, StartAdmissionError,
+    StartAdmissions, StartOutcome, admission_held_result, enter_start_admission,
 };
 pub use pause::admission_barrier::{
     AdmissionBarrier, AdmissionBarrierError, AdmissionCheck, AdmissionCommit, AdmissionEntry,

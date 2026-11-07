@@ -7,29 +7,50 @@ use crate::journal::entries::{TextTranscriptEntry, TranscriptEntry};
 
 use crate::reflection::machine::{
     CapturedConversation, DreamOrigin, EvaluationAction, JournalSnapshot, MachineState,
-    ReflectionEvent, ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState,
-    TriggerConfig, REFLECTION_PENDING_MAX_CONVERSATIONS, complete_transition, evaluate_transitions, reserve_transition,
+    REFLECTION_PENDING_MAX_CONVERSATIONS, ReflectionEvent, ReflectionOutcome, ReflectionRequest,
+    ReflectionTrigger, ReservationState, TriggerConfig, complete_transition, evaluate_transitions,
+    reserve_transition,
 };
 
 #[test]
 fn pending_reservation_is_bounded_to_conversation_limit() {
-    let mut pending_request = request(ReflectionTrigger::StepCount, Some(vec!["active".into()]), None);
-    let (state, _) = reserve_transition(ReservationState::default(), pending_request.clone(), "active".into());
-    pending_request.conversation_ids = (0..REFLECTION_PENDING_MAX_CONVERSATIONS + 4).map(|n| format!("conversation-{n}")).collect();
+    let mut pending_request = request(
+        ReflectionTrigger::StepCount,
+        Some(vec!["active".into()]),
+        None,
+    );
+    let (state, _) = reserve_transition(
+        ReservationState::default(),
+        pending_request.clone(),
+        "active".into(),
+    );
+    pending_request.conversation_ids = (0..REFLECTION_PENDING_MAX_CONVERSATIONS + 4)
+        .map(|n| format!("conversation-{n}"))
+        .collect();
     pending_request.snapshots.clear();
     let (state, _) = reserve_transition(state, pending_request, "pending".into());
-    assert!(state.pending.unwrap().request.conversation_ids.len() <= REFLECTION_PENDING_MAX_CONVERSATIONS);
+    assert!(
+        state.pending.unwrap().request.conversation_ids.len()
+            <= REFLECTION_PENDING_MAX_CONVERSATIONS
+    );
 }
 
 #[test]
 fn byte_pressure_reserves_pressure_origin_dream() {
     let mut snapshot = journal(0, None);
     snapshot.state.unreflected_bytes = Some(128 * 1024);
-    let result = evaluate_transitions(MachineState {
-        journal: snapshot,
-        reservation: ReservationState::default(),
-        config: TriggerConfig { step_count: Some(99), on_compaction: None, snapshot_max_bytes: None },
-    }, ReflectionEvent::Settled { success: true });
+    let result = evaluate_transitions(
+        MachineState {
+            journal: snapshot,
+            reservation: ReservationState::default(),
+            config: TriggerConfig {
+                step_count: Some(99),
+                on_compaction: None,
+                snapshot_max_bytes: None,
+            },
+        },
+        ReflectionEvent::Settled { success: true },
+    );
     match result.action {
         EvaluationAction::Reserve(request) => {
             assert_eq!(request.trigger, ReflectionTrigger::Dream);

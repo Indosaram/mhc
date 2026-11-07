@@ -1,11 +1,9 @@
 //! Computer tool definition matching upstream `src/tool-definition.ts`.
 
-use std::sync::Arc;
-use maho_tools::definition::{
-    ToolDefinition, ToolExecutionMode, ToolExposure,
-};
-use senpi_desktop_prelude::ComputerPreludeAssets;
 pub use maho_tools::KernelPrelude;
+use maho_tools::definition::{ToolDefinition, ToolExecutionMode, ToolExposure};
+use senpi_desktop_prelude::ComputerPreludeAssets;
+use std::sync::Arc;
 
 use crate::params::computer_params_schema;
 use crate::permission::computer_permission_parser;
@@ -52,7 +50,10 @@ pub fn kernel_prelude_for_computer() -> KernelPrelude {
         javascript: ComputerPreludeAssets::javascript().to_string(),
         python: ComputerPreludeAssets::python().to_string(),
         documentation: ComputerPreludeAssets::documentation().to_string(),
-        exports: ComputerPreludeAssets::exports().iter().map(|s| s.to_string()).collect(),
+        exports: ComputerPreludeAssets::exports()
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         declarations: Some(ComputerPreludeAssets::declarations().to_string()),
         safety: Some(ComputerPreludeAssets::safety().to_string()),
         method_allowlist: Some(
@@ -65,11 +66,19 @@ pub fn kernel_prelude_for_computer() -> KernelPrelude {
 }
 
 pub fn computer_tool_definition() -> ToolDefinition {
-    let execute_stub: maho_tools::definition::ToolExecutor = Arc::new(|_| Box::pin(async { Err(maho_tools::ToolError::Message("computer implementation is not bound".into())) }));
+    let execute_stub: maho_tools::definition::ToolExecutor = Arc::new(|_| {
+        Box::pin(async {
+            Err(maho_tools::ToolError::Message(
+                "computer implementation is not bound".into(),
+            ))
+        })
+    });
     let mut def = ToolDefinition::new(
         COMPUTER_TOOL_NAME,
-        &COMPUTER_DESCRIPTION.join("
-"),
+        &COMPUTER_DESCRIPTION.join(
+            "
+",
+        ),
         computer_params_schema(),
         execute_stub,
     );
@@ -81,7 +90,12 @@ pub fn computer_tool_definition() -> ToolDefinition {
     def.prompt_snippet = Some("Operate the real desktop (experimental): screenshots, native input, accessibility tree, clipboard".to_string());
     def.prompt_guidelines = Some(safety_guidelines());
     def.kernel_prelude = Some(kernel_prelude_for_computer());
-    def.permission_parser = Some(Arc::new(|input,cwd|computer_permission_parser(COMPUTER_TOOL_NAME,input,cwd).into_iter().map(Into::into).collect()));
+    def.permission_parser = Some(Arc::new(|input, cwd| {
+        computer_permission_parser(COMPUTER_TOOL_NAME, input, cwd)
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }));
     def.execution_mode = Some(ToolExecutionMode::Sequential);
     def
 }

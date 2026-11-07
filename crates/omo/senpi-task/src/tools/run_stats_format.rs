@@ -1,7 +1,9 @@
 //! `tools/run-stats-format.ts`: run-stats suffix and result tokens shared by the tool renderers.
 
 use crate::state::TaskRunStats;
-use crate::status_line::{format_cache_hit_percent, format_cost_usd, format_run_spend, js_number_text};
+use crate::status_line::{
+    format_cache_hit_percent, format_cost_usd, format_run_spend, js_number_text,
+};
 
 pub fn format_run_duration(duration_ms: u64) -> String {
     // `Math.round(ms / 1000)` rounds half up for the non-negative inputs a duration can take.
@@ -26,7 +28,15 @@ pub fn run_stats_suffix(stats: Option<&TaskRunStats>) -> String {
     };
     let mut parts = vec![
         format!("ran {}", format_run_duration(stats.runtime_ms)),
-        format!("{} {}", stats.tool_calls, if stats.tool_calls == 1 { "tool" } else { "tools" }),
+        format!(
+            "{} {}",
+            stats.tool_calls,
+            if stats.tool_calls == 1 {
+                "tool"
+            } else {
+                "tools"
+            }
+        ),
     ];
     if let Some(spend) = format_run_spend(stats.cost_usd, stats.cache_hit_rate_run) {
         parts.push(spend);
@@ -43,9 +53,16 @@ pub fn run_stats_result_tokens(stats: Option<&TaskRunStats>) -> Vec<String> {
         return Vec::new();
     };
     let duration = format_run_duration(stats.runtime_ms).replace(' ', "");
-    let cost = if stats.cost_usd == Some(0.0) { None } else { format_cost_usd(stats.cost_usd) };
+    let cost = if stats.cost_usd == Some(0.0) {
+        None
+    } else {
+        format_cost_usd(stats.cost_usd)
+    };
     let cache_hit = format_cache_hit_percent(stats.cache_hit_rate_run);
-    let mut tokens = vec![format!("ran:{duration}"), format!("tools:{}", stats.tool_calls)];
+    let mut tokens = vec![
+        format!("ran:{duration}"),
+        format!("tools:{}", stats.tool_calls),
+    ];
     if let Some(cost) = cost {
         tokens.push(format!("cost:{cost}"));
     }

@@ -148,7 +148,9 @@ mod tests {
         fs::create_dir(&target).expect("target");
         fs::write(source.join("nested/config"), "legacy").expect("write");
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1234);
-        fs::OpenOptions::new().write(true).open(source.join("nested/config"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(source.join("nested/config"))
             .expect("open")
             .set_modified(time)
             .expect("mtime");

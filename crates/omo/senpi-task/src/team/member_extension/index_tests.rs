@@ -69,7 +69,11 @@ impl IntervalHandle for NoopHandle {
 struct ManualScheduler;
 
 impl IntervalScheduler for ManualScheduler {
-    fn set_interval(&self, _interval_ms: u64, _callback: IntervalCallback) -> Box<dyn IntervalHandle> {
+    fn set_interval(
+        &self,
+        _interval_ms: u64,
+        _callback: IntervalCallback,
+    ) -> Box<dyn IntervalHandle> {
         Box::new(NoopHandle)
     }
 }
@@ -108,8 +112,14 @@ fn given_unread_mail_during_extension_loading_when_session_start_fires_then_inbo
     let pi: Arc<dyn ExtensionApi> = api.clone();
 
     let mut env: HashMap<String, String> = HashMap::new();
-    env.insert("SENPI_TASK_MEMBER".to_string(), format!("{TEAM_RUN_ID}::alice"));
-    env.insert("SENPI_TASK_MEMBER_TASK_ID".to_string(), "st_00000001".to_string());
+    env.insert(
+        "SENPI_TASK_MEMBER".to_string(),
+        format!("{TEAM_RUN_ID}::alice"),
+    );
+    env.insert(
+        "SENPI_TASK_MEMBER_TASK_ID".to_string(),
+        "st_00000001".to_string(),
+    );
     env.insert(
         "SENPI_TASK_TEAM_CONFIG".to_string(),
         json!({
@@ -138,7 +148,10 @@ fn given_unread_mail_during_extension_loading_when_session_start_fires_then_inbo
     .unwrap();
 
     assert_eq!(api.injected.lock().unwrap().len(), 0);
-    assert_eq!(*api.tool_names.lock().unwrap(), vec!["task_send".to_string()]);
+    assert_eq!(
+        *api.tool_names.lock().unwrap(),
+        vec!["task_send".to_string()]
+    );
 
     api.loading.store(false, Ordering::SeqCst);
     api.dispatch("session_start");

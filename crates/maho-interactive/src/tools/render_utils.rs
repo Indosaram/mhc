@@ -1,10 +1,12 @@
 //! Port of `core/tools/render-utils.ts`.
 use maho_agent::harness::utils::shell_output::sanitize_binary_output;
 use maho_core::paths::{PathInputOptions, resolve_path, shorten_path as shorten_path_string};
-use maho_tui::terminal_image::{get_capabilities, get_image_dimensions, hyperlink, image_fallback, path_to_file_url};
-use maho_tui::utils::strip_terminal_sequences;
 use maho_tools::definition::{ToolContent, ToolResult};
 use maho_tools::model_only_text::is_model_only_text;
+use maho_tui::terminal_image::{
+    get_capabilities, get_image_dimensions, hyperlink, image_fallback, path_to_file_url,
+};
+use maho_tui::utils::strip_terminal_sequences;
 use serde_json::Value;
 
 use crate::theme::{Theme, ThemeColor};
@@ -50,7 +52,9 @@ pub fn get_text_output(result: Option<&ToolResult>, show_images: bool) -> String
     let text_blocks: Vec<&ToolContent> = result
         .content
         .iter()
-        .filter(|content| matches!(content, ToolContent::Text { .. }) && !is_model_only_text(content))
+        .filter(|content| {
+            matches!(content, ToolContent::Text { .. }) && !is_model_only_text(content)
+        })
         .collect();
     let image_blocks: Vec<&ToolContent> = result
         .content
@@ -82,7 +86,11 @@ pub fn get_text_output(result: Option<&ToolResult>, show_images: bool) -> String
             })
             .collect::<Vec<_>>()
             .join("\n");
-        output = if output.is_empty() { indicators } else { format!("{output}\n{indicators}") };
+        output = if output.is_empty() {
+            indicators
+        } else {
+            format!("{output}\n{indicators}")
+        };
     }
 
     output
@@ -101,9 +109,17 @@ pub fn render_tool_path(
     let Some(raw_path) = raw_path else {
         return invalid_arg_text(theme);
     };
-    let value = if raw_path.is_empty() { empty_fallback } else { Some(raw_path.as_str()) };
+    let value = if raw_path.is_empty() {
+        empty_fallback
+    } else {
+        Some(raw_path.as_str())
+    };
     let Some(value) = value else {
         return theme.fg(ThemeColor::ToolOutput, "...");
     };
-    link_path(&theme.fg(ThemeColor::Accent, &shorten_path_string(value)), value, cwd)
+    link_path(
+        &theme.fg(ThemeColor::Accent, &shorten_path_string(value)),
+        value,
+        cwd,
+    )
 }

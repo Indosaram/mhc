@@ -69,14 +69,26 @@ impl FakeServer {
         self.words_on(ROOT, property, kind.into(), words)
     }
 
-    pub(crate) fn words_on(mut self, window: Window, property: &str, kind: Atom, words: &[u32]) -> Self {
+    pub(crate) fn words_on(
+        mut self,
+        window: Window,
+        property: &str,
+        kind: Atom,
+        words: &[u32],
+    ) -> Self {
         let property = self.intern(property);
         self.properties
             .insert((window, property), (kind, Value::Words(words.to_vec())));
         self
     }
 
-    pub(crate) fn bytes_on(mut self, window: Window, property: Atom, kind: Atom, bytes: &[u8]) -> Self {
+    pub(crate) fn bytes_on(
+        mut self,
+        window: Window,
+        property: Atom,
+        kind: Atom,
+        bytes: &[u8],
+    ) -> Self {
         self.properties
             .insert((window, property), (kind, Value::Bytes(bytes.to_vec())));
         self

@@ -640,10 +640,7 @@ mod tests {
             login_method: login_method.to_string(),
             events: events.clone(),
         });
-        (
-            ProviderAuthInteraction::new(signal, inner),
-            events,
-        )
+        (ProviderAuthInteraction::new(signal, inner), events)
     }
 
     fn form_of(request: &HttpRequest) -> Vec<(String, String)> {
@@ -690,11 +687,7 @@ mod tests {
             ),
         ]));
         transport.set_now_ms(1_784_851_200_000.0);
-        let oauth = RadiusOAuth::new(
-            "Radius",
-            GATEWAY,
-            transport.clone(),
-        );
+        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
         let (interaction, events) = interaction("device-code");
 
         let credential = oauth.login(&interaction).await.unwrap();
@@ -760,11 +753,7 @@ mod tests {
                 serde_json::json!({"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}),
             ),
         )]));
-        let oauth = RadiusOAuth::new(
-            "Radius",
-            GATEWAY,
-            transport.clone(),
-        );
+        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
         let credential = oauth
             .refresh(
                 &OAuthCredential::new("old-access", "old-refresh", 0.0),
@@ -801,11 +790,7 @@ mod tests {
                 serde_json::json!({"issuer": "https://radius-ui.example"}),
             ),
         )]));
-        let oauth = RadiusOAuth::new(
-            "Radius",
-            GATEWAY,
-            transport.clone(),
-        );
+        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
         let (interaction, _) = interaction("browser");
         let error = oauth.login(&interaction).await.unwrap_err();
         assert_eq!(
@@ -819,11 +804,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn unknown_sign_in_methods_are_rejected() {
         let transport = Arc::new(ScriptedTransport::default());
-        let oauth = RadiusOAuth::new(
-            "Radius",
-            GATEWAY,
-            transport.clone(),
-        );
+        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
         let (interaction, _) = interaction("carrier-pigeon");
         let error = oauth.login(&interaction).await.unwrap_err();
         assert_eq!(

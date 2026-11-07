@@ -358,16 +358,17 @@ impl FactsExtractorRunner {
         // Input-side replay guard: transcript lines restating owner-forgotten or corrected content
         // never reach the facts child; an unreadable suppression store skips the launch (the batch
         // stays pending) rather than risk re-learning it.
-        let suppressions =
-            match memory_core::receipts::owner::SuppressionSet::load(&self.identity.paths.runtime) {
-                Ok(set) => set,
-                Err(error) => {
-                    warn(&format!(
-                        "memory suppression unreadable; facts launch skipped: {error}"
-                    ));
-                    return Ok(FactsLaunchResult::Skipped);
-                }
-            };
+        let suppressions = match memory_core::receipts::owner::SuppressionSet::load(
+            &self.identity.paths.runtime,
+        ) {
+            Ok(set) => set,
+            Err(error) => {
+                warn(&format!(
+                    "memory suppression unreadable; facts launch skipped: {error}"
+                ));
+                return Ok(FactsLaunchResult::Skipped);
+            }
+        };
         let batch = memory_core::support::random::random_uuid();
         let launched_at = (self.now)();
         if aborted() {
@@ -658,10 +659,7 @@ impl FactsExtractorRunner {
         };
         let model_candidates: Vec<_> = std::iter::once(first).chain(fallbacks).collect();
 
-        let signal = input
-            .signal
-            .clone()
-            .unwrap_or_default();
+        let signal = input.signal.clone().unwrap_or_default();
         let cancel_state = signal.flag();
 
         let payload_path = dir.join("facts-payload.json");
@@ -681,7 +679,9 @@ impl FactsExtractorRunner {
         let record_tool = Arc::new(crate::facts_record_tool::create_facts_record_tool(
             crate::facts_record_tool::FactsRecordToolInput {
                 exchanges: match input.payload {
-                    crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => crate::facts_record_tool::payload_exchanges(payload),
+                    crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => {
+                        crate::facts_record_tool::payload_exchanges(payload)
+                    }
                     crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => Vec::new(),
                 },
                 extraction_path,
@@ -721,7 +721,9 @@ impl FactsExtractorRunner {
             let at = Arc::new(crate::facts_agreement_tool::create_facts_agreement_tool(
                 crate::facts_agreement_tool::FactsAgreementToolInput {
                     payload: match input.payload {
-                        crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => Some(serde_json::to_value(payload).map_err(|error| error.to_string())?),
+                        crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => {
+                            Some(serde_json::to_value(payload).map_err(|error| error.to_string())?)
+                        }
                         crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => None,
                     },
                     extraction_path: agreements_path,
@@ -773,10 +775,12 @@ impl FactsExtractorRunner {
                     attempt: 1,
                     model: None,
                 };
-                if let Err(write_err) = crate::facts_child_spawner::write_facts_child_artifacts(
-                    dir, run, 1, &outcome,
-                ) {
-                    warn(&format!("failed to write facts child artifacts: {write_err}"));
+                if let Err(write_err) =
+                    crate::facts_child_spawner::write_facts_child_artifacts(dir, run, 1, &outcome)
+                {
+                    warn(&format!(
+                        "failed to write facts child artifacts: {write_err}"
+                    ));
                 }
                 let instant = chrono::DateTime::from_timestamp_millis((self.now)())
                     .ok_or("Invalid facts clock")?
@@ -801,9 +805,7 @@ impl FactsExtractorRunner {
                     outcome: None,
                 })
                 .map_err(|error| error.to_string())?;
-                return Ok(FactsLaunchResult::Failed {
-                    run_id: run.into(),
-                });
+                return Ok(FactsLaunchResult::Failed { run_id: run.into() });
             }
         };
 
@@ -836,15 +838,17 @@ impl FactsExtractorRunner {
             } else {
                 memory_core::facts::FactsFailureReason::ChildExit
             };
-            let detail = session_result.error_message.as_deref().unwrap_or(
-                if session_result.cancelled {
-                    "facts child cancelled"
-                } else if session_result.timed_out {
-                    "facts child deadline exceeded"
-                } else {
-                    "facts child failed"
-                },
-            );
+            let detail =
+                session_result
+                    .error_message
+                    .as_deref()
+                    .unwrap_or(if session_result.cancelled {
+                        "facts child cancelled"
+                    } else if session_result.timed_out {
+                        "facts child deadline exceeded"
+                    } else {
+                        "facts child failed"
+                    });
             crate::facts_terminal_writes::FactsTerminalWrites {
                 failures: &self.failures,
                 io: &mut io,
@@ -859,9 +863,7 @@ impl FactsExtractorRunner {
                 outcome: None,
             })
             .map_err(|error| error.to_string())?;
-            return Ok(FactsLaunchResult::Failed {
-                run_id: run.into(),
-            });
+            return Ok(FactsLaunchResult::Failed { run_id: run.into() });
         }
 
         self.finalize(dir, people, warn)
@@ -1275,7 +1277,7 @@ mod tests {
             &dir.join("facts-payload.json"),
             &FactsPayload {
                 version: 1,
-            agreement_event_version: Some(1),
+                agreement_event_version: Some(1),
                 identity: "agent".into(),
                 today: "1970-01-01".into(),
                 known_people: vec![],

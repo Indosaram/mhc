@@ -1,4 +1,6 @@
-use maho_codemode::tool::{interrupt_note::*, eval_kernel_reset_refused_error::*, types::EvalLanguage};
+use maho_codemode::tool::{
+    eval_kernel_reset_refused_error::*, interrupt_note::*, types::EvalLanguage,
+};
 
 #[test]
 fn reset_refusal_has_machine_code() {
@@ -14,7 +16,11 @@ fn absent_interrupt_does_not_invent_state() {
 
 #[tokio::test(start_paused = true)]
 async fn completed_outcome_appends_note() {
-    let message = describe_timeout_state("timeout", Some(std::future::ready((true, Some(" detail ".into()))))).await;
+    let message = describe_timeout_state(
+        "timeout",
+        Some(std::future::ready((true, Some(" detail ".into())))),
+    )
+    .await;
     assert!(message.ends_with(" detail"));
 }
 
@@ -23,6 +29,9 @@ async fn unresponsive_outcome_is_bounded() {
     let pending = std::future::pending::<(bool, Option<String>)>();
     let start = tokio::time::Instant::now();
     let message = describe_timeout_state("timeout", Some(pending)).await;
-    assert_eq!(start.elapsed(), std::time::Duration::from_millis(TIMEOUT_STATE_GRACE_MS));
+    assert_eq!(
+        start.elapsed(),
+        std::time::Duration::from_millis(TIMEOUT_STATE_GRACE_MS)
+    );
     assert!(!message.is_empty());
 }

@@ -22,7 +22,12 @@ pub fn fetch_cursor_usable_models(
 pub struct CursorAgentApi;
 
 impl ProviderStreams for CursorAgentApi {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         cursor_agent::stream(model, context, options)
     }
 

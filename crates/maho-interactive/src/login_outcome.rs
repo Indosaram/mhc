@@ -1,7 +1,10 @@
 //! Port of interactive/login-outcome.ts.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoginMethod { Oauth, ApiKey }
+pub enum LoginMethod {
+    Oauth,
+    ApiKey,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginFailure {
@@ -12,7 +15,10 @@ pub enum LoginFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoticeLevel { Status, Error }
+pub enum NoticeLevel {
+    Status,
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginFailureNotice {
@@ -25,15 +31,22 @@ pub const LOGIN_CANCELLED_NOTICE: &str = "Login cancelled";
 pub fn is_login_cancellation(error: Option<&LoginFailure>) -> bool {
     match error {
         None | Some(LoginFailure::Cancelled | LoginFailure::Abort { .. }) => true,
-        Some(LoginFailure::CredentialSynchronization { message } | LoginFailure::Failed { message }) => {
-            message == LOGIN_CANCELLED_NOTICE
-        }
+        Some(
+            LoginFailure::CredentialSynchronization { message } | LoginFailure::Failed { message },
+        ) => message == LOGIN_CANCELLED_NOTICE,
     }
 }
 
-pub fn describe_login_failure(error: Option<&LoginFailure>, provider: &str, method: LoginMethod) -> LoginFailureNotice {
+pub fn describe_login_failure(
+    error: Option<&LoginFailure>,
+    provider: &str,
+    method: LoginMethod,
+) -> LoginFailureNotice {
     if is_login_cancellation(error) {
-        return LoginFailureNotice { level: NoticeLevel::Status, message: LOGIN_CANCELLED_NOTICE.into() };
+        return LoginFailureNotice {
+            level: NoticeLevel::Status,
+            message: LOGIN_CANCELLED_NOTICE.into(),
+        };
     }
     let message = match error {
         Some(LoginFailure::CredentialSynchronization { message }) => {
@@ -50,9 +63,14 @@ pub fn describe_login_failure(error: Option<&LoginFailure>, provider: &str, meth
             };
             format!("{failed}: {message}")
         }
-        None | Some(LoginFailure::Cancelled | LoginFailure::Abort { .. }) => LOGIN_CANCELLED_NOTICE.into(),
+        None | Some(LoginFailure::Cancelled | LoginFailure::Abort { .. }) => {
+            LOGIN_CANCELLED_NOTICE.into()
+        }
     };
-    LoginFailureNotice { level: NoticeLevel::Error, message }
+    LoginFailureNotice {
+        level: NoticeLevel::Error,
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -62,16 +80,43 @@ mod tests {
     #[test]
     fn classifies_cancellation_and_provider_failures() {
         assert!(is_login_cancellation(None));
-        assert!(is_login_cancellation(Some(&LoginFailure::Abort { message: "aborted".into() })));
-        assert!(is_login_cancellation(Some(&LoginFailure::Failed { message: LOGIN_CANCELLED_NOTICE.into() })));
-        assert!(!is_login_cancellation(Some(&LoginFailure::Failed { message: "invalid_grant".into() })));
-        assert_eq!(describe_login_failure(Some(&LoginFailure::Failed { message: "fetch failed".into() }), "OpenAI", LoginMethod::ApiKey), LoginFailureNotice { level: NoticeLevel::Error, message: "Failed to save API key for OpenAI: fetch failed".into() });
+        assert!(is_login_cancellation(Some(&LoginFailure::Abort {
+            message: "aborted".into()
+        })));
+        assert!(is_login_cancellation(Some(&LoginFailure::Failed {
+            message: LOGIN_CANCELLED_NOTICE.into()
+        })));
+        assert!(!is_login_cancellation(Some(&LoginFailure::Failed {
+            message: "invalid_grant".into()
+        })));
+        assert_eq!(
+            describe_login_failure(
+                Some(&LoginFailure::Failed {
+                    message: "fetch failed".into()
+                }),
+                "OpenAI",
+                LoginMethod::ApiKey
+            ),
+            LoginFailureNotice {
+                level: NoticeLevel::Error,
+                message: "Failed to save API key for OpenAI: fetch failed".into()
+            }
+        );
     }
 
     #[test]
     fn preserves_credential_synchronization_message() {
-        let notice = describe_login_failure(Some(&LoginFailure::CredentialSynchronization { message: "disk on fire".into() }), "ChatGPT Subscription", LoginMethod::Oauth);
+        let notice = describe_login_failure(
+            Some(&LoginFailure::CredentialSynchronization {
+                message: "disk on fire".into(),
+            }),
+            "ChatGPT Subscription",
+            LoginMethod::Oauth,
+        );
         assert_eq!(notice.level, NoticeLevel::Error);
-        assert_eq!(notice.message, "Logged in to ChatGPT Subscription, but local model state could not be synchronized: disk on fire");
+        assert_eq!(
+            notice.message,
+            "Logged in to ChatGPT Subscription, but local model state could not be synchronized: disk on fire"
+        );
     }
 }

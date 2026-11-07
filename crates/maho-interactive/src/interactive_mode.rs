@@ -4916,7 +4916,15 @@ impl InteractiveMode {
                 Box::pin(async move {
                     use maho_ext_api::ExtensionUi;
                     let signal = maho_ext_api::AbortSignal::default();
-                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None, ..Default::default() });
+                    let selection = ui.select(
+                        &title,
+                        &choices,
+                        maho_ext_api::ExtensionUiDialogOptions {
+                            signal: Some(signal.clone()),
+                            timeout_ms: None,
+                            ..Default::default()
+                        },
+                    );
                     tokio::select! {
                         answer = selection => Ok(answer),
                         () = opts.cancelled() => { signal.abort(); Ok(None) }
@@ -4924,22 +4932,23 @@ impl InteractiveMode {
                 })
             });
         let attachment = maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
-                &session_id, select_fn,
-            );
+            &session_id,
+            select_fn,
+        );
         self.detach_mcp_grant_presentation = Some(Box::new(move || drop(attachment)));
 
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
             unsubscribe();
         }
         let ui_sec = self.extension_ui.clone();
-        let subscription = self.session.subscribe_security_notices(
-            Arc::new(move |snapshot| {
+        let subscription = self
+            .session
+            .subscribe_security_notices(Arc::new(move |snapshot| {
                 for notice in &snapshot.notices {
                     use maho_ext_api::ExtensionUi;
                     ui_sec.notify(&notice.message, maho_ext_api::NotificationType::Warning);
                 }
-            }),
-        );
+            }));
         self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
         // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
@@ -5156,7 +5165,9 @@ impl InteractiveMode {
                     let session = self.session.clone();
                     self.park_independent_action(
                         async move { session.stop().await },
-                        move |_mode, ()| { let _ = reply.send(()); },
+                        move |_mode, ()| {
+                            let _ = reply.send(());
+                        },
                     );
                 }
             }
@@ -5386,11 +5397,10 @@ impl InteractiveMode {
         {
             let keys = self.keybindings();
             if crate::components::ask_user_answer_key::matches_ask_user_answer_key(
-                    data,
-                    &maho_core::keybindings::host_platform(),
-                    &keys,
-                )
-            {
+                data,
+                &maho_core::keybindings::host_platform(),
+                &keys,
+            ) {
                 self.expand_shown_question(None);
                 return;
             }
@@ -9149,9 +9159,14 @@ impl InteractiveMode {
                 == crate::pause_footer::ResumeCommandTarget::ResumeSession
             {
                 let session = self.session.clone();
-                self.park_action(async move {
-                    session.resume_session().await
-                }, |mode, result| { if let Err(error) = result { mode.show_status(error); } });
+                self.park_action(
+                    async move { session.resume_session().await },
+                    |mode, result| {
+                        if let Err(error) = result {
+                            mode.show_status(error);
+                        }
+                    },
+                );
                 return Ok(true);
             }
             use crate::components::session_selector::SessionSelectorComponent;
@@ -9915,7 +9930,10 @@ impl InteractiveMode {
                                     .expect("resolved thinking level")
                             }),
                             thinking_selection: entry.thinking_selection,
-                            service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
+                            service_tier: entry
+                                .service_tier
+                                .as_deref()
+                                .and_then(service_tier_from_wire),
                         })
                         .collect();
                     if favorites {
@@ -10254,7 +10272,10 @@ impl InteractiveMode {
                                     serde_json::from_value(serde_json::json!(level.as_str())).ok()
                                 }),
                                 thinking_selection: entry.thinking_selection,
-                                service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
+                                service_tier: entry
+                                    .service_tier
+                                    .as_deref()
+                                    .and_then(service_tier_from_wire),
                             })
                             .collect(),
                     );
@@ -12604,9 +12625,14 @@ impl InteractiveMode {
                 self.editor_host.request_render();
             }
             UiRequest::WidgetFrame => {
-                self.background_footer_animating = crate::components::footer::background_status_animating(
-                    &self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-                );
+                self.background_footer_animating =
+                    crate::components::footer::background_status_animating(
+                        &self
+                            .extension_ui
+                            .statuses
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    );
                 self.editor_host.request_render();
             }
             UiRequest::ResetExtensionUi => self.reset_extension_ui(),
@@ -13177,8 +13203,7 @@ impl InteractiveMode {
                 // senpi: an ephemeral answer under enforcement is admitted once by the presenter, and
                 // the selector is rendered before the form is marked presented.
                 let private_form = private.ephemeral && self.mcp_presenter_enforcement;
-                self.pending_mcp_form_presented =
-                    private.presented.filter(|_| private_form);
+                self.pending_mcp_form_presented = private.presented.filter(|_| private_form);
                 let session_select = (!private_form).then(|| self.session.clone());
                 let component = Rc::new(RefCell::new(
                     crate::components::extension_selector::ExtensionSelectorComponent::new(
@@ -14742,7 +14767,10 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
             .get("cost")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
-        cost_unknown: value.get("costUnknown").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        cost_unknown: value
+            .get("costUnknown")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
     }
 }
@@ -15676,8 +15704,14 @@ mod tests {
 
     #[test]
     fn service_tier_from_wire_maps_every_resolved_tier() {
-        assert!(matches!(service_tier_from_wire("ultrafast"), Some(maho_ext_api::ServiceTier::Ultrafast)));
-        assert!(matches!(service_tier_from_wire("priority"), Some(maho_ext_api::ServiceTier::Priority)));
+        assert!(matches!(
+            service_tier_from_wire("ultrafast"),
+            Some(maho_ext_api::ServiceTier::Ultrafast)
+        ));
+        assert!(matches!(
+            service_tier_from_wire("priority"),
+            Some(maho_ext_api::ServiceTier::Priority)
+        ));
         assert!(service_tier_from_wire("bogus").is_none());
     }
 

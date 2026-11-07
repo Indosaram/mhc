@@ -8,27 +8,62 @@ fn real_import_from_refuses_repeat_without_destination_changes() {
     let source = root.path().join("source");
     fs::create_dir(&home).expect("home");
     fs::create_dir_all(source.join("sessions/project")).expect("source");
-    let files = ["settings.json", "models.json", "keybindings.json", "auth.json", "sessions/project/session.jsonl"];
-    for path in files { fs::write(source.join(path), b"{}\n").expect("fixture"); }
-    let run = || Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .env_clear().env("HOME", &home).current_dir(&home)
-        .arg("import-omo").arg("--from").arg(&source).output().expect("real mhc");
+    let files = [
+        "settings.json",
+        "models.json",
+        "keybindings.json",
+        "auth.json",
+        "sessions/project/session.jsonl",
+    ];
+    for path in files {
+        fs::write(source.join(path), b"{}\n").expect("fixture");
+    }
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_mhc"))
+            .env_clear()
+            .env("HOME", &home)
+            .current_dir(&home)
+            .arg("import-omo")
+            .arg("--from")
+            .arg(&source)
+            .output()
+            .expect("real mhc")
+    };
     let first = run();
-    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
     let target = home.join(".omo/agent");
-    let before: Vec<_> = files.iter().map(|path| {
-        let path = target.join(path);
-        (fs::read(&path).expect("copied bytes"), fs::metadata(path).expect("metadata").permissions())
-    }).collect();
+    let before: Vec<_> = files
+        .iter()
+        .map(|path| {
+            let path = target.join(path);
+            (
+                fs::read(&path).expect("copied bytes"),
+                fs::metadata(path).expect("metadata").permissions(),
+            )
+        })
+        .collect();
     assert!(before.iter().all(|(bytes, _)| bytes == b"{}\n"));
     fs::write(source.join("settings.json"), b"changed source").expect("change source");
     let repeated = run();
     assert_eq!(repeated.status.code(), Some(1));
     for (path, (bytes, permissions)) in files.iter().zip(before) {
         let after = fs::read(target.join(path)).expect("unchanged bytes");
-        println!("IMPORT_HASH {path} before={:x} after={:x}", Sha256::digest(&bytes), Sha256::digest(&after));
+        println!(
+            "IMPORT_HASH {path} before={:x} after={:x}",
+            Sha256::digest(&bytes),
+            Sha256::digest(&after)
+        );
         assert_eq!(after, bytes);
-        assert_eq!(fs::metadata(target.join(path)).expect("unchanged metadata").permissions(), permissions);
+        assert_eq!(
+            fs::metadata(target.join(path))
+                .expect("unchanged metadata")
+                .permissions(),
+            permissions
+        );
     }
 }
 
@@ -40,41 +75,109 @@ fn repeat_real_import_never_clobbers_destination_bytes() {
     let target = home.path().join(".omo/agent");
     std::fs::create_dir_all(source.join("sessions/project")).expect("source directories");
     std::fs::write(source.join("settings.json"), b"{\"fixture\":1}").expect("settings");
-    std::fs::write(source.join("sessions/project/a.jsonl"), b"session fixture\n").expect("session");
-    let run = || std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN").env_remove("OMO_CODING_AGENT_DIR").env_remove("SENPI_CODING_AGENT_DIR").env_remove("PI_CODING_AGENT_DIR").env_remove("MAHO_CODING_AGENT_DIR")
-        .args(["import-omo", "--from", source.to_str().expect("source path")])
-        .output().expect("real import command");
+    std::fs::write(
+        source.join("sessions/project/a.jsonl"),
+        b"session fixture\n",
+    )
+    .expect("session");
+    let run = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env_remove("__PI_INTERNAL_SPAWN")
+            .env_remove("OMO_CODING_AGENT_DIR")
+            .env_remove("SENPI_CODING_AGENT_DIR")
+            .env_remove("PI_CODING_AGENT_DIR")
+            .env_remove("MAHO_CODING_AGENT_DIR")
+            .args([
+                "import-omo",
+                "--from",
+                source.to_str().expect("source path"),
+            ])
+            .output()
+            .expect("real import command")
+    };
     let first = run();
-    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
-    let paths = [target.join("settings.json"), target.join("sessions/project/a.jsonl")];
-    let before: Vec<_> = paths.iter().map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes"))).collect();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let paths = [
+        target.join("settings.json"),
+        target.join("sessions/project/a.jsonl"),
+    ];
+    let before: Vec<_> = paths
+        .iter()
+        .map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes")))
+        .collect();
     std::fs::write(source.join("settings.json"), b"{\"fixture\":2}").expect("changed source");
     assert_eq!(run().status.code(), Some(1));
-    let after: Vec<_> = paths.iter().map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes"))).collect();
+    let after: Vec<_> = paths
+        .iter()
+        .map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes")))
+        .collect();
     assert_eq!(before, after);
     let forced = std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN").env_remove("OMO_CODING_AGENT_DIR").env_remove("SENPI_CODING_AGENT_DIR").env_remove("PI_CODING_AGENT_DIR").env_remove("MAHO_CODING_AGENT_DIR")
-        .args(["import-omo", "--from", source.to_str().expect("source path"), "--force"])
-        .output().expect("forced import command");
-    assert!(forced.status.success(), "{}", String::from_utf8_lossy(&forced.stderr));
-    assert_eq!(std::fs::read(target.join("settings.json")).expect("updated settings"), b"{\"fixture\":2}");
-    assert_eq!(std::fs::read(target.join("sessions/project/a.jsonl")).expect("session"), b"session fixture\n");
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove("__PI_INTERNAL_SPAWN")
+        .env_remove("OMO_CODING_AGENT_DIR")
+        .env_remove("SENPI_CODING_AGENT_DIR")
+        .env_remove("PI_CODING_AGENT_DIR")
+        .env_remove("MAHO_CODING_AGENT_DIR")
+        .args([
+            "import-omo",
+            "--from",
+            source.to_str().expect("source path"),
+            "--force",
+        ])
+        .output()
+        .expect("forced import command");
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    assert_eq!(
+        std::fs::read(target.join("settings.json")).expect("updated settings"),
+        b"{\"fixture\":2}"
+    );
+    assert_eq!(
+        std::fs::read(target.join("sessions/project/a.jsonl")).expect("session"),
+        b"session fixture\n"
+    );
 }
 
 #[test]
 fn import_omo_without_from_reports_nothing_to_import() {
     let home = tempfile::tempdir().expect("isolated home");
     fs::create_dir_all(home.path().join(".omo/agent")).expect("agent dir");
-    let run = |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .env_clear().env("HOME", home.path()).current_dir(home.path())
-        .arg("import-omo").args(args).output().expect("real mhc");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_mhc"))
+            .env_clear()
+            .env("HOME", home.path())
+            .current_dir(home.path())
+            .arg("import-omo")
+            .args(args)
+            .output()
+            .expect("real mhc")
+    };
     let output = run(&[]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("already reads ~/.omo/agent directly; nothing to import"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("already reads ~/.omo/agent directly; nothing to import")
+    );
     let missing = run(&["--from", "/nonexistent"]);
     assert_eq!(missing.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("omo agent directory does not exist"));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("omo agent directory does not exist")
+    );
 }
 
 #[test]
@@ -88,6 +191,13 @@ fn test_import_omo_falls_back_to_userprofile() {
         .arg("import-omo")
         .output()
         .expect("real mhc");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("already reads ~/.omo/agent directly; nothing to import"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("already reads ~/.omo/agent directly; nothing to import")
+    );
 }

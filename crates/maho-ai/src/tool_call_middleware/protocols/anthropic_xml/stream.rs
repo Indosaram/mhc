@@ -221,8 +221,8 @@ impl StreamParser for InvokeStreamParser {
         let mut events = Vec::new();
         let mut offset = 0usize;
         while offset < text_delta.len() {
-            let capacity = ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH
-                .saturating_sub(self.buffer_utf16_len);
+            let capacity =
+                ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH.saturating_sub(self.buffer_utf16_len);
             if capacity == 0 {
                 events.extend(self.overflow_retained_fragment());
                 continue;

@@ -125,12 +125,16 @@ pub fn build_display_message(
         };
         let mut shown = Vec::with_capacity(blocks.len());
         for (i, block) in blocks.iter().enumerate() {
-            let sliced = match field(block, hide)
-                .and_then(|key| block.get(key).and_then(Value::as_str).map(|text| (key, text)))
-            {
+            let sliced = match field(block, hide).and_then(|key| {
+                block
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(|text| (key, text))
+            }) {
                 Some((key, text)) => {
                     let units = counter.count(i, text);
-                    let sliced = (remaining < units).then(|| (key, counter.slice(i, text, remaining)));
+                    let sliced =
+                        (remaining < units).then(|| (key, counter.slice(i, text, remaining)));
                     remaining = remaining.saturating_sub(units);
                     sliced
                 }

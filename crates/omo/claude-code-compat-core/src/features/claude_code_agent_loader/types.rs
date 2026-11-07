@@ -1,18 +1,26 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentScope {
-    User, Project, Opencode, OpencodeProject, DefinitionFile, OpencodeConfig,
+    User,
+    Project,
+    Opencode,
+    OpencodeProject,
+    DefinitionFile,
+    OpencodeConfig,
 }
 
 impl fmt::Display for AgentScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::User => "user", Self::Project => "project", Self::Opencode => "opencode",
-            Self::OpencodeProject => "opencode-project", Self::DefinitionFile => "definition-file",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Opencode => "opencode",
+            Self::OpencodeProject => "opencode-project",
+            Self::DefinitionFile => "definition-file",
             Self::OpencodeConfig => "opencode-config",
         })
     }
@@ -20,13 +28,23 @@ impl fmt::Display for AgentScope {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AgentMode { #[default] Subagent, Primary, All }
+pub enum AgentMode {
+    #[default]
+    Subagent,
+    Primary,
+    All,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentModel {
     String(String),
-    Provider { #[serde(rename = "providerID")] provider_id: String, #[serde(rename = "modelID")] model_id: String },
+    Provider {
+        #[serde(rename = "providerID")]
+        provider_id: String,
+        #[serde(rename = "modelID")]
+        model_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

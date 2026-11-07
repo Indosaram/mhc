@@ -18,7 +18,9 @@ use maho_agent::harness::session::session::SessionError;
 use maho_agent::harness::session::types::LaneModelRef;
 
 use super::runtime::ModelRuntimeHandle;
-use super::shared::protocol::{CommandResult, LaneSubscription, ModelRef, ModelsState, SessionSnapshot};
+use super::shared::protocol::{
+    CommandResult, LaneSubscription, ModelRef, ModelsState, SessionSnapshot,
+};
 
 /// The worker's lane-event publisher: `(subscriptionId, presentationId, event)`.
 pub type LaneEventPublisher = Arc<dyn Fn(&str, &str, &HarnessEvent) + Send + Sync>;
@@ -50,14 +52,21 @@ pub struct LaneService {
 
 impl LaneService {
     pub fn new(options: LaneServiceOptions) -> Self {
-        Self { options, watches: Mutex::new(HashMap::new()) }
+        Self {
+            options,
+            watches: Mutex::new(HashMap::new()),
+        }
     }
 
     pub async fn watch(&self, presentation_id: &str) -> Result<LaneSubscription, String> {
         let lane: Arc<dyn RuntimeLane> = self.options.lane.clone();
-        let watcher = watch_lane(lane, self.options.lane.events.clone(), &self.options.context)
-            .await
-            .map_err(|error| error.message)?;
+        let watcher = watch_lane(
+            lane,
+            self.options.lane.events.clone(),
+            &self.options.context,
+        )
+        .await
+        .map_err(|error| error.message)?;
         let snapshot = match watcher.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -69,7 +78,13 @@ impl LaneService {
         self.watches
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(subscription_id.clone(), Watch { watcher, to: presentation_id.to_owned() });
+            .insert(
+                subscription_id.clone(),
+                Watch {
+                    watcher,
+                    to: presentation_id.to_owned(),
+                },
+            );
         Ok(LaneSubscription {
             subscription_id,
             snapshot: SessionSnapshot {
@@ -84,22 +99,33 @@ impl LaneService {
 
     pub async fn start(&self, subscription_id: &str) -> Result<(), String> {
         let (watcher, to) = {
-            let watches = self.watches.lock().unwrap_or_else(|error| error.into_inner());
-            let watch = watches.get(subscription_id).ok_or_else(|| format!("Unknown subscription: {subscription_id}"))?;
+            let watches = self
+                .watches
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let watch = watches
+                .get(subscription_id)
+                .ok_or_else(|| format!("Unknown subscription: {subscription_id}"))?;
             (watch.watcher.clone(), watch.to.clone())
         };
         let publish = self.options.publish.clone();
         let subscription = subscription_id.to_owned();
-        let listener: maho_agent::harness::events::UntypedEventListener = Arc::new(move |event: HarnessEvent, _context: Context| {
-            publish(&subscription, &to, &event);
-            Box::pin(async {})
-        });
+        let listener: maho_agent::harness::events::UntypedEventListener =
+            Arc::new(move |event: HarnessEvent, _context: Context| {
+                publish(&subscription, &to, &event);
+                Box::pin(async {})
+            });
         watcher.start(listener).await;
         Ok(())
     }
 
     pub fn unwatch(&self, subscription_id: &str) {
-        if let Some(watch) = self.watches.lock().unwrap_or_else(|error| error.into_inner()).remove(subscription_id) {
+        if let Some(watch) = self
+            .watches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(subscription_id)
+        {
             watch.watcher.unsubscribe();
         }
     }
@@ -108,57 +134,126 @@ impl LaneService {
     /// any run, queue or resume reaches the provider.
     async fn consent_gate(&self) -> Option<CommandResult> {
         let model = self.options.lane.get_model().ok().flatten()?;
-        self.options.models.consent_failure(&model.provider).await.map(CommandResult::Error)
+        self.options
+            .models
+            .consent_failure(&model.provider)
+            .await
+            .map(CommandResult::Error)
     }
 
     pub async fn prompt(&self, text: &str) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        let input = PromptInput::Text { text: text.to_owned(), images: vec![] };
-        self.run(self.options.lane.prompt(input, &self.options.context)).await
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        let input = PromptInput::Text {
+            text: text.to_owned(),
+            images: vec![],
+        };
+        self.run(self.options.lane.prompt(input, &self.options.context))
+            .await
     }
 
-    pub async fn skill(&self, name: &str, additional_instructions: Option<String>) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        self.run(self.options.lane.skill(name, additional_instructions, &self.options.context)).await
+    pub async fn skill(
+        &self,
+        name: &str,
+        additional_instructions: Option<String>,
+    ) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        self.run(
+            self.options
+                .lane
+                .skill(name, additional_instructions, &self.options.context),
+        )
+        .await
     }
 
     pub async fn steer(&self, text: &str) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        self.queue(self.options.lane.steer(QueuedInput::Text(text.to_owned()), vec![], &self.options.context)).await
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        self.queue(self.options.lane.steer(
+            QueuedInput::Text(text.to_owned()),
+            vec![],
+            &self.options.context,
+        ))
+        .await
     }
 
     pub async fn follow_up(&self, text: &str) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        self.queue(self.options.lane.follow_up(QueuedInput::Text(text.to_owned()), vec![], &self.options.context)).await
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        self.queue(self.options.lane.follow_up(
+            QueuedInput::Text(text.to_owned()),
+            vec![],
+            &self.options.context,
+        ))
+        .await
     }
 
     pub async fn compact(&self) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        self.run(self.options.lane.compact(None, &self.options.context)).await
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        self.run(self.options.lane.compact(None, &self.options.context))
+            .await
     }
 
-    pub async fn navigate_tree(&self, target_id: Option<String>, options: NavigationOptions) -> CommandResult {
-        if let Some(blocked) = self.consent_gate().await { return blocked; }
-        self.run(self.options.lane.navigate_tree(target_id, options, &self.options.context)).await
+    pub async fn navigate_tree(
+        &self,
+        target_id: Option<String>,
+        options: NavigationOptions,
+    ) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await {
+            return blocked;
+        }
+        self.run(
+            self.options
+                .lane
+                .navigate_tree(target_id, options, &self.options.context),
+        )
+        .await
     }
 
     pub async fn abort(&self) -> CommandResult {
-        self.run(self.options.lane.abort(&self.options.context)).await
+        self.run(self.options.lane.abort(&self.options.context))
+            .await
     }
 
     pub async fn set_model(&self, reference: &ModelRef) -> CommandResult {
-        if !self.options.models.has_model(&reference.provider, &reference.model_id).await {
-            return CommandResult::Error(format!("Unknown model: {}/{}", reference.provider, reference.model_id));
+        if !self
+            .options
+            .models
+            .has_model(&reference.provider, &reference.model_id)
+            .await
+        {
+            return CommandResult::Error(format!(
+                "Unknown model: {}/{}",
+                reference.provider, reference.model_id
+            ));
         }
-        let model = LaneModelRef { provider: reference.provider.clone(), model_id: reference.model_id.clone() };
-        match self.options.lane.set_model(model, &self.options.context).await {
+        let model = LaneModelRef {
+            provider: reference.provider.clone(),
+            model_id: reference.model_id.clone(),
+        };
+        match self
+            .options
+            .lane
+            .set_model(model, &self.options.context)
+            .await
+        {
             Ok(()) => CommandResult::Ok,
             Err(error) => CommandResult::Error(error.message),
         }
     }
 
     pub fn close(&self) {
-        let mut watches = self.watches.lock().unwrap_or_else(|error| error.into_inner());
+        let mut watches = self
+            .watches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for watch in watches.values() {
             watch.watcher.unsubscribe();
         }

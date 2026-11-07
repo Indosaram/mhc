@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 
-
 use crate::otel_minimal_logs::LogRecordInput;
 use crate::otel_minimal_logs::LogRecordProcessor;
 use crate::otel_minimal_logs::MinimalLoggerProvider;
@@ -208,7 +207,9 @@ pub fn wal_span(span: &ReadableSpan) -> WalSpan {
             .as_ref()
             .map_or_else(Vec::new, |parent| hex_id(parent)),
         trace_flags: span.span_context.trace_flags,
-        kind: u32::try_from(span.kind.proto()).unwrap_or(1).saturating_sub(1),
+        kind: u32::try_from(span.kind.proto())
+            .unwrap_or(1)
+            .saturating_sub(1),
         start_time_unix_nano: span.start_time_unix_nano,
         end_time_unix_nano: span.end_time_unix_nano,
         attributes: span.attributes.clone(),

@@ -47,7 +47,10 @@ pub async fn approve_device(
     clock: &dyn CeremonyClock,
     confirmation: ApprovalConfirmation<'_>,
 ) -> EngineResult<ApproveOutcome> {
-    let ApprovalConfirmation { pending_id, confirm_code } = confirmation;
+    let ApprovalConfirmation {
+        pending_id,
+        confirm_code,
+    } = confirmation;
     let PinLoad::Loaded { anchor } =
         load_trust_anchor(pin_dir, account).map_err(|e| EngineError::Recovery(e.into()))?
     else {

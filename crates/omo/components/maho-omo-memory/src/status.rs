@@ -264,7 +264,8 @@ mod tests {
             format_memory_status_line(
                 "agent",
                 "just now",
-                &MemoryStatusSegments { sync_blocked: false,
+                &MemoryStatusSegments {
+                    sync_blocked: false,
                     dirty: false,
                     backlog_steps: 0.0,
                     streak: 2
@@ -385,7 +386,8 @@ mod tests {
             format_memory_status_line(
                 &identity,
                 "just now",
-                &MemoryStatusSegments { sync_blocked: false,
+                &MemoryStatusSegments {
+                    sync_blocked: false,
                     dirty: true,
                     backlog_steps: 14.0,
                     streak: 3

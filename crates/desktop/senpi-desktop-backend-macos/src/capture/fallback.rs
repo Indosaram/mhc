@@ -98,7 +98,9 @@ pub(crate) fn capture_primary(
             "screencapture failed ({reason}) and the CoreGraphics fallback covers only the primary display, which is not selected"
         ))
     })?;
-    eprintln!("senpi-desktop-backend-macos: capture: fallback=CGDisplayCreateImage reason={reason}");
+    eprintln!(
+        "senpi-desktop-backend-macos: capture: fallback=CGDisplayCreateImage reason={reason}"
+    );
     let image = main_display_image()?;
     let display = DesktopDisplay {
         pixel_x: 0,
@@ -107,17 +109,21 @@ pub(crate) fn capture_primary(
         pixel_height: image.height(),
         ..primary.clone()
     };
-    Ok((image, FrameGeometry::for_displays(std::slice::from_ref(&display))))
+    Ok((
+        image,
+        FrameGeometry::for_displays(std::slice::from_ref(&display)),
+    ))
 }
 
 fn main_display_image() -> CoreResult<RgbaImage> {
-    let image = Owned::new(CGDisplayCreateImage(CGMainDisplayID()), CGImageRelease).ok_or_else(|| {
-        if capture_permission() {
-            DesktopError::capture_failed("CGDisplayCreateImage returned no image")
-        } else {
-            permission_denied()
-        }
-    })?;
+    let image =
+        Owned::new(CGDisplayCreateImage(CGMainDisplayID()), CGImageRelease).ok_or_else(|| {
+            if capture_permission() {
+                DesktopError::capture_failed("CGDisplayCreateImage returned no image")
+            } else {
+                permission_denied()
+            }
+        })?;
     // SAFETY: [Category 8 - FFI] `image` is a live non-null CGImageRef.
     let width = unsafe { CGImageGetWidth(image.as_ptr()) };
     // SAFETY: [Category 8 - FFI] `image` is a live non-null CGImageRef.

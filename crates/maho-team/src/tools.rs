@@ -113,9 +113,11 @@ fn team_list(scope: &TaskScope, params: &Value) -> Result<(String, Tasklist, Vec
 
 fn id_param(params: &Value, key: &str) -> Option<u64> {
     let value = params.get(key)?;
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|text| text.trim().trim_start_matches('#').parse().ok()))
+    value.as_u64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|text| text.trim().trim_start_matches('#').parse().ok())
+    })
 }
 
 fn task_create(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
@@ -136,7 +138,11 @@ fn task_create(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> 
     {
         match id_param(&json!({"id": value}), "id") {
             Some(id) => blocked_by.push(id),
-            None => return Ok(invalid(format!("blocked_by holds {value}, which is not an item id"))),
+            None => {
+                return Ok(invalid(format!(
+                    "blocked_by holds {value}, which is not an item id"
+                )));
+            }
         }
     }
     let item = list.create(subject, description, blocked_by)?;
@@ -155,7 +161,11 @@ fn task_create(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> 
                 .join(", ")
         ));
     }
-    Ok(kind_result("created", text, json!({"team": team, "item": item})))
+    Ok(kind_result(
+        "created",
+        text,
+        json!({"team": team, "item": item}),
+    ))
 }
 
 fn task_list(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
@@ -190,7 +200,10 @@ fn task_get(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
         return Ok(invalid("Missing required parameter: id"));
     };
     Ok(match list.get(id) {
-        Some(item) => text_result(tasklist::item_text(&item), json!({"team": team, "item": item})),
+        Some(item) => text_result(
+            tasklist::item_text(&item),
+            json!({"team": team, "item": item}),
+        ),
         None => {
             let refusal = tasklist::Refusal::NotFound { id };
             text_result(refusal.reason(), refusal.details())

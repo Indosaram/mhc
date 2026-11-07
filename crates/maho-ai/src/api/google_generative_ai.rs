@@ -34,9 +34,7 @@ use crate::utils::abort::AbortSignal;
 use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::headers::provider_headers_to_record;
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::provider_retry::{ProviderRetryError, ProviderRetryOptions};

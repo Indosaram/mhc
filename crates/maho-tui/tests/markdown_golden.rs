@@ -45,7 +45,10 @@ fn chalk_theme() -> MarkdownTheme {
 }
 
 fn case() -> Value {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/golden/cases/tui-markdown.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tools/golden/cases/tui-markdown.json"
+    );
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
@@ -110,6 +113,15 @@ fn renders_every_case_document_byte_for_byte_at_every_width() {
         }
     }
 
-    assert_eq!(checked, docs.len() * widths.len(), "every document at every width");
-    assert!(failures.is_empty(), "{} of {checked} mismatched:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!(
+        checked,
+        docs.len() * widths.len(),
+        "every document at every width"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} mismatched:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

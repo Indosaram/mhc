@@ -1,4 +1,3 @@
-
 use maho_ext_api::JsonValue;
 use maho_omo_model_profile::custom_providers::DeclaredModelProvider;
 use maho_omo_model_profile::resolve::{
@@ -23,7 +22,11 @@ const SOL_56_COPILOT: &str = "github-copilot/gpt-5.6-sol";
 const SOL_61: &str = "chatgpt-subscription/gpt-6.1-sol";
 const ASTRA: &str = "chatgpt-subscription/gpt-6-astra";
 
-fn resolve(active: &str, available: &[&str], profiles: Option<JsonValue>) -> ModelProfileResolution {
+fn resolve(
+    active: &str,
+    available: &[&str],
+    profiles: Option<JsonValue>,
+) -> ModelProfileResolution {
     resolve_with_custom(active, available, profiles, &[])
 }
 
@@ -33,7 +36,10 @@ fn resolve_with_custom(
     profiles: Option<JsonValue>,
     custom_providers: &[DeclaredModelProvider],
 ) -> ModelProfileResolution {
-    let owned: Vec<String> = available.iter().map(|selector| (*selector).to_owned()).collect();
+    let owned: Vec<String> = available
+        .iter()
+        .map(|selector| (*selector).to_owned())
+        .collect();
     resolve_model_profile(&ResolveModelProfileInput {
         profiles: profiles.as_ref(),
         active,
@@ -61,7 +67,13 @@ struct Resolved<'a> {
 
 fn resolved(result: &ModelProfileResolution) -> Resolved<'_> {
     match result {
-        ModelProfileResolution::Resolved { provider, model_id, reasoning, skipped, .. } => Resolved {
+        ModelProfileResolution::Resolved {
+            provider,
+            model_id,
+            reasoning,
+            skipped,
+            ..
+        } => Resolved {
             provider,
             model_id,
             reasoning: reasoning.as_deref(),
@@ -136,7 +148,18 @@ fn resolves_a_rung_through_its_second_provider_when_the_first_is_absent() {
 #[test]
 fn treats_a_value_carrying_a_slash_as_a_literal_pin() {
     let result = resolve(OPUS, &[FABLE, OPUS], None);
-    assert_eq!(result, expected_resolved(OPUS, OPUS, ModelProfileSource::Pin, "anthropic", "claude-opus-5-5", None, &[]));
+    assert_eq!(
+        result,
+        expected_resolved(
+            OPUS,
+            OPUS,
+            ModelProfileSource::Pin,
+            "anthropic",
+            "claude-opus-5-5",
+            None,
+            &[]
+        )
+    );
 }
 
 #[test]
@@ -197,7 +220,9 @@ fn resolves_a_profile_the_user_added() {
     let result = resolve(
         "night-shift",
         &[LUNA],
-        Some(json!({"night-shift": {"display_name": "Night shift", "models": [{"model": "gpt-5.6-luna-fast", "reasoning": "low"}]}})),
+        Some(
+            json!({"night-shift": {"display_name": "Night shift", "models": [{"model": "gpt-5.6-luna-fast", "reasoning": "low"}]}}),
+        ),
     );
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "openai");
@@ -211,7 +236,11 @@ fn resolves_a_profile_the_user_added() {
 
 #[test]
 fn carries_a_reasoning_suffix_written_on_a_user_chain_entry() {
-    let result = resolve("pair", &[OPUS], Some(json!({"pair": {"models": [format!("{OPUS}:high")]}})));
+    let result = resolve(
+        "pair",
+        &[OPUS],
+        Some(json!({"pair": {"models": [format!("{OPUS}:high")]}})),
+    );
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic");
     assert_eq!(resolved.model_id, "claude-opus-5-5");
@@ -223,18 +252,40 @@ fn reports_an_empty_registry_as_unavailable_and_lists_the_chain() {
     let result = resolve("daily-normal", &[], None);
     assert_eq!(
         chain_of(&result),
-        [OPUS_SUBSCRIPTION.to_owned(), "kimi-coding/kimi-k3.1-pro".to_owned(), "zai/glm-5.3".to_owned()]
+        [
+            OPUS_SUBSCRIPTION.to_owned(),
+            "kimi-coding/kimi-k3.1-pro".to_owned(),
+            "zai/glm-5.3".to_owned()
+        ]
     );
 }
 
 #[test]
 fn reports_an_unknown_name_once_with_the_known_profiles_sorted() {
-    let result = resolve("nope", &[LUNA], Some(json!({"night-shift": {"models": [LUNA]}})));
-    let ModelProfileResolution::Unknown { name, known, message } = result else {
+    let result = resolve(
+        "nope",
+        &[LUNA],
+        Some(json!({"night-shift": {"models": [LUNA]}})),
+    );
+    let ModelProfileResolution::Unknown {
+        name,
+        known,
+        message,
+    } = result
+    else {
         panic!("expected unknown");
     };
     assert_eq!(name, "nope");
-    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal", "night-shift"]);
+    assert_eq!(
+        known,
+        [
+            "daily-heavy",
+            "daily-normal",
+            "geeky-heavy",
+            "geeky-normal",
+            "night-shift"
+        ]
+    );
     assert_eq!(
         message,
         "model_profile \"nope\" is not defined; known profiles: daily-heavy, daily-normal, geeky-heavy, geeky-normal, night-shift"
@@ -248,7 +299,10 @@ fn reports_a_blank_value_as_unknown_rather_than_silently_doing_nothing() {
         panic!("expected unknown");
     };
     assert_eq!(name, "");
-    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]);
+    assert_eq!(
+        known,
+        ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]
+    );
 }
 
 #[test]
@@ -274,11 +328,19 @@ fn reports_the_removed_capable_deep_work_and_simple_work_ids_as_unknown() {
     let available = [OPUS_SUBSCRIPTION, ASTRA];
     for name in ["capable", "deep-work", "simple-work"] {
         let result = resolve(name, &available, None);
-        let ModelProfileResolution::Unknown { name: reported, known, .. } = result else {
+        let ModelProfileResolution::Unknown {
+            name: reported,
+            known,
+            ..
+        } = result
+        else {
             panic!("expected unknown for {name}");
         };
         assert_eq!(reported, name);
-        assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]);
+        assert_eq!(
+            known,
+            ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]
+        );
     }
 }
 
@@ -317,7 +379,11 @@ fn does_not_fall_back_to_a_gpt_6_model_when_geeky_normals_gpt_56_sol_is_missing(
 
 #[test]
 fn ranks_the_openai_api_lane_ahead_of_an_unlisted_provider_serving_geeky_normal_gpt_56_sol() {
-    let result = resolve("geeky-normal", &["office-gateway/gpt-5.6-sol", "openai/gpt-5.6-sol"], None);
+    let result = resolve(
+        "geeky-normal",
+        &["office-gateway/gpt-5.6-sol", "openai/gpt-5.6-sol"],
+        None,
+    );
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "openai");
     assert_eq!(resolved.model_id, "gpt-5.6-sol");
@@ -339,7 +405,10 @@ fn never_serves_a_builtin_lane_from_a_gateways_copy_of_its_models() {
             ],
             None,
         );
-        assert!(matches!(result, ModelProfileResolution::Unavailable { .. }), "{active} stays unavailable");
+        assert!(
+            matches!(result, ModelProfileResolution::Unavailable { .. }),
+            "{active} stays unavailable"
+        );
     }
 }
 
@@ -377,7 +446,9 @@ fn does_not_silently_take_another_provider_when_a_user_overlay_names_openai_and_
     let result = resolve(
         "geeky-normal",
         &["chatgpt-subscription/gpt-6-sol"],
-        Some(json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "medium"}]}})),
+        Some(
+            json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "medium"}]}}),
+        ),
     );
     assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
 }
@@ -416,7 +487,9 @@ fn selects_the_named_provider_when_a_scoped_user_rung_is_present() {
     let result = resolve(
         "geeky-normal",
         &["openai/gpt-6-sol", "chatgpt-subscription/gpt-6-sol"],
-        Some(json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "high"}]}})),
+        Some(
+            json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "high"}]}}),
+        ),
     );
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "openai");
@@ -425,16 +498,22 @@ fn selects_the_named_provider_when_a_scoped_user_rung_is_present() {
 }
 
 #[test]
-fn keeps_geeky_normal_family_tier_when_a_user_replaces_the_chain_with_an_openai_model_and_does_not_merge_builtin_rungs() {
+fn keeps_geeky_normal_family_tier_when_a_user_replaces_the_chain_with_an_openai_model_and_does_not_merge_builtin_rungs()
+ {
     let result = resolve(
         "geeky-normal",
         &[SOL_FAST, "openai/gpt-6-sol"],
-        Some(json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "high"}]}})),
+        Some(
+            json!({"geeky-normal": {"models": [{"model": "openai/gpt-6-sol", "reasoning": "high"}]}}),
+        ),
     );
     let profile = profile_of(&result);
     assert_eq!(profile.id, "geeky-normal");
     assert_eq!(profile.display_name, "Obsessive · Normal");
-    assert_eq!(profile.caution.as_deref(), Some("NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK."));
+    assert_eq!(
+        profile.caution.as_deref(),
+        Some("NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.")
+    );
     assert_eq!(profile.source, ModelProfileSource::User);
     assert_eq!(profile.family.map(|family| family.as_str()), Some("geeky"));
     assert_eq!(profile.tier.map(|tier| tier.as_str()), Some("normal"));
@@ -447,8 +526,15 @@ fn keeps_geeky_normal_family_tier_when_a_user_replaces_the_chain_with_an_openai_
 
 #[test]
 fn recommended_is_no_longer_a_builtin_but_can_be_user_defined() {
-    assert!(matches!(resolve("recommended", &[OPUS], None), ModelProfileResolution::Unknown { .. }));
-    let result = resolve("recommended", &[OPUS], Some(json!({"recommended": {"models": [OPUS]}})));
+    assert!(matches!(
+        resolve("recommended", &[OPUS], None),
+        ModelProfileResolution::Unknown { .. }
+    ));
+    let result = resolve(
+        "recommended",
+        &[OPUS],
+        Some(json!({"recommended": {"models": [OPUS]}})),
+    );
     assert_eq!(resolved(&result).model_id, "claude-opus-5-5");
     assert_eq!(profile_of(&result).source, ModelProfileSource::User);
 }
@@ -479,7 +565,10 @@ fn a_pin_is_not_probed_for_auth_and_keeps_the_users_explicit_choice() {
 #[test]
 fn a_profile_whose_registry_serves_nothing_reports_the_whole_chain() {
     let result = resolve("geeky-heavy", &["example/nothing"], None);
-    assert_eq!(chain_of(&result), ["chatgpt-subscription/gpt-6-astra".to_owned()]);
+    assert_eq!(
+        chain_of(&result),
+        ["chatgpt-subscription/gpt-6-astra".to_owned()]
+    );
 }
 
 // --- builtin chain routing through a models.json declaration (#10485, #9146) ---
@@ -495,7 +584,8 @@ fn obsessive_caution() -> &'static str {
 }
 
 #[test]
-fn resolves_daily_normal_to_a_custom_models_json_provider_that_is_the_only_one_serving_its_opus_id() {
+fn resolves_daily_normal_to_a_custom_models_json_provider_that_is_the_only_one_serving_its_opus_id()
+{
     let proxy = format!("my-claude-proxy/{}", opus_id());
     let result = resolve_with_custom(
         "daily-normal",
@@ -579,27 +669,38 @@ fn the_same_gateway_declaring_the_rung_id_itself_serves_the_lane() {
 }
 
 #[test]
-fn carries_the_obsessive_caution_onto_the_resolved_profile_and_an_overlay_inherits_or_replaces_it() {
+fn carries_the_obsessive_caution_onto_the_resolved_profile_and_an_overlay_inherits_or_replaces_it()
+{
     let builtin = resolve("geeky-normal", &[ASTRA], None);
-    assert_eq!(profile_of(&builtin).caution.as_deref(), Some(obsessive_caution()));
+    assert_eq!(
+        profile_of(&builtin).caution.as_deref(),
+        Some(obsessive_caution())
+    );
 
     let inherited = resolve(
         "geeky-normal",
         &[ASTRA],
         Some(json!({"geeky-normal": {"models": [ASTRA]}})),
     );
-    assert_eq!(profile_of(&inherited).caution.as_deref(), Some(obsessive_caution()));
+    assert_eq!(
+        profile_of(&inherited).caution.as_deref(),
+        Some(obsessive_caution())
+    );
 
     let replaced = resolve(
         "geeky-normal",
         &[ASTRA],
         Some(json!({"geeky-normal": {"caution": "Handle with care.", "models": [ASTRA]}})),
     );
-    assert_eq!(profile_of(&replaced).caution.as_deref(), Some("Handle with care."));
+    assert_eq!(
+        profile_of(&replaced).caution.as_deref(),
+        Some("Handle with care.")
+    );
 }
 
 #[test]
-fn resolves_geeky_normal_to_gpt_6_astra_medium_when_the_subscription_serves_it_beside_the_sol_tiers() {
+fn resolves_geeky_normal_to_gpt_6_astra_medium_when_the_subscription_serves_it_beside_the_sol_tiers()
+ {
     let result = resolve("geeky-normal", &[ASTRA, SOL_61, SOL_56], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "chatgpt-subscription");

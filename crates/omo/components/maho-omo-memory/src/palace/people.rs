@@ -135,7 +135,10 @@ pub fn collect_people(
             slug: slug.clone(),
             path,
             display_name: display_name_of(&file.frontmatter.description, &slug),
-            kind: file.frontmatter.kind.unwrap_or_else(|| "person".to_string()),
+            kind: file
+                .frontmatter
+                .kind
+                .unwrap_or_else(|| "person".to_string()),
             aliases: file.frontmatter.aliases.unwrap_or_default(),
             state: state.label().to_string(),
         });
@@ -240,7 +243,10 @@ fn working_card_paths(repo_dir: &Path) -> Vec<String> {
             if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 continue;
             }
-            let card = format!("{PEOPLE_PREFIX}{}{CARD_SUFFIX}", entry.file_name().to_string_lossy());
+            let card = format!(
+                "{PEOPLE_PREFIX}{}{CARD_SUFFIX}",
+                entry.file_name().to_string_lossy()
+            );
             if is_file(&repo_dir.join(&card)) {
                 paths.push(card);
             }
@@ -250,7 +256,9 @@ fn working_card_paths(repo_dir: &Path) -> Vec<String> {
 }
 
 fn is_file(path: &Path) -> bool {
-    std::fs::metadata(path).map(|info| info.is_file()).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|info| info.is_file())
+        .unwrap_or(false)
 }
 
 fn is_card_path(path: &str) -> bool {
@@ -315,7 +323,10 @@ mod tests {
     };
 
     fn limits_options(enabled: bool) -> PalacePeopleOptions {
-        PalacePeopleOptions { enabled, limits: LIMITS }
+        PalacePeopleOptions {
+            enabled,
+            limits: LIMITS,
+        }
     }
 
     #[test]
@@ -323,14 +334,26 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
-            .unwrap()
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(true),
+        )
+        .unwrap()
+        .unwrap();
 
-        let mut slugs = people.nodes.iter().map(|node| node.slug.clone()).collect::<Vec<_>>();
+        let mut slugs = people
+            .nodes
+            .iter()
+            .map(|node| node.slug.clone())
+            .collect::<Vec<_>>();
         slugs.sort();
         assert_eq!(slugs, ["human", "jane-doe", "sam-rivers"]);
-        let jane = people.nodes.iter().find(|node| node.slug == "jane-doe").unwrap();
+        let jane = people
+            .nodes
+            .iter()
+            .find(|node| node.slug == "jane-doe")
+            .unwrap();
         assert_eq!(jane.display_name, "Jane Doe");
         assert_eq!(jane.kind, "person");
         assert_eq!(jane.aliases, ["Jane", "JD"]);
@@ -341,9 +364,13 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
-            .unwrap()
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(true),
+        )
+        .unwrap()
+        .unwrap();
 
         let edges = people
             .edges
@@ -373,11 +400,20 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
-            .unwrap()
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(true),
+        )
+        .unwrap()
+        .unwrap();
 
-        assert!(!people.edges.iter().any(|edge| edge.predicate == "senior-engineer"));
+        assert!(
+            !people
+                .edges
+                .iter()
+                .any(|edge| edge.predicate == "senior-engineer")
+        );
         assert!(people.edges.iter().all(|edge| !edge.target.is_empty()));
     }
 
@@ -390,13 +426,25 @@ mod tests {
             "---\ndescription: Person - Kim Lee\nkind: person\naliases: [\"Kim\"]\n---\n\nIDENTITY: draft person\n",
         );
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
-            .unwrap()
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(true),
+        )
+        .unwrap()
+        .unwrap();
 
-        let kim = people.nodes.iter().find(|node| node.slug == "kim-lee").unwrap();
+        let kim = people
+            .nodes
+            .iter()
+            .find(|node| node.slug == "kim-lee")
+            .unwrap();
         assert_eq!(kim.state, UNCOMMITTED_LABEL);
-        let jane = people.nodes.iter().find(|node| node.slug == "jane-doe").unwrap();
+        let jane = people
+            .nodes
+            .iter()
+            .find(|node| node.slug == "jane-doe")
+            .unwrap();
         assert_eq!(jane.state, "committed");
     }
 
@@ -404,11 +452,22 @@ mod tests {
     fn repo_without_people_directory_has_only_human() {
         let fixture = create_palace_fixture(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
-            .unwrap()
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(true),
+        )
+        .unwrap()
+        .unwrap();
 
-        assert_eq!(people.nodes.iter().map(|node| node.slug.as_str()).collect::<Vec<_>>(), ["human"]);
+        assert_eq!(
+            people
+                .nodes
+                .iter()
+                .map(|node| node.slug.as_str())
+                .collect::<Vec<_>>(),
+            ["human"]
+        );
         assert!(people.edges.is_empty());
     }
 
@@ -417,8 +476,12 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(false))
-            .unwrap();
+        let people = collect_people(
+            &fixture.repo,
+            Some(fixture.head.as_str()),
+            &limits_options(false),
+        )
+        .unwrap();
 
         assert!(people.is_none());
     }
@@ -432,7 +495,8 @@ mod tests {
                 Ok(GitExecResult {
                     code: 128,
                     stdout: String::new(),
-                    stderr: "fatal: not a git repository (or any parent up to mount point /)".to_string(),
+                    stderr: "fatal: not a git repository (or any parent up to mount point /)"
+                        .to_string(),
                 })
             })),
         });
@@ -468,7 +532,12 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(people.diagnostics.iter().any(|entry| entry.path == "people/jane-doe/card.md"));
+        assert!(
+            people
+                .diagnostics
+                .iter()
+                .any(|entry| entry.path == "people/jane-doe/card.md")
+        );
     }
 
     #[test]

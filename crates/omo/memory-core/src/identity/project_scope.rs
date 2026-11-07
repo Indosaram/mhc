@@ -103,16 +103,16 @@ impl ProjectIdentityResolver {
         }
         if self.probe.link_kind(path).await == Some(EntryKind::Symlink)
             && let Some(target) = self.probe.real_path(path).await
-                && self.probe.link_kind(&target).await == Some(EntryKind::Directory)
-                    && !self
-                        .is_inside_git_work_tree(path.parent().unwrap_or(path))
-                        .await
-                    && !scope.session.starts_with(&target)
-                    && !scope.home.starts_with(&target)
-                    && !scope.memory.starts_with(&target)
-                {
-                    self.links.lock().await.insert(target);
-                }
+            && self.probe.link_kind(&target).await == Some(EntryKind::Directory)
+            && !self
+                .is_inside_git_work_tree(path.parent().unwrap_or(path))
+                .await
+            && !scope.session.starts_with(&target)
+            && !scope.home.starts_with(&target)
+            && !scope.memory.starts_with(&target)
+        {
+            self.links.lock().await.insert(target);
+        }
         checked.insert(path.to_path_buf());
     }
     async fn scan_session_tree(&self, scope: &ScopeRoots) {

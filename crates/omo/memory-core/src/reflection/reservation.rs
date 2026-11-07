@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::resolve::MemoryIdentity;
 use crate::journal::store::TranscriptJournal;
-use crate::locks::acquire::{AcquireLockError, AcquireLockOptions, LockContentionError, WithLockError, with_lock};
+use crate::locks::acquire::{
+    AcquireLockError, AcquireLockOptions, LockContentionError, WithLockError, with_lock,
+};
 use crate::locks::domains::reflection_scheduler_lock_path;
 use crate::locks::lock_record::{CreateLockRecordOptions, create_lock_record};
 use crate::locks::process_identity::get_process_start_identity;
@@ -318,7 +320,10 @@ impl ReflectionReservationStore {
     }
 
     /// Reads with an explicit scheduler wait; zero reports contention without blocking.
-    pub fn read_state_with_wait(&self, wait_timeout_ms: Option<u64>) -> Result<ReservationState, ReservationError> {
+    pub fn read_state_with_wait(
+        &self,
+        wait_timeout_ms: Option<u64>,
+    ) -> Result<ReservationState, ReservationError> {
         self.locked_with_wait(None, wait_timeout_ms, None, || self.read_state_unlocked())
     }
 
@@ -371,7 +376,9 @@ impl ReflectionReservationStore {
         with_lock(&self.scheduler_lock_path, &record, &acquire_options, task).map_err(|err| {
             match err {
                 WithLockError::Acquire(AcquireLockError::Aborted) => ReservationError::Aborted,
-                WithLockError::Acquire(AcquireLockError::Contention(error)) => ReservationError::Contention(error),
+                WithLockError::Acquire(AcquireLockError::Contention(error)) => {
+                    ReservationError::Contention(error)
+                }
                 WithLockError::Acquire(e) => ReservationError::Lock(e.to_string()),
                 WithLockError::User(e) => e,
             }

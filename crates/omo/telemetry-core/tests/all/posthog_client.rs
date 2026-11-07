@@ -123,10 +123,17 @@ async fn terminal_program_capture_keeps_only_published_names() {
         let messages = recorder.messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(
-            messages[0].properties.get("terminal").and_then(Value::as_str),
+            messages[0]
+                .properties
+                .get("terminal")
+                .and_then(Value::as_str),
             (!expected.is_empty()).then_some(expected.as_str())
         );
-        assert!(!serde_json::to_string(&messages[0]).expect("capture JSON").contains("sentinel-user"));
+        assert!(
+            !serde_json::to_string(&messages[0])
+                .expect("capture JSON")
+                .contains("sentinel-user")
+        );
         return;
     }
 
@@ -146,15 +153,28 @@ async fn terminal_program_capture_keeps_only_published_names() {
     let test_name = thread.name().expect("test thread name");
     for (terminal, expected) in cases {
         let mut child = tokio::process::Command::new(std::env::current_exe().expect("test binary"));
-        child.args(["--exact", test_name, "--nocapture"]).env(CHILD, expected).kill_on_drop(true);
+        child
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD, expected)
+            .kill_on_drop(true);
         match terminal {
-            Some(value) => { child.env("TERM_PROGRAM", value); }
-            None => { child.env_remove("TERM_PROGRAM"); }
+            Some(value) => {
+                child.env("TERM_PROGRAM", value);
+            }
+            None => {
+                child.env_remove("TERM_PROGRAM");
+            }
         }
         let output = tokio::time::timeout(std::time::Duration::from_secs(10), child.output())
-            .await.expect("capture child deadline").expect("capture test child");
-        assert!(output.status.success(), "terminal {terminal:?}: {}{}",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            .await
+            .expect("capture child deadline")
+            .expect("capture test child");
+        assert!(
+            output.status.success(),
+            "terminal {terminal:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 }

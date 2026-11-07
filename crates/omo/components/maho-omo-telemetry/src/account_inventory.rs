@@ -186,7 +186,10 @@ fn kind_of(provider: &str, _tables: &EngineTables) -> String {
     let current = RETIRED_PROVIDER_IDS
         .iter()
         .find(|(retired, _)| *retired == provider)
-        .map_or_else(|| provider.to_string(), |(_, canonical)| (*canonical).to_string());
+        .map_or_else(
+            || provider.to_string(),
+            |(_, canonical)| (*canonical).to_string(),
+        );
     if KNOWN_PROVIDERS.contains(&current.as_str()) {
         current
     } else {
@@ -287,7 +290,8 @@ mod tests {
         );
         assert_eq!(counts.get("openai"), Some(&1));
 
-        let counts = connected_account_counts(&auth(json!({})), &env(&[("OPENAI_API_KEY", "x")]), &tables);
+        let counts =
+            connected_account_counts(&auth(json!({})), &env(&[("OPENAI_API_KEY", "x")]), &tables);
         assert_eq!(counts.get("openai"), Some(&1));
         let counts = connected_account_counts(&auth(json!({})), &env(&[]), &tables);
         assert_eq!(counts.get("openai"), None);
@@ -303,7 +307,8 @@ mod tests {
         );
         // The first `_API_KEY` spelling wins, so the alternate name alone counts nothing.
         assert_eq!(counts.get("google"), Some(&1));
-        let counts = connected_account_counts(&auth(json!({})), &env(&[("GOOGLE_API_KEY", "y")]), &tables);
+        let counts =
+            connected_account_counts(&auth(json!({})), &env(&[("GOOGLE_API_KEY", "y")]), &tables);
         assert_eq!(counts.get("google"), None);
     }
 
@@ -344,10 +349,7 @@ mod tests {
         )
         .unwrap();
         let rendered = read_connected_accounts(dir.path(), &env(&[]), Some(&tables));
-        assert_eq!(
-            rendered,
-            "anthropic-subscription:2,custom:1,openai:1"
-        );
+        assert_eq!(rendered, "anthropic-subscription:2,custom:1,openai:1");
         assert!(!rendered.contains("my-gateway"));
         assert!(!rendered.contains("claude-sdk-oauth"));
     }
@@ -357,15 +359,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_connected_accounts(dir.path(), &env(&[]), None), "");
         std::fs::write(dir.path().join("auth.json"), "{not json").unwrap();
-        assert_eq!(read_connected_accounts(dir.path(), &env(&[]), Some(&tables())), "");
+        assert_eq!(
+            read_connected_accounts(dir.path(), &env(&[]), Some(&tables())),
+            ""
+        );
         std::fs::write(dir.path().join("auth.json"), "[]").unwrap();
-        assert_eq!(read_connected_accounts(dir.path(), &env(&[]), Some(&tables())), "");
+        assert_eq!(
+            read_connected_accounts(dir.path(), &env(&[]), Some(&tables())),
+            ""
+        );
     }
 
     #[test]
     fn the_engine_tables_are_available() {
         let tables = EngineTables::load().expect("engine tables");
-        assert_eq!((tables.normalize_provider_id)("claude-sdk-oauth"), "anthropic-subscription");
-        assert!((tables.api_key_env_providers)().iter().any(|provider| provider == "openai"));
+        assert_eq!(
+            (tables.normalize_provider_id)("claude-sdk-oauth"),
+            "anthropic-subscription"
+        );
+        assert!(
+            (tables.api_key_env_providers)()
+                .iter()
+                .any(|provider| provider == "openai")
+        );
     }
 }

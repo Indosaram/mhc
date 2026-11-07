@@ -95,7 +95,11 @@ impl ProcessSignaller for ChaosProcessTable {
 }
 
 fn has_session(store: &TaskRecordStore, task_id: &str) -> bool {
-    let directory = store.state_dir().join("children").join(task_id).join("sessions");
+    let directory = store
+        .state_dir()
+        .join("children")
+        .join(task_id)
+        .join("sessions");
     let Ok(entries) = std::fs::read_dir(&directory) else {
         return false;
     };
@@ -179,7 +183,13 @@ impl ChaosRunner {
     }
 
     fn launch(&self, task_id: &str) -> Arc<FakeHandle> {
-        observe_launch(&self.engine_id, task_id, &self.store, &self.processes, &self.observations);
+        observe_launch(
+            &self.engine_id,
+            task_id,
+            &self.store,
+            &self.processes,
+            &self.observations,
+        );
         let pid = if self.mode == "process" {
             Some(self.processes.spawn())
         } else {

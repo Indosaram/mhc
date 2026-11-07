@@ -36,14 +36,22 @@ fn corrupt(error: impl std::fmt::Display) -> PoolError {
 /// Task ids are file-name safe (`maho_task::ids::sanitize`); anything else is mapped to `_`.
 fn file_safe(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
 impl PoolStore {
     /// The store of a task state dir (`<state dir>/workpools`).
     pub fn in_state_dir(state_dir: &Path) -> Self {
-        Self { dir: state_dir.join("workpools") }
+        Self {
+            dir: state_dir.join("workpools"),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -55,7 +63,9 @@ impl PoolStore {
     }
 
     pub fn log_path(&self, task_id: &str) -> PathBuf {
-        self.dir.join("logs").join(format!("{}.jsonl", file_safe(task_id)))
+        self.dir
+            .join("logs")
+            .join(format!("{}.jsonl", file_safe(task_id)))
     }
 
     /// The record of `pool_id`; `Ok(None)` when no record exists.
@@ -73,14 +83,20 @@ impl PoolStore {
         let record: PoolRecord = serde_json::from_slice(&bytes)
             .map_err(|error| corrupt(format!("invalid pool record {}: {error}", path.display())))?;
         if record.pool_id != pool_id {
-            return Err(corrupt(format!("record {} names pool {}", path.display(), record.pool_id)));
+            return Err(corrupt(format!(
+                "record {} names pool {}",
+                path.display(),
+                record.pool_id
+            )));
         }
         Ok(Some(record))
     }
 
     /// Ids of every record file (well-formed names only).
     pub fn ids(&self) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
         let mut ids: Vec<String> = entries
             .filter_map(Result::ok)
             .filter_map(|entry| {
@@ -112,7 +128,11 @@ impl PoolStore {
     pub fn save(&self, record: &PoolRecord) -> Result<(), PoolError> {
         std::fs::create_dir_all(&self.dir).map_err(corrupt)?;
         let path = self.record_path(&record.pool_id);
-        let tmp = self.dir.join(format!(".{}.{}.tmp", record.pool_id, uuid::Uuid::new_v4().simple()));
+        let tmp = self.dir.join(format!(
+            ".{}.{}.tmp",
+            record.pool_id,
+            uuid::Uuid::new_v4().simple()
+        ));
         let bytes = serde_json::to_vec_pretty(record).map_err(corrupt)?;
         let written = std::fs::File::create(&tmp).and_then(|mut file| {
             file.write_all(&bytes)?;
@@ -149,7 +169,9 @@ impl PoolStore {
 
     /// The events of `task_id`'s log; a torn last line (crash mid-append) is skipped.
     pub fn events(&self, task_id: &str) -> Vec<YieldEvent> {
-        let Ok(text) = std::fs::read_to_string(self.log_path(task_id)) else { return Vec::new() };
+        let Ok(text) = std::fs::read_to_string(self.log_path(task_id)) else {
+            return Vec::new();
+        };
         text.lines()
             .filter(|line| !line.trim().is_empty())
             .filter_map(|line| serde_json::from_str(line).ok())

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use senpi_desktop_protocol::{AuditEvent, StopPathStatus, ENGINE_NOTIFICATIONS};
+use senpi_desktop_protocol::{AuditEvent, ENGINE_NOTIFICATIONS, StopPathStatus};
 use serde_json::Value;
 
 pub type Listener<T> = Arc<dyn Fn(T) + Send + Sync + 'static>;
@@ -136,7 +136,10 @@ impl NotificationHub {
                     }
                 }
                 None => {
-                    self.emit_error(Arc::new(DesktopNotificationError::new(method, "is malformed")));
+                    self.emit_error(Arc::new(DesktopNotificationError::new(
+                        method,
+                        "is malformed",
+                    )));
                 }
             },
             "stopPath.changed" => match serde_json::from_value::<StopPathStatus>(params.clone()) {
@@ -150,7 +153,10 @@ impl NotificationHub {
                     }
                 }
                 Err(_) => {
-                    self.emit_error(Arc::new(DesktopNotificationError::new(method, "is malformed")));
+                    self.emit_error(Arc::new(DesktopNotificationError::new(
+                        method,
+                        "is malformed",
+                    )));
                 }
             },
             "engine.log" => {}

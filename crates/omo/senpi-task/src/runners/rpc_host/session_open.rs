@@ -87,7 +87,12 @@ impl HostSessionOpener {
         }
     }
     pub fn settle_teardowns(&self) -> Result<(), HostError> {
-        let handles = std::mem::take(&mut *self.teardowns.lock().expect("hosted child state lock poisoned"));
+        let handles = std::mem::take(
+            &mut *self
+                .teardowns
+                .lock()
+                .expect("hosted child state lock poisoned"),
+        );
         let mut first = None;
         for handle in handles {
             let result = handle
@@ -97,9 +102,10 @@ impl HostSessionOpener {
                 })
                 .and_then(|result| result);
             if let Err(error) = result
-                && first.is_none() {
-                    first = Some(error);
-                }
+                && first.is_none()
+            {
+                first = Some(error);
+            }
         }
         first.map_or(Ok(()), Err)
     }

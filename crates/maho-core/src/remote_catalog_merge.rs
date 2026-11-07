@@ -32,7 +32,11 @@ fn model_value(model: &Model) -> Value {
     serde_json::to_value(model).unwrap_or(Value::Null)
 }
 
-pub fn merge_remote_catalog_models(provider_id: &str, baseline: &[Model], dynamic: &[Model]) -> RemoteCatalogMerge {
+pub fn merge_remote_catalog_models(
+    provider_id: &str,
+    baseline: &[Model],
+    dynamic: &[Model],
+) -> RemoteCatalogMerge {
     let mut merged = baseline.to_vec();
     let mut conflicts = Vec::new();
     for model in dynamic {
@@ -61,7 +65,10 @@ pub fn merge_remote_catalog_models(provider_id: &str, baseline: &[Model], dynami
         replacement.cost = model.cost.clone();
         merged[index] = replacement;
     }
-    RemoteCatalogMerge { models: merged, conflicts }
+    RemoteCatalogMerge {
+        models: merged,
+        conflicts,
+    }
 }
 
 fn is_finite_number(value: Option<&Value>) -> bool {
@@ -71,14 +78,19 @@ fn is_finite_number(value: Option<&Value>) -> bool {
 fn is_input_array(value: Option<&Value>) -> bool {
     match value.and_then(Value::as_array) {
         Some(items) => items.iter().all(|modality| {
-            matches!(modality.as_str(), Some("text") | Some("image") | Some("video"))
+            matches!(
+                modality.as_str(),
+                Some("text") | Some("image") | Some("video")
+            )
         }),
         None => false,
     }
 }
 
 fn is_model_cost(value: Option<&Value>) -> bool {
-    let Some(cost) = value.and_then(Value::as_object) else { return false };
+    let Some(cost) = value.and_then(Value::as_object) else {
+        return false;
+    };
     is_finite_number(cost.get("input"))
         && is_finite_number(cost.get("output"))
         && is_finite_number(cost.get("cacheRead"))
@@ -86,7 +98,9 @@ fn is_model_cost(value: Option<&Value>) -> bool {
 }
 
 fn is_model_catalog_entry(value: &Value) -> bool {
-    let Some(object) = value.as_object() else { return false };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
     object.get("id").and_then(Value::as_str).is_some()
         && object.get("name").and_then(Value::as_str).is_some()
         && object.get("api").and_then(Value::as_str).is_some()
@@ -109,7 +123,9 @@ pub fn parse_remote_catalog(provider_id: &str, value: &Value) -> Result<Vec<Mode
         _ => Vec::new(),
     };
     if !entries.iter().all(is_model_catalog_entry) {
-        return Err(format!("Invalid model catalog for provider \"{provider_id}\""));
+        return Err(format!(
+            "Invalid model catalog for provider \"{provider_id}\""
+        ));
     }
     entries
         .into_iter()
@@ -152,7 +168,11 @@ mod tests {
         let dynamic = vec![model("a", "A2", 5000)];
         let merged = merge_remote_catalog_models("p", &baseline, &dynamic);
         assert_eq!(merged.conflicts.len(), 1);
-        assert!(merged.conflicts[0].fields.contains(&"contextWindow".to_owned()));
+        assert!(
+            merged.conflicts[0]
+                .fields
+                .contains(&"contextWindow".to_owned())
+        );
     }
 
     #[test]

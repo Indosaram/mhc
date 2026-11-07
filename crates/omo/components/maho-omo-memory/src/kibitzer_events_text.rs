@@ -76,7 +76,10 @@ pub fn truncate_head_with_extra(text: &str, cap: usize, extra: usize) -> String 
 
 /// One folded event as it appears in the digest: kind (and tool), error flag, clipped body.
 pub fn fragment_of(kind: &str, tool: Option<&str>, is_error: bool, body: &str) -> String {
-    let label = match tool { Some(tool) => format!("{kind}({tool})"), None => kind.to_string() };
+    let label = match tool {
+        Some(tool) => format!("{kind}({tool})"),
+        None => kind.to_string(),
+    };
     let status = if is_error { " error" } else { "" };
     let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
     let clipped = if utf16_len(&collapsed) > DIGEST_FRAGMENT_CHARS {
@@ -91,7 +94,10 @@ pub fn fragment_of(kind: &str, tool: Option<&str>, is_error: bool, body: &str) -
 /// of the newest tail fragments as fit, redacted after composition and hard-capped from the tail so
 /// the header - and with it both cursors - always survives.
 pub fn digest_line(fold: &FoldState) -> String {
-    let header = format!("{} earlier events folded (seq {}-{}, cursor {}..{}): ", fold.count, fold.first_seq, fold.last_seq, fold.first_cursor, fold.last_cursor);
+    let header = format!(
+        "{} earlier events folded (seq {}-{}, cursor {}..{}): ",
+        fold.count, fold.first_seq, fold.last_seq, fold.first_cursor, fold.last_cursor
+    );
     let budget = KIBITZER_DIGEST_MAX_CHARS.saturating_sub(utf16_len(&header));
     let mut tail = fold.tail.clone();
     let mut elided = fold.count.saturating_sub(1).saturating_sub(tail.len());
@@ -101,20 +107,32 @@ pub fn digest_line(fold: &FoldState) -> String {
         elided += 1;
         body = join_fragments(&fold.head, elided, &tail);
     }
-    let line = redact_kibitzer_event_text(&format!("{header}{body}")).split(['\r', '\n']).collect::<Vec<_>>().join(" ");
-    if utf16_len(&line) <= KIBITZER_DIGEST_MAX_CHARS { line } else { utf16_head(&line, KIBITZER_DIGEST_MAX_CHARS) }
+    let line = redact_kibitzer_event_text(&format!("{header}{body}"))
+        .split(['\r', '\n'])
+        .collect::<Vec<_>>()
+        .join(" ");
+    if utf16_len(&line) <= KIBITZER_DIGEST_MAX_CHARS {
+        line
+    } else {
+        utf16_head(&line, KIBITZER_DIGEST_MAX_CHARS)
+    }
 }
 
 fn join_fragments(head: &str, elided: usize, tail: &[String]) -> String {
     let mut parts = vec![head.to_string()];
-    if elided > 0 { parts.push(format!("... {elided} more ...")); }
+    if elided > 0 {
+        parts.push(format!("... {elided} more ..."));
+    }
     parts.extend(tail.iter().cloned());
     parts.join(" | ")
 }
 
 /// `escapeXml(text)`.
 pub fn escape_xml(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -123,12 +141,17 @@ mod redaction_tests {
 
     #[test]
     fn credential_shapes_beyond_github_tokens_are_masked() {
-        let text = redact_kibitzer_event_text("deploy sk_live_abcdefghijklmnop1234 and AKIAABCDEFGHIJKLMNOP done");
+        let text = redact_kibitzer_event_text(
+            "deploy sk_live_abcdefghijklmnop1234 and AKIAABCDEFGHIJKLMNOP done",
+        );
         assert_eq!(text, "deploy [REDACTED] and *** done");
     }
 
     #[test]
     fn env_assignment_with_a_credential_word_is_masked_and_others_are_not() {
-        assert_eq!(redact_kibitzer_event_text("MY_API_KEY=abc PATH=/bin"), "MY_API_KEY=[REDACTED] PATH=/bin");
+        assert_eq!(
+            redact_kibitzer_event_text("MY_API_KEY=abc PATH=/bin"),
+            "MY_API_KEY=[REDACTED] PATH=/bin"
+        );
     }
 }

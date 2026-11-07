@@ -51,13 +51,28 @@ impl ModelRegistry for TestRegistry {
 
 pub struct TestUi;
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
@@ -88,13 +103,22 @@ impl RecordingLogger {
 }
 impl ComponentLogger for RecordingLogger {
     fn info(&self, message: &str, details: Option<&JsonValue>) {
-        self.0.lock().expect("log messages").push((message.to_owned(), details.cloned()));
+        self.0
+            .lock()
+            .expect("log messages")
+            .push((message.to_owned(), details.cloned()));
     }
     fn warn(&self, message: &str, details: Option<&JsonValue>) {
-        self.0.lock().expect("log messages").push((message.to_owned(), details.cloned()));
+        self.0
+            .lock()
+            .expect("log messages")
+            .push((message.to_owned(), details.cloned()));
     }
     fn error(&self, message: &str, details: Option<&JsonValue>) {
-        self.0.lock().expect("log messages").push((message.to_owned(), details.cloned()));
+        self.0
+            .lock()
+            .expect("log messages")
+            .push((message.to_owned(), details.cloned()));
     }
 }
 
@@ -121,7 +145,10 @@ pub fn context(cwd: &Path, logger: Option<Arc<dyn ComponentLogger>>) -> Extensio
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,
@@ -134,7 +161,11 @@ pub fn context(cwd: &Path, logger: Option<Arc<dyn ComponentLogger>>) -> Extensio
 pub fn write_skill(skills_dir: &Path, name: &str) {
     let dir = skills_dir.join(name);
     std::fs::create_dir_all(&dir).expect("skill dir");
-    std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: fixture\n---\nbody\n")).expect("skill file");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: fixture\n---\nbody\n"),
+    )
+    .expect("skill file");
 }
 
 pub fn env_for_home(home: &Path) -> std::collections::BTreeMap<String, String> {

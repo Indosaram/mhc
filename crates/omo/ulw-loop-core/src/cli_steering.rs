@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::cli_arg_parser::{parse_goal_arg, read_json_input, read_value};
 use crate::cli_output::{print_json, print_status};
 use crate::runtime::UlwLoopError;
-use crate::steering_batch::{steer_ulw_loop_batch, SteerUlwLoopBatchResult};
+use crate::steering_batch::{SteerUlwLoopBatchResult, steer_ulw_loop_batch};
 use crate::steering_types::{
     SteerUlwLoopResult, UlwLoopSteeringChildGoal, UlwLoopSteeringMutationKind,
     UlwLoopSteeringProposal, UlwLoopSteeringSource,
@@ -25,8 +25,13 @@ Example: mhc ulw-loop steer --kind annotate_ledger --evidence \"observed behavio
 pub fn parse_steering_kind(argv: &[String]) -> Result<String, UlwLoopError> {
     let val = read_value(argv, "--kind");
     let kinds = [
-        "add_subgoal", "split_subgoal", "reorder_pending", "revise_pending_wording",
-        "revise_criterion", "annotate_ledger", "mark_blocked_superseded",
+        "add_subgoal",
+        "split_subgoal",
+        "reorder_pending",
+        "revise_pending_wording",
+        "revise_criterion",
+        "annotate_ledger",
+        "mark_blocked_superseded",
     ];
     match val {
         Some(k) if kinds.contains(&k.as_str()) => Ok(k),
@@ -61,7 +66,10 @@ fn required(argv: &[String], flag: &str) -> Result<String, UlwLoopError> {
             return Ok(trimmed);
         }
     }
-    Err(UlwLoopError::new(format!("Missing {flag}."), "ULW_LOOP_STEERING_FIELD_REQUIRED"))
+    Err(UlwLoopError::new(
+        format!("Missing {flag}."),
+        "ULW_LOOP_STEERING_FIELD_REQUIRED",
+    ))
 }
 
 fn required_goal(argv: &[String]) -> Result<String, UlwLoopError> {
@@ -71,38 +79,68 @@ fn required_goal(argv: &[String]) -> Result<String, UlwLoopError> {
             return Ok(trimmed);
         }
     }
-    Err(UlwLoopError::new("Missing --goal-id.", "ULW_LOOP_GOAL_ID_REQUIRED"))
+    Err(UlwLoopError::new(
+        "Missing --goal-id.",
+        "ULW_LOOP_GOAL_ID_REQUIRED",
+    ))
 }
 
-fn children_from_val(val: Option<Value>, flag: &str) -> Result<Vec<UlwLoopSteeringChildGoal>, UlwLoopError> {
-    let Some(v) = val else { return Ok(Vec::new()); };
+fn children_from_val(
+    val: Option<Value>,
+    flag: &str,
+) -> Result<Vec<UlwLoopSteeringChildGoal>, UlwLoopError> {
+    let Some(v) = val else {
+        return Ok(Vec::new());
+    };
     let Some(arr) = v.as_array() else {
-        return Err(UlwLoopError::new(format!("{flag} must be a JSON array."), "ULW_LOOP_STEERING_JSON_ARRAY_REQUIRED"));
+        return Err(UlwLoopError::new(
+            format!("{flag} must be a JSON array."),
+            "ULW_LOOP_STEERING_JSON_ARRAY_REQUIRED",
+        ));
     };
     let mut res = Vec::new();
     for item in arr {
-        let title = item.get("title").and_then(|t| t.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let objective = item.get("objective").and_then(|t| t.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let title = item
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let objective = item
+            .get("objective")
+            .and_then(|t| t.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         if let (Some(title), Some(objective)) = (title, objective) {
             res.push(UlwLoopSteeringChildGoal { title, objective });
         } else {
-            return Err(UlwLoopError::new(format!("{flag} entries require title/objective."), "ULW_LOOP_STEERING_CHILD_INVALID"));
+            return Err(UlwLoopError::new(
+                format!("{flag} entries require title/objective."),
+                "ULW_LOOP_STEERING_CHILD_INVALID",
+            ));
         }
     }
     Ok(res)
 }
 
 fn string_array_from_val(val: Option<Value>, flag: &str) -> Result<Vec<String>, UlwLoopError> {
-    let Some(v) = val else { return Ok(Vec::new()); };
+    let Some(v) = val else {
+        return Ok(Vec::new());
+    };
     let Some(arr) = v.as_array() else {
-        return Err(UlwLoopError::new(format!("{flag} must be a JSON array."), "ULW_LOOP_STEERING_JSON_ARRAY_REQUIRED"));
+        return Err(UlwLoopError::new(
+            format!("{flag} must be a JSON array."),
+            "ULW_LOOP_STEERING_JSON_ARRAY_REQUIRED",
+        ));
     };
     let mut res = Vec::new();
     for item in arr {
         if let Some(s) = item.as_str() {
             res.push(s.trim().to_string());
         } else {
-            return Err(UlwLoopError::new(format!("{flag} entries must be strings."), "ULW_LOOP_STEERING_STRING_ARRAY_REQUIRED"));
+            return Err(UlwLoopError::new(
+                format!("{flag} entries must be strings."),
+                "ULW_LOOP_STEERING_STRING_ARRAY_REQUIRED",
+            ));
         }
     }
     Ok(res)
@@ -166,7 +204,10 @@ pub fn parse_steering_proposal(argv: &[String]) -> Result<UlwLoopSteeringProposa
             let title = read_value(argv, "--title");
             let objective = read_value(argv, "--objective");
             if title.is_none() && objective.is_none() {
-                return Err(UlwLoopError::new("revise_pending_wording requires --title or --objective.", "ULW_LOOP_STEERING_UPDATE_REQUIRED"));
+                return Err(UlwLoopError::new(
+                    "revise_pending_wording requires --title or --objective.",
+                    "ULW_LOOP_STEERING_UPDATE_REQUIRED",
+                ));
             }
             proposal.revised_title = title;
             proposal.revised_objective = objective;
@@ -180,7 +221,10 @@ pub fn parse_steering_proposal(argv: &[String]) -> Result<UlwLoopSteeringProposa
             let expected_evidence = read_value(argv, "--expected-evidence");
             let user_model = read_value(argv, "--user-model");
             if scenario.is_none() && expected_evidence.is_none() && user_model.is_none() {
-                return Err(UlwLoopError::new("revise_criterion requires scenario, expected-evidence, or user-model.", "ULW_LOOP_STEERING_UPDATE_REQUIRED"));
+                return Err(UlwLoopError::new(
+                    "revise_criterion requires scenario, expected-evidence, or user-model.",
+                    "ULW_LOOP_STEERING_UPDATE_REQUIRED",
+                ));
             }
             proposal.scenario = scenario;
             proposal.expected_evidence = expected_evidence;
@@ -196,34 +240,53 @@ pub fn parse_steering_proposal(argv: &[String]) -> Result<UlwLoopSteeringProposa
                 proposal.child_goals = Some(children_from_val(val, "--replacements")?);
             }
         }
-        _ => return Err(UlwLoopError::new(format!("Unsupported steering kind: {kind}."), "ULW_LOOP_STEERING_KIND_UNSUPPORTED")),
+        _ => {
+            return Err(UlwLoopError::new(
+                format!("Unsupported steering kind: {kind}."),
+                "ULW_LOOP_STEERING_KIND_UNSUPPORTED",
+            ));
+        }
     }
 
     Ok(proposal)
 }
 
-pub fn parse_steering_proposals(argv: &[String]) -> Result<Vec<UlwLoopSteeringProposal>, UlwLoopError> {
+pub fn parse_steering_proposals(
+    argv: &[String],
+) -> Result<Vec<UlwLoopSteeringProposal>, UlwLoopError> {
     let input = read_value(argv, "--proposals-json");
     let Some(input_val) = input else {
         return Ok(vec![parse_steering_proposal(argv)?]);
     };
 
     if read_value(argv, "--kind").is_some() {
-        return Err(UlwLoopError::new("--kind and --proposals-json are mutually exclusive.", "ULW_LOOP_STEERING_BATCH_CONFLICT"));
+        return Err(UlwLoopError::new(
+            "--kind and --proposals-json are mutually exclusive.",
+            "ULW_LOOP_STEERING_BATCH_CONFLICT",
+        ));
     }
 
     let raw = read_json_input(Some(&input_val))?;
     let Some(arr) = raw.and_then(|v| v.as_array().cloned()) else {
-        return Err(UlwLoopError::new("--proposals-json must be a non-empty JSON array.", "ULW_LOOP_STEERING_BATCH_ARRAY_REQUIRED"));
+        return Err(UlwLoopError::new(
+            "--proposals-json must be a non-empty JSON array.",
+            "ULW_LOOP_STEERING_BATCH_ARRAY_REQUIRED",
+        ));
     };
     if arr.is_empty() {
-        return Err(UlwLoopError::new("--proposals-json must be a non-empty JSON array.", "ULW_LOOP_STEERING_BATCH_ARRAY_REQUIRED"));
+        return Err(UlwLoopError::new(
+            "--proposals-json must be a non-empty JSON array.",
+            "ULW_LOOP_STEERING_BATCH_ARRAY_REQUIRED",
+        ));
     }
 
     let mut proposals = Vec::new();
     for item in arr {
         let p: UlwLoopSteeringProposal = serde_json::from_value(item).map_err(|e| {
-            UlwLoopError::new(format!("Invalid batch steering proposal: {e}"), "ULW_LOOP_STEERING_BATCH_ITEM_INVALID")
+            UlwLoopError::new(
+                format!("Invalid batch steering proposal: {e}"),
+                "ULW_LOOP_STEERING_BATCH_ITEM_INVALID",
+            )
         })?;
         proposals.push(p);
     }
@@ -277,7 +340,13 @@ pub fn print_steer_result(result: &SteerUlwLoopResult, json: bool) {
         print_json(&out);
         return;
     }
-    let outcome = if result.deduped { "deduped" } else if result.accepted { "accepted" } else { "rejected" };
+    let outcome = if result.deduped {
+        "deduped"
+    } else if result.accepted {
+        "accepted"
+    } else {
+        "rejected"
+    };
     println!("ulw-loop steer: {outcome} {}", result.audit.kind);
     if !result.rejected_reasons.is_empty() {
         println!("rejected: {}", result.rejected_reasons.join("; "));
@@ -300,7 +369,15 @@ pub fn print_steer_batch_result(result: &SteerUlwLoopBatchResult, json: bool) {
         print_json(&out);
         return;
     }
-    println!("ulw-loop steer batch: {} {} proposal(s)", if result.accepted { "accepted" } else { "rejected" }, result.results.len());
+    println!(
+        "ulw-loop steer batch: {} {} proposal(s)",
+        if result.accepted {
+            "accepted"
+        } else {
+            "rejected"
+        },
+        result.results.len()
+    );
     if !result.rejected_reasons.is_empty() {
         println!("rejected: {}", result.rejected_reasons.join("; "));
     }

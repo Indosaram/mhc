@@ -12,7 +12,9 @@ use super::{RenderedComponent, ToolRenderContext, ToolRenderResultOptions, ToolR
 use crate::components::keybinding_hints::key_hint;
 use crate::components::visual_truncate::truncate_to_visual_lines;
 use crate::theme::{Theme, ThemeColor};
-use crate::tools::render_utils::{get_text_output, invalid_arg_text, normalize_display_text, replace_tabs, str_value};
+use crate::tools::render_utils::{
+    get_text_output, invalid_arg_text, normalize_display_text, replace_tabs, str_value,
+};
 
 const BASH_PREVIEW_LINES: usize = 5;
 
@@ -29,20 +31,40 @@ fn format_duration(ms: f64) -> String {
     let minutes = total_minutes % 60;
     let hours = total_minutes / 60;
     if hours < 1 {
-        return if seconds == 0 { format!("{minutes}m") } else { format!("{minutes}m {seconds}s") };
+        return if seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m {seconds}s")
+        };
     }
-    if minutes == 0 { format!("{hours}h") } else { format!("{hours}h {minutes}m") }
+    if minutes == 0 {
+        format!("{hours}h")
+    } else {
+        format!("{hours}h {minutes}m")
+    }
 }
 
 fn highlight_bash_command(command: &str, theme: &Theme) -> String {
-    crate::theme::highlight_code(theme, &replace_tabs(&normalize_display_text(command)), Some("bash")).join("\n")
+    crate::theme::highlight_code(
+        theme,
+        &replace_tabs(&normalize_display_text(command)),
+        Some("bash"),
+    )
+    .join("\n")
 }
 
 fn format_shell_call(args: Option<&Value>, theme: &Theme) -> String {
-    let command = args.and_then(|args| str_value(args.get("command"))).flatten();
-    let timeout = args.and_then(|args| args.get("timeout")).and_then(Value::as_f64);
+    let command = args
+        .and_then(|args| str_value(args.get("command")))
+        .flatten();
+    let timeout = args
+        .and_then(|args| args.get("timeout"))
+        .and_then(Value::as_f64);
     let timeout_suffix = match timeout {
-        Some(timeout) if timeout != 0. => theme.fg(ThemeColor::Muted, &format!(" (timeout {}s)", format_number(timeout))),
+        Some(timeout) if timeout != 0. => theme.fg(
+            ThemeColor::Muted,
+            &format!(" (timeout {}s)", format_number(timeout)),
+        ),
         _ => String::new(),
     };
     let command_display = match &command {
@@ -50,11 +72,18 @@ fn format_shell_call(args: Option<&Value>, theme: &Theme) -> String {
         Some(command) if command.is_empty() => theme.fg(ThemeColor::ToolOutput, "..."),
         Some(command) => highlight_bash_command(command, theme),
     };
-    format!("{}{command_display}{timeout_suffix}", theme.fg(ThemeColor::ToolTitle, &theme.bold("$ ")))
+    format!(
+        "{}{command_display}{timeout_suffix}",
+        theme.fg(ThemeColor::ToolTitle, &theme.bold("$ "))
+    )
 }
 
 fn format_number(value: f64) -> String {
-    if value.fract() == 0. { format!("{}", value as i64) } else { format!("{value}") }
+    if value.fract() == 0. {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
 }
 
 #[derive(Default)]
@@ -74,7 +103,8 @@ impl Component for CachedPreview {
     fn render(&mut self, width: usize) -> Vec<String> {
         let mut state = self.state.borrow_mut();
         if state.cached_lines.is_none() || state.cached_width != Some(width) {
-            let preview = truncate_to_visual_lines(&self.styled_output, BASH_PREVIEW_LINES, width, 0);
+            let preview =
+                truncate_to_visual_lines(&self.styled_output, BASH_PREVIEW_LINES, width, 0);
             state.cached_lines = Some(preview.visual_lines);
             state.cached_skipped = Some(preview.skipped_count);
             state.cached_width = Some(width);
@@ -84,7 +114,8 @@ impl Component for CachedPreview {
         if skipped > 0 {
             let hint = format!(
                 "{} {}{}",
-                self.theme.fg(ThemeColor::Muted, &format!("... ({skipped} earlier lines,")),
+                self.theme
+                    .fg(ThemeColor::Muted, &format!("... ({skipped} earlier lines,")),
                 key_hint("app.tools.expand", "to expand", &self.theme),
                 self.theme.fg(ThemeColor::Muted, ")")
             );
@@ -121,7 +152,11 @@ impl ToolRenderers for ShellRenderers {
     fn is_built_in(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
         if context.execution_started && self.started_at.is_none() {
             self.started_at = Some(context.now_ms);
             self.ended_at = None;
@@ -138,7 +173,10 @@ impl ToolRenderers for ShellRenderers {
         context: &ToolRenderContext<'_>,
     ) -> Option<RenderedComponent> {
         if self.started_at.is_some() && options.is_partial && self.interval.is_none() {
-            self.interval = Some(maho_tui::ui_intervals::set_ui_interval(std::time::Duration::from_secs(1), Rc::clone(&context.invalidate)));
+            self.interval = Some(maho_tui::ui_intervals::set_ui_interval(
+                std::time::Duration::from_secs(1),
+                Rc::clone(&context.invalidate),
+            ));
         }
         if !options.is_partial || context.is_error {
             self.ended_at.get_or_insert(context.now_ms);
@@ -151,10 +189,17 @@ impl ToolRenderers for ShellRenderers {
         let output = get_text_output(Some(result), context.show_images);
         let output = output.trim();
         if !output.is_empty() {
-            let styled_output =
-                output.split('\n').map(|line| theme.fg(ThemeColor::ToolOutput, line)).collect::<Vec<_>>().join("\n");
+            let styled_output = output
+                .split('\n')
+                .map(|line| theme.fg(ThemeColor::ToolOutput, line))
+                .collect::<Vec<_>>()
+                .join("\n");
             if options.expanded {
-                component.add_child(Rc::new(RefCell::new(Text::with_padding(format!("\n{styled_output}"), 0, 0))));
+                component.add_child(Rc::new(RefCell::new(Text::with_padding(
+                    format!("\n{styled_output}"),
+                    0,
+                    0,
+                ))));
             } else {
                 let state = Rc::new(RefCell::new(BashResultState::default()));
                 component.add_child(Rc::new(RefCell::new(CachedPreview {
@@ -166,10 +211,20 @@ impl ToolRenderers for ShellRenderers {
         }
 
         if let Some(started_at) = self.started_at {
-            let label = if options.is_partial { "Elapsed" } else { "Took" };
+            let label = if options.is_partial {
+                "Elapsed"
+            } else {
+                "Took"
+            };
             let end_time = self.ended_at.unwrap_or(context.now_ms);
             component.add_child(Rc::new(RefCell::new(Text::with_padding(
-                format!("\n{}", theme.fg(ThemeColor::Muted, &format!("{label} {}", format_duration(end_time - started_at)))),
+                format!(
+                    "\n{}",
+                    theme.fg(
+                        ThemeColor::Muted,
+                        &format!("{label} {}", format_duration(end_time - started_at))
+                    )
+                ),
                 0,
                 0,
             ))));

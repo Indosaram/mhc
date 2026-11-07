@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use super::markdown_helpers::{
-    expand_tabs, indent_code_compensation, normalize_label, rtrim, split_cells,
-    trim_trailing_blank_lines, Rule,
+    Rule, expand_tabs, indent_code_compensation, normalize_label, rtrim, split_cells,
+    trim_trailing_blank_lines,
 };
 use super::markdown_rules as rules;
 use super::markdown_token::{Align, Inline, InlineSlot, TableCell, Token};
@@ -120,25 +120,37 @@ static R_PARAGRAPH: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::BLOCK_PAR
 static R_TEXT: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::BLOCK_TEXT, ""));
 
 static R_ENDING_HASH: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_ENDINGHASH, ""));
-static R_ENDING_SPACE_TAB: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_ENDINGSPACETABCHAR, ""));
+static R_ENDING_SPACE_TAB: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_ENDINGSPACETABCHAR, ""));
 static R_TAB_CHAR_GLOBAL: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABCHARGLOBAL, "g"));
 static R_BLANK_LINE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_BLANKLINE, ""));
-static R_DOUBLE_BLANK_LINE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_DOUBLEBLANKLINE, ""));
-static R_BLOCKQUOTE_START: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESTART, ""));
-static R_BQ_SETEXT_REPLACE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESETEXTREPLACE, "g"));
-static R_BQ_SETEXT_REPLACE2: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESETEXTREPLACE2, "gm"));
+static R_DOUBLE_BLANK_LINE: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_DOUBLEBLANKLINE, ""));
+static R_BLOCKQUOTE_START: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESTART, ""));
+static R_BQ_SETEXT_REPLACE: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESETEXTREPLACE, "g"));
+static R_BQ_SETEXT_REPLACE2: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_BLOCKQUOTESETEXTREPLACE2, "gm"));
 static R_LIST_IS_TASK: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_LISTISTASK, ""));
-static R_LIST_REPLACE_TASK: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_LISTREPLACETASK, ""));
-static R_LIST_TASK_CHECKBOX: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_LISTTASKCHECKBOX, ""));
+static R_LIST_REPLACE_TASK: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_LISTREPLACETASK, ""));
+static R_LIST_TASK_CHECKBOX: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_LISTTASKCHECKBOX, ""));
 static R_ANY_LINE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_ANYLINE, ""));
 static R_HREF_BRACKETS: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_HREFBRACKETS, ""));
 static R_TABLE_DELIMITER: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEDELIMITER, ""));
-static R_TABLE_ALIGN_CHARS: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEALIGNCHARS, "g"));
-static R_TABLE_ROW_BLANK_LINE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEROWBLANKLINE, ""));
-static R_TABLE_ALIGN_RIGHT: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEALIGNRIGHT, ""));
-static R_TABLE_ALIGN_CENTER: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEALIGNCENTER, ""));
+static R_TABLE_ALIGN_CHARS: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_TABLEALIGNCHARS, "g"));
+static R_TABLE_ROW_BLANK_LINE: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_TABLEROWBLANKLINE, ""));
+static R_TABLE_ALIGN_RIGHT: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_TABLEALIGNRIGHT, ""));
+static R_TABLE_ALIGN_CENTER: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_TABLEALIGNCENTER, ""));
 static R_TABLE_ALIGN_LEFT: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_TABLEALIGNLEFT, ""));
-static R_MULTIPLE_SPACE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_MULTIPLESPACEGLOBAL, "g"));
+static R_MULTIPLE_SPACE: LazyLock<Rule> =
+    LazyLock::new(|| rule(rules::OTHER_MULTIPLESPACEGLOBAL, "g"));
 
 static R_ANY_PUNCTUATION: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(rules::INLINE_ANYPUNCTUATION, "gu"));
@@ -146,9 +158,14 @@ static R_ANY_PUNCTUATION: LazyLock<Rule> =
 fn list_item_regex(bull: &str) -> Arc<Rule> {
     static CACHE: LazyLock<Mutex<HashMap<String, Arc<Rule>>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
-    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Arc::clone(cache.entry(bull.to_string()).or_insert_with(|| {
-        Arc::new(Rule::new(&format!(r"^( {{0,3}}{bull})((?:[\t ][^\n]*)?(?:\n|$))"), ""))
+        Arc::new(Rule::new(
+            &format!(r"^( {{0,3}}{bull})((?:[\t ][^\n]*)?(?:\n|$))"),
+            "",
+        ))
     }))
 }
 
@@ -169,7 +186,8 @@ fn next_bullet_regex_build(indent: usize) -> Rule {
 }
 
 fn next_bullet_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| next_bullet_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| next_bullet_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -184,7 +202,8 @@ fn hr_regex_build(indent: usize) -> Rule {
 }
 
 fn hr_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| hr_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| hr_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -196,7 +215,8 @@ fn fences_begin_regex_build(indent: usize) -> Rule {
 }
 
 fn fences_begin_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| fences_begin_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| fences_begin_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -205,7 +225,8 @@ fn heading_begin_regex_build(indent: usize) -> Rule {
 }
 
 fn heading_begin_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| heading_begin_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| heading_begin_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -214,7 +235,8 @@ fn blockquote_begin_regex_build(indent: usize) -> Rule {
 }
 
 fn blockquote_begin_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| blockquote_begin_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| blockquote_begin_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -231,7 +253,8 @@ fn html_begin_regex_build(indent: usize) -> Rule {
 }
 
 fn html_begin_regex(indent: usize) -> &'static Rule {
-    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| html_begin_regex_build(i + 1)));
+    static RULES: LazyLock<[Rule; 4]> =
+        LazyLock::new(|| std::array::from_fn(|i| html_begin_regex_build(i + 1)));
     &RULES[cached_indent(indent)]
 }
 
@@ -266,8 +289,8 @@ pub(crate) fn find_inline_math(src: &str, open: &str, close: &str) -> Option<(St
             } else {
                 text.trim().to_string()
             };
-            let has_edge_space =
-                text.starts_with(|c: char| c.is_whitespace()) || text.ends_with(char::is_whitespace);
+            let has_edge_space = text.starts_with(|c: char| c.is_whitespace())
+                || text.ends_with(char::is_whitespace);
             if normalized.is_empty() || (open == close && has_edge_space) {
                 return None;
             }
@@ -278,7 +301,10 @@ pub(crate) fn find_inline_math(src: &str, open: &str, close: &str) -> Option<(St
             return None;
         }
         if chars[index] == '\\' {
-            if chars.get(index + 1).is_some_and(|c| *c == '\n' || *c == '\r') {
+            if chars
+                .get(index + 1)
+                .is_some_and(|c| *c == '\n' || *c == '\r')
+            {
                 return None;
             }
             index += 1;
@@ -293,7 +319,9 @@ pub(crate) fn find_malformed_inline_span(src: &str, open: &str, close: &str) -> 
         return None;
     }
     let chars: Vec<char> = src.chars().collect();
-    let scan_end = chars.len().min(open.chars().count() + MAX_LATEX_FORMULA_LENGTH + 1);
+    let scan_end = chars
+        .len()
+        .min(open.chars().count() + MAX_LATEX_FORMULA_LENGTH + 1);
     let mut competing_opener = false;
     let mut closers: Vec<&str> = vec![close];
     let mut index = open.chars().count();
@@ -315,17 +343,21 @@ pub(crate) fn find_malformed_inline_span(src: &str, open: &str, close: &str) -> 
             continue;
         }
         if let Some(expected) = closers.last().copied()
-            && starts_with_chars(&chars, index, expected) {
-                closers.pop();
-                if closers.is_empty() {
-                    return competing_opener
-                        .then(|| chars[..index + expected.chars().count()].iter().collect());
-                }
-                index += expected.chars().count();
-                continue;
+            && starts_with_chars(&chars, index, expected)
+        {
+            closers.pop();
+            if closers.is_empty() {
+                return competing_opener
+                    .then(|| chars[..index + expected.chars().count()].iter().collect());
             }
+            index += expected.chars().count();
+            continue;
+        }
         if chars[index] == '\\' {
-            if chars.get(index + 1).is_some_and(|c| *c == '\n' || *c == '\r') {
+            if chars
+                .get(index + 1)
+                .is_some_and(|c| *c == '\n' || *c == '\r')
+            {
                 return competing_opener.then(|| chars[..index].iter().collect());
             }
             index += 1;
@@ -340,7 +372,8 @@ pub(crate) fn is_likely_literal_dollar_body(text: &str) -> bool {
     static PAREN: LazyLock<Rule> = LazyLock::new(|| rule(r"^\([^)\r\n]*\)[/\\]$", ""));
     static SYMBOL: LazyLock<Rule> = LazyLock::new(|| rule(r"^[!#$?@*-][/\\]$", ""));
     static WORD: LazyLock<Rule> = LazyLock::new(|| rule(r"^[A-Za-z_][A-Za-z0-9_]*[./\\:-]$", ""));
-    static NUMBER: LazyLock<Rule> = LazyLock::new(|| rule(r"^[\d][\d,.]*(?:[-\u{2013}\u{2014}]|[/\\])$", ""));
+    static NUMBER: LazyLock<Rule> =
+        LazyLock::new(|| rule(r"^[\d][\d,.]*(?:[-\u{2013}\u{2014}]|[/\\])$", ""));
     BRACE.matches(text)
         || PAREN.matches(text)
         || SYMBOL.matches(text)
@@ -433,8 +466,8 @@ fn block_math_tokenizer(src: &str) -> Option<Token> {
         .map(|captures| captures.whole().to_string())
         .unwrap_or_default();
     let candidate = drop_utf16(src, utf16_len(&leading));
-    let found = find_block_math(candidate, "$$", "$$")
-        .or_else(|| find_block_math(candidate, "\\[", "\\]"));
+    let found =
+        find_block_math(candidate, "$$", "$$").or_else(|| find_block_math(candidate, "\\[", "\\]"));
     found.map(|(raw, text)| latex_token("latex_block", &format!("{leading}{raw}"), &text))
 }
 
@@ -526,7 +559,12 @@ impl Lexer {
         }
     }
 
-    fn block_tokens(&mut self, source: &str, tokens: &mut Vec<Token>, last_paragraph_clipped_in: bool) {
+    fn block_tokens(
+        &mut self,
+        source: &str,
+        tokens: &mut Vec<Token>,
+        last_paragraph_clipped_in: bool,
+    ) {
         let mut src: &str = source;
         let mut last_paragraph_clipped = last_paragraph_clipped_in;
         let mut src_length = usize::MAX;
@@ -566,11 +604,17 @@ impl Lexer {
                     Token::Code { text, .. } => text.clone(),
                     _ => String::new(),
                 };
-                if matches!(tokens.last(), Some(Token::Paragraph { .. } | Token::Text { .. })) {
+                if matches!(
+                    tokens.last(),
+                    Some(Token::Paragraph { .. } | Token::Text { .. })
+                ) {
                     if let Some(last) = tokens.last_mut() {
                         merge_continuation(last, token.raw(), &text, MergeKind::Other);
                     }
-                    let merged = tokens.last().map(|t| t.raw().to_string()).unwrap_or_default();
+                    let merged = tokens
+                        .last()
+                        .map(|t| t.raw().to_string())
+                        .unwrap_or_default();
                     self.last_paragraph_source(&merged);
                 } else {
                     tokens.push(token);
@@ -616,24 +660,33 @@ impl Lexer {
 
             if let Some(token) = self.tokenizer_def(src) {
                 src = advance(src, token.raw());
-                if matches!(tokens.last(), Some(Token::Paragraph { .. } | Token::Text { .. })) {
+                if matches!(
+                    tokens.last(),
+                    Some(Token::Paragraph { .. } | Token::Text { .. })
+                ) {
                     let raw = token.raw().to_string();
                     if let Some(last) = tokens.last_mut() {
                         merge_continuation(last, &raw, &raw, MergeKind::Other);
                     }
-                    let merged = tokens.last().map(|t| t.raw().to_string()).unwrap_or_default();
+                    let merged = tokens
+                        .last()
+                        .map(|t| t.raw().to_string())
+                        .unwrap_or_default();
                     self.last_paragraph_source(&merged);
-                } else if let Token::Def { tag, href, title, .. } = &token
-                    && !self.links.contains_key(tag) {
-                        self.links.insert(
-                            tag.clone(),
-                            Link {
-                                href: href.clone(),
-                                title: title.clone(),
-                            },
-                        );
-                        tokens.push(token);
-                    }
+                } else if let Token::Def {
+                    tag, href, title, ..
+                } = &token
+                    && !self.links.contains_key(tag)
+                {
+                    self.links.insert(
+                        tag.clone(),
+                        Link {
+                            href: href.clone(),
+                            title: title.clone(),
+                        },
+                    );
+                    tokens.push(token);
+                }
                 continue;
             }
 
@@ -650,28 +703,32 @@ impl Lexer {
             }
 
             if self.state.top
-                && let Some(token) = self.tokenizer_paragraph(src) {
-                    let raw = token.raw().to_string();
-                    let text = match &token {
-                        Token::Paragraph { text, .. } => text.clone(),
-                        _ => String::new(),
-                    };
-                    let mergeable =
-                        last_paragraph_clipped && matches!(tokens.last(), Some(Token::Paragraph { .. }));
-                    if mergeable {
-                        self.inline_queue.pop();
-                        if let Some(last) = tokens.last_mut() {
-                            merge_continuation(last, &raw, &text, MergeKind::Paragraph);
-                        }
-                        let merged = tokens.last().map(|t| t.raw().to_string()).unwrap_or_default();
-                        self.last_paragraph_source(&merged);
-                    } else {
-                        tokens.push(token);
+                && let Some(token) = self.tokenizer_paragraph(src)
+            {
+                let raw = token.raw().to_string();
+                let text = match &token {
+                    Token::Paragraph { text, .. } => text.clone(),
+                    _ => String::new(),
+                };
+                let mergeable = last_paragraph_clipped
+                    && matches!(tokens.last(), Some(Token::Paragraph { .. }));
+                if mergeable {
+                    self.inline_queue.pop();
+                    if let Some(last) = tokens.last_mut() {
+                        merge_continuation(last, &raw, &text, MergeKind::Paragraph);
                     }
-                    last_paragraph_clipped = false;
-                    src = advance(src, &raw);
-                    continue;
+                    let merged = tokens
+                        .last()
+                        .map(|t| t.raw().to_string())
+                        .unwrap_or_default();
+                    self.last_paragraph_source(&merged);
+                } else {
+                    tokens.push(token);
                 }
+                last_paragraph_clipped = false;
+                src = advance(src, &raw);
+                continue;
+            }
 
             if let Some(token) = self.tokenizer_text(src) {
                 let raw = token.raw().to_string();
@@ -685,7 +742,10 @@ impl Lexer {
                     if let Some(last) = tokens.last_mut() {
                         merge_continuation(last, &raw, &text, MergeKind::Other);
                     }
-                    let merged = tokens.last().map(|t| t.raw().to_string()).unwrap_or_default();
+                    let merged = tokens
+                        .last()
+                        .map(|t| t.raw().to_string())
+                        .unwrap_or_default();
                     self.last_paragraph_source(&merged);
                 } else {
                     tokens.push(token);
@@ -820,7 +880,11 @@ impl Lexer {
             let last = tokens.last().cloned();
             match last {
                 Some(Token::Code { .. }) => break,
-                Some(Token::Blockquote { raw: old_raw, text: old_text, .. }) => {
+                Some(Token::Blockquote {
+                    raw: old_raw,
+                    text: old_text,
+                    ..
+                }) => {
                     let continuation = lines.join("\n");
                     let new_text = format!(
                         "{old_raw}\n{}",
@@ -902,7 +966,11 @@ impl Lexer {
                 (
                     item.whole().to_string(),
                     item.group_or(1, "").to_string(),
-                    item.group_or(2, "").split('\n').next().unwrap_or("").to_string(),
+                    item.group_or(2, "")
+                        .split('\n')
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
                 )
             };
             src = advance(src, &raw);
@@ -957,7 +1025,12 @@ impl Lexer {
                         .unwrap_or(next_line_without_tabs.chars().count());
                     if leading_spaces >= indent || next_line.trim().is_empty() {
                         item_contents.push('\n');
-                        item_contents.push_str(&next_line_without_tabs.chars().skip(indent).collect::<String>());
+                        item_contents.push_str(
+                            &next_line_without_tabs
+                                .chars()
+                                .skip(indent)
+                                .collect::<String>(),
+                        );
                     } else {
                         if blank_line {
                             break;
@@ -1030,10 +1103,7 @@ impl Lexer {
                     .iter()
                     .filter(|t| matches!(t, Token::Space { .. }))
                     .collect();
-                loose = !spacers.is_empty()
-                    && spacers
-                        .iter()
-                        .any(|t| R_ANY_LINE.matches(t.raw()));
+                loose = !spacers.is_empty() && spacers.iter().any(|t| R_ANY_LINE.matches(t.raw()));
             }
             if let Token::ListItem { tokens, .. } = item {
                 *tokens = child_tokens;
@@ -1065,7 +1135,8 @@ impl Lexer {
                 };
                 let new_text = R_LIST_REPLACE_TASK.replace_all(text, "");
                 let (raw_value, text_value) = match tokens.first() {
-                    Some(Token::Text { raw, text, .. }) | Some(Token::Paragraph { raw, text, .. }) => (
+                    Some(Token::Text { raw, text, .. })
+                    | Some(Token::Paragraph { raw, text, .. }) => (
                         R_LIST_REPLACE_TASK.replace_all(raw, ""),
                         R_LIST_REPLACE_TASK.replace_all(text, ""),
                     ),
@@ -1078,9 +1149,8 @@ impl Lexer {
                     continue;
                 };
                 *text = new_text;
-                if let Some(
-                    Token::Text { raw, text, .. } | Token::Paragraph { raw, text, .. },
-                ) = tokens.first_mut()
+                if let Some(Token::Text { raw, text, .. } | Token::Paragraph { raw, text, .. }) =
+                    tokens.first_mut()
                 {
                     *raw = new_first_raw;
                     *text = new_first_text;
@@ -1115,10 +1185,8 @@ impl Lexer {
                 {
                     *item_checked = checked;
                     if loose {
-                        let first_is_paragraph = matches!(
-                            tokens.first(),
-                            Some(Token::Paragraph { .. })
-                        );
+                        let first_is_paragraph =
+                            matches!(tokens.first(), Some(Token::Paragraph { .. }));
                         if first_is_paragraph {
                             if let Some(Token::Paragraph { raw, text, .. }) = tokens.first_mut() {
                                 *raw = format!("{checkbox_raw}{raw}");
@@ -1134,7 +1202,8 @@ impl Lexer {
                                     tokens: Inline::Slot(0),
                                 },
                             );
-                            if let Some(Token::Paragraph { tokens: slot, .. }) = tokens.first_mut() {
+                            if let Some(Token::Paragraph { tokens: slot, .. }) = tokens.first_mut()
+                            {
                                 let slot_index = self.inline_slots.len();
                                 self.inline_slots.push(vec![checkbox]);
                                 *slot = Inline::Slot(slot_index);
@@ -1149,12 +1218,19 @@ impl Lexer {
 
         if loose {
             for item in items.iter_mut() {
-                if let Token::ListItem { loose: item_loose, tokens, .. } = item {
+                if let Token::ListItem {
+                    loose: item_loose,
+                    tokens,
+                    ..
+                } = item
+                {
                     *item_loose = true;
                     for token in tokens.iter_mut() {
                         if matches!(token, Token::Text { .. }) {
                             let converted = match token {
-                                Token::Text { raw, text, tokens, .. } => Token::Paragraph {
+                                Token::Text {
+                                    raw, text, tokens, ..
+                                } => Token::Paragraph {
                                     raw: raw.clone(),
                                     text: text.clone(),
                                     tokens: tokens.clone().unwrap_or_default(),
@@ -1180,7 +1256,10 @@ impl Lexer {
     fn tokenizer_html(&self, src: &str) -> Option<Token> {
         let captures = R_HTML.exec(src)?;
         let raw = trim_trailing_blank_lines(captures.whole());
-        let pre = matches!(captures.group(1), Some("pre") | Some("script") | Some("style"));
+        let pre = matches!(
+            captures.group(1),
+            Some("pre") | Some("script") | Some("style")
+        );
         Some(Token::Html {
             raw: raw.clone(),
             block: true,
@@ -1291,7 +1370,11 @@ impl Lexer {
     fn tokenizer_lheading(&mut self, src: &str) -> Option<Token> {
         let captures = R_LHEADING.exec(src)?;
         let text = captures.group_or(1, "").trim().to_string();
-        let depth = if captures.group_or(2, "").starts_with('=') { 1 } else { 2 };
+        let depth = if captures.group_or(2, "").starts_with('=') {
+            1
+        } else {
+            2
+        };
         let tokens = self.inline(&text);
         Some(Token::Heading {
             raw: rtrim(captures.whole(), '\n', false),

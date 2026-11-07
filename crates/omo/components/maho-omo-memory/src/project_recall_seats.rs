@@ -5,12 +5,15 @@
 //! corpus) and gave a small project no seat against thousands of own notes. Projects get up to
 //! half the seats, rounded up, in touch order; seats one side cannot fill go to the other.
 
-use std::collections::HashSet;
 use memory_core::recall::{RecallCandidate, RecallDocument};
+use std::collections::HashSet;
 
 pub const PROJECT_MEMORY_PATH_PREFIX: &str = "@project/";
 
-pub fn qualify_project_documents(identity_id: &str, documents: &[RecallDocument]) -> Vec<RecallDocument> {
+pub fn qualify_project_documents(
+    identity_id: &str,
+    documents: &[RecallDocument],
+) -> Vec<RecallDocument> {
     documents
         .iter()
         .map(|doc| RecallDocument {
@@ -69,11 +72,18 @@ where
             .as_ref()
             .map(|p| vec![p.clone()])
             .unwrap_or_default();
-        let ranked = rank(&project.documents, &extra_queries, Some(&project.identity_id));
+        let ranked = rank(
+            &project.documents,
+            &extra_queries,
+            Some(&project.identity_id),
+        );
         let qualified = ranked
             .into_iter()
             .map(|mut candidate| {
-                candidate.path = format!("{PROJECT_MEMORY_PATH_PREFIX}{}/{}", project.identity_id, candidate.path);
+                candidate.path = format!(
+                    "{PROJECT_MEMORY_PATH_PREFIX}{}/{}",
+                    project.identity_id, candidate.path
+                );
                 candidate
             })
             .collect();
@@ -84,7 +94,10 @@ where
     let own_take_count = max_items.saturating_sub(project_seats);
     let own_taken: Vec<RecallCandidate> = own_ranked.into_iter().take(own_take_count).collect();
     let project_take_count = max_items.saturating_sub(own_taken.len());
-    let project_taken: Vec<RecallCandidate> = project_ranked.into_iter().take(project_take_count).collect();
+    let project_taken: Vec<RecallCandidate> = project_ranked
+        .into_iter()
+        .take(project_take_count)
+        .collect();
 
     let mut result = own_taken;
     result.extend(project_taken);
@@ -98,10 +111,11 @@ fn interleave(lists: &[Vec<RecallCandidate>]) -> Vec<RecallCandidate> {
     for index in 0..max_len {
         for list in lists {
             if let Some(candidate) = list.get(index)
-                && !seen.contains(&candidate.path) {
-                    seen.insert(candidate.path.clone());
-                    out.push(candidate.clone());
-                }
+                && !seen.contains(&candidate.path)
+            {
+                seen.insert(candidate.path.clone());
+                out.push(candidate.clone());
+            }
         }
     }
     out
@@ -118,8 +132,8 @@ pub fn project_documents_of(projects: &[ProjectRecallCorpus]) -> Vec<RecallDocum
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memory_core::recall::{SelectRecallOptions, select_recall_candidates};
     use std::collections::BTreeSet;
-    use memory_core::recall::{select_recall_candidates, SelectRecallOptions};
 
     const QUERY: &str = "kubernetes rollout canary";
 
@@ -133,11 +147,21 @@ mod tests {
 
     fn filler(prefix: &str, count: usize, text: &str) -> Vec<RecallDocument> {
         (0..count)
-            .map(|index| note(&format!("{prefix}/note-{index}.md"), &format!("{text} {index}"), &format!("{text} {index}")))
+            .map(|index| {
+                note(
+                    &format!("{prefix}/note-{index}.md"),
+                    &format!("{text} {index}"),
+                    &format!("{text} {index}"),
+                )
+            })
             .collect()
     }
 
-    fn project(id: &str, documents: Vec<RecallDocument>, touched_path: Option<&str>) -> ProjectRecallCorpus {
+    fn project(
+        id: &str,
+        documents: Vec<RecallDocument>,
+        touched_path: Option<&str>,
+    ) -> ProjectRecallCorpus {
         ProjectRecallCorpus {
             identity_id: id.to_string(),
             documents,
@@ -145,7 +169,10 @@ mod tests {
         }
     }
 
-    fn rank_fn(queries: Vec<String>, max_items: usize) -> impl Fn(&[RecallDocument], &[String], Option<&str>) -> Vec<RecallCandidate> {
+    fn rank_fn(
+        queries: Vec<String>,
+        max_items: usize,
+    ) -> impl Fn(&[RecallDocument], &[String], Option<&str>) -> Vec<RecallCandidate> {
         move |documents: &[RecallDocument], extra_queries: &[String], _identity_id: Option<&str>| {
             let mut all_queries = queries.clone();
             all_queries.extend(extra_queries.iter().cloned());
@@ -164,15 +191,34 @@ mod tests {
     }
 
     #[test]
-    fn given_150_own_notes_and_a_60_note_project_when_ranked_then_own_candidates_are_own_only_ranking() {
+    fn given_150_own_notes_and_a_60_note_project_when_ranked_then_own_candidates_are_own_only_ranking()
+     {
         let own = filler("own", 150, "kubernetes rollout canary steps");
-        let projects = vec![project("child-1234abcd", filler("child", 60, "kubernetes rollout canary checklist"), None)];
+        let projects = vec![project(
+            "child-1234abcd",
+            filler("child", 60, "kubernetes rollout canary checklist"),
+            None,
+        )];
         let max_items = 4;
 
-        let alone = select_with_project_seats(&own, &[], max_items, rank_fn(vec![QUERY.to_string()], max_items));
-        let with_project = select_with_project_seats(&own, &projects, max_items, rank_fn(vec![QUERY.to_string()], max_items));
+        let alone = select_with_project_seats(
+            &own,
+            &[],
+            max_items,
+            rank_fn(vec![QUERY.to_string()], max_items),
+        );
+        let with_project = select_with_project_seats(
+            &own,
+            &projects,
+            max_items,
+            rank_fn(vec![QUERY.to_string()], max_items),
+        );
 
-        let own_part: Vec<_> = with_project.iter().filter(|c| !c.path.starts_with("@project/")).cloned().collect();
+        let own_part: Vec<_> = with_project
+            .iter()
+            .filter(|c| !c.path.starts_with("@project/"))
+            .cloned()
+            .collect();
         assert_eq!(own_part, alone[..own_part.len()]);
         assert_eq!(own_part.len(), max_items - max_items.div_ceil(2));
         assert!(with_project.iter().any(|c| c.path.starts_with("@project/")));
@@ -181,9 +227,14 @@ mod tests {
     #[test]
     fn given_no_project_note_matches_when_ranked_then_own_notes_take_every_seat() {
         let own = filler("own", 5, "kubernetes rollout canary");
-        let unrelated = vec![project("child-1234abcd", vec![note("cooking.md", "pasta recipes", "pasta recipes")], None)];
+        let unrelated = vec![project(
+            "child-1234abcd",
+            vec![note("cooking.md", "pasta recipes", "pasta recipes")],
+            None,
+        )];
 
-        let own_only = select_with_project_seats(&own, &unrelated, 4, rank_fn(vec![QUERY.to_string()], 4));
+        let own_only =
+            select_with_project_seats(&own, &unrelated, 4, rank_fn(vec![QUERY.to_string()], 4));
         assert_eq!(own_only.len(), 4);
         assert!(own_only.iter().all(|c| !c.path.starts_with("@project/")));
     }

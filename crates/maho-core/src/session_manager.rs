@@ -575,7 +575,10 @@ fn context_entry_refs(path: Vec<&Value>) -> Vec<&Value> {
 pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> SessionContext {
     // PERF-DIVERGENCE(senpi session-manager.ts): upstream builds the path once; the previous port built and deep-cloned it twice, this builds it once as references shared by the settings scan and the context-entry selection. Output is identical.
     build_session_context_from_path(session_path_refs(entries, leaf_id), |selected| {
-        selected.into_iter().map(std::borrow::Cow::Borrowed).collect()
+        selected
+            .into_iter()
+            .map(std::borrow::Cow::Borrowed)
+            .collect()
     })
 }
 
@@ -712,7 +715,9 @@ pub(crate) fn load_entries_from_file_prepared(
             Ok(0) => break,
             Ok(_) => {
                 let line = String::from_utf8_lossy(&buffer);
-                if let Some(mut entry) = parse_session_entry_line(line.trim_end_matches(['\n', '\r'])) {
+                if let Some(mut entry) =
+                    parse_session_entry_line(line.trim_end_matches(['\n', '\r']))
+                {
                     prepare(&mut entry);
                     entries.push(entry);
                 }
@@ -1611,7 +1616,10 @@ impl SessionManager {
                     &mut prepare,
                 )
             } else {
-                (load_entries_from_file_prepared(&current, &mut prepare), None)
+                (
+                    load_entries_from_file_prepared(&current, &mut prepare),
+                    None,
+                )
             };
             if self.captures_transcript_base && !entries.is_empty() {
                 self.transcript_file.capture(identity, Some(&entries));
@@ -2854,7 +2862,9 @@ impl SessionManager {
     /// (custom records, delivered notices) get them without materializing the rest of the history.
     pub fn entries_of_types(&self, kinds: &[&str]) -> Vec<Value> {
         let mut entries = Vec::new();
-        self.for_each_entry(&|entry| kinds.contains(&entry_type(entry)), &mut |entry| entries.push(entry));
+        self.for_each_entry(&|entry| kinds.contains(&entry_type(entry)), &mut |entry| {
+            entries.push(entry)
+        });
         entries
     }
 
@@ -3196,7 +3206,11 @@ impl SessionManager {
     // used to materialize (and cache) every resident entry first. Walking the resident entries by
     // reference reads only id/parentId, so callers materialize just the entries they return.
     fn resident_path_refs(&self, leaf_id: Option<&str>) -> Vec<&Value> {
-        let lookup = |id: &str| self.by_id.get(id).and_then(|order| self.file_entries.get(*order));
+        let lookup = |id: &str| {
+            self.by_id
+                .get(id)
+                .and_then(|order| self.file_entries.get(*order))
+        };
         let last = || {
             self.file_entries
                 .iter()
@@ -5170,10 +5184,19 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().to_string_lossy().into_owned();
         let mut writer = SessionManager::create(&dir, Some(&dir), None);
-        let root = writer.append_message(json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }));
+        let root = writer.append_message(
+            json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }),
+        );
         writer.append_message(json!({ "role": "assistant", "content": [{ "type": "text", "text": "y".repeat(40 * 1024) }], "provider": "p", "model": "m", "timestamp": 2 }));
         writer.append_thinking_level_change("high", None);
-        writer.append_compaction("digest", root["id"].as_str().expect("root"), 1000, None, None, None);
+        writer.append_compaction(
+            "digest",
+            root["id"].as_str().expect("root"),
+            1000,
+            None,
+            None,
+            None,
+        );
         writer.append_message(json!({ "role": "user", "content": "after", "timestamp": 3 }));
         let path = writer.session_file().expect("session file").to_owned();
         let expected_context = writer.current_context();
@@ -5186,14 +5209,21 @@ mod tests {
         drop(writer);
 
         let manager = SessionManager::open(&path, Some(&dir), None, None).expect("reopen");
-        assert_eq!(manager.resident_store_stats().blob_count, 0, "loaded strings are spilled");
+        assert_eq!(
+            manager.resident_store_stats().blob_count,
+            0,
+            "loaded strings are spilled"
+        );
         let context = manager.current_context();
         assert_eq!(context.messages, expected_context.messages);
         assert_eq!(context.entry_ids, expected_context.entry_ids);
         assert_eq!(context.thinking_level, "high");
         assert_eq!(context.model, expected_context.model);
         assert_eq!(manager.current_context_entries(), expected_entries);
-        assert_eq!(manager.current_branch_of_types(&["thinking_level_change"]), expected_thinking);
+        assert_eq!(
+            manager.current_branch_of_types(&["thinking_level_change"]),
+            expected_thinking
+        );
         assert!(!manager.has_materialized_view());
         assert_eq!(manager.entries().len(), 5);
     }
@@ -5203,7 +5233,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().to_string_lossy().into_owned();
         let mut writer = SessionManager::create(&dir, Some(&dir), None);
-        writer.append_message(json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }));
+        writer.append_message(
+            json!({ "role": "user", "content": "x".repeat(64 * 1024), "timestamp": 1 }),
+        );
         writer.append_custom("work-custody", Some(json!({ "id": "w" })));
         writer.append_message(json!({ "role": "user", "content": "small", "timestamp": 2 }));
         let path = writer.session_file().expect("session file").to_owned();
@@ -5215,7 +5247,13 @@ mod tests {
         manager.for_each_entry(&|_| true, &mut |entry| visited.push(entry));
 
         let all = manager.entries();
-        assert_eq!(custom, all.iter().filter(|entry| entry["type"] == "custom").cloned().collect::<Vec<_>>());
+        assert_eq!(
+            custom,
+            all.iter()
+                .filter(|entry| entry["type"] == "custom")
+                .cloned()
+                .collect::<Vec<_>>()
+        );
         assert_eq!(visited, all);
         manager.drop_materialized_cache();
         manager.entries_of_types(&["custom"]);
@@ -5229,7 +5267,10 @@ mod tests {
         let original = value.clone();
         shrink_json_to_fit(&mut value);
         assert_eq!(value, original);
-        assert_eq!(serde_json::to_string(&value).expect("json"), serde_json::to_string(&original).expect("json"));
+        assert_eq!(
+            serde_json::to_string(&value).expect("json"),
+            serde_json::to_string(&original).expect("json")
+        );
     }
 
     #[test]

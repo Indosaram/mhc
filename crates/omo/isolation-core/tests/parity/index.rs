@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use isolation_core::{
-    choose_base_dir, cleanup_isolation, ensure_isolation, read_owner_liveness, resolve_candidates,
-    retain_isolation, sweep_stale_isolations, write_owner_marker, BackendKind, BaseDirIo,
-    EnsureIsolationOptions, IsolationError, IsolationHandle, IsolationResult, OwnerProbe,
-    SweepOptions, SweepResult,
+    BackendKind, BaseDirIo, EnsureIsolationOptions, IsolationError, IsolationHandle,
+    IsolationResult, OwnerProbe, SweepOptions, SweepResult, choose_base_dir, cleanup_isolation,
+    ensure_isolation, read_owner_liveness, resolve_candidates, retain_isolation,
+    sweep_stale_isolations, write_owner_marker,
 };
 
 type MarkerFn = fn(
@@ -19,7 +19,8 @@ fn public_surface_exposes_the_whole_isolation_lifecycle_from_the_crate_root() {
     let _ensure: fn(EnsureIsolationOptions) -> IsolationResult<IsolationHandle> = ensure_isolation;
     let _cleanup: fn(&IsolationHandle) -> IsolationResult<()> = cleanup_isolation;
     let _retain: fn(&IsolationHandle, &str) -> IsolationResult<PathBuf> = retain_isolation;
-    let _sweep: fn(&[PathBuf], &SweepOptions) -> IsolationResult<SweepResult> = sweep_stale_isolations;
+    let _sweep: fn(&[PathBuf], &SweepOptions) -> IsolationResult<SweepResult> =
+        sweep_stale_isolations;
     let _liveness: fn(
         &std::path::Path,
         &dyn OwnerProbe,

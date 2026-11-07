@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use image::RgbaImage;
 use image::imageops::FilterType;
+use image::RgbaImage;
 
-use super::{FrameGeometry, round_to_u32};
+use super::{round_to_u32, FrameGeometry};
 use crate::error::{CoreResult, DesktopError};
 use crate::types::CaptureCaps;
 

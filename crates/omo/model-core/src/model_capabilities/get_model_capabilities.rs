@@ -392,14 +392,34 @@ mod tests {
 
     #[test]
     fn copilot_gpt_five_and_six_models_use_high_capped_overrides() {
-        for model_id in ["gpt-5.6-sol", "gpt-6", "gpt-6-astra", "gpt-6.1-sol", "openai/gpt-6-luna", " GPT-6-SOL "] {
+        for model_id in [
+            "gpt-5.6-sol",
+            "gpt-6",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "openai/gpt-6-luna",
+            " GPT-6-SOL ",
+        ] {
             let result = get_model_capabilities(GetModelCapabilitiesInput {
-                provider_id: " GitHub-Copilot ", model_id, ..Default::default()
+                provider_id: " GitHub-Copilot ",
+                model_id,
+                ..Default::default()
             });
-            assert_eq!(result.variants, Some(owned_strings(&["low", "medium", "high"])), "{model_id}");
-            assert_eq!(result.reasoning_efforts, Some(owned_strings(&["none", "minimal", "low", "medium", "high"])), "{model_id}");
+            assert_eq!(
+                result.variants,
+                Some(owned_strings(&["low", "medium", "high"])),
+                "{model_id}"
+            );
+            assert_eq!(
+                result.reasoning_efforts,
+                Some(owned_strings(&["none", "minimal", "low", "medium", "high"])),
+                "{model_id}"
+            );
             assert_eq!(result.diagnostics.variants, VariantsSource::Override);
-            assert_eq!(result.diagnostics.reasoning_efforts, ReasoningEffortsSource::Override);
+            assert_eq!(
+                result.diagnostics.reasoning_efforts,
+                ReasoningEffortsSource::Override
+            );
         }
     }
 
@@ -407,16 +427,30 @@ mod tests {
     fn copilot_override_preserves_runtime_variant_precedence() {
         let runtime = json!({"variants": ["low", "high", "max"]});
         let result = get_model_capabilities(GetModelCapabilitiesInput {
-            provider_id: "github-copilot", model_id: "gpt-6-astra", runtime_model: Some(&runtime), ..Default::default()
+            provider_id: "github-copilot",
+            model_id: "gpt-6-astra",
+            runtime_model: Some(&runtime),
+            ..Default::default()
         });
-        assert_eq!(result.variants, Some(owned_strings(&["low", "high", "max"])));
+        assert_eq!(
+            result.variants,
+            Some(owned_strings(&["low", "high", "max"]))
+        );
         assert_eq!(result.diagnostics.variants, VariantsSource::Runtime);
-        assert_eq!(result.reasoning_efforts, Some(owned_strings(&["none", "minimal", "low", "medium", "high"])));
+        assert_eq!(
+            result.reasoning_efforts,
+            Some(owned_strings(&["none", "minimal", "low", "medium", "high"]))
+        );
     }
 
     #[test]
     fn copilot_override_excludes_other_providers_and_model_numbers() {
-        for (provider_id, model_id) in [("openai", "gpt-6-astra"), ("github-copilot", "gpt-60"), ("github-copilot", "gpt-4o"), ("github-copilot", "custom-gpt-6")] {
+        for (provider_id, model_id) in [
+            ("openai", "gpt-6-astra"),
+            ("github-copilot", "gpt-60"),
+            ("github-copilot", "gpt-4o"),
+            ("github-copilot", "custom-gpt-6"),
+        ] {
             assert!(get_provider_override(provider_id, model_id).is_none());
         }
     }

@@ -10,8 +10,8 @@ use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
 use xcap::Window;
 
-use super::frame::{PhysicalRect, logical_window_rect};
-use crate::integrity::{IntegrityRid, process_elevated};
+use super::frame::{logical_window_rect, PhysicalRect};
+use crate::integrity::{process_elevated, IntegrityRid};
 
 const MAX_LISTED_WINDOWS: usize = 48;
 const MIN_WINDOW_EDGE: u32 = 16;

@@ -208,8 +208,12 @@ fn test_secret_like_content_is_a_known_failure_reason() {
             "lastReason":"secret_like_content", "lastFailureId":"run-a",
             "nextEligibleAt":null, "parkedAt":T0
         })]
-    }).to_string();
-    assert_eq!(parse_failures_file(&raw).unwrap().entries[0].last_reason, FactsFailureReason::SecretLikeContent);
+    })
+    .to_string();
+    assert_eq!(
+        parse_failures_file(&raw).unwrap().entries[0].last_reason,
+        FactsFailureReason::SecretLikeContent
+    );
 }
 
 #[test]

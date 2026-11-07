@@ -28,7 +28,9 @@ pub fn is_cached_comment_checker_current(
 pub fn record_cached_comment_checker_release(cache_dir: &Path) -> io::Result<()> {
     fs::write(
         cache_dir.join(COMMENT_CHECKER_VERSION_MARKER),
-        format!("{COMMENT_CHECKER_RELEASE_VERSION}
-"),
+        format!(
+            "{COMMENT_CHECKER_RELEASE_VERSION}
+"
+        ),
     )
 }

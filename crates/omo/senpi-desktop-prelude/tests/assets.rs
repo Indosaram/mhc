@@ -19,7 +19,10 @@ fn keeps_the_committed_assets_json_in_sync_with_the_asset_files() {
 fn defines_every_declared_export_in_the_javascript_kernel() {
     let js = ComputerPreludeAssets::javascript();
     for export in ComputerPreludeAssets::exports() {
-        assert!(js.contains(&format!("globalThis.{} =", export)) || js.contains(&format!("{}:", export)));
+        assert!(
+            js.contains(&format!("globalThis.{} =", export))
+                || js.contains(&format!("{}:", export))
+        );
     }
 }
 
@@ -36,7 +39,11 @@ fn documents_every_facade_helper_as_a_call_in_the_model_facing_docs() {
     let doc = ComputerPreludeAssets::documentation();
     for method in ComputerPreludeAssets::method_allowlist() {
         let pattern = format!("{}(", method);
-        assert!(doc.contains(&pattern), "Documentation missing pattern: {}", pattern);
+        assert!(
+            doc.contains(&pattern),
+            "Documentation missing pattern: {}",
+            pattern
+        );
     }
 }
 

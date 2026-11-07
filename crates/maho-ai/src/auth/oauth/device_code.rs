@@ -21,7 +21,8 @@ pub enum OAuthDeviceCodePollResult<T> {
     Complete(T),
 }
 
-pub type DeviceCodePollFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<OAuthDeviceCodePollResult<T>>> + Send>>;
+pub type DeviceCodePollFuture<T> =
+    Pin<Box<dyn Future<Output = anyhow::Result<OAuthDeviceCodePollResult<T>>> + Send>>;
 
 pub struct OAuthDeviceCodePollOptions<T> {
     pub interval_seconds: Option<f64>,
@@ -31,7 +32,11 @@ pub struct OAuthDeviceCodePollOptions<T> {
     pub signal: AbortSignal,
 }
 
-pub async fn abortable_sleep(ms: u64, signal: &AbortSignal, cancel_message: &str) -> anyhow::Result<()> {
+pub async fn abortable_sleep(
+    ms: u64,
+    signal: &AbortSignal,
+    cancel_message: &str,
+) -> anyhow::Result<()> {
     if signal.aborted() {
         anyhow::bail!("{cancel_message}");
     }
@@ -47,7 +52,11 @@ fn milliseconds(seconds: f64) -> u64 {
         return MINIMUM_INTERVAL_MS;
     }
     let ms = (seconds * 1000.0).floor();
-    if ms >= u64::MAX as f64 { u64::MAX } else { ms as u64 }
+    if ms >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        ms as u64
+    }
 }
 
 fn remaining_ms(deadline: Option<Instant>) -> Option<u64> {
@@ -59,7 +68,9 @@ fn remaining_ms(deadline: Option<Instant>) -> Option<u64> {
     Some((deadline - now).as_millis().min(u64::MAX as u128) as u64)
 }
 
-pub async fn poll_oauth_device_code_flow<T>(options: OAuthDeviceCodePollOptions<T>) -> anyhow::Result<T> {
+pub async fn poll_oauth_device_code_flow<T>(
+    options: OAuthDeviceCodePollOptions<T>,
+) -> anyhow::Result<T> {
     let OAuthDeviceCodePollOptions {
         interval_seconds,
         expires_in_seconds,
@@ -68,7 +79,8 @@ pub async fn poll_oauth_device_code_flow<T>(options: OAuthDeviceCodePollOptions<
         signal,
     } = options;
 
-    let deadline = expires_in_seconds.map(|seconds| Instant::now() + Duration::from_millis(milliseconds(seconds)));
+    let deadline = expires_in_seconds
+        .map(|seconds| Instant::now() + Duration::from_millis(milliseconds(seconds)));
     let mut interval_ms = std::cmp::max(
         MINIMUM_INTERVAL_MS,
         ((interval_seconds.unwrap_or(DEFAULT_POLL_INTERVAL_SECONDS)) * 1000.0).floor() as u64,
@@ -103,7 +115,10 @@ pub async fn poll_oauth_device_code_flow<T>(options: OAuthDeviceCodePollOptions<
                     Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
                         std::cmp::max(MINIMUM_INTERVAL_MS, (seconds * 1000.0).floor() as u64)
                     }
-                    _ => std::cmp::max(MINIMUM_INTERVAL_MS, interval_ms + SLOW_DOWN_INTERVAL_INCREMENT_MS),
+                    _ => std::cmp::max(
+                        MINIMUM_INTERVAL_MS,
+                        interval_ms + SLOW_DOWN_INTERVAL_INCREMENT_MS,
+                    ),
                 };
             }
             OAuthDeviceCodePollResult::Pending => {}
@@ -116,7 +131,12 @@ pub async fn poll_oauth_device_code_flow<T>(options: OAuthDeviceCodePollOptions<
         if remaining == 0 {
             break;
         }
-        abortable_sleep(std::cmp::min(interval_ms, remaining), &signal, CANCEL_MESSAGE).await?;
+        abortable_sleep(
+            std::cmp::min(interval_ms, remaining),
+            &signal,
+            CANCEL_MESSAGE,
+        )
+        .await?;
     }
 
     if slow_down_responses > 0 {
@@ -147,11 +167,16 @@ mod tests {
         }
     }
 
-    fn recorder() -> (Arc<Mutex<Vec<Instant>>>, impl FnMut() -> DeviceCodePollFuture<String> + Send) {
+    fn recorder() -> (
+        Arc<Mutex<Vec<Instant>>>,
+        impl FnMut() -> DeviceCodePollFuture<String> + Send,
+    ) {
         let times = Arc::new(Mutex::new(Vec::new()));
         let sink = times.clone();
         let poll = move || -> DeviceCodePollFuture<String> {
-            sink.lock().unwrap_or_else(|p| p.into_inner()).push(Instant::now());
+            sink.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Instant::now());
             Box::pin(async { Ok(OAuthDeviceCodePollResult::Complete("token".to_string())) })
         };
         (times, poll)
@@ -172,10 +197,14 @@ mod tests {
                 poll: Box::new(move || {
                     polls += 1;
                     if polls == 1 {
-                        sink.lock().unwrap_or_else(|p| p.into_inner()).push(Instant::now());
+                        sink.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .push(Instant::now());
                         return Box::pin(async { Ok(OAuthDeviceCodePollResult::Pending) });
                     }
-                    sink.lock().unwrap_or_else(|p| p.into_inner()).push(Instant::now());
+                    sink.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(Instant::now());
                     Box::pin(async { Ok(OAuthDeviceCodePollResult::Complete("token".to_string())) })
                 }),
             })
@@ -216,7 +245,10 @@ mod tests {
         advance(Duration::from_millis(1)).await;
         settle().await;
         assert_eq!(handle.await.unwrap().unwrap(), "token");
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start + Duration::from_millis(2000)]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start + Duration::from_millis(2000)]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -241,7 +273,10 @@ mod tests {
         advance(Duration::from_millis(1)).await;
         settle().await;
         assert_eq!(handle.await.unwrap().unwrap(), "token");
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start + Duration::from_millis(2000)]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start + Duration::from_millis(2000)]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -257,12 +292,20 @@ mod tests {
                 wait_before_first_poll: false,
                 signal: never_aborted(),
                 poll: Box::new(move || {
-                    sink.lock().unwrap_or_else(|p| p.into_inner()).push(Instant::now());
+                    sink.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(Instant::now());
                     polls += 1;
                     if polls == 1 {
-                        Box::pin(async { Ok(OAuthDeviceCodePollResult::SlowDown { interval_seconds: None }) })
+                        Box::pin(async {
+                            Ok(OAuthDeviceCodePollResult::SlowDown {
+                                interval_seconds: None,
+                            })
+                        })
                     } else {
-                        Box::pin(async { Ok(OAuthDeviceCodePollResult::Complete("token".to_string())) })
+                        Box::pin(async {
+                            Ok(OAuthDeviceCodePollResult::Complete("token".to_string()))
+                        })
                     }
                 }),
             })
@@ -270,14 +313,23 @@ mod tests {
         });
 
         settle().await;
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start]
+        );
         advance(Duration::from_millis(6999)).await;
         settle().await;
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start]
+        );
         advance(Duration::from_millis(1)).await;
         settle().await;
         assert_eq!(handle.await.unwrap().unwrap(), "token");
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start, start + Duration::from_millis(7000)]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start, start + Duration::from_millis(7000)]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -293,12 +345,20 @@ mod tests {
                 wait_before_first_poll: false,
                 signal: never_aborted(),
                 poll: Box::new(move || {
-                    sink.lock().unwrap_or_else(|p| p.into_inner()).push(Instant::now());
+                    sink.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(Instant::now());
                     polls += 1;
                     if polls == 1 {
-                        Box::pin(async { Ok(OAuthDeviceCodePollResult::SlowDown { interval_seconds: Some(30.0) }) })
+                        Box::pin(async {
+                            Ok(OAuthDeviceCodePollResult::SlowDown {
+                                interval_seconds: Some(30.0),
+                            })
+                        })
                     } else {
-                        Box::pin(async { Ok(OAuthDeviceCodePollResult::Complete("token".to_string())) })
+                        Box::pin(async {
+                            Ok(OAuthDeviceCodePollResult::Complete("token".to_string()))
+                        })
                     }
                 }),
             })
@@ -306,14 +366,23 @@ mod tests {
         });
 
         settle().await;
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start]
+        );
         advance(Duration::from_millis(29999)).await;
         settle().await;
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start]
+        );
         advance(Duration::from_millis(1)).await;
         settle().await;
         assert_eq!(handle.await.unwrap().unwrap(), "token");
-        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start, start + Duration::from_millis(30000)]);
+        assert_eq!(
+            *times.lock().unwrap_or_else(|p| p.into_inner()),
+            vec![start, start + Duration::from_millis(30000)]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -322,7 +391,13 @@ mod tests {
             interval_seconds: Some(1.0),
             expires_in_seconds: Some(2.0),
             wait_before_first_poll: false,
-            poll: Box::new(|| Box::pin(async { Ok(OAuthDeviceCodePollResult::SlowDown { interval_seconds: None }) })),
+            poll: Box::new(|| {
+                Box::pin(async {
+                    Ok(OAuthDeviceCodePollResult::SlowDown {
+                        interval_seconds: None,
+                    })
+                })
+            }),
             signal: never_aborted(),
         })
         .await
@@ -350,7 +425,13 @@ mod tests {
             interval_seconds: Some(5.0),
             expires_in_seconds: Some(30.0),
             wait_before_first_poll: false,
-            poll: Box::new(|| Box::pin(async { Ok(OAuthDeviceCodePollResult::<()>::Failed { message: "nope".into() }) })),
+            poll: Box::new(|| {
+                Box::pin(async {
+                    Ok(OAuthDeviceCodePollResult::<()>::Failed {
+                        message: "nope".into(),
+                    })
+                })
+            }),
             signal: never_aborted(),
         })
         .await

@@ -29,7 +29,13 @@ fn spill_files(root: &Path) -> Vec<String> {
         return vec![];
     };
     let mut names: Vec<_> = entries
-        .map(|entry| entry.expect("directory entry").file_name().into_string().expect("valid utf-8 file name"))
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .into_string()
+                .expect("valid utf-8 file name")
+        })
         .collect();
     names.sort();
     names
@@ -126,7 +132,11 @@ fn image_data(snapshot: &EvalDetachedCellSnapshot) -> Vec<String> {
 }
 
 fn peek(manager: &Arc<Mutex<EvalDetachedCellManager>>, id: &str) -> EvalDetachedCellSnapshot {
-    manager.lock().expect("manager lock poisoned").peek(id).expect("cell snapshot peek")
+    manager
+        .lock()
+        .expect("manager lock poisoned")
+        .peek(id)
+        .expect("cell snapshot peek")
 }
 
 #[tokio::test]

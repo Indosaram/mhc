@@ -78,45 +78,46 @@ pub async fn collect_reply(
     mut on_text_delta: impl FnMut(&str),
 ) -> Result<String, String> {
     let outcome = async {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    let mut established = false;
-    let mut reply = String::new();
-    loop {
-        let event = if established {
-            stream.next().await
-        } else {
-            match tokio::time::timeout_at(deadline, stream.next()).await {
-                Ok(event) => event,
-                Err(_) => {
-                    return Err(format!(
-                        "/btw provider did not produce an event within {}s",
-                        (timeout_ms as f64 / 1000.0).round()
-                    ));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let mut established = false;
+        let mut reply = String::new();
+        loop {
+            let event = if established {
+                stream.next().await
+            } else {
+                match tokio::time::timeout_at(deadline, stream.next()).await {
+                    Ok(event) => event,
+                    Err(_) => {
+                        return Err(format!(
+                            "/btw provider did not produce an event within {}s",
+                            (timeout_ms as f64 / 1000.0).round()
+                        ));
+                    }
                 }
             }
-        }
-        .map_err(|error| error.message)?;
-        let Some(event) = event else { break };
-        if !matches!(event, AssistantMessageEvent::Start { .. }) {
-            established = true;
-        }
-        match event {
-            AssistantMessageEvent::TextDelta { delta, .. } => {
-                reply.push_str(&delta);
-                on_text_delta(&delta);
+            .map_err(|error| error.message)?;
+            let Some(event) = event else { break };
+            if !matches!(event, AssistantMessageEvent::Start { .. }) {
+                established = true;
             }
-            AssistantMessageEvent::Done { .. } => break,
-            AssistantMessageEvent::Error { error, .. } => {
-                return Err(error
-                    .error_message
-                    .filter(|message| !message.is_empty())
-                    .unwrap_or_else(|| "Side query failed".into()));
+            match event {
+                AssistantMessageEvent::TextDelta { delta, .. } => {
+                    reply.push_str(&delta);
+                    on_text_delta(&delta);
+                }
+                AssistantMessageEvent::Done { .. } => break,
+                AssistantMessageEvent::Error { error, .. } => {
+                    return Err(error
+                        .error_message
+                        .filter(|message| !message.is_empty())
+                        .unwrap_or_else(|| "Side query failed".into()));
+                }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(reply)
     }
-    Ok(reply)
-    }.await;
+    .await;
     stream.cancel().await.map_err(|error| error.message)?;
     outcome
 }
@@ -139,11 +140,13 @@ mod tests {
             })).expect("message");
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-            stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                entered_tx.send(()).expect("cleanup subscriber");
-                release_rx.await.expect("cleanup release");
-                Ok(())
-            })));
+            stream.set_cancellation_handler(Box::new(move || {
+                Box::pin(async move {
+                    entered_tx.send(()).expect("cleanup subscriber");
+                    release_rx.await.expect("cleanup release");
+                    Ok(())
+                })
+            }));
             if failed {
                 stream.push(AssistantMessageEvent::Error {
                     reason: maho_ai::types::ErrorReason::Error,
@@ -157,11 +160,24 @@ mod tests {
             }
             let task = tokio::spawn(async move { collect_reply(&stream, 30_000, |_| {}).await });
             let bound = std::time::Duration::from_secs(5);
-            tokio::time::timeout(bound, entered_rx).await.expect("cleanup deadline").expect("cleanup");
+            tokio::time::timeout(bound, entered_rx)
+                .await
+                .expect("cleanup deadline")
+                .expect("cleanup");
             assert!(!task.is_finished());
             release_tx.send(()).expect("cleanup subscriber");
-            let outcome = tokio::time::timeout(bound, task).await.expect("reply deadline").expect("task");
-            assert_eq!(outcome, if failed { Err("provider failed".into()) } else { Ok(String::new()) });
+            let outcome = tokio::time::timeout(bound, task)
+                .await
+                .expect("reply deadline")
+                .expect("task");
+            assert_eq!(
+                outcome,
+                if failed {
+                    Err("provider failed".into())
+                } else {
+                    Ok(String::new())
+                }
+            );
         }
     }
 
@@ -171,23 +187,35 @@ mod tests {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let (relay_tx, relay_rx) = tokio::sync::oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("cleanup subscriber");
-            release_rx.await.expect("cleanup release");
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("cleanup subscriber");
+                release_rx.await.expect("cleanup release");
+                Ok(())
+            })
+        }));
         stream.set_cancellation_task(tokio::spawn(async move {
             relay_rx.await.expect("relay release");
         }));
         stream.end(None);
         let task = tokio::spawn(async move { collect_reply(&stream, 30_000, |_| {}).await });
         let bound = std::time::Duration::from_secs(5);
-        tokio::time::timeout(bound, entered_rx).await.expect("cleanup deadline").expect("cleanup");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("cleanup deadline")
+            .expect("cleanup");
         assert!(!task.is_finished());
         release_tx.send(()).expect("cleanup subscriber");
         assert!(!task.is_finished());
         relay_tx.send(()).expect("relay subscriber");
-        assert_eq!(tokio::time::timeout(bound, task).await.expect("reply deadline").expect("task").expect("reply"), "");
+        assert_eq!(
+            tokio::time::timeout(bound, task)
+                .await
+                .expect("reply deadline")
+                .expect("task")
+                .expect("reply"),
+            ""
+        );
     }
 
     #[tokio::test]
@@ -195,17 +223,29 @@ mod tests {
         let stream = AssistantMessageEventStream::assistant();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("cleanup subscriber");
-            release_rx.await.expect("cleanup release");
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("cleanup subscriber");
+                release_rx.await.expect("cleanup release");
+                Ok(())
+            })
+        }));
         stream.fail(maho_ai::utils::event_stream::StreamError::new("failed"));
         let task = tokio::spawn(async move { collect_reply(&stream, 30_000, |_| {}).await });
         let bound = std::time::Duration::from_secs(5);
-        tokio::time::timeout(bound, entered_rx).await.expect("cleanup deadline").expect("cleanup");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("cleanup deadline")
+            .expect("cleanup");
         assert!(!task.is_finished());
         release_tx.send(()).expect("cleanup subscriber");
-        assert_eq!(tokio::time::timeout(bound, task).await.expect("reply deadline").expect("task").expect_err("failure"), "failed");
+        assert_eq!(
+            tokio::time::timeout(bound, task)
+                .await
+                .expect("reply deadline")
+                .expect("task")
+                .expect_err("failure"),
+            "failed"
+        );
     }
 }

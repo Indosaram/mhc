@@ -1,4 +1,5 @@
 use crate::server::{errors::ServerError, types::*};
+use crate::transport_json as json;
 use maho_agent::harness::{
     context::BACKGROUND_CONTEXT,
     session::{
@@ -7,7 +8,6 @@ use maho_agent::harness::{
     },
 };
 use maho_chord::types::JsonValue as Value;
-use crate::transport_json as json;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
@@ -215,7 +215,9 @@ impl RoutedServerServiceAttachment for TestServicesAttachment {
         context: Context,
     ) -> ServerFuture<'a, Option<Value>> {
         Box::pin(async move {
-            if call.get("instance").is_none() && call["serviceId"].as_str() == Some("pi.session-management") {
+            if call.get("instance").is_none()
+                && call["serviceId"].as_str() == Some("pi.session-management")
+            {
                 if call["member"].as_str() == Some("attach")
                     && let Some(args) = call["args"].as_array()
                     && args.len() == 1
@@ -224,7 +226,8 @@ impl RoutedServerServiceAttachment for TestServicesAttachment {
                     self.presentation.attach_session(id, context).await?;
                     return Ok(Some(Value::Null));
                 }
-                if call["member"].as_str() == Some("detach") && call["args"].as_array().is_some_and(Vec::is_empty)
+                if call["member"].as_str() == Some("detach")
+                    && call["args"].as_array().is_some_and(Vec::is_empty)
                 {
                     self.presentation.detach_session(context).await?;
                     return Ok(Some(Value::Null));
@@ -351,9 +354,11 @@ impl ServerHost for TestServerHost {
                 gate.entered.resolve(());
                 gate.release.wait().await;
             }
-            let metadata: SessionMetadata = serde_json::from_str(&serde_json::to_string(&metadata)
-                .map_err(|error| ServerError::new("internal_error", &error.to_string()))?)
-                .map_err(|error| ServerError::new("internal_error", &error.to_string()))?;
+            let metadata: SessionMetadata = serde_json::from_str(
+                &serde_json::to_string(&metadata)
+                    .map_err(|error| ServerError::new("internal_error", &error.to_string()))?,
+            )
+            .map_err(|error| ServerError::new("internal_error", &error.to_string()))?;
             let session = self
                 .repo
                 .open(metadata.clone(), &BACKGROUND_CONTEXT)

@@ -1,6 +1,6 @@
 use super::worker_host::{JavaScriptKernelMode, WorkerHost};
 use crate::kernels::shared::{
-    runtime_asset::{require_codemode_runtime_asset, CodemodeRuntimeAssetMissingError},
+    runtime_asset::{CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset},
     subprocess_process::ProcessError,
 };
 use std::path::{Path, PathBuf};

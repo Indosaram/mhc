@@ -73,13 +73,14 @@ const fn is_js_trim_char(c: char) -> bool {
             | '\u{0020}'
             | '\u{00A0}'
             | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
+            | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
     )
 }
 
@@ -104,9 +105,7 @@ pub fn is_approval_label(label: &str) -> bool {
         let word = word.as_bytes();
         label.len() >= word.len()
             && label[..word.len()].eq_ignore_ascii_case(word)
-            && !label
-                .get(word.len())
-                .is_some_and(u8::is_ascii_alphabetic)
+            && !label.get(word.len()).is_some_and(u8::is_ascii_alphabetic)
     })
 }
 

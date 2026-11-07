@@ -12,7 +12,9 @@ pub struct RunBudgetEvent {
 }
 
 pub fn run_budget_error(cell_id: &str, budget_seconds: f64) -> String {
-    format!("Eval cell {cell_id} exhausted its {budget_seconds}s run budget (own execution time; host tool calls excluded) and was killed.")
+    format!(
+        "Eval cell {cell_id} exhausted its {budget_seconds}s run budget (own execution time; host tool calls excluded) and was killed."
+    )
 }
 
 struct State {
@@ -24,7 +26,10 @@ struct State {
 
 impl State {
     fn consumed(&self) -> Duration {
-        self.charged + self.running_since.map_or(Duration::ZERO, |since| Instant::now() - since)
+        self.charged
+            + self
+                .running_since
+                .map_or(Duration::ZERO, |since| Instant::now() - since)
     }
 }
 
@@ -40,7 +45,12 @@ impl RunBudget {
     pub fn new(cell_id: String, budget_ms: u64) -> Self {
         let budget_ms = budget_ms.max(1);
         let budget = Duration::from_millis(budget_ms);
-        let state = Arc::new(Mutex::new(State { charged: Duration::ZERO, running_since: Some(Instant::now()), pause_depth: 0, settled: false }));
+        let state = Arc::new(Mutex::new(State {
+            charged: Duration::ZERO,
+            running_since: Some(Instant::now()),
+            pause_depth: 0,
+            settled: false,
+        }));
         let changed = Arc::new(Notify::new());
         let (sender, signal) = watch::channel(None);
         let worker_state = Arc::clone(&state);
@@ -52,8 +62,12 @@ impl RunBudget {
                 notified.as_mut().enable();
                 let deadline = {
                     let state = worker_state.lock().expect("run budget state lock poisoned");
-                    if state.settled { return; }
-                    state.running_since.map(|since| since + budget.saturating_sub(state.charged))
+                    if state.settled {
+                        return;
+                    }
+                    state
+                        .running_since
+                        .map(|since| since + budget.saturating_sub(state.charged))
                 };
                 if let Some(deadline) = deadline {
                     tokio::select! {
@@ -65,22 +79,46 @@ impl RunBudget {
                     continue;
                 }
                 let mut state = worker_state.lock().expect("run budget state lock poisoned");
-                if state.settled { return; }
-                if state.pause_depth > 0 || state.consumed() < budget { continue; }
+                if state.settled {
+                    return;
+                }
+                if state.pause_depth > 0 || state.consumed() < budget {
+                    continue;
+                }
                 state.charged = state.consumed();
                 state.running_since = None;
                 state.settled = true;
-                sender.send_replace(Some(RunBudgetEvent { error: run_budget_error(&cell_id, budget.as_secs_f64()), cell_id, budget_ms }));
+                sender.send_replace(Some(RunBudgetEvent {
+                    error: run_budget_error(&cell_id, budget.as_secs_f64()),
+                    cell_id,
+                    budget_ms,
+                }));
                 return;
             }
         });
-        Self { budget_ms, state, changed, signal, task }
+        Self {
+            budget_ms,
+            state,
+            changed,
+            signal,
+            task,
+        }
     }
 
-    pub fn consumed(&self) -> Duration { self.state.lock().expect("run budget state lock poisoned").consumed() }
-    pub fn signal(&self) -> watch::Receiver<Option<RunBudgetEvent>> { self.signal.clone() }
+    pub fn consumed(&self) -> Duration {
+        self.state
+            .lock()
+            .expect("run budget state lock poisoned")
+            .consumed()
+    }
+    pub fn signal(&self) -> watch::Receiver<Option<RunBudgetEvent>> {
+        self.signal.clone()
+    }
     pub fn dispose(&self) {
-        self.state.lock().expect("run budget state lock poisoned").settled = true;
+        self.state
+            .lock()
+            .expect("run budget state lock poisoned")
+            .settled = true;
         self.changed.notify_one();
     }
 }
@@ -88,7 +126,9 @@ impl RunBudget {
 impl TimeoutPauseHandle for RunBudget {
     fn pause(&self) {
         let mut state = self.state.lock().expect("run budget state lock poisoned");
-        if state.settled { return; }
+        if state.settled {
+            return;
+        }
         state.pause_depth += 1;
         if state.pause_depth == 1 {
             state.charged = state.consumed();
@@ -98,7 +138,9 @@ impl TimeoutPauseHandle for RunBudget {
     }
     fn resume(&self) {
         let mut state = self.state.lock().expect("run budget state lock poisoned");
-        if state.settled || state.pause_depth == 0 { return; }
+        if state.settled || state.pause_depth == 0 {
+            return;
+        }
         state.pause_depth -= 1;
         if state.pause_depth == 0 {
             state.running_since = Some(Instant::now());
@@ -108,5 +150,7 @@ impl TimeoutPauseHandle for RunBudget {
 }
 
 impl Drop for RunBudget {
-    fn drop(&mut self) { self.task.abort(); }
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }

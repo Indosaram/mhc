@@ -134,7 +134,7 @@ pub fn resolve_computer_settings(
         None => {
             return Err(ComputerSettingsError::new(vec![
                 "computer: expected object".to_string(),
-            ]))
+            ]));
         }
     };
 
@@ -143,9 +143,18 @@ pub fn resolve_computer_settings(
     // Check unknown keys
     for key in obj.keys() {
         match key.as_str() {
-            "enabled" | "display" | "maxWidth" | "maxHeight" | "screenshotMaxBytes"
-            | "stopHotkey" | "allowHostRelayOnlyStop" | "macosCanary" | "auditLog"
-            | "screenshotGc" | "enginePath" | "cuaAdapter" => {}
+            "enabled"
+            | "display"
+            | "maxWidth"
+            | "maxHeight"
+            | "screenshotMaxBytes"
+            | "stopHotkey"
+            | "allowHostRelayOnlyStop"
+            | "macosCanary"
+            | "auditLog"
+            | "screenshotGc"
+            | "enginePath"
+            | "cuaAdapter" => {}
             other => {
                 issues.push(format!("computer: unknown property '{other}'"));
             }

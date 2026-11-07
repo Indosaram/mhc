@@ -513,7 +513,8 @@ where
     let parent_watchdog = options.parent_watchdog.clone().unwrap_or_default();
     let lifecycle_log = options.lifecycle_log.clone();
     let idle_timeout_env = std::env::var(IDLE_TIMEOUT_ENV_KEY).ok();
-    let idle_timeout_ms = resolve_idle_timeout_ms(options.idle_timeout_ms, idle_timeout_env.as_deref());
+    let idle_timeout_ms =
+        resolve_idle_timeout_ms(options.idle_timeout_ms, idle_timeout_env.as_deref());
     let handler =
         move |request: &Value| -> Result<Option<JsonRpcResponse>, std::convert::Infallible> {
             let signal = AbortSignal::new();
@@ -674,13 +675,17 @@ mod tests {
                     ..AstGrepMcpOptions::default()
                 },
             );
-            finished_sender.send(result).expect("test receiver is alive");
+            finished_sender
+                .send(result)
+                .expect("test receiver is alive");
         });
         let outcome = finished_receiver.recv_timeout(Duration::from_secs(5));
         drop(input_sender);
         server.join().expect("server thread completes");
         assert_eq!(
-            outcome.expect("idle server settles").expect("server succeeds"),
+            outcome
+                .expect("idle server settles")
+                .expect("server succeeds"),
             ServerOutcome::IdleTimeout
         );
     }

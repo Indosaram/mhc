@@ -1,6 +1,6 @@
-use maho_chord::{delta::*, JsonValue};
-use std::result::Result;
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
+use std::result::Result;
 
 fn replay(prepared: &Prepared) -> Result<(), DeltaError> {
     assert_eq!(
@@ -111,10 +111,12 @@ fn deeply_nested_dense_region_keeps_a_sparse_neighbor_narrow() -> Result<(), Del
     }
     let prepared = change.prepare()?;
     assert_eq!(prepared.ops().len(), 2);
-    assert!(prepared
-        .ops()
-        .iter()
-        .any(|op| matches!(op,Op::Splice(_,500,500,items) if items.len()==500)));
+    assert!(
+        prepared
+            .ops()
+            .iter()
+            .any(|op| matches!(op,Op::Splice(_,500,500,items) if items.len()==500))
+    );
     replay(&prepared)
 }
 
@@ -262,12 +264,16 @@ fn reverse_depth_object_edits_emit_shallow_nodes_first() -> Result<(), Box<dyn s
     }
     let prepared = change.prepare()?;
     assert_eq!(prepared.ops().len(), 300);
-    assert!(prepared.ops()[..150]
-        .iter()
-        .all(|op| op.path().is_some_and(|p| p.len() == 2)));
-    assert!(prepared.ops()[150..]
-        .iter()
-        .all(|op| op.path().is_some_and(|p| p.len() == 3)));
+    assert!(
+        prepared.ops()[..150]
+            .iter()
+            .all(|op| op.path().is_some_and(|p| p.len() == 2))
+    );
+    assert!(
+        prepared.ops()[150..]
+            .iter()
+            .all(|op| op.path().is_some_and(|p| p.len() == 3))
+    );
     replay(&prepared)?;
     Ok(())
 }
@@ -281,48 +287,70 @@ fn comparator_writes_and_structural_appends_are_not_lost() -> Result<(), DeltaEr
     let second = array.get(1usize)?.ok_or(DeltaError::Root)?;
     let mut appended = false;
     let mut callback_error = None;
-    array.sort_by(|left,right| {
-        let result = (|| -> Result<(),DeltaError> {
-            for item in [&first,&second] {
-                let count = item.value()?["comparisons"].as_u64().ok_or(DeltaError::Root)?;
-                item.set("comparisons",&json!(count+1).into())?;
+    array.sort_by(|left, right| {
+        let result = (|| -> Result<(), DeltaError> {
+            for item in [&first, &second] {
+                let count = item.value()?["comparisons"]
+                    .as_u64()
+                    .ok_or(DeltaError::Root)?;
+                item.set("comparisons", &json!(count + 1).into())?;
             }
             if !appended {
                 appended = true;
-                array.set(0usize,&json!({"rank":9,"comparisons":0}).into())?;
+                array.set(0usize, &json!({"rank":9,"comparisons":0}).into())?;
                 array.push(&[json!({"rank":3,"comparisons":0}).into()])?;
             }
             Ok(())
         })();
-        if let Err(error) = result { callback_error = Some(error); }
+        if let Err(error) = result {
+            callback_error = Some(error);
+        }
         left["rank"].as_u64().cmp(&right["rank"].as_u64())
     })?;
-    if let Some(error) = callback_error { return Err(error); }
+    if let Some(error) = callback_error {
+        return Err(error);
+    }
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value(),&json!([{"rank":1,"comparisons":1},{"rank":2,"comparisons":1},{"rank":3,"comparisons":0}]).into());
+    assert_eq!(
+        prepared.value(),
+        &json!([{"rank":1,"comparisons":1},{"rank":2,"comparisons":1},{"rank":3,"comparisons":0}])
+            .into()
+    );
     replay(&prepared)
 }
 
 #[test]
 fn reentrant_sort_normalizes_duplicate_entries_by_value() -> Result<(), DeltaError> {
-    let tracker = track(json!([{"rank":2,"nested":{"value":0}},{"rank":1,"nested":{"value":0}}]).into())?;
+    let tracker =
+        track(json!([{"rank":2,"nested":{"value":0}},{"rank":1,"nested":{"value":0}}]).into())?;
     let mut change = tracker.begin_change();
     let array = change.state()?;
     let first = array.get(0usize)?.ok_or(DeltaError::Root)?;
     let second = array.get(1usize)?.ok_or(DeltaError::Root)?;
     let mut inserted = false;
     let mut callback_error = None;
-    array.sort_by(|left,right| {
-        let result = (|| -> Result<(),DeltaError> {
-            first.at(&["nested".into()])?.set("value",&json!(200).into())?;
-            second.at(&["nested".into()])?.set("value",&json!(100).into())?;
-            if !inserted { inserted = true; array.unshift(&[json!({"rank":4,"nested":{"value":0}}).into()])?; }
+    array.sort_by(|left, right| {
+        let result = (|| -> Result<(), DeltaError> {
+            first
+                .at(&["nested".into()])?
+                .set("value", &json!(200).into())?;
+            second
+                .at(&["nested".into()])?
+                .set("value", &json!(100).into())?;
+            if !inserted {
+                inserted = true;
+                array.unshift(&[json!({"rank":4,"nested":{"value":0}}).into()])?;
+            }
             Ok(())
         })();
-        if let Err(error) = result { callback_error = Some(error); }
+        if let Err(error) = result {
+            callback_error = Some(error);
+        }
         left["rank"].as_u64().cmp(&right["rank"].as_u64())
     })?;
-    if let Some(error) = callback_error { return Err(error); }
+    if let Some(error) = callback_error {
+        return Err(error);
+    }
     let prepared = change.prepare()?;
     assert_eq!(prepared.value(),&json!([{"rank":1,"nested":{"value":100}},{"rank":2,"nested":{"value":200}},{"rank":1,"nested":{"value":100}}]).into());
     assert!(!prepared.value()[0].same_identity(&prepared.value()[2]));
@@ -330,19 +358,21 @@ fn reentrant_sort_normalizes_duplicate_entries_by_value() -> Result<(), DeltaErr
     replay(&prepared)
 }
 
-#[tokio::test(flavor="current_thread")]
-async fn transaction_survives_an_event_await_and_then_revokes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test(flavor = "current_thread")]
+async fn transaction_survives_an_event_await_and_then_revokes()
+-> Result<(), Box<dyn std::error::Error>> {
     let tracker = track(json!({"then":"document-value","left":0,"nested":{"right":0}}).into())?;
     let mut change = tracker.begin_change();
     let root = change.state()?;
-    root.set("left",&json!(1).into())?;
-    let (send,receive) = tokio::sync::oneshot::channel();
-    send.send(()).map_err(|_|"event closed")?;
-    tokio::time::timeout(std::time::Duration::from_secs(1),receive).await??;
-    root.at(&["nested".into()])?.set("right",&json!(2).into())?;
+    root.set("left", &json!(1).into())?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    send.send(()).map_err(|_| "event closed")?;
+    tokio::time::timeout(std::time::Duration::from_secs(1), receive).await??;
+    root.at(&["nested".into()])?
+        .set("right", &json!(2).into())?;
     let prepared = change.prepare()?;
     assert!(root.value().is_err());
-    assert_eq!(prepared.value()["then"],json!("document-value").into());
+    assert_eq!(prepared.value()["then"], json!("document-value").into());
     replay(&prepared)?;
     Ok(())
 }
@@ -354,17 +384,21 @@ fn raw_committed_and_draft_placements_capture_different_revisions() -> Result<()
     let mut change = tracker.begin_change();
     let root = change.state()?;
     let source = root.at(&["source".into()])?;
-    source.set("value",&json!(2).into())?;
-    root.set("rawCopy",&raw)?;
-    root.place("draftCopy",&source)?;
+    source.set("value", &json!(2).into())?;
+    root.set("rawCopy", &raw)?;
+    root.place("draftCopy", &source)?;
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value(),&json!({"source":{"value":2},"rawCopy":{"value":1},"draftCopy":{"value":2}}).into());
+    assert_eq!(
+        prepared.value(),
+        &json!({"source":{"value":2},"rawCopy":{"value":1},"draftCopy":{"value":2}}).into()
+    );
     replay(&prepared)
 }
 
 #[test]
 fn ownership_is_shallow_but_all_placement_methods_copy_immediately() -> Result<(), DeltaError> {
-    let input: JsonValue = json!({"property":null,"values":[{"value":0},{"value":1},{"value":2}]}).into();
+    let input: JsonValue =
+        json!({"property":null,"values":[{"value":0},{"value":1},{"value":2}]}).into();
     let tracker = track(input.clone())?;
     assert!(tracker.value().same_identity(&input));
     assert!(tracker.value()["values"].same_identity(&input["values"]));
@@ -372,18 +406,18 @@ fn ownership_is_shallow_but_all_placement_methods_copy_immediately() -> Result<(
     let root = change.state()?;
     let array = root.at(&["values".into()])?;
     let external: JsonValue = json!({"value":5}).into();
-    root.set("property",&external)?;
-    array.set(0usize,&external)?;
+    root.set("property", &external)?;
+    array.set(0usize, &external)?;
     array.push(std::slice::from_ref(&external))?;
     array.unshift(std::slice::from_ref(&external))?;
-    array.splice(2,0,std::slice::from_ref(&external))?;
+    array.splice(2, 0, std::slice::from_ref(&external))?;
     let source = array.get(0usize)?.ok_or(DeltaError::Root)?.value()?;
-    array.fill(&source,1,Some(3))?;
-    array.copy_within(3,0,Some(2))?;
+    array.fill(&source, 1, Some(3))?;
+    array.copy_within(3, 0, Some(2))?;
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value()["property"],json!({"value":5}).into());
+    assert_eq!(prepared.value()["property"], json!({"value":5}).into());
     for index in 0..5 {
-        assert_eq!(prepared.value()["values"][index],json!({"value":5}).into());
+        assert_eq!(prepared.value()["values"][index], json!({"value":5}).into());
         assert!(!prepared.value()["values"][index].same_identity(&external));
     }
     replay(&prepared)
@@ -391,18 +425,22 @@ fn ownership_is_shallow_but_all_placement_methods_copy_immediately() -> Result<(
 
 #[test]
 fn deep_equal_array_and_object_assignments_detach_before_normalizing() -> Result<(), DeltaError> {
-    let initial: JsonValue = json!({"object":{"nested":{"value":1}},"array":[{"value":1}],"rows":[{"value":1}]}).into();
+    let initial: JsonValue =
+        json!({"object":{"nested":{"value":1}},"array":[{"value":1}],"rows":[{"value":1}]}).into();
     let tracker = track(initial.clone())?;
     let mut change = tracker.begin_change();
     let root = change.state()?;
-    let old_object = root.at(&["object".into(),"nested".into()])?;
-    let old_array = root.at(&["array".into(),0usize.into()])?;
-    let old_row = root.at(&["rows".into(),0usize.into()])?;
-    root.set("object",&json!({"nested":{"value":1}}).into())?;
-    root.set("array",&json!([{"value":1}]).into())?;
-    root.at(&["rows".into()])?.set(0usize,&json!({"value":1}).into())?;
-    for held in [old_object,old_array,old_row] { held.set("value",&json!(9).into())?; }
-    assert_eq!(root.value()?,initial);
+    let old_object = root.at(&["object".into(), "nested".into()])?;
+    let old_array = root.at(&["array".into(), 0usize.into()])?;
+    let old_row = root.at(&["rows".into(), 0usize.into()])?;
+    root.set("object", &json!({"nested":{"value":1}}).into())?;
+    root.set("array", &json!([{"value":1}]).into())?;
+    root.at(&["rows".into()])?
+        .set(0usize, &json!({"value":1}).into())?;
+    for held in [old_object, old_array, old_row] {
+        held.set("value", &json!(9).into())?;
+    }
+    assert_eq!(root.value()?, initial);
     let prepared = change.prepare()?;
     assert!(prepared.ops().is_empty());
     assert!(prepared.value().same_identity(&initial));
@@ -410,75 +448,125 @@ fn deep_equal_array_and_object_assignments_detach_before_normalizing() -> Result
 }
 
 #[test]
-fn normalized_assignment_preserves_original_key_order_and_readable_publications() -> Result<(), DeltaError> {
+fn normalized_assignment_preserves_original_key_order_and_readable_publications()
+-> Result<(), DeltaError> {
     let mut tracker = track(json!({"child":{"a":1,"b":2},"count":0}).into())?;
     let mut change = tracker.begin_change();
     let root = change.state()?;
-    root.set("child",&json!({"b":2,"a":1}).into())?;
-    root.set("count",&json!(1).into())?;
+    root.set("child", &json!({"b":2,"a":1}).into())?;
+    root.set("count", &json!(1).into())?;
     let prepared = change.prepare()?;
-    assert_eq!(prepared.ops(),&[Op::Set(vec!["count".into()],json!(1).into())]);
+    assert_eq!(
+        prepared.ops(),
+        &[Op::Set(vec!["count".into()], json!(1).into())]
+    );
     tracker.adopt(&prepared)?;
     let publication = prepared.value().clone();
     let replacement = tracker.prepare_replace(json!({"count":2}).into())?;
     tracker.adopt(&replacement)?;
-    assert_eq!(publication["count"],json!(1).into());
-    assert_eq!(publication["child"].as_object().map(|v|v.iter().map(|(key,_)|key.as_str()).collect::<Vec<_>>()),Some(vec![Some("a"),Some("b")]));
+    assert_eq!(publication["count"], json!(1).into());
+    assert_eq!(
+        publication["child"]
+            .as_object()
+            .map(|v| v.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>()),
+        Some(vec![Some("a"), Some("b")])
+    );
     replay(&prepared)
 }
 
 #[test]
 fn reverse_depth_chain_emission_matches_the_512_level_upstream_case() -> Result<(), DeltaError> {
     let mut initial: JsonValue = json!({"value":0}).into();
-    for _ in 0..512 { initial = JsonValue::object(vec![("value".into(),json!(0).into()),("next".into(),initial)]); }
+    for _ in 0..512 {
+        initial = JsonValue::object(vec![
+            ("value".into(), json!(0).into()),
+            ("next".into(), initial),
+        ]);
+    }
     let tracker = track(initial)?;
     let mut change = tracker.begin_change();
     let mut nodes = vec![change.state()?];
-    while let Some(next) = nodes.last().ok_or(DeltaError::Root)?.get("next")? { nodes.push(next); }
-    for (index,node) in nodes.iter().enumerate().rev() { node.set("value",&json!(index+1).into())?; }
+    while let Some(next) = nodes.last().ok_or(DeltaError::Root)?.get("next")? {
+        nodes.push(next);
+    }
+    for (index, node) in nodes.iter().enumerate().rev() {
+        node.set("value", &json!(index + 1).into())?;
+    }
     let prepared = change.prepare()?;
-    assert_eq!(prepared.ops().len(),513);
+    assert_eq!(prepared.ops().len(), 513);
     replay(&prepared)
 }
 
 #[test]
 fn sparse_overflow_and_explicit_splice_arity_equivalents() -> Result<(), DeltaError> {
-    let tracker = track(JsonValue::array((0..15_000).map(|value|json!({"value":value}).into()).collect()))?;
+    let tracker = track(JsonValue::array(
+        (0..15_000)
+            .map(|value| json!({"value":value}).into())
+            .collect(),
+    ))?;
     let mut change = tracker.begin_change();
     let array = change.state()?;
-    for index in (0..15_000).step_by(3) { array.get(index)?.ok_or(DeltaError::Root)?.set("value",&json!(-i64::try_from(index).map_err(|_|DeltaError::Root)?-1).into())?; }
+    for index in (0..15_000).step_by(3) {
+        array.get(index)?.ok_or(DeltaError::Root)?.set(
+            "value",
+            &json!(-i64::try_from(index).map_err(|_| DeltaError::Root)? - 1).into(),
+        )?;
+    }
     let prepared = change.prepare()?;
-    assert!(matches!(prepared.ops(),[Op::Replace(_)]));
+    assert!(matches!(prepared.ops(), [Op::Replace(_)]));
     replay(&prepared)?;
-    let tracker = track(json!([1,2,3,4]).into())?;
+    let tracker = track(json!([1, 2, 3, 4]).into())?;
     let mut change = tracker.begin_change();
     let array = change.state()?;
-    assert!(array.splice(0,0,&[])?.is_empty());
+    assert!(array.splice(0, 0, &[])?.is_empty());
     let removed = array.splice_to_end(1)?;
-    assert_eq!(removed.iter().map(Draft::value).collect::<Result<Vec<_>,_>>()?,vec![json!(2).into(),json!(3).into(),json!(4).into()]);
+    assert_eq!(
+        removed
+            .iter()
+            .map(Draft::value)
+            .collect::<Result<Vec<_>, _>>()?,
+        vec![json!(2).into(), json!(3).into(), json!(4).into()]
+    );
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value(),&json!([1]).into());
+    assert_eq!(prepared.value(), &json!([1]).into());
     replay(&prepared)
 }
 
 #[test]
-fn policy_reads_keys_serialization_and_internal_named_fields_remain_document_data() -> Result<(), Box<dyn std::error::Error>> {
+fn policy_reads_keys_serialization_and_internal_named_fields_remain_document_data()
+-> Result<(), Box<dyn std::error::Error>> {
     let tracker = track(json!({"values":[1,2,3],"object":{"context":1,"base":2,"parent":3,"dirty":4,"target":5,"proxy":6}}).into())?;
     let mut change = tracker.begin_change();
     let root = change.state()?;
     let values = root.at(&["values".into()])?;
-    values.splice(1,1,&[json!(4).into(),json!(5).into()])?;
-    assert_eq!(values.keys()?,["0","1","2","3"]);
-    let doubled: Vec<u64> = (0..values.len()?).map(|i|values.get(i)?.ok_or(DeltaError::Root)?.value()?.as_u64().map(|n|n*2).ok_or(DeltaError::Root)).collect::<Result<_,_>>()?;
-    assert_eq!(doubled,[2,8,10,6]);
+    values.splice(1, 1, &[json!(4).into(), json!(5).into()])?;
+    assert_eq!(values.keys()?, ["0", "1", "2", "3"]);
+    let doubled: Vec<u64> = (0..values.len()?)
+        .map(|i| {
+            values
+                .get(i)?
+                .ok_or(DeltaError::Root)?
+                .value()?
+                .as_u64()
+                .map(|n| n * 2)
+                .ok_or(DeltaError::Root)
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(doubled, [2, 8, 10, 6]);
     let object = root.at(&["object".into()])?;
-    object.set("context",&json!(7).into())?;
-    object.set("proxy",&json!(8).into())?;
-    assert_eq!(object.keys()?,["context","base","parent","dirty","target","proxy"]);
-    assert_eq!(serde_json::from_str::<JsonValue>(&serde_json::to_string(&root.value()?)?)?,root.value()?);
+    object.set("context", &json!(7).into())?;
+    object.set("proxy", &json!(8).into())?;
+    assert_eq!(
+        object.keys()?,
+        ["context", "base", "parent", "dirty", "target", "proxy"]
+    );
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&serde_json::to_string(&root.value()?)?)?,
+        root.value()?
+    );
     assert!(values.get("map").is_err());
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value()["object"]["context"],json!(7).into());
+    assert_eq!(prepared.value()["object"]["context"], json!(7).into());
     replay(&prepared)?;
     Ok(())
 }
@@ -488,18 +576,41 @@ fn integer_and_string_keys_keep_order_after_deletion_and_readdition() -> Result<
     let tracker = track(json!({"1":"one","2":"two","first":"a","second":"b"}).into())?;
     let mut change = tracker.begin_change();
     let root = change.state()?;
-    root.delete("2")?; root.set("2",&json!("two").into())?;
-    root.delete("first")?; root.set("first",&json!("a").into())?;
-    root.set("3",&json!("three").into())?; root.set("0",&json!("zero").into())?;
-    assert_eq!(root.keys()?,["0","1","2","3","second","first"]);
+    root.delete("2")?;
+    root.set("2", &json!("two").into())?;
+    root.delete("first")?;
+    root.set("first", &json!("a").into())?;
+    root.set("3", &json!("three").into())?;
+    root.set("0", &json!("zero").into())?;
+    assert_eq!(root.keys()?, ["0", "1", "2", "3", "second", "first"]);
     let prepared = change.prepare()?;
-    assert_eq!(prepared.value().as_object().map(|v|v.iter().map(|(key,_)|key.as_str()).collect::<Vec<_>>()),Some(vec![Some("0"),Some("1"),Some("2"),Some("3"),Some("second"),Some("first")]));
+    assert_eq!(
+        prepared
+            .value()
+            .as_object()
+            .map(|v| v.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>()),
+        Some(vec![
+            Some("0"),
+            Some("1"),
+            Some("2"),
+            Some("3"),
+            Some("second"),
+            Some("first")
+        ])
+    );
     replay(&prepared)
 }
 
 #[test]
 fn strict_json_boundary_rejects_nonjson_before_a_draft_can_receive_it() {
-    for text in ["undefined","NaN","Infinity","[1,,2]","{\"nested\":undefined}","{\"nested\":1n}"] {
+    for text in [
+        "undefined",
+        "NaN",
+        "Infinity",
+        "[1,,2]",
+        "{\"nested\":undefined}",
+        "{\"nested\":1n}",
+    ] {
         assert!(maho_chord::json::parse(text).is_err());
     }
     assert!(serde_json::Number::from_f64(f64::NAN).is_none());
@@ -512,16 +623,21 @@ fn prepared_placement_payload_is_shared_but_immutable() -> Result<(), DeltaError
     let mut change = tracker.begin_change();
     change.state()?.push(&[json!({"value":1}).into()])?;
     let prepared = change.prepare()?;
-    let [Op::Splice(_,_,_,items)] = prepared.ops() else { return Err(DeltaError::Root); };
+    let [Op::Splice(_, _, _, items)] = prepared.ops() else {
+        return Err(DeltaError::Root);
+    };
     assert!(items[0].same_identity(&prepared.value()[0]));
     let mut detached = prepared.ops().to_vec();
-    if let Op::Splice(_,_,_,items) = &mut detached[0] { items.clear(); }
-    assert_eq!(prepared.value(),&json!([{ "value":1 }]).into());
+    if let Op::Splice(_, _, _, items) = &mut detached[0] {
+        items.clear();
+    }
+    assert_eq!(prepared.value(), &json!([{ "value":1 }]).into());
     replay(&prepared)
 }
 
 #[test]
-fn consecutive_equal_event_arrays_detach_handles_but_normalize_before_publication() -> Result<(), DeltaError> {
+fn consecutive_equal_event_arrays_detach_handles_but_normalize_before_publication()
+-> Result<(), DeltaError> {
     for events in [json!([]), json!([{"kind":"committed"}])] {
         let initial: JsonValue = json!({"commit":{"events":events}}).into();
         let mut tracker = track(initial.clone())?;
@@ -554,13 +670,25 @@ fn changed_event_arrays_emit_once_then_equal_assignment_normalizes() -> Result<(
     for events in [json!([{"kind":"committed"}]), json!([])] {
         let fresh: JsonValue = events.into();
         let mut change = tracker.begin_change();
-        change.state()?.at(&["commit".into()])?.set("events", &fresh)?;
+        change
+            .state()?
+            .at(&["commit".into()])?
+            .set("events", &fresh)?;
         let prepared = change.prepare()?;
-        assert_eq!(prepared.ops(), &[Op::Set(vec!["commit".into(), "events".into()], fresh.clone())]);
+        assert_eq!(
+            prepared.ops(),
+            &[Op::Set(
+                vec!["commit".into(), "events".into()],
+                fresh.clone()
+            )]
+        );
         replay(&prepared)?;
         tracker.adopt(&prepared)?;
         let mut repeated = tracker.begin_change();
-        repeated.state()?.at(&["commit".into()])?.set("events", &fresh)?;
+        repeated
+            .state()?
+            .at(&["commit".into()])?
+            .set("events", &fresh)?;
         assert!(repeated.prepare()?.ops().is_empty());
     }
     Ok(())

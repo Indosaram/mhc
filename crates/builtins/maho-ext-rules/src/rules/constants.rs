@@ -1,6 +1,28 @@
 pub const GLOBAL_DISTANCE: usize = 9999;
-pub const SOURCE_PRIORITY: &[(&str, usize)] = &[(".pi/rules", 0), (".omo/rules", 1), (".claude/rules", 2), (".cursor/rules", 3), (".github/instructions", 4), (".github/copilot-instructions.md", 5), ("AGENTS.md", 6), ("CLAUDE.md", 7), ("CONTEXT.md", 8), ("~/.pi/rules", 100), ("~/.omo/rules", 101), ("~/.opencode/rules", 102), ("~/.claude/rules", 103), ("~/.config/opencode/AGENTS.md", 104), ("~/.claude/CLAUDE.md", 105)];
-pub const PROJECT_RULE_SUBDIRS: &[(&str, &str)] = &[(".pi", "rules"), (".omo", "rules"), (".claude", "rules"), (".cursor", "rules"), (".github", "instructions")];
+pub const SOURCE_PRIORITY: &[(&str, usize)] = &[
+    (".pi/rules", 0),
+    (".omo/rules", 1),
+    (".claude/rules", 2),
+    (".cursor/rules", 3),
+    (".github/instructions", 4),
+    (".github/copilot-instructions.md", 5),
+    ("AGENTS.md", 6),
+    ("CLAUDE.md", 7),
+    ("CONTEXT.md", 8),
+    ("~/.pi/rules", 100),
+    ("~/.omo/rules", 101),
+    ("~/.opencode/rules", 102),
+    ("~/.claude/rules", 103),
+    ("~/.config/opencode/AGENTS.md", 104),
+    ("~/.claude/CLAUDE.md", 105),
+];
+pub const PROJECT_RULE_SUBDIRS: &[(&str, &str)] = &[
+    (".pi", "rules"),
+    (".omo", "rules"),
+    (".claude", "rules"),
+    (".cursor", "rules"),
+    (".github", "instructions"),
+];
 pub const DEFAULT_MAX_RULE_CHARS: usize = 12000;
 pub const DEFAULT_MAX_RESULT_CHARS: usize = 40000;
 pub const TRUNCATION_NOTICE: &str = "\n\n[Rule truncated. Read full rule: {path}]";
@@ -9,10 +31,36 @@ pub const PROJECT_RULES_END_MARKER: &str = "</project_rules>";
 pub const PROJECT_RULES_HEADING: &str = "## Project Instructions";
 pub const PROJECT_RULES_REGION_START_MARKER: &str = "<!--senpi:project-rules:1:start-->";
 pub const PROJECT_RULES_REGION_END_MARKER: &str = "<!--senpi:project-rules:1:end-->";
-pub const PROJECT_MARKERS: &[&str] = &[".git", "pnpm-workspace.yaml", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", ".venv"];
-pub const PROJECT_SINGLE_FILES: &[&str] = &[".github/copilot-instructions.md", "AGENTS.md", "CLAUDE.md", "CONTEXT.md"];
-pub const USER_HOME_RULE_SUBDIRS: &[&str] = &[".pi/rules", ".omo/rules", ".opencode/rules", ".claude/rules"];
+pub const PROJECT_MARKERS: &[&str] = &[
+    ".git",
+    "pnpm-workspace.yaml",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    ".venv",
+];
+pub const PROJECT_SINGLE_FILES: &[&str] = &[
+    ".github/copilot-instructions.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTEXT.md",
+];
+pub const USER_HOME_RULE_SUBDIRS: &[&str] = &[
+    ".pi/rules",
+    ".omo/rules",
+    ".opencode/rules",
+    ".claude/rules",
+];
 pub const USER_HOME_SINGLE_FILES: &[&str] = &[".config/opencode/AGENTS.md", ".claude/CLAUDE.md"];
 pub const RULE_FILE_EXTENSIONS: &[&str] = &[".md", ".mdc"];
 pub const TRACKED_BUILTIN_TOOLS: &[&str] = &["read", "edit", "write"];
-pub const SCANNER_EXCLUDED_DIRS: &[&str] = &["node_modules", ".git", "dist", "build", ".turbo", ".next", "coverage"];
+pub const SCANNER_EXCLUDED_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".turbo",
+    ".next",
+    "coverage",
+];

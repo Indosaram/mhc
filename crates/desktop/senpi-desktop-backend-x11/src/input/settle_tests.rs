@@ -7,10 +7,10 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::Target;
 use x11rb::protocol::xproto::Window;
 
-use super::X11Input;
 use super::fake::Call;
 use super::server::FakeInput;
 use super::tests::input;
+use super::X11Input;
 
 const TERMINAL: Window = 0x40_0001;
 const EDITOR: Window = 0x80_0001;

@@ -1345,13 +1345,25 @@ fn windows_platform_and_provisioned_workers_are_matched() {
 
 #[test]
 fn default_home_roots_include_claude_omo_install() {
-    let home = if cfg!(windows) { PathBuf::from("C:\\Users\\yeongyu") } else { PathBuf::from("/Users/yeongyu") };
+    let home = if cfg!(windows) {
+        PathBuf::from("C:\\Users\\yeongyu")
+    } else {
+        PathBuf::from("/Users/yeongyu")
+    };
     let discovered = discover_codegraph_owned_roots(&CodegraphOwnedRootsOptions {
         codex_home: Some(home.join(".missing-codex")),
         home_dir: Some(home.clone()),
         ..Default::default()
     });
-    assert!(discovered.contains(&home.join(".claude").join("omo").to_string_lossy().into_owned()));
+    assert!(
+        discovered.contains(
+            &home
+                .join(".claude")
+                .join("omo")
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
 }
 
 #[test]

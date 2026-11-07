@@ -107,17 +107,29 @@ fn clean_exit_without_text_and_killed_exit_are_errors() {
     assert_eq!(failure.kind, RunnerFailureKind::ChildPromptFailed);
     assert!(killed);
     assert_eq!(failure.exit.as_ref().map(|exit| exit.kind), Some("killed"));
-    assert_eq!(failure.exit.as_ref().and_then(|exit| exit.signal.as_deref()), Some("SIGKILL"));
+    assert_eq!(
+        failure
+            .exit
+            .as_ref()
+            .and_then(|exit| exit.signal.as_deref()),
+        Some("SIGKILL")
+    );
     assert_eq!(failure.exit.as_ref().and_then(|exit| exit.code), None);
     assert!(failure.message.contains("SIGKILL"), "{}", failure.message);
 }
 
 #[test]
 fn clean_process_exit_without_output_carries_confirmation_facts() {
-    let exit = ChildExitOutcome::Clean { facts: ChildExitFacts {
-        pid: Some(7), code: Some(0), ..Default::default()
-    }};
-    let RunnerOutcome::Error { failure, .. } = exit_turn_outcome(&exit, None) else { panic!("missing output must fail"); };
+    let exit = ChildExitOutcome::Clean {
+        facts: ChildExitFacts {
+            pid: Some(7),
+            code: Some(0),
+            ..Default::default()
+        },
+    };
+    let RunnerOutcome::Error { failure, .. } = exit_turn_outcome(&exit, None) else {
+        panic!("missing output must fail");
+    };
     let facts = failure.exit.expect("process exit facts");
     assert_eq!(facts.kind, "clean");
     assert_eq!(facts.code, Some(0));

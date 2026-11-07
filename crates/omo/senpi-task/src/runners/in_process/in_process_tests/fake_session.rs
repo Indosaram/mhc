@@ -8,7 +8,9 @@ use serde_json::Value;
 
 use crate::host::HostError;
 use crate::manager::child_handle::{InputIdentity, Unsubscribe};
-use crate::runners::in_process::child_handle::{ChildSession, ChildSessionListener, WorkpoolChildIdentity};
+use crate::runners::in_process::child_handle::{
+    ChildSession, ChildSessionListener, WorkpoolChildIdentity,
+};
 
 #[derive(Default)]
 struct FakeState {
@@ -109,7 +111,9 @@ impl FakeSession {
         self.lock().follow_up_calls.clone()
     }
 
-    pub(super) fn workpool_identity(&self) -> Option<WorkpoolChildIdentity> { self.lock().workpool_identity.clone() }
+    pub(super) fn workpool_identity(&self) -> Option<WorkpoolChildIdentity> {
+        self.lock().workpool_identity.clone()
+    }
 
     pub(super) fn disposed(&self) -> usize {
         self.lock().disposed
@@ -172,21 +176,34 @@ impl ChildSession for FakeSession {
     }
 
     fn prompt_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
-        self.lock().identities.push(format!("prompt:{}", identity.client_message_id));
+        self.lock()
+            .identities
+            .push(format!("prompt:{}", identity.client_message_id));
         self.prompt(text)
     }
 
     fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
-        self.lock().identities.push(format!("steer:{}", identity.client_message_id));
+        self.lock()
+            .identities
+            .push(format!("steer:{}", identity.client_message_id));
         self.steer(text)
     }
 
-    fn follow_up_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
-        self.lock().identities.push(format!("followUp:{}", identity.client_message_id));
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        self.lock()
+            .identities
+            .push(format!("followUp:{}", identity.client_message_id));
         self.follow_up(text)
     }
 
-    fn rebind_workpool_identity(&self, identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
+    fn rebind_workpool_identity(
+        &self,
+        identity: WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
         self.lock().workpool_identity = Some(identity);
         Some(Ok(()))
     }

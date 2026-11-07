@@ -13,7 +13,7 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 
 pub(crate) use self::dpi::enable_per_monitor_awareness;
-pub(crate) use self::frame::{PhysicalRect, logical_bounds, physical_point};
+pub(crate) use self::frame::{logical_bounds, physical_point, PhysicalRect};
 use crate::integrity::IntegrityRid;
 
 #[derive(Debug, Clone)]

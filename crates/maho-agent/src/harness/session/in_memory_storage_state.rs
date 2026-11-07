@@ -3,21 +3,22 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::commit::{
-    CommittedEntryWrite, CommittedListAppendWrite, CommittedListDeleteWrite, CommittedListWrite, CommittedUsageWrite,
-    CommittedValueDeleteWrite, CommittedValueSetWrite, CommittedValueWrite, CommittedWrite, CommitResultBase,
-    CommitValidationState, PreparedCommit, prepare_storage_commit, validate_committed_writes,
+    CommitResultBase, CommitValidationState, CommittedEntryWrite, CommittedListAppendWrite,
+    CommittedListDeleteWrite, CommittedListWrite, CommittedUsageWrite, CommittedValueDeleteWrite,
+    CommittedValueSetWrite, CommittedValueWrite, CommittedWrite, PreparedCommit,
+    prepare_storage_commit, validate_committed_writes,
 };
 use super::fork_policy::{
-    ForkCurrentStatePlan, ForkCurrentStateRow, select_branch_fork, project_fork_current_state_write,
+    ForkCurrentStatePlan, ForkCurrentStateRow, project_fork_current_state_write, select_branch_fork,
 };
 use super::session::{SessionError, SessionErrorKind, session_invariant_error};
 use super::types::{
-    Entry, EntryScan, EntryStructure, ForkOptions, ScanOrder, SessionStats, StorageBranchScan, UsageRow, UsageScan,
-    Write,
+    Entry, EntryScan, EntryStructure, ForkOptions, ScanOrder, SessionStats, StorageBranchScan,
+    UsageRow, UsageScan, Write,
 };
 use super::values::{
-    ListCursor, ListElement, ListOrder, ListReadOptions, StoredValue, Value, ValueList, branch_tip, lane_config,
-    lane_state, physical_key, resolve_list_read_options, value,
+    ListCursor, ListElement, ListOrder, ListReadOptions, StoredValue, Value, ValueList, branch_tip,
+    lane_config, lane_state, physical_key, resolve_list_read_options, value,
 };
 use crate::harness::utils::usage::{add_usage, empty_usage};
 
@@ -85,7 +86,11 @@ impl InMemoryStorageState {
         }
     }
 
-    pub fn prepare_commit(&self, writes: Vec<Write>, timestamp: i64) -> Result<PreparedCommit, SessionError> {
+    pub fn prepare_commit(
+        &self,
+        writes: Vec<Write>,
+        timestamp: i64,
+    ) -> Result<PreparedCommit, SessionError> {
         let prepared = prepare_storage_commit(writes, self.next_seq, timestamp);
         self.validate_committed(&prepared.writes)?;
         Ok(prepared)
@@ -122,13 +127,15 @@ impl InMemoryStorageState {
                     self.stats.usage = add_usage(&self.stats.usage, &row.usage);
                 }
                 CommittedWrite::Value(CommittedValueWrite::Delete(write)) => {
-                    self.scalar_values.remove(&physical_key(&write.namespace, &write.key));
+                    self.scalar_values
+                        .remove(&physical_key(&write.namespace, &write.key));
                 }
                 CommittedWrite::Value(CommittedValueWrite::Set(write)) => {
                     self.apply_value_set_or_list_append(&ForkCurrentStateRow::Value(write.clone()));
                 }
                 CommittedWrite::List(CommittedListWrite::Delete(write)) => {
-                    self.list_values.remove(&physical_key(&write.namespace, &write.key));
+                    self.list_values
+                        .remove(&physical_key(&write.namespace, &write.key));
                 }
                 CommittedWrite::List(CommittedListWrite::Append(write)) => {
                     self.apply_value_set_or_list_append(&ForkCurrentStateRow::List(write.clone()));
@@ -150,7 +157,11 @@ impl InMemoryStorageState {
 
         let mut destination = InMemoryStorageState::new();
         let mut message_count = 0;
-        for entry in self.entries_by_seq.iter().filter_map(|id| self.entries.get(id)) {
+        for entry in self
+            .entries_by_seq
+            .iter()
+            .filter_map(|id| self.entries.get(id))
+        {
             if !is_entry_copied(&entry.id) {
                 continue;
             }
@@ -171,7 +182,9 @@ impl InMemoryStorageState {
                 key: stored.address.key.clone(),
                 value: stored.value.clone(),
             });
-            if let Some(projected) = project_fork_current_state_write(&row, &plan.plan(), &is_entry_copied)? {
+            if let Some(projected) =
+                project_fork_current_state_write(&row, &plan.plan(), &is_entry_copied)?
+            {
                 destination.apply_value_set_or_list_append(&projected);
             }
         }
@@ -186,7 +199,9 @@ impl InMemoryStorageState {
                     key: stored.address.key.clone(),
                     value: element.value.clone(),
                 });
-                if let Some(projected) = project_fork_current_state_write(&row, &plan.plan(), &is_entry_copied)? {
+                if let Some(projected) =
+                    project_fork_current_state_write(&row, &plan.plan(), &is_entry_copied)?
+                {
                     destination.apply_value_set_or_list_append(&projected);
                 }
             }
@@ -204,16 +219,22 @@ impl InMemoryStorageState {
         let plan = select_branch_fork(
             options,
             &super::fork_policy::BranchForkSource {
-                tip: self
-                    .get_value(&branch_tip(branch))
-                    .map(|stored| serde_json::from_value::<Option<String>>(stored.value).unwrap_or(None)),
-                get_parent: &|entry_id: &str| self.entries.get(entry_id).map(|entry| entry.parent_id.clone()),
+                tip: self.get_value(&branch_tip(branch)).map(|stored| {
+                    serde_json::from_value::<Option<String>>(stored.value).unwrap_or(None)
+                }),
+                get_parent: &|entry_id: &str| {
+                    self.entries
+                        .get(entry_id)
+                        .map(|entry| entry.parent_id.clone())
+                },
                 select_entry: &|entry_id: &str| {
                     selected.borrow_mut().insert(entry_id.to_owned());
                 },
             },
         )?;
-        if self.get_value(&lane_config(branch)).is_none() || self.get_value(&lane_state(branch)).is_none() {
+        if self.get_value(&lane_config(branch)).is_none()
+            || self.get_value(&lane_state(branch)).is_none()
+        {
             return Err(session_invariant_error(format!(
                 "Source branch {} is not a configured AgentLane",
                 serde_json::Value::String(branch.clone())
@@ -259,8 +280,11 @@ impl InMemoryStorageState {
                         self.list_values.insert(
                             key,
                             StoredListSnapshot {
-                                address: super::values::list(write.namespace.clone(), write.key.clone())
-                                    .expect("committed list address must be valid"),
+                                address: super::values::list(
+                                    write.namespace.clone(),
+                                    write.key.clone(),
+                                )
+                                .expect("committed list address must be valid"),
                                 elements: vec![element],
                             },
                         );
@@ -301,7 +325,8 @@ impl InMemoryStorageState {
             .scalar_values
             .values()
             .filter(|stored| {
-                stored.address.namespace == prefix.namespace && stored.address.key.starts_with(&prefix.key)
+                stored.address.namespace == prefix.namespace
+                    && stored.address.key.starts_with(&prefix.key)
             })
             .cloned()
             .collect();
@@ -309,7 +334,11 @@ impl InMemoryStorageState {
         found
     }
 
-    pub fn read_list(&self, address: &ValueList, options: Option<ListReadOptions>) -> Result<Vec<ListElement>, SessionError> {
+    pub fn read_list(
+        &self,
+        address: &ValueList,
+        options: Option<ListReadOptions>,
+    ) -> Result<Vec<ListElement>, SessionError> {
         let resolved = resolve_list_read_options(options)
             .map_err(|error| SessionError::new(SessionErrorKind::Invariant, error.message))?;
         let elements: &[ListElement] = self
@@ -323,13 +352,22 @@ impl InMemoryStorageState {
                 None => 0,
                 Some(ListCursor { seq }) => elements.partition_point(|element| element.seq <= seq),
             };
-            elements[from..].iter().take(resolved.limit).cloned().collect()
+            elements[from..]
+                .iter()
+                .take(resolved.limit)
+                .cloned()
+                .collect()
         } else {
             let to = match resolved.cursor {
                 None => elements.len(),
                 Some(ListCursor { seq }) => elements.partition_point(|element| element.seq < seq),
             };
-            elements[..to].iter().rev().take(resolved.limit).cloned().collect()
+            elements[..to]
+                .iter()
+                .rev()
+                .take(resolved.limit)
+                .cloned()
+                .collect()
         };
         Ok(ordered)
     }
@@ -361,7 +399,10 @@ impl InMemoryStorageState {
         let mut stopped: Vec<&Entry> = Vec::new();
         for candidate in path {
             let stop = query.stop_at_id.as_deref() == Some(candidate.id.as_str())
-                || query.stop_at_type.map(|stop| stop == candidate.entry_type()) == Some(true);
+                || query
+                    .stop_at_type
+                    .map(|stop| stop == candidate.entry_type())
+                    == Some(true);
             stopped.push(candidate);
             if stop {
                 break;
@@ -370,9 +411,12 @@ impl InMemoryStorageState {
         let oldest_first = query.order == Some(super::types::BranchOrder::OldestFirst);
         let filtered = stopped
             .into_iter()
-            .filter(|candidate| query.entry_type.is_none() || query.entry_type == Some(candidate.entry_type()))
             .filter(|candidate| {
-                query.custom_type.is_none() || query.custom_type.as_deref() == candidate.custom_type()
+                query.entry_type.is_none() || query.entry_type == Some(candidate.entry_type())
+            })
+            .filter(|candidate| {
+                query.custom_type.is_none()
+                    || query.custom_type.as_deref() == candidate.custom_type()
             })
             .filter(|candidate| match query.cursor {
                 None => true,
@@ -390,7 +434,10 @@ impl InMemoryStorageState {
         Ok(filtered)
     }
 
-    pub fn scan_branch_structure(&self, query: &StorageBranchScan) -> Result<Vec<EntryStructure>, SessionError> {
+    pub fn scan_branch_structure(
+        &self,
+        query: &StorageBranchScan,
+    ) -> Result<Vec<EntryStructure>, SessionError> {
         Ok(self
             .scan_branch(query)?
             .into_iter()
@@ -423,8 +470,10 @@ impl InMemoryStorageState {
                 index += if descending { -1 } else { 1 };
                 continue;
             };
-            let matches = (query.entry_type.is_none() || query.entry_type == Some(entry.entry_type()))
-                && (query.custom_type.is_none() || query.custom_type.as_deref() == entry.custom_type())
+            let matches = (query.entry_type.is_none()
+                || query.entry_type == Some(entry.entry_type()))
+                && (query.custom_type.is_none()
+                    || query.custom_type.as_deref() == entry.custom_type())
                 && query.from_seq.map(|from| entry.seq >= from).unwrap_or(true)
                 && query.to_seq.map(|to| entry.seq <= to).unwrap_or(true);
             if matches {

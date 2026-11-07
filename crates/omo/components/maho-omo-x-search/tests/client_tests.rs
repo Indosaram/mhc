@@ -1,22 +1,22 @@
 //! Port of omo-senpi `components/x-search/client.test.ts` at latest `455dee62`.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maho_ai::utils::abort::AbortController;
 use maho_omo_x_search::client::{
-    build_x_search_request, carrier_model, perform_x_search, prompt_v1, prompt_v2,
-    PerformXSearchOptions, XSearchCarrier, XSearchCarrierName,
-    XSearchFetch, XSearchFetchOutcome, XSearchHttpResponse, XSearchPromptVariant,
-    XSearchRequestParams, DEFAULT_CARRIER, DEFAULT_PROMPT_VARIANT,
+    DEFAULT_CARRIER, DEFAULT_PROMPT_VARIANT, PerformXSearchOptions, XSearchCarrier,
+    XSearchCarrierName, XSearchFetch, XSearchFetchOutcome, XSearchHttpResponse,
+    XSearchPromptVariant, XSearchRequestParams, build_x_search_request, carrier_model,
+    perform_x_search, prompt_v1, prompt_v2,
 };
 use maho_omo_x_search::format::{
-    format_x_search_error, format_x_search_result, NormalizedXSearch, XSearchErrorCode,
-    XSearchResultItem, XSearchUsage,
+    NormalizedXSearch, XSearchErrorCode, XSearchResultItem, XSearchUsage, format_x_search_error,
+    format_x_search_result,
 };
 use maho_omo_x_search::normalize_x_search_response;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn fast_carrier() -> XSearchCarrier {
     carrier_model(XSearchCarrierName::Fast)
@@ -68,9 +68,18 @@ fn test_build_request_given_dates_and_allowed_handles_when_building_then_bounded
 
     assert_eq!(body.tools.len(), 1);
     let tool_obj = body.tools[0].as_object().expect("tool obj");
-    assert_eq!(tool_obj.get("type").and_then(Value::as_str), Some("x_search"));
-    assert_eq!(tool_obj.get("from_date").and_then(Value::as_str), Some("2026-09-01"));
-    assert_eq!(tool_obj.get("to_date").and_then(Value::as_str), Some("2026-09-03"));
+    assert_eq!(
+        tool_obj.get("type").and_then(Value::as_str),
+        Some("x_search")
+    );
+    assert_eq!(
+        tool_obj.get("from_date").and_then(Value::as_str),
+        Some("2026-09-01")
+    );
+    assert_eq!(
+        tool_obj.get("to_date").and_then(Value::as_str),
+        Some("2026-09-03")
+    );
     assert_eq!(
         tool_obj.get("allowed_x_handles"),
         Some(&json!(["grok", "xai"]))
@@ -78,7 +87,11 @@ fn test_build_request_given_dates_and_allowed_handles_when_building_then_bounded
 
     assert_eq!(body.input.len(), 1);
     assert_eq!(body.input[0].role, "user");
-    assert!(body.input[0].content.contains("Run exactly this query: \"Grok CLI since:2026-09-01 until:2026-09-03\""));
+    assert!(
+        body.input[0]
+            .content
+            .contains("Run exactly this query: \"Grok CLI since:2026-09-01 until:2026-09-03\"")
+    );
     assert!(body.input[0].content.contains("mode=Latest"));
     assert!(body.input[0].content.contains("Return up to 10 X posts"));
     assert!(body.reasoning.is_none());
@@ -101,7 +114,11 @@ fn test_build_request_given_top_mode_with_no_filters_when_building_then_top_prom
     assert!(!body.store);
 
     assert!(body.input[0].content.contains("mode=Top"));
-    assert!(body.input[0].content.contains("Run exactly this query: \"bun 1.4\""));
+    assert!(
+        body.input[0]
+            .content
+            .contains("Run exactly this query: \"bun 1.4\"")
+    );
     assert!(body.input[0].content.contains("Return up to 5 X posts"));
 }
 
@@ -128,7 +145,10 @@ fn test_build_request_given_excluded_handles_plus_understanding_flags_on_reasoni
 
     assert_eq!(body.tools.len(), 1);
     let tool_obj = body.tools[0].as_object().expect("tool obj");
-    assert_eq!(tool_obj.get("type").and_then(Value::as_str), Some("x_search"));
+    assert_eq!(
+        tool_obj.get("type").and_then(Value::as_str),
+        Some("x_search")
+    );
     assert_eq!(
         tool_obj.get("excluded_x_handles"),
         Some(&json!(["spam_account"]))
@@ -153,7 +173,10 @@ fn test_defaults_and_prompt_variants_relationship() {
         carrier_model(XSearchCarrierName::Fast).model,
         "grok-4.20-0309-non-reasoning"
     );
-    assert_eq!(carrier_model(XSearchCarrierName::Reasoning).model, "grok-4.6");
+    assert_eq!(
+        carrier_model(XSearchCarrierName::Reasoning).model,
+        "grok-4.6"
+    );
 
     let params = base_params();
     let v1 = prompt_v1(&params);
@@ -164,7 +187,11 @@ fn test_defaults_and_prompt_variants_relationship() {
 
 #[tokio::test]
 async fn test_perform_x_search_given_200_json_response() {
-    let captured = Arc::new(std::sync::Mutex::new(Vec::<(String, BTreeMap<String, String>, String)>::new()));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<(
+        String,
+        BTreeMap<String, String>,
+        String,
+    )>::new()));
     let captured_clone = captured.clone();
 
     let fetch_impl: XSearchFetch = Arc::new(move |url, headers, body| {
@@ -285,7 +312,10 @@ async fn test_perform_x_search_429_carries_retry_after() {
     })
     .await;
 
-    let XSearchFetchOutcome::Err { code, retry_after, .. } = outcome else {
+    let XSearchFetchOutcome::Err {
+        code, retry_after, ..
+    } = outcome
+    else {
         panic!("expected error");
     };
     assert_eq!(code, XSearchErrorCode::RateLimited);
@@ -582,7 +612,11 @@ fn test_normalize_citation_titles_index_and_url_handling() {
     });
 
     let normalized = normalize_x_search_response(&payload, None);
-    let titles: Vec<&str> = normalized.results.iter().map(|e| e.title.as_str()).collect();
+    let titles: Vec<&str> = normalized
+        .results
+        .iter()
+        .map(|e| e.title.as_str())
+        .collect();
     assert_eq!(
         titles,
         vec![
@@ -591,7 +625,10 @@ fn test_normalize_citation_titles_index_and_url_handling() {
             "Real headline",
         ]
     );
-    assert_eq!(normalized.results[0].snippet, "https://x.com/a/status/11 first");
+    assert_eq!(
+        normalized.results[0].snippet,
+        "https://x.com/a/status/11 first"
+    );
 }
 
 #[test]

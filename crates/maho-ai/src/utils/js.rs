@@ -8,8 +8,18 @@ pub fn trim(text: &str) -> &str {
 pub fn is_js_whitespace(c: char) -> bool {
     matches!(
         c,
-        '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\u{00A0}' | '\u{FEFF}' | '\u{000A}' | '\u{000D}'
-            | '\u{2028}' | '\u{2029}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+        '\u{0009}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{FEFF}'
+            | '\u{000A}'
+            | '\u{000D}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
     )
 }
 
@@ -23,7 +33,8 @@ pub fn json_number(value: f64) -> serde_json::Value {
     if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         serde_json::Value::from(value as i64)
     } else {
-        serde_json::Number::from_f64(value).map_or(serde_json::Value::Null, serde_json::Value::Number)
+        serde_json::Number::from_f64(value)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number)
     }
 }
 
@@ -53,8 +64,16 @@ pub fn number_to_string(value: f64) -> String {
         format!("0.{}{digits}", "0".repeat((-n) as usize))
     } else {
         let e = n - 1;
-        let e = if e >= 0 { format!("+{e}") } else { e.to_string() };
-        if k == 1 { format!("{digits}e{e}") } else { format!("{}.{}e{e}", &digits[..1], &digits[1..]) }
+        let e = if e >= 0 {
+            format!("+{e}")
+        } else {
+            e.to_string()
+        };
+        if k == 1 {
+            format!("{digits}e{e}")
+        } else {
+            format!("{}.{}e{e}", &digits[..1], &digits[1..])
+        }
     };
     format!("{sign}{body}")
 }
@@ -75,10 +94,16 @@ pub fn string_to_number(text: &str) -> f64 {
             if body.is_empty() || !body.chars().all(|c| c.is_digit(radix)) {
                 return f64::NAN;
             }
-            return body.chars().fold(0.0, |acc, c| acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0)));
+            return body.chars().fold(0.0, |acc, c| {
+                acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
+            });
         }
     }
-    if is_decimal_literal(text) { text.parse::<f64>().unwrap_or(f64::NAN) } else { f64::NAN }
+    if is_decimal_literal(text) {
+        text.parse::<f64>().unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    }
 }
 
 fn is_decimal_literal(text: &str) -> bool {
@@ -121,7 +146,11 @@ pub fn object_keys(map: &serde_json::Map<String, serde_json::Value>) -> Vec<&Str
         }
     }
     indices.sort_by_key(|(index, _)| *index);
-    indices.into_iter().map(|(_, key)| key).chain(rest).collect()
+    indices
+        .into_iter()
+        .map(|(_, key)| key)
+        .chain(rest)
+        .collect()
 }
 
 fn array_index(key: &str) -> Option<u32> {
@@ -200,7 +229,19 @@ mod tests {
 
     #[test]
     fn formats_numbers_like_js() {
-        let cases = [(1e21, "1e+21"), (1e-7, "1e-7"), (123e-20, "1.23e-18"), (0.1, "0.1"), (-0.0, "0"), (1.5e300, "1.5e+300"), (9007199254740992.0, "9007199254740992"), (123456789012345680000.0, "123456789012345680000"), (0.000001, "0.000001"), (-2.5, "-2.5"), (42.0, "42")];
+        let cases = [
+            (1e21, "1e+21"),
+            (1e-7, "1e-7"),
+            (123e-20, "1.23e-18"),
+            (0.1, "0.1"),
+            (-0.0, "0"),
+            (1.5e300, "1.5e+300"),
+            (9007199254740992.0, "9007199254740992"),
+            (123456789012345680000.0, "123456789012345680000"),
+            (0.000001, "0.000001"),
+            (-2.5, "-2.5"),
+            (42.0, "42"),
+        ];
         for (value, expected) in cases {
             assert_eq!(number_to_string(value), expected, "{value}");
         }
@@ -220,7 +261,11 @@ mod tests {
 
     #[test]
     fn stringifies_like_js() {
-        let value = serde_json::json!({"b": 1, "2": 1, "a": [], "1": {}, "c": 1.0, "d": [true, null, "x"]});
-        assert_eq!(json_stringify_pretty(&value), "{\n  \"1\": {},\n  \"2\": 1,\n  \"b\": 1,\n  \"a\": [],\n  \"c\": 1,\n  \"d\": [\n    true,\n    null,\n    \"x\"\n  ]\n}");
+        let value =
+            serde_json::json!({"b": 1, "2": 1, "a": [], "1": {}, "c": 1.0, "d": [true, null, "x"]});
+        assert_eq!(
+            json_stringify_pretty(&value),
+            "{\n  \"1\": {},\n  \"2\": 1,\n  \"b\": 1,\n  \"a\": [],\n  \"c\": 1,\n  \"d\": [\n    true,\n    null,\n    \"x\"\n  ]\n}"
+        );
     }
 }

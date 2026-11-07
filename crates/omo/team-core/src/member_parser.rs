@@ -152,7 +152,12 @@ mod tests {
     fn parse_member_base_rejects_unknown_subagent_with_exact_message() {
         let raw = json!({ "name": "worker", "kind": "subagent_type", "subagent_type": "" });
         let error = parse_member_base(&raw).expect_err("empty subagent rejected");
-        let MemberParseError::Validation { message, member_name, issue } = error else {
+        let MemberParseError::Validation {
+            message,
+            member_name,
+            issue,
+        } = error
+        else {
             panic!("expected validation error");
         };
         assert_eq!(

@@ -3,9 +3,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::stack::{allocate_stack_sizes, visible_stack_entries, Stack, StackChild, StackEntryOptions, StackOptions};
+use super::stack::{
+    Stack, StackChild, StackEntryOptions, StackOptions, allocate_stack_sizes, visible_stack_entries,
+};
 use crate::layout_node::{LayoutNode, LayoutViewport, StackAlign, StackDirection, StackLayoutNode};
-use crate::tui::{composite_tui_line, Component, Container, TuiMouseEvent, TuiMouseEventResult};
+use crate::tui::{Component, Container, TuiMouseEvent, TuiMouseEventResult, composite_tui_line};
 use crate::utils::visible_width;
 
 pub struct HStack {
@@ -69,7 +71,12 @@ impl Component for HStack {
                     .unwrap_or(0)
             })
             .collect();
-        let widths = allocate_stack_sizes(&entries, &intrinsic_widths, Some(safe_width), self.stack.gap);
+        let widths = allocate_stack_sizes(
+            &entries,
+            &intrinsic_widths,
+            Some(safe_width),
+            self.stack.gap,
+        );
         let rendered: Vec<Vec<String>> = entries
             .iter()
             .enumerate()
@@ -96,7 +103,8 @@ impl Component for HStack {
                 if target >= result.len() {
                     continue;
                 }
-                result[target] = composite_tui_line(&result[target], line, x, child_width, safe_width);
+                result[target] =
+                    composite_tui_line(&result[target], line, x, child_width, safe_width);
             }
             x += child_width + self.stack.gap;
         }

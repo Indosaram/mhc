@@ -39,6 +39,9 @@ pub fn wire_task_usage_guidance(
     );
 }
 
+/// Ends a task whose Resume never brought it back.
+pub type FailResume = dyn Fn(&str) -> Result<(), String> + Send + Sync;
+
 /// The pause custody the component restores BEFORE its lifecycle reconcile and applies on the
 /// host's Resume edge. `event-bridge.ts` owns this seam: custody must exist before the reconcile
 /// reads records, or a restored Stop looks like an ordinary running session.
@@ -46,6 +49,9 @@ pub fn wire_task_usage_guidance(
 pub struct TaskPauseCustody {
     pub bridge: std::sync::Arc<crate::run_pause_bridge::EngineRunPauseBridge>,
     pub session_id: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Gives a task an explicit terminal state when a Resume never brought it back. `None` keeps the
+    /// diagnostic-only behavior for hosts without a task manager.
+    pub fail_resume: Option<std::sync::Arc<FailResume>>,
 }
 
 impl TaskPauseCustody {
@@ -136,9 +142,10 @@ impl TaskPauseCustody {
         let custody = self.clone();
         api.on(
             maho_ext_api::EventKind::HeldWakesReleased,
-            std::sync::Arc::new(move |_, _| {
+            std::sync::Arc::new(move |_, ctx| {
                 let custody = custody.clone();
                 let pending = pending.clone();
+                let ui = ctx.has_ui.then(|| ctx.ui.clone());
                 Box::pin(async move {
                     // The join and the Resume block, and the Resume waits on child turns the host
                     // runtime must drive (a native child admits its continue prompt on that same
@@ -148,33 +155,20 @@ impl TaskPauseCustody {
                         let propagations = std::mem::take(
                             &mut *pending.lock().unwrap_or_else(PoisonError::into_inner),
                         );
-                        for propagation in propagations {
-                            if propagation.join().is_err() {
-                                return Err(maho_ext_api::ExtensionFailure::new(
-                                    "run Stop propagation panicked",
-                                ));
-                            }
-                        }
-                        match custody.resume_current() {
-                            crate::run_pause_bridge::BridgeOutcome::Failed(error) => {
-                                maho_ext_api::diagnostic(&format!(
-                                    "run Resume propagation failed: {error}"
-                                ));
-                            }
-                            // A Resume can install and still leave participants behind, or fail to
-                            // release admission at all; both are partial failures the caller never
-                            // sees otherwise, because the outcome is a success variant.
-                            crate::run_pause_bridge::BridgeOutcome::Resumed {
-                                installed,
-                                failures,
-                            } if !installed || failures > 0 => {
-                                maho_ext_api::diagnostic(&format!(
-                                    "run Resume propagated with {failures} failed participant(s), admission released: {installed}"
-                                ));
-                            }
-                            _ => {}
-                        }
-                        Ok(())
+                        // Two closures need the custody: the Resume borrows the bridge, the
+                        // escalation borrows the task-writer. Split them before either moves.
+                        let fail_resume = custody.fail_resume.clone();
+                        finish_held_wakes_reported(
+                            propagations,
+                            move || custody.resume_current(),
+                            move |failed: &[String]| {
+                                escalate_failed_resumes(
+                                    failed,
+                                    fail_resume.as_deref(),
+                                    ui.as_deref(),
+                                )
+                            },
+                        )
                     };
                     match tokio::runtime::Handle::try_current() {
                         Ok(runtime) => runtime.spawn_blocking(work).await.map_err(|error| {
@@ -190,6 +184,116 @@ impl TaskPauseCustody {
         );
         stop
     }
+}
+
+/// Give every task a Resume left behind an explicit terminal state. Without this the record stays
+/// `Paused` with nobody owning the wake, and the user only sees a run that never continues.
+fn escalate_failed_resumes(
+    failed_keys: &[String],
+    fail_resume: Option<&FailResume>,
+    ui: Option<&dyn maho_ext_api::ExtensionUi>,
+) {
+    let Some(fail_resume) = fail_resume else {
+        return;
+    };
+    let mut stranded = 0usize;
+    for key in failed_keys {
+        match fail_resume(key) {
+            Ok(()) => stranded += 1,
+            Err(error) => {
+                stranded += 1;
+                maho_ext_api::diagnostic(&format!(
+                    "task {key} could not be resumed and could not be interrupted: {error}"
+                ));
+            }
+        }
+    }
+    if let Some(ui) = ui
+        && stranded > 0
+    {
+        ui.notify(
+            &format!(
+                "{stranded} paused task(s) could not be resumed and were ended; start them again to continue"
+            ),
+            maho_ext_api::NotificationType::Warning,
+        );
+    }
+}
+
+/// Join every held-wake propagation, then resume unconditionally: a panicked propagation must never
+/// leave the run Paused. Panics are reported only after the Resume had its chance.
+///
+/// A partial Resume is NOT just a diagnostic: participants that stayed outside custody would keep
+/// their tasks Paused with nobody left to wake them, which is indistinguishable from a hang. The
+/// caller passes `escalate` to give exactly those tasks an explicit terminal state and tell the user.
+/// A test-only convenience: every production caller also escalates failed Resume participants, so the
+/// two-argument form exists only to keep the panic/retry tests readable.
+#[cfg(test)]
+fn finish_held_wakes(
+    propagations: Vec<std::thread::JoinHandle<()>>,
+    resume: impl Fn() -> crate::run_pause_bridge::BridgeOutcome,
+) -> Result<(), maho_ext_api::ExtensionFailure> {
+    finish_held_wakes_reported(propagations, resume, |_| {})
+}
+
+fn finish_held_wakes_reported(
+    propagations: Vec<std::thread::JoinHandle<()>>,
+    resume: impl Fn() -> crate::run_pause_bridge::BridgeOutcome,
+    mut escalate: impl FnMut(&[String]),
+) -> Result<(), maho_ext_api::ExtensionFailure> {
+    let mut panicked = 0usize;
+    for propagation in propagations {
+        if propagation.join().is_err() {
+            panicked += 1;
+        }
+    }
+    let mut outcome = resume();
+    // One bounded retry, only while admission is still closed: the bridge's sequence admits a
+    // repeated Resume, the controller skips participants it already resumed, and re-running the
+    // guidance dispatch is idempotent, so the retry only redoes the work that was lost.
+    if resume_retryable(&outcome) {
+        outcome = resume();
+    }
+    match outcome {
+        crate::run_pause_bridge::BridgeOutcome::Failed(error) => {
+            maho_ext_api::diagnostic(&format!("run Resume propagation failed: {error}"));
+        }
+        // A Resume can install and still leave participants behind, or fail to release admission at
+        // all; both are partial failures the caller never sees otherwise, because the outcome is a
+        // success variant.
+        crate::run_pause_bridge::BridgeOutcome::Resumed {
+            installed,
+            failures,
+            failed_keys,
+        } if !installed || failures > 0 => {
+            maho_ext_api::diagnostic(&format!(
+                "run Resume propagated with {failures} failed participant(s), admission released: {installed}"
+            ));
+            escalate(&failed_keys);
+        }
+        _ => {}
+    }
+    if panicked > 0 {
+        return Err(maho_ext_api::ExtensionFailure::new(format!(
+            "{panicked} run Stop propagation(s) panicked"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether one retry can still resume something. `Resumed { installed: true, .. }` means admission
+/// was already released, so the retry could only die at `AdmissionBarrier::resume` on an open
+/// barrier and would replace the accurate partial-failure diagnostic with a stale-sequence one;
+/// those participants need the bridge's `retry_lost`, not a second Resume.
+fn resume_retryable(outcome: &crate::run_pause_bridge::BridgeOutcome) -> bool {
+    matches!(
+        outcome,
+        crate::run_pause_bridge::BridgeOutcome::Failed(_)
+            | crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: false,
+                ..
+            }
+    )
 }
 
 /// The task id this process may claim as its own on shutdown: the hosted child's identity, trusted
@@ -229,6 +333,135 @@ pub fn shutdown_notice(started: bool, is_own_task: bool) -> Option<&'static str>
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_panicked_stop_propagation_still_resumes_and_reports_the_panic_count() {
+        let propagations = vec![
+            std::thread::spawn(|| panic!("propagation failed")),
+            std::thread::spawn(|| {}),
+        ];
+        let resumes = std::sync::atomic::AtomicUsize::new(0);
+        let result = finish_held_wakes(propagations, || {
+            resumes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: true,
+                failures: 0,
+                failed_keys: Vec::new(),
+            }
+        });
+        assert_eq!(resumes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let error = result.expect_err("the panics are reported");
+        assert!(
+            error.message.contains("1 run Stop propagation(s) panicked"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_failed_resume_is_retried_exactly_once() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let result = finish_held_wakes(Vec::new(), || {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                crate::run_pause_bridge::BridgeOutcome::Failed("host refused".into())
+            } else {
+                crate::run_pause_bridge::BridgeOutcome::Resumed {
+                    installed: true,
+                    failures: 0,
+                    failed_keys: Vec::new(),
+                }
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_resume_that_never_released_admission_is_retried_once() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        assert!(
+            finish_held_wakes(Vec::new(), || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::run_pause_bridge::BridgeOutcome::Resumed {
+                    installed: false,
+                    failures: 1,
+                    failed_keys: vec!["run".into()],
+                }
+            })
+            .is_ok()
+        );
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Admission is already open once `installed` is true, so a second Resume would only fail
+    /// authorization; the partial-failure diagnostic is the accurate report for that outcome.
+    #[test]
+    fn a_resume_that_released_admission_is_never_retried() {
+        for outcome in [
+            crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: true,
+                failures: 0,
+                failed_keys: Vec::new(),
+            },
+            crate::run_pause_bridge::BridgeOutcome::Resumed {
+                installed: true,
+                failures: 2,
+                failed_keys: vec!["a".into(), "b".into()],
+            },
+        ] {
+            let attempts = std::sync::atomic::AtomicUsize::new(0);
+            assert!(
+                finish_held_wakes(Vec::new(), || {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    outcome.clone()
+                })
+                .is_ok()
+            );
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+    }
+
+    /// A participant a Resume left behind must not stay `Paused` with nobody owning the wake: the
+    /// failed keys are handed to the escalation port exactly once, after the retry gave up.
+    #[test]
+    fn a_partial_resume_hands_every_stranded_participant_to_escalation() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let mut escalated: Vec<String> = Vec::new();
+        let result = finish_held_wakes_reported(
+            Vec::new(),
+            || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::run_pause_bridge::BridgeOutcome::Resumed {
+                    installed: true,
+                    failures: 2,
+                    failed_keys: vec!["task-a".into(), "task-b".into()],
+                }
+            },
+            |failed| escalated.extend(failed.iter().cloned()),
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(escalated, vec!["task-a".to_string(), "task-b".to_string()]);
+    }
+
+    /// A clean Resume must not touch any task record.
+    #[test]
+    fn a_clean_resume_never_escalates() {
+        let mut escalated: Vec<String> = Vec::new();
+        assert!(
+            finish_held_wakes_reported(
+                Vec::new(),
+                || crate::run_pause_bridge::BridgeOutcome::Resumed {
+                    installed: true,
+                    failures: 0,
+                    failed_keys: Vec::new(),
+                },
+                |failed| escalated.extend(failed.iter().cloned()),
+            )
+            .is_ok()
+        );
+        assert!(escalated.is_empty());
+    }
 
     #[test]
     fn a_foreign_or_missing_context_keeps_the_live_session_as_the_shutdown_owner() {

@@ -5,12 +5,20 @@ use serde_json::Value;
 
 #[test]
 fn edge_bearing_diagrams_match_pinned_grok_mermaid() {
-    let fixture: Value = serde_json::from_str(include_str!("golden/grok-mermaid-edges.json")).expect("pinned fixture");
+    let fixture: Value = serde_json::from_str(include_str!("golden/grok-mermaid-edges.json"))
+        .expect("pinned fixture");
     for case in fixture["cases"].as_array().expect("cases") {
         let name = case["name"].as_str().expect("name");
         let src = case["src"].as_str().expect("src");
-        let want: Vec<String> = case["plain"].as_array().expect("plain").iter().map(|line| line.as_str().expect("line").to_owned()).collect();
-        let got = maho_interactive::grok_mermaid::render(src).map(|art| art.plain).unwrap_or_default();
+        let want: Vec<String> = case["plain"]
+            .as_array()
+            .expect("plain")
+            .iter()
+            .map(|line| line.as_str().expect("line").to_owned())
+            .collect();
+        let got = maho_interactive::grok_mermaid::render(src)
+            .map(|art| art.plain)
+            .unwrap_or_default();
         assert_eq!(got, want, "mermaid case {name}");
     }
 }

@@ -29,9 +29,11 @@ pub(crate) fn warp(source: &CGEventSource, point: DesktopPoint) -> CoreResult<()
     );
     CGDisplay::warp_mouse_cursor_position(target)
         .map_err(|error| DesktopError::input_failed(format!("cursor warp failed ({error:?})")))?;
-    CGDisplay::associate_mouse_and_mouse_cursor_position(true)
-        .map_err(|error| DesktopError::input_failed(format!("cursor re-association failed ({error:?})")))?;
-    let event = crate::input::mouse_event(source, CGEventType::MouseMoved, target, CGMouseButton::Left)?;
+    CGDisplay::associate_mouse_and_mouse_cursor_position(true).map_err(|error| {
+        DesktopError::input_failed(format!("cursor re-association failed ({error:?})"))
+    })?;
+    let event =
+        crate::input::mouse_event(source, CGEventType::MouseMoved, target, CGMouseButton::Left)?;
     event.set_flags(CGEventFlags::CGEventFlagNull);
     event.post(CGEventTapLocation::HID);
     Ok(())
@@ -49,7 +51,10 @@ pub(crate) fn screen_locked() -> CoreResult<bool> {
     // SAFETY: The session dictionary is a CFDictionary<CFType, CFType>.
     let session = unsafe {
         objc2_core_foundation::CFRetained::cast_unchecked::<
-            objc2_core_foundation::CFDictionary<objc2_core_foundation::CFType, objc2_core_foundation::CFType>,
+            objc2_core_foundation::CFDictionary<
+                objc2_core_foundation::CFType,
+                objc2_core_foundation::CFType,
+            >,
         >(session)
     };
     let key = objc2_core_foundation::CFString::from_str("CGSSessionScreenIsLocked");

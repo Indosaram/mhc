@@ -99,14 +99,20 @@ pub fn discover(executable: &Path) -> Result<Layout, String> {
     let version_dir = executable.parent().ok_or_else(not_versioned)?;
     let versions = version_dir.parent().ok_or_else(not_versioned)?;
     let root = versions.parent().ok_or_else(not_versioned)?;
-    let version = version_dir.file_name().and_then(|name| name.to_str()).ok_or_else(not_versioned)?;
+    let version = version_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(not_versioned)?;
     if versions.file_name().is_none_or(|name| name != "versions")
         || !super::pointer::is_valid_version(version)
         || !root.join(super::pointer::FILE_NAME).is_file()
     {
         return Err(not_versioned());
     }
-    Ok(Layout { root: root.to_path_buf(), version: version.to_owned() })
+    Ok(Layout {
+        root: root.to_path_buf(),
+        version: version.to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -114,7 +120,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovers_versioned_layout_and_rejects_flat_or_dev_installs() -> Result<(), Box<dyn std::error::Error>> {
+    fn discovers_versioned_layout_and_rejects_flat_or_dev_installs()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let payload = root.path().join("versions/1.2.3/mhc");
         fs::create_dir_all(root.path().join("versions/1.2.3"))?;
@@ -127,8 +134,13 @@ mod tests {
 
         let flat = root.path().join("mhc");
         assert!(discover(&flat).is_err());
-        let error = discover(&root.path().join("target/debug/mhc")).err().ok_or("dev binary")?;
-        assert!(error.contains("reinstall using the release installer"), "{error}");
+        let error = discover(&root.path().join("target/debug/mhc"))
+            .err()
+            .ok_or("dev binary")?;
+        assert!(
+            error.contains("reinstall using the release installer"),
+            "{error}"
+        );
         let misnamed = root.path().join("other/1.2.3/mhc");
         assert!(discover(&misnamed).is_err());
         Ok(())

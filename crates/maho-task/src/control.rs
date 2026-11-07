@@ -5,10 +5,10 @@ use crate::manager::{TaskManager, WrittenSteer};
 use crate::record::{PendingMessage, TaskRecord, TaskStatus, is_task_child, now_ms};
 use crate::runner::BoxFuture;
 use crate::settings::TASK_ID_ENV;
+use maho_ext_api::{CustomMessage, SendMessageOptions};
 use maho_ext_api::{ExtensionContext, ExtensionMode, ExtensionUiDialogOptions, NotificationType};
 use maho_gateway::{Delivery, Endpoint, Mode, Sender, Store};
 use serde_json::{Value, json};
-use maho_ext_api::{CustomMessage, SendMessageOptions};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,7 +99,10 @@ impl Outcome {
     }
     /// Whether the outcome is a caller error (bad arguments, unknown task, wrong session).
     pub fn is_error(&self) -> bool {
-        matches!(self.kind, "invalid_arguments" | "not_found" | "scope_denied")
+        matches!(
+            self.kind,
+            "invalid_arguments" | "not_found" | "scope_denied"
+        )
     }
 }
 
@@ -120,7 +123,10 @@ pub fn resolve(manager: &TaskManager, to: &str) -> Option<TaskRecord> {
 }
 
 fn owned_by(record: &TaskRecord, session: &str) -> bool {
-    record.owner_session.as_deref().is_none_or(|owner| owner == session)
+    record
+        .owner_session
+        .as_deref()
+        .is_none_or(|owner| owner == session)
 }
 
 /// Ids of the caller's active tasks (at most [`MAX_CANDIDATES`]).
@@ -139,7 +145,10 @@ fn not_found(manager: &TaskManager, caller: &Caller, to: &str) -> Outcome {
     let text = if ids.is_empty() {
         format!("No task \"{to}\" found, and this session has no active tasks.")
     } else {
-        format!("No task \"{to}\" found. Active tasks of this session: {}", ids.join(", "))
+        format!(
+            "No task \"{to}\" found. Active tasks of this session: {}",
+            ids.join(", ")
+        )
     };
     Outcome::new("not_found", text, json!({"to": to, "candidates": ids}))
 }
@@ -326,7 +335,9 @@ fn try_steer(manager: &TaskManager, caller: &Caller, id: &str, message: &str) ->
         }
         let stored = pending.clone();
         let _ = manager.update(id, move |record| {
-            if record.status.is_active() && !record.pending_messages.iter().any(|m| m.id == stored.id) {
+            if record.status.is_active()
+                && !record.pending_messages.iter().any(|m| m.id == stored.id)
+            {
                 record.pending_messages.push(stored);
             }
         });
@@ -360,7 +371,9 @@ fn queue(manager: &TaskManager, id: &str, message: &str) -> Option<Outcome> {
             };
             Outcome::new(
                 "queued",
-                format!("Queued the message for task {id} (position {position}); it is delivered {when}."),
+                format!(
+                    "Queued the message for task {id} (position {position}); it is delivered {when}."
+                ),
                 json!({"id": id, "position": position, "status": status.as_str()}),
             )
         }
@@ -385,7 +398,10 @@ pub async fn cancel(
         return not_found(manager, caller, id_or_name);
     };
     let id = record.id.clone();
-    let reason = reason.map(str::trim).filter(|r| !r.is_empty()).map(str::to_owned);
+    let reason = reason
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_owned);
     let previous = record.status;
     if let Some(token) = manager.cancel_token(&id) {
         // Queued or running here: stop the run; `finish` records `cancelled` with the reason and
@@ -416,7 +432,10 @@ pub async fn cancel(
         }
         return Outcome::new(
             "noop",
-            format!("Task {id} finished as {} before the cancel took effect.", status.as_str()),
+            format!(
+                "Task {id} finished as {} before the cancel took effect.",
+                status.as_str()
+            ),
             json!({"id": id, "status": status.as_str()}),
         );
     }
@@ -434,7 +453,10 @@ pub async fn cancel(
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Interrupted => {
             // Owned by another process (running) or by none (interrupted). The pid is signalled
             // only while it is still this task's child (task.md Delta D8).
-            let signalled = match record.pid.filter(|_| previous == TaskStatus::Running && is_task_child(&record)) {
+            let signalled = match record
+                .pid
+                .filter(|_| previous == TaskStatus::Running && is_task_child(&record))
+            {
                 Some(pid) => {
                     crate::manager::terminate(pid);
                     true
@@ -470,11 +492,7 @@ fn cancelled_result(
     dropped: usize,
     signalled: bool,
 ) -> Outcome {
-    let mut text = format!(
-        "Task {id}: {} -> {}.",
-        previous.as_str(),
-        status.as_str()
-    );
+    let mut text = format!("Task {id}: {} -> {}.", previous.as_str(), status.as_str());
     if dropped > 0 {
         text.push_str(&format!(
             " {dropped} queued message{} not delivered.",
@@ -492,7 +510,8 @@ fn cancelled_result(
 /// The dialogs `/task-kill` needs.
 pub trait KillUi: Send + Sync {
     fn has_ui(&self) -> bool;
-    fn select<'a>(&'a self, title: &'a str, options: &'a [String]) -> BoxFuture<'a, Option<String>>;
+    fn select<'a>(&'a self, title: &'a str, options: &'a [String])
+    -> BoxFuture<'a, Option<String>>;
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str) -> BoxFuture<'a, bool>;
     fn notify(&self, message: &str, kind: NotificationType);
 }
@@ -504,11 +523,19 @@ impl KillUi for ContextUi<'_> {
     fn has_ui(&self) -> bool {
         self.0.has_ui
     }
-    fn select<'a>(&'a self, title: &'a str, options: &'a [String]) -> BoxFuture<'a, Option<String>> {
-        self.0.ui.select(title, options, ExtensionUiDialogOptions::default())
+    fn select<'a>(
+        &'a self,
+        title: &'a str,
+        options: &'a [String],
+    ) -> BoxFuture<'a, Option<String>> {
+        self.0
+            .ui
+            .select(title, options, ExtensionUiDialogOptions::default())
     }
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str) -> BoxFuture<'a, bool> {
-        self.0.ui.confirm(title, message, ExtensionUiDialogOptions::default())
+        self.0
+            .ui
+            .confirm(title, message, ExtensionUiDialogOptions::default())
     }
     fn notify(&self, message: &str, kind: NotificationType) {
         self.0.ui.notify(message, kind);
@@ -538,10 +565,17 @@ pub fn kill_label(record: &TaskRecord) -> String {
 }
 
 /// `/task-kill` (spec §3). Returns the id it cancelled, if any.
-pub async fn task_kill(manager: &Arc<TaskManager>, caller: &Caller, ui: &dyn KillUi) -> Option<String> {
+pub async fn task_kill(
+    manager: &Arc<TaskManager>,
+    caller: &Caller,
+    ui: &dyn KillUi,
+) -> Option<String> {
     let candidates = kill_candidates(manager, &caller.session_id);
     if candidates.is_empty() {
-        ui.notify("No queued, running or interrupted task to cancel.", NotificationType::Info);
+        ui.notify(
+            "No queued, running or interrupted task to cancel.",
+            NotificationType::Info,
+        );
         return None;
     }
     let labels: Vec<String> = candidates.iter().map(kill_label).collect();
@@ -559,7 +593,10 @@ pub async fn task_kill(manager: &Arc<TaskManager>, caller: &Caller, ui: &dyn Kil
     let index = labels.iter().position(|label| *label == chosen)?;
     let id = candidates[index].id.clone();
     if !ui
-        .confirm("Cancel task", &format!("Cancel task {id}? This cannot be undone."))
+        .confirm(
+            "Cancel task",
+            &format!("Cancel task {id}? This cannot be undone."),
+        )
         .await
     {
         return None;
@@ -624,7 +661,8 @@ impl Drop for DelegatedEndpoint {
 }
 
 /// Sends one gateway delivery into the session; `Err` leaves it for the next pass.
-pub type DeliverFn = Arc<dyn Fn(CustomMessage, SendMessageOptions) -> Result<(), String> + Send + Sync>;
+pub type DeliverFn =
+    Arc<dyn Fn(CustomMessage, SendMessageOptions) -> Result<(), String> + Send + Sync>;
 
 /// A delegated run's gateway inbox (spec §1.1): the endpoint record plus a drain loop as in
 /// `gateway.md` §5. Dropping it stops the loop and removes the record.
@@ -663,9 +701,8 @@ impl DelegatedInbox {
             .spawn(move || {
                 let _entered = handle.as_ref().map(tokio::runtime::Handle::enter);
                 let receiver = maho_gateway::Receiver::new();
-                let send = |message: CustomMessage, options: SendMessageOptions| {
-                    deliver(message, options)
-                };
+                let send =
+                    |message: CustomMessage, options: SendMessageOptions| deliver(message, options);
                 while !flag.load(Ordering::SeqCst) {
                     receiver.poll_once(&store, &session, &send);
                     std::thread::sleep(poll);

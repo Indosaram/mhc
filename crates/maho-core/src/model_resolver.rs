@@ -695,7 +695,10 @@ pub async fn find_initial_model(
             provenance: InitialModelProvenance::Settings,
         });
     }
-    let available = runtime.get_available(None).await.map_err(|error| error.to_string())?;
+    let available = runtime
+        .get_available(None)
+        .await
+        .map_err(|error| error.to_string())?;
     let model = preferred_available(&available, |id| {
         runtime.get_provider_auth_status(id).ambient
     });
@@ -1128,7 +1131,8 @@ mod tests {
                 providers: Some(Vec::new()),
                 ..Default::default()
             },
-        ).expect("model runtime");
+        )
+        .expect("model runtime");
         let resolved = resolve_cli_model(None, Some("xprov/mimo"), None, &runtime);
         let model = resolved.parsed.model.expect("model");
         assert_eq!(

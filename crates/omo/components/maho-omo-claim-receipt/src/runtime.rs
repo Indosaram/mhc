@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::classify::classify_claims;
 use crate::evidence::{build_timeline, content_text};
-use crate::r#match::{is_flagged, match_claims, ClaimVerdict};
+use crate::r#match::{ClaimVerdict, is_flagged, match_claims};
 
 /// Every verdict for the answer plus the unsupported ones.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -68,7 +68,8 @@ mod tests {
         assert_eq!(evaluated.flagged.len(), 1);
         assert_eq!(evaluated.verdicts[0].status, ClaimStatus::Unsupported);
 
-        let prose = serde_json::json!([{ "type": "text", "text": "Here is the summary you asked for." }]);
+        let prose =
+            serde_json::json!([{ "type": "text", "text": "Here is the summary you asked for." }]);
         assert!(evaluate_answer(&branch, 1.0, &prose).is_none());
     }
 }

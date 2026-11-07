@@ -314,15 +314,20 @@ mod tests {
         zero_token.provider = "devin".into();
         let mut token_bearing = zero_token.clone();
         token_bearing.usage.total_tokens = 178_626;
-        assert!(!is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token)));
-        assert!(!is_cursor_payload_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token), 0));
+        assert!(!is_cursor_zero_token_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&zero_token)
+        ));
+        assert!(!is_cursor_payload_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&zero_token),
+            0
+        ));
         assert!(!is_cursor_quota_resource_exhausted(
             &CursorExhaustionProbe::from_message(&token_bearing),
             1_048_576
         ));
-        assert!(is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(
-            &cursor_error_message(limit)
-        )));
+        assert!(is_cursor_zero_token_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&cursor_error_message(limit))
+        ));
     }
 
     #[test]
@@ -367,7 +372,8 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage { context_usage: None,
+            usage: Usage {
+                context_usage: None,
                 input: options.input,
                 output: options.output,
                 cache_read: options.cache_read,

@@ -2,46 +2,102 @@ use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
-    Absent, Starting, IdleSynced, TurnWaiting, TurnSent, TurnClaimed,
-    TurnStreaming, TurnResultSeen, Tainted, Closing, Closed, Broken,
+    Absent,
+    Starting,
+    IdleSynced,
+    TurnWaiting,
+    TurnSent,
+    TurnClaimed,
+    TurnStreaming,
+    TurnResultSeen,
+    Tainted,
+    Closing,
+    Closed,
+    Broken,
 }
 
 impl SessionState {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Absent => "ABSENT", Self::Starting => "STARTING", Self::IdleSynced => "IDLE_SYNCED",
-            Self::TurnWaiting => "TURN_WAITING", Self::TurnSent => "TURN_SENT", Self::TurnClaimed => "TURN_CLAIMED",
-            Self::TurnStreaming => "TURN_STREAMING", Self::TurnResultSeen => "TURN_RESULT_SEEN", Self::Tainted => "TAINTED",
-            Self::Closing => "CLOSING", Self::Closed => "CLOSED", Self::Broken => "BROKEN",
+            Self::Absent => "ABSENT",
+            Self::Starting => "STARTING",
+            Self::IdleSynced => "IDLE_SYNCED",
+            Self::TurnWaiting => "TURN_WAITING",
+            Self::TurnSent => "TURN_SENT",
+            Self::TurnClaimed => "TURN_CLAIMED",
+            Self::TurnStreaming => "TURN_STREAMING",
+            Self::TurnResultSeen => "TURN_RESULT_SEEN",
+            Self::Tainted => "TAINTED",
+            Self::Closing => "CLOSING",
+            Self::Closed => "CLOSED",
+            Self::Broken => "BROKEN",
         }
     }
     const fn allowed(self) -> &'static [Self] {
         match self {
             Self::Absent => &[Self::Starting],
             Self::Starting => &[Self::IdleSynced, Self::Tainted, Self::Closing, Self::Broken],
-            Self::IdleSynced => &[Self::TurnWaiting, Self::Tainted, Self::Closing, Self::Broken],
+            Self::IdleSynced => &[
+                Self::TurnWaiting,
+                Self::Tainted,
+                Self::Closing,
+                Self::Broken,
+            ],
             Self::TurnWaiting => &[Self::TurnSent, Self::Tainted, Self::Closing, Self::Broken],
-            Self::TurnSent => &[Self::TurnClaimed, Self::Tainted, Self::Closing, Self::Broken],
-            Self::TurnClaimed => &[Self::TurnStreaming, Self::Tainted, Self::Closing, Self::Broken],
-            Self::TurnStreaming => &[Self::TurnResultSeen, Self::Tainted, Self::Closing, Self::Broken],
+            Self::TurnSent => &[
+                Self::TurnClaimed,
+                Self::Tainted,
+                Self::Closing,
+                Self::Broken,
+            ],
+            Self::TurnClaimed => &[
+                Self::TurnStreaming,
+                Self::Tainted,
+                Self::Closing,
+                Self::Broken,
+            ],
+            Self::TurnStreaming => &[
+                Self::TurnResultSeen,
+                Self::Tainted,
+                Self::Closing,
+                Self::Broken,
+            ],
             Self::TurnResultSeen => &[Self::IdleSynced, Self::Tainted, Self::Closing, Self::Broken],
-            Self::Tainted => &[Self::Closing, Self::Broken], Self::Closing => &[Self::Closed, Self::Broken],
-            Self::Closed => &[], Self::Broken => &[Self::Closing, Self::Closed],
+            Self::Tainted => &[Self::Closing, Self::Broken],
+            Self::Closing => &[Self::Closed, Self::Broken],
+            Self::Closed => &[],
+            Self::Broken => &[Self::Closing, Self::Closed],
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IllegalTransition { pub from: SessionState, pub to: SessionState }
+pub struct IllegalTransition {
+    pub from: SessionState,
+    pub to: SessionState,
+}
 impl fmt::Display for IllegalTransition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Illegal session state transition: {} -> {}", self.from.as_str(), self.to.as_str())
+        write!(
+            f,
+            "Illegal session state transition: {} -> {}",
+            self.from.as_str(),
+            self.to.as_str()
+        )
     }
 }
 impl std::error::Error for IllegalTransition {}
 
-pub fn transition_session_state(state: &mut SessionState, next: SessionState) -> Result<(), IllegalTransition> {
-    if !state.allowed().contains(&next) { return Err(IllegalTransition { from: *state, to: next }); }
+pub fn transition_session_state(
+    state: &mut SessionState,
+    next: SessionState,
+) -> Result<(), IllegalTransition> {
+    if !state.allowed().contains(&next) {
+        return Err(IllegalTransition {
+            from: *state,
+            to: next,
+        });
+    }
     *state = next;
     Ok(())
 }
@@ -84,18 +140,48 @@ mod tests {
         let mut state = SessionState::IdleSynced;
         let error = transition_to_turn_streaming(&mut state).unwrap_err();
         assert_eq!(state, SessionState::IdleSynced);
-        assert_eq!(error, IllegalTransition { from: SessionState::IdleSynced, to: SessionState::TurnStreaming });
-        assert_eq!(error.to_string(), "Illegal session state transition: IDLE_SYNCED -> TURN_STREAMING");
+        assert_eq!(
+            error,
+            IllegalTransition {
+                from: SessionState::IdleSynced,
+                to: SessionState::TurnStreaming
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Illegal session state transition: IDLE_SYNCED -> TURN_STREAMING"
+        );
     }
     #[test]
     fn transition_matrix_matches_upstream() {
         use SessionState::*;
-        let states = [Absent, Starting, IdleSynced, TurnWaiting, TurnSent, TurnClaimed, TurnStreaming, TurnResultSeen, Tainted, Closing, Closed, Broken];
+        let states = [
+            Absent,
+            Starting,
+            IdleSynced,
+            TurnWaiting,
+            TurnSent,
+            TurnClaimed,
+            TurnStreaming,
+            TurnResultSeen,
+            Tainted,
+            Closing,
+            Closed,
+            Broken,
+        ];
         let targets: [&[SessionState]; 12] = [
-            &[Starting], &[IdleSynced, Tainted, Closing, Broken], &[TurnWaiting, Tainted, Closing, Broken],
-            &[TurnSent, Tainted, Closing, Broken], &[TurnClaimed, Tainted, Closing, Broken],
-            &[TurnStreaming, Tainted, Closing, Broken], &[TurnResultSeen, Tainted, Closing, Broken],
-            &[IdleSynced, Tainted, Closing, Broken], &[Closing, Broken], &[Closed, Broken], &[], &[Closing, Closed],
+            &[Starting],
+            &[IdleSynced, Tainted, Closing, Broken],
+            &[TurnWaiting, Tainted, Closing, Broken],
+            &[TurnSent, Tainted, Closing, Broken],
+            &[TurnClaimed, Tainted, Closing, Broken],
+            &[TurnStreaming, Tainted, Closing, Broken],
+            &[TurnResultSeen, Tainted, Closing, Broken],
+            &[IdleSynced, Tainted, Closing, Broken],
+            &[Closing, Broken],
+            &[Closed, Broken],
+            &[],
+            &[Closing, Closed],
         ];
         for (from, allowed) in states.iter().zip(targets) {
             for to in states {

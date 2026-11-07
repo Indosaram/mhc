@@ -36,7 +36,10 @@ fn given_a_user_text_when_planning_then_terms_are_ranked_and_capped_with_phrases
 
 #[test]
 fn given_tool_texts_when_planning_then_path_derived_terms_join_the_queries() {
-    let queries = plan_recall_queries(&texts(&["deploy pipeline"]), Some(&texts(&["src/deploy.rs"])));
+    let queries = plan_recall_queries(
+        &texts(&["deploy pipeline"]),
+        Some(&texts(&["src/deploy.rs"])),
+    );
     assert_eq!(
         queries,
         texts(&["pipeline", "deploy", "src", "\"deploy pipeline\""])

@@ -32,10 +32,14 @@ struct SummaryAccumulator {
 /// Folds one JSONL line into the accumulator. Returns false when the first parsable record is not
 /// a session header, which means the file is not a session and the caller stops reading.
 fn accumulate_line(accumulator: &mut SummaryAccumulator, line: &str) -> bool {
-    let Some(entry) = parse_entry_line(line) else { return true };
+    let Some(entry) = parse_entry_line(line) else {
+        return true;
+    };
 
     if accumulator.header.is_none() {
-        if entry.get("type").and_then(Value::as_str) != Some("session") || entry.get("id").and_then(Value::as_str).is_none() {
+        if entry.get("type").and_then(Value::as_str) != Some("session")
+            || entry.get("id").and_then(Value::as_str).is_none()
+        {
             return false;
         }
         accumulator.header = Some(entry);
@@ -59,9 +63,12 @@ fn accumulate_line(accumulator: &mut SummaryAccumulator, line: &str) -> bool {
     }
     accumulator.message_count += 1;
 
-    let Some(visible) = visible_message(&entry) else { return true };
+    let Some(visible) = visible_message(&entry) else {
+        return true;
+    };
     if let Some(time) = visible.time {
-        accumulator.last_activity_time = Some(accumulator.last_activity_time.unwrap_or(0).max(time));
+        accumulator.last_activity_time =
+            Some(accumulator.last_activity_time.unwrap_or(0).max(time));
     }
     if visible.text.is_empty() {
         return true;
@@ -129,7 +136,8 @@ mod tests {
     #[test]
     fn a_file_that_does_not_start_with_a_session_header_is_none() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let content = json!({ "type": "message", "message": { "role": "user", "content": "x" } }).to_string();
+        let content =
+            json!({ "type": "message", "message": { "role": "user", "content": "x" } }).to_string();
         assert!(read_session_summary(&write(tmp.path(), &content)).is_none());
     }
 
@@ -161,6 +169,9 @@ mod tests {
             json!({ "type": "custom", "customType": "repository-identity", "data": { "rootCommits": ["later"] } }).to_string(),
         ].join("\n");
         let summary = read_session_summary(&write(tmp.path(), &content)).expect("summary");
-        assert_eq!(summary.repository_identity, Some(json!({ "rootCommits": ["later"] })));
+        assert_eq!(
+            summary.repository_identity,
+            Some(json!({ "rootCommits": ["later"] }))
+        );
     }
 }

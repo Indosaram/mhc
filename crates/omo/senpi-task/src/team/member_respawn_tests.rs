@@ -16,13 +16,16 @@ use crate::team::normalize::normalize_senpi_team_spec;
 use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::create_team;
 use crate::team::runtime_config::{TeamTaskBounds, to_team_core_config};
-use crate::team::runtime_fakes::{FakeTeamManager, FakeTeamManagerOptions, TeamBoundsOverrides, team_bounds};
+use crate::team::runtime_fakes::{
+    FakeTeamManager, FakeTeamManagerOptions, TeamBoundsOverrides, team_bounds,
+};
 use crate::team::runtime_types::{
-    CreateTeamDeps, CreateTeamResult, TeamMemberExtensionConfig, TeamMemberReadPort, TeamMemberTaskRecord,
-    TeamRuntimeManagerPort,
+    CreateTeamDeps, CreateTeamResult, TeamMemberExtensionConfig, TeamMemberReadPort,
+    TeamMemberTaskRecord, TeamRuntimeManagerPort,
 };
 use crate::team::shutdown::{
-    ApproveShutdownDeps, RequestShutdownDeps, ShutdownOutboundMessage, approve_shutdown, request_shutdown,
+    ApproveShutdownDeps, RequestShutdownDeps, ShutdownOutboundMessage, approve_shutdown,
+    request_shutdown,
 };
 use crate::team::storage::team_storage_base_dir;
 
@@ -83,7 +86,8 @@ fn create_squad(inherited: Option<Vec<String>>) -> Created {
         .get("alpha")
         .cloned()
         .expect("expected alpha task id");
-    let record = TeamMemberReadPort::get(manager.as_ref(), &task_id).expect("expected team member record");
+    let record =
+        TeamMemberReadPort::get(manager.as_ref(), &task_id).expect("expected team member record");
     Created {
         project,
         bounds,
@@ -99,12 +103,13 @@ fn given_persisted_team_member_task_when_resolved_against_current_team_runtime_t
     // given
     let inherited = vec![TRUSTED_PROVIDER.to_string()];
     let fixture = create_squad(Some(inherited.clone()));
-    let resolver = create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
-        state_dir: state_dir_config(&fixture.project),
-        team_bounds: fixture.bounds,
-        member_extension: member_extension(Some(inherited)),
-    })
-    .expect("resolver");
+    let resolver =
+        create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
+            state_dir: state_dir_config(&fixture.project),
+            team_bounds: fixture.bounds,
+            member_extension: member_extension(Some(inherited)),
+        })
+        .expect("resolver");
 
     // when
     let launch = resolver
@@ -119,7 +124,10 @@ fn given_persisted_team_member_task_when_resolved_against_current_team_runtime_t
     let env = launch.member_env.expect("member env");
     assert_eq!(
         env.get("SENPI_TASK_MEMBER").cloned(),
-        Some(format!("{}::alpha", fixture.created.runtime_state.team_run_id))
+        Some(format!(
+            "{}::alpha",
+            fixture.created.runtime_state.team_run_id
+        ))
     );
     assert_eq!(
         env.get("SENPI_TASK_MEMBER_TASK_ID").cloned(),
@@ -133,12 +141,13 @@ fn given_persisted_team_member_task_when_resolved_against_current_team_runtime_t
 fn given_team_member_task_missing_from_current_task_map_when_resolved_then_reattach_is_rejected() {
     // given
     let fixture = create_squad(None);
-    let resolver = create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
-        state_dir: state_dir_config(&fixture.project),
-        team_bounds: fixture.bounds,
-        member_extension: member_extension(None),
-    })
-    .expect("resolver");
+    let resolver =
+        create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
+            state_dir: state_dir_config(&fixture.project),
+            team_bounds: fixture.bounds,
+            member_extension: member_extension(None),
+        })
+        .expect("resolver");
 
     // when
     let error = resolver
@@ -147,7 +156,10 @@ fn given_team_member_task_missing_from_current_task_map_when_resolved_then_reatt
 
     // then
     assert!(error.to_string().contains("task_mapping_mismatch"));
-    assert_eq!(error.code, TeamMemberRespawnLaunchErrorCode::TaskMappingMismatch);
+    assert_eq!(
+        error.code,
+        TeamMemberRespawnLaunchErrorCode::TaskMappingMismatch
+    );
 }
 
 #[test]
@@ -167,7 +179,10 @@ fn given_shutdown_approved_team_member_when_resolved_then_reattach_is_rejected_a
     };
     let cancelled: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let cancel_member_task = |member_name: &str| -> Result<(), String> {
-        cancelled.lock().expect("cancelled lock").push(member_name.to_string());
+        cancelled
+            .lock()
+            .expect("cancelled lock")
+            .push(member_name.to_string());
         Ok(())
     };
     request_shutdown(
@@ -201,12 +216,13 @@ fn given_shutdown_approved_team_member_when_resolved_then_reattach_is_rejected_a
         serde_json::to_value(alpha.status).expect("status json"),
         json!("shutdown_approved")
     );
-    let resolver = create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
-        state_dir: state_dir_config(&fixture.project),
-        team_bounds: fixture.bounds,
-        member_extension: member_extension(None),
-    })
-    .expect("resolver");
+    let resolver =
+        create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
+            state_dir: state_dir_config(&fixture.project),
+            team_bounds: fixture.bounds,
+            member_extension: member_extension(None),
+        })
+        .expect("resolver");
 
     // when
     let attempt = resolver.resolve(fixture.record.name.as_deref(), &fixture.record.task_id);

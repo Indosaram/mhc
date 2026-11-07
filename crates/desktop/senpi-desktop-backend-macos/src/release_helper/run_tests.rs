@@ -10,7 +10,13 @@ fn the_helper_takes_exactly_its_parent_and_spawn_token() {
     let token: [u8; TOKEN_LEN] = [0, 1, 2, 0xab, 0xff, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0x10, 0xfe];
     let hex = encode_token(&token);
     assert_eq!(hex, "000102abff09080706050403020110fe");
-    assert_eq!(parse_args(&args(&["--parent", "4242", "--token", &hex])), Ok(Spawner { parent: 4242, token }));
+    assert_eq!(
+        parse_args(&args(&["--parent", "4242", "--token", &hex])),
+        Ok(Spawner {
+            parent: 4242,
+            token
+        })
+    );
 }
 
 #[test]
@@ -26,6 +32,9 @@ fn the_helper_refuses_any_other_argv() {
         args(&["--parent", "4242", "--token", &hex, "--extra"]),
     ] {
         let refusal = parse_args(&refused).expect_err("refused");
-        assert!(refusal.starts_with("refusing to run"), "{refused:?}: {refusal}");
+        assert!(
+            refusal.starts_with("refusing to run"),
+            "{refused:?}: {refusal}"
+        );
     }
 }

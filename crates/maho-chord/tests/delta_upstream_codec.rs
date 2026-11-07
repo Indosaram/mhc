@@ -1,6 +1,6 @@
-use maho_chord::{delta::*, JsonValue};
+use maho_chord::{JsonValue, delta::*};
+use serde_json::{Value, json};
 use std::result::Result;
-use serde_json::{json, Value};
 
 fn ops(value: Value) -> Result<Vec<Op>, serde_json::Error> {
     serde_json::from_value(value)
@@ -35,8 +35,8 @@ fn decoded_and_wire_vocabularies_are_distinct() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn null_containing_paths_do_not_collide_and_mixed_streams_round_trip(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn null_containing_paths_do_not_collide_and_mixed_streams_round_trip()
+-> Result<(), Box<dyn std::error::Error>> {
     let operations = ops(json!([["s", ["a\u{0000}b"], 1], ["s", ["a", "b"], 2]]))?;
     assert_eq!(
         decoder().decode(&encoder().encode(&operations))?,
@@ -68,7 +68,10 @@ fn replacement_clears_both_path_dictionaries() -> Result<(), Box<dyn std::error:
     assert!(decoder.decode(&[json!(["a", 0, "bad"])]).is_err());
     let operations = ops(json!([["a", ["a", "deep"], "3"]]))?;
     let wire = encoder.encode(&operations);
-    assert_eq!(serde_json::to_value(&wire)?, json!([["a", ["a", "deep"], "3"]]));
+    assert_eq!(
+        serde_json::to_value(&wire)?,
+        json!([["a", ["a", "deep"], "3"]])
+    );
     assert_eq!(decoder.decode(&wire)?, operations);
     assert!(decoder.decode(&[json!(["a", "x"])]).is_err());
     Ok(())
@@ -124,10 +127,12 @@ fn malformed_structures_append_targets_and_truncations_fail() {
         assert!(assert_valid_op(&value).is_err());
     }
     for path in [vec!["missing".into()], vec!["value".into()]] {
-        assert!(apply_immutable(
-            Some(&json!({"value":1}).into()),
-            &[Op::Append(path, "x".into())]
-        )
-        .is_err());
+        assert!(
+            apply_immutable(
+                Some(&json!({"value":1}).into()),
+                &[Op::Append(path, "x".into())]
+            )
+            .is_err()
+        );
     }
 }

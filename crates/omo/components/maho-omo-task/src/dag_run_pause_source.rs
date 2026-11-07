@@ -7,15 +7,15 @@
 pub type RecordsCallback = Arc<dyn Fn(&str) -> Vec<DagRunRecordV1> + Send + Sync>;
 pub type RetireCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 pub type InstallResumedRunCallback = Arc<
-        dyn Fn(
-                &str,
-                &str,
-                u64,
-                &ResumeCredential,
-            ) -> Result<senpi_task::dag::recovery::InstalledDagRun, String>
-            + Send
-            + Sync,
-    >;
+    dyn Fn(
+            &str,
+            &str,
+            u64,
+            &ResumeCredential,
+        ) -> Result<senpi_task::dag::recovery::InstalledDagRun, String>
+        + Send
+        + Sync,
+>;
 use std::sync::Arc;
 
 use senpi_task::{
@@ -236,7 +236,9 @@ impl RunPauseSource for DagRunPauseSource {
                     source: self,
                     record: record.clone(),
                 };
-                if let Err(error) = dispatch_guidance(std::slice::from_ref(&entry), &targets, &mut ports) {
+                if let Err(error) =
+                    dispatch_guidance(std::slice::from_ref(&entry), &targets, &mut ports)
+                {
                     eprintln!(
                         "[omo-task] dag guidance dispatch failed: run={} guidance={} error={error}",
                         record.run_id, entry.id
@@ -388,9 +390,6 @@ mod tests {
             source: &pause_source,
             record,
         };
-        assert_eq!(
-            guidance.save(&[]).unwrap_err(),
-            "DAG runtime disposed"
-        );
+        assert_eq!(guidance.save(&[]).unwrap_err(), "DAG runtime disposed");
     }
 }

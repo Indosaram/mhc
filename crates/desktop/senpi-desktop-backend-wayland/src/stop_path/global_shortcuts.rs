@@ -3,23 +3,23 @@
 //! task beats the `Global` heartbeat every `HEARTBEAT_INTERVAL_MS` while the
 //! session is open; a closed session takes the path down.
 
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use ashpd::desktop::Session;
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
+use ashpd::desktop::Session;
 use futures::StreamExt;
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{
-    Chord, HEARTBEAT_INTERVAL_MS, StopPathError, StopPathId, StopPathListener, StopSource,
-    Supervisor,
+    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor,
+    HEARTBEAT_INTERVAL_MS,
 };
 use tokio::sync::watch;
-use zbus::zvariant::OwnedObjectPath;
 use zbus::zvariant::serialized::Context;
+use zbus::zvariant::OwnedObjectPath;
 
-use super::trigger::{STOP_SHORTCUT_ID, preferred_trigger};
-use crate::portal::{CLOSE_TIMEOUT, portal_runtime};
+use super::trigger::{preferred_trigger, STOP_SHORTCUT_ID};
+use crate::portal::{portal_runtime, CLOSE_TIMEOUT};
 
 /// `stopReason` when the portal is missing, refuses, or never answers;
 /// Wayland input then needs `computer.allowHostRelayOnlyStop=true`.

@@ -52,8 +52,7 @@ impl MemoryFooterProbe for Probe<'_> {
         let Some(head) = head else {
             return Ok(Some(format!("none|{active}")));
         };
-        let segments =
-            read_memory_status_segments(repo, context, Some(session), now, sync_status);
+        let segments = read_memory_status_segments(repo, context, Some(session), now, sync_status);
         Ok(Some(format!(
             "{head}|{}|{}|{}|{active}|{}",
             if segments.dirty { "dirty" } else { "clean" },

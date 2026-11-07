@@ -19,12 +19,16 @@ fn empty_allowlist_and_write_deny_fail_closed_without_scope_support() {
     let mut r = request();
     r.tool_allowlist = Some(vec![]);
     r.tool_denylist = Some(vec!["write".into()]);
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, message } if message.contains("write")));
+    assert!(
+        matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, message } if message.contains("write"))
+    );
 }
 
 #[test]
 fn deny_only_write_policy_fails_closed_without_scope_support() {
     let mut r = request();
     r.tool_denylist = Some(vec!["write".into()]);
-    assert!(matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, message } if message.contains("write")));
+    assert!(
+        matches!(resolve_kernel_tool_grant(&r, None), KernelToolGrantResolution::Denied { code: KernelToolErrorCode::ToolsUnavailable, message } if message.contains("write"))
+    );
 }

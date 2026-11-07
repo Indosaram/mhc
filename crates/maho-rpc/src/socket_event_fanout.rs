@@ -566,7 +566,9 @@ mod tests {
         assert!(!error.to_string().contains("token-canary"));
         assert!(!error.incoming_preview.contains("token-canary"));
         let mut queue = SocketEventQueue::new(16);
-        queue.enable_recovery(Box::new(|_| crate::socket_peer_recovery::ResyncCut::new(Box::new(Vec::<serde_json::Value>::new))));
+        queue.enable_recovery(Box::new(|_| {
+            crate::socket_peer_recovery::ResyncCut::new(Box::new(Vec::<serde_json::Value>::new))
+        }));
         assert_eq!(
             queue.take_raw().as_deref(),
             Some("{\"type\":\"rpc_ping\"}\n")

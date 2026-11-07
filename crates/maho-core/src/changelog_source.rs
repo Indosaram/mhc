@@ -17,7 +17,11 @@ pub struct ChangelogSource {
 
 /// getChangelogPath: the CHANGELOG.md beside the running package.
 pub fn get_changelog_path() -> String {
-    lexical_resolve(&Path::new(&get_package_dir()).join("CHANGELOG.md").to_string_lossy())
+    lexical_resolve(
+        &Path::new(&get_package_dir())
+            .join("CHANGELOG.md")
+            .to_string_lossy(),
+    )
 }
 
 fn brand_source(brand: &BrandProfile) -> ChangelogSource {
@@ -75,7 +79,10 @@ mod tests {
             user_agent: "omo".into(),
             originator: None,
             update: None,
-            changelog: Some(crate::brand::BrandChangelog { path: "/tmp/CHANGELOG.md".into(), version: Some("1.2.3".into()) }),
+            changelog: Some(crate::brand::BrandChangelog {
+                path: "/tmp/CHANGELOG.md".into(),
+                version: Some("1.2.3".into()),
+            }),
         };
         let source = brand_source(&brand);
         assert_eq!(source.id, "omo");

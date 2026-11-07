@@ -15,7 +15,9 @@ fn memory_owned_custom_messages_are_excluded_but_other_custom_channels_remain_se
     let foreign = json!({"type":"message","id":"foreign","message":{"role":"custom","customType":"extension:custom","content":"visible extension note"}});
     let mut docs: Vec<SearchDocument> = Vec::new();
     for value in [hidden, foreign] {
-        if let Some(document) = to_document(value.as_object().expect("object"), "c") { docs.push(document); }
+        if let Some(document) = to_document(value.as_object().expect("object"), "c") {
+            docs.push(document);
+        }
     }
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "foreign");

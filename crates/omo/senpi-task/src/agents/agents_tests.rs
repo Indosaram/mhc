@@ -5,10 +5,10 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::model_exclusion::{excluded_model_pattern, is_excluded_model};
 use crate::delegate_adapter::DelegateFallbackEntry;
 use crate::host::SenpiModelRegistry;
 use crate::host::fake::{catalog_registry, model, registry};
+use crate::model_exclusion::{excluded_model_pattern, is_excluded_model};
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 fn rules_of(input: Value) -> Vec<AgentToolRule> {
@@ -150,9 +150,29 @@ fn interaction_policy_lookup_plan_reviewer() {
 fn builtin_agents_route_x_search_by_role() {
     let explore = builtin_agent("explore").expect("explore");
     let librarian = builtin_agent("librarian").expect("librarian");
-    assert!(explore.tools.as_ref().unwrap().iter().any(|rule| rule.pattern == "x_search" && !rule.allow));
-    assert!(librarian.tools.as_ref().unwrap().iter().any(|rule| rule.pattern == "x_search" && rule.allow));
-    assert!(librarian.prompt.as_deref().unwrap().contains("call x_search"));
+    assert!(
+        explore
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.pattern == "x_search" && !rule.allow)
+    );
+    assert!(
+        librarian
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.pattern == "x_search" && rule.allow)
+    );
+    assert!(
+        librarian
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("call x_search")
+    );
 }
 
 #[test]
@@ -240,14 +260,20 @@ fn guard_allows_non_gated_agent() {
 
 #[test]
 fn guard_denies_plan_reviewer_in_empty_session_naming_ulw_plan() {
-    let message = deny_message(evaluate_invocation_guard("plan-reviewer", &StateOf::default()));
+    let message = deny_message(evaluate_invocation_guard(
+        "plan-reviewer",
+        &StateOf::default(),
+    ));
     assert!(message.contains("plan-reviewer"));
     assert!(message.contains("ulw-plan"));
 }
 
 #[test]
 fn guard_denies_plan_consultant_in_empty_session_naming_ulw_plan() {
-    let message = deny_message(evaluate_invocation_guard("plan-consultant", &StateOf::default()));
+    let message = deny_message(evaluate_invocation_guard(
+        "plan-consultant",
+        &StateOf::default(),
+    ));
     assert!(message.contains("ulw-plan"));
 }
 
@@ -270,7 +296,9 @@ fn guard_denies_user_request_without_artifact() {
         requested: vec!["ulw-plan"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains(".omo/plans"));
+    assert!(
+        deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains(".omo/plans")
+    );
 }
 
 #[test]
@@ -294,7 +322,9 @@ fn guard_denies_after_ulw_execute() {
         invoked: vec!["ulw-execute"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute"));
+    assert!(
+        deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute")
+    );
 }
 
 #[test]
@@ -303,7 +333,9 @@ fn guard_forbidden_denial_precedes_missing_requirement() {
         invoked: vec!["ulw-execute"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute"));
+    assert!(
+        deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute")
+    );
 }
 
 #[test]
@@ -351,7 +383,9 @@ fn guard_missing_artifact_names_plan_file_requirement() {
         requested: vec!["ulw-plan"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("plan-consultant", &state)).contains(".omo/plans"));
+    assert!(
+        deny_message(evaluate_invocation_guard("plan-consultant", &state)).contains(".omo/plans")
+    );
 }
 
 #[test]
@@ -425,16 +459,44 @@ fn builtin_definitions_carry_role_specific_x_search_rules() {
     expected.sort_unstable();
     for definition in BUILTIN_AGENT_DEFAULTS.iter() {
         let rules = definition.tools.as_deref().unwrap_or_default();
-        assert_eq!(rules.len(), if definition.name == "explore" || definition.name == "librarian" { 10 } else { 9 });
-        let mut patterns: Vec<&str> = rules.iter().map(|rule| rule.pattern.as_str()).filter(|pattern| *pattern != "x_search").collect();
+        assert_eq!(
+            rules.len(),
+            if definition.name == "explore" || definition.name == "librarian" {
+                10
+            } else {
+                9
+            }
+        );
+        let mut patterns: Vec<&str> = rules
+            .iter()
+            .map(|rule| rule.pattern.as_str())
+            .filter(|pattern| *pattern != "x_search")
+            .collect();
         patterns.sort_unstable();
         assert_eq!(patterns, expected);
-        assert!(rules.iter().filter(|rule| rule.pattern != "x_search").all(|rule| rule.allow));
+        assert!(
+            rules
+                .iter()
+                .filter(|rule| rule.pattern != "x_search")
+                .all(|rule| rule.allow)
+        );
         if definition.name == "explore" {
-            assert_eq!(rules.iter().find(|rule| rule.pattern == "x_search").map(|rule| rule.allow), Some(false));
+            assert_eq!(
+                rules
+                    .iter()
+                    .find(|rule| rule.pattern == "x_search")
+                    .map(|rule| rule.allow),
+                Some(false)
+            );
         }
         if definition.name == "librarian" {
-            assert_eq!(rules.iter().find(|rule| rule.pattern == "x_search").map(|rule| rule.allow), Some(true));
+            assert_eq!(
+                rules
+                    .iter()
+                    .find(|rule| rule.pattern == "x_search")
+                    .map(|rule| rule.allow),
+                Some(true)
+            );
         }
     }
 }
@@ -485,21 +547,47 @@ fn fallback_chain_lengths_match_transcription() {
         .collect();
     assert_eq!(
         lengths,
-        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 4), ("plan-reviewer", 8)]
+        vec![
+            ("explore", 6),
+            ("librarian", 6),
+            ("plan-consultant", 4),
+            ("plan-reviewer", 8)
+        ]
     );
 }
 
 #[test]
 fn fallback_chain_table_is_pinned() {
     let fast = vec![
-        entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
-        entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
-        entry(&["anthropic-subscription", "anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+        entry(
+            &["kimi-coding", "kimi-for-coding"],
+            "kimi-for-coding-highspeed",
+            Some("off"),
+        ),
+        entry(
+            &["chatgpt-subscription", "openai"],
+            "gpt-6-luna-fast",
+            Some("low"),
+        ),
+        entry(
+            &["anthropic-subscription", "anthropic", "github-copilot"],
+            "claude-haiku-5-5",
+            Some("medium"),
+        ),
         entry(&["deepseek"], "deepseek-flash", Some("max")),
-        entry(&["opencode-go", "bailian-coding-plan"], "qwen3.7-plus", None),
+        entry(
+            &["opencode-go", "bailian-coding-plan"],
+            "qwen3.7-plus",
+            None,
+        ),
         entry(&["opencode-go"], "minimax-m2.7", None),
     ];
-    let claude = ["anthropic-subscription", "anthropic", "github-copilot", "opencode"];
+    let claude = [
+        "anthropic-subscription",
+        "anthropic",
+        "github-copilot",
+        "opencode",
+    ];
     let expected = vec![
         ("explore", fast.clone()),
         ("librarian", fast),
@@ -508,20 +596,40 @@ fn fallback_chain_table_is_pinned() {
             vec![
                 entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
-                entry(&["opencode-go", "kimi-for-coding", "moonshotai"], "kimi-k3.1-pro", Some("max")),
+                entry(
+                    &["opencode-go", "kimi-for-coding", "moonshotai"],
+                    "kimi-k3.1-pro",
+                    Some("max"),
+                ),
                 entry(&["opencode"], "kimi-k3", Some("max")),
             ],
         ),
         (
             "plan-reviewer",
             vec![
-                entry(&["chatgpt-subscription", "openai"], "gpt-6-astra", Some("xhigh")),
+                entry(
+                    &["chatgpt-subscription", "openai"],
+                    "gpt-6-astra",
+                    Some("xhigh"),
+                ),
                 entry(&["github-copilot"], "gpt-6-astra", Some("high")),
-                entry(&["chatgpt-subscription", "openai", "opencode"], "gpt-6-astra", Some("high")),
+                entry(
+                    &["chatgpt-subscription", "openai", "opencode"],
+                    "gpt-6-astra",
+                    Some("high"),
+                ),
                 entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
-                entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("high")),
-                entry(&["google", "github-copilot", "opencode"], "gemini-3.1-pro", Some("high")),
+                entry(
+                    &["google", "google-vertex", "opencode"],
+                    "gemini-4-argon",
+                    Some("high"),
+                ),
+                entry(
+                    &["google", "github-copilot", "opencode"],
+                    "gemini-3.1-pro",
+                    Some("high"),
+                ),
                 entry(&["opencode-go"], "glm-5.2", None),
             ],
         ),
@@ -550,8 +658,16 @@ fn explore_and_librarian_place_max_deepseek_after_luna() {
         assert_eq!(
             chain[0..2].to_vec(),
             vec![
-                entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
-                entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
+                entry(
+                    &["kimi-coding", "kimi-for-coding"],
+                    "kimi-for-coding-highspeed",
+                    Some("off")
+                ),
+                entry(
+                    &["chatgpt-subscription", "openai"],
+                    "gpt-6-luna-fast",
+                    Some("low")
+                ),
             ],
             "{agent}"
         );
@@ -1281,10 +1397,18 @@ fn loader_omo_overlay_wins_last() {
 #[test]
 fn loader_malformed_frontmatter_is_per_file() {
     let fixture = fixture();
-    let bad_path = fixture.project.join(".senpi").join("agent").join("broken.md");
+    let bad_path = fixture
+        .project
+        .join(".senpi")
+        .join("agent")
+        .join("broken.md");
     write_text(&bad_path, "---\nmodel: [unterminated\n---\nBad");
     write_text(
-        &fixture.project.join(".senpi").join("agent").join("valid.md"),
+        &fixture
+            .project
+            .join(".senpi")
+            .join("agent")
+            .join("valid.md"),
         &agent_markdown("valid-model", "Valid"),
     );
     let result = load(&fixture, &AgentRegistry::new(), None);
@@ -1391,11 +1515,7 @@ fn loader_omo_json_directory_reports_read_diagnostic() {
     } else {
         shown(&config_path)
     };
-    assert!(
-        diagnostic
-            .message
-            .contains(&expected_in_message)
-    );
+    assert!(diagnostic.message.contains(&expected_in_message));
 }
 
 #[test]
@@ -1537,7 +1657,10 @@ fn excluded_model_pattern_matches_provider_scoped_tails_ignoring_case() {
         excluded_model_pattern("openrouter/anthropic/", &patterns),
         Some("ANTHROPIC/*")
     );
-    assert_eq!(excluded_model_pattern("openai/gpt-6.1-sol", &patterns), None);
+    assert_eq!(
+        excluded_model_pattern("openai/gpt-6.1-sol", &patterns),
+        None
+    );
     assert_eq!(excluded_model_pattern("openrouter/anthropic/", &[]), None);
 }
 
@@ -1553,7 +1676,10 @@ fn excluded_model_pattern_keeps_metacharacters_literal_and_blanks_inert() {
 fn excluded_model_pattern_matches_a_bare_entry_on_every_provider() {
     let patterns = vec!["gpt-6-luna-fast".to_string()];
     assert!(is_excluded_model("openai/gpt-6-luna-fast", &patterns));
-    assert!(is_excluded_model("github-copilot/gpt-6-luna-fast", &patterns));
+    assert!(is_excluded_model(
+        "github-copilot/gpt-6-luna-fast",
+        &patterns
+    ));
     assert!(!is_excluded_model("openai/gpt-6-luna", &patterns));
 }
 

@@ -1,19 +1,25 @@
-use maho_omo_ulw_loop::omo_command::*;
 use maho_omo_ulw_loop::index::status_has_active_incomplete_run;
+use maho_omo_ulw_loop::omo_command::*;
 
 #[test]
 fn active_pending_goal() {
-    assert!(status_has_active_incomplete_run(&serde_json::json!({"ok":true,"plan":{"goals":[{"status":"pending"}]}})));
+    assert!(status_has_active_incomplete_run(
+        &serde_json::json!({"ok":true,"plan":{"goals":[{"status":"pending"}]}})
+    ));
 }
 
 #[test]
 fn blocked_goal_not_active() {
-    assert!(!status_has_active_incomplete_run(&serde_json::json!({"ok":true,"plan":{"goals":[{"status":"pending","steeringStatus":"blocked"}]}})));
+    assert!(!status_has_active_incomplete_run(
+        &serde_json::json!({"ok":true,"plan":{"goals":[{"status":"pending","steeringStatus":"blocked"}]}})
+    ));
 }
 
 #[test]
 fn aggregate_complete_not_active() {
-    assert!(!status_has_active_incomplete_run(&serde_json::json!({"ok":true,"plan":{"aggregateCompletion":{"status":"complete"},"goals":[{"status":"pending"}]}})));
+    assert!(!status_has_active_incomplete_run(
+        &serde_json::json!({"ok":true,"plan":{"aggregateCompletion":{"status":"complete"},"goals":[{"status":"pending"}]}})
+    ));
 }
 
 #[test]
@@ -24,7 +30,9 @@ fn completed_criteria_and_superseded_goals_are_inactive() {
         serde_json::json!({"status":"complete"}),
         serde_json::Value::Null,
     ] {
-        assert!(!status_has_active_incomplete_run(&serde_json::json!({"ok":true,"plan":{"goals":[goal]}})));
+        assert!(!status_has_active_incomplete_run(
+            &serde_json::json!({"ok":true,"plan":{"goals":[goal]}})
+        ));
     }
 }
 

@@ -114,9 +114,7 @@ fn find_leak(value: &str, from: &str) -> Option<Leak> {
             let tail = &after_marker[quote..];
             if tail.starts_with("\">")
                 && !name.is_empty()
-                && name
-                    .chars()
-                    .all(|ch| ch.is_ascii_lowercase() || ch == '_')
+                && name.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')
             {
                 return Some(Leak {
                     index,

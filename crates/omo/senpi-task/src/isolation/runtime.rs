@@ -63,10 +63,8 @@ pub trait IsolationRuntime: Send + Sync {
     ) -> Result<DeltaPatchResult, IsolationError>;
     /// Merges (or, with apply=false, writes artifacts and returns Retained). Takes options by value,
     /// matching the producer. Never tears down isolation.
-    fn merge(
-        &self,
-        options: IsolationMergeOptions,
-    ) -> Result<IsolationMergeResult, IsolationError>;
+    fn merge(&self, options: IsolationMergeOptions)
+    -> Result<IsolationMergeResult, IsolationError>;
     fn cleanup(&self, handle: &IsolationHandle);
     /// Rename the clone aside; returns the retained path.
     fn retain(&self, handle: &IsolationHandle, reason: &str) -> Result<PathBuf, IsolationError>;
@@ -166,7 +164,9 @@ impl IsolationRuntime for CoreIsolationRuntime {
         if let Err(error) = isolation_core::cleanup_isolation(handle) {
             utils::logger::log(
                 "senpi-task isolation cleanup failed",
-                Some(&serde_json::json!({ "base_dir": handle.base_dir.display().to_string(), "error": error.to_string() })),
+                Some(
+                    &serde_json::json!({ "base_dir": handle.base_dir.display().to_string(), "error": error.to_string() }),
+                ),
             );
         }
     }

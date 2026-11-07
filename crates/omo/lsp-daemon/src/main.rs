@@ -60,6 +60,9 @@ mod tests {
     #[test]
     fn unexpected_error_keeps_its_message() {
         let error = std::io::Error::other("unexpected startup failure");
-        assert_eq!(startup_error_message(StartupError::Io(error)), "unexpected startup failure");
+        assert_eq!(
+            startup_error_message(StartupError::Io(error)),
+            "unexpected startup failure"
+        );
     }
 }

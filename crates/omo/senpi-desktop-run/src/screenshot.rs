@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::context::RunScope;
-use crate::engine_results::{expect_result, CaptureResult};
+use crate::engine_results::{CaptureResult, expect_result};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScreenshotOptions {
@@ -36,7 +36,10 @@ fn caption(frame: &CaptureResult) -> String {
     let size = format!("{}x{}", frame.width, frame.height);
     let scaled = frame.width != frame.source_width || frame.height != frame.source_height;
     let source = if scaled {
-        format!(" (scaled from {}x{})", frame.source_width, frame.source_height)
+        format!(
+            " (scaled from {}x{})",
+            frame.source_width, frame.source_height
+        )
     } else {
         String::new()
     };

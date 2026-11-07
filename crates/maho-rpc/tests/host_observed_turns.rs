@@ -34,7 +34,11 @@ fn closing_a_session_releases_only_its_run_even_without_settlement() {
     assert!(turns.observe(r#"{"type":"session_closed","sessionId":"a"}"#));
     assert_eq!(turns.busy_turns(), 1, "another session remains protected");
     turns.observe(r#"{"type":"agent_end","sessionId":"b"}"#);
-    assert_eq!(turns.busy_turns(), 1, "an iteration ending is not run settlement");
+    assert_eq!(
+        turns.busy_turns(),
+        1,
+        "an iteration ending is not run settlement"
+    );
     turns.observe(r#"{"type":"agent_settled","sessionId":"b"}"#);
     assert_eq!(turns.busy_turns(), 0);
     turns.observe(r#"{"type":"agent_start","sessionId":"a"}"#);

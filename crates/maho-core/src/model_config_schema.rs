@@ -1,5 +1,8 @@
 use indexmap::IndexMap;
-use maho_ai::types::{CacheRetention, InputModality, ModelCost, ModelThinkingLevel, ServiceTierPreference, ThinkingLevelMap};
+use maho_ai::types::{
+    CacheRetention, InputModality, ModelCost, ModelThinkingLevel, ServiceTierPreference,
+    ThinkingLevelMap,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -39,21 +42,28 @@ impl ModelInputLimits {
     pub(crate) fn to_shared(&self) -> maho_ai::types::ModelInputLimits {
         maho_ai::types::ModelInputLimits {
             max_request_bytes: self.max_request_bytes.map(|value| value as usize),
-            images: self.images.as_ref().map(|images| maho_ai::types::ModelImageInputLimits {
-                max_per_message: images.max_per_message.map(|value| value as usize),
-                max_per_request: images.max_per_request.map(|value| value as usize),
-                resize: images.resize.as_ref().map(|resize| maho_ai::types::ModelImageResizeOptions {
-                    max_width: resize.max_width, max_height: resize.max_height,
-                    max_bytes: resize.max_bytes.map(|value| value as usize),
-                    jpeg_quality: resize.jpeg_quality.map(|value| value as u8),
+            images: self
+                .images
+                .as_ref()
+                .map(|images| maho_ai::types::ModelImageInputLimits {
+                    max_per_message: images.max_per_message.map(|value| value as usize),
+                    max_per_request: images.max_per_request.map(|value| value as usize),
+                    resize: images.resize.as_ref().map(|resize| {
+                        maho_ai::types::ModelImageResizeOptions {
+                            max_width: resize.max_width,
+                            max_height: resize.max_height,
+                            max_bytes: resize.max_bytes.map(|value| value as usize),
+                            jpeg_quality: resize.jpeg_quality.map(|value| value as u8),
+                        }
+                    }),
                 }),
-            }),
         }
     }
 }
 
 pub use crate::credential_policy_schema::{
-    CREDENTIAL_POLICY_DEFAULTS, CredentialPolicyDefaults, CredentialSlotRef, ModelsJsonCredentialPolicy,
+    CREDENTIAL_POLICY_DEFAULTS, CredentialPolicyDefaults, CredentialSlotRef,
+    ModelsJsonCredentialPolicy,
 };
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -100,7 +110,10 @@ pub struct PartialModelCost {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ThinkingLevelMapMode { Merge, Replace }
+pub enum ThinkingLevelMapMode {
+    Merge,
+    Replace,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,57 +177,127 @@ pub enum ModelsConfigValidationError {
 pub fn validate_models_config(value: Value) -> Result<ModelsJson, ModelsConfigValidationError> {
     let config: ModelsJson = serde_json::from_value(value)?;
     let nonempty = |value: Option<&str>, path: String| {
-        if value == Some("") { Err(ModelsConfigValidationError::Constraint { path, message: "Expected string length greater or equal to 1" }) } else { Ok(()) }
+        if value == Some("") {
+            Err(ModelsConfigValidationError::Constraint {
+                path,
+                message: "Expected string length greater or equal to 1",
+            })
+        } else {
+            Ok(())
+        }
     };
-    for id in config.disabled_providers.iter().flatten() { nonempty(Some(id), "disabledProviders".into())?; }
+    for id in config.disabled_providers.iter().flatten() {
+        nonempty(Some(id), "disabledProviders".into())?;
+    }
     for (id, provider) in &config.providers {
         let path = format!("providers.{id}");
-        for (name, value) in [("name", &provider.name), ("baseUrl", &provider.base_url), ("api", &provider.api)] {
+        for (name, value) in [
+            ("name", &provider.name),
+            ("baseUrl", &provider.base_url),
+            ("api", &provider.api),
+        ] {
             nonempty(value.as_deref(), format!("{path}.{name}"))?;
         }
-        nonempty(provider.api_key.as_ref().and_then(|value| value.as_str()), format!("{path}.apiKey"))?;
-        for (name, values) in [("whitelist", &provider.whitelist), ("blacklist", &provider.blacklist)] {
-            for value in values.iter().flatten() { nonempty(Some(value), format!("{path}.{name}"))?; }
+        nonempty(
+            provider.api_key.as_ref().and_then(|value| value.as_str()),
+            format!("{path}.apiKey"),
+        )?;
+        for (name, values) in [
+            ("whitelist", &provider.whitelist),
+            ("blacklist", &provider.blacklist),
+        ] {
+            for value in values.iter().flatten() {
+                nonempty(Some(value), format!("{path}.{name}"))?;
+            }
         }
         if let Some(policy) = &provider.credentials {
-            for (name, value) in [("cooldownBaseMs", policy.cooldown_base_ms), ("cooldownCapMs", policy.cooldown_cap_ms)] {
+            for (name, value) in [
+                ("cooldownBaseMs", policy.cooldown_base_ms),
+                ("cooldownCapMs", policy.cooldown_cap_ms),
+            ] {
                 if value.is_some_and(|v| v < 0.0) {
-                    return Err(ModelsConfigValidationError::Constraint { path: format!("{path}.credentials.{name}"), message: "Expected number greater or equal to 0" });
+                    return Err(ModelsConfigValidationError::Constraint {
+                        path: format!("{path}.credentials.{name}"),
+                        message: "Expected number greater or equal to 0",
+                    });
                 }
             }
             for (name, slot) in policy.slots.iter().flatten() {
                 nonempty(Some(name), format!("{path}.credentials.slots"))?;
-                nonempty(slot.env.as_deref(), format!("{path}.credentials.slots.{name}.env"))?;
-                nonempty(slot.value.as_ref().and_then(|value| value.as_str()), format!("{path}.credentials.slots.{name}.value"))?;
+                nonempty(
+                    slot.env.as_deref(),
+                    format!("{path}.credentials.slots.{name}.env"),
+                )?;
+                nonempty(
+                    slot.value.as_ref().and_then(|value| value.as_str()),
+                    format!("{path}.credentials.slots.{name}.value"),
+                )?;
             }
         }
         for (index, model) in provider.models.iter().flatten().enumerate() {
-            for (name, value) in [("id", Some(model.id.as_str())), ("name", model.name.as_deref()),
-                ("upstreamModelId", model.upstream_model_id.as_deref()), ("promptPreset", model.prompt_preset.as_deref()),
-                ("api", model.api.as_deref()), ("baseUrl", model.base_url.as_deref())] {
+            for (name, value) in [
+                ("id", Some(model.id.as_str())),
+                ("name", model.name.as_deref()),
+                ("upstreamModelId", model.upstream_model_id.as_deref()),
+                ("promptPreset", model.prompt_preset.as_deref()),
+                ("api", model.api.as_deref()),
+                ("baseUrl", model.base_url.as_deref()),
+            ] {
                 nonempty(value, format!("{path}.models.{index}.{name}"))?;
             }
-            validate_image_limits(model.input_limits.as_ref(), &format!("{path}.models.{index}.inputLimits"))?;
-            validate_prompt_cache(model.prompt_cache.as_ref(), &format!("{path}.models.{index}.promptCache"))?;
+            validate_image_limits(
+                model.input_limits.as_ref(),
+                &format!("{path}.models.{index}.inputLimits"),
+            )?;
+            validate_prompt_cache(
+                model.prompt_cache.as_ref(),
+                &format!("{path}.models.{index}.promptCache"),
+            )?;
         }
         for (id, model) in provider.model_overrides.iter().flatten() {
-            nonempty(model.name.as_deref(), format!("{path}.modelOverrides.{id}.name"))?;
-            nonempty(model.prompt_preset.as_deref(), format!("{path}.modelOverrides.{id}.promptPreset"))?;
-            validate_image_limits(model.input_limits.as_ref(), &format!("{path}.modelOverrides.{id}.inputLimits"))?;
-            validate_prompt_cache(model.prompt_cache.as_ref(), &format!("{path}.modelOverrides.{id}.promptCache"))?;
+            nonempty(
+                model.name.as_deref(),
+                format!("{path}.modelOverrides.{id}.name"),
+            )?;
+            nonempty(
+                model.prompt_preset.as_deref(),
+                format!("{path}.modelOverrides.{id}.promptPreset"),
+            )?;
+            validate_image_limits(
+                model.input_limits.as_ref(),
+                &format!("{path}.modelOverrides.{id}.inputLimits"),
+            )?;
+            validate_prompt_cache(
+                model.prompt_cache.as_ref(),
+                &format!("{path}.modelOverrides.{id}.promptCache"),
+            )?;
         }
     }
     Ok(config)
 }
 
-fn validate_prompt_cache(cache: Option<&ModelPromptCache>, path: &str) -> Result<(), ModelsConfigValidationError> {
-    if cache.is_some_and(|cache| [cache.short, cache.long].into_iter().flatten().any(|value| value.get() == 0)) {
-        return Err(ModelsConfigValidationError::Constraint { path: path.to_owned(), message: "Expected number greater than 0" });
+fn validate_prompt_cache(
+    cache: Option<&ModelPromptCache>,
+    path: &str,
+) -> Result<(), ModelsConfigValidationError> {
+    if cache.is_some_and(|cache| {
+        [cache.short, cache.long]
+            .into_iter()
+            .flatten()
+            .any(|value| value.get() == 0)
+    }) {
+        return Err(ModelsConfigValidationError::Constraint {
+            path: path.to_owned(),
+            message: "Expected number greater than 0",
+        });
     }
     Ok(())
 }
 
-fn validate_image_limits(limits: Option<&ModelInputLimits>, path: &str) -> Result<(), ModelsConfigValidationError> {
+fn validate_image_limits(
+    limits: Option<&ModelInputLimits>,
+    path: &str,
+) -> Result<(), ModelsConfigValidationError> {
     let valid = limits.is_none_or(|limits| {
         limits.max_request_bytes.is_none_or(|value| value > 0)
             && limits.images.as_ref().is_none_or(|images| {
@@ -224,11 +307,18 @@ fn validate_image_limits(limits: Option<&ModelInputLimits>, path: &str) -> Resul
                         resize.max_width.is_none_or(|value| value > 0)
                             && resize.max_height.is_none_or(|value| value > 0)
                             && resize.max_bytes.is_none_or(|value| value > 0)
-                            && resize.jpeg_quality.is_none_or(|value| (1..=100).contains(&value))
+                            && resize
+                                .jpeg_quality
+                                .is_none_or(|value| (1..=100).contains(&value))
                     })
             })
     });
-    if !valid { return Err(ModelsConfigValidationError::Constraint { path: path.to_owned(), message: "Image and request limits must be positive; jpegQuality must be between 1 and 100" }); }
+    if !valid {
+        return Err(ModelsConfigValidationError::Constraint {
+            path: path.to_owned(),
+            message: "Image and request limits must be positive; jpegQuality must be between 1 and 100",
+        });
+    }
     Ok(())
 }
 
@@ -244,25 +334,80 @@ mod tests {
         }}}})).is_ok());
     }
     #[test]
-    fn absent_policy_is_accepted() { assert!(validate_models_config(json!({"providers":{"openai":{}}})).is_ok()); }
+    fn absent_policy_is_accepted() {
+        assert!(validate_models_config(json!({"providers":{"openai":{}}})).is_ok());
+    }
     #[test]
-    fn negative_cooldown_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"cooldownBaseMs":-1}}}})).is_err()); }
+    fn negative_cooldown_is_rejected() {
+        assert!(
+            validate_models_config(
+                json!({"providers":{"openai":{"credentials":{"cooldownBaseMs":-1}}}})
+            )
+            .is_err()
+        );
+    }
     #[test]
-    fn unknown_policy_key_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"rotate":true}}}})).is_err()); }
+    fn unknown_policy_key_is_rejected() {
+        assert!(
+            validate_models_config(json!({"providers":{"openai":{"credentials":{"rotate":true}}}}))
+                .is_err()
+        );
+    }
     #[test]
-    fn literal_policy_key_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"apiKey":"test"}}}})).is_err()); }
+    fn literal_policy_key_is_rejected() {
+        assert!(
+            validate_models_config(
+                json!({"providers":{"openai":{"credentials":{"apiKey":"test"}}}})
+            )
+            .is_err()
+        );
+    }
     #[test]
-    fn unknown_slot_key_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"slots":{"work":{"apiKey":"test"}}}}}})).is_err()); }
+    fn unknown_slot_key_is_rejected() {
+        assert!(
+            validate_models_config(
+                json!({"providers":{"openai":{"credentials":{"slots":{"work":{"apiKey":"test"}}}}}})
+            )
+            .is_err()
+        );
+    }
     #[test]
-    fn empty_slot_reference_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"slots":{"work":{"env":""}}}}}})).is_err()); }
+    fn empty_slot_reference_is_rejected() {
+        assert!(
+            validate_models_config(
+                json!({"providers":{"openai":{"credentials":{"slots":{"work":{"env":""}}}}}})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn prompt_cache_and_image_input_limits_are_parsed_and_validated() {
         let config = validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":300,"long":3600},"inputLimits":{"maxRequestBytes":100000,"images":{"maxPerMessage":4,"resize":{"maxWidth":1024,"jpegQuality":80}}}}]}}})).expect("valid config");
         let model = &config.providers["openai"].models.as_ref().expect("models")[0];
-        assert_eq!(model.prompt_cache.as_ref().and_then(|value| value.short).map(std::num::NonZeroU64::get), Some(300));
-        assert_eq!(model.input_limits.as_ref().and_then(|value| value.images.as_ref()).and_then(|value| value.resize.as_ref()).and_then(|value| value.jpeg_quality), Some(80));
-        assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":0}}]}}})).is_err());
+        assert_eq!(
+            model
+                .prompt_cache
+                .as_ref()
+                .and_then(|value| value.short)
+                .map(std::num::NonZeroU64::get),
+            Some(300)
+        );
+        assert_eq!(
+            model
+                .input_limits
+                .as_ref()
+                .and_then(|value| value.images.as_ref())
+                .and_then(|value| value.resize.as_ref())
+                .and_then(|value| value.jpeg_quality),
+            Some(80)
+        );
+        assert!(
+            validate_models_config(
+                json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":0}}]}}})
+            )
+            .is_err()
+        );
         assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","inputLimits":{"images":{"resize":{"jpegQuality":101}}}}]}}})).is_err());
     }
 
@@ -275,19 +420,41 @@ mod tests {
             "headers":{"x-key":{"$file":"~/k"},"x-plain":"v"},
             "models":[{"id":"m","headers":{"x":{"$concat":["a",{"$env":"B"}]}}}],
             "credentials":{"slots":{"work":{"value":{"$env":"WORK_KEY"}}}}
-        }}})).expect("references accepted");
+        }}}))
+        .expect("references accepted");
         let provider = &config.providers["p"];
-        assert!(provider.api_key.as_ref().is_some_and(|value| value.is_reference()));
-        assert_eq!(provider.headers.as_ref().expect("headers")["x-plain"].as_str(), Some("v"));
-        assert!(validate_models_config(json!({"providers":{"p":{"apiKey":{"$cmd":"cat"}}}})).is_err());
+        assert!(
+            provider
+                .api_key
+                .as_ref()
+                .is_some_and(|value| value.is_reference())
+        );
+        assert_eq!(
+            provider.headers.as_ref().expect("headers")["x-plain"].as_str(),
+            Some("v")
+        );
+        assert!(
+            validate_models_config(json!({"providers":{"p":{"apiKey":{"$cmd":"cat"}}}})).is_err()
+        );
         assert!(validate_models_config(json!({"providers":{"p":{"apiKey":""}}})).is_err());
-        assert!(validate_models_config(json!({"providers":{"p":{"credentials":{"slots":{"w":{"value":{"$env":"1BAD"}}}}}}})).is_err());
+        assert!(
+            validate_models_config(
+                json!({"providers":{"p":{"credentials":{"slots":{"w":{"value":{"$env":"1BAD"}}}}}}})
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn model_thinking_levels_accept_only_the_supported_vocabulary() {
-        let config = validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","defaultThinkingLevel":"xhigh"}]}}})).expect("valid level");
-        assert_eq!(config.providers["openai"].models.as_ref().expect("models")[0].default_thinking_level, Some(ModelThinkingLevel::Xhigh));
+        let config = validate_models_config(
+            json!({"providers":{"openai":{"models":[{"id":"m","defaultThinkingLevel":"xhigh"}]}}}),
+        )
+        .expect("valid level");
+        assert_eq!(
+            config.providers["openai"].models.as_ref().expect("models")[0].default_thinking_level,
+            Some(ModelThinkingLevel::Xhigh)
+        );
         assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","defaultThinkingLevel":"extra-high"}]}}})).is_err());
     }
 }

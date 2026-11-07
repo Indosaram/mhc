@@ -207,11 +207,8 @@ impl ImageMarkerRegistry {
                 continue;
             }
             let new_id = old_id - 1;
-            updated_text = replace_single_occurrence(
-                &updated_text,
-                &marker,
-                &format_image_marker(new_id),
-            );
+            updated_text =
+                replace_single_occurrence(&updated_text, &marker, &format_image_marker(new_id));
             self.entries.insert(new_id);
         }
         self.image_counter = self.entries.iter().copied().max().unwrap_or(0);

@@ -1,9 +1,8 @@
 use senpi_task::manager::credential_failure::{
-    is_credential_failure, runtime_fallback_candidates, terminal_failure_message,
-    UsageLimitScope,
+    UsageLimitScope, is_credential_failure, runtime_fallback_candidates, terminal_failure_message,
 };
 use senpi_task::state::{
-    create_task_record, ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskRecordInput,
+    ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskRecordInput, create_task_record,
 };
 
 fn rung(provider: &str, model_id: &str) -> ResolvedModelRecord {
@@ -78,7 +77,8 @@ fn model_scoped_403_retains_sibling_model() {
     let go_m27 = rung("opencode-go", "minimax-m2.7");
     let zai_glm = rung("zai", "glm-5.3");
     let rec = record_with(&go_m3, &[go_m27.clone(), zai_glm.clone()]);
-    let candidates = runtime_fallback_candidates(&rec, "403: This model is not enabled for your project.");
+    let candidates =
+        runtime_fallback_candidates(&rec, "403: This model is not enabled for your project.");
     assert_eq!(candidates.remaining, vec![go_m27, zai_glm]);
     assert!(candidates.skipped.is_empty());
 }
@@ -149,7 +149,10 @@ fn model_scoped_usage_limit_retains_sibling_first() {
     let go_m27 = rung("opencode-go", "minimax-m2.7");
     let zai_glm = rung("zai", "glm-5.3");
     let rec = record_with(&go_m3, &[go_m27.clone(), zai_glm.clone()]);
-    let candidates = runtime_fallback_candidates(&rec, "You've hit your Fable weekly limit · resets Oct 2, 9am");
+    let candidates = runtime_fallback_candidates(
+        &rec,
+        "You've hit your Fable weekly limit · resets Oct 2, 9am",
+    );
     assert_eq!(candidates.remaining, vec![go_m27, zai_glm]);
     assert!(candidates.skipped.is_empty());
     assert_eq!(candidates.limit, Some(UsageLimitScope::Model));
@@ -179,7 +182,10 @@ fn parent_session_model_retention_and_exclusion() {
 
     let mut rec_spent = record_with(&go_m3, &[zai_glm.clone(), spent_parent.clone()]);
     rec_spent.parent_model = Some(spent_parent.display.clone());
-    let candidates = runtime_fallback_candidates(&rec_spent, "429 Monthly usage limit reached. It will reset in 2 days 8 hours");
+    let candidates = runtime_fallback_candidates(
+        &rec_spent,
+        "429 Monthly usage limit reached. It will reset in 2 days 8 hours",
+    );
     assert_eq!(candidates.remaining, vec![zai_glm]);
     assert_eq!(candidates.skipped, vec![spent_parent]);
     assert_eq!(candidates.limit, Some(UsageLimitScope::Account));
@@ -210,7 +216,12 @@ fn terminal_failure_message_formats_usage_limit_exhaustion() {
     let go_m3 = rung("opencode-go", "minimax-m3");
     let zai_glm = rung("zai", "glm-5.3");
     let rec_remaining = record_with(&go_m3, &[zai_glm]);
-    let msg_remaining = terminal_failure_message(Some(&rec_remaining), "You've hit your session limit");
+    let msg_remaining =
+        terminal_failure_message(Some(&rec_remaining), "You've hit your session limit");
     assert!(msg_remaining.contains("opencode-go/minimax-m3"));
-    assert!(!runtime_fallback_candidates(&rec_remaining, "You've hit your session limit").remaining.is_empty());
+    assert!(
+        !runtime_fallback_candidates(&rec_remaining, "You've hit your session limit")
+            .remaining
+            .is_empty()
+    );
 }

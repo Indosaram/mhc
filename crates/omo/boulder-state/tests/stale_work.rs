@@ -45,7 +45,10 @@ fn create_stale_work_record(overrides: Value) -> Value {
 // One stale work under its id, as the `works` map the fixture writes.
 fn stale_works(overrides: Value) -> Value {
     let mut works = serde_json::Map::new();
-    works.insert(STALE_WORK_ID.to_string(), create_stale_work_record(overrides));
+    works.insert(
+        STALE_WORK_ID.to_string(),
+        create_stale_work_record(overrides),
+    );
     Value::Object(works)
 }
 
@@ -95,7 +98,8 @@ fn set_mtime(path: &Path, millis: i64) {
         .write(true)
         .open(path)
         .expect("open transcript");
-    let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(u64::try_from(millis).expect("non-negative"));
+    let modified = SystemTime::UNIX_EPOCH
+        + Duration::from_millis(u64::try_from(millis).expect("non-negative"));
     file.set_modified(modified).expect("set mtime");
 }
 
@@ -105,13 +109,16 @@ fn write_transcript_into(
     file_name: &str,
     mtime_ms: i64,
 ) {
-    let project_sessions_directory = sessions_directory
-        .join(format!("--{}--", encode_session_cwd(project_directory)));
+    let project_sessions_directory =
+        sessions_directory.join(format!("--{}--", encode_session_cwd(project_directory)));
     std::fs::create_dir_all(&project_sessions_directory).expect("create session dir");
     let transcript_path = project_sessions_directory.join(file_name);
     std::fs::write(
         &transcript_path,
-        format!("{}\n", json!({ "type": "session", "id": "01a09988-f0b5-7e7c-97b2-ea591aa4bdaf" })),
+        format!(
+            "{}\n",
+            json!({ "type": "session", "id": "01a09988-f0b5-7e7c-97b2-ea591aa4bdaf" })
+        ),
     )
     .expect("write transcript");
     set_mtime(&transcript_path, mtime_ms);
@@ -119,7 +126,12 @@ fn write_transcript_into(
 
 fn write_transcript(project_directory: &Path, file_name: &str, mtime_ms: i64) -> tempfile::TempDir {
     let sessions_directory = create_sessions_directory();
-    write_transcript_into(sessions_directory.path(), project_directory, file_name, mtime_ms);
+    write_transcript_into(
+        sessions_directory.path(),
+        project_directory,
+        file_name,
+        mtime_ms,
+    );
     sessions_directory
 }
 
@@ -144,16 +156,30 @@ fn fractional_transcript_activity_survives_threshold_comparison() {
     let sessions = tempfile::tempdir().expect("sessions");
     let path = sessions.path().join(STALE_TRANSCRIPT_FILE);
     let file = std::fs::File::create(&path).expect("transcript");
-    file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_micros(1_000_500)).expect("mtime");
+    file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_micros(1_000_500))
+        .expect("mtime");
     let activity = boulder_state::find_newest_session_transcript_ms_precise(
-        sessions.path(), &[STALE_SESSION_ID.to_string()], &[],
-    ).expect("activity");
+        sessions.path(),
+        &[STALE_SESSION_ID.to_string()],
+        &[],
+    )
+    .expect("activity");
     assert!((activity - 1000.5).abs() < 0.001);
-    let result = reconcile_stale_works(directory.path(), &ReconcileStaleWorksOptions {
-        now: Some(1001), threshold_ms: Some(0.75), sessions_directory: Some(sessions.path().to_path_buf()), env: None,
-    });
+    let result = reconcile_stale_works(
+        directory.path(),
+        &ReconcileStaleWorksOptions {
+            now: Some(1001),
+            threshold_ms: Some(0.75),
+            sessions_directory: Some(sessions.path().to_path_buf()),
+            env: None,
+        },
+    );
     assert_eq!(result, no_changes());
-    assert!(!boulder_state::is_work_stale_precise(Some(activity), 1001, 0.75));
+    assert!(!boulder_state::is_work_stale_precise(
+        Some(activity),
+        1001,
+        0.75
+    ));
 }
 
 #[cfg(unix)]
@@ -161,14 +187,30 @@ fn fractional_transcript_activity_survives_threshold_comparison() {
 fn preepoch_transcript_activity_formats_with_date_timeclip() {
     let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
     let sessions = tempfile::tempdir().expect("sessions");
-    let file = std::fs::File::create(sessions.path().join(STALE_TRANSCRIPT_FILE)).expect("transcript");
-    file.set_modified(SystemTime::UNIX_EPOCH - Duration::from_micros(1500)).expect("mtime");
-    let activity = boulder_state::find_newest_session_transcript_ms_precise(sessions.path(), &[STALE_SESSION_ID.to_string()], &[]).expect("activity");
+    let file =
+        std::fs::File::create(sessions.path().join(STALE_TRANSCRIPT_FILE)).expect("transcript");
+    file.set_modified(SystemTime::UNIX_EPOCH - Duration::from_micros(1500))
+        .expect("mtime");
+    let activity = boulder_state::find_newest_session_transcript_ms_precise(
+        sessions.path(),
+        &[STALE_SESSION_ID.to_string()],
+        &[],
+    )
+    .expect("activity");
     assert!((activity + 1.5).abs() < 0.001);
-    let result = reconcile_stale_works(directory.path(), &ReconcileStaleWorksOptions {
-        now: Some(10), threshold_ms: Some(1.0), sessions_directory: Some(sessions.path().to_path_buf()), env: None,
-    });
-    assert_eq!(result.demoted[0].last_activity_at.as_deref(), Some("1969-12-31T23:59:59.999Z"));
+    let result = reconcile_stale_works(
+        directory.path(),
+        &ReconcileStaleWorksOptions {
+            now: Some(10),
+            threshold_ms: Some(1.0),
+            sessions_directory: Some(sessions.path().to_path_buf()),
+            env: None,
+        },
+    );
+    assert_eq!(
+        result.demoted[0].last_activity_at.as_deref(),
+        Some("1969-12-31T23:59:59.999Z")
+    );
 }
 
 #[test]
@@ -186,19 +228,26 @@ fn windows_shaped_session_cwd_encodes_without_colon_or_separator() {
 
 #[test]
 fn active_work_with_only_a_41_hour_old_transcript_is_paused_and_stamped() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions_directory = write_transcript(
+        directory.path(),
+        STALE_TRANSCRIPT_FILE,
+        NOW_MS - 41 * HOUR_MS,
     );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - 41 * HOUR_MS);
 
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
     assert_eq!(
-        result.demoted.iter().map(|demotion| demotion.work_id.as_str()).collect::<Vec<_>>(),
+        result
+            .demoted
+            .iter()
+            .map(|demotion| demotion.work_id.as_str())
+            .collect::<Vec<_>>(),
         vec![STALE_WORK_ID]
     );
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     let work = state.work(STALE_WORK_ID).expect("work");
     assert_eq!(work.status().map(|status| status.as_str()), Some("paused"));
     assert_eq!(work.stale_since(), Some("2026-09-17T06:00:00.000Z"));
@@ -207,11 +256,12 @@ fn active_work_with_only_a_41_hour_old_transcript_is_paused_and_stamped() {
 
 #[test]
 fn demoted_work_keeps_every_other_field() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions_directory = write_transcript(
+        directory.path(),
+        STALE_TRANSCRIPT_FILE,
+        NOW_MS - 41 * HOUR_MS,
     );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - 41 * HOUR_MS);
 
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
@@ -220,21 +270,30 @@ fn demoted_work_keeps_every_other_field() {
         result.demoted[0].last_activity_at.as_deref(),
         Some("2026-09-15T13:00:00.000Z")
     );
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     let work = state.work(STALE_WORK_ID).expect("work").to_json_value();
-    assert_eq!(work["active_plan"], json!(".omo/plans/omo-agent-toolkit-eval-sdk.md"));
+    assert_eq!(
+        work["active_plan"],
+        json!(".omo/plans/omo-agent-toolkit-eval-sdk.md")
+    );
     assert_eq!(work["plan_name"], json!("omo-agent-toolkit-eval-sdk"));
-    assert_eq!(work["ulw_loop_session"], json!("01a09988-f0b5-7e7c-97b2-ea591aa4bdaf"));
+    assert_eq!(
+        work["ulw_loop_session"],
+        json!("01a09988-f0b5-7e7c-97b2-ea591aa4bdaf")
+    );
     assert_eq!(work["mode"], json!("--ship"));
 }
 
 #[test]
 fn demoted_work_is_still_resumable() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions_directory = write_transcript(
+        directory.path(),
+        STALE_TRANSCRIPT_FILE,
+        NOW_MS - 41 * HOUR_MS,
     );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - 41 * HOUR_MS);
     reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
     let resume_options = get_work_resume_options(directory.path()).expect("resume options");
@@ -250,20 +309,24 @@ fn demoted_work_is_still_resumable() {
 
 #[test]
 fn one_hour_old_transcript_writes_nothing() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - HOUR_MS);
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions_directory =
+        write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - HOUR_MS);
     let raw_before = read_raw_state(directory.path());
 
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
     assert_eq!(result, no_changes());
     assert_eq!(read_raw_state(directory.path()), raw_before);
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("active")
     );
 }
@@ -284,9 +347,15 @@ fn completed_work_with_no_activity_for_days_is_untouched() {
 
     assert_eq!(result, no_changes());
     assert_eq!(read_raw_state(directory.path()), raw_before);
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("completed")
     );
 }
@@ -306,19 +375,22 @@ fn no_transcript_but_a_fresh_updated_at_stays_active() {
 
     assert_eq!(result, no_changes());
     assert_eq!(read_raw_state(directory.path()), raw_before);
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("active")
     );
 }
 
 #[test]
 fn no_transcript_and_no_timestamps_demotes_with_no_last_activity() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
     let sessions_directory = create_sessions_directory();
 
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
@@ -331,9 +403,15 @@ fn no_transcript_and_no_timestamps_demotes_with_no_last_activity() {
             last_activity_at: None,
         }]
     );
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("paused")
     );
 }
@@ -344,7 +422,8 @@ fn unresolved_session_id_is_demoted_and_no_unrelated_transcript_matches() {
         stale_works(json!({ "session_ids": ["senpi:unknown"] })),
         STALE_WORK_ID,
     );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - 60 * 1000);
+    let sessions_directory =
+        write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, NOW_MS - 60 * 1000);
     write_transcript_into(
         sessions_directory.path(),
         directory.path(),
@@ -362,9 +441,15 @@ fn unresolved_session_id_is_demoted_and_no_unrelated_transcript_matches() {
             last_activity_at: None,
         }]
     );
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("paused")
     );
 }
@@ -372,11 +457,9 @@ fn unresolved_session_id_is_demoted_and_no_unrelated_transcript_matches() {
 #[test]
 fn work_quiet_for_31_days_is_demoted_with_its_last_activity_recorded() {
     let last_activity_ms = NOW_MS - 31 * 24 * HOUR_MS;
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
-    let sessions_directory = write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, last_activity_ms);
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions_directory =
+        write_transcript(directory.path(), STALE_TRANSCRIPT_FILE, last_activity_ms);
 
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
@@ -388,9 +471,15 @@ fn work_quiet_for_31_days_is_demoted_with_its_last_activity_recorded() {
             last_activity_at: Some("2026-08-17T06:00:00.000Z".to_string()),
         }]
     );
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("paused")
     );
 }
@@ -399,7 +488,10 @@ fn work_quiet_for_31_days_is_demoted_with_its_last_activity_recorded() {
 fn no_boulder_file_writes_nothing_and_throws_nothing() {
     let directory = tempfile::tempdir().expect("tempdir");
 
-    let result = reconcile_stale_works(directory.path(), &options(create_sessions_directory().path()));
+    let result = reconcile_stale_works(
+        directory.path(),
+        &options(create_sessions_directory().path()),
+    );
 
     assert_eq!(result, no_changes());
     assert!(!get_boulder_file_path(directory.path()).exists());
@@ -411,7 +503,10 @@ fn unreadable_boulder_file_writes_nothing_and_throws_nothing() {
     std::fs::create_dir_all(directory.path().join(".omo")).expect("create .omo");
     std::fs::write(get_boulder_file_path(directory.path()), "{not-json").expect("write broken");
 
-    let result = reconcile_stale_works(directory.path(), &options(create_sessions_directory().path()));
+    let result = reconcile_stale_works(
+        directory.path(),
+        &options(create_sessions_directory().path()),
+    );
 
     assert_eq!(result, no_changes());
     assert_eq!(read_raw_state(directory.path()), "{not-json");
@@ -419,10 +514,7 @@ fn unreadable_boulder_file_writes_nothing_and_throws_nothing() {
 
 #[test]
 fn selecting_a_demoted_work_reactivates_it_without_the_stale_stamp() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
     reconcile_stale_works(
         directory.path(),
         &options(create_sessions_directory().path()),
@@ -430,7 +522,9 @@ fn selecting_a_demoted_work_reactivates_it_without_the_stale_stamp() {
 
     select_active_work(directory.path(), STALE_WORK_ID).expect("select");
 
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     let work = state.work(STALE_WORK_ID).expect("work");
     assert_eq!(work.status().map(|status| status.as_str()), Some("active"));
     assert_eq!(work.stale_since(), None);
@@ -438,10 +532,7 @@ fn selecting_a_demoted_work_reactivates_it_without_the_stale_stamp() {
 
 #[test]
 fn appending_a_session_to_a_demoted_work_reactivates_it_without_the_stale_stamp() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
     reconcile_stale_works(
         directory.path(),
         &options(create_sessions_directory().path()),
@@ -455,7 +546,9 @@ fn appending_a_session_to_a_demoted_work_reactivates_it_without_the_stale_stamp(
     )
     .expect("append");
 
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     let work = state.work(STALE_WORK_ID).expect("work");
     assert_eq!(work.status().map(|status| status.as_str()), Some("active"));
     assert_eq!(work.stale_since(), None);
@@ -470,16 +563,19 @@ fn appending_a_session_to_a_demoted_work_reactivates_it_without_the_stale_stamp(
 
 #[test]
 fn a_work_paused_without_a_stale_stamp_keeps_its_status() {
-    let directory = create_project(
-        stale_works(json!({ "status": "paused" })),
-        STALE_WORK_ID,
-    );
+    let directory = create_project(stale_works(json!({ "status": "paused" })), STALE_WORK_ID);
 
     select_active_work(directory.path(), STALE_WORK_ID).expect("select");
 
-    let state = read_boulder_state(directory.path()).expect("readable").expect("state");
+    let state = read_boulder_state(directory.path())
+        .expect("readable")
+        .expect("state");
     assert_eq!(
-        state.work(STALE_WORK_ID).expect("work").status().map(|status| status.as_str()),
+        state
+            .work(STALE_WORK_ID)
+            .expect("work")
+            .status()
+            .map(|status| status.as_str()),
         Some("paused")
     );
 }
@@ -506,7 +602,10 @@ fn activity_stamped_in_the_future_is_not_stale() {
 
 #[test]
 fn no_env_knob_uses_the_six_hour_default() {
-    assert_eq!(resolve_stale_work_threshold_ms(&Default::default()), DEFAULT_STALE_WORK_THRESHOLD_MS);
+    assert_eq!(
+        resolve_stale_work_threshold_ms(&Default::default()),
+        DEFAULT_STALE_WORK_THRESHOLD_MS
+    );
     assert_eq!(DEFAULT_STALE_WORK_THRESHOLD_MS, (6 * HOUR_MS) as f64);
 }
 
@@ -526,7 +625,10 @@ fn non_positive_or_unparsable_env_knob_uses_the_default() {
             STALE_WORK_THRESHOLD_ENV_KEY.to_string(),
             raw.to_string(),
         )]);
-        assert_eq!(resolve_stale_work_threshold_ms(&env), DEFAULT_STALE_WORK_THRESHOLD_MS);
+        assert_eq!(
+            resolve_stale_work_threshold_ms(&env),
+            DEFAULT_STALE_WORK_THRESHOLD_MS
+        );
     }
 }
 
@@ -546,7 +648,8 @@ fn fractional_env_threshold_is_not_truncated() {
 fn radix_env_threshold_matches_javascript_number() {
     for (raw, expected) in [("0x10", 16.0), ("0b10", 2.0), ("0o10", 8.0)] {
         let env = std::collections::BTreeMap::from([(
-            STALE_WORK_THRESHOLD_ENV_KEY.to_string(), raw.to_string(),
+            STALE_WORK_THRESHOLD_ENV_KEY.to_string(),
+            raw.to_string(),
         )]);
         assert_eq!(resolve_stale_work_threshold_ms(&env), expected);
     }
@@ -554,10 +657,7 @@ fn radix_env_threshold_matches_javascript_number() {
 
 #[test]
 fn transcript_scan_reads_only_the_matching_session_directory() {
-    let directory = create_project(
-        stale_works(json!({})),
-        STALE_WORK_ID,
-    );
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
     let sessions_directory = create_sessions_directory();
     // A fresh transcript under an unrelated cwd must not keep the work alive.
     let unrelated = tempfile::tempdir().expect("unrelated project");
@@ -571,7 +671,11 @@ fn transcript_scan_reads_only_the_matching_session_directory() {
     let result = reconcile_stale_works(directory.path(), &options(sessions_directory.path()));
 
     assert_eq!(
-        result.demoted.iter().map(|demotion| demotion.work_id.as_str()).collect::<Vec<_>>(),
+        result
+            .demoted
+            .iter()
+            .map(|demotion| demotion.work_id.as_str())
+            .collect::<Vec<_>>(),
         vec![STALE_WORK_ID]
     );
 }

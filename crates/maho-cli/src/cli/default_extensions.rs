@@ -1042,18 +1042,28 @@ pub fn task_omo_isolation_config(
     config: &serde_json::Value,
 ) -> Option<senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig> {
     let isolation = config.get("task")?.get("isolation")?;
-    Some(senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
-        enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
-        backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
-        merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| {
-            if merge == "branch" {
-                senpi_task::state::IsolationMergeMode::Branch
-            } else {
-                senpi_task::state::IsolationMergeMode::Patch
-            }
-        }),
-        apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
-    })
+    Some(
+        senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
+            enabled: isolation
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool),
+            backend: isolation
+                .get("backend")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            merge: isolation
+                .get("merge")
+                .and_then(serde_json::Value::as_str)
+                .map(|merge| {
+                    if merge == "branch" {
+                        senpi_task::state::IsolationMergeMode::Branch
+                    } else {
+                        senpi_task::state::IsolationMergeMode::Patch
+                    }
+                }),
+            apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
+        },
+    )
 }
 #[cfg(feature = "omo")]
 pub(super) struct TaskActions(pub(super) TaskParent);
@@ -1158,7 +1168,20 @@ impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
 }
 impl Extension for Codemode {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
-        let env_passthrough = self.parent.get().and_then(|p| p()).map(|s| s.with_settings_manager(|m| m.get_bash_env_scrub_passthrough())).unwrap_or_else(|| maho_core::settings_manager::SettingsManager::create(&api.registered.registration_cwd.to_string_lossy(), &maho_core::config::get_agent_dir(), &maho_core::config::home_dir(), true).get_bash_env_scrub_passthrough());
+        let env_passthrough = self
+            .parent
+            .get()
+            .and_then(|p| p())
+            .map(|s| s.with_settings_manager(|m| m.get_bash_env_scrub_passthrough()))
+            .unwrap_or_else(|| {
+                maho_core::settings_manager::SettingsManager::create(
+                    &api.registered.registration_cwd.to_string_lossy(),
+                    &maho_core::config::get_agent_dir(),
+                    &maho_core::config::home_dir(),
+                    true,
+                )
+                .get_bash_env_scrub_passthrough()
+            });
         if let Err(error) = maho_codemode::register(
             api,
             maho_codemode::CodemodeExtensionOptions {

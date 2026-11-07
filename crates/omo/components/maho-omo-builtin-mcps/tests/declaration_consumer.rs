@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +24,9 @@ struct FakeMcpServer {
 
 impl FakeMcpServer {
     async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let address = listener.local_addr().expect("address");
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&requests);
@@ -67,11 +68,19 @@ impl FakeMcpServer {
                     }
                 }),
             );
-            axum::serve(listener, router).with_graceful_shutdown(async {
-                let _ = stopped.await;
-            }).await.expect("serve");
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .expect("serve");
         });
-        Self { address, requests, stop, task }
+        Self {
+            address,
+            requests,
+            stop,
+            task,
+        }
     }
 
     fn requests(&self) -> usize {
@@ -80,7 +89,10 @@ impl FakeMcpServer {
 
     async fn shutdown(self) {
         let _ = self.stop.send(());
-        tokio::time::timeout(Duration::from_secs(3), self.task).await.expect("server stops").expect("server task");
+        tokio::time::timeout(Duration::from_secs(3), self.task)
+            .await
+            .expect("server stops")
+            .expect("server task");
     }
 }
 
@@ -104,14 +116,28 @@ impl Harness {
         wire.connect_timeout_ms = Some(CONNECT_TIMEOUT_MS);
 
         let logs = tempfile::tempdir().expect("log dir");
-        let logger = Arc::new(Mutex::new(McpLogger::new("context7", logs.path(), None).expect("logger")));
-        let connection = create_mcp_transport("context7", &wire, Some(&env), logger).expect("transport");
-        Self { server, env, connection, _logs: logs }
+        let logger = Arc::new(Mutex::new(
+            McpLogger::new("context7", logs.path(), None).expect("logger"),
+        ));
+        let connection =
+            create_mcp_transport("context7", &wire, Some(&env), logger).expect("transport");
+        Self {
+            server,
+            env,
+            connection,
+            _logs: logs,
+        }
     }
 
     async fn tools(&self) -> Value {
-        let client = connect_mcp_transport(&self.connection).await.expect("connect");
-        let tools = client.request("tools/list", json!({}), Duration::from_secs(2)).await.expect("tools/list")["tools"].clone();
+        let client = connect_mcp_transport(&self.connection)
+            .await
+            .expect("connect");
+        let tools = client
+            .request("tools/list", json!({}), Duration::from_secs(2))
+            .await
+            .expect("tools/list")["tools"]
+            .clone();
         client.close().await.expect("close");
         tools
     }
@@ -122,37 +148,58 @@ impl Harness {
 }
 
 #[tokio::test]
-async fn given_the_anonymous_context7_declaration_when_a_local_mcp_server_serves_it_then_the_declared_transport_connects_without_a_bearer_header() {
+async fn given_the_anonymous_context7_declaration_when_a_local_mcp_server_serves_it_then_the_declared_transport_connects_without_a_bearer_header()
+ {
     let harness = Harness::start(None).await;
 
     let tools = harness.tools().await;
 
     assert_eq!(tools[0]["name"], json!("context7-echo"));
-    assert_eq!(tools[0]["description"], json!("anonymous"), "no CONTEXT7_API_KEY means no Authorization header");
+    assert_eq!(
+        tools[0]["description"],
+        json!("anonymous"),
+        "no CONTEXT7_API_KEY means no Authorization header"
+    );
     harness.shutdown().await;
 }
 
 #[tokio::test]
-async fn given_the_bearer_context7_declaration_when_a_local_mcp_server_serves_it_then_the_token_is_resolved_from_the_environment_at_connect_time() {
+async fn given_the_bearer_context7_declaration_when_a_local_mcp_server_serves_it_then_the_token_is_resolved_from_the_environment_at_connect_time()
+ {
     let harness = Harness::start(Some("ctx7sk-live-secret")).await;
 
     let tools = harness.tools().await;
 
     assert_eq!(tools[0]["name"], json!("context7-echo"));
-    assert_eq!(tools[0]["description"], json!("authenticated"), "bearerTokenEnv is read at connect time");
+    assert_eq!(
+        tools[0]["description"],
+        json!("authenticated"),
+        "bearerTokenEnv is read at connect time"
+    );
     assert!(!harness.env.is_empty());
     harness.shutdown().await;
 }
 
 #[tokio::test]
-async fn given_the_declared_lazy_lifecycle_when_the_transport_is_created_then_no_request_reaches_the_server_until_it_is_used() {
+async fn given_the_declared_lazy_lifecycle_when_the_transport_is_created_then_no_request_reaches_the_server_until_it_is_used()
+ {
     let harness = Harness::start(None).await;
 
-    assert!(harness.connection.client().is_err(), "lazy: creating the transport opens no connection");
-    assert_eq!(harness.server.requests(), 0, "lazy: nothing connects before a tool call needs it");
+    assert!(
+        harness.connection.client().is_err(),
+        "lazy: creating the transport opens no connection"
+    );
+    assert_eq!(
+        harness.server.requests(),
+        0,
+        "lazy: nothing connects before a tool call needs it"
+    );
 
     let _ = harness.tools().await;
-    assert!(harness.server.requests() > 0, "the declared transport does connect when it is used");
+    assert!(
+        harness.server.requests() > 0,
+        "the declared transport does connect when it is used"
+    );
     harness.shutdown().await;
 }
 
@@ -169,9 +216,12 @@ fn given_the_wire_form_of_the_declaration_when_compared_then_it_carries_upstream
     assert_eq!(value["exposure"], json!("search"));
     assert!(value.get("bearerTokenEnv").is_none());
 
-    let authenticated = serde_json::to_value(ServerConfigWire::from(&create_context7_declaration(&BTreeMap::from([
-        (CONTEXT7_API_KEY_ENV.to_owned(), "ctx7sk-live-secret".to_owned()),
-    ]))))
+    let authenticated = serde_json::to_value(ServerConfigWire::from(&create_context7_declaration(
+        &BTreeMap::from([(
+            CONTEXT7_API_KEY_ENV.to_owned(),
+            "ctx7sk-live-secret".to_owned(),
+        )]),
+    )))
     .expect("wire json");
     assert_eq!(authenticated["auth"], json!("bearer"));
     assert_eq!(authenticated["bearerTokenEnv"], json!(CONTEXT7_API_KEY_ENV));

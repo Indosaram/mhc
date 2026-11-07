@@ -13,7 +13,8 @@ use tokio::runtime::Runtime;
 use super::runtime::CLOSE_TIMEOUT;
 
 /// The message when neither input path exists; the prefix is the contract.
-pub const INPUT_PATH_REQUIRED: &str = "RemoteDesktop portal or LIBEI_SOCKET is required for Wayland input";
+pub const INPUT_PATH_REQUIRED: &str =
+    "RemoteDesktop portal or LIBEI_SOCKET is required for Wayland input";
 
 /// Bound on the presence probe behind `capabilities().inputPermission`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -84,10 +85,9 @@ pub fn connect(runtime: &'static Runtime) -> CoreResult<(UnixStream, PortalSessi
         let portal = offered_portal()
             .await
             .map_err(|err| DesktopError::input_failed(format!("{INPUT_PATH_REQUIRED}: {err}")))?;
-        let session = portal
-            .create_session()
-            .await
-            .map_err(|err| DesktopError::permission_denied(format!("RemoteDesktop CreateSession: {err}")))?;
+        let session = portal.create_session().await.map_err(|err| {
+            DesktopError::permission_denied(format!("RemoteDesktop CreateSession: {err}"))
+        })?;
         match start(&portal, &session).await {
             Ok((fd, granted)) => Ok((fd, session, granted)),
             Err(err) => {
@@ -97,7 +97,11 @@ pub fn connect(runtime: &'static Runtime) -> CoreResult<(UnixStream, PortalSessi
             }
         }
     })?;
-    Ok((UnixStream::from(fd), PortalSession { runtime, session }, granted))
+    Ok((
+        UnixStream::from(fd),
+        PortalSession { runtime, session },
+        granted,
+    ))
 }
 
 async fn start(

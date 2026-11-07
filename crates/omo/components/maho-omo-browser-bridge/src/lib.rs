@@ -6,6 +6,6 @@
 pub mod index;
 
 pub use index::{
-    BROWSER_BRIDGE_TOOL_NAME, BROWSER_STATE_EVENT, BROWSER_STOP_RPC,
-    BrowserBridgeComponent, create_browser_bridge_component,
+    BROWSER_BRIDGE_TOOL_NAME, BROWSER_STATE_EVENT, BROWSER_STOP_RPC, BrowserBridgeComponent,
+    create_browser_bridge_component,
 };

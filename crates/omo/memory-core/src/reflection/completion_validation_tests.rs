@@ -6,26 +6,36 @@ use pretty_assertions::assert_eq;
 
 use tempfile::TempDir;
 
-use crate::git::exec::{GitExec, GitExecBytesResult, GitExecOptions, GitExecResult, system_git_exec};
+use crate::git::exec::{
+    GitExec, GitExecBytesResult, GitExecOptions, GitExecResult, system_git_exec,
+};
 use crate::git::{
     GitCommitAuthor, GitMemoryRepo, GitMemoryRepoOptions, GitSeedFile, InitializeGitRepoOptions,
 };
 
 use crate::reflection::completion_repair::describe_dropped_entries;
 use crate::reflection::completion_validation::{
-    CompletionValidation, DreamTokenBudgetValidation, validate_completion, validate_dream_token_budget,
+    CompletionValidation, DreamTokenBudgetValidation, validate_completion,
+    validate_dream_token_budget,
 };
 use crate::reflection::machine::DreamOrigin;
 use crate::reflection::worktree::{ReflectionWorktree, create_reflection_worktree};
 
 const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSk\n-----END RSA PRIVATE KEY-----\n";
 const GOOD: &str = "---\ndescription: A good note\n---\n\nbody\n";
-const LEGACY: &str = "---\ndescription: Run the chain by default: verify, merge\n---\n\nlegacy body\n";
+const LEGACY: &str =
+    "---\ndescription: Run the chain by default: verify, merge\n---\n\nlegacy body\n";
 
 #[test]
 fn pressure_dream_budget_rejects_committed_token_count_at_target() {
-    assert!(matches!(validate_dream_token_budget(DreamOrigin::Pressure, 100, 100), DreamTokenBudgetValidation::BudgetNotMet { .. }));
-    assert!(matches!(validate_dream_token_budget(DreamOrigin::Idle, 1, 100), DreamTokenBudgetValidation::Valid { .. }));
+    assert!(matches!(
+        validate_dream_token_budget(DreamOrigin::Pressure, 100, 100),
+        DreamTokenBudgetValidation::BudgetNotMet { .. }
+    ));
+    assert!(matches!(
+        validate_dream_token_budget(DreamOrigin::Idle, 1, 100),
+        DreamTokenBudgetValidation::Valid { .. }
+    ));
 }
 
 struct Fixture {
@@ -230,7 +240,10 @@ fn given_a_commit_with_malformed_frontmatter_when_validated_then_the_entry_is_dr
 
 #[test]
 fn given_a_body_only_edit_of_legacy_frontmatter_when_validated_then_it_passes() {
-    let fixture = fixture(&[("system/legacy.md", "---\ndescription: true\n---\nfirst\n")], "run-legacy");
+    let fixture = fixture(
+        &[("system/legacy.md", "---\ndescription: true\n---\nfirst\n")],
+        "run-legacy",
+    );
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
@@ -274,7 +287,10 @@ fn given_a_good_note_and_a_note_with_a_pem_block_when_validated_then_the_good_no
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[("reference/good.md", GOOD), ("reference/leak.md", leak.as_str())],
+        &[
+            ("reference/good.md", GOOD),
+            ("reference/leak.md", leak.as_str()),
+        ],
         "two notes",
     );
 
@@ -288,7 +304,8 @@ fn given_a_good_note_and_a_note_with_a_pem_block_when_validated_then_the_good_no
             let paths: Vec<&str> = dropped.iter().map(|entry| entry.path.as_str()).collect();
             assert_eq!(paths, vec!["reference/leak.md"]);
             assert!(
-                !describe_dropped_entries(&dropped).contains("MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSk"),
+                !describe_dropped_entries(&dropped)
+                    .contains("MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSk"),
                 "{dropped:?}"
             );
         }
@@ -297,7 +314,11 @@ fn given_a_good_note_and_a_note_with_a_pem_block_when_validated_then_the_good_no
     let tree = tree_paths(fixture.exec.as_ref(), &fixture.worktree.dir);
     assert!(!tree.contains(&"reference/leak.md".to_string()), "{tree:?}");
     assert_eq!(
-        git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["status", "--porcelain"]),
+        git_out(
+            fixture.exec.as_ref(),
+            &fixture.worktree.dir,
+            &["status", "--porcelain"]
+        ),
         ""
     );
 }
@@ -309,7 +330,10 @@ fn given_a_secret_only_in_an_earlier_commit_when_validated_then_the_history_carr
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[("reference/good.md", GOOD), ("reference/tmp.md", secret.as_str())],
+        &[
+            ("reference/good.md", GOOD),
+            ("reference/tmp.md", secret.as_str()),
+        ],
         "add",
     );
     git_out(
@@ -339,7 +363,12 @@ fn given_a_secret_only_in_an_earlier_commit_when_validated_then_the_history_carr
     }
     let range = format!("{}..HEAD", fixture.worktree.base_commit_sha);
     assert_eq!(
-        git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["rev-list", "--count", &range]).trim(),
+        git_out(
+            fixture.exec.as_ref(),
+            &fixture.worktree.dir,
+            &["rev-list", "--count", &range]
+        )
+        .trim(),
         "1"
     );
 }
@@ -351,7 +380,10 @@ fn given_a_note_whose_description_is_over_1024_characters_when_validated_then_it
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[("reference/good.md", GOOD), ("reference/long.md", long.as_str())],
+        &[
+            ("reference/good.md", GOOD),
+            ("reference/long.md", long.as_str()),
+        ],
         "notes",
     );
 
@@ -374,8 +406,12 @@ fn given_a_note_whose_description_is_over_1024_characters_when_validated_then_it
 }
 
 #[test]
-fn given_a_frontmatter_less_root_file_moved_into_reference_when_validated_then_the_move_is_undone() {
-    let fixture = fixture(&[("notes-dump.md", "# Title\n\nno frontmatter\n")], "run-move");
+fn given_a_frontmatter_less_root_file_moved_into_reference_when_validated_then_the_move_is_undone()
+{
+    let fixture = fixture(
+        &[("notes-dump.md", "# Title\n\nno frontmatter\n")],
+        "run-move",
+    );
     std::fs::create_dir_all(fixture.worktree.dir.join("reference")).expect("reference dir");
     git_out(
         fixture.exec.as_ref(),
@@ -397,7 +433,10 @@ fn given_a_frontmatter_less_root_file_moved_into_reference_when_validated_then_t
     }
     let tree = tree_paths(fixture.exec.as_ref(), &fixture.worktree.dir);
     assert!(tree.contains(&"notes-dump.md".to_string()), "{tree:?}");
-    assert!(!tree.contains(&"reference/notes-dump.md".to_string()), "{tree:?}");
+    assert!(
+        !tree.contains(&"reference/notes-dump.md".to_string()),
+        "{tree:?}"
+    );
 }
 
 #[test]
@@ -501,7 +540,11 @@ fn given_a_dropped_note_with_a_glob_pathspec_name_when_validated_then_only_that_
             "{name}"
         );
         assert_eq!(
-            git_out(fixture.exec.as_ref(), &fixture.worktree.dir, &["status", "--porcelain"]),
+            git_out(
+                fixture.exec.as_ref(),
+                &fixture.worktree.dir,
+                &["status", "--porcelain"]
+            ),
             "",
             "{name}"
         );
@@ -510,15 +553,22 @@ fn given_a_dropped_note_with_a_glob_pathspec_name_when_validated_then_only_that_
 
 #[cfg(unix)]
 #[test]
-fn given_an_existing_glob_named_note_that_gets_a_secret_when_validated_then_the_other_edit_is_kept() {
+fn given_an_existing_glob_named_note_that_gets_a_secret_when_validated_then_the_other_edit_is_kept()
+{
     let globbed = "reference/k?ep*.md";
-    let fixture = fixture(&[(globbed, GOOD), ("reference/keep1.md", GOOD)], "run-glob-edit");
+    let fixture = fixture(
+        &[(globbed, GOOD), ("reference/keep1.md", GOOD)],
+        "run-glob-edit",
+    );
     let edited = GOOD.replace("body", "edited body");
     let leak = format!("---\ndescription: Leak\n---\n\n{PEM}");
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[(globbed, leak.as_str()), ("reference/keep1.md", edited.as_str())],
+        &[
+            (globbed, leak.as_str()),
+            ("reference/keep1.md", edited.as_str()),
+        ],
         "edit both",
     );
 
@@ -548,7 +598,13 @@ fn given_a_valid_glob_named_note_when_the_agent_deletes_it_then_the_deletion_is_
     git_out(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &["--literal-pathspecs", "rm", "-q", "--", "reference/k[e]p.md"],
+        &[
+            "--literal-pathspecs",
+            "rm",
+            "-q",
+            "--",
+            "reference/k[e]p.md",
+        ],
     );
     git_out(
         fixture.exec.as_ref(),
@@ -641,7 +697,10 @@ fn given_a_dropped_note_when_the_branch_is_rewritten_then_every_pathspec_call_is
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[("reference/leak.md", leak.as_str()), ("reference/good.md", GOOD)],
+        &[
+            ("reference/leak.md", leak.as_str()),
+            ("reference/good.md", GOOD),
+        ],
         "icase env",
     );
     let recording = EnvRecordingExec {
@@ -669,7 +728,10 @@ fn given_a_dropped_note_when_the_branch_is_rewritten_then_every_pathspec_call_is
                 .any(|arg| matches!(arg.as_str(), "reset" | "checkout" | "rm"))
         })
         .collect();
-    assert!(!repair_calls.is_empty(), "the branch must have been rewritten");
+    assert!(
+        !repair_calls.is_empty(),
+        "the branch must have been rewritten"
+    );
     for (argv, env) in repair_calls {
         assert_eq!(
             env.get("GIT_LITERAL_PATHSPECS").map(String::as_str),
@@ -701,7 +763,10 @@ fn given_a_secret_shaped_file_name_when_the_drop_is_described_then_the_note_neve
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[(name, "---\ndescription: Named\n---\n\nclean\n"), ("reference/good.md", GOOD)],
+        &[
+            (name, "---\ndescription: Named\n---\n\nclean\n"),
+            ("reference/good.md", GOOD),
+        ],
         "secret name",
     );
 
@@ -709,7 +774,10 @@ fn given_a_secret_shaped_file_name_when_the_drop_is_described_then_the_note_neve
         CompletionValidation::Valid { dropped, .. } => {
             let note = describe_dropped_entries(&dropped);
             assert!(note.contains("Dropped 1 invalid memory entry"), "{note}");
-            assert!(!note.contains("Ab3dEf5hJ7kL9mN1pQ3rS5tU7vW9xY1zB3C5"), "{note}");
+            assert!(
+                !note.contains("Ab3dEf5hJ7kL9mN1pQ3rS5tU7vW9xY1zB3C5"),
+                "{note}"
+            );
         }
         other => panic!("expected Valid completion, got {other:?}"),
     }
@@ -723,7 +791,10 @@ fn given_a_dropped_path_containing_a_pipe_when_validated_again_then_the_trailer_
     commit_files(
         fixture.exec.as_ref(),
         &fixture.worktree.dir,
-        &[("reference/a | b.md", leak.as_str()), ("reference/good.md", GOOD)],
+        &[
+            ("reference/a | b.md", leak.as_str()),
+            ("reference/good.md", GOOD),
+        ],
         "pipe name",
     );
 
@@ -817,7 +888,10 @@ fn given_a_legacy_file_whose_body_is_edited_when_validated_then_it_stays_valid()
         "reflect legacy",
     );
 
-    assert!(matches!(validate(&fixture), CompletionValidation::Valid { .. }));
+    assert!(matches!(
+        validate(&fixture),
+        CompletionValidation::Valid { .. }
+    ));
 }
 
 #[test]

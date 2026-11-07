@@ -26,7 +26,7 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 
-use self::layout::{EisRegion, derive_displays};
+use self::layout::{derive_displays, EisRegion};
 use self::pipewire::{CastError, Geometry, ScreenCast};
 use self::screenshot_portal::ShotError;
 use crate::portal::portal_runtime;

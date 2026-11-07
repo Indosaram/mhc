@@ -29,10 +29,7 @@ fn cleaned() -> &'static Mutex<BTreeSet<PathBuf>> {
 }
 
 /// Once per state dir per process: removes the leftovers and logs counts only, never a name or path.
-pub fn remove_legacy_rollups_once(
-    state_dir: &Path,
-    diagnostics: Option<&TelemetryDiagnostics>,
-) {
+pub fn remove_legacy_rollups_once(state_dir: &Path, diagnostics: Option<&TelemetryDiagnostics>) {
     {
         let mut cleaned = cleaned().lock().unwrap_or_else(PoisonError::into_inner);
         if !cleaned.insert(state_dir.to_path_buf()) {
@@ -117,7 +114,9 @@ fn identity(path: &Path) -> Option<Identity> {
 }
 
 fn is_same_directory(now: Option<Identity>, start: Identity) -> bool {
-    now.is_some_and(|now| now.kind == EntryKind::Directory && now.dev == start.dev && now.ino == start.ino)
+    now.is_some_and(|now| {
+        now.kind == EntryKind::Directory && now.dev == start.dev && now.ino == start.ino
+    })
 }
 
 /// Removes `<state>/rollups/` without deleting what a link points to. A `rollups` link is unlinked itself

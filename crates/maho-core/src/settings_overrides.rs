@@ -11,7 +11,9 @@ pub fn without_override(overrides: &Settings, field: &str, nested_key: Option<&s
     }
     let mut next = overrides.clone();
     let current = next.get(field).cloned();
-    let Some(current) = current else { return overrides.clone() };
+    let Some(current) = current else {
+        return overrides.clone();
+    };
     let Some(nested_key) = nested_key else {
         next.remove(field);
         return next;
@@ -64,7 +66,8 @@ mod tests {
 
     #[test]
     fn a_nested_key_keeps_siblings() {
-        let overrides = settings(json!({ "compaction": { "reserveTokens": 1, "keepRecentTokens": 2 } }));
+        let overrides =
+            settings(json!({ "compaction": { "reserveTokens": 1, "keepRecentTokens": 2 } }));
         let result = without_override(&overrides, "compaction", Some("reserveTokens"));
         assert_eq!(result["compaction"]["keepRecentTokens"], json!(2));
         assert!(result["compaction"].get("reserveTokens").is_none());
@@ -73,6 +76,9 @@ mod tests {
     #[test]
     fn a_missing_nested_key_returns_the_input_unchanged() {
         let overrides = settings(json!({ "compaction": { "reserveTokens": 1 } }));
-        assert_eq!(without_override(&overrides, "compaction", Some("nope")), overrides);
+        assert_eq!(
+            without_override(&overrides, "compaction", Some("nope")),
+            overrides
+        );
     }
 }

@@ -555,10 +555,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         {
                             effective.base_url = base_url;
                         }
-                        let additional = headers
-                            .clone()
-                            .or(auth.auth.headers)
-                            .unwrap_or_default();
+                        let additional = headers.clone().or(auth.auth.headers).unwrap_or_default();
                         let Ok(Some(request_headers)) =
                             openai_remote_model::create_live_openai_remote_compaction_headers(
                                 &effective,
@@ -577,20 +574,22 @@ impl maho_ext_api::Extension for CompactionExtension {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .clone();
-                        Ok(openai_remote::rewrite_openai_payload_with_remote_compaction(
-                            payload,
-                            Some(&effective),
-                            &branch,
-                            origin.as_ref(),
-                            boundary.as_ref(),
-                            &|data: serde_json::Value| {
-                                events.emit(openai_remote::SENPI_COMPACTION_EVENT, &data)
-                            },
+                        Ok(
+                            openai_remote::rewrite_openai_payload_with_remote_compaction(
+                                payload,
+                                Some(&effective),
+                                &branch,
+                                origin.as_ref(),
+                                boundary.as_ref(),
+                                &|data: serde_json::Value| {
+                                    events.emit(openai_remote::SENPI_COMPACTION_EVENT, &data)
+                                },
+                            )
+                            .map_or(
+                                maho_ext_api::EventResult::None,
+                                maho_ext_api::EventResult::ProviderPayload,
+                            ),
                         )
-                        .map_or(
-                            maho_ext_api::EventResult::None,
-                            maho_ext_api::EventResult::ProviderPayload,
-                        ))
                     })
                 }),
             );

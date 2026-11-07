@@ -11,7 +11,10 @@ pub struct RecoveryRecord<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecoveryState { Resuming, Ending }
+pub enum RecoveryState {
+    Resuming,
+    Ending,
+}
 
 pub struct RecoveryPresentation {
     pub state: RecoveryState,
@@ -20,23 +23,35 @@ pub struct RecoveryPresentation {
 }
 
 pub fn recovery_presentation(record: &RecoveryRecord<'_>) -> Option<RecoveryPresentation> {
-    if matches!(record.status, "completed" | "error" | "cancelled" | "interrupted" | "lost") {
+    if matches!(
+        record.status,
+        "completed" | "error" | "cancelled" | "interrupted" | "lost"
+    ) {
         return None;
     }
     let expiring = record.failure_kind == Some("suspended_unresumable")
-        || record.error_message.is_some_and(|message| message.starts_with("suspended_unresumable:"));
-    if !expiring && record.suspension_reason.is_none()
-        && matches!(record.residency_state, None | Some("resident")) {
+        || record
+            .error_message
+            .is_some_and(|message| message.starts_with("suspended_unresumable:"));
+    if !expiring
+        && record.suspension_reason.is_none()
+        && matches!(record.residency_state, None | Some("resident"))
+    {
         return None;
     }
-    let reason = record.revival_deferred_reason.or(record.suspension_reason).unwrap_or_default();
+    let reason = record
+        .revival_deferred_reason
+        .or(record.suspension_reason)
+        .unwrap_or_default();
     let state = if expiring || PERMANENT_REVIVAL_REASONS.contains(&reason) {
         RecoveryState::Ending
     } else {
         RecoveryState::Resuming
     };
     let cause = match record.revival_deferred_reason {
-        Some(reason) if record.suspension_reason == Some("revival_deferred") => format!("revival deferred: {reason}"),
+        Some(reason) if record.suspension_reason == Some("revival_deferred") => {
+            format!("revival deferred: {reason}")
+        }
         Some(reason) => reason.to_owned(),
         None => match record.suspension_reason {
             None => "parent session restarted",
@@ -50,9 +65,13 @@ pub fn recovery_presentation(record: &RecoveryRecord<'_>) -> Option<RecoveryPres
             Some("session_quit") => "session quit",
             Some("store_index_unavailable") => "task store unavailable",
             Some(other) => other,
-        }.to_owned(),
+        }
+        .to_owned(),
     };
-    let label = match state { RecoveryState::Resuming => "resuming", RecoveryState::Ending => "ending" };
+    let label = match state {
+        RecoveryState::Resuming => "resuming",
+        RecoveryState::Ending => "ending",
+    };
     let text = format!("{label} ({cause})");
     Some(RecoveryPresentation { state, cause, text })
 }
@@ -64,18 +83,28 @@ mod tests {
     #[test]
     fn terminal_records_never_recover() {
         for status in ["completed", "error", "cancelled", "interrupted", "lost"] {
-            assert!(recovery_presentation(&RecoveryRecord {
-                status, suspension_reason: Some("host_incompatible"), ..Default::default()
-            }).is_none());
+            assert!(
+                recovery_presentation(&RecoveryRecord {
+                    status,
+                    suspension_reason: Some("host_incompatible"),
+                    ..Default::default()
+                })
+                .is_none()
+            );
         }
     }
 
     #[test]
     fn ordinary_live_records_are_not_parked() {
         for residency_state in [None, Some("resident")] {
-            assert!(recovery_presentation(&RecoveryRecord {
-                status: "running", residency_state, ..Default::default()
-            }).is_none());
+            assert!(
+                recovery_presentation(&RecoveryRecord {
+                    status: "running",
+                    residency_state,
+                    ..Default::default()
+                })
+                .is_none()
+            );
         }
     }
 
@@ -83,15 +112,20 @@ mod tests {
     fn permanent_deferrals_and_expiring_records_end() {
         for reason in PERMANENT_REVIVAL_REASONS {
             let result = recovery_presentation(&RecoveryRecord {
-                status: "running", suspension_reason: Some("revival_deferred"),
-                revival_deferred_reason: Some(reason), ..Default::default()
-            }).expect("parked record");
+                status: "running",
+                suspension_reason: Some("revival_deferred"),
+                revival_deferred_reason: Some(reason),
+                ..Default::default()
+            })
+            .expect("parked record");
             assert_eq!(result.state, RecoveryState::Ending);
         }
         let result = recovery_presentation(&RecoveryRecord {
-            status: "running", error_message: Some("suspended_unresumable: unavailable"),
+            status: "running",
+            error_message: Some("suspended_unresumable: unavailable"),
             ..Default::default()
-        }).expect("expiring record");
+        })
+        .expect("expiring record");
         assert_eq!(result.state, RecoveryState::Ending);
     }
 
@@ -99,14 +133,20 @@ mod tests {
     fn detached_and_retryable_records_resume() {
         for residency_state in ["persisted_only", "rpc_detached", "evicted"] {
             let result = recovery_presentation(&RecoveryRecord {
-                status: "pending", residency_state: Some(residency_state), ..Default::default()
-            }).expect("detached record");
+                status: "pending",
+                residency_state: Some(residency_state),
+                ..Default::default()
+            })
+            .expect("detached record");
             assert_eq!(result.state, RecoveryState::Resuming);
         }
         let result = recovery_presentation(&RecoveryRecord {
-            status: "running", suspension_reason: Some("revival_deferred"),
-            revival_deferred_reason: Some("capacity"), ..Default::default()
-        }).expect("retryable record");
+            status: "running",
+            suspension_reason: Some("revival_deferred"),
+            revival_deferred_reason: Some("capacity"),
+            ..Default::default()
+        })
+        .expect("retryable record");
         assert_eq!(result.state, RecoveryState::Resuming);
     }
 }

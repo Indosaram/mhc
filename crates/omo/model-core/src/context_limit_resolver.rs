@@ -58,7 +58,6 @@ fn has_ga_1m_context(model_id: &str) -> bool {
     CLAUDE_4X.is_match(model_id) || CLAUDE_5.is_match(model_id) || CLAUDE_OPUS_5.is_match(model_id)
 }
 
-
 /// Context limit using the process environment switches.
 #[must_use]
 pub fn resolve_actual_context_limit(
@@ -88,7 +87,12 @@ pub fn resolve_actual_context_limit_with_env(
         .copied();
 
     if model_id == FABLE_55_LAUNCH_ID {
-        return cached_limit.or_else(|| FABLE_55_LAUNCH.limit.as_ref().and_then(|limit| limit.context));
+        return cached_limit.or_else(|| {
+            FABLE_55_LAUNCH
+                .limit
+                .as_ref()
+                .and_then(|limit| limit.context)
+        });
     }
     if !is_anthropic_provider(provider_id, model_id) {
         return cached_limit;
@@ -117,31 +121,77 @@ mod tests {
     #[test]
     fn opus_five_aliases_have_ga_context_and_honor_cache() {
         let models = [
-            "claude-opus-5", "claude-opus-5-fast", "claude-opus-5-5", "claude-opus-5.5",
-            "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-5.5",
-            "claude-opus-5@default", "claude-opus-5-5@default", "anthropic.claude-opus-5",
-            "us.anthropic.claude-opus-5", "eu.anthropic.claude-opus-5-5",
-            "global.anthropic.claude-opus-5-5", "jp.anthropic.claude-opus-5",
-            "au.anthropic.claude-opus-5-5", "claude-opus-5-20261001",
-            "claude-opus-5-fast-20261001", "claude-opus-5-5-20261001",
+            "claude-opus-5",
+            "claude-opus-5-fast",
+            "claude-opus-5-5",
+            "claude-opus-5.5",
+            "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5-fast",
+            "anthropic/claude-opus-5.5",
+            "claude-opus-5@default",
+            "claude-opus-5-5@default",
+            "anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "eu.anthropic.claude-opus-5-5",
+            "global.anthropic.claude-opus-5-5",
+            "jp.anthropic.claude-opus-5",
+            "au.anthropic.claude-opus-5-5",
+            "claude-opus-5-20261001",
+            "claude-opus-5-fast-20261001",
+            "claude-opus-5-5-20261001",
             "anthropic/claude-opus-5-5-20261001",
         ];
-        for provider in ["anthropic", "google-vertex-anthropic", "aws-bedrock-anthropic"] {
+        for provider in [
+            "anthropic",
+            "google-vertex-anthropic",
+            "aws-bedrock-anthropic",
+        ] {
             for model in models {
-                assert_eq!(resolve_actual_context_limit_with_env(provider, model, None, ContextLimitEnv::default()), Some(1_000_000));
+                assert_eq!(
+                    resolve_actual_context_limit_with_env(
+                        provider,
+                        model,
+                        None,
+                        ContextLimitEnv::default()
+                    ),
+                    Some(1_000_000)
+                );
                 let state = ContextLimitModelCacheState {
                     anthropic_context_1m_enabled: false,
-                    model_context_limits_cache: Some(HashMap::from([(format!("{provider}/{model}"), 700_000)])),
+                    model_context_limits_cache: Some(HashMap::from([(
+                        format!("{provider}/{model}"),
+                        700_000,
+                    )])),
                 };
-                assert_eq!(resolve_actual_context_limit_with_env(provider, model, Some(&state), ContextLimitEnv::default()), Some(700_000));
+                assert_eq!(
+                    resolve_actual_context_limit_with_env(
+                        provider,
+                        model,
+                        Some(&state),
+                        ContextLimitEnv::default()
+                    ),
+                    Some(700_000)
+                );
             }
         }
     }
 
     #[test]
     fn unsupported_opus_ids_keep_default_context() {
-        for model in ["claude-opus-5-6", "claude-opus-5-fastest", "claude-opus-5-5-202610"] {
-            assert_eq!(resolve_actual_context_limit_with_env("anthropic", model, None, ContextLimitEnv::default()), Some(200_000));
+        for model in [
+            "claude-opus-5-6",
+            "claude-opus-5-fastest",
+            "claude-opus-5-5-202610",
+        ] {
+            assert_eq!(
+                resolve_actual_context_limit_with_env(
+                    "anthropic",
+                    model,
+                    None,
+                    ContextLimitEnv::default()
+                ),
+                Some(200_000)
+            );
         }
     }
 }

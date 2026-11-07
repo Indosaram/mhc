@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use maho_ai::api::openai_completions::{convert_messages, ConvertCompletionsMessagesOptions};
+use maho_ai::api::openai_completions::{ConvertCompletionsMessagesOptions, convert_messages};
 use maho_ai::types::{AssistantMessageEvent, SimpleStreamOptions, StopReason, ThinkingLevel};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -17,7 +17,9 @@ fn base_model(overrides: &[(&str, Value)]) -> maho_ai::types::Model {
     serde_json::from_value(value).expect("model")
 }
 
-fn payload_capture(_model: &maho_ai::types::Model) -> (Arc<Mutex<Option<Value>>>, maho_ai::types::OnPayload) {
+fn payload_capture(
+    _model: &maho_ai::types::Model,
+) -> (Arc<Mutex<Option<Value>>>, maho_ai::types::OnPayload) {
     let sink: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let writer = sink.clone();
     let hook: maho_ai::types::OnPayload = Arc::new(move |payload: &Value, _model, _meta| {
@@ -43,17 +45,36 @@ async fn capture_simple(
     let mut options: SimpleStreamOptions = simple_options("test");
     options.reasoning = reasoning;
     options.stream.request.on_payload = Some(hook);
-    let message = finish(&run_simple(model, &context, options, Some(transport.clone()))).await;
-    assert_eq!(message.stop_reason, StopReason::Stop, "request should reach the scripted transport");
-    sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body)
+    let message = finish(&run_simple(
+        model,
+        &context,
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
+    assert_eq!(
+        message.stop_reason,
+        StopReason::Stop,
+        "request should reach the scripted transport"
+    );
+    sink.lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body)
 }
 
 fn ping_tool() -> maho_ai::types::Tool {
-    tool("ping", json!({ "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] }))
+    tool(
+        "ping",
+        json!({ "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] }),
+    )
 }
 
 fn read_tool() -> maho_ai::types::Tool {
-    tool("read", json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }))
+    tool(
+        "read",
+        json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+    )
 }
 
 #[tokio::test]
@@ -66,23 +87,46 @@ async fn forwards_tool_choice_from_simple_options_to_payload() {
     })]);
     let mut options = simple_options("test");
     options.stream.request.on_payload = Some(hook);
-    options.stream.extra.insert("toolChoice".to_owned(), json!("required"));
-    let _ = finish(&run_simple(&model, &context(vec![user_message("Call ping with ok=true")], Some(vec![ping_tool()])), options, Some(transport.clone()))).await;
+    options
+        .stream
+        .extra
+        .insert("toolChoice".to_owned(), json!("required"));
+    let _ = finish(&run_simple(
+        &model,
+        &context(
+            vec![user_message("Call ping with ok=true")],
+            Some(vec![ping_tool()]),
+        ),
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
 
-    let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
+    let payload = sink
+        .lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body);
     assert_eq!(payload.get("tool_choice"), Some(&json!("required")));
-    assert!(payload.get("tools").and_then(Value::as_array).is_some_and(|tools| !tools.is_empty()));
+    assert!(
+        payload
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| !tools.is_empty())
+    );
 }
 
 #[tokio::test]
 async fn retries_forced_tool_choice_400_once_without_tool_choice() {
     let model = base_model(&[]);
     let transport = ScriptedTransport::new([
-        Err(maho_ai::api::openai_completions::OpenAiCompletionsError::http(
-            "tool_choice is not supported by this model",
-            400,
-            reqwest::header::HeaderMap::new(),
-        )),
+        Err(
+            maho_ai::api::openai_completions::OpenAiCompletionsError::http(
+                "tool_choice is not supported by this model",
+                400,
+                reqwest::header::HeaderMap::new(),
+            ),
+        ),
         Ok(ScriptedResponse::chunks([json!({
             "choices": [{ "delta": {}, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 },
@@ -90,7 +134,16 @@ async fn retries_forced_tool_choice_400_once_without_tool_choice() {
     ]);
     let mut options = options("test");
     options.tool_choice = Some(json!("required"));
-    let response = finish(&run(&model, &context(vec![user_message("Call ping with ok=true")], Some(vec![ping_tool()])), options, transport.clone())).await;
+    let response = finish(&run(
+        &model,
+        &context(
+            vec![user_message("Call ping with ok=true")],
+            Some(vec![ping_tool()]),
+        ),
+        options,
+        transport.clone(),
+    ))
+    .await;
 
     let calls = transport.requests();
     assert_eq!(response.stop_reason, StopReason::Stop);
@@ -110,7 +163,12 @@ async fn omits_strict_when_compat_disables_strict_mode() {
         .and_then(|tools| tools.first())
         .and_then(|tool| tool.get("function"))
         .expect("tool function");
-    assert!(!function.as_object().expect("function object").contains_key("strict"));
+    assert!(
+        !function
+            .as_object()
+            .expect("function object")
+            .contains_key("strict")
+    );
 }
 
 #[tokio::test]
@@ -118,7 +176,10 @@ async fn maps_groq_qwen_reasoning_levels_to_default_reasoning_effort() {
     let model = catalog_model("groq", "qwen/qwen3.6-27b");
     let payload = capture_simple(&model, Some(ThinkingLevel::Medium), None, None).await;
 
-    assert_eq!(payload.get("reasoning_effort").and_then(Value::as_str), Some("default"));
+    assert_eq!(
+        payload.get("reasoning_effort").and_then(Value::as_str),
+        Some("default")
+    );
 }
 
 #[tokio::test]
@@ -126,7 +187,10 @@ async fn keeps_normal_reasoning_effort_for_groq_models_without_compat_mapping() 
     let model = catalog_model("groq", "openai/gpt-oss-20b");
     let payload = capture_simple(&model, Some(ThinkingLevel::Medium), None, None).await;
 
-    assert_eq!(payload.get("reasoning_effort").and_then(Value::as_str), Some("medium"));
+    assert_eq!(
+        payload.get("reasoning_effort").and_then(Value::as_str),
+        Some("medium")
+    );
 }
 
 #[tokio::test]
@@ -150,8 +214,14 @@ async fn maps_z_ai_glm_5_3_thinking_levels_to_reasoning_effort() {
 
     for (reasoning, effort) in cases {
         let payload = capture_simple(&model, Some(reasoning), None, None).await;
-        assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled", "clear_thinking": false })));
-        assert_eq!(payload.get("reasoning_effort").and_then(Value::as_str), Some(effort));
+        assert_eq!(
+            payload.get("thinking"),
+            Some(&json!({ "type": "enabled", "clear_thinking": false }))
+        );
+        assert_eq!(
+            payload.get("reasoning_effort").and_then(Value::as_str),
+            Some(effort)
+        );
     }
 }
 
@@ -160,7 +230,10 @@ async fn does_not_send_disabled_thinking_for_glm_5_3_when_reasoning_is_off_throu
     let model = catalog_model("zai", "glm-5.3");
     let payload = capture_simple(&model, None, None, None).await;
 
-    assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled", "clear_thinking": false })));
+    assert_eq!(
+        payload.get("thinking"),
+        Some(&json!({ "type": "enabled", "clear_thinking": false }))
+    );
     assert_eq!(payload.get("reasoning_effort"), None);
 }
 
@@ -176,8 +249,14 @@ async fn maps_z_ai_glm_5_2_thinking_levels_to_reasoning_effort() {
 
     for (reasoning, effort) in cases {
         let payload = capture_simple(&model, Some(reasoning), None, None).await;
-        assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled", "clear_thinking": false })));
-        assert_eq!(payload.get("reasoning_effort").and_then(Value::as_str), Some(effort));
+        assert_eq!(
+            payload.get("thinking"),
+            Some(&json!({ "type": "enabled", "clear_thinking": false }))
+        );
+        assert_eq!(
+            payload.get("reasoning_effort").and_then(Value::as_str),
+            Some(effort)
+        );
     }
 }
 
@@ -185,7 +264,10 @@ async fn maps_z_ai_glm_5_2_thinking_levels_to_reasoning_effort() {
 async fn preserves_z_ai_thinking_when_replaying_reasoning_content() {
     let model = catalog_model("zai", "glm-5.2");
     let mut replayed = assistant(
-        vec![thinking_block("prior reasoning", Some("reasoning_content")), tool_call("call_1", "read", json!({ "path": "README.md" }))],
+        vec![
+            thinking_block("prior reasoning", Some("reasoning_content")),
+            tool_call("call_1", "read", json!({ "path": "README.md" })),
+        ],
         StopReason::ToolUse,
     );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
@@ -210,16 +292,38 @@ async fn preserves_z_ai_thinking_when_replaying_reasoning_content() {
     let mut options = simple_options("test");
     options.reasoning = Some(ThinkingLevel::High);
     options.stream.request.on_payload = Some(hook);
-    let _ = finish(&run_simple(&model, &messages, options, Some(transport.clone()))).await;
+    let _ = finish(&run_simple(
+        &model,
+        &messages,
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
 
-    let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
+    let payload = sink
+        .lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body);
     let replayed_assistant = payload
         .get("messages")
         .and_then(Value::as_array)
-        .and_then(|messages| messages.iter().find(|message| message.get("role").and_then(Value::as_str) == Some("assistant")))
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+        })
         .expect("replayed assistant");
-    assert_eq!(replayed_assistant.get("reasoning_content").and_then(Value::as_str), Some("prior reasoning"));
-    assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled", "clear_thinking": false })));
+    assert_eq!(
+        replayed_assistant
+            .get("reasoning_content")
+            .and_then(Value::as_str),
+        Some("prior reasoning")
+    );
+    assert_eq!(
+        payload.get("thinking"),
+        Some(&json!({ "type": "enabled", "clear_thinking": false }))
+    );
 }
 
 #[tokio::test]
@@ -227,7 +331,10 @@ async fn omits_z_ai_glm_5_2_reasoning_effort_when_thinking_is_off() {
     let model = catalog_model("zai", "glm-5.2");
     let payload = capture_simple(&model, None, None, None).await;
 
-    assert_eq!(payload.get("thinking"), Some(&json!({ "type": "disabled" })));
+    assert_eq!(
+        payload.get("thinking"),
+        Some(&json!({ "type": "disabled" }))
+    );
     assert_eq!(payload.get("reasoning_effort"), None);
 }
 
@@ -271,10 +378,19 @@ async fn maps_non_standard_provider_finish_reason_values_to_stop_reason_error() 
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 },
         }),
     ]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Hi")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Hi")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.stop_reason, StopReason::Error);
-    assert_eq!(response.error_message.as_deref(), Some("Provider finish_reason: network_error"));
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Provider finish_reason: network_error")
+    );
 }
 
 #[tokio::test]
@@ -289,7 +405,13 @@ async fn ignores_null_stream_chunks_from_openai_compatible_providers() {
             "usage": { "prompt_tokens": 3, "completion_tokens": 1 },
         }),
     ]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Reply with exactly OK")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Reply with exactly OK")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.stop_reason, StopReason::Stop);
     assert_eq!(response.error_message, None);
@@ -305,10 +427,19 @@ async fn errors_when_a_stream_ends_after_only_null_finish_reason_chunks() {
         json!({ "id": "chatcmpl-truncated", "choices": [{ "delta": { "content": "partial answer" }, "finish_reason": null }] }),
         json!({ "id": "chatcmpl-truncated", "choices": [{ "delta": { "content": "partial answer" }, "finish_reason": null }] }),
     ]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Reply with a longer sentence")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Reply with a longer sentence")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.stop_reason, StopReason::Error);
-    assert_eq!(response.error_message.as_deref(), Some("Stream ended without finish_reason"));
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Stream ended without finish_reason")
+    );
 }
 
 #[tokio::test]
@@ -318,7 +449,13 @@ async fn accepts_streams_without_finish_reason_when_compat_disables_it() {
         "id": "chatcmpl-no-finish-reason",
         "choices": [{ "delta": { "content": "complete answer" }, "finish_reason": null }],
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Reply with a complete answer")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Reply with a complete answer")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.stop_reason, StopReason::Stop);
     assert_eq!(response.error_message, None);
@@ -343,14 +480,26 @@ async fn ignores_empty_custom_objects_on_function_tool_call_deltas() {
             "finish_reason": "tool_calls",
         }],
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Read README.md")], Some(vec![read_tool()])), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(
+            vec![user_message("Read README.md")],
+            Some(vec![read_tool()]),
+        ),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.content.len(), 1);
     match &response.content[0] {
         maho_ai::types::ContentBlock::ToolCall(call) => {
             assert_eq!(call.id, "call_1");
             assert_eq!(call.name, "read");
-            assert_eq!(call.arguments.get("path").and_then(Value::as_str), Some("README.md"));
+            assert_eq!(
+                call.arguments.get("path").and_then(Value::as_str),
+                Some("README.md")
+            );
         }
         other => panic!("expected a tool call, got {other:?}"),
     }
@@ -374,14 +523,24 @@ async fn coalesces_tool_call_deltas_by_stable_index_when_provider_mutates_ids_mi
             "usage": { "prompt_tokens": 10, "completion_tokens": 5 },
         }),
     ]);
-    let stream = run_simple(&model, &context(vec![user_message("Read README.md")], Some(vec![read_tool()])), simple_options("test"), Some(transport));
+    let stream = run_simple(
+        &model,
+        &context(
+            vec![user_message("Read README.md")],
+            Some(vec![read_tool()]),
+        ),
+        simple_options("test"),
+        Some(transport),
+    );
     let mut tool_call_indexes = Vec::new();
     let mut collected = Vec::new();
     while let Some(event) = stream.next().await.expect("stream event") {
         match &event {
             AssistantMessageEvent::ToolcallStart { content_index, .. }
             | AssistantMessageEvent::ToolcallDelta { content_index, .. }
-            | AssistantMessageEvent::ToolcallEnd { content_index, .. } => tool_call_indexes.push(*content_index),
+            | AssistantMessageEvent::ToolcallEnd { content_index, .. } => {
+                tool_call_indexes.push(*content_index)
+            }
             _ => {}
         }
         collected.push(event);
@@ -395,7 +554,10 @@ async fn coalesces_tool_call_deltas_by_stable_index_when_provider_mutates_ids_mi
         maho_ai::types::ContentBlock::ToolCall(call) => {
             assert_eq!(call.id, "functions.read:0");
             assert_eq!(call.name, "read");
-            assert_eq!(call.arguments.get("path").and_then(Value::as_str), Some("README.md"));
+            assert_eq!(
+                call.arguments.get("path").and_then(Value::as_str),
+                Some("README.md")
+            );
         }
         other => panic!("expected a tool call, got {other:?}"),
     }
@@ -440,7 +602,11 @@ async fn keeps_developer_messages_for_openai_and_anthropic_openrouter_batch_inst
 
 #[tokio::test]
 async fn keeps_developer_messages_for_openai_reasoning_model_instructions() {
-    let model = base_model(&[("id", json!("gpt-5.5")), ("name", json!("GPT-5.5")), ("reasoning", json!(true))]);
+    let model = base_model(&[
+        ("id", json!("gpt-5.5")),
+        ("name", json!("GPT-5.5")),
+        ("reasoning", json!(true)),
+    ]);
     let payload = capture_simple(&model, None, None, Some("Follow instructions.")).await;
 
     let role = payload
@@ -453,16 +619,24 @@ async fn keeps_developer_messages_for_openai_reasoning_model_instructions() {
 }
 
 #[tokio::test]
-async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_when_thinking_is_missing() {
+async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_when_thinking_is_missing()
+ {
     let model = catalog_model("xiaomi", "mimo-v2.6-pro");
-    let mut replayed = assistant(vec![tool_call("call_1", "read", json!({ "path": "README.md" }))], StopReason::ToolUse);
+    let mut replayed = assistant(
+        vec![tool_call("call_1", "read", json!({ "path": "README.md" }))],
+        StopReason::ToolUse,
+    );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
         let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = "xiaomi".to_owned();
         assistant.model = "mimo-v2.6-pro".to_owned();
     }
     let messages = context(
-        vec![user_message("Read README.md"), replayed, tool_result("call_1", vec![text_block("contents")])],
+        vec![
+            user_message("Read README.md"),
+            replayed,
+            tool_result("call_1", vec![text_block("contents")]),
+        ],
         None,
     );
     let (sink, hook) = payload_capture(&model);
@@ -473,17 +647,39 @@ async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_
     let mut options = simple_options("test");
     options.reasoning = Some(ThinkingLevel::High);
     options.stream.request.on_payload = Some(hook);
-    let _ = finish(&run_simple(&model, &messages, options, Some(transport.clone()))).await;
+    let _ = finish(&run_simple(
+        &model,
+        &messages,
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
 
-    let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
+    let payload = sink
+        .lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body);
     let replayed_assistant = payload
         .get("messages")
         .and_then(Value::as_array)
-        .and_then(|messages| messages.iter().find(|message| message.get("role").and_then(Value::as_str) == Some("assistant")))
+        .and_then(|messages| {
+            messages
+                .iter()
+                .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+        })
         .expect("replayed assistant");
-    assert_eq!(replayed_assistant.get("reasoning_content").and_then(Value::as_str), Some(""));
+    assert_eq!(
+        replayed_assistant
+            .get("reasoning_content")
+            .and_then(Value::as_str),
+        Some("")
+    );
     assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled" })));
-    assert_eq!(payload.get("reasoning_effort").and_then(Value::as_str), Some("high"));
+    assert_eq!(
+        payload.get("reasoning_effort").and_then(Value::as_str),
+        Some("high")
+    );
 }
 
 #[tokio::test]
@@ -494,12 +690,21 @@ async fn normalizes_open_code_go_reasoning_deltas_to_reasoning_content_for_repla
         "id": "chatcmpl-opencode-go-reasoning",
         "choices": [{ "delta": { "reasoning": "think" }, "finish_reason": "stop" }],
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Use reasoning.")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Use reasoning.")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     match &response.content[0] {
         maho_ai::types::ContentBlock::Thinking(thinking) => {
             assert_eq!(thinking.thinking, "think");
-            assert_eq!(thinking.thinking_signature.as_deref(), Some("reasoning_content"));
+            assert_eq!(
+                thinking.thinking_signature.as_deref(),
+                Some("reasoning_content")
+            );
         }
         other => panic!("expected a thinking block, got {other:?}"),
     }
@@ -512,7 +717,13 @@ async fn keeps_non_open_code_go_reasoning_deltas_on_the_original_reasoning_field
         "id": "chatcmpl-reasoning",
         "choices": [{ "delta": { "reasoning": "think" }, "finish_reason": "stop" }],
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("Use reasoning.")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("Use reasoning.")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     match &response.content[0] {
         maho_ai::types::ContentBlock::Thinking(thinking) => {
@@ -529,7 +740,10 @@ async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
     model.compat = None;
     model.api = "openai-completions".to_owned();
     let mut replayed = assistant(
-        vec![thinking_block("think", Some("reasoning")), tool_call("call_1", "read", json!({ "path": "README.md" }))],
+        vec![
+            thinking_block("think", Some("reasoning")),
+            tool_call("call_1", "read", json!({ "path": "README.md" })),
+        ],
         StopReason::Stop,
     );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
@@ -550,7 +764,12 @@ async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
         .iter()
         .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
         .expect("replayed assistant");
-    assert_eq!(replayed_assistant.get("reasoning_content").and_then(Value::as_str), Some("think"));
+    assert_eq!(
+        replayed_assistant
+            .get("reasoning_content")
+            .and_then(Value::as_str),
+        Some("think")
+    );
     assert_eq!(replayed_assistant.get("reasoning"), None);
 }
 
@@ -559,7 +778,10 @@ async fn sends_thinking_disabled_for_open_code_go_kimi_k2_6_when_thinking_is_off
     let model = catalog_model("opencode", "kimi-k2.6");
     let payload = capture_simple(&model, None, None, None).await;
 
-    assert_eq!(payload.get("thinking"), Some(&json!({ "type": "disabled" })));
+    assert_eq!(
+        payload.get("thinking"),
+        Some(&json!({ "type": "disabled" }))
+    );
     assert_eq!(payload.get("reasoning_effort"), None);
 }
 
@@ -574,7 +796,10 @@ async fn sends_thinking_enabled_for_open_code_go_kimi_k2_6_when_thinking_is_enab
 
 #[tokio::test]
 async fn omits_disabled_thinking_for_moonshot_kimi_k2_7_code_models() {
-    for (provider, id) in [("moonshotai", "kimi-k2.7-code"), ("moonshotai-cn", "kimi-k2.7-code")] {
+    for (provider, id) in [
+        ("moonshotai", "kimi-k2.7-code"),
+        ("moonshotai-cn", "kimi-k2.7-code"),
+    ] {
         let model = catalog_model(provider, id);
         let payload = capture_simple(&model, None, None, None).await;
 
@@ -588,7 +813,10 @@ async fn keeps_disabled_thinking_for_moonshot_kimi_k2_6_when_thinking_is_off() {
     let model = catalog_model("moonshotai-cn", "kimi-k2.6");
     let payload = capture_simple(&model, None, None, None).await;
 
-    assert_eq!(payload.get("thinking"), Some(&json!({ "type": "disabled" })));
+    assert_eq!(
+        payload.get("thinking"),
+        Some(&json!({ "type": "disabled" }))
+    );
     assert_eq!(payload.get("reasoning_effort"), None);
 }
 
@@ -605,7 +833,13 @@ async fn does_not_double_count_reasoning_tokens_in_completion_usage() {
             "completion_tokens_details": { "reasoning_tokens": 30 },
         },
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("hi")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("hi")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.usage.input, 75);
     assert_eq!(response.usage.output, 50);
@@ -627,7 +861,13 @@ async fn preserves_prompt_tokens_details_cache_read_write_fields_from_chunk_usag
             "prompt_tokens_details": { "cached_tokens": 50, "cache_write_tokens": 25 },
         },
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("hi")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("hi")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.usage.cache_read, 50);
     assert_eq!(response.usage.cache_write, 25);
@@ -649,7 +889,13 @@ async fn preserves_prompt_tokens_details_cache_read_write_fields_from_choice_usa
             },
         }],
     })]);
-    let response = finish(&run_simple(&model, &context(vec![user_message("hi")], None), simple_options("test"), Some(transport))).await;
+    let response = finish(&run_simple(
+        &model,
+        &context(vec![user_message("hi")], None),
+        simple_options("test"),
+        Some(transport),
+    ))
+    .await;
 
     assert_eq!(response.usage.cache_read, 100);
     assert_eq!(response.usage.cache_write, 40);
@@ -677,7 +923,10 @@ async fn uses_configurable_chat_template_boolean_thinking_kwargs() {
     )]);
     let payload = capture_simple(&model, Some(ThinkingLevel::Medium), None, None).await;
 
-    assert_eq!(payload.get("chat_template_kwargs"), Some(&json!({ "enable_thinking": true })));
+    assert_eq!(
+        payload.get("chat_template_kwargs"),
+        Some(&json!({ "enable_thinking": true }))
+    );
 }
 
 #[tokio::test]
@@ -685,7 +934,10 @@ async fn uses_qwen_chat_template_thinking_kwargs() {
     let model = base_model(&[("compat", json!({ "thinkingFormat": "qwen-chat-template" }))]);
     let payload = capture_simple(&model, Some(ThinkingLevel::Medium), None, None).await;
 
-    assert_eq!(payload.get("chat_template_kwargs"), Some(&json!({ "enable_thinking": true, "preserve_thinking": true })));
+    assert_eq!(
+        payload.get("chat_template_kwargs"),
+        Some(&json!({ "enable_thinking": true, "preserve_thinking": true }))
+    );
 }
 
 #[tokio::test]
@@ -704,7 +956,10 @@ async fn uses_configurable_chat_template_effort_kwargs_with_static_kwargs() {
     )]);
     let payload = capture_simple(&model, Some(ThinkingLevel::High), None, None).await;
 
-    let kwargs = payload.get("chat_template_kwargs").and_then(Value::as_object).expect("chat template kwargs");
+    let kwargs = payload
+        .get("chat_template_kwargs")
+        .and_then(Value::as_object)
+        .expect("chat template kwargs");
     assert_eq!(kwargs.get("enable_thinking"), Some(&json!(true)));
     assert_eq!(kwargs.get("static_flag"), Some(&json!("always")));
 }
@@ -712,15 +967,28 @@ async fn uses_configurable_chat_template_effort_kwargs_with_static_kwargs() {
 #[tokio::test]
 async fn uses_ant_ling_compatibility_metadata() {
     let model = catalog_model("ant-ling", "Ring-2.6-1T");
-    let compat = model.compat.clone().expect("catalog compat").openai_completions();
+    let compat = model
+        .compat
+        .clone()
+        .expect("catalog compat")
+        .openai_completions();
     assert_eq!(compat.supports_store, Some(false));
     assert_eq!(compat.supports_developer_role, Some(false));
     assert_eq!(compat.supports_reasoning_effort, Some(false));
-    assert_eq!(compat.max_tokens_field, Some(maho_ai::types::MaxTokensField::MaxTokens));
-    assert_eq!(compat.thinking_format, Some(maho_ai::types::ThinkingFormat::AntLing));
+    assert_eq!(
+        compat.max_tokens_field,
+        Some(maho_ai::types::MaxTokensField::MaxTokens)
+    );
+    assert_eq!(
+        compat.thinking_format,
+        Some(maho_ai::types::ThinkingFormat::AntLing)
+    );
     assert_eq!(compat.supports_long_cache_retention, Some(false));
     assert_eq!(compat.supports_strict_mode, Some(true));
-    assert_eq!(compat.requires_reasoning_content_on_assistant_messages, None);
+    assert_eq!(
+        compat.requires_reasoning_content_on_assistant_messages,
+        None
+    );
 
     let (sink, hook) = payload_capture(&model);
     let transport = ScriptedTransport::success([json!({
@@ -735,9 +1003,19 @@ async fn uses_ant_ling_compatibility_metadata() {
     options.stream.cache_retention = Some(maho_ai::types::CacheRetention::Long);
     options.stream.session_id = Some("ant-ling-session".to_owned());
     options.stream.request.on_payload = Some(hook);
-    let _ = finish(&run_simple(&model, &context, options, Some(transport.clone()))).await;
+    let _ = finish(&run_simple(
+        &model,
+        &context,
+        options,
+        Some(transport.clone()),
+    ))
+    .await;
 
-    let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
+    let payload = sink
+        .lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body);
     assert_eq!(payload.get("max_tokens").and_then(Value::as_u64), Some(123));
     assert_eq!(payload.get("max_completion_tokens"), None);
     assert_eq!(
@@ -767,8 +1045,18 @@ async fn omits_ant_ling_reasoning_for_unmapped_direct_reasoning_efforts_and_non_
     let mut options = options("test");
     options.reasoning_effort = Some(maho_ai::types::ModelThinkingLevel::Medium);
     options.stream.request.on_payload = Some(hook);
-    let _ = finish(&run(&ring, &context(vec![user_message("Hi")], None), options, transport.clone())).await;
-    let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
+    let _ = finish(&run(
+        &ring,
+        &context(vec![user_message("Hi")], None),
+        options,
+        transport.clone(),
+    ))
+    .await;
+    let payload = sink
+        .lock()
+        .expect("payload lock")
+        .clone()
+        .unwrap_or_else(|| transport.last_request().body);
     assert_eq!(payload.get("reasoning"), None);
 
     let ling = catalog_model("ant-ling", "Ling-2.6-flash");
@@ -781,7 +1069,12 @@ async fn sends_max_tokens_for_open_code_completions_models() {
     for (provider, id) in [("opencode-go", "kimi-k2.7-code"), ("opencode", "kimi-k2.6")] {
         let model = catalog_model(provider, id);
         assert_eq!(
-            model.compat.clone().expect("compat").openai_completions().max_tokens_field,
+            model
+                .compat
+                .clone()
+                .expect("compat")
+                .openai_completions()
+                .max_tokens_field,
             Some(maho_ai::types::MaxTokensField::MaxTokens),
             "{provider}/{id}"
         );
@@ -794,11 +1087,29 @@ async fn sends_max_tokens_for_open_code_completions_models() {
         let mut options = simple_options("test");
         options.stream.max_tokens = Some(123);
         options.stream.request.on_payload = Some(hook);
-        let _ = finish(&run_simple(&model, &context(vec![user_message("Hi")], None), options, Some(transport.clone()))).await;
+        let _ = finish(&run_simple(
+            &model,
+            &context(vec![user_message("Hi")], None),
+            options,
+            Some(transport.clone()),
+        ))
+        .await;
 
-        let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
-        assert_eq!(payload.get("max_tokens").and_then(Value::as_u64), Some(123), "{provider}/{id}");
-        assert_eq!(payload.get("max_completion_tokens"), None, "{provider}/{id}");
+        let payload = sink
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .unwrap_or_else(|| transport.last_request().body);
+        assert_eq!(
+            payload.get("max_tokens").and_then(Value::as_u64),
+            Some(123),
+            "{provider}/{id}"
+        );
+        assert_eq!(
+            payload.get("max_completion_tokens"),
+            None,
+            "{provider}/{id}"
+        );
     }
 }
 
@@ -819,10 +1130,18 @@ async fn sends_max_tokens_for_built_in_and_custom_deep_seek_api_models() {
     custom_uppercase.name = "Custom Uppercase DeepSeek Model".to_owned();
     custom_uppercase.base_url = "https://API.DeepSeek.COM".to_owned();
 
-    let native = [catalog_model("deepseek", "deepseek-flash"), catalog_model("deepseek", "deepseek-v4-pro")];
+    let native = [
+        catalog_model("deepseek", "deepseek-flash"),
+        catalog_model("deepseek", "deepseek-v4-pro"),
+    ];
     for model in &native {
         assert_eq!(
-            model.compat.clone().expect("compat").openai_completions().max_tokens_field,
+            model
+                .compat
+                .clone()
+                .expect("compat")
+                .openai_completions()
+                .max_tokens_field,
             Some(maho_ai::types::MaxTokensField::MaxTokens),
             "{}",
             model.id
@@ -838,10 +1157,25 @@ async fn sends_max_tokens_for_built_in_and_custom_deep_seek_api_models() {
         let mut options = simple_options("test");
         options.stream.max_tokens = Some(123);
         options.stream.request.on_payload = Some(hook);
-        let _ = finish(&run_simple(&model, &context(vec![user_message("Hi")], None), options, Some(transport.clone()))).await;
+        let _ = finish(&run_simple(
+            &model,
+            &context(vec![user_message("Hi")], None),
+            options,
+            Some(transport.clone()),
+        ))
+        .await;
 
-        let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
-        assert_eq!(payload.get("max_tokens").and_then(Value::as_u64), Some(123), "{}", model.id);
+        let payload = sink
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .unwrap_or_else(|| transport.last_request().body);
+        assert_eq!(
+            payload.get("max_tokens").and_then(Value::as_u64),
+            Some(123),
+            "{}",
+            model.id
+        );
         assert_eq!(payload.get("max_completion_tokens"), None, "{}", model.id);
     }
 }
@@ -851,7 +1185,12 @@ async fn sends_max_tokens_for_z_ai_completions_models() {
     for id in ["glm-5-turbo", "glm-5.2", "glm-5.3"] {
         let model = catalog_model("zai", id);
         assert_eq!(
-            model.compat.clone().expect("compat").openai_completions().max_tokens_field,
+            model
+                .compat
+                .clone()
+                .expect("compat")
+                .openai_completions()
+                .max_tokens_field,
             Some(maho_ai::types::MaxTokensField::MaxTokens),
             "{id}"
         );
@@ -864,10 +1203,24 @@ async fn sends_max_tokens_for_z_ai_completions_models() {
         let mut options = simple_options("test");
         options.stream.max_tokens = Some(123);
         options.stream.request.on_payload = Some(hook);
-        let _ = finish(&run_simple(&model, &context(vec![user_message("Hi")], None), options, Some(transport.clone()))).await;
+        let _ = finish(&run_simple(
+            &model,
+            &context(vec![user_message("Hi")], None),
+            options,
+            Some(transport.clone()),
+        ))
+        .await;
 
-        let payload = sink.lock().expect("payload lock").clone().unwrap_or_else(|| transport.last_request().body);
-        assert_eq!(payload.get("max_tokens").and_then(Value::as_u64), Some(123), "{id}");
+        let payload = sink
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .unwrap_or_else(|| transport.last_request().body);
+        assert_eq!(
+            payload.get("max_tokens").and_then(Value::as_u64),
+            Some(123),
+            "{id}"
+        );
         assert_eq!(payload.get("max_completion_tokens"), None, "{id}");
     }
 }
@@ -931,27 +1284,66 @@ async fn accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_indep
         }),
     ]);
     let tools = vec![
-        tool("read", json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] })),
-        tool("grep", json!({ "type": "object", "properties": { "pattern": { "type": "string" }, "path": { "type": "string" } }, "required": ["pattern", "path"] })),
-        tool("list", json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] })),
-        tool("write", json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] })),
+        tool(
+            "read",
+            json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+        ),
+        tool(
+            "grep",
+            json!({ "type": "object", "properties": { "pattern": { "type": "string" }, "path": { "type": "string" } }, "required": ["pattern", "path"] }),
+        ),
+        tool(
+            "list",
+            json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+        ),
+        tool(
+            "write",
+            json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }),
+        ),
     ];
-    let stream = run_simple(&model, &context(vec![user_message("Think, answer, and use tools.")], Some(tools)), simple_options("test"), Some(transport));
+    let stream = run_simple(
+        &model,
+        &context(
+            vec![user_message("Think, answer, and use tools.")],
+            Some(tools),
+        ),
+        simple_options("test"),
+        Some(transport),
+    );
 
     let mut event_types: Vec<&str> = Vec::new();
-    let mut tool_events_by_index: std::collections::BTreeMap<usize, Vec<&str>> = std::collections::BTreeMap::new();
+    let mut tool_events_by_index: std::collections::BTreeMap<usize, Vec<&str>> =
+        std::collections::BTreeMap::new();
     while let Some(event) = stream.next().await.expect("stream event") {
         let (name, index) = match &event {
             AssistantMessageEvent::Start { .. } => ("start", None),
-            AssistantMessageEvent::TextStart { content_index, .. } => ("text_start", Some(*content_index)),
-            AssistantMessageEvent::TextDelta { content_index, .. } => ("text_delta", Some(*content_index)),
-            AssistantMessageEvent::TextEnd { content_index, .. } => ("text_end", Some(*content_index)),
-            AssistantMessageEvent::ThinkingStart { content_index, .. } => ("thinking_start", Some(*content_index)),
-            AssistantMessageEvent::ThinkingDelta { content_index, .. } => ("thinking_delta", Some(*content_index)),
-            AssistantMessageEvent::ThinkingEnd { content_index, .. } => ("thinking_end", Some(*content_index)),
-            AssistantMessageEvent::ToolcallStart { content_index, .. } => ("toolcall_start", Some(*content_index)),
-            AssistantMessageEvent::ToolcallDelta { content_index, .. } => ("toolcall_delta", Some(*content_index)),
-            AssistantMessageEvent::ToolcallEnd { content_index, .. } => ("toolcall_end", Some(*content_index)),
+            AssistantMessageEvent::TextStart { content_index, .. } => {
+                ("text_start", Some(*content_index))
+            }
+            AssistantMessageEvent::TextDelta { content_index, .. } => {
+                ("text_delta", Some(*content_index))
+            }
+            AssistantMessageEvent::TextEnd { content_index, .. } => {
+                ("text_end", Some(*content_index))
+            }
+            AssistantMessageEvent::ThinkingStart { content_index, .. } => {
+                ("thinking_start", Some(*content_index))
+            }
+            AssistantMessageEvent::ThinkingDelta { content_index, .. } => {
+                ("thinking_delta", Some(*content_index))
+            }
+            AssistantMessageEvent::ThinkingEnd { content_index, .. } => {
+                ("thinking_end", Some(*content_index))
+            }
+            AssistantMessageEvent::ToolcallStart { content_index, .. } => {
+                ("toolcall_start", Some(*content_index))
+            }
+            AssistantMessageEvent::ToolcallDelta { content_index, .. } => {
+                ("toolcall_delta", Some(*content_index))
+            }
+            AssistantMessageEvent::ToolcallEnd { content_index, .. } => {
+                ("toolcall_end", Some(*content_index))
+            }
             AssistantMessageEvent::Done { .. } => ("done", None),
             AssistantMessageEvent::Error { .. } => ("error", None),
         };
@@ -976,14 +1368,60 @@ async fn accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_indep
     assert_eq!(count("toolcall_delta"), 9);
     assert_eq!(count("toolcall_end"), 4);
 
-    let position = |name: &str| event_types.iter().position(|event| *event == name).expect("event present");
+    let position = |name: &str| {
+        event_types
+            .iter()
+            .position(|event| *event == name)
+            .expect("event present")
+    };
     assert!(position("text_end") < position("thinking_start"));
     assert!(position("thinking_end") < position("toolcall_start"));
 
-    assert_eq!(tool_events_by_index.get(&2).map(Vec::as_slice), Some(&["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_end"][..]));
-    assert_eq!(tool_events_by_index.get(&3).map(Vec::as_slice), Some(&["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_delta", "toolcall_end"][..]));
-    assert_eq!(tool_events_by_index.get(&4).map(Vec::as_slice), Some(&["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_end"][..]));
-    assert_eq!(tool_events_by_index.get(&5).map(Vec::as_slice), Some(&["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_end"][..]));
+    assert_eq!(
+        tool_events_by_index.get(&2).map(Vec::as_slice),
+        Some(
+            &[
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ][..]
+        )
+    );
+    assert_eq!(
+        tool_events_by_index.get(&3).map(Vec::as_slice),
+        Some(
+            &[
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ][..]
+        )
+    );
+    assert_eq!(
+        tool_events_by_index.get(&4).map(Vec::as_slice),
+        Some(
+            &[
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ][..]
+        )
+    );
+    assert_eq!(
+        tool_events_by_index.get(&5).map(Vec::as_slice),
+        Some(
+            &[
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ][..]
+        )
+    );
 
     assert_eq!(response.content.len(), 6);
     match &response.content[0] {
@@ -993,30 +1431,49 @@ async fn accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_indep
     match &response.content[1] {
         maho_ai::types::ContentBlock::Thinking(thinking) => {
             assert_eq!(thinking.thinking, "think 1 think 2");
-            assert_eq!(thinking.thinking_signature.as_deref(), Some("reasoning_content"));
+            assert_eq!(
+                thinking.thinking_signature.as_deref(),
+                Some("reasoning_content")
+            );
         }
         other => panic!("expected thinking, got {other:?}"),
     }
     let calls: Vec<(&str, &str, &serde_json::Map<String, Value>)> = response.content[2..]
         .iter()
         .map(|block| match block {
-            maho_ai::types::ContentBlock::ToolCall(call) => (call.id.as_str(), call.name.as_str(), &call.arguments),
+            maho_ai::types::ContentBlock::ToolCall(call) => {
+                (call.id.as_str(), call.name.as_str(), &call.arguments)
+            }
             other => panic!("expected tool call, got {other:?}"),
         })
         .collect();
     assert_eq!(calls[0].0, "tc_read_initial");
     assert_eq!(calls[0].1, "read");
-    assert_eq!(calls[0].2.get("path").and_then(Value::as_str), Some("README.md"));
+    assert_eq!(
+        calls[0].2.get("path").and_then(Value::as_str),
+        Some("README.md")
+    );
     assert_eq!(calls[1].0, "tc_grep_initial");
     assert_eq!(calls[1].1, "grep");
-    assert_eq!(calls[1].2.get("pattern").and_then(Value::as_str), Some("TODO"));
+    assert_eq!(
+        calls[1].2.get("pattern").and_then(Value::as_str),
+        Some("TODO")
+    );
     assert_eq!(calls[1].2.get("path").and_then(Value::as_str), Some("src"));
     assert_eq!(calls[2].0, "tc_list_no_index");
     assert_eq!(calls[2].1, "list");
-    assert_eq!(calls[2].2.get("path").and_then(Value::as_str), Some("packages/ai"));
+    assert_eq!(
+        calls[2].2.get("path").and_then(Value::as_str),
+        Some("packages/ai")
+    );
     assert_eq!(calls[3].0, "tc_write_no_index");
     assert_eq!(calls[3].1, "write");
-    assert_eq!(calls[3].2.get("path").and_then(Value::as_str), Some("out.txt"));
-    assert_eq!(calls[3].2.get("content").and_then(Value::as_str), Some("ok"));
+    assert_eq!(
+        calls[3].2.get("path").and_then(Value::as_str),
+        Some("out.txt")
+    );
+    assert_eq!(
+        calls[3].2.get("content").and_then(Value::as_str),
+        Some("ok")
+    );
 }
-

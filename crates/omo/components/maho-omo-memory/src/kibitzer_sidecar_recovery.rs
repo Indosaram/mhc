@@ -59,7 +59,9 @@ use std::sync::{Arc, PoisonError};
 use serde_json::json;
 
 use crate::kibitzer_backoff::{KIBITZER_BACKOFF_MAX_MS, KIBITZER_BACKOFF_MIN_MS, backoff_delay_ms};
-use crate::kibitzer_contract::{KIBITZER_REJECTED_AFTER_WAKES, KibitzerSidecarState, KibitzerWakeSpawn};
+use crate::kibitzer_contract::{
+    KIBITZER_REJECTED_AFTER_WAKES, KibitzerSidecarState, KibitzerWakeSpawn,
+};
 use crate::kibitzer_prompt_blocks::KIBITZER_FIELD_CAPS;
 use crate::kibitzer_sidecar_core::{PendingReseed, SidecarCore};
 
@@ -81,7 +83,11 @@ pub struct KibitzerRecovery {
 /// Builds the recovery for one sidecar (upstream `createRecovery(core)`), plus the explicit executor
 /// the native async disposal and the backoff callback need (see the module notes).
 pub fn create_recovery(core: Arc<SidecarCore>, spawn: KibitzerWakeSpawn) -> KibitzerRecovery {
-    KibitzerRecovery { core, spawn, backoff_generation: Arc::new(AtomicU64::new(0)) }
+    KibitzerRecovery {
+        core,
+        spawn,
+        backoff_generation: Arc::new(AtomicU64::new(0)),
+    }
 }
 
 impl KibitzerRecovery {
@@ -91,7 +97,11 @@ impl KibitzerRecovery {
     /// wake the new child again. `surfaced` and delivery state are left untouched.
     pub fn prepare_reseed(&self, wake: u64) {
         let (rejected, delivered_paths, task_summary) = {
-            let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let rejected: Vec<String> = record
                 .offered_at_wake
                 .iter()
@@ -102,11 +112,25 @@ impl KibitzerRecovery {
                 .map(|(path, _)| path.as_str().to_string())
                 .collect();
             let delivered_paths: Vec<String> = record.delivered.iter().cloned().collect();
-            (rejected, delivered_paths, record.task_summary.clone().unwrap_or_default())
+            (
+                rejected,
+                delivered_paths,
+                record.task_summary.clone().unwrap_or_default(),
+            )
         };
-        let last_cursor = self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).last_cursor().unwrap_or(0);
+        let last_cursor = self
+            .core
+            .stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_cursor()
+            .unwrap_or(0);
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.pending_reseed = Some(PendingReseed {
                 session_id: self.core.session_id.clone(),
                 last_cursor,
@@ -118,16 +142,31 @@ impl KibitzerRecovery {
             });
         }
         // Offered membership becomes rejected union delivered; every other offered path is dropped.
-        let retained: BTreeSet<String> = rejected.iter().chain(delivered_paths.iter()).cloned().collect();
+        let retained: BTreeSet<String> = rejected
+            .iter()
+            .chain(delivered_paths.iter())
+            .cloned()
+            .collect();
         {
-            let mut offered = self.core.resources.offered.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut offered = self
+                .core
+                .resources
+                .offered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             offered.clear();
             offered.extend(retained.iter().cloned());
         }
         // offered_at_wake keeps only entries whose path is still offered.
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
-            record.offered_at_wake.retain(|path, _| retained.contains(path));
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            record
+                .offered_at_wake
+                .retain(|path, _| retained.contains(path));
         }
     }
 
@@ -140,7 +179,11 @@ impl KibitzerRecovery {
     /// clear the new backoff (see the module note).
     pub fn enter_backoff(&self) {
         let delay = {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let delay = backoff_delay_ms(
                 record.consecutive_failures as usize,
                 self.core.random.as_ref(),
@@ -167,7 +210,10 @@ impl KibitzerRecovery {
                         if generation.load(Ordering::SeqCst) != token {
                             return;
                         }
-                        let mut record = task_core.record.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut record = task_core
+                            .record
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         record.backoff_timer = None;
                         if record.state == KibitzerSidecarState::Backoff {
                             record.state = KibitzerSidecarState::Idle;
@@ -179,7 +225,11 @@ impl KibitzerRecovery {
             delay,
         );
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.backoff_timer = Some(handle);
         }
     }
@@ -190,7 +240,11 @@ impl KibitzerRecovery {
     pub fn clear_backoff(&self) {
         self.backoff_generation.fetch_add(1, Ordering::SeqCst);
         let handle = {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.backoff_timer.take()
         };
         if let Some(handle) = handle {
@@ -204,11 +258,20 @@ impl KibitzerRecovery {
     /// reported through the warn sink, never thrown, never dropped, and never blocks the reactor.
     pub fn dispose_child(&self) {
         let current = {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.child.take()
         };
         let Some(current) = current else { return };
-        let unsubscribes = std::mem::take(&mut *current.unsubscribes.lock().unwrap_or_else(PoisonError::into_inner));
+        let unsubscribes = std::mem::take(
+            &mut *current
+                .unsubscribes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         for unsubscribe in unsubscribes {
             unsubscribe();
         }
@@ -219,7 +282,10 @@ impl KibitzerRecovery {
             if let Err(error) = handle.dispose().await
                 && let Some(warn) = warn
             {
-                warn(&format!("omo-senpi kibitzer sidecar dispose failed {}", json!({ "generation": generation, "error": error })));
+                warn(&format!(
+                    "omo-senpi kibitzer sidecar dispose failed {}",
+                    json!({ "generation": generation, "error": error })
+                ));
             }
         }));
     }

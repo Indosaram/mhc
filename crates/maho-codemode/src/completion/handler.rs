@@ -15,13 +15,23 @@ pub struct CompletionRequest {
 pub struct CompletionError(pub String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompletionTier { Smol, Default, Slow }
+pub enum CompletionTier {
+    Smol,
+    Default,
+    Slow,
+}
 
 pub fn normalize_request(mut request: CompletionRequest) -> CompletionRequest {
     if let Some(opts) = &request.opts {
-        if let Some(model) = opts["model"].as_str() { request.model = Some(model.into()); }
-        if let Some(system) = opts["system"].as_str() { request.system = Some(system.into()); }
-        if let Some(schema) = opts.get("schema") { request.schema = Some(schema.clone()); }
+        if let Some(model) = opts["model"].as_str() {
+            request.model = Some(model.into());
+        }
+        if let Some(system) = opts["system"].as_str() {
+            request.system = Some(system.into());
+        }
+        if let Some(schema) = opts.get("schema") {
+            request.schema = Some(schema.clone());
+        }
     }
     request
 }
@@ -31,31 +41,76 @@ pub fn resolve_completion_tier(requested: Option<&str>) -> Result<CompletionTier
         None | Some("default") => Ok(CompletionTier::Default),
         Some("smol") => Ok(CompletionTier::Smol),
         Some("slow") => Ok(CompletionTier::Slow),
-        Some(tier) => Err(CompletionError(format!("completion() could not resolve the \"{tier}\" model tier; expected \"smol\", \"default\", or \"slow\"."))),
+        Some(tier) => Err(CompletionError(format!(
+            "completion() could not resolve the \"{tier}\" model tier; expected \"smol\", \"default\", or \"slow\"."
+        ))),
     }
 }
 
-pub fn resolve_requested_model(tier: CompletionTier, current: Option<&maho_ai::model::Model>, available: &[maho_ai::model::Model]) -> Result<maho_ai::model::Model, CompletionError> {
-    if tier==CompletionTier::Default {return current.cloned().ok_or_else(||CompletionError("completion() has no model/credentials".into()));}
-    let mut selected=None::<&maho_ai::model::Model>;
+pub fn resolve_requested_model(
+    tier: CompletionTier,
+    current: Option<&maho_ai::model::Model>,
+    available: &[maho_ai::model::Model],
+) -> Result<maho_ai::model::Model, CompletionError> {
+    if tier == CompletionTier::Default {
+        return current
+            .cloned()
+            .ok_or_else(|| CompletionError("completion() has no model/credentials".into()));
+    }
+    let mut selected = None::<&maho_ai::model::Model>;
     for model in available {
         if selected.is_none_or(|previous| {
-            let cost=model.cost.input+model.cost.output;
-            let previous=previous.cost.input+previous.cost.output;
-            if tier==CompletionTier::Smol {cost<previous} else {cost>previous}
-        }) {selected=Some(model);}
+            let cost = model.cost.input + model.cost.output;
+            let previous = previous.cost.input + previous.cost.output;
+            if tier == CompletionTier::Smol {
+                cost < previous
+            } else {
+                cost > previous
+            }
+        }) {
+            selected = Some(model);
+        }
     }
     selected.cloned().ok_or_else(||CompletionError(format!("completion() could not resolve the \"{}\" model tier: no configured models are available.",if tier==CompletionTier::Smol {"smol"} else {"slow"})))
 }
 
-pub fn format_completion(message: &AssistantMessage, provider: &str, model_id: &str, structured: bool) -> Result<Value, CompletionError> {
-    if message.stop_reason == StopReason::Error { return Err(CompletionError(message.error_message.clone().unwrap_or_else(|| "completion() request failed.".into()))); }
-    if message.stop_reason == StopReason::Aborted { return Err(CompletionError("completion() request aborted.".into())); }
-    let text = message.content.iter().filter_map(|part| match part { ContentBlock::Text(text) => Some(text.text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
-    if text.is_empty() { return Err(CompletionError("completion() returned no text output.".into())); }
+pub fn format_completion(
+    message: &AssistantMessage,
+    provider: &str,
+    model_id: &str,
+    structured: bool,
+) -> Result<Value, CompletionError> {
+    if message.stop_reason == StopReason::Error {
+        return Err(CompletionError(
+            message
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "completion() request failed.".into()),
+        ));
+    }
+    if message.stop_reason == StopReason::Aborted {
+        return Err(CompletionError("completion() request aborted.".into()));
+    }
+    let text = message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        return Err(CompletionError(
+            "completion() returned no text output.".into(),
+        ));
+    }
     let details = json!({"model":format!("{provider}/{model_id}"),"structured":structured});
     if structured {
-        let value = serde_json::from_str::<Value>(&text).unwrap_or_else(|error| json!({"parseError":error.to_string()}));
+        let value = serde_json::from_str::<Value>(&text)
+            .unwrap_or_else(|error| json!({"parseError":error.to_string()}));
         Ok(json!({"value":value,"details":details}))
-    } else { Ok(json!({"text":text,"details":details})) }
+    } else {
+        Ok(json!({"text":text,"details":details}))
+    }
 }

@@ -1,6 +1,10 @@
-use std::{path::Path, sync::Arc};
-use maho_tools::{definition::*, edit::{create_edit_tool_definition, prepare_edit_arguments, EditToolOptions}, read_classifiers::*};
+use maho_tools::{
+    definition::*,
+    edit::{EditToolOptions, create_edit_tool_definition, prepare_edit_arguments},
+    read_classifiers::*,
+};
 use serde_json::json;
+use std::{path::Path, sync::Arc};
 
 #[test]
 fn edit_schema_has_no_legacy_fields() {
@@ -11,8 +15,10 @@ fn edit_schema_has_no_legacy_fields() {
 
 #[test]
 fn edit_folds_legacy_fields() {
-    assert_eq!(prepare_edit_arguments(json!({"path":"file", "oldText":"a", "newText":"b"})).unwrap(),
-        json!({"path":"file", "edits":[{"oldText":"a", "newText":"b"}]}));
+    assert_eq!(
+        prepare_edit_arguments(json!({"path":"file", "oldText":"a", "newText":"b"})).unwrap(),
+        json!({"path":"file", "edits":[{"oldText":"a", "newText":"b"}]})
+    );
 }
 
 #[test]
@@ -36,8 +42,10 @@ fn edit_preserves_nonobject_input() {
 
 #[test]
 fn edit_parses_stringified_edits() {
-    assert_eq!(prepare_edit_arguments(json!({"edits":"[{\"oldText\":\"a\",\"newText\":\"b\"}]"})).unwrap(),
-        json!({"edits":[{"oldText":"a", "newText":"b"}]}));
+    assert_eq!(
+        prepare_edit_arguments(json!({"edits":"[{\"oldText\":\"a\",\"newText\":\"b\"}]"})).unwrap(),
+        json!({"edits":[{"oldText":"a", "newText":"b"}]})
+    );
 }
 
 #[test]
@@ -56,10 +64,18 @@ fn classifiers_decline_claim_skip_errors_and_unregister() {
     let claiming = register_read_classifier(Arc::new(move |received_path, received_cwd| {
         assert_eq!(received_path, path);
         assert_eq!(received_cwd, cwd);
-        Ok(Some(CompactReadClassification { kind: CompactReadKind::Memory, label: "preference".into(), headline: None }))
-    })).unwrap();
+        Ok(Some(CompactReadClassification {
+            kind: CompactReadKind::Memory,
+            label: "preference".into(),
+            headline: None,
+        }))
+    }))
+    .unwrap();
     let later = register_read_classifier(Arc::new(|_, _| panic!("first match must win"))).unwrap();
-    assert_eq!(classify_read(path, cwd).unwrap().kind, CompactReadKind::Memory);
+    assert_eq!(
+        classify_read(path, cwd).unwrap().kind,
+        CompactReadKind::Memory
+    );
     drop(later);
     drop(claiming);
     assert!(classify_read(path, cwd).is_none());
@@ -69,11 +85,23 @@ fn classifiers_decline_claim_skip_errors_and_unregister() {
 
 #[tokio::test]
 async fn wrapped_definition_executes_agent_contract() {
-    let definition = ToolDefinition::new("echo", "echo", json!({}), Arc::new(|call| Box::pin(async move {
-        call.signal.check()?;
-        Ok(ToolResult::text(call.params["value"].as_str().unwrap_or_default()))
-    })));
+    let definition = ToolDefinition::new(
+        "echo",
+        "echo",
+        json!({}),
+        Arc::new(|call| {
+            Box::pin(async move {
+                call.signal.check()?;
+                Ok(ToolResult::text(
+                    call.params["value"].as_str().unwrap_or_default(),
+                ))
+            })
+        }),
+    );
     let agent = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition, None, None);
     let result = (agent.execute)("id".into(), json!({"value":"hello"}), None, None).await;
-    assert_eq!(serde_json::to_value(result.content).unwrap()[0]["text"], "hello");
+    assert_eq!(
+        serde_json::to_value(result.content).unwrap()[0]["text"],
+        "hello"
+    );
 }

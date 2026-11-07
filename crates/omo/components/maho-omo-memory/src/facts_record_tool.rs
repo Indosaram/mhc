@@ -159,26 +159,61 @@ impl FactsRecordTool {
             on_call();
         }
 
-        if self.ended.load(Ordering::Acquire) { return FactsRecordToolResult { text: "Fact rejected: the facts run has ended; stop calling record_fact".into(), is_error: true }; }
+        if self.ended.load(Ordering::Acquire) {
+            return FactsRecordToolResult {
+                text: "Fact rejected: the facts run has ended; stop calling record_fact".into(),
+                is_error: true,
+            };
+        }
         // Source and quote are model input; the saved receipt is always computed locally.
         let mut fact = params.clone();
-        let source = fact.get("source").and_then(serde_json::Value::as_str).unwrap_or("inferred");
+        let source = fact
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("inferred");
         let quote = fact.get("user_quote").and_then(serde_json::Value::as_str);
-        let receipt = self.exchanges.iter().find_map(|exchange| {
-            let entries = [serde_json::json!({"role":"assistant", "text":exchange.proposal}), serde_json::json!({"role":"user", "text":exchange.reply})];
-            let receipt = crate::memory_tool_provenance::resolve_claim_receipt(source, quote, &entries, None);
-            (receipt.source == "user").then_some(receipt)
-        }).unwrap_or_else(|| crate::memory_tool_provenance::resolve_claim_receipt(source, quote, &[], None));
-        if let Some(object) = fact.as_object_mut() { object.remove("source"); object.remove("user_quote"); object.insert("receipt".into(), serde_json::json!(receipt)); }
+        let receipt = self
+            .exchanges
+            .iter()
+            .find_map(|exchange| {
+                let entries = [
+                    serde_json::json!({"role":"assistant", "text":exchange.proposal}),
+                    serde_json::json!({"role":"user", "text":exchange.reply}),
+                ];
+                let receipt = crate::memory_tool_provenance::resolve_claim_receipt(
+                    source, quote, &entries, None,
+                );
+                (receipt.source == "user").then_some(receipt)
+            })
+            .unwrap_or_else(|| {
+                crate::memory_tool_provenance::resolve_claim_receipt(source, quote, &[], None)
+            });
+        if let Some(object) = fact.as_object_mut() {
+            object.remove("source");
+            object.remove("user_quote");
+            object.insert("receipt".into(), serde_json::json!(receipt));
+        }
         let record = match parse_facts_extraction_record(&fact, self.count.load(Ordering::Relaxed))
         {
             Ok(rec) => rec,
             Err(err) => {
                 let signature = params.to_string();
-                let first = self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(signature);
-                if first { return reject(&format!("{}. Fix this call or skip this fact; the same call will not be accepted", err.message)); }
+                let first = self
+                    .refused
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(signature);
+                if first {
+                    return reject(&format!(
+                        "{}. Fix this call or skip this fact; the same call will not be accepted",
+                        err.message
+                    ));
+                }
                 self.ended.store(true, Ordering::Release);
-                return reject(&format!("{}. This exact call was already refused, so the facts run ends here; facts recorded so far are kept", err.message));
+                return reject(&format!(
+                    "{}. This exact call was already refused, so the facts run ends here; facts recorded so far are kept",
+                    err.message
+                ));
             }
         };
 
@@ -295,19 +330,38 @@ pub fn create_facts_record_tool(input: FactsRecordToolInput) -> FactsRecordTool 
     }
 }
 
-pub fn payload_exchanges(payload: &memory_core::facts::FactsPayload) -> Vec<crate::consent_exchange::ConsentExchange> {
+pub fn payload_exchanges(
+    payload: &memory_core::facts::FactsPayload,
+) -> Vec<crate::consent_exchange::ConsentExchange> {
     let mut exchanges = Vec::new();
     for entry in &payload.entries {
         let mut proposal: Option<String> = entry.lead.as_ref().and_then(|item| match item {
-            memory_core::journal::entries::TranscriptEntry::Text(text) if text.kind == "assistant" && !text.text.trim().is_empty() => Some(text.text.clone()),
+            memory_core::journal::entries::TranscriptEntry::Text(text)
+                if text.kind == "assistant" && !text.text.trim().is_empty() =>
+            {
+                Some(text.text.clone())
+            }
             _ => None,
         });
         for item in &entry.entries {
-            if item.kind() == "reasoning" { continue; }
-            let text = match item { memory_core::journal::entries::TranscriptEntry::Text(text) => text.text.as_str(), _ => "" };
-            if item.kind() == "user" && !text.trim().is_empty()
-                && let Some(proposal) = &proposal { exchanges.push(crate::consent_exchange::ConsentExchange { proposal: proposal.clone(), reply: text.into() }); }
-            proposal = (item.kind() == "assistant" && !text.trim().is_empty()).then(|| text.to_owned());
+            if item.kind() == "reasoning" {
+                continue;
+            }
+            let text = match item {
+                memory_core::journal::entries::TranscriptEntry::Text(text) => text.text.as_str(),
+                _ => "",
+            };
+            if item.kind() == "user"
+                && !text.trim().is_empty()
+                && let Some(proposal) = &proposal
+            {
+                exchanges.push(crate::consent_exchange::ConsentExchange {
+                    proposal: proposal.clone(),
+                    reply: text.into(),
+                });
+            }
+            proposal =
+                (item.kind() == "assistant" && !text.trim().is_empty()).then(|| text.to_owned());
         }
     }
     exchanges

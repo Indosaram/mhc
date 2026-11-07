@@ -58,10 +58,7 @@ fn macos_footprint(
     Ok(json!({"bytes": usage.ri_phys_footprint, "measure": "phys_footprint"}))
 }
 
-fn append_reporter_sections(
-    report: &mut Value,
-    reporters: Vec<maho_ext_api::NamedMemoryReporter>,
-) {
+fn append_reporter_sections(report: &mut Value, reporters: Vec<maho_ext_api::NamedMemoryReporter>) {
     let mut seen = std::collections::BTreeSet::new();
     let mut errors = serde_json::Map::new();
     for maho_ext_api::NamedMemoryReporter { name, reporter } in reporters {
@@ -73,7 +70,9 @@ fn append_reporter_sections(
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reporter())) {
             Ok(figures) => report[&name] = json!(figures),
             Err(error) => {
-                let message = error.downcast_ref::<String>().map(String::as_str)
+                let message = error
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
                     .or_else(|| error.downcast_ref::<&str>().copied())
                     .unwrap_or("Memory reporter panicked with a non-string payload");
                 errors.insert(name, json!(message));
@@ -144,11 +143,19 @@ mod tests {
                 name: "cache".into(),
                 reporter: std::sync::Arc::new(|| [("bytes".into(), 41)].into()),
             },
-            maho_ext_api::NamedMemoryReporter { name: "cache".into(), reporter: ignored.clone() },
+            maho_ext_api::NamedMemoryReporter {
+                name: "cache".into(),
+                reporter: ignored.clone(),
+            },
         ];
-        reporters.extend(maho_ext_api::RESERVED_MEMORY_REPORT_KEYS.iter().map(|name| {
-            maho_ext_api::NamedMemoryReporter { name: (*name).into(), reporter: ignored.clone() }
-        }));
+        reporters.extend(
+            maho_ext_api::RESERVED_MEMORY_REPORT_KEYS
+                .iter()
+                .map(|name| maho_ext_api::NamedMemoryReporter {
+                    name: (*name).into(),
+                    reporter: ignored.clone(),
+                }),
+        );
         // When
         append_reporter_sections(&mut report, reporters);
         // Then
@@ -164,20 +171,26 @@ mod tests {
         let mut report = json!({});
         let reporters = vec![
             maho_ext_api::NamedMemoryReporter {
-                name: "broken".into(), reporter: std::sync::Arc::new(|| panic!("reporter failed")),
+                name: "broken".into(),
+                reporter: std::sync::Arc::new(|| panic!("reporter failed")),
             },
             maho_ext_api::NamedMemoryReporter {
-                name: "broken".into(), reporter: std::sync::Arc::new(|| panic!("duplicate ran")),
+                name: "broken".into(),
+                reporter: std::sync::Arc::new(|| panic!("duplicate ran")),
             },
             maho_ext_api::NamedMemoryReporter {
-                name: "healthy".into(), reporter: std::sync::Arc::new(|| [("bytes".into(), 0)].into()),
+                name: "healthy".into(),
+                reporter: std::sync::Arc::new(|| [("bytes".into(), 0)].into()),
             },
         ];
         // When
         append_reporter_sections(&mut report, reporters);
         // Then
         assert!(report.get("broken").is_none());
-        assert_eq!(report["reporterErrors"], json!({"broken": "reporter failed"}));
+        assert_eq!(
+            report["reporterErrors"],
+            json!({"broken": "reporter failed"})
+        );
         assert_eq!(report["healthy"], json!({"bytes": 0}));
     }
 

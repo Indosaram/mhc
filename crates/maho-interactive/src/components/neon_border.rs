@@ -31,7 +31,9 @@ static GLOW_KEYWORDS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
 /// Registers keywords (case-insensitive) that light the prompt border. Idempotent.
 pub fn register_glow_keywords(keywords: &[&str]) {
-    let mut known = GLOW_KEYWORDS.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut known = GLOW_KEYWORDS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for keyword in keywords {
         let keyword = keyword.to_ascii_lowercase();
         if !keyword.is_empty() && !known.contains(&keyword) {
@@ -41,20 +43,31 @@ pub fn register_glow_keywords(keywords: &[&str]) {
 }
 
 pub fn has_glow_keyword(text: &str) -> bool {
-    let keywords = GLOW_KEYWORDS.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let keywords = GLOW_KEYWORDS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if keywords.is_empty() {
         return false;
     }
     let lower = text.to_ascii_lowercase();
     keywords.iter().any(|keyword| {
         lower.match_indices(keyword.as_str()).any(|(index, _)| {
-            index == 0 || !lower[..index].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            index == 0
+                || !lower[..index]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
         })
     })
 }
 
 pub fn apply_neon_border(lines: &mut [String], now_ms: f64, mode: ColorMode) -> bool {
-    let Some(bottom) = lines.iter().skip(1).position(|line| strip_terminal_sequences(line).starts_with('─')).map(|index| index + 1) else {
+    let Some(bottom) = lines
+        .iter()
+        .skip(1)
+        .position(|line| strip_terminal_sequences(line).starts_with('─'))
+        .map(|index| index + 1)
+    else {
         return false;
     };
     let top_plain = strip_terminal_sequences(&lines[0]);
@@ -66,12 +79,18 @@ pub fn apply_neon_border(lines: &mut [String], now_ms: f64, mode: ColorMode) -> 
     }
     let (top_len, bottom_len) = (top_cells.len(), bottom_cells.len());
     let perimeter = (top_len + bottom_len) as f64;
-    let seconds = (now_ms.max(0.0) / 1000.0 * BREATH_STEPS_PER_SECOND).floor() / BREATH_STEPS_PER_SECOND;
+    let seconds =
+        (now_ms.max(0.0) / 1000.0 * BREATH_STEPS_PER_SECOND).floor() / BREATH_STEPS_PER_SECOND;
     // Every cell shares one breath level: take its cosine once per frame instead of once per cell.
     let breath = breath_level(seconds);
     lines[0] = paint(&top_cells, |column| column as f64 / perimeter, breath, mode);
     // The static gradient runs clockwise: top border left->right, then bottom border right->left.
-    lines[bottom] = paint(&bottom_cells, |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter, breath, mode);
+    lines[bottom] = paint(
+        &bottom_cells,
+        |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter,
+        breath,
+        mode,
+    );
     if bottom > 1 {
         color_prompt_glyph(&mut lines[1], breathe_color_at(0.0, breath), mode);
     }
@@ -89,7 +108,9 @@ fn paint(cells: &[&str], position: impl Fn(usize) -> f64, breath: f64, mode: Col
 }
 
 fn color_prompt_glyph(line: &mut String, rgb: [u8; 3], mode: ColorMode) {
-    let Some(position) = line.find('❯') else { return };
+    let Some(position) = line.find('❯') else {
+        return;
+    };
     if !strip_terminal_sequences(&line[..position]).is_empty() {
         return;
     }
@@ -148,7 +169,14 @@ mod tests {
     fn detects_registered_keywords_at_word_starts() {
         register_glow_keywords(&["Sparkle", "spk"]);
         register_glow_keywords(&["spk"]);
-        for text in ["spk fix it", "please SPK", "spk-loop go", "/spk-plan", "sparkle mode", "do it (spk)"] {
+        for text in [
+            "spk fix it",
+            "please SPK",
+            "spk-loop go",
+            "/spk-plan",
+            "sparkle mode",
+            "do it (spk)",
+        ] {
             assert!(has_glow_keyword(text), "{text}");
         }
         for text in ["", "bspkx", "fix the bug", "spar kle"] {
@@ -158,7 +186,12 @@ mod tests {
 
     #[test]
     fn thickens_borders_and_recolors_prompt() {
-        let mut lines = vec!["\x1b[38;5;8m".to_owned() + &"─".repeat(40) + "\x1b[39m", "\x1b[38;2;1;2;3m❯\x1b[39m spk hi".to_owned(), "─".repeat(37) + "↓ 2", "  → /spk-loop".to_owned()];
+        let mut lines = vec![
+            "\x1b[38;5;8m".to_owned() + &"─".repeat(40) + "\x1b[39m",
+            "\x1b[38;2;1;2;3m❯\x1b[39m spk hi".to_owned(),
+            "─".repeat(37) + "↓ 2",
+            "  → /spk-loop".to_owned(),
+        ];
         assert!(apply_neon_border(&mut lines, 0.0, ColorMode::Truecolor));
         assert_eq!(strip_terminal_sequences(&lines[0]), "━".repeat(40));
         assert_eq!(strip_terminal_sequences(&lines[2]), "━".repeat(37) + "↓ 2");
@@ -178,19 +211,35 @@ mod tests {
     #[test]
     fn whole_border_breathes_together_every_four_seconds() {
         for s in [0.0, 0.2, 0.5, 0.9] {
-            assert!(brightness(breathe_color(s, 2.0)) > brightness(breathe_color(s, 0.0)), "cell {s} brightens toward the peak");
-            assert_eq!(breathe_color(s, 0.7), breathe_color(s, 4.7), "cell {s} repeats every breath");
+            assert!(
+                brightness(breathe_color(s, 2.0)) > brightness(breathe_color(s, 0.0)),
+                "cell {s} brightens toward the peak"
+            );
+            assert_eq!(
+                breathe_color(s, 0.7),
+                breathe_color(s, 4.7),
+                "cell {s} repeats every breath"
+            );
         }
-        let ratio = |s: f64, seconds: f64| f64::from(brightness(breathe_color(s, seconds))) / f64::from(brightness(breathe_color(s, 0.0)));
-        assert!((ratio(0.4, 1.3) - ratio(0.8, 1.3)).abs() < 0.03, "no position travels: cells rise in step");
+        let ratio = |s: f64, seconds: f64| {
+            f64::from(brightness(breathe_color(s, seconds)))
+                / f64::from(brightness(breathe_color(s, 0.0)))
+        };
+        assert!(
+            (ratio(0.4, 1.3) - ratio(0.8, 1.3)).abs() < 0.03,
+            "no position travels: cells rise in step"
+        );
     }
 
     #[test]
     fn breath_is_smooth_frame_to_frame() {
-        let step = (0..240).map(|frame| {
-            let [a, b] = [frame, frame + 1].map(|f| breathe_color(0.3, f64::from(f) / 60.0));
-            (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0)
-        }).max().unwrap_or(0);
+        let step = (0..240)
+            .map(|frame| {
+                let [a, b] = [frame, frame + 1].map(|f| breathe_color(0.3, f64::from(f) / 60.0));
+                (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
         assert!(step <= 3, "largest per-frame channel step at 60fps: {step}");
     }
 
@@ -202,13 +251,18 @@ mod tests {
             lines
         };
         let distinct = |from_ms: u32, to_ms: u32| {
-            let mut frames: Vec<Vec<String>> = (from_ms..to_ms).map(|ms| render(f64::from(ms))).collect();
+            let mut frames: Vec<Vec<String>> =
+                (from_ms..to_ms).map(|ms| render(f64::from(ms))).collect();
             frames.dedup();
             frames.len()
         };
         // One second sampled every millisecond yields at most 15 distinct frames (16 when the
         // window straddles a step boundary), so an unchanged frame lets the loop skip the repaint.
-        assert!(distinct(1000, 2000) <= 16, "{} frames in one second", distinct(1000, 2000));
+        assert!(
+            distinct(1000, 2000) <= 16,
+            "{} frames in one second",
+            distinct(1000, 2000)
+        );
         assert!(distinct(1000, 2000) >= 14, "the breath still animates");
     }
 

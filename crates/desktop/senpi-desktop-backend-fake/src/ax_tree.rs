@@ -43,7 +43,10 @@ impl AxTree {
             .collect();
         let props = AxProps {
             role: node.role.clone(),
-            native_role: node.native_role.clone().unwrap_or_else(|| node.role.clone()),
+            native_role: node
+                .native_role
+                .clone()
+                .unwrap_or_else(|| node.role.clone()),
             title: node.title.clone(),
             value: node.value.clone(),
             description: node.description.clone(),
@@ -71,7 +74,9 @@ impl AxTree {
 
     pub(crate) fn root(&self, window_id: &str) -> CoreResult<u64> {
         self.roots.get(window_id).copied().ok_or_else(|| {
-            DesktopError::ax_failed(format!("no accessibility tree scripted for window {window_id}"))
+            DesktopError::ax_failed(format!(
+                "no accessibility tree scripted for window {window_id}"
+            ))
         })
     }
 
@@ -95,7 +100,13 @@ impl AxTree {
 
     /// Fails with `AxFailed` unless the node advertises `action`.
     pub(crate) fn check_action(&self, id: u64, action: &str) -> CoreResult<()> {
-        if self.entry(id)?.props.actions.iter().any(|known| known == action) {
+        if self
+            .entry(id)?
+            .props
+            .actions
+            .iter()
+            .any(|known| known == action)
+        {
             Ok(())
         } else {
             Err(DesktopError::ax_failed(format!(
@@ -174,7 +185,11 @@ impl AxTree {
             ("nativeRole", Some(&props.native_role)),
         ]
         .into_iter()
-        .chain(optional.into_iter().map(|(name, value)| (name, value.as_ref())))
+        .chain(
+            optional
+                .into_iter()
+                .map(|(name, value)| (name, value.as_ref())),
+        )
         .filter_map(|(name, value)| value.map(|value| (name.to_string(), value.clone())))
         .collect())
     }

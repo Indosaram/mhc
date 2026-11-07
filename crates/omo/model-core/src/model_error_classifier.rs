@@ -11,7 +11,6 @@ const RETRYABLE_ERROR_NAMES: &[&str] = &[
     "authenticationerror",
 ];
 
-
 /// Error names that are user-induced or fixable without switching models.
 const NON_RETRYABLE_ERROR_NAMES: &[&str] = &[
     "messageabortederror",
@@ -75,7 +74,6 @@ const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "upstream request failed",
 ];
 
-
 const AUTO_RETRY_GATE_PATTERNS: &[&str] = &["rate limit", "cooling down", "credentials for model"];
 
 fn has_provider_auto_retry_signal(message: &str) -> bool {
@@ -98,17 +96,25 @@ pub struct ErrorInfo {
 #[must_use]
 pub fn is_retryable_model_error(error: &ErrorInfo) -> bool {
     let name = error.name.as_deref().map(str::to_lowercase);
-    if name.as_deref().is_some_and(|name| NON_RETRYABLE_ERROR_NAMES.contains(&name)) {
+    if name
+        .as_deref()
+        .is_some_and(|name| NON_RETRYABLE_ERROR_NAMES.contains(&name))
+    {
         return false;
     }
     let value = serde_json::json!({"name":error.name,"message":error.message,"statusCode":error.status_code});
     if crate::runtime_fallback_error_classifier::is_terminal_quota_error(Some(&value)) {
         return false;
     }
-    if crate::runtime_fallback_error_classifier::classify_runtime_fallback_error(Some(&value)) == Some(crate::runtime_fallback_error_classifier::RuntimeFallbackErrorType::QuotaExceeded) {
+    if crate::runtime_fallback_error_classifier::classify_runtime_fallback_error(Some(&value))
+        == Some(crate::runtime_fallback_error_classifier::RuntimeFallbackErrorType::QuotaExceeded)
+    {
         return true;
     }
-    if name.as_deref().is_some_and(|name| RETRYABLE_ERROR_NAMES.contains(&name)) {
+    if name
+        .as_deref()
+        .is_some_and(|name| RETRYABLE_ERROR_NAMES.contains(&name))
+    {
         return true;
     }
     let msg = error.message.as_deref().unwrap_or_default().to_lowercase();

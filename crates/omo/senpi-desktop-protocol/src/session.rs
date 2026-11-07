@@ -66,7 +66,11 @@ pub enum ComputerDisplay {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, #[serde(rename = "mimeType")] mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
 }
 
 /// Full-resolution screenshot artifact written during one computer run.

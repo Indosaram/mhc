@@ -187,19 +187,45 @@ fn revived_last_node_terminalizes_run_once() {
     use crate::manager::manager_tests::fakes::{base_spec, started};
     let fixture = fixture(definition(vec![node("only", &[])]), 1);
     let task = started(fixture.scheduler.options.task_manager.start(&base_spec()));
-    fixture.runner.handle(&task.task_id).expect("handle").complete("revived output");
+    fixture
+        .runner
+        .handle(&task.task_id)
+        .expect("handle")
+        .complete("revived output");
     let mut record = fixture.scheduler.journal.snapshot();
     record.status = DagRunStatus::Running;
     record.nodes[0].state = DagNodeState::Running;
     record.nodes[0].task_id = Some(task.task_id.clone());
-    fixture.store.write_checkpoint(&run_id(), &record).expect("checkpoint");
-    crate::dag::node_send::watch_revived_task(fixture.scheduler.options.clone(), "only".into(), task.task_id)
-        .expect("watcher settles");
-    let record = fixture.store.read_checkpoint::<DagRunRecordV1>(&run_id()).expect("read").expect("record");
+    fixture
+        .store
+        .write_checkpoint(&run_id(), &record)
+        .expect("checkpoint");
+    crate::dag::node_send::watch_revived_task(
+        fixture.scheduler.options.clone(),
+        "only".into(),
+        task.task_id,
+    )
+    .expect("watcher settles");
+    let record = fixture
+        .store
+        .read_checkpoint::<DagRunRecordV1>(&run_id())
+        .expect("read")
+        .expect("record");
     assert_eq!(record.status, DagRunStatus::Completed);
-    let journal = crate::dag::node_control_context::control_journal(&fixture.scheduler.options, record, BTreeMap::new()).expect("journal");
+    let journal = crate::dag::node_control_context::control_journal(
+        &fixture.scheduler.options,
+        record,
+        BTreeMap::new(),
+    )
+    .expect("journal");
     finish_settled_run(&journal, &fixture.scheduler.now).expect("idempotent finish");
-    assert_eq!(events_of(&fixture.store).iter().filter(|event| matches!(event.payload, DagRunEventPayload::RunCompleted { .. })).count(), 1);
+    assert_eq!(
+        events_of(&fixture.store)
+            .iter()
+            .filter(|event| matches!(event.payload, DagRunEventPayload::RunCompleted { .. }))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -209,11 +235,29 @@ fn revived_last_node_failure_terminalizes_run() {
     record.status = DagRunStatus::Running;
     record.nodes[0].state = DagNodeState::Running;
     record.nodes[0].task_id = Some("missing-task".into());
-    fixture.store.write_checkpoint(&run_id(), &record).expect("checkpoint");
-    crate::dag::node_send::watch_revived_task(fixture.scheduler.options.clone(), "only".into(), "missing-task".into()).expect("watcher settles failure");
-    let record = fixture.store.read_checkpoint::<DagRunRecordV1>(&run_id()).expect("read").expect("record");
+    fixture
+        .store
+        .write_checkpoint(&run_id(), &record)
+        .expect("checkpoint");
+    crate::dag::node_send::watch_revived_task(
+        fixture.scheduler.options.clone(),
+        "only".into(),
+        "missing-task".into(),
+    )
+    .expect("watcher settles failure");
+    let record = fixture
+        .store
+        .read_checkpoint::<DagRunRecordV1>(&run_id())
+        .expect("read")
+        .expect("record");
     assert_eq!(record.status, DagRunStatus::Failed);
-    assert_eq!(events_of(&fixture.store).iter().filter(|event| matches!(event.payload, DagRunEventPayload::RunFailed { .. })).count(), 1);
+    assert_eq!(
+        events_of(&fixture.store)
+            .iter()
+            .filter(|event| matches!(event.payload, DagRunEventPayload::RunFailed { .. }))
+            .count(),
+        1
+    );
 }
 
 #[test]

@@ -17,21 +17,8 @@ static LAST_TOKEN_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\S+$").expect("valid token regex"));
 
 const COMMON_SHELL_VARIABLES: &[&str] = &[
-    "CI",
-    "EDITOR",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "NODE_ENV",
-    "OLDPWD",
-    "PATH",
-    "PWD",
-    "SHELL",
-    "SHLVL",
-    "TERM",
-    "TMPDIR",
-    "USER",
-    "VISUAL",
+    "CI", "EDITOR", "HOME", "LANG", "LC_ALL", "NODE_ENV", "OLDPWD", "PATH", "PWD", "SHELL",
+    "SHLVL", "TERM", "TMPDIR", "USER", "VISUAL",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +54,10 @@ fn is_dollar_query_completable(query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
-    if query.starts_with('-') || query.starts_with('_') || query.starts_with(|c: char| c.is_ascii_digit()) {
+    if query.starts_with('-')
+        || query.starts_with('_')
+        || query.starts_with(|c: char| c.is_ascii_digit())
+    {
         return false;
     }
     !COMMON_SHELL_VARIABLES.contains(&query)
@@ -75,11 +65,7 @@ fn is_dollar_query_completable(query: &str) -> bool {
 
 fn skill_name(name: &str) -> Option<&str> {
     let value = name.strip_prefix(SKILL_COMMAND_PREFIX)?;
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn command_description(command: &CommandSpec) -> Option<String> {
@@ -109,7 +95,10 @@ fn is_whitespace_char(c: char) -> bool {
 ///
 /// Tokens must sit at a whitespace boundary, so `$HOME`, `$1`, `a$x`, and unknown names
 /// stay plain. Offsets are line-local and `end` is exclusive.
-pub fn find_dollar_skill_mentions(line: &str, known_skills: &BTreeSet<String>) -> Vec<DollarSkillMention> {
+pub fn find_dollar_skill_mentions(
+    line: &str,
+    known_skills: &BTreeSet<String>,
+) -> Vec<DollarSkillMention> {
     if known_skills.is_empty() {
         return Vec::new();
     }
@@ -155,7 +144,9 @@ pub fn get_dollar_invocation_context(
     _cursor_line: usize,
     commands: &[CommandSpec],
 ) -> Option<DollarInvocationContext> {
-    let token_start = LAST_TOKEN_PATTERN.find(text_before_cursor).map(|m| m.start());
+    let token_start = LAST_TOKEN_PATTERN
+        .find(text_before_cursor)
+        .map(|m| m.start());
     let token = match token_start {
         Some(start) => &text_before_cursor[start..],
         None => "",
@@ -215,10 +206,11 @@ pub fn get_dollar_invocation_suggestions(
         });
     }
 
-    let mut ranked: Vec<(usize, DollarInvocationItem)> = fuzzy_filter(&items, query, |item| item.search_text.clone())
-        .into_iter()
-        .enumerate()
-        .collect();
+    let mut ranked: Vec<(usize, DollarInvocationItem)> =
+        fuzzy_filter(&items, query, |item| item.search_text.clone())
+            .into_iter()
+            .enumerate()
+            .collect();
     ranked.sort_by(|(left_index, left), (right_index, right)| {
         if left.kind != right.kind {
             return match left.kind {

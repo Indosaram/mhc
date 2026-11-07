@@ -62,7 +62,8 @@ pub(crate) fn native_owner<B: AtSpiBus>(
 /// told apart, or title and geometry disagree.
 pub(crate) fn correlate_owner(frame: &FrameFacts, windows: &[DesktopWindow]) -> Option<String> {
     let pid = frame.pid?;
-    let candidates: Vec<&DesktopWindow> = windows.iter().filter(|win| win.pid == Some(pid)).collect();
+    let candidates: Vec<&DesktopWindow> =
+        windows.iter().filter(|win| win.pid == Some(pid)).collect();
     let extents = frame.extents.filter(|&extents| trusted(extents));
     let titled: Vec<&DesktopWindow> = candidates
         .iter()
@@ -76,13 +77,22 @@ pub(crate) fn correlate_owner(frame: &FrameFacts, windows: &[DesktopWindow]) -> 
     let near = |win: &&DesktopWindow| {
         extents.is_none_or(|extents| bounds_distance(extents, win) <= FRAME_MATCH_TOLERANCE)
     };
-    match titled.into_iter().filter(near).collect::<Vec<_>>().as_slice() {
+    match titled
+        .into_iter()
+        .filter(near)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         [only] => return Some(only.id.clone()),
         [_, _, ..] => return None,
         [] => {}
     }
     match candidates.as_slice() {
-        [only] if frame.sole_frame && extents.is_none() && (frame.title.is_empty() || only.title.is_empty()) => {
+        [only]
+            if frame.sole_frame
+                && extents.is_none()
+                && (frame.title.is_empty() || only.title.is_empty()) =>
+        {
             Some(only.id.clone())
         }
         _ => None,
@@ -91,7 +101,10 @@ pub(crate) fn correlate_owner(frame: &FrameFacts, windows: &[DesktopWindow]) -> 
 
 /// The candidate nearest `extents`, when it is within tolerance and clear
 /// of the runner-up by the margin.
-fn geometry_winner<'w>(extents: Extents, candidates: &[&'w DesktopWindow]) -> Option<&'w DesktopWindow> {
+fn geometry_winner<'w>(
+    extents: Extents,
+    candidates: &[&'w DesktopWindow],
+) -> Option<&'w DesktopWindow> {
     let mut ranked: Vec<(u64, &DesktopWindow)> = candidates
         .iter()
         .map(|&win| (bounds_distance(extents, win), win))

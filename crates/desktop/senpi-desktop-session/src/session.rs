@@ -1,7 +1,7 @@
 //! The session handle: starts the session thread, enqueues requests in
 //! submission order, and waits for each reply under its deadline.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopCapabilities, DesktopSessionOptions};
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{timeout_at, Instant};
 
 use crate::mutate::SessionSafety;
 use crate::request::{Op, Response};

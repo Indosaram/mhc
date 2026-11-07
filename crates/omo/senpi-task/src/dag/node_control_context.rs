@@ -6,8 +6,7 @@ use std::sync::Arc;
 use crate::dag::journal::{DagJournal, DagJournalOptions, create_dag_journal};
 use crate::dag::manager::DagRunRecordV1;
 pub use crate::dag::scheduler::{
-    DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions,
-    apply_dag_scheduler_event,
+    DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions, apply_dag_scheduler_event,
 };
 use crate::dag::store::{DagFileStore, DagStoreError};
 use crate::dag::types::{DagNodeError, DagNodeId, DagRunId};

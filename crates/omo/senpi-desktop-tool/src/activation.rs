@@ -1,14 +1,14 @@
 //! Computer activation and handle lifecycle matching upstream `src/activation.ts`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 use senpi_desktop_protocol::{ComputerSessionSnapshot, DesktopCapabilities, StopPathStatus};
 use senpi_desktop_service::rpc_client::DesktopError;
 use senpi_desktop_service::service::DesktopService;
 
-use crate::session::{run_snapshot, session_open_params, ComputerHostContext};
+use crate::session::{ComputerHostContext, run_snapshot, session_open_params};
 use crate::settings::ComputerSettings;
 
 pub type ActivationListener = Arc<dyn Fn(bool) + Send + Sync>;
@@ -76,7 +76,10 @@ impl ComputerHandle {
         self.listeners.lock().await.push(listener);
     }
 
-    pub async fn activate(&self, context: &ComputerHostContext) -> Result<StopPathStatus, DesktopError> {
+    pub async fn activate(
+        &self,
+        context: &ComputerHostContext,
+    ) -> Result<StopPathStatus, DesktopError> {
         if !self.enabled().await {
             return Err(senpi_desktop_service::rpc_client::DesktopServiceError::closed(
                 "Computer use is off for this session; the user can turn it on with /computer on.",
@@ -89,11 +92,18 @@ impl ComputerHandle {
         Ok(status)
     }
 
-    pub async fn start(&self, context: &ComputerHostContext) -> Result<StopPathStatus, DesktopError> {
+    pub async fn start(
+        &self,
+        context: &ComputerHostContext,
+    ) -> Result<StopPathStatus, DesktopError> {
         self.activate(context).await
     }
 
-    pub fn snapshot(&self, context: &ComputerHostContext, read_only: bool) -> ComputerSessionSnapshot {
+    pub fn snapshot(
+        &self,
+        context: &ComputerHostContext,
+        read_only: bool,
+    ) -> ComputerSessionSnapshot {
         run_snapshot(&self.settings(), context, read_only)
     }
 
@@ -155,7 +165,8 @@ impl ComputerHandle {
 
         let mut opened_guard = self.opened.lock().await;
         if let Some(opened) = opened_guard.as_ref()
-            && opened.key == key {
+            && opened.key == key
+        {
             return Ok(());
         }
 

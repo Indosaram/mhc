@@ -32,8 +32,10 @@ fn run() -> Result<i32, String> {
         let path = executable.to_str().ok_or("probe path is not utf-8")?;
         std::fs::write(marker, path).map_err(|error| format!("write probe marker: {error}"))?;
     }
-    let fail_installed =
-        manifest.get("probeFailInstalled").and_then(serde_json::Value::as_bool) == Some(true);
+    let fail_installed = manifest
+        .get("probeFailInstalled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
     let in_versions = executable
         .parent()
         .and_then(Path::parent)

@@ -2,8 +2,8 @@
 use crate::{
     auth::catalog_identity::legacy_mcp_credential_identity,
     catalog_cache::{
-        McpCachedServerCatalog, McpCatalogCacheFile, get_valid_cached_server_for,
-        write_mcp_cached_server,
+        McpCachedServerCatalog, McpCatalogCacheFile, get_mcp_catalog_cache_path,
+        get_valid_cached_server_for, write_mcp_cached_server,
     },
     config_schema::McpServerDeclaredConfig,
 };
@@ -73,8 +73,13 @@ pub fn adopt_mcp_cached_server(
         credential_identity: Some(current.credential_identity),
         ..previous.clone()
     };
-    if let Some(agent_dir) = agent_dir {
-        let _ = write_mcp_cached_server(agent_dir, server_name, migrated.clone());
+    if let Some(agent_dir) = agent_dir
+        && let Err(error) = write_mcp_cached_server(agent_dir, server_name, migrated.clone())
+    {
+        maho_ext_api::diagnostic(&format!(
+            "MCP catalog cache migration write failed for {server_name} at {}: {error}",
+            get_mcp_catalog_cache_path(agent_dir).display()
+        ));
     }
     Some(migrated)
 }

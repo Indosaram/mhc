@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 fn test_server() -> ResolvedServer {
     ResolvedServer {
         id: "typescript".to_string(),
-        command: vec!["typescript-language-server".to_string(), "--stdio".to_string()],
+        command: vec![
+            "typescript-language-server".to_string(),
+            "--stdio".to_string(),
+        ],
         extensions: vec![".ts".to_string()],
         priority: 1.0,
         env: None,
@@ -28,7 +31,10 @@ impl FakeLspClient {
         Self {
             alive: AtomicBool::new(true),
             stop_call_count,
-            command: vec!["typescript-language-server".to_string(), "--stdio".to_string()],
+            command: vec![
+                "typescript-language-server".to_string(),
+                "--stdio".to_string(),
+            ],
         }
     }
 }
@@ -78,7 +84,8 @@ struct ManagerWithFakes {
 }
 
 fn manager_with_fakes(max_resident_clients: usize) -> ManagerWithFakes {
-    let stop_counts: Arc<Mutex<HashMap<String, Arc<AtomicUsize>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let stop_counts: Arc<Mutex<HashMap<String, Arc<AtomicUsize>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let clock = Arc::new(Mutex::new(1000.0));
     let stop_counts_clone = Arc::clone(&stop_counts);
     let clock_clone = Arc::clone(&clock);
@@ -90,7 +97,10 @@ fn manager_with_fakes(max_resident_clients: usize) -> ManagerWithFakes {
         now: Some(Arc::new(move || *clock_clone.lock().unwrap())),
         client_factory: Some(Arc::new(move |root: &str, _server: &ResolvedServer| {
             let count = Arc::new(AtomicUsize::new(0));
-            stop_counts_clone.lock().unwrap().insert(root.to_string(), Arc::clone(&count));
+            stop_counts_clone
+                .lock()
+                .unwrap()
+                .insert(root.to_string(), Arc::clone(&count));
             Ok(Arc::new(FakeLspClient::new(count)) as SharedClient)
         })),
         ..Default::default()
@@ -104,7 +114,8 @@ fn manager_with_fakes(max_resident_clients: usize) -> ManagerWithFakes {
 }
 
 #[tokio::test]
-async fn given_a_cap_of_two_idle_clients_when_a_third_client_is_admitted_then_the_least_recently_used_one_is_stopped_and_evicted() {
+async fn given_a_cap_of_two_idle_clients_when_a_third_client_is_admitted_then_the_least_recently_used_one_is_stopped_and_evicted()
+ {
     let server = test_server();
     let fakes = manager_with_fakes(2);
     let manager = &fakes.manager;
@@ -140,20 +151,30 @@ async fn given_a_cap_of_two_idle_clients_when_a_third_client_is_admitted_then_th
 }
 
 #[tokio::test]
-async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_is_admitted_then_the_busy_client_survives_and_an_idle_one_is_evicted() {
+async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_is_admitted_then_the_busy_client_survives_and_an_idle_one_is_evicted()
+ {
     let server = test_server();
     let fakes = manager_with_fakes(2);
     let manager = &fakes.manager;
 
-    manager.get_client("/root-busy", &server, None).await.unwrap();
+    manager
+        .get_client("/root-busy", &server, None)
+        .await
+        .unwrap();
     *fakes.clock.lock().unwrap() += 10.0;
 
-    manager.get_client("/root-idle", &server, None).await.unwrap();
+    manager
+        .get_client("/root-idle", &server, None)
+        .await
+        .unwrap();
     manager.release_client("/root-idle", &server.id);
     *fakes.clock.lock().unwrap() += 10.0;
 
     // when
-    manager.get_client("/root-new", &server, None).await.unwrap();
+    manager
+        .get_client("/root-new", &server, None)
+        .await
+        .unwrap();
     manager.release_client("/root-new", &server.id);
 
     // then
@@ -183,15 +204,22 @@ async fn given_the_least_recently_used_client_is_mid_request_when_a_new_client_i
 }
 
 #[tokio::test]
-async fn given_every_resident_client_is_busy_when_a_new_client_is_admitted_then_nothing_is_evicted_and_the_cap_is_exceeded_rather_than_breaking_a_live_request() {
+async fn given_every_resident_client_is_busy_when_a_new_client_is_admitted_then_nothing_is_evicted_and_the_cap_is_exceeded_rather_than_breaking_a_live_request()
+ {
     let server = test_server();
     let fakes = manager_with_fakes(1);
     let manager = &fakes.manager;
 
-    manager.get_client("/root-busy", &server, None).await.unwrap();
+    manager
+        .get_client("/root-busy", &server, None)
+        .await
+        .unwrap();
 
     // when
-    manager.get_client("/root-second", &server, None).await.unwrap();
+    manager
+        .get_client("/root-second", &server, None)
+        .await
+        .unwrap();
 
     // then
     assert_eq!(manager.client_count(), 2);
@@ -210,12 +238,16 @@ async fn given_every_resident_client_is_busy_when_a_new_client_is_admitted_then_
 }
 
 #[tokio::test]
-async fn given_warmup_requests_beyond_the_cap_when_a_warm_client_is_admitted_then_the_idle_least_recently_used_client_is_evicted_too() {
+async fn given_warmup_requests_beyond_the_cap_when_a_warm_client_is_admitted_then_the_idle_least_recently_used_client_is_evicted_too()
+ {
     let server = test_server();
     let fakes = manager_with_fakes(1);
     let manager = &fakes.manager;
 
-    manager.get_client("/root-first", &server, None).await.unwrap();
+    manager
+        .get_client("/root-first", &server, None)
+        .await
+        .unwrap();
     manager.release_client("/root-first", &server.id);
     *fakes.clock.lock().unwrap() += 10.0;
 

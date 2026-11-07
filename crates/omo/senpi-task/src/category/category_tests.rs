@@ -243,7 +243,10 @@ fn resolve_quick_chain_reaches_luna_fast() {
 
 #[test]
 fn resolve_writing_default_selects_kimi_k3() {
-    let models = registry(vec![model("kimi-coding", "k3"), model("kimi-coding", "k3.1-pro")]);
+    let models = registry(vec![
+        model("kimi-coding", "k3"),
+        model("kimi-coding", "k3.1-pro"),
+    ]);
     let resolved = expect_resolved(resolve("writing", json!({}), &models));
     assert_eq!(resolved.spec.provider, "kimi-coding");
     assert_eq!(resolved.spec.model_id, "k3");

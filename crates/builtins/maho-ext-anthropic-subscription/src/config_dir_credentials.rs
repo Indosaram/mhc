@@ -43,17 +43,30 @@ pub fn resolve_accounts_directory(agent_dir: &Path, now_ms: u64) -> PathBuf {
         return target;
     }
     if target.exists() {
-        let _ = fs::rename(&legacy, agent_dir.join(format!("{LEGACY}.{now_ms}.bak")));
+        let backup = agent_dir.join(format!("{LEGACY}.{now_ms}.bak"));
+        if let Err(error) = fs::rename(&legacy, backup) {
+            maho_ext_api::diagnostic(&format!(
+                "Anthropic Subscription could not move legacy account directory {} aside: {error}",
+                legacy.display()
+            ));
+        }
         return target;
     }
-    if fs::rename(&legacy, &target).is_ok() {
-        return target;
-    }
-    if copy_tree(&legacy, &target)
-        .and_then(|()| fs::remove_dir_all(&legacy))
-        .is_ok()
-    {
-        return target;
+    let rename_error = match fs::rename(&legacy, &target) {
+        Ok(()) => return target,
+        Err(error) => error,
+    };
+    match copy_tree(&legacy, &target).and_then(|()| fs::remove_dir_all(&legacy)) {
+        Ok(()) => return target,
+        Err(error) => {
+            // The legacy directory stays: say why, otherwise every start retries the same migration
+            // with no trace of the cause. Both failures matter - rename usually failed for a reason
+            // (a cross-device move), and the copy is what was supposed to replace it.
+            maho_ext_api::diagnostic(&format!(
+                "Anthropic Subscription could not migrate legacy account directory {}: {error}; rename first failed: {rename_error}",
+                legacy.display()
+            ));
+        }
     }
     let _ = fs::remove_dir_all(&target);
     legacy

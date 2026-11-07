@@ -19,10 +19,16 @@ impl ServerError {
         Self::new("wrong_server", "Request was addressed to another server")
     }
     pub fn session_not_found(message: Option<&str>) -> Self {
-        Self::new("session_not_found", message.unwrap_or("Session was not found"))
+        Self::new(
+            "session_not_found",
+            message.unwrap_or("Session was not found"),
+        )
     }
     pub fn session_ambiguous() -> Self {
-        Self::new("session_ambiguous", "Session ID matches more than one session")
+        Self::new(
+            "session_ambiguous",
+            "Session ID matches more than one session",
+        )
     }
     pub fn not_attached() -> Self {
         Self::new(

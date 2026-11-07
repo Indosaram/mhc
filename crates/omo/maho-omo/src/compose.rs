@@ -13,19 +13,17 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use maho_ext_api::{
-    ComponentLogger, DeliverAs, EventBus, Extension, ExtensionApi, ExtensionSessionProfile, FlagType, FlagValue,
-    LoadedExtension, SendMessageOptions, SourceInfo,
-};
 use idle_injection::IdleInjectionCoordinator;
+use maho_ext_api::{
+    ComponentLogger, DeliverAs, EventBus, Extension, ExtensionApi, ExtensionSessionProfile,
+    FlagType, FlagValue, LoadedExtension, SendMessageOptions, SourceInfo,
+};
 
 use maho_omo_comment_checker::resolver::default_comment_checker_cache_dir;
 
 use crate::coordinator::{Delivery, IdleInjectionDelivery, IdleInjectionMessage};
 use crate::logger::StderrLogger;
-use crate::provisioning::{
-    ProvisioningOptions, provision_dag_sdk_root, provision_toolkit_path,
-};
+use crate::provisioning::{ProvisioningOptions, provision_dag_sdk_root, provision_toolkit_path};
 use crate::runtime::{ConfigAccessor, OmoRuntime, OmoRuntimeOptions};
 
 /// Upstream `omo-senpi-disabled`, rebranded per the plan (`omo-senpi-disabled -> maho-omo-disabled`).
@@ -68,30 +66,51 @@ pub struct OmoSenpiComponent {
 
 impl std::fmt::Debug for OmoSenpiComponent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("OmoSenpiComponent").field("name", &self.name).finish_non_exhaustive()
+        formatter
+            .debug_struct("OmoSenpiComponent")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }
 
 impl OmoSenpiComponent {
     pub fn new(name: &'static str, extension: Box<dyn Extension>) -> Self {
-        Self { name, register: Arc::new(move |api, _| extension.register(api)) }
+        Self {
+            name,
+            register: Arc::new(move |api, _| extension.register(api)),
+        }
     }
 
-    pub fn from_register(name: &'static str, register: impl Fn(&mut ExtensionApi) + Send + Sync + 'static) -> Self {
-        Self { name, register: Arc::new(move |api, _| register(api)) }
+    pub fn from_register(
+        name: &'static str,
+        register: impl Fn(&mut ExtensionApi) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name,
+            register: Arc::new(move |api, _| register(api)),
+        }
     }
 
     /// Builds a fresh extension on every register, so a component whose registration consumes
     /// one-shot state still registers after a reload/recreate.
-    pub fn from_factory(name: &'static str, factory: impl Fn() -> Box<dyn Extension> + Send + Sync + 'static) -> Self {
-        Self { name, register: Arc::new(move |api, _| factory().register(api)) }
+    pub fn from_factory(
+        name: &'static str,
+        factory: impl Fn() -> Box<dyn Extension> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name,
+            register: Arc::new(move |api, _| factory().register(api)),
+        }
     }
 
     pub fn from_context_register(
         name: &'static str,
         register: impl Fn(&mut ExtensionApi, &OmoRuntime) + Send + Sync + 'static,
     ) -> Self {
-        Self { name, register: Arc::new(register) }
+        Self {
+            name,
+            register: Arc::new(register),
+        }
     }
 
     pub fn register(&self, api: &mut ExtensionApi, runtime: &OmoRuntime) {
@@ -110,11 +129,26 @@ pub struct OmoExtension {
 
 impl OmoExtension {
     pub fn new(components: Vec<OmoSenpiComponent>) -> Self {
-        Self::with_options(components, OmoRuntimeOptions::default(), ProvisioningOptions::default())
+        Self::with_options(
+            components,
+            OmoRuntimeOptions::default(),
+            ProvisioningOptions::default(),
+        )
     }
 
-    pub fn with_options(components: Vec<OmoSenpiComponent>, options: OmoRuntimeOptions, provisioning: ProvisioningOptions) -> Self {
-        Self { components, options, provisioning, runtime: Mutex::new(None), retained_runtime: Mutex::new(None), environment: Mutex::new(std::collections::BTreeMap::new()) }
+    pub fn with_options(
+        components: Vec<OmoSenpiComponent>,
+        options: OmoRuntimeOptions,
+        provisioning: ProvisioningOptions,
+    ) -> Self {
+        Self {
+            components,
+            options,
+            provisioning,
+            runtime: Mutex::new(None),
+            retained_runtime: Mutex::new(None),
+            environment: Mutex::new(std::collections::BTreeMap::new()),
+        }
     }
 
     pub fn components(&self) -> &[OmoSenpiComponent] {
@@ -123,25 +157,41 @@ impl OmoExtension {
 
     /// The runtime built during `register`; the CLI binds it into the session's `ExtensionContext`.
     pub fn runtime(&self) -> Option<Arc<OmoRuntime>> {
-        self.runtime.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn environment(&self) -> std::collections::BTreeMap<String, String> {
-        self.environment.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.environment
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
 impl Extension for OmoExtension {
     fn register(&self, api: &mut ExtensionApi) {
         *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        let logger: Arc<dyn ComponentLogger> = self.options.logger.clone().unwrap_or_else(|| Arc::new(StderrLogger));
+        let logger: Arc<dyn ComponentLogger> = self
+            .options
+            .logger
+            .clone()
+            .unwrap_or_else(|| Arc::new(StderrLogger));
 
-        let updates = provision_toolkit_path(&self.provisioning).into_iter()
+        let updates = provision_toolkit_path(&self.provisioning)
+            .into_iter()
             .chain(provision_dag_sdk_root(&self.provisioning));
-        let mut environment = self.environment.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut environment = self
+            .environment
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         environment.clear();
         for (name, value) in updates {
-            if let Some(value) = value { environment.insert(name, value); }
+            if let Some(value) = value {
+                environment.insert(name, value);
+            }
         }
         // Shell children inherit this environment: a bundled skill's Python must not write
         // __pycache__ into a signed app, so bytecode goes to <user cache>/omo-senpi/pycache unless
@@ -155,7 +205,8 @@ impl Extension for OmoExtension {
                     .filter_map(|name| Some((name.to_owned(), self.provisioning.read(name)?)))
                     .collect();
             let platform = if cfg!(windows) { "win32" } else { "linux" };
-            let cache_dir = default_comment_checker_cache_dir(platform, Some(&env), Some("omo-senpi"));
+            let cache_dir =
+                default_comment_checker_cache_dir(platform, Some(&env), Some("omo-senpi"));
             if let Some(root) = cache_dir.parent() {
                 let prefix = root.join("pycache").to_string_lossy().into_owned();
                 if let Some(sink) = &self.provisioning.sink {
@@ -168,14 +219,21 @@ impl Extension for OmoExtension {
 
         api.register_flag(
             OMO_DISABLED_FLAG,
-            FlagType::Boolean { default: Some(false) },
+            FlagType::Boolean {
+                default: Some(false),
+            },
             Some("Disable all maho-omo components.".to_owned()),
         );
         for component in &self.components {
             api.register_flag(
                 &component_disabled_flag(component.name),
-                FlagType::Boolean { default: Some(false) },
-                Some(format!("Disable the omo-senpi {} component.", component.name)),
+                FlagType::Boolean {
+                    default: Some(false),
+                },
+                Some(format!(
+                    "Disable the omo-senpi {} component.",
+                    component.name
+                )),
             );
         }
 
@@ -187,14 +245,21 @@ impl Extension for OmoExtension {
         }
 
         let runtime = {
-            let mut retained = self.retained_runtime.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut retained = self
+                .retained_runtime
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             match retained.as_ref() {
                 Some(runtime) => {
                     runtime.rebind(delivery_from(api), config_from(api));
                     Arc::clone(runtime)
                 }
                 None => {
-                    let runtime = Arc::new(OmoRuntime::new(delivery_from(api), config_from(api), self.options.clone()));
+                    let runtime = Arc::new(OmoRuntime::new(
+                        delivery_from(api),
+                        config_from(api),
+                        self.options.clone(),
+                    ));
                     *retained = Some(Arc::clone(&runtime));
                     runtime
                 }
@@ -208,40 +273,66 @@ impl Extension for OmoExtension {
         let settles = crate::settle_observers::SettleObservers::new(runtime.logger());
         let shutdown_runtime = Arc::clone(&runtime);
         let shutdown_settles = settles.clone();
-        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, context| {
-            shutdown_runtime.startup_deferral().retire();
-            shutdown_runtime.coordinator().retire();
-            shutdown_settles.retire(Some(context.session_manager.session_id()));
-            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
-        }));
+        api.on(
+            maho_ext_api::EventKind::SessionShutdown,
+            Arc::new(move |_, context| {
+                shutdown_runtime.startup_deferral().retire();
+                shutdown_runtime.coordinator().retire();
+                shutdown_settles.retire(Some(context.session_manager.session_id()));
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            }),
+        );
         // On A -> B switches the host sends session_shutdown on A before starting B.
         let start_settles = settles.clone();
-        api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
-            start_settles.retire(Some(context.session_manager.session_id()));
-            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
-        }));
-        for kind in [maho_ext_api::EventKind::Input, maho_ext_api::EventKind::BeforeAgentStart] {
-            let startup = runtime.startup_deferral();
-            api.on(kind, Arc::new(move |_, _| {
-                startup.open();
+        api.on(
+            maho_ext_api::EventKind::SessionStart,
+            Arc::new(move |_, context| {
+                start_settles.retire(Some(context.session_manager.session_id()));
                 Box::pin(async { Ok(maho_ext_api::EventResult::None) })
-            }));
+            }),
+        );
+        for kind in [
+            maho_ext_api::EventKind::Input,
+            maho_ext_api::EventKind::BeforeAgentStart,
+        ] {
+            let startup = runtime.startup_deferral();
+            api.on(
+                kind,
+                Arc::new(move |_, _| {
+                    startup.open();
+                    Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+                }),
+            );
         }
         let _turn = runtime.enter_turn();
-        let existing: std::collections::BTreeMap<_, _> = api.registered.handlers.iter()
-            .map(|(kind, handlers)| (*kind, handlers.len())).collect();
+        let existing: std::collections::BTreeMap<_, _> = api
+            .registered
+            .handlers
+            .iter()
+            .map(|(kind, handlers)| (*kind, handlers.len()))
+            .collect();
 
         for component in &self.components {
             if is_true(api.get_flag(&component_disabled_flag(component.name))) {
                 let details = serde_json::json!({ "component": component.name });
-                runtime.logger().info("omo-senpi component disabled by flag", Some(&details));
+                runtime
+                    .logger()
+                    .info("omo-senpi component disabled by flag", Some(&details));
                 continue;
             }
-            let settled_before = api.registered.handlers.get(&maho_ext_api::EventKind::AgentSettled).map_or(0, Vec::len);
+            let settled_before = api
+                .registered
+                .handlers
+                .get(&maho_ext_api::EventKind::AgentSettled)
+                .map_or(0, Vec::len);
             let registration = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime)));
             // Upstream `prewarm-diagnostics`: every `agent_settled` handler a component registered
             // runs under a bounded settle observer.
-            if let Some(handlers) = api.registered.handlers.get_mut(&maho_ext_api::EventKind::AgentSettled) {
+            if let Some(handlers) = api
+                .registered
+                .handlers
+                .get_mut(&maho_ext_api::EventKind::AgentSettled)
+            {
                 for handler in handlers.iter_mut().skip(settled_before) {
                     *handler = settles.wrap(component.name, None, Arc::clone(handler));
                 }
@@ -251,14 +342,25 @@ impl Extension for OmoExtension {
                     "component": component.name,
                     "error": panic_reason(payload.as_ref()),
                 });
-                runtime.logger().error("omo-senpi component registration failed", Some(&details));
+                runtime
+                    .logger()
+                    .error("omo-senpi component registration failed", Some(&details));
             }
-            runtime.capture_tools(api.registered.tools.iter().map(|tool| tool.definition.clone()).collect());
+            runtime.capture_tools(
+                api.registered
+                    .tools
+                    .iter()
+                    .map(|tool| tool.definition.clone())
+                    .collect(),
+            );
         }
         // Bind only this composition's handlers, leaving earlier host handlers untouched.
         // The guard spans the awaited handler: no deferred queue pass splits its turn.
         for (kind, handlers) in &mut api.registered.handlers {
-            for handler in handlers.iter_mut().skip(existing.get(kind).copied().unwrap_or(0)) {
+            for handler in handlers
+                .iter_mut()
+                .skip(existing.get(kind).copied().unwrap_or(0))
+            {
                 let original = Arc::clone(handler);
                 let shared = Arc::clone(&runtime);
                 *handler = Arc::new(move |event, context| {
@@ -268,7 +370,8 @@ impl Extension for OmoExtension {
                     shared.bind(&mut context);
                     if matches!(event, maho_ext_api::ExtensionEvent::SessionStart(_)) {
                         let startup = shared.startup_deferral();
-                        context.defer_macrotask = Some(Arc::new(move |work| startup.schedule(work)));
+                        context.defer_macrotask =
+                            Some(Arc::new(move |work| startup.schedule(work)));
                     }
                     Box::pin(async move {
                         let future = original(event, &context);
@@ -278,7 +381,13 @@ impl Extension for OmoExtension {
             }
         }
 
-        runtime.capture_tools(api.registered.tools.iter().map(|tool| tool.definition.clone()).collect());
+        runtime.capture_tools(
+            api.registered
+                .tools
+                .iter()
+                .map(|tool| tool.definition.clone())
+                .collect(),
+        );
         *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = Some(runtime);
     }
 }
@@ -296,21 +405,26 @@ fn config_from(api: &ExtensionApi) -> ConfigAccessor {
 fn delivery_from(api: &ExtensionApi) -> IdleInjectionDelivery {
     let runtime = api.runtime.clone();
     let cwd = api.cwd.clone();
-    Arc::new(move |message: &IdleInjectionMessage, deliver_as: DeliverAs| {
-        let api = ExtensionApi::new(
-            LoadedExtension::new(OMO_EXTENSION_IDENTITY, cwd.clone(), SourceInfo::default()),
-            ExtensionSessionProfile::default(),
-            EventBus::default(),
-            runtime.clone(),
-        );
-        match api.send_message_with_receipt(
-            message.to_custom_message(),
-            SendMessageOptions { trigger_turn: true, deliver_as: Some(deliver_as) },
-        ) {
-            Ok(receipt) => Delivery::Receipt(receipt),
-            Err(error) => Delivery::Failed(error.to_string()),
-        }
-    })
+    Arc::new(
+        move |message: &IdleInjectionMessage, deliver_as: DeliverAs| {
+            let api = ExtensionApi::new(
+                LoadedExtension::new(OMO_EXTENSION_IDENTITY, cwd.clone(), SourceInfo::default()),
+                ExtensionSessionProfile::default(),
+                EventBus::default(),
+                runtime.clone(),
+            );
+            match api.send_message_with_receipt(
+                message.to_custom_message(),
+                SendMessageOptions {
+                    trigger_turn: true,
+                    deliver_as: Some(deliver_as),
+                },
+            ) {
+                Ok(receipt) => Delivery::Receipt(receipt),
+                Err(error) => Delivery::Failed(error.to_string()),
+            }
+        },
+    )
 }
 
 fn panic_reason(payload: &(dyn std::any::Any + Send)) -> String {

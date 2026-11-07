@@ -14,13 +14,19 @@ fn doc(path: &str, description: &str, body: &str) -> RecallDocument {
 
 fn english_corpus(count: usize) -> Vec<RecallDocument> {
     (0..count)
-        .map(|index| doc(&format!("notes/n{index}.md"), "Deploy notes", "rollback the canary"))
+        .map(|index| {
+            doc(
+                &format!("notes/n{index}.md"),
+                "Deploy notes",
+                "rollback the canary",
+            )
+        })
         .collect()
 }
 
 #[test]
 fn given_hangul_han_hiragana_katakana_and_the_prolonged_sound_mark_when_checked_then_each_counts_as_cjk()
-{
+ {
     for sample in ["배포", "发布", "ひらがな", "カタカナ", "\u{30fc}"] {
         assert!(has_cjk(sample), "{sample} should count as CJK");
     }
@@ -52,16 +58,22 @@ fn given_an_empty_corpus_when_measured_then_the_share_is_zero() {
 #[test]
 fn given_english_queries_over_a_small_english_corpus_when_chosen_then_the_substring_path_is_kept() {
     assert_eq!(
-        choose_recall_strategy(&english_corpus(10), &["rollback".to_string(), "\"canary deploy\"".to_string()]),
+        choose_recall_strategy(
+            &english_corpus(10),
+            &["rollback".to_string(), "\"canary deploy\"".to_string()]
+        ),
         RecallStrategy::Substring
     );
 }
 
 #[test]
 fn given_one_planned_query_with_a_cjk_character_over_an_english_corpus_when_chosen_then_bm25_is_picked()
-{
+ {
     assert_eq!(
-        choose_recall_strategy(&english_corpus(10), &["rollback".to_string(), "퍼블리시할".to_string()]),
+        choose_recall_strategy(
+            &english_corpus(10),
+            &["rollback".to_string(), "퍼블리시할".to_string()]
+        ),
         RecallStrategy::Bm25
     );
 }
@@ -102,7 +114,10 @@ fn given_an_english_corpus_one_note_below_the_large_threshold_when_chosen_then_s
 #[test]
 fn given_an_english_corpus_exactly_at_the_large_threshold_when_chosen_then_hybrid_is_picked() {
     assert_eq!(
-        choose_recall_strategy(&english_corpus(LARGE_CORPUS_MIN_DOCUMENTS), &["rollback".to_string()]),
+        choose_recall_strategy(
+            &english_corpus(LARGE_CORPUS_MIN_DOCUMENTS),
+            &["rollback".to_string()]
+        ),
         RecallStrategy::Hybrid
     );
 }
@@ -110,7 +125,10 @@ fn given_an_english_corpus_exactly_at_the_large_threshold_when_chosen_then_hybri
 #[test]
 fn given_a_cjk_query_over_a_large_corpus_when_chosen_then_hybrid_is_picked() {
     assert_eq!(
-        choose_recall_strategy(&english_corpus(LARGE_CORPUS_MIN_DOCUMENTS), &["퍼블리시할".to_string()]),
+        choose_recall_strategy(
+            &english_corpus(LARGE_CORPUS_MIN_DOCUMENTS),
+            &["퍼블리시할".to_string()]
+        ),
         RecallStrategy::Hybrid
     );
 }

@@ -17,7 +17,11 @@ pub struct Pointer {
 
 impl Pointer {
     pub fn new(current: String, previous: Option<String>) -> Self {
-        Self { schema_version: SCHEMA_VERSION, current, previous }
+        Self {
+            schema_version: SCHEMA_VERSION,
+            current,
+            previous,
+        }
     }
 }
 
@@ -25,7 +29,9 @@ pub fn is_valid_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 128
         && !version.starts_with('.')
-        && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
 /// Directory name for a release version: the string `mhc --version` prints, without a leading `v`.
@@ -41,12 +47,16 @@ pub fn version_dir(version: &str) -> Result<String, String> {
 
 pub fn read(root: &Path) -> Result<Pointer, String> {
     let path = root.join(FILE_NAME);
-    let bytes = std::fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let bytes =
+        std::fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let pointer: Pointer = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid {}: {error}", path.display()))?;
     if pointer.schema_version != SCHEMA_VERSION
         || !is_valid_version(&pointer.current)
-        || pointer.previous.as_deref().is_some_and(|previous| !is_valid_version(previous))
+        || pointer
+            .previous
+            .as_deref()
+            .is_some_and(|previous| !is_valid_version(previous))
     {
         return Err(format!("unsupported {}", path.display()));
     }
@@ -57,7 +67,10 @@ pub fn read(root: &Path) -> Result<Pointer, String> {
 pub fn publish(root: &Path, pointer: &Pointer) -> Result<(), String> {
     if pointer.schema_version != SCHEMA_VERSION
         || !is_valid_version(&pointer.current)
-        || pointer.previous.as_deref().is_some_and(|version| !is_valid_version(version))
+        || pointer
+            .previous
+            .as_deref()
+            .is_some_and(|version| !is_valid_version(version))
     {
         return Err("cannot publish an invalid version pointer".into());
     }
@@ -66,8 +79,13 @@ pub fn publish(root: &Path, pointer: &Pointer) -> Result<(), String> {
         .tempfile_in(root)
         .map_err(|error| format!("cannot create pointer file: {error}"))?;
     serde_json::to_writer(&mut temporary, pointer).map_err(|error| error.to_string())?;
-    temporary.write_all(b"\n").map_err(|error| error.to_string())?;
-    temporary.as_file().sync_all().map_err(|error| error.to_string())?;
+    temporary
+        .write_all(b"\n")
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
     temporary
         .persist(root.join(FILE_NAME))
         .map_err(|error| format!("cannot publish {FILE_NAME}: {}", error.error))?;
@@ -125,7 +143,10 @@ mod tests {
     #[test]
     fn version_dir_strips_leading_v_and_rejects_paths() {
         assert_eq!(version_dir("v1.2.3"), Ok("1.2.3".to_owned()));
-        assert_eq!(version_dir("1.2.3-rc.1+build"), Ok("1.2.3-rc.1+build".to_owned()));
+        assert_eq!(
+            version_dir("1.2.3-rc.1+build"),
+            Ok("1.2.3-rc.1+build".to_owned())
+        );
         for bad in ["", "..", "a/b", "a\\b", ".hidden"] {
             assert!(version_dir(bad).is_err(), "{bad:?}");
         }
@@ -139,5 +160,4 @@ mod tests {
         assert_eq!(read(root.path())?, old);
         Ok(())
     }
-
 }

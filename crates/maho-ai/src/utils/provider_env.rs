@@ -21,9 +21,18 @@ mod tests {
     fn scoped_value_wins_and_empty_falls_through() {
         let mut env = ProviderEnv::new();
         env.insert("MAHO_AI_TEST_PROVIDER_ENV_SCOPED".into(), "scoped".into());
-        assert_eq!(get_provider_env_value("MAHO_AI_TEST_PROVIDER_ENV_SCOPED", Some(&env)).as_deref(), Some("scoped"));
+        assert_eq!(
+            get_provider_env_value("MAHO_AI_TEST_PROVIDER_ENV_SCOPED", Some(&env)).as_deref(),
+            Some("scoped")
+        );
         env.insert("MAHO_AI_TEST_PROVIDER_ENV_EMPTY".into(), String::new());
-        assert_eq!(get_provider_env_value("MAHO_AI_TEST_PROVIDER_ENV_EMPTY", Some(&env)), None);
-        assert_eq!(get_provider_env_value("PATH", None), std::env::var("PATH").ok().filter(|v| !v.is_empty()));
+        assert_eq!(
+            get_provider_env_value("MAHO_AI_TEST_PROVIDER_ENV_EMPTY", Some(&env)),
+            None
+        );
+        assert_eq!(
+            get_provider_env_value("PATH", None),
+            std::env::var("PATH").ok().filter(|v| !v.is_empty())
+        );
     }
 }

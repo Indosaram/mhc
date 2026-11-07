@@ -59,15 +59,17 @@ fn paths(dir: &tempfile::TempDir) -> DaemonPaths {
 #[test]
 fn removed_cached_node_falls_back_to_argv0() {
     let (cached, argv0) = if cfg!(windows) {
-        ("C:\\Program Files\\node\\26.5.0\\node.exe", "C:\\Program Files\\nodejs\\node.exe")
+        (
+            "C:\\Program Files\\node\\26.5.0\\node.exe",
+            "C:\\Program Files\\nodejs\\node.exe",
+        )
     } else {
-        ("/opt/homebrew/Cellar/node/26.5.0/bin/node", "/opt/homebrew/bin/node")
+        (
+            "/opt/homebrew/Cellar/node/26.5.0/bin/node",
+            "/opt/homebrew/bin/node",
+        )
     };
-    let executable = resolve_daemon_node_executable(
-        cached,
-        argv0,
-        |path| path == argv0,
-    );
+    let executable = resolve_daemon_node_executable(cached, argv0, |path| path == argv0);
     assert_eq!(executable, argv0);
 }
 
@@ -213,16 +215,35 @@ async fn failed_readiness_cools_down_for_five_seconds_then_retries() {
     let dir = tempfile::tempdir().expect("temporary daemon root");
     let paths = paths(&dir);
     let harness = harness(Vec::new(), false);
-    let options = EnsureDaemonOptions { ready_timeout_ms: Some(300), ..EnsureDaemonOptions::default() };
-    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
-    assert!(ensure_daemon_running(&paths.clone(), &harness.deps.clone(), options.clone()).await.is_err());
+    let options = EnsureDaemonOptions {
+        ready_timeout_ms: Some(300),
+        ..EnsureDaemonOptions::default()
+    };
+    assert!(
+        ensure_daemon_running(&paths, &harness.deps, options.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        ensure_daemon_running(&paths.clone(), &harness.deps.clone(), options.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(harness.spawns.load(Ordering::SeqCst), 1);
     assert_eq!((harness.deps.now)(), 300);
     (harness.deps.sleep)(4_999, None).await;
-    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
+    assert!(
+        ensure_daemon_running(&paths, &harness.deps, options.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(harness.spawns.load(Ordering::SeqCst), 1);
     (harness.deps.sleep)(1, None).await;
-    assert!(ensure_daemon_running(&paths, &harness.deps, options).await.is_err());
+    assert!(
+        ensure_daemon_running(&paths, &harness.deps, options)
+            .await
+            .is_err()
+    );
     assert_eq!(harness.spawns.load(Ordering::SeqCst), 2);
 }
 
@@ -231,14 +252,31 @@ async fn cooldown_is_per_endpoint_and_reachable_probe_clears_it() {
     let dir = tempfile::tempdir().expect("temporary daemon root");
     let paths = paths(&dir);
     let mut harness = harness(Vec::new(), false);
-    let options = EnsureDaemonOptions { ready_timeout_ms: Some(0), ..EnsureDaemonOptions::default() };
-    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
+    let options = EnsureDaemonOptions {
+        ready_timeout_ms: Some(0),
+        ..EnsureDaemonOptions::default()
+    };
+    assert!(
+        ensure_daemon_running(&paths, &harness.deps, options.clone())
+            .await
+            .is_err()
+    );
     let other = DaemonPaths::under_dir(dir.path().join("other"), "1");
-    assert!(ensure_daemon_running(&other, &harness.deps, options.clone()).await.is_err());
+    assert!(
+        ensure_daemon_running(&other, &harness.deps, options.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(harness.spawns.load(Ordering::SeqCst), 2);
     harness.deps.probe = Arc::new(|_, _| Box::pin(async { true }));
-    ensure_daemon_running(&paths, &harness.deps, options.clone()).await.expect("reachable clears cooldown");
+    ensure_daemon_running(&paths, &harness.deps, options.clone())
+        .await
+        .expect("reachable clears cooldown");
     harness.deps.probe = Arc::new(|_, _| Box::pin(async { false }));
-    assert!(ensure_daemon_running(&paths, &harness.deps, options).await.is_err());
+    assert!(
+        ensure_daemon_running(&paths, &harness.deps, options)
+            .await
+            .is_err()
+    );
     assert_eq!(harness.spawns.load(Ordering::SeqCst), 3);
 }

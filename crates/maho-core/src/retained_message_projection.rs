@@ -11,8 +11,12 @@ pub fn is_safe_bounded_value(value: &Value, depth: usize) -> bool {
         return false;
     }
     match value {
-        Value::Array(items) => items.iter().all(|item| is_safe_bounded_value(item, depth + 1)),
-        Value::Object(items) => items.values().all(|item| is_safe_bounded_value(item, depth + 1)),
+        Value::Array(items) => items
+            .iter()
+            .all(|item| is_safe_bounded_value(item, depth + 1)),
+        Value::Object(items) => items
+            .values()
+            .all(|item| is_safe_bounded_value(item, depth + 1)),
         _ => true,
     }
 }
@@ -114,7 +118,10 @@ mod tests {
         let projected = project_retained_messages(&[call, result]);
         for message in &projected {
             assert_eq!(message["role"], "user");
-            assert_eq!(message["content"], "[message omitted from retained context: not replay-safe]");
+            assert_eq!(
+                message["content"],
+                "[message omitted from retained context: not replay-safe]"
+            );
         }
     }
 
@@ -122,14 +129,20 @@ mod tests {
     fn user_text_survives_a_malformed_attachment() {
         let message = json!({"role":"user","content":[{"type":"text","text":"hello"},{"type":"image"}],"timestamp":3});
         let projected = project_retained_messages(&[message]);
-        assert_eq!(projected[0]["content"], "hello\n[message omitted from retained context: not replay-safe]");
+        assert_eq!(
+            projected[0]["content"],
+            "hello\n[message omitted from retained context: not replay-safe]"
+        );
         assert_eq!(projected[0]["timestamp"], 3);
     }
 
     #[test]
     fn safe_messages_pass_through_and_missing_timestamp_is_zero() {
         let safe = json!({"role":"user","content":"hi","timestamp":1});
-        assert_eq!(project_retained_messages(std::slice::from_ref(&safe)), vec![safe]);
+        assert_eq!(
+            project_retained_messages(std::slice::from_ref(&safe)),
+            vec![safe]
+        );
         let projected = project_retained_messages(&[json!({"role":"custom"})]);
         assert_eq!(projected[0]["timestamp"], 0);
     }

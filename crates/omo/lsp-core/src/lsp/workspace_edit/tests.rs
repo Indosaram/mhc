@@ -26,7 +26,10 @@ fn tmp() -> (tempfile::TempDir, String) {
 }
 
 fn join(dir: &str, name: &str) -> String {
-    std::path::Path::new(dir).join(name).to_string_lossy().into_owned()
+    std::path::Path::new(dir)
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn read(path: &str) -> String {

@@ -61,24 +61,86 @@ fn received() -> Vec<Record> {
 fn a_request_streams_presses_moves_and_releases_and_nothing_runs_outside_one() {
     let mut ledger = Ledger::with_connect(peer);
     ledger.press(Route::Keyboard(9), Input::Key(56), None);
-    assert!(PEER.with_borrow(Option::is_none), "no helper outside a request");
+    assert!(
+        PEER.with_borrow(Option::is_none),
+        "no helper outside a request"
+    );
     ledger.begin();
     ledger.press(Route::Keyboard(9), Input::Key(56), None);
     ledger.press(Route::Keyboard(9), Input::Key(0), Some("a"));
-    ledger.press(Route::Window { pid: 9, wid: 4, x: 1.0, y: 1.0 }, Input::Button(0), None);
-    ledger.moved(Route::Window { pid: 9, wid: 4, x: 5.0, y: 6.0 }, Input::Button(0));
-    ledger.moved(Route::Window { pid: 9, wid: 5, x: 5.0, y: 6.0 }, Input::Button(0));
+    ledger.press(
+        Route::Window {
+            pid: 9,
+            wid: 4,
+            x: 1.0,
+            y: 1.0,
+        },
+        Input::Button(0),
+        None,
+    );
+    ledger.moved(
+        Route::Window {
+            pid: 9,
+            wid: 4,
+            x: 5.0,
+            y: 6.0,
+        },
+        Input::Button(0),
+    );
+    ledger.moved(
+        Route::Window {
+            pid: 9,
+            wid: 5,
+            x: 5.0,
+            y: 6.0,
+        },
+        Input::Button(0),
+    );
     ledger.released(Lane::Keyboard(9), Input::Key(0));
     ledger.released(Lane::Window(9, 4), Input::Button(0));
-    ledger.end().expect("the outermost request ends the stream").finish_within(Duration::ZERO);
-    assert_eq!(received(), [
-        Record::Press { id: 0, route: Route::Keyboard(9), input: Input::Key(56), text: None },
-        Record::Press { id: 1, route: Route::Keyboard(9), input: Input::Key(0), text: Some("a".to_owned()) },
-        Record::Press { id: 2, route: Route::Window { pid: 9, wid: 4, x: 1.0, y: 1.0 }, input: Input::Button(0), text: None },
-        Record::Update { id: 2, route: Route::Window { pid: 9, wid: 4, x: 5.0, y: 6.0 } },
-        Record::Release { id: 1 },
-        Record::Release { id: 2 },
-    ]);
+    ledger
+        .end()
+        .expect("the outermost request ends the stream")
+        .finish_within(Duration::ZERO);
+    assert_eq!(
+        received(),
+        [
+            Record::Press {
+                id: 0,
+                route: Route::Keyboard(9),
+                input: Input::Key(56),
+                text: None
+            },
+            Record::Press {
+                id: 1,
+                route: Route::Keyboard(9),
+                input: Input::Key(0),
+                text: Some("a".to_owned())
+            },
+            Record::Press {
+                id: 2,
+                route: Route::Window {
+                    pid: 9,
+                    wid: 4,
+                    x: 1.0,
+                    y: 1.0
+                },
+                input: Input::Button(0),
+                text: None
+            },
+            Record::Update {
+                id: 2,
+                route: Route::Window {
+                    pid: 9,
+                    wid: 4,
+                    x: 5.0,
+                    y: 6.0
+                }
+            },
+            Record::Release { id: 1 },
+            Record::Release { id: 2 },
+        ]
+    );
 }
 
 #[test]
@@ -87,8 +149,14 @@ fn only_the_outermost_request_ends_the_stream() {
     ledger.begin();
     ledger.begin();
     ledger.press(Route::Keyboard(9), Input::Key(56), None);
-    assert!(ledger.end().is_none(), "an inner request leaves the stream open");
-    ledger.end().expect("the outermost request ends it").finish_within(Duration::ZERO);
+    assert!(
+        ledger.end().is_none(),
+        "an inner request leaves the stream open"
+    );
+    ledger
+        .end()
+        .expect("the outermost request ends it")
+        .finish_within(Duration::ZERO);
     assert_eq!(received().len(), 1);
 }
 
@@ -99,11 +167,24 @@ fn a_hid_press_goes_out_once_the_helper_follows_the_user() {
     ledger.press(Route::Hid, Input::Key(56), None);
     ledger.press(Route::Hid, Input::Button(0), None);
     ledger.end().expect("stream").finish_within(Duration::ZERO);
-    assert_eq!(received(), [
-        Record::Observe,
-        Record::Press { id: 0, route: Route::Hid, input: Input::Key(56), text: None },
-        Record::Press { id: 1, route: Route::Hid, input: Input::Button(0), text: None },
-    ]);
+    assert_eq!(
+        received(),
+        [
+            Record::Observe,
+            Record::Press {
+                id: 0,
+                route: Route::Hid,
+                input: Input::Key(56),
+                text: None
+            },
+            Record::Press {
+                id: 1,
+                route: Route::Hid,
+                input: Input::Button(0),
+                text: None
+            },
+        ]
+    );
 }
 
 #[test]
@@ -114,7 +195,11 @@ fn a_helper_that_never_follows_the_user_is_abandoned_before_the_first_hid_press(
     ledger.press(Route::Hid, Input::Key(0), None);
     assert!(ledger.end().is_none(), "the abandoned helper is gone");
     assert_eq!(received(), [Record::Observe]);
-    assert_eq!(CONNECTS.get(), 1, "the request goes on without a new helper");
+    assert_eq!(
+        CONNECTS.get(),
+        1,
+        "the request goes on without a new helper"
+    );
 }
 
 #[test]

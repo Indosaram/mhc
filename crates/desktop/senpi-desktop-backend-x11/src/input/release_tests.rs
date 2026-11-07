@@ -22,7 +22,10 @@ fn a_failed_press_releases_the_keys_already_down() {
     assert!(result.is_err());
     assert_eq!(
         input.server.calls(),
-        [fake_key(KEY_CONTROL_L, true), fake_key(KEY_CONTROL_L, false)]
+        [
+            fake_key(KEY_CONTROL_L, true),
+            fake_key(KEY_CONTROL_L, false)
+        ]
     );
     // The failed press may still have reached the server, so `release_all`
     // keeps it.

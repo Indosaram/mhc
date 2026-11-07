@@ -42,9 +42,11 @@ impl From<Value> for JsonValue {
             Value::Number(v) => Self::Number(v),
             Value::String(v) => Self::String(v.into()),
             Value::Array(v) => Self::array(v.into_iter().map(Self::from).collect()),
-            Value::Object(v) => {
-                Self::object(v.into_iter().map(|(k, v)| (k.into(), Self::from(v))).collect())
-            }
+            Value::Object(v) => Self::object(
+                v.into_iter()
+                    .map(|(k, v)| (k.into(), Self::from(v)))
+                    .collect(),
+            ),
         }
     }
 }
@@ -120,25 +122,36 @@ fn parse_object(text: &str) -> Result<JsonValue, serde_json::Error> {
     let mut at = 1;
     let mut entries = Vec::new();
     loop {
-        while bytes[at].is_ascii_whitespace() || bytes[at] == b',' { at += 1; }
-        if bytes[at] == b'}' { break; }
+        while bytes[at].is_ascii_whitespace() || bytes[at] == b',' {
+            at += 1;
+        }
+        if bytes[at] == b'}' {
+            break;
+        }
         let start = at;
         at += 1;
         while bytes[at] != b'"' {
-            if bytes[at] == b'\\' { at += 1; }
+            if bytes[at] == b'\\' {
+                at += 1;
+            }
             at += 1;
         }
         at += 1;
         let key = parse_string(&text[start..at])?;
-        while bytes[at].is_ascii_whitespace() || bytes[at] == b':' { at += 1; }
+        while bytes[at].is_ascii_whitespace() || bytes[at] == b':' {
+            at += 1;
+        }
         let start = at;
         let mut depth = 0usize;
         let mut quoted = false;
         loop {
             let byte = bytes[at];
             if quoted {
-                if byte == b'\\' { at += 1; }
-                else if byte == b'"' { quoted = false; }
+                if byte == b'\\' {
+                    at += 1;
+                } else if byte == b'"' {
+                    quoted = false;
+                }
             } else {
                 match byte {
                     b'"' => quoted = true,

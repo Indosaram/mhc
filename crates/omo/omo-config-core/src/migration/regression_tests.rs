@@ -14,9 +14,15 @@ fn renewal_releases_guard_when_replacement_fails() {
     let clock = || 0;
     let alive = |_| true;
     let lock = acquire_migration_lock(AcquireMigrationLockInput {
-        clock: &clock, env: &fixture.env, file_system: &fs, is_alive: &alive,
-        lease_duration_ms: None, pid: 7,
-    }).unwrap().unwrap();
+        clock: &clock,
+        env: &fixture.env,
+        file_system: &fs,
+        is_alive: &alive,
+        lease_duration_ms: None,
+        pid: 7,
+    })
+    .unwrap()
+    .unwrap();
     fs.fail_replace.set(true);
     // When
     let result = lock.renew();
@@ -36,23 +42,37 @@ fn replacement_preplans_unused_backup_in_journal_and_run_result() {
     fs.write(&format!("{base}.1"), "occupied").unwrap();
     let expected = format!("{base}.2");
     let plan = MigrationPlan {
-        id: "planned".into(), mode: MigrationMode::ReplaceTarget, should_run: None,
-        sources: vec![], target_path: fixture.target_path.into(),
+        id: "planned".into(),
+        mode: MigrationMode::ReplaceTarget,
+        should_run: None,
+        sources: vec![],
+        target_path: fixture.target_path.into(),
         transform: Box::new(|_| Ok(json!({}).into())),
     };
     let writer = |input: MigrationTargetWriterInput<'_>| {
         let recorded = read_migration_journal(input.file_system, input.env)?.unwrap();
-        assert_eq!(recorded.target_backup_path.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            recorded.target_backup_path.as_deref(),
+            Some(expected.as_str())
+        );
         assert!(!recorded.target_written);
         assert_eq!(input.backup_path, Some(expected.as_str()));
         write_omo_migration_target(input)
     };
     // When
     let result = execute_plan(ExecutePlanInput {
-        clock: &|| 0, dry_run: false, env: &fixture.env, file_system: &fs,
-        journal_resumed: false, on_boundary: None, pid: 7, plan: &plan,
-        renew_lock: &|| Ok(()), write_target: &writer,
-    }).unwrap();
+        clock: &|| 0,
+        dry_run: false,
+        env: &fixture.env,
+        file_system: &fs,
+        journal_resumed: false,
+        on_boundary: None,
+        pid: 7,
+        plan: &plan,
+        renew_lock: &|| Ok(()),
+        write_target: &writer,
+    })
+    .unwrap();
     // Then
     assert_eq!(result.target_backup_path, Some(expected.clone()));
     assert_eq!(fs.read(&expected).unwrap(), "{}");
@@ -66,16 +86,27 @@ fn fresh_target_does_not_report_a_prewrite_backup() {
     let fixture = migration_fixture();
     fs.write(fixture.source_path, "{}").unwrap();
     let plan = MigrationPlan {
-        id: "fresh".into(), mode: MigrationMode::Merge, should_run: None,
+        id: "fresh".into(),
+        mode: MigrationMode::Merge,
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
-        target_path: fixture.target_path.into(), transform: Box::new(|_| Ok(json!({}).into())),
+        target_path: fixture.target_path.into(),
+        transform: Box::new(|_| Ok(json!({}).into())),
     };
     // When
     let result = execute_plan(ExecutePlanInput {
-        clock: &|| 0, dry_run: false, env: &fixture.env, file_system: &fs,
-        journal_resumed: false, on_boundary: None, pid: 7, plan: &plan,
-        renew_lock: &|| Ok(()), write_target: &write_omo_migration_target,
-    }).unwrap();
+        clock: &|| 0,
+        dry_run: false,
+        env: &fixture.env,
+        file_system: &fs,
+        journal_resumed: false,
+        on_boundary: None,
+        pid: 7,
+        plan: &plan,
+        renew_lock: &|| Ok(()),
+        write_target: &write_omo_migration_target,
+    })
+    .unwrap();
     // Then
     assert_eq!(result.target_backup_path, None);
     assert_eq!(result.status, MigrationStatus::Migrated);
@@ -86,15 +117,29 @@ fn prepared_writer_receives_planned_backup_and_returns_actual_backup() {
     // Given
     let fs = MemoryMigrationFileSystem::new();
     let fixture = migration_fixture();
-    let prepared = PreparedTargetWrite { diagnostics: vec![], document: json!({}), edits: vec![] };
+    let prepared = PreparedTargetWrite {
+        diagnostics: vec![],
+        document: json!({}),
+        edits: vec![],
+    };
     let called = Cell::new(false);
     let writer = |input: MigrationTargetWriterInput<'_>| {
         assert_eq!(input.backup_path, Some("planned"));
         called.set(true);
-        Ok(MigrationTargetWriteResult { backup_path: Some("actual".into()) })
+        Ok(MigrationTargetWriteResult {
+            backup_path: Some("actual".into()),
+        })
     };
     // When
-    let result = write_prepared_target(&fixture.env, &fs, &prepared, fixture.target_path, &writer, Some("planned")).unwrap();
+    let result = write_prepared_target(
+        &fixture.env,
+        &fs,
+        &prepared,
+        fixture.target_path,
+        &writer,
+        Some("planned"),
+    )
+    .unwrap();
     // Then
     assert!(called.get());
     assert_eq!(result.as_deref(), Some("actual"));
@@ -103,24 +148,41 @@ fn prepared_writer_receives_planned_backup_and_returns_actual_backup() {
 #[test]
 fn replacement_edits_only_changed_nested_paths() {
     // Given
-    let before = json!({"task":{"default_concurrency":3,"provider_concurrency":{"old":2,"keep":1}}});
+    let before =
+        json!({"task":{"default_concurrency":3,"provider_concurrency":{"old":2,"keep":1}}});
     let after = json!({"task":{"default_concurrency":3,"provider_concurrency":{"keep":1,"new":4}}});
     // When
-    let prepared = prepare_target_replacement(&after, "nested", &before, "/home/alice/.omo/omo.jsonc").unwrap();
+    let prepared =
+        prepare_target_replacement(&after, "nested", &before, "/home/alice/.omo/omo.jsonc")
+            .unwrap();
     // Then
     assert_eq!(prepared.edits.len(), 3);
-    assert_eq!(prepared.edits[0].path, vec![PathSegment::Key("task".into()), PathSegment::Key("provider_concurrency".into()), PathSegment::Key("old".into())]);
+    assert_eq!(
+        prepared.edits[0].path,
+        vec![
+            PathSegment::Key("task".into()),
+            PathSegment::Key("provider_concurrency".into()),
+            PathSegment::Key("old".into())
+        ]
+    );
     assert_eq!(prepared.edits[0].value, None);
     assert_eq!(prepared.edits[1].value, Some(json!(4)));
 }
 
 fn journal(target_path: &str) -> MigrationJournal {
     MigrationJournal {
-        backup_moves: vec![], completed_moves: vec![], diagnostics: vec![],
-        migration_id: "resume".into(), target_backup_path: Some("/backup".into()),
+        backup_moves: vec![],
+        completed_moves: vec![],
+        diagnostics: vec![],
+        migration_id: "resume".into(),
+        target_backup_path: Some("/backup".into()),
         target_path: target_path.into(),
-        target_write: MigrationJournalTargetWrite { additions: json!({}), mode: None },
-        target_written: false, version: 1,
+        target_write: MigrationJournalTargetWrite {
+            additions: json!({}),
+            mode: None,
+        },
+        target_written: false,
+        version: 1,
     }
 }
 
@@ -159,9 +221,14 @@ fn resume_records_collision_replacement_before_injected_writer() {
     };
     // When
     let result = resume_migration_journal(ResumeMigrationJournalInput {
-        clock: &|| 0, env: &fixture.env, file_system: &fs, pid: 7,
-        renew_lock: &|| Ok(()), write_target: &writer,
-    }).unwrap();
+        clock: &|| 0,
+        env: &fixture.env,
+        file_system: &fs,
+        pid: 7,
+        renew_lock: &|| Ok(()),
+        write_target: &writer,
+    })
+    .unwrap();
     // Then
     assert!(result.resumed);
     assert_eq!(result.target_backup_path.as_deref(), Some("/backup.2"));
@@ -174,19 +241,31 @@ fn resumed_marked_target_reports_journal_backup_without_writing() {
     // Given
     let fs = MemoryMigrationFileSystem::new();
     let fixture = migration_fixture();
-    fs.write(fixture.target_path, r#"{"_migrations":["resume"]}"#).unwrap();
+    fs.write(fixture.target_path, r#"{"_migrations":["resume"]}"#)
+        .unwrap();
     fs.write("/backup", "{}").unwrap();
     write_migration_journal(&journal(fixture.target_path), &fs, &fixture.env, 7, &|| 0).unwrap();
     // When
     let result = run_migrations(RunMigrationsOptions {
-        after_migrations: None, clock: Some(&|| 0), discover: Box::new(Vec::new),
-        dry_run: false, env: Some(fixture.env), file_system: Some(&fs),
-        is_process_alive: Some(Box::new(|_| true)), lease_duration_ms: None,
-        on_boundary: None, pid: Some(7), write_target: Some(&|_| panic!("marked target must not be written")),
-    }).unwrap();
+        after_migrations: None,
+        clock: Some(&|| 0),
+        discover: Box::new(Vec::new),
+        dry_run: false,
+        env: Some(fixture.env),
+        file_system: Some(&fs),
+        is_process_alive: Some(Box::new(|_| true)),
+        lease_duration_ms: None,
+        on_boundary: None,
+        pid: Some(7),
+        write_target: Some(&|_| panic!("marked target must not be written")),
+    })
+    .unwrap();
     // Then
     assert!(result.journal_resumed);
-    assert_eq!(result.resumed_target_backup_path.as_deref(), Some("/backup"));
+    assert_eq!(
+        result.resumed_target_backup_path.as_deref(),
+        Some("/backup")
+    );
 }
 
 #[test]

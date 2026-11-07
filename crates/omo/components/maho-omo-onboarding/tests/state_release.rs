@@ -14,7 +14,8 @@ fn release_removes_claimed_marker_and_is_idempotent() {
 #[test]
 fn release_preserves_unrelated_state_files() {
     let state = tempfile::tempdir().expect("private onboarding state");
-    std::fs::write(state.path().join("onboarding-declined-global"), "declined").expect("decline marker");
+    std::fs::write(state.path().join("onboarding-declined-global"), "declined")
+        .expect("decline marker");
     release_onboarding(state.path()).expect("release missing onboarding marker");
     assert!(state.path().join("onboarding-declined-global").exists());
 }

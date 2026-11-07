@@ -43,11 +43,13 @@ pub fn start_opt_out_purge(input: StartOptOutPurgeInput) {
 
 pub fn has_liveness_leftovers(state_dir: &std::path::Path) -> bool {
     let dir = summary_dir(state_dir);
-    [dir.clone(), dir.join("pending")].into_iter().any(|folder| {
-        crate::session_summary_files::list_names(&folder)
-            .iter()
-            .any(|name| name.ends_with(".tmp") || name.contains(".claimed-"))
-    })
+    [dir.clone(), dir.join("pending")]
+        .into_iter()
+        .any(|folder| {
+            crate::session_summary_files::list_names(&folder)
+                .iter()
+                .any(|name| name.ends_with(".tmp") || name.contains(".claimed-"))
+        })
 }
 
 #[cfg(test)]

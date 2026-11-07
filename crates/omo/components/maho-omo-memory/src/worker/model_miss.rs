@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use model_core::{is_context_overflow_message, is_retryable_model_error, ErrorInfo};
+use model_core::{ErrorInfo, is_context_overflow_message, is_retryable_model_error};
 use regex::Regex;
 
 pub struct ModelMissResult<'a> {
@@ -22,9 +22,8 @@ static ADVISORY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bunder (?:Bun|Node(?:\.js)?|Deno)\b|^(?:\[[^\]]*\]\s*)?(?:note|notice|info|hint|debug|warn|warning)\s*:").expect("valid regex")
 });
 
-static HTTP_STATUS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\s)(\d{3})\s*:").expect("valid regex")
-});
+static HTTP_STATUS_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)(\d{3})\s*:").expect("valid regex"));
 
 const PROVIDER_DETAIL_MAX_CHARS: usize = 200;
 
@@ -59,17 +58,19 @@ pub fn classify_retryable_model_miss(result: &ModelMissResult<'_>) -> Option<Ret
     }
     let output = format!("{}\n{}", result.stderr, result.stdout);
     for line in output.lines() {
-        if let Some(id) = line
-            .strip_prefix("Error: Model \"")
-            .and_then(|value| value.strip_suffix("\" not found. Use --list-models to see available models."))
-            && !id.is_empty()
+        if let Some(id) = line.strip_prefix("Error: Model \"").and_then(|value| {
+            value.strip_suffix("\" not found. Use --list-models to see available models.")
+        }) && !id.is_empty()
             && !id.contains('"')
         {
             return Some(RetryableModelMiss::ModelNotVisible { id: id.to_owned() });
         }
     }
     for line in output.lines() {
-        let line = line.strip_prefix("Error:").map(str::trim_start).unwrap_or(line);
+        let line = line
+            .strip_prefix("Error:")
+            .map(str::trim_start)
+            .unwrap_or(line);
         if let Some(value) = line
             .strip_prefix("No API key found for")
             .filter(|value| value.starts_with(char::is_whitespace))
@@ -151,7 +152,9 @@ mod tests {
     #[test]
     fn openai_context_overflow() {
         assert_eq!(
-            classify_retryable_model_miss(&result("Your input exceeds the context window of this model")),
+            classify_retryable_model_miss(&result(
+                "Your input exceeds the context window of this model"
+            )),
             Some(RetryableModelMiss::ContextOverflow {
                 detail: "Your input exceeds the context window of this model".into()
             })
@@ -161,7 +164,9 @@ mod tests {
     #[test]
     fn anthropic_context_overflow() {
         assert_eq!(
-            classify_retryable_model_miss(&result("prompt is too long: 213462 tokens > 200000 maximum")),
+            classify_retryable_model_miss(&result(
+                "prompt is too long: 213462 tokens > 200000 maximum"
+            )),
             Some(RetryableModelMiss::ContextOverflow {
                 detail: "prompt is too long: 213462 tokens > 200000 maximum".into()
             })
@@ -171,7 +176,9 @@ mod tests {
     #[test]
     fn provider_cooldown_503() {
         assert_eq!(
-            classify_retryable_model_miss(&result("503: {\"message\":\"All providers are temporarily cooling down\"}")),
+            classify_retryable_model_miss(&result(
+                "503: {\"message\":\"All providers are temporarily cooling down\"}"
+            )),
             Some(RetryableModelMiss::ProviderUnavailable {
                 detail: "503: {\"message\":\"All providers are temporarily cooling down\"}".into()
             })
@@ -181,7 +188,9 @@ mod tests {
     #[test]
     fn exhausted_senpi_fallback_chain() {
         assert_eq!(
-            classify_retryable_model_miss(&result("All configured providers are temporarily unavailable")),
+            classify_retryable_model_miss(&result(
+                "All configured providers are temporarily unavailable"
+            )),
             Some(RetryableModelMiss::ProviderUnavailable {
                 detail: "All configured providers are temporarily unavailable".into()
             })
@@ -201,7 +210,9 @@ mod tests {
     #[test]
     fn prompt_shaped_context_overflow() {
         assert_eq!(
-            classify_retryable_model_miss(&result("Error: context length exceeded for the submitted transcript")),
+            classify_retryable_model_miss(&result(
+                "Error: context length exceeded for the submitted transcript"
+            )),
             Some(RetryableModelMiss::ContextOverflow {
                 detail: "Error: context length exceeded for the submitted transcript".into()
             })
@@ -211,13 +222,15 @@ mod tests {
     #[test]
     fn timeout_and_success_not_retryable() {
         for (code, timed_out) in [(Some(1), true), (Some(0), false)] {
-            assert!(classify_retryable_model_miss(&ModelMissResult {
-                code,
-                stdout: "",
-                stderr: "No API key found for anthropic",
-                timed_out
-            })
-            .is_none());
+            assert!(
+                classify_retryable_model_miss(&ModelMissResult {
+                    code,
+                    stdout: "",
+                    stderr: "No API key found for anthropic",
+                    timed_out
+                })
+                .is_none()
+            );
         }
     }
 
@@ -225,14 +238,17 @@ mod tests {
 
     #[test]
     fn reaper_advisory_then_non_provider_error() {
-        let text = format!("{REAPER_ADVISORY}\nError: reflection worker could not open its session file");
+        let text =
+            format!("{REAPER_ADVISORY}\nError: reflection worker could not open its session file");
         let child = result(&text);
         assert!(classify_retryable_model_miss(&child).is_none());
     }
 
     #[test]
     fn reaper_advisory_then_rate_limit() {
-        let text = format!("{REAPER_ADVISORY}\n429: {{\"error\":{{\"type\":\"rate_limit_error\",\"message\":\"Too many requests\"}}}}");
+        let text = format!(
+            "{REAPER_ADVISORY}\n429: {{\"error\":{{\"type\":\"rate_limit_error\",\"message\":\"Too many requests\"}}}}"
+        );
         let child = result(&text);
         assert_eq!(
             classify_retryable_model_miss(&child),
@@ -250,13 +266,17 @@ mod tests {
 
     #[test]
     fn unknown_advisory_then_real_error() {
-        let child = result("note: response cache temporarily unavailable, continuing without it\nError: reflection worker could not open its session file");
+        let child = result(
+            "note: response cache temporarily unavailable, continuing without it\nError: reflection worker could not open its session file",
+        );
         assert!(classify_retryable_model_miss(&child).is_none());
     }
 
     #[test]
     fn provider_outage_then_stack_error_line() {
-        let child = result("The model is temporarily unavailable\nError: request failed\n    at send (provider.js:10:3)");
+        let child = result(
+            "The model is temporarily unavailable\nError: request failed\n    at send (provider.js:10:3)",
+        );
         assert_eq!(
             classify_retryable_model_miss(&child),
             Some(RetryableModelMiss::ProviderUnavailable {

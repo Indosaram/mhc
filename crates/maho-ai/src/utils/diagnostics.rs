@@ -35,19 +35,35 @@ pub struct AssistantMessageDiagnostic {
 /// A thrown value: an `Error` (name/message/code) or any other value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Thrown {
-    Error { name: String, message: String, stack: Option<String>, code: Option<DiagnosticCode> },
+    Error {
+        name: String,
+        message: String,
+        stack: Option<String>,
+        code: Option<DiagnosticCode>,
+    },
     Value(Value),
 }
 
 impl Thrown {
     pub fn error(name: impl Into<String>, message: impl Into<String>) -> Self {
-        Thrown::Error { name: name.into(), message: message.into(), stack: None, code: None }
+        Thrown::Error {
+            name: name.into(),
+            message: message.into(),
+            stack: None,
+            code: None,
+        }
     }
 }
 
 pub fn format_thrown_value(value: &Thrown) -> String {
     match value {
-        Thrown::Error { name, message, .. } => if message.is_empty() { name.clone() } else { message.clone() },
+        Thrown::Error { name, message, .. } => {
+            if message.is_empty() {
+                name.clone()
+            } else {
+                message.clone()
+            }
+        }
         Thrown::Value(Value::String(text)) => text.clone(),
         Thrown::Value(other) => js_string(other),
     }
@@ -60,16 +76,39 @@ pub fn js_string(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().map(|v| if v.is_null() { String::new() } else { js_string(v) }).collect::<Vec<_>>().join(","),
+        Value::Array(items) => items
+            .iter()
+            .map(|v| {
+                if v.is_null() {
+                    String::new()
+                } else {
+                    js_string(v)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
         Value::Object(_) => "[object Object]".into(),
     }
 }
 
 pub fn extract_diagnostic_error(error: &Thrown) -> DiagnosticErrorInfo {
     match error {
-        Thrown::Error { name, message, stack, code } => DiagnosticErrorInfo {
-            name: if name.is_empty() { None } else { Some(name.clone()) },
-            message: if message.is_empty() { name.clone() } else { message.clone() },
+        Thrown::Error {
+            name,
+            message,
+            stack,
+            code,
+        } => DiagnosticErrorInfo {
+            name: if name.is_empty() {
+                None
+            } else {
+                Some(name.clone())
+            },
+            message: if message.is_empty() {
+                name.clone()
+            } else {
+                message.clone()
+            },
             stack: stack.clone(),
             code: code.clone(),
         },
@@ -117,7 +156,10 @@ mod tests {
 
     #[test]
     fn formats_and_extracts() {
-        assert_eq!(format_thrown_value(&Thrown::error("TypeError", "")), "TypeError");
+        assert_eq!(
+            format_thrown_value(&Thrown::error("TypeError", "")),
+            "TypeError"
+        );
         assert_eq!(format_thrown_value(&Thrown::Value(json!("s"))), "s");
         assert_eq!(format_thrown_value(&Thrown::Value(json!(3))), "3");
         let info = extract_diagnostic_error(&Thrown::Value(json!({})));
@@ -126,7 +168,10 @@ mod tests {
         let info = extract_diagnostic_error(&Thrown::error("", "m"));
         assert_eq!(info.name, None);
         let mut diagnostics = None;
-        append_assistant_message_diagnostic(&mut diagnostics, create_assistant_message_diagnostic("t", &Thrown::error("E", "m"), None));
+        append_assistant_message_diagnostic(
+            &mut diagnostics,
+            create_assistant_message_diagnostic("t", &Thrown::error("E", "m"), None),
+        );
         assert_eq!(diagnostics.map(|d| d.len()), Some(1));
     }
 }

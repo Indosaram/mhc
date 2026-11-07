@@ -425,17 +425,26 @@ mod owner_acl {
             if !ok {
                 return Err(last_error("building the owner-only security descriptor"));
             }
-            Ok(Self { _sid: sid, acl, descriptor })
+            Ok(Self {
+                _sid: sid,
+                acl,
+                descriptor,
+            })
         }
     }
 
     fn last_error(call: &str) -> String {
         // SAFETY: GetLastError has no preconditions.
-        format!("{call} failed with Win32 error {}", unsafe { GetLastError() })
+        format!("{call} failed with Win32 error {}", unsafe {
+            GetLastError()
+        })
     }
 
     fn wide(path: &str) -> Vec<u16> {
-        std::ffi::OsStr::new(path).encode_wide().chain(std::iter::once(0)).collect()
+        std::ffi::OsStr::new(path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     /// Creates `path` (must not exist) with the owner-only descriptor applied at creation, then
@@ -487,7 +496,9 @@ mod owner_acl {
             )
         };
         if status != 0 {
-            return Err(format!("SetNamedSecurityInfoW failed with Win32 error {status}"));
+            return Err(format!(
+                "SetNamedSecurityInfoW failed with Win32 error {status}"
+            ));
         }
         Ok(())
     }
@@ -519,7 +530,11 @@ mod owner_acl {
             )
         };
         assert_eq!(status, 0, "GetNamedSecurityInfoW");
-        let mut info = ACL_SIZE_INFORMATION { AceCount: 0, AclBytesInUse: 0, AclBytesFree: 0 };
+        let mut info = ACL_SIZE_INFORMATION {
+            AceCount: 0,
+            AclBytesInUse: 0,
+            AclBytesFree: 0,
+        };
         // SAFETY: `acl` is a valid ACL returned above; `info` is the matching out-structure.
         let ok = unsafe {
             GetAclInformation(
@@ -861,7 +876,10 @@ impl ReadOnlyAuthStorage {
             slot_name,
             Some(&self.auth_path),
             |flat| async move {
-                crate::auth_credential_values::resolve_read_only_credential(flat, &provider, &auth_path).await
+                crate::auth_credential_values::resolve_read_only_credential(
+                    flat, &provider, &auth_path,
+                )
+                .await
             },
         )
         .await
@@ -2527,7 +2545,10 @@ mod tests {
             .output()
             .expect("icacls");
         assert!(grant.status.success(), "icacls grant Users read");
-        assert!(owner_acl::dacl_summary(&path).0 > 1, "file starts permissive");
+        assert!(
+            owner_acl::dacl_summary(&path).0 > 1,
+            "file starts permissive"
+        );
         FileAuthStorageBackend::new(&path)
             .with_lock(|_| Ok(((), None)))
             .expect("open");

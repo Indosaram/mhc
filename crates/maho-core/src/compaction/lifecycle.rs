@@ -121,10 +121,14 @@ pub fn begin_compaction_operation(
 }
 
 /// senpi promoteCompactionOperation.
-pub fn promote_compaction_operation(state: &CompactionLifecycleState, operation_id: &str) -> CompactionLifecycleState {
+pub fn promote_compaction_operation(
+    state: &CompactionLifecycleState,
+    operation_id: &str,
+) -> CompactionLifecycleState {
     match state {
         CompactionLifecycleState::Running(operation)
-            if operation.operation_id == operation_id && operation.stage == CompactionStage::Feedback =>
+            if operation.operation_id == operation_id
+                && operation.stage == CompactionStage::Feedback =>
         {
             let mut promoted = operation.clone();
             promoted.stage = CompactionStage::Execution;
@@ -147,10 +151,14 @@ pub fn finish_compaction_operation(
     }
 
     match event.status {
-        CompactionFinishStatus::Completed => CompactionLifecycleState::Completed(operation.clone(), event.ended_revision),
-        CompactionFinishStatus::Aborted => {
-            CompactionLifecycleState::Aborted(operation.clone(), event.ended_revision, event.error_message.clone())
+        CompactionFinishStatus::Completed => {
+            CompactionLifecycleState::Completed(operation.clone(), event.ended_revision)
         }
+        CompactionFinishStatus::Aborted => CompactionLifecycleState::Aborted(
+            operation.clone(),
+            event.ended_revision,
+            event.error_message.clone(),
+        ),
         CompactionFinishStatus::Failed => CompactionLifecycleState::Failed(
             operation.clone(),
             event.ended_revision,
@@ -204,7 +212,10 @@ pub struct CompactionLifecycleCoordinator {
 
 impl CompactionLifecycleCoordinator {
     pub fn new() -> Self {
-        Self { state: initial_compaction_lifecycle_state(), controller: None }
+        Self {
+            state: initial_compaction_lifecycle_state(),
+            controller: None,
+        }
     }
 
     pub fn state(&self) -> &CompactionLifecycleState {
@@ -212,12 +223,22 @@ impl CompactionLifecycleCoordinator {
     }
 
     /// senpi begin: returns the operation id the coordinator settled on.
-    pub fn begin(&mut self, operation: BeginCompactionOperation, controller: CompactionAbortController) -> String {
+    pub fn begin(
+        &mut self,
+        operation: BeginCompactionOperation,
+        controller: CompactionAbortController,
+    ) -> String {
         if self.state.status() == "running" {
-            let same_controller = self.controller.as_ref().is_some_and(|current| current.same(&controller));
+            let same_controller = self
+                .controller
+                .as_ref()
+                .is_some_and(|current| current.same(&controller));
             if same_controller {
-                let running_operation_id =
-                    self.state.operation().map(|operation| operation.operation_id.clone()).unwrap_or_default();
+                let running_operation_id = self
+                    .state
+                    .operation()
+                    .map(|operation| operation.operation_id.clone())
+                    .unwrap_or_default();
                 if operation.stage == CompactionStage::Execution {
                     self.state = promote_compaction_operation(&self.state, &running_operation_id);
                 }
@@ -236,8 +257,14 @@ impl CompactionLifecycleCoordinator {
     /// senpi isCurrent.
     pub fn is_current(&self, operation_id: &str, controller: &CompactionAbortController) -> bool {
         self.state.status() == "running"
-            && self.state.operation().is_some_and(|operation| operation.operation_id == operation_id)
-            && self.controller.as_ref().is_some_and(|current| current.same(controller))
+            && self
+                .state
+                .operation()
+                .is_some_and(|operation| operation.operation_id == operation_id)
+            && self
+                .controller
+                .as_ref()
+                .is_some_and(|current| current.same(controller))
             && !controller.aborted()
     }
 
@@ -245,7 +272,10 @@ impl CompactionLifecycleCoordinator {
     /// compares the controller handle that owns the signal instead of the signal itself.
     pub fn has_current_signal(&self, controller: &CompactionAbortController) -> bool {
         self.state.status() == "running"
-            && self.controller.as_ref().is_some_and(|current| current.same(controller))
+            && self
+                .controller
+                .as_ref()
+                .is_some_and(|current| current.same(controller))
             && !controller.aborted()
     }
 
@@ -311,25 +341,49 @@ mod tests {
         let running = begin_compaction_operation(&state, begin("op-1", CompactionStage::Feedback));
         assert_eq!(running.status(), "running");
         assert_eq!(running.generation(), 1);
-        let completed = finish_compaction_operation(&running, &finish("op-1", CompactionFinishStatus::Completed));
+        let completed = finish_compaction_operation(
+            &running,
+            &finish("op-1", CompactionFinishStatus::Completed),
+        );
         assert_eq!(completed.status(), "completed");
         assert_eq!(completed.generation(), 1);
-        assert_eq!(completed, CompactionLifecycleState::Completed(running.operation().cloned().expect("operation"), 7));
+        assert_eq!(
+            completed,
+            CompactionLifecycleState::Completed(
+                running.operation().cloned().expect("operation"),
+                7
+            )
+        );
     }
 
     #[test]
     fn a_stale_finish_event_leaves_the_state_untouched() {
-        let running = begin_compaction_operation(&initial_compaction_lifecycle_state(), begin("op-1", CompactionStage::Feedback));
-        assert_eq!(finish_compaction_operation(&running, &finish("op-2", CompactionFinishStatus::Completed)), running);
+        let running = begin_compaction_operation(
+            &initial_compaction_lifecycle_state(),
+            begin("op-1", CompactionStage::Feedback),
+        );
         assert_eq!(
-            finish_compaction_operation(&CompactionLifecycleState::Idle, &finish("op-1", CompactionFinishStatus::Completed)),
+            finish_compaction_operation(
+                &running,
+                &finish("op-2", CompactionFinishStatus::Completed)
+            ),
+            running
+        );
+        assert_eq!(
+            finish_compaction_operation(
+                &CompactionLifecycleState::Idle,
+                &finish("op-1", CompactionFinishStatus::Completed)
+            ),
             CompactionLifecycleState::Idle
         );
     }
 
     #[test]
     fn failed_and_aborted_keep_their_extra_fields() {
-        let running = begin_compaction_operation(&initial_compaction_lifecycle_state(), begin("op-1", CompactionStage::Feedback));
+        let running = begin_compaction_operation(
+            &initial_compaction_lifecycle_state(),
+            begin("op-1", CompactionStage::Feedback),
+        );
         let mut event = finish("op-1", CompactionFinishStatus::Failed);
         event.rejection_cause = Some("too-small".to_string());
         event.error_message = Some("boom".to_string());
@@ -347,15 +401,25 @@ mod tests {
         abort_event.error_message = Some("Compaction cancelled".to_string());
         assert_eq!(
             finish_compaction_operation(&running, &abort_event),
-            CompactionLifecycleState::Aborted(running.operation().cloned().expect("operation"), 7, Some("Compaction cancelled".to_string()))
+            CompactionLifecycleState::Aborted(
+                running.operation().cloned().expect("operation"),
+                7,
+                Some("Compaction cancelled".to_string())
+            )
         );
     }
 
     #[test]
     fn promotion_only_moves_feedback_to_execution_once() {
-        let running = begin_compaction_operation(&initial_compaction_lifecycle_state(), begin("op-1", CompactionStage::Feedback));
+        let running = begin_compaction_operation(
+            &initial_compaction_lifecycle_state(),
+            begin("op-1", CompactionStage::Feedback),
+        );
         let promoted = promote_compaction_operation(&running, "op-1");
-        assert_eq!(promoted.operation().map(|operation| operation.stage), Some(CompactionStage::Execution));
+        assert_eq!(
+            promoted.operation().map(|operation| operation.stage),
+            Some(CompactionStage::Execution)
+        );
         assert_eq!(promote_compaction_operation(&promoted, "op-1"), promoted);
         assert_eq!(promote_compaction_operation(&running, "op-2"), running);
     }
@@ -365,7 +429,8 @@ mod tests {
         let mut coordinator = CompactionLifecycleCoordinator::new();
         let first = CompactionAbortController::new();
         let second = CompactionAbortController::new();
-        let operation_id = coordinator.begin(begin("op-1", CompactionStage::Feedback), first.clone());
+        let operation_id =
+            coordinator.begin(begin("op-1", CompactionStage::Feedback), first.clone());
         assert_eq!(operation_id, "op-1");
         assert!(coordinator.is_current("op-1", &first));
 
@@ -382,10 +447,25 @@ mod tests {
         let mut coordinator = CompactionLifecycleCoordinator::new();
         let controller = CompactionAbortController::new();
         coordinator.begin(begin("op-1", CompactionStage::Feedback), controller.clone());
-        let operation_id = coordinator.begin(begin("op-2", CompactionStage::Execution), controller.clone());
+        let operation_id = coordinator.begin(
+            begin("op-2", CompactionStage::Execution),
+            controller.clone(),
+        );
         assert_eq!(operation_id, "op-1");
-        assert_eq!(coordinator.state().operation().map(|operation| operation.operation_id.clone()), Some("op-1".to_string()));
-        assert_eq!(coordinator.state().operation().map(|operation| operation.stage), Some(CompactionStage::Execution));
+        assert_eq!(
+            coordinator
+                .state()
+                .operation()
+                .map(|operation| operation.operation_id.clone()),
+            Some("op-1".to_string())
+        );
+        assert_eq!(
+            coordinator
+                .state()
+                .operation()
+                .map(|operation| operation.stage),
+            Some(CompactionStage::Execution)
+        );
         assert_eq!(coordinator.state().generation(), 1);
     }
 
@@ -404,7 +484,10 @@ mod tests {
     fn abort_reports_the_running_operation_and_marks_the_controller() {
         let mut coordinator = CompactionLifecycleCoordinator::new();
         let controller = CompactionAbortController::new();
-        coordinator.begin(begin("op-1", CompactionStage::Execution), controller.clone());
+        coordinator.begin(
+            begin("op-1", CompactionStage::Execution),
+            controller.clone(),
+        );
         let aborted = coordinator.abort(9).expect("abort");
         assert_eq!(aborted.0, "manual");
         assert_eq!(aborted.1, CompactionStage::Execution);

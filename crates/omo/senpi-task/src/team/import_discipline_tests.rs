@@ -31,7 +31,9 @@ const FORBIDDEN_TEAM_CORE_PREFIXES: [&str; 4] = [
 const FORBIDDEN_CRATES: [&str; 3] = ["tmux_core", "maho_tmux_core", "omo_opencode"];
 
 fn team_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("team")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("team")
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -361,7 +363,10 @@ fn given_team_core_imports_when_scanned_then_only_exported_subpaths_are_used() {
 fn given_the_team_dir_when_listed_then_source_files_are_found_and_test_files_are_excluded() {
     let files = list_team_source_files();
 
-    assert!(!files.is_empty(), "expected team source files under src/team");
+    assert!(
+        !files.is_empty(),
+        "expected team source files under src/team"
+    );
     let test_files: Vec<String> = files
         .iter()
         .filter(|f| f.to_string_lossy().ends_with("_tests.rs"))

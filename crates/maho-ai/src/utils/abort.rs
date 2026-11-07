@@ -145,7 +145,9 @@ impl AbortSignal {
     }
 
     pub fn downgrade(&self) -> WeakAbortSignal {
-        WeakAbortSignal { inner: Arc::downgrade(&self.inner) }
+        WeakAbortSignal {
+            inner: Arc::downgrade(&self.inner),
+        }
     }
 
     /// `signal.throwIfAborted()`.
@@ -193,11 +195,12 @@ impl AbortSignal {
                 return;
             }
             let order = order.or_else(|| {
-                let (context, cancel) = maho_chord::context::with_cancel(
-                    &maho_chord::context::BACKGROUND_CONTEXT,
-                );
+                let (context, cancel) =
+                    maho_chord::context::with_cancel(&maho_chord::context::BACKGROUND_CONTEXT);
                 cancel.cancel_with_reason(reason.clone());
-                context.abort_signal().and_then(|signal| signal.cancellation_order())
+                context
+                    .abort_signal()
+                    .and_then(|signal| signal.cancellation_order())
             });
             state.reason = Some(reason.clone());
             state.cancellation_order = order;
@@ -239,7 +242,8 @@ impl AbortController {
 
     pub fn abort_arc_with_order(&self, reason: Option<Arc<AbortReason>>, order: Option<u64>) {
         self.signal.abort_arc_with_order(
-            reason.unwrap_or_else(|| Arc::new(AbortReason::dom_default())), order,
+            reason.unwrap_or_else(|| Arc::new(AbortReason::dom_default())),
+            order,
         );
     }
 }

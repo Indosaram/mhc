@@ -233,9 +233,10 @@ impl EnvironmentGrantPolicy {
         }
         drop(state);
         if let Some(message) = notice
-            && let Some(notify) = &self.notify {
-                notify(&message, info);
-            }
+            && let Some(notify) = &self.notify
+        {
+            notify(&message, info);
+        }
         Some(PreparedPolicy {
             identity,
             digest,

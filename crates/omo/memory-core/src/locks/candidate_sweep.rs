@@ -95,13 +95,7 @@ pub fn sweep_stale_lock_candidates(
         }
         let candidate_path = lock_directory.join(&name);
         let mut removed = false;
-        let outcome = sweep_one(
-            &candidate_path,
-            &now_ms,
-            options,
-            unlink,
-            &mut removed,
-        );
+        let outcome = sweep_one(&candidate_path, &now_ms, options, unlink, &mut removed);
         match outcome {
             Ok(()) => {
                 if removed {
@@ -132,7 +126,8 @@ fn sweep_one(
         .ok()
         .and_then(system_time_to_millis)
         .unwrap_or(0);
-    if !is_known_leaked(candidate_path) && now_ms().saturating_sub(mtime_ms) <= CANDIDATE_STALE_AGE_MS
+    if !is_known_leaked(candidate_path)
+        && now_ms().saturating_sub(mtime_ms) <= CANDIDATE_STALE_AGE_MS
     {
         return Ok(());
     }

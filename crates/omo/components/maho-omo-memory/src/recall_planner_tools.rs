@@ -28,7 +28,9 @@ fn path_like(value: &str) -> bool {
     let suffix = &value[dot + 1..];
     !suffix.is_empty()
         && suffix.len() <= 6
-        && suffix.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }
 
 fn basename(value: &str) -> &str {
@@ -59,7 +61,11 @@ fn shell_tokens(command: &str) -> Vec<String> {
 
 fn path_chunks(token: &str) -> Vec<String> {
     if !token.contains('\'') && !token.contains('"') {
-        return if path_like(token) { vec![token.to_string()] } else { vec![] };
+        return if path_like(token) {
+            vec![token.to_string()]
+        } else {
+            vec![]
+        };
     }
     token
         .split(['\'', '"'])
@@ -105,7 +111,10 @@ fn command_texts(command: &str) -> Vec<String> {
             if token.starts_with('-') {
                 continue;
             }
-            for word in path_chunks(token).into_iter().flat_map(|chunk| path_words(&chunk)) {
+            for word in path_chunks(token)
+                .into_iter()
+                .flat_map(|chunk| path_words(&chunk))
+            {
                 if is_usable(&word) {
                     result.push(word);
                 }
@@ -159,15 +168,21 @@ pub fn tool_arg_texts(_tool_name: &str, input: &Value) -> Vec<String> {
         return result;
     };
     for (key, value) in object {
-        if (key == "command" || key == "code") && let Some(text) = value.as_str() {
+        if (key == "command" || key == "code")
+            && let Some(text) = value.as_str()
+        {
             result.extend(command_texts(text));
             continue;
         }
-        if key == "summary" && let Some(text) = value.as_str() {
+        if key == "summary"
+            && let Some(text) = value.as_str()
+        {
             result.extend(summary_texts(text));
             continue;
         }
-        if is_path_key(key) && let Some(text) = value.as_str() {
+        if is_path_key(key)
+            && let Some(text) = value.as_str()
+        {
             if !is_usable(text) {
                 continue;
             }
@@ -178,7 +193,9 @@ pub fn tool_arg_texts(_tool_name: &str, input: &Value) -> Vec<String> {
             }
             continue;
         }
-        if is_array_key(key) && let Some(items) = value.as_array() {
+        if is_array_key(key)
+            && let Some(items) = value.as_array()
+        {
             for item in items {
                 let Some(text) = item.as_str() else {
                     continue;

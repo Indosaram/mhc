@@ -16,8 +16,8 @@ use team_core::types::Message;
 
 use crate::team::messaging::delivery_events::append_delivered_event;
 use crate::team::messaging::lead_poller_types::{
-    InvalidReservedLeadMessageError, LEAD_INJECTION_SOURCE, LeadInjection, LeadPollError, LeadPollFilter,
-    LeadPollState, LeadPoller, LeadPollerDeps, PendingDelivery, PendingPhase,
+    InvalidReservedLeadMessageError, LEAD_INJECTION_SOURCE, LeadInjection, LeadPollError,
+    LeadPollFilter, LeadPollState, LeadPoller, LeadPollerDeps, PendingDelivery, PendingPhase,
 };
 use crate::team::messaging::message::build_peer_message_envelope;
 use crate::team::messaging::session_marker_index::create_session_marker_index;
@@ -82,7 +82,11 @@ impl TeamLeadPoller {
     fn poll_under_lease(&self, filter: Option<&LeadPollFilter>) -> Result<(), LeadPollError> {
         self.settle_pending()?;
         self.recover_reservations()?;
-        let messages = list_unread_messages(&self.deps.team_run_id, TEAM_LEAD_SENTINEL, &self.deps.config)?;
+        let messages = list_unread_messages(
+            &self.deps.team_run_id,
+            TEAM_LEAD_SENTINEL,
+            &self.deps.config,
+        )?;
         let from_filter = filter.and_then(|filter| filter.from.as_deref());
         for message in messages {
             if let Some(from) = from_filter
@@ -96,11 +100,19 @@ impl TeamLeadPoller {
     }
 
     fn lead_session_file(&self) -> Option<PathBuf> {
-        self.deps.lead_session_file.as_ref().and_then(|session_file| session_file())
+        self.deps
+            .lead_session_file
+            .as_ref()
+            .and_then(|session_file| session_file())
     }
 
-    fn lock_pending(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PendingDelivery>> {
-        self.state.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock_pending(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PendingDelivery>> {
+        self.state
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn mark_delivered(&self, message: &Message) {
@@ -150,12 +162,21 @@ impl TeamLeadPoller {
         let team_run_id = &self.deps.team_run_id;
         let config = &self.deps.config;
         if is_message_consumed(team_run_id, TEAM_LEAD_SENTINEL, &message.message_id, config)? {
-            ack_messages(team_run_id, TEAM_LEAD_SENTINEL, std::slice::from_ref(&message.message_id), config)?;
+            ack_messages(
+                team_run_id,
+                TEAM_LEAD_SENTINEL,
+                std::slice::from_ref(&message.message_id),
+                config,
+            )?;
             return Ok(());
         }
 
-        let Some(reservation) =
-            reserve_message_for_delivery(team_run_id, TEAM_LEAD_SENTINEL, &message.message_id, config)?
+        let Some(reservation) = reserve_message_for_delivery(
+            team_run_id,
+            TEAM_LEAD_SENTINEL,
+            &message.message_id,
+            config,
+        )?
         else {
             return Ok(());
         };
@@ -253,8 +274,12 @@ impl TeamLeadPoller {
             if self.lock_pending().contains_key(&message.message_id) {
                 continue;
             }
-            let Some(reservation) =
-                reserve_message_for_delivery(team_run_id, TEAM_LEAD_SENTINEL, &message.message_id, config)?
+            let Some(reservation) = reserve_message_for_delivery(
+                team_run_id,
+                TEAM_LEAD_SENTINEL,
+                &message.message_id,
+                config,
+            )?
             else {
                 continue;
             };
@@ -303,7 +328,9 @@ impl TeamLeadPoller {
             };
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.ends_with(RESERVED_SUFFIX) && (!name.starts_with('.') || name.starts_with(RESERVED_PREFIX)) {
+            if name.ends_with(RESERVED_SUFFIX)
+                && (!name.starts_with('.') || name.starts_with(RESERVED_PREFIX))
+            {
                 return true;
             }
         }

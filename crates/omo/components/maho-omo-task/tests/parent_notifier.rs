@@ -70,26 +70,29 @@ fn message() -> ParentNotifierMessage {
 }
 fn completion_message(ids: &[&str]) -> ParentNotifierMessage {
     let mut message = message();
-    message.details = ids.iter().map(|id| senpi_task::completion::CompletionDetails {
-        parent_model: None,
-        parent_model_fallback: None,
-        run_ref: None,
-        task_id: (*id).into(),
-        name: (*id).into(),
-        status: senpi_task::state::TaskStatus::Completed,
-        category: None,
-        agent_type: None,
-        model: "faux/faux".into(),
-        requested_model: None,
-        fallback_models: None,
-        resolved_model: None,
-        duration_ms: 1000,
-        tokens: None,
-        run_stats: None,
-        final_response: "finished".into(),
-        final_response_file: None,
-        continuation_hint: "continue".into(),
-    }).collect();
+    message.details = ids
+        .iter()
+        .map(|id| senpi_task::completion::CompletionDetails {
+            parent_model: None,
+            parent_model_fallback: None,
+            run_ref: None,
+            task_id: (*id).into(),
+            name: (*id).into(),
+            status: senpi_task::state::TaskStatus::Completed,
+            category: None,
+            agent_type: None,
+            model: "faux/faux".into(),
+            requested_model: None,
+            fallback_models: None,
+            resolved_model: None,
+            duration_ms: 1000,
+            tokens: None,
+            run_stats: None,
+            final_response: "finished".into(),
+            final_response_file: None,
+            continuation_hint: "continue".into(),
+        })
+        .collect();
     message
 }
 #[test]
@@ -126,7 +129,10 @@ fn streaming_parent_schedules_coordinator_without_direct_delivery() {
         actions.0.lock().expect("messages").is_empty(),
         "a coordinated delivery never steers directly"
     );
-    assert_eq!(*coordinator.calls.lock().expect("calls"), ["enqueue", "schedule"]);
+    assert_eq!(
+        *coordinator.calls.lock().expect("calls"),
+        ["enqueue", "schedule"]
+    );
     assert_eq!(coordinator.messages.lock().expect("messages").len(), 1);
 }
 #[test]
@@ -141,7 +147,10 @@ fn idle_parent_requests_soon_flush_after_enqueue() {
     notifier
         .enqueue(&completion_message(&["st_completed"]))
         .expect("enqueue");
-    assert_eq!(*coordinator.calls.lock().expect("calls"), ["enqueue", "soon"]);
+    assert_eq!(
+        *coordinator.calls.lock().expect("calls"),
+        ["enqueue", "soon"]
+    );
     assert_eq!(coordinator.messages.lock().expect("messages").len(), 1);
 }
 #[test]
@@ -382,7 +391,8 @@ fn a_retired_coordinator_refuses_instead_of_claiming_delivery() {
 }
 
 #[test]
-fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persisted_exactly_once() {
+fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persisted_exactly_once()
+{
     use senpi_task::completion::{
         CompletionNotifierDeps, CompletionRequest, FlushInput, FlushResult, ParentState,
         create_completion_notifier,
@@ -452,10 +462,8 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     record_b.final_response = Some("finished second".into());
     store.save(&record_b).expect("save record_b");
 
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(
-        notifier.clone(),
-        store.clone(),
-    ));
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(notifier.clone(), store.clone()));
 
     // Buffer both completions
     completion
@@ -499,18 +507,25 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     receipts[1].1.delivered();
 
     // Verify first is retried / not marked notified
-    let loaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
+    let loaded_a = store
+        .load("st_0000000a")
+        .expect("load a")
+        .expect("a exists");
     assert_eq!(
         loaded_a.notification.notified_epoch, -1,
         "first was not delivered so notified_epoch must not advance"
     );
     assert_eq!(
-        loaded_a.notification.notification_failed_epoch, Some(0),
+        loaded_a.notification.notification_failed_epoch,
+        Some(0),
         "first failure must be recorded"
     );
 
     // Verify second is marked notified exactly once
-    let loaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
+    let loaded_b = store
+        .load("st_0000000b")
+        .expect("load b")
+        .expect("b exists");
     assert_eq!(
         loaded_b.notification.notified_epoch, 0,
         "second delivered so notified_epoch must be marked"
@@ -532,19 +547,29 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     assert_eq!(second_flush, FlushResult::Pending(1));
 
     let retry_receipts = coordinator.0.lock().expect("keys").clone();
-    assert_eq!(retry_receipts.len(), 1, "only st_0000000a should be retried");
+    assert_eq!(
+        retry_receipts.len(),
+        1,
+        "only st_0000000a should be retried"
+    );
     assert_eq!(retry_receipts[0].0, "task-completion:st_0000000a");
 
     // Settle the retry successfully
     retry_receipts[0].1.delivered();
 
-    let reloaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
+    let reloaded_a = store
+        .load("st_0000000a")
+        .expect("load a")
+        .expect("a exists");
     assert_eq!(
         reloaded_a.notification.notified_epoch, 0,
         "first now marked notified after successful retry"
     );
 
-    let reloaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
+    let reloaded_b = store
+        .load("st_0000000b")
+        .expect("load b")
+        .expect("b exists");
     assert_eq!(
         reloaded_b.notification.notified_epoch, 0,
         "second remains notified exactly once, no duplicates"
@@ -553,7 +578,8 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
 }
 
 #[test]
-fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persisted_exactly_once() {
+fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persisted_exactly_once()
+{
     use senpi_task::completion::{
         CompletionNotifierDeps, CompletionRequest, FlushInput, FlushResult, ParentState,
         create_completion_notifier,
@@ -623,10 +649,8 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
     record_b.final_response = Some("finished second".into());
     store.save(&record_b).expect("save record_b");
 
-    let completion = create_completion_notifier(CompletionNotifierDeps::new(
-        notifier.clone(),
-        store.clone(),
-    ));
+    let completion =
+        create_completion_notifier(CompletionNotifierDeps::new(notifier.clone(), store.clone()));
 
     // Buffer both completions
     completion
@@ -670,20 +694,27 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
     });
 
     // Verify first is marked notified exactly once
-    let loaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
+    let loaded_a = store
+        .load("st_0000000a")
+        .expect("load a")
+        .expect("a exists");
     assert_eq!(
         loaded_a.notification.notified_epoch, 0,
         "first delivered so notified_epoch must be marked"
     );
 
     // Verify second is retried / not marked notified
-    let loaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
+    let loaded_b = store
+        .load("st_0000000b")
+        .expect("load b")
+        .expect("b exists");
     assert_eq!(
         loaded_b.notification.notified_epoch, -1,
         "second was not delivered so notified_epoch must not advance"
     );
     assert_eq!(
-        loaded_b.notification.notification_failed_epoch, Some(0),
+        loaded_b.notification.notification_failed_epoch,
+        Some(0),
         "second failure must be recorded"
     );
 
@@ -703,19 +734,29 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
     assert_eq!(second_flush, FlushResult::Pending(1));
 
     let retry_receipts = coordinator.0.lock().expect("keys").clone();
-    assert_eq!(retry_receipts.len(), 1, "only st_0000000b should be retried");
+    assert_eq!(
+        retry_receipts.len(),
+        1,
+        "only st_0000000b should be retried"
+    );
     assert_eq!(retry_receipts[0].0, "task-completion:st_0000000b");
 
     // Settle the retry successfully
     retry_receipts[0].1.delivered();
 
-    let reloaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
+    let reloaded_a = store
+        .load("st_0000000a")
+        .expect("load a")
+        .expect("a exists");
     assert_eq!(
         reloaded_a.notification.notified_epoch, 0,
         "first remains notified exactly once, no duplicates"
     );
 
-    let reloaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
+    let reloaded_b = store
+        .load("st_0000000b")
+        .expect("load b")
+        .expect("b exists");
     assert_eq!(
         reloaded_b.notification.notified_epoch, 0,
         "second now marked notified after successful retry"
@@ -881,8 +922,14 @@ fn partial_enqueue_error_after_accepted_receipt_settles_caller_failed_without_re
     let caller = senpi_task::completion::DeliveryCallbacks::new(|_| {});
     // Must return Ok(()) so already accepted entry is not retried as a synchronous rejection
     let result = notifier.enqueue_with_callbacks(&message, caller.clone());
-    assert!(result.is_ok(), "partial enqueue after accepted receipt must not return Err");
-    assert_eq!(caller.state(), senpi_task::completion::DeliveryState::Pending);
+    assert!(
+        result.is_ok(),
+        "partial enqueue after accepted receipt must not return Err"
+    );
+    assert_eq!(
+        caller.state(),
+        senpi_task::completion::DeliveryState::Pending
+    );
 
     // Settle the accepted receipt from coordinator
     let accepted_receipts = coordinator.receipts.lock().expect("receipts").clone();
@@ -890,7 +937,13 @@ fn partial_enqueue_error_after_accepted_receipt_settles_caller_failed_without_re
     accepted_receipts[0].delivered();
 
     // Since one entry was refused, batch settlement fails per all-success contract
-    assert_eq!(caller.state(), senpi_task::completion::DeliveryState::Failed);
+    assert_eq!(
+        caller.state(),
+        senpi_task::completion::DeliveryState::Failed
+    );
     // Failure hook was called for the refused entry
-    assert_eq!(*failures.lock().expect("failures"), vec![vec!["st_refused".to_string()]]);
+    assert_eq!(
+        *failures.lock().expect("failures"),
+        vec![vec!["st_refused".to_string()]]
+    );
 }

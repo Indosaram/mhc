@@ -315,11 +315,12 @@ impl TaskConcurrency {
         if let Some(entry) = self
             .parked
             .get_mut(&lease_key(&lease.task_id, lease.run_epoch))
-            && Arc::ptr_eq(&entry.lease, lease) {
-                entry.resumable = true;
-                entry.resumed.push(tx);
-                return rx;
-            }
+            && Arc::ptr_eq(&entry.lease, lease)
+        {
+            entry.resumable = true;
+            entry.resumed.push(tx);
+            return rx;
+        }
         let _ = tx.send(());
         rx
     }
@@ -327,10 +328,12 @@ impl TaskConcurrency {
         if let Some(entry) = self
             .parked
             .get_mut(&lease_key(&lease.task_id, lease.run_epoch))
-            && Arc::ptr_eq(&entry.lease, lease) && entry.resumable {
-                entry.resumable = false;
-                entry.settle();
-            }
+            && Arc::ptr_eq(&entry.lease, lease)
+            && entry.resumable
+        {
+            entry.resumable = false;
+            entry.settle();
+        }
     }
     pub fn release_lease(&mut self, task_id: &str, epoch: i64) -> Vec<Grant> {
         let key = lease_key(task_id, epoch);
@@ -657,7 +660,10 @@ mod custody_tests {
         // The permit is transferred, not freed: drain promotes the waiter and records its lease
         // before returning the grant, so the global slot is already accounted for the promoted
         // lane. Nothing else may admit into that slot (asserted below via the third lane).
-        assert_eq!(c.active_global, 1, "park must hand the global permit to the drained lane");
+        assert_eq!(
+            c.active_global, 1,
+            "park must hand the global permit to the drained lane"
+        );
         for grant in grants {
             grant();
         }

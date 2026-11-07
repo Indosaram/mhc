@@ -306,24 +306,57 @@ async fn kimi_k3_1_aliases_dispatch_through_registered_prompt_hook() {
         ExtensionRuntime::default(),
     );
     maho_ext_prompt_preset::PromptPreset.register(&mut api);
-    for id in ["k3.1-pro", "k3.1-pro-highspeed", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3-1-pro", "k3p1", "kimi-for-coding/k3p1"] {
-        ctx.model = Some(serde_json::from_value(serde_json::json!({
-            "id": id, "name": id, "api": "openai-completions", "provider": "custom",
-            "baseUrl": "", "reasoning": false, "input": ["text"],
-            "cost": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0},
-            "contextWindow": 100000, "maxTokens": 1000
-        })).expect("model"));
+    for id in [
+        "k3.1-pro",
+        "k3.1-pro-highspeed",
+        "kimi-k3.1-pro",
+        "kimi-k3.1-pro-highspeed",
+        "kimi-k3-1-pro",
+        "k3p1",
+        "kimi-for-coding/k3p1",
+    ] {
+        ctx.model = Some(
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "api": "openai-completions", "provider": "custom",
+                "baseUrl": "", "reasoning": false, "input": ["text"],
+                "cost": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0},
+                "contextWindow": 100000, "maxTokens": 1000
+            }))
+            .expect("model"),
+        );
         let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
-            prompt: String::new(), trigger: "prompt".into(), preview: false, images: None,
+            prompt: String::new(),
+            trigger: "prompt".into(),
+            preview: false,
+            images: None,
             system_prompt: "base".into(),
-            system_prompt_options: BuildSystemPromptOptions { cwd: "<root>".into(), ..Default::default() },
+            system_prompt_options: BuildSystemPromptOptions {
+                cwd: "<root>".into(),
+                ..Default::default()
+            },
         });
         let EventResult::BeforeAgentStart(result) =
-            api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event, &ctx).await.expect("dispatch")
-        else { panic!("no preset for {id}"); };
+            api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event, &ctx)
+                .await
+                .expect("dispatch")
+        else {
+            panic!("no preset for {id}");
+        };
         let parts = result.system_prompt_parts.expect("captured prompt parts");
-        assert!(parts.iter().any(|part| part.source.as_deref() == Some("prompt-preset:kimi-k3-1")), "{id}");
-        assert_eq!(parts.iter().map(|part| part.text.as_str()).collect::<String>(), result.system_prompt.expect("prompt"), "{id}");
+        assert!(
+            parts
+                .iter()
+                .any(|part| part.source.as_deref() == Some("prompt-preset:kimi-k3-1")),
+            "{id}"
+        );
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            result.system_prompt.expect("prompt"),
+            "{id}"
+        );
     }
 }
 

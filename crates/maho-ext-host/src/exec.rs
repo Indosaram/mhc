@@ -1,17 +1,40 @@
-use std::{path::Path, process::Stdio, time::Duration};
 use maho_ext_api::{ExecOptions, ExecResult};
+use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::AsyncReadExt;
 
-pub async fn exec_command(command: &str, args: &[String], cwd: &Path, options: ExecOptions) -> ExecResult {
+pub async fn exec_command(
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    options: ExecOptions,
+) -> ExecResult {
     let mut command = tokio::process::Command::new(command);
-    command.args(args).current_dir(options.cwd.as_deref().unwrap_or(cwd))
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env_remove("__PI_INTERNAL_SPAWN").kill_on_drop(true);
+    command
+        .args(args)
+        .current_dir(options.cwd.as_deref().unwrap_or(cwd))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("__PI_INTERNAL_SPAWN")
+        .kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(error) => return ExecResult { stdout: String::new(), stderr: error.to_string(), code: 1, killed: false },
+        Err(error) => {
+            return ExecResult {
+                stdout: String::new(),
+                stderr: error.to_string(),
+                code: 1,
+                killed: false,
+            };
+        }
     };
-    let pre_aborted = options.signal.as_ref().is_some_and(|signal| signal.is_aborted());
-    if pre_aborted { terminate(&mut child); }
+    let pre_aborted = options
+        .signal
+        .as_ref()
+        .is_some_and(|signal| signal.is_aborted());
+    if pre_aborted {
+        terminate(&mut child);
+    }
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out = Vec::new();
@@ -21,10 +44,16 @@ pub async fn exec_command(command: &str, args: &[String], cwd: &Path, options: E
     let mut status = None;
     let mut killed = pre_aborted;
     let mut idle_deadline = None;
-    let mut kill_deadline = pre_aborted.then(|| tokio::time::Instant::now() + Duration::from_secs(5));
-    let timeout = options.timeout_ms.filter(|ms| *ms > 0).map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    let mut kill_deadline =
+        pre_aborted.then(|| tokio::time::Instant::now() + Duration::from_secs(5));
+    let timeout = options
+        .timeout_ms
+        .filter(|ms| *ms > 0)
+        .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
     loop {
-        if status.is_some() && stdout.is_none() && stderr.is_none() { break; }
+        if status.is_some() && stdout.is_none() && stderr.is_none() {
+            break;
+        }
         tokio::select! {
             result = child.wait(), if status.is_none() => {
                 status = Some(result.map(|status| status.code().unwrap_or(0)).unwrap_or(1));
@@ -60,7 +89,12 @@ pub async fn exec_command(command: &str, args: &[String], cwd: &Path, options: E
             () = deadline(idle_deadline), if idle_deadline.is_some() => break,
         }
     }
-    ExecResult { stdout: String::from_utf8_lossy(&out).into_owned(), stderr: String::from_utf8_lossy(&err).into_owned(), code: status.unwrap_or(0), killed }
+    ExecResult {
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        code: status.unwrap_or(0),
+        killed,
+    }
 }
 
 async fn deadline(deadline: Option<tokio::time::Instant>) {
@@ -70,9 +104,14 @@ async fn deadline(deadline: Option<tokio::time::Instant>) {
 #[cfg(unix)]
 fn terminate(child: &mut tokio::process::Child) {
     if let Some(id) = child.id() {
-        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGTERM);
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(id as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        );
     }
 }
 
 #[cfg(not(unix))]
-fn terminate(child: &mut tokio::process::Child) { let _ = child.start_kill(); }
+fn terminate(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+}

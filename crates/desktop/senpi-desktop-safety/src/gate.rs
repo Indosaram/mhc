@@ -105,7 +105,9 @@ impl SupervisorStatus {
             }),
             (ActiveStopPath::HostRelay, _) if !policy.allow_host_relay_only => {
                 Some(match self.global_failure {
-                    Some(StopPathFailure::AccessibilityDenied) => StopPathReason::AccessibilityDenied,
+                    Some(StopPathFailure::AccessibilityDenied) => {
+                        StopPathReason::AccessibilityDenied
+                    }
                     _ => StopPathReason::HostRelayNotAllowed,
                 })
             }
@@ -134,7 +136,9 @@ pub enum GateError {
     ScreenLocked,
     #[error("input permission is not granted")]
     PermissionDenied { permission: TccPermission },
-    #[error("the frame is not the target's latest capture; capture it again before coordinate input")]
+    #[error(
+        "the frame is not the target's latest capture; capture it again before coordinate input"
+    )]
     InvalidCoordinateFrame,
 }
 
@@ -175,7 +179,9 @@ pub fn gate(
     }
     if let Some(reason) = status.stop_path_unavailable(policy) {
         if reason == StopPathReason::AccessibilityDenied {
-            return Err(GateError::PermissionDenied { permission: TccPermission::Accessibility });
+            return Err(GateError::PermissionDenied {
+                permission: TccPermission::Accessibility,
+            });
         }
         return Err(GateError::StopPathUnavailable { reason });
     }
@@ -183,9 +189,12 @@ pub fn gate(
         return Err(GateError::ScreenLocked);
     }
     if !perms.input_granted() {
-        return Err(GateError::PermissionDenied { permission: TccPermission::Accessibility });
+        return Err(GateError::PermissionDenied {
+            permission: TccPermission::Accessibility,
+        });
     }
-    if action.is_coordinate() && expected_frame.is_some_and(|expected| !frames.is_latest(&expected)) {
+    if action.is_coordinate() && expected_frame.is_some_and(|expected| !frames.is_latest(&expected))
+    {
         return Err(GateError::InvalidCoordinateFrame);
     }
     Ok(())

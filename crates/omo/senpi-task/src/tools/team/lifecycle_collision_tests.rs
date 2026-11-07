@@ -12,10 +12,12 @@ use crate::host::HostError;
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{
-    ChildPlanner, ManagedRunner, ManagedRunnerResult, ManagedRunners, ManagedStartSpec, ManagerConfig,
-    ManagerStartSpec, ResolvedChildPlan, StartResult, TaskManagerOptions,
+    ChildPlanner, ManagedRunner, ManagedRunnerResult, ManagedRunners, ManagedStartSpec,
+    ManagerConfig, ManagerStartSpec, ResolvedChildPlan, StartResult, TaskManagerOptions,
 };
-use crate::manager::{ManagedChildHandle, ManagedChildListener, TaskManager, Unsubscribe, create_task_manager};
+use crate::manager::{
+    ManagedChildHandle, ManagedChildListener, TaskManager, Unsubscribe, create_task_manager,
+};
 use crate::runners::RunnerOutcome;
 use crate::state::{ResidencyState, TaskStatus};
 use crate::store::{StateDirConfig, TaskRecordStore};
@@ -25,8 +27,9 @@ use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::{TeamRuntimeError, create_team};
 use crate::team::runtime_config::TeamTaskBounds;
 use crate::team::runtime_types::{
-    CreateTeamDeps, TeamCancelOutcome, TeamMemberCancelPort, TeamMemberReadPort, TeamMemberStartSpec,
-    TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
+    CreateTeamDeps, TeamCancelOutcome, TeamMemberCancelPort, TeamMemberReadPort,
+    TeamMemberStartSpec, TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult,
+    TeamStartedMember,
 };
 use crate::tools::team::lifecycle::{
     TeamCreateDetails, TeamCreateInput, run_team_create, runtime_error_to_service_error,
@@ -76,7 +79,9 @@ impl ManagedChildHandle for IdleHandle {
     }
 
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        lock(&self.outcomes).recv().unwrap_or(RunnerOutcome::Cancelled)
+        lock(&self.outcomes)
+            .recv()
+            .unwrap_or(RunnerOutcome::Cancelled)
     }
 
     fn last_assistant_text(&self) -> Option<String> {
@@ -193,7 +198,10 @@ fn build_manager(project: &std::path::Path) -> TaskManager {
     let store = TaskRecordStore::new(&state_dir_config(project));
     let planner: ChildPlanner = Arc::new(|spec: &ManagerStartSpec| {
         Ok(ResolvedChildPlan {
-            model: spec.model.clone().unwrap_or_else(|| "anthropic/claude".to_string()),
+            model: spec
+                .model
+                .clone()
+                .unwrap_or_else(|| "anthropic/claude".to_string()),
             category: spec.category.clone(),
             agent_type: spec.subagent_type.clone(),
             ..ResolvedChildPlan::default()
@@ -232,7 +240,9 @@ fn given_a_first_save_collision_when_the_real_team_create_tool_creates_a_team_th
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         create_team: Some(Box::new(move |input| {
             let Some(inline_spec) = &input.inline_spec else {
-                return Err(TeamToolServiceError::new("expected inline team spec".to_string()));
+                return Err(TeamToolServiceError::new(
+                    "expected inline team spec".to_string(),
+                ));
             };
             let spec = normalize_senpi_team_spec(inline_spec, "collision-team", None)
                 .map_err(|error| spec_error_to_service_error(&error))?;
@@ -257,7 +267,9 @@ fn given_a_first_save_collision_when_the_real_team_create_tool_creates_a_team_th
             };
             let created = match create_team(&spec, TeamSpecSource::Project, &deps) {
                 Ok(created) => created,
-                Err(TeamRuntimeError::Runtime(error)) => return Err(runtime_error_to_service_error(&error)),
+                Err(TeamRuntimeError::Runtime(error)) => {
+                    return Err(runtime_error_to_service_error(&error));
+                }
                 Err(other) => return Err(TeamToolServiceError::new(other.to_string())),
             };
             *lock(&status_slot) = Some(created.runtime_state.status.as_str().to_string());

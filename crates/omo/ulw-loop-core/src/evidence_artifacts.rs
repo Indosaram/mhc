@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use crate::paths::repo_relative;
 use crate::runtime::UlwLoopError;
 
-fn fail(message: impl Into<String>, code: impl Into<String>, details: BTreeMap<String, serde_json::Value>) -> Result<Vec<String>, UlwLoopError> {
+fn fail(
+    message: impl Into<String>,
+    code: impl Into<String>,
+    details: BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<String>, UlwLoopError> {
     Err(UlwLoopError::with_details(message, code, details))
 }
 
@@ -37,7 +41,8 @@ pub fn resolve_evidence_artifacts(
                 format!("Artifact {} must be a non-empty path.", index + 1),
                 "ULW_LOOP_ARGUMENT_INVALID",
                 details,
-            ).map(Some);
+            )
+            .map(Some);
         }
 
         let absolute = if Path::new(path).is_absolute() {
@@ -49,7 +54,10 @@ pub fn resolve_evidence_artifacts(
         if !absolute.exists() {
             let mut details = BTreeMap::new();
             details.insert("path".into(), serde_json::json!(path));
-            details.insert("resolved".into(), serde_json::json!(absolute.to_string_lossy()));
+            details.insert(
+                "resolved".into(),
+                serde_json::json!(absolute.to_string_lossy()),
+            );
             return fail(
                 format!(
                     "Evidence artifact does not exist: {} (resolved to {}).",
@@ -58,7 +66,8 @@ pub fn resolve_evidence_artifacts(
                 ),
                 "ULW_LOOP_EVIDENCE_ARTIFACT_MISSING",
                 details,
-            ).map(Some);
+            )
+            .map(Some);
         }
 
         let value = stored(root, &absolute);

@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use serde_json::Value;
 use senpi_task::{dag::types::DagRunSnapshot, manager::Unsubscribe};
+use serde_json::Value;
+use std::sync::Arc;
 pub type DagBridgeListener = Arc<dyn Fn(&Value) + Send + Sync>;
 pub type DagBridgeSubscribe = Arc<dyn Fn(DagBridgeListener) -> Unsubscribe + Send + Sync>;
 pub type DagBridgeEmit = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -8,7 +8,11 @@ pub type DagBridgeSnapshots = Arc<dyn Fn() -> Vec<(DagRunSnapshot, String)> + Se
 pub trait DagBridgeLogger: Send + Sync {
     fn warn(&self, message: &str, details: &Value);
 }
-pub struct DagBridgeRun { pub run_id: String, pub status: String, pub subscribe: DagBridgeSubscribe }
+pub struct DagBridgeRun {
+    pub run_id: String,
+    pub status: String,
+    pub subscribe: DagBridgeSubscribe,
+}
 pub struct DagRpcBridgeDeps {
     pub live_runs: Arc<dyn Fn() -> Vec<DagBridgeRun> + Send + Sync>,
     pub run_snapshots: Option<DagBridgeSnapshots>,

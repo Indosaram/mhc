@@ -32,8 +32,12 @@ pub struct DagNodeResultArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DagNodeResultPersistOutcome {
-    Persisted { artifact: DagNodeResultArtifact },
-    Failed { diagnostic: crate::dag::store::DagStoreDiagnostic },
+    Persisted {
+        artifact: DagNodeResultArtifact,
+    },
+    Failed {
+        diagnostic: crate::dag::store::DagStoreDiagnostic,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +75,9 @@ struct StatsSidecar {
 /// terminal idle TaskRecords, and the record itself expires on the task TTL, so a lazy copy would
 /// lose the output. Single attempt only - a failed copy returns a `journal_corrupt` diagnostic for
 /// the caller to journal, and the run continues.
-pub fn persist_dag_node_result(input: DagNodeResultPersistInput<'_>) -> DagNodeResultPersistOutcome {
+pub fn persist_dag_node_result(
+    input: DagNodeResultPersistInput<'_>,
+) -> DagNodeResultPersistOutcome {
     let output_path = input.store.paths.result(&input.run_id, &input.node_id);
     match persist(&input, &output_path) {
         Ok(artifact) => DagNodeResultPersistOutcome::Persisted { artifact },
@@ -101,7 +107,8 @@ fn persist(
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     write_artifact(output_path, output.as_bytes()).map_err(|error| error.to_string())?;
-    let stats = write_stats_sidecar(input, &stats_path(output_path)).map_err(|error| error.to_string())?;
+    let stats =
+        write_stats_sidecar(input, &stats_path(output_path)).map_err(|error| error.to_string())?;
     Ok(DagNodeResultArtifact {
         stats,
         ..artifact_ref(&input.store.state_dir, output_path, output.as_bytes())
@@ -124,15 +131,26 @@ fn write_stats_sidecar(
     // The sidecar shape is a fixed, always-serializable struct.
     let serialized = serde_json::to_string(&sidecar).unwrap_or_default();
     write_artifact(path, serialized.as_bytes())?;
-    Ok(Some(artifact_ref_from(&input.store.state_dir, path, serialized.as_bytes())))
+    Ok(Some(artifact_ref_from(
+        &input.store.state_dir,
+        path,
+        serialized.as_bytes(),
+    )))
 }
 
 fn write_artifact(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let suffix = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp_path = path.with_file_name(format!("{}.tmp-{}-{suffix}", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+    let temp_path = path.with_file_name(format!(
+        "{}.tmp-{}-{suffix}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
     let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
         file.write_all(contents)?;
         file.sync_all()?;
         drop(file);
@@ -163,9 +181,7 @@ fn artifact_ref_from(state_dir: &Path, path: &Path, contents: &[u8]) -> DagResul
 }
 
 fn relative_to(base: &Path, path: &Path) -> String {
-    pathdiff(base, path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    pathdiff(base, path).to_string_lossy().replace('\\', "/")
 }
 
 /// `node:path` `relative(from, to)`: both paths resolved beforehand by the store, so a plain

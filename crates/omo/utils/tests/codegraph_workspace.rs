@@ -55,7 +55,9 @@ fn prepare_workspace_creates_global_project_store_and_symlink() {
     #[cfg(windows)]
     if result.mode == CodegraphWorkspaceMode::InPlaceFallback
         && let Some(reason) = &result.reason
-        && (reason.contains("1314") || reason.contains("PrivilegeNotHeld") || reason.contains("권한"))
+        && (reason.contains("1314")
+            || reason.contains("PrivilegeNotHeld")
+            || reason.contains("권한"))
     {
         return;
     }
@@ -315,12 +317,17 @@ fn prune_store_missing_sources() {
     let live = tempdir().unwrap();
     let dead = tempdir().unwrap();
 
-    let symlink_fn = |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
+    let symlink_fn =
+        |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
     let live_prep = prepare_codegraph_workspace(
         live.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );
@@ -328,7 +335,11 @@ fn prune_store_missing_sources() {
         dead.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );
@@ -367,12 +378,17 @@ fn prune_dead_project_stores_ignores_unreadable_cache() {
     let live = tempdir().unwrap();
     let dead = tempdir().unwrap();
 
-    let symlink_fn = |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
+    let symlink_fn =
+        |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
     let live_prep = prepare_codegraph_workspace(
         live.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );
@@ -380,7 +396,11 @@ fn prune_dead_project_stores_ignores_unreadable_cache() {
         dead.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );
@@ -412,12 +432,17 @@ fn prune_dead_project_stores_ignores_malformed_metadata() {
     let live = tempdir().unwrap();
     let dead = tempdir().unwrap();
 
-    let symlink_fn = |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
+    let symlink_fn =
+        |_target: &Path, _link: &Path, _platform: &str| -> std::io::Result<()> { Ok(()) };
     let malformed_prep = prepare_codegraph_workspace(
         live.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );
@@ -425,7 +450,11 @@ fn prune_dead_project_stores_ignores_malformed_metadata() {
         dead.path(),
         &PrepareCodegraphWorkspaceOptions {
             home_dir: Some(home_path.to_path_buf()),
-            symlink: if cfg!(windows) { Some(&symlink_fn) } else { None },
+            symlink: if cfg!(windows) {
+                Some(&symlink_fn)
+            } else {
+                None
+            },
             ..Default::default()
         },
     );

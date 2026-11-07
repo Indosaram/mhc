@@ -61,7 +61,8 @@ use memory_core::recall::{RecallCandidate, RecallNudge};
 use serde_json::json;
 
 use crate::kibitzer_child::{
-    JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput, KibitzerChildSpawner,
+    JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput,
+    KibitzerChildSpawner,
 };
 use crate::kibitzer_contract::{
     KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState, KibitzerWakeSpawn,
@@ -76,7 +77,8 @@ use crate::kibitzer_sidecar_core::{Child, Envelope, Payload, SidecarCore, Turn};
 use crate::kibitzer_sidecar_envelope::{envelope_input, merge, payload_of};
 use crate::kibitzer_sidecar_model::kibitzer_configuration_failure;
 use crate::kibitzer_sidecar_outcome::{
-    KibitzerWakeAbort, KibitzerWakeEnd, KibitzerWakeFailureCause, classify_wake_end, start_failure_end,
+    KibitzerWakeAbort, KibitzerWakeEnd, KibitzerWakeFailureCause, classify_wake_end,
+    start_failure_end,
 };
 use crate::kibitzer_sidecar_recovery::KibitzerRecovery;
 use crate::kibitzer_sidecar_turn::TurnLifecycle;
@@ -125,18 +127,40 @@ pub fn create_wake_transitions(
     spawn: KibitzerWakeSpawn,
     deliver: Arc<dyn KibitzerWakeDeliver>,
 ) -> Arc<WakeTransitions> {
-    Arc::new(WakeTransitions { core, turns, admission, recovery, spawner, spawn, deliver })
+    Arc::new(WakeTransitions {
+        core,
+        turns,
+        admission,
+        recovery,
+        spawner,
+        spawn,
+        deliver,
+    })
 }
 
 impl WakeTransitions {
     /// `seed(fresh, maxItems)`: a fresh resident child whose first message is the carried and buffered
     /// events plus the fresh candidates. The lease is taken before the payload is cut, the deadline is
     /// armed before the child I/O it bounds, and the settlement is armed before the trigger.
-    pub async fn seed(self: &Arc<Self>, fresh: &[RecallCandidate], max_items: usize) -> KibitzerOfferResult {
-        let generation = self.core.record.lock().unwrap_or_else(PoisonError::into_inner).generations + 1;
+    pub async fn seed(
+        self: &Arc<Self>,
+        fresh: &[RecallCandidate],
+        max_items: usize,
+    ) -> KibitzerOfferResult {
+        let generation = self
+            .core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .generations
+            + 1;
         let admitted = match self.admission.admit().await.into_refusal() {
             Ok(admitted) => admitted,
-            Err(refusal) => return self.admission.refused(refusal, generation, max_items, fresh.len()),
+            Err(refusal) => {
+                return self
+                    .admission
+                    .refused(refusal, generation, max_items, fresh.len());
+            }
         };
         let Admission::Acquired { lease, waited_ms } = admitted else {
             // `into_refusal` yields `Ok` only for an acquired admission.
@@ -145,14 +169,25 @@ impl WakeTransitions {
         // Cut the payload here: a hook captured while the child is starting opens the next batch
         // instead of being drained unread once the child exists. Carried payloads come first.
         let payload = {
-            let batch = self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).drain();
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let batch = self
+                .core
+                .stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .drain();
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let mut parts = std::mem::take(&mut record.carry);
             parts.push(payload_of(batch, fresh.to_vec()));
             merge(&parts)
         };
         let prompt = self.render_prompt(&payload, max_items);
-        let turn = self.turns.new_turn(generation, max_items, payload.candidates.len());
+        let turn = self
+            .turns
+            .new_turn(generation, max_items, payload.candidates.len());
         *turn.lease.lock().unwrap_or_else(PoisonError::into_inner) = Some(lease);
         turn.slot_wait_ms.store(waited_ms, Ordering::SeqCst);
         // The explicit minimal pending state: exactly one of {the expiry callback, the spawn
@@ -165,7 +200,11 @@ impl WakeTransitions {
         // the lease and reports the wake directly, never queueing behind that I/O.
         self.turns.arm_deadline(
             &turn,
-            Some(self.pending_start_expiry(&turn, Arc::clone(&pending_claim), Arc::clone(&armed_epoch))),
+            Some(self.pending_start_expiry(
+                &turn,
+                Arc::clone(&pending_claim),
+                Arc::clone(&armed_epoch),
+            )),
         );
         // The token `arm_deadline` minted for THIS arm: the expiry re-checks it before claiming, so a
         // re-arm (a spawn that succeeded) leaves the stale callback unable to claim.
@@ -173,7 +212,10 @@ impl WakeTransitions {
         let input = KibitzerChildSpawnInput {
             session_id: self.core.session_id.clone(),
             generation,
-            tools: KIBITZER_SIDECAR_TOOL_NAMES.iter().map(|name| (*name).to_string()).collect(),
+            tools: KIBITZER_SIDECAR_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
             max_items,
         };
         let handle = match self.spawner.spawn(input).await {
@@ -181,7 +223,9 @@ impl WakeTransitions {
                 // Atomically claim the pending start. A loss means the deadline already claimed and
                 // settled this wake, so the late child begins no turn.
                 if pending_claim.swap(true, Ordering::SeqCst) {
-                    self.turns.abort_handle(Arc::clone(&handle), KibitzerWakeAbort::Deadline).await;
+                    self.turns
+                        .abort_handle(Arc::clone(&handle), KibitzerWakeAbort::Deadline)
+                        .await;
                     self.dispose_handle(&handle, generation);
                     return self.abandoned(payload);
                 }
@@ -196,18 +240,28 @@ impl WakeTransitions {
                 // No child read the envelope and nothing was offered: its events and candidates ride
                 // the retry. The typed start failure is reported, then the sidecar backs off.
                 self.turns.clear_deadline(&turn);
-                self.core.record.lock().unwrap_or_else(PoisonError::into_inner).carry = vec![payload];
+                self.core
+                    .record
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .carry = vec![payload];
                 self.admission.release_lease(&turn).await;
                 let end = start_failure_end(&error.message, kibitzer_configuration_failure(&error));
                 self.turns.report(&turn, &end, &[], None, None);
                 self.recovery.enter_backoff();
-                return KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Backoff };
+                return KibitzerOfferResult::Buffered {
+                    reason: KibitzerBufferedReason::Backoff,
+                };
             }
         };
         // The child exists and its turn is about to start. The claim already proves the deadline did
         // not win, so the deadline's on_expire is superseded here.
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.generations = generation;
             record.pending_reseed = None;
         }
@@ -217,7 +271,11 @@ impl WakeTransitions {
             Arc::new(move |observation: KibitzerChildObservation| turns.observe(observation))
         });
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.child = Some(Child {
                 handle: Arc::clone(&handle),
                 generation,
@@ -229,12 +287,15 @@ impl WakeTransitions {
             record.active_turn = Some(Arc::clone(&turn));
             record.state = KibitzerSidecarState::TurnRunning;
         }
-        turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner).push(Envelope {
-            text: prompt.clone(),
-            payload: payload.clone(),
-            steered: false,
-            consumed: true,
-        });
+        turn.envelopes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Envelope {
+                text: prompt.clone(),
+                payload: payload.clone(),
+                steered: false,
+                consumed: true,
+            });
         self.turns.arm_deadline(&turn, None);
         // The settlement is armed BEFORE the trigger, and the arm is SYNCHRONOUS (see `arm_settlement`).
         self.arm_settlement(Arc::clone(&handle), Arc::clone(&turn));
@@ -266,11 +327,24 @@ impl WakeTransitions {
     ) -> KibitzerOfferResult {
         // The resident generation and the report context come from the SAME child the turn revives; the
         // snapshot shares every `Arc` field, so it stays valid after the record lock is dropped.
-        let child_snapshot = self.core.record.lock().unwrap_or_else(PoisonError::into_inner).child.clone();
-        let generation = child_snapshot.as_ref().map(|child| child.generation).unwrap_or(0);
+        let child_snapshot = self
+            .core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .child
+            .clone();
+        let generation = child_snapshot
+            .as_ref()
+            .map(|child| child.generation)
+            .unwrap_or(0);
         let admitted = match self.admission.admit().await.into_refusal() {
             Ok(admitted) => admitted,
-            Err(refusal) => return self.admission.refused(refusal, generation, max_items, fresh.len()),
+            Err(refusal) => {
+                return self
+                    .admission
+                    .refused(refusal, generation, max_items, fresh.len());
+            }
         };
         let Admission::Acquired { lease, waited_ms } = admitted else {
             // `into_refusal` yields `Ok` only for an acquired admission.
@@ -278,8 +352,17 @@ impl WakeTransitions {
         };
         // Cut the payload here, as seed does: carried payloads first, then the drained batch.
         let payload = {
-            let batch = self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).drain();
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let batch = self
+                .core
+                .stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .drain();
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let mut parts = std::mem::take(&mut record.carry);
             parts.push(payload_of(batch, fresh.to_vec()));
             merge(&parts)
@@ -288,7 +371,9 @@ impl WakeTransitions {
             let adapter = envelope_input(&self.core, payload.clone(), max_items, false);
             render_kibitzer_wake_prompt(&adapter.input())
         };
-        let turn = self.turns.new_turn(generation, max_items, payload.candidates.len());
+        let turn = self
+            .turns
+            .new_turn(generation, max_items, payload.candidates.len());
         *turn.lease.lock().unwrap_or_else(PoisonError::into_inner) = Some(lease);
         turn.slot_wait_ms.store(waited_ms, Ordering::SeqCst);
         self.turns.offer_paths(fresh, turn.wake);
@@ -298,20 +383,30 @@ impl WakeTransitions {
         // Install the turn BEFORE the trigger: the applied native trigger awaits the whole turn, so the
         // turn must already be active for the child's observations to be seen and the deadline to apply.
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.active_turn = Some(Arc::clone(&turn));
             record.state = KibitzerSidecarState::TurnRunning;
         }
         if let Some(child) = child_snapshot.as_ref() {
             // `envelope.text.length` is UTF-16 units (JS `String.length`); the counter is `Arc`-shared.
-            *child.chars_sent.lock().unwrap_or_else(PoisonError::into_inner) += text.encode_utf16().count() as i64;
+            *child
+                .chars_sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) += text.encode_utf16().count() as i64;
         }
-        turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner).push(Envelope {
-            text: text.clone(),
-            payload: payload.clone(),
-            steered: false,
-            consumed: true,
-        });
+        turn.envelopes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Envelope {
+                text: text.clone(),
+                payload: payload.clone(),
+                steered: false,
+                consumed: true,
+            });
         self.turns.arm_deadline(&turn, None);
         match current.follow_up(&text).await {
             Err(error) => {
@@ -320,7 +415,11 @@ impl WakeTransitions {
                 // back off - matching upstream's failed followUp.
                 self.turns.clear_deadline(&turn);
                 {
-                    let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut record = self
+                        .core
+                        .record
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
                     record.active_turn = None;
                     record.carry = vec![payload];
                 }
@@ -330,10 +429,13 @@ impl WakeTransitions {
                     reason: Some(error),
                     configuration: None,
                 };
-                self.turns.report(&turn, &end, &[], child_snapshot.as_ref(), None);
+                self.turns
+                    .report(&turn, &end, &[], child_snapshot.as_ref(), None);
                 self.recovery.dispose_child();
                 self.recovery.enter_backoff();
-                KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Backoff }
+                KibitzerOfferResult::Buffered {
+                    reason: KibitzerBufferedReason::Backoff,
+                }
             }
             Ok(()) => KibitzerOfferResult::FollowedUp { wake: turn.wake },
         }
@@ -354,21 +456,33 @@ impl WakeTransitions {
     ) -> KibitzerOfferResult {
         // The batch joins the turn: only the buffered events plus the fresh candidates, never the carry.
         let payload = {
-            let batch = self.core.stream.lock().unwrap_or_else(PoisonError::into_inner).drain();
+            let batch = self
+                .core
+                .stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .drain();
             payload_of(batch, fresh.to_vec())
         };
         let adapter = envelope_input(&self.core, payload.clone(), max_items, false);
         let text = render_kibitzer_wake_prompt(&adapter.input());
         self.turns.offer_paths(fresh, turn.wake);
-        turn.candidate_count.fetch_add(fresh.len(), Ordering::SeqCst);
-        turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner).push(Envelope {
-            text: text.clone(),
-            payload,
-            steered: true,
-            consumed: false,
-        });
+        turn.candidate_count
+            .fetch_add(fresh.len(), Ordering::SeqCst);
+        turn.envelopes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Envelope {
+                text: text.clone(),
+                payload,
+                steered: true,
+                consumed: false,
+            });
         // `envelope.text.length` is UTF-16 units (JS `String.length`), not scalar values.
-        *current.chars_sent.lock().unwrap_or_else(PoisonError::into_inner) += text.encode_utf16().count() as i64;
+        *current
+            .chars_sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += text.encode_utf16().count() as i64;
         // Re-arm the bounded deadline BEFORE the steer it bounds: the quiet period restarts.
         self.turns.arm_deadline(turn, None);
         if let Err(error) = current.handle.steer(&text).await {
@@ -384,7 +498,13 @@ impl WakeTransitions {
     /// The first message: a seed envelope, or - when a restart is pending - the reseed envelope
     /// concatenated with the wake envelope, both rendered over the SAME cut payload.
     fn render_prompt(&self, payload: &Payload, max_items: usize) -> String {
-        let pending = self.core.record.lock().unwrap_or_else(PoisonError::into_inner).pending_reseed.clone();
+        let pending = self
+            .core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending_reseed
+            .clone();
         match pending {
             None => {
                 let adapter = envelope_input(&self.core, payload.clone(), max_items, true);
@@ -468,11 +588,22 @@ impl WakeTransitions {
         // The provider turn is over whatever happens next: the machine slot goes back first.
         self.admission.release_lease(&turn).await;
         let active = {
-            let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
-            record.active_turn.as_ref().is_some_and(|current| Arc::ptr_eq(current, &turn))
+            let record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            record
+                .active_turn
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &turn))
         };
         let handle = {
-            let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.child.as_ref().map(|child| Arc::clone(&child.handle))
         };
         // A superseded settlement (not the active turn, or no live child) changes nothing else - but
@@ -484,42 +615,70 @@ impl WakeTransitions {
         };
         self.turns.clear_deadline(&turn);
         let abort = *turn.abort.lock().unwrap_or_else(PoisonError::into_inner);
-        let accepted = turn.accepted.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let accepted = turn
+            .accepted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let end = classify_wake_end(&outcome, abort, &accepted);
         let nudges: Vec<RecallNudge> = if matches!(end, KibitzerWakeEnd::Cancelled) {
             Vec::new()
         } else {
-            let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             match record.child.as_ref() {
                 Some(current) => self.turns.validated(&turn, current),
                 None => Vec::new(),
             }
         };
         if !nudges.is_empty() {
-            if let Err(error) = self.deliver.deliver(nudges.clone(), turn.wake, turn.generation).await {
+            if let Err(error) = self
+                .deliver
+                .deliver(nudges.clone(), turn.wake, turn.generation)
+                .await
+            {
                 self.core.warn(
                     "omo-senpi kibitzer sidecar delivery failed",
                     Some(json!({ "wake": turn.wake, "error": error })),
                 );
             }
             {
-                let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut record = self
+                    .core
+                    .record
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 for nudge in &nudges {
                     record.delivered.insert(nudge.path.clone());
                 }
             }
             {
-                let mut surfaced = self.core.resources.surfaced.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut surfaced = self
+                    .core
+                    .resources
+                    .surfaced
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 for nudge in &nudges {
                     surfaced.insert(nudge.path.clone());
                 }
             }
-            self.core.cooldown.lock().unwrap_or_else(PoisonError::into_inner).charge();
+            self.core
+                .cooldown
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .charge();
         }
         // A dead child judged nothing it was sent; a live one may have missed steers that landed late.
         let failed = matches!(end, KibitzerWakeEnd::Failed { .. });
         let unread: Vec<Payload> = {
-            let envelopes = turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner);
+            let envelopes = turn
+                .envelopes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             envelopes
                 .iter()
                 .filter(|envelope| failed || (envelope.steered && !envelope.consumed))
@@ -528,14 +687,32 @@ impl WakeTransitions {
         };
         if failed {
             let paths: Vec<String> = {
-                let envelopes = turn.envelopes.lock().unwrap_or_else(PoisonError::into_inner);
+                let envelopes = turn
+                    .envelopes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 envelopes
                     .iter()
-                    .flat_map(|envelope| envelope.payload.candidates.iter().map(|candidate| candidate.path.clone()))
+                    .flat_map(|envelope| {
+                        envelope
+                            .payload
+                            .candidates
+                            .iter()
+                            .map(|candidate| candidate.path.clone())
+                    })
                     .collect()
             };
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut offered = self.core.resources.offered.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mut offered = self
+                .core
+                .resources
+                .offered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             for path in paths {
                 if record.delivered.contains(&path) {
                     continue;
@@ -545,15 +722,26 @@ impl WakeTransitions {
             }
         }
         {
-            let mut record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut record = self
+                .core
+                .record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             record.carry.extend(unread);
             record.active_turn = None;
         }
         // Clone the child snapshot OUT of the record, drop the guard, then report: the `on_wake`
         // callback may reenter the sidecar (`core.state()` locks the record), so no record lock may be
         // held across `report`. The snapshot shares every `Arc` field with the live child.
-        let child_snapshot = self.core.record.lock().unwrap_or_else(PoisonError::into_inner).child.clone();
-        self.turns.report(&turn, &end, &nudges, child_snapshot.as_ref(), None);
+        let child_snapshot = self
+            .core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .child
+            .clone();
+        self.turns
+            .report(&turn, &end, &nudges, child_snapshot.as_ref(), None);
         match &end {
             KibitzerWakeEnd::Cancelled => {
                 self.recovery.dispose_child();
@@ -563,18 +751,38 @@ impl WakeTransitions {
                 self.recovery.dispose_child();
                 self.recovery.enter_backoff();
             }
-            KibitzerWakeEnd::Completed | KibitzerWakeEnd::ToolBudgetExceeded | KibitzerWakeEnd::Deadline => {
-                self.core.record.lock().unwrap_or_else(PoisonError::into_inner).consecutive_failures = 0;
+            KibitzerWakeEnd::Completed
+            | KibitzerWakeEnd::ToolBudgetExceeded
+            | KibitzerWakeEnd::Deadline => {
+                self.core
+                    .record
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .consecutive_failures = 0;
                 let estimate = {
-                    let record = self.core.record.lock().unwrap_or_else(PoisonError::into_inner);
-                    record.child.as_ref().map(|child| self.turns.context_estimate(child)).unwrap_or(0)
+                    let record = self
+                        .core
+                        .record
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    record
+                        .child
+                        .as_ref()
+                        .map(|child| self.turns.context_estimate(child))
+                        .unwrap_or(0)
                 };
                 if estimate >= self.core.reseed_at_tokens {
                     self.recovery.prepare_reseed(turn.wake);
                     self.recovery.dispose_child();
                     self.set_state(KibitzerSidecarState::Reseeding);
                 } else {
-                    let carry_len = self.core.record.lock().unwrap_or_else(PoisonError::into_inner).carry.len();
+                    let carry_len = self
+                        .core
+                        .record
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .carry
+                        .len();
                     if carry_len > 0 {
                         // The later followUp unit's transition; invoked exactly as upstream's
                         // `await followUp(current, [], turn.maxItems)`. It is called from INSIDE the
@@ -594,15 +802,25 @@ impl WakeTransitions {
 
     /// Sets the sidecar state under a short, non-await record lock.
     fn set_state(&self, state: KibitzerSidecarState) {
-        self.core.record.lock().unwrap_or_else(PoisonError::into_inner).state = state;
+        self.core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state = state;
     }
 
     /// What the transition returns once its child I/O finally lands behind an abandoned deadline: no
     /// child read the envelope, so its events and candidates ride the retry, as a start failure's do.
     fn abandoned(&self, payload: Payload) -> KibitzerOfferResult {
-        self.core.record.lock().unwrap_or_else(PoisonError::into_inner).carry = vec![payload];
+        self.core
+            .record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .carry = vec![payload];
         self.recovery.enter_backoff();
-        KibitzerOfferResult::Buffered { reason: KibitzerBufferedReason::Backoff }
+        KibitzerOfferResult::Buffered {
+            reason: KibitzerBufferedReason::Backoff,
+        }
     }
 
     /// Disposes a child that arrived after its wake was abandoned. The async native disposal runs on

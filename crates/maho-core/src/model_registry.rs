@@ -132,7 +132,10 @@ impl ModelRegistry {
         self.model_runtime.unregister_provider(id)
     }
     /// senpi `ModelRegistry.getProviderOrigin` (senpi#4328).
-    pub fn get_provider_origin(&self, provider: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+    pub fn get_provider_origin(
+        &self,
+        provider: &str,
+    ) -> Option<crate::provider_origin::ProviderOrigin> {
         self.model_runtime.get_provider_origin(provider)
     }
     pub fn get_upstream_model_id(&self, model: &Model) -> Option<String> {
@@ -475,11 +478,16 @@ impl ModelRegistry {
 mod consent_tests {
     use super::*;
 
-    fn registry(credential: serde_json::Value, consent: bool) -> (ModelRegistry, tempfile::TempDir) {
+    fn registry(
+        credential: serde_json::Value,
+        consent: bool,
+    ) -> (ModelRegistry, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("dir");
         let auth_path = dir.path().join("auth.json");
         let storage = AuthStorage::create(&auth_path.to_string_lossy());
-        storage.set("anthropic", Some(credential)).expect("credential");
+        storage
+            .set("anthropic", Some(credential))
+            .expect("credential");
         if consent {
             std::fs::write(
                 dir.path().join("settings.json"),
@@ -521,12 +529,17 @@ mod consent_tests {
 
     #[tokio::test]
     async fn api_key_anthropic_never_needs_consent() {
-        let (registry, _dir) =
-            registry(serde_json::json!({"type":"api_key","key":"sk-ant-api03-x"}), false);
+        let (registry, _dir) = registry(
+            serde_json::json!({"type":"api_key","key":"sk-ant-api03-x"}),
+            false,
+        );
         let auth = registry
             .get_api_key_and_headers(&anthropic_model(&registry))
             .await;
-        assert!(matches!(auth, ResolvedRequestAuth::Resolved { .. }), "{auth:?}");
+        assert!(
+            matches!(auth, ResolvedRequestAuth::Resolved { .. }),
+            "{auth:?}"
+        );
     }
 
     #[tokio::test]
@@ -538,6 +551,9 @@ mod consent_tests {
         let auth = registry
             .get_api_key_and_headers(&anthropic_model(&registry))
             .await;
-        assert!(matches!(auth, ResolvedRequestAuth::Resolved { .. }), "{auth:?}");
+        assert!(
+            matches!(auth, ResolvedRequestAuth::Resolved { .. }),
+            "{auth:?}"
+        );
     }
 }

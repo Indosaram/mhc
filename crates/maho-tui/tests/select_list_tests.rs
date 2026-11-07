@@ -13,7 +13,12 @@ fn item(value: &str) -> SelectItem {
 
 fn filtered_to_nothing() -> SelectList {
     let items = vec![item("alpha"), item("beta")];
-    let mut list = SelectList::new(items, 5, plain_select_list_theme(), SelectListLayoutOptions::default());
+    let mut list = SelectList::new(
+        items,
+        5,
+        plain_select_list_theme(),
+        SelectListLayoutOptions::default(),
+    );
     list.set_filter("zzz");
     list
 }
@@ -24,7 +29,10 @@ fn up_on_empty_filter_keeps_list_usable() {
     list.handle_input("\x1b[A");
     assert!(list.get_selected_item().is_none());
     list.set_filter("");
-    assert_eq!(list.get_selected_item().map(|item| item.value.as_str()), Some("alpha"));
+    assert_eq!(
+        list.get_selected_item().map(|item| item.value.as_str()),
+        Some("alpha")
+    );
 }
 
 #[test]
@@ -33,5 +41,8 @@ fn down_on_empty_filter_keeps_list_usable() {
     list.handle_input("\x1b[B");
     assert!(list.get_selected_item().is_none());
     list.set_filter("");
-    assert_eq!(list.get_selected_item().map(|item| item.value.as_str()), Some("alpha"));
+    assert_eq!(
+        list.get_selected_item().map(|item| item.value.as_str()),
+        Some("alpha")
+    );
 }

@@ -2283,7 +2283,9 @@ fn apply_streamed_args_delta(
     }
     // `parsedThrough` counts UTF-16 code units of the buffer prefix last parsed into `arguments`.
     let parsed_through = entry.last_parse_len.map_or(0, |len| {
-        crate::utils::assistant_capture::utf16_len(&entry.partial_json.as_deref().unwrap_or("")[..len])
+        crate::utils::assistant_capture::utf16_len(
+            &entry.partial_json.as_deref().unwrap_or("")[..len],
+        )
     });
     stream.push_with_hint(
         AssistantMessageEvent::ToolcallDelta {

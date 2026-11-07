@@ -62,7 +62,10 @@ fn stat_identity(metadata: &Metadata) -> (u64, u64, f64, f64) {
 /// `statStamp`: `dev:ino:size:mtimeMs:ctimeMs`; also returns the later change time in ms.
 fn stat_stamp(metadata: &Metadata) -> (String, f64) {
     let (dev, ino, mtime, ctime) = stat_identity(metadata);
-    (format!("{dev}:{ino}:{}:{mtime}:{ctime}", metadata.len()), mtime.max(ctime))
+    (
+        format!("{dev}:{ino}:{}:{mtime}:{ctime}", metadata.len()),
+        mtime.max(ctime),
+    )
 }
 
 fn now_ms() -> f64 {
@@ -97,13 +100,23 @@ pub struct SkillSourceCache {
 }
 
 impl SkillSourceCache {
-    pub fn new(limits: SkillSourceCacheLimits, now: impl Fn() -> f64 + Send + Sync + 'static) -> Self {
-        Self { limits, now: Box::new(now), entries: Mutex::new(Entries::default()) }
+    pub fn new(
+        limits: SkillSourceCacheLimits,
+        now: impl Fn() -> f64 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            limits,
+            now: Box::new(now),
+            entries: Mutex::new(Entries::default()),
+        }
     }
 
     pub fn read(&self, file_path: &str, metadata: &Metadata) -> Result<String, std::io::Error> {
         let (stamp, changed_ms) = stat_stamp(metadata);
-        let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = entries.sources.get(file_path)
             && cached.stamp == stamp
         {
@@ -120,18 +133,31 @@ impl SkillSourceCache {
         if bytes > self.limits.max_entry_bytes {
             return Ok(source);
         }
-        entries.sources.insert(file_path.to_owned(), CachedSkillSource { stamp, source: source.clone(), bytes });
+        entries.sources.insert(
+            file_path.to_owned(),
+            CachedSkillSource {
+                stamp,
+                source: source.clone(),
+                bytes,
+            },
+        );
         entries.order.push_back(file_path.to_owned());
         entries.total_bytes += bytes;
         while entries.total_bytes > self.limits.max_total_bytes {
-            let Some(oldest) = entries.order.front().cloned() else { break };
+            let Some(oldest) = entries.order.front().cloned() else {
+                break;
+            };
             entries.forget(&oldest);
         }
         Ok(source)
     }
 
     pub fn len(&self) -> usize {
-        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sources.len()
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sources
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -139,11 +165,15 @@ impl SkillSourceCache {
     }
 }
 
-static USER_SKILL_SOURCES: LazyLock<SkillSourceCache> = LazyLock::new(|| SkillSourceCache::new(DEFAULT_LIMITS, now_ms));
+static USER_SKILL_SOURCES: LazyLock<SkillSourceCache> =
+    LazyLock::new(|| SkillSourceCache::new(DEFAULT_LIMITS, now_ms));
 
 /// `readUserSkillSource`: process-wide, because a shared RPC host opens a fresh resource loader for every
 /// session and each open loaded every user skill twice (omo#11437).
-pub fn read_user_skill_source(file_path: &str, metadata: &Metadata) -> Result<String, std::io::Error> {
+pub fn read_user_skill_source(
+    file_path: &str,
+    metadata: &Metadata,
+) -> Result<String, std::io::Error> {
     USER_SKILL_SOURCES.read(file_path, metadata)
 }
 
@@ -186,7 +216,9 @@ mod tests {
         let metadata = std::fs::metadata(&path).expect("stat");
         let now = Arc::new(AtomicU64::new(now_ms() as u64));
         let cache = SkillSourceCache::new(DEFAULT_LIMITS, clock(&now));
-        cache.read(&path.to_string_lossy(), &metadata).expect("read");
+        cache
+            .read(&path.to_string_lossy(), &metadata)
+            .expect("read");
         assert!(cache.is_empty());
     }
 
@@ -199,29 +231,59 @@ mod tests {
         let cache = SkillSourceCache::new(DEFAULT_LIMITS, clock(&now));
         let key = path.to_string_lossy().into_owned();
         let before = std::fs::metadata(&path).expect("stat");
-        assert!(cache.read(&key, &before).expect("read").contains("name: one"));
+        assert!(
+            cache
+                .read(&key, &before)
+                .expect("read")
+                .contains("name: one")
+        );
         write(&path, "---\nname: longer text\n---\nbody");
         let after = std::fs::metadata(&path).expect("stat");
-        assert!(cache.read(&key, &after).expect("read").contains("name: longer text"));
+        assert!(
+            cache
+                .read(&key, &after)
+                .expect("read")
+                .contains("name: longer text")
+        );
     }
 
     #[test]
     fn oversized_entries_are_not_kept_and_the_oldest_is_dropped_over_the_total() {
         let dir = tempfile::tempdir().expect("tempdir");
         let now = Arc::new(AtomicU64::new((now_ms() + 60_000.0) as u64));
-        let limits = SkillSourceCacheLimits { max_entry_bytes: 40, max_total_bytes: 60 };
+        let limits = SkillSourceCacheLimits {
+            max_entry_bytes: 40,
+            max_total_bytes: 60,
+        };
         let cache = SkillSourceCache::new(limits, clock(&now));
         let big = dir.path().join("big.md");
         write(&big, &"x".repeat(100));
-        cache.read(&big.to_string_lossy(), &std::fs::metadata(&big).expect("stat")).expect("read");
+        cache
+            .read(
+                &big.to_string_lossy(),
+                &std::fs::metadata(&big).expect("stat"),
+            )
+            .expect("read");
         assert!(cache.is_empty());
-        let paths: Vec<_> = ["a.md", "b.md"].iter().map(|name| dir.path().join(name)).collect();
+        let paths: Vec<_> = ["a.md", "b.md"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
         for path in &paths {
             write(path, &"y".repeat(35));
-            cache.read(&path.to_string_lossy(), &std::fs::metadata(path).expect("stat")).expect("read");
+            cache
+                .read(
+                    &path.to_string_lossy(),
+                    &std::fs::metadata(path).expect("stat"),
+                )
+                .expect("read");
         }
         assert_eq!(cache.len(), 1);
         let entries = cache.entries.lock().expect("lock");
-        assert!(entries.sources.contains_key(&paths[1].to_string_lossy().into_owned()));
+        assert!(
+            entries
+                .sources
+                .contains_key(&paths[1].to_string_lossy().into_owned())
+        );
     }
 }

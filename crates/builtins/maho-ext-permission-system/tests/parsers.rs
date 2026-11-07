@@ -90,7 +90,10 @@ fn grep_empty_path_does_not_fall_back_to_pattern() {
 #[test]
 fn grep_path_array_gates_every_element() {
     // Given a grep over a workspace path and an external one (senpi#4311).
-    let requests = parse("grep", json!({"pattern":"TOKEN","path":["src","/mhc-outside"]}));
+    let requests = parse(
+        "grep",
+        json!({"pattern":"TOKEN","path":["src","/mhc-outside"]}),
+    );
     // Then each element is a grep pattern and only the external one is classified.
     assert_eq!(requests[0].patterns, vec!["src", "/mhc-outside"]);
     assert_eq!(requests[1].permission, "external_directory");

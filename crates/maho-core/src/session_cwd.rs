@@ -616,7 +616,12 @@ mod tests {
         let src = dir.path().join("source.jsonl");
         let dst = dir.path().join("sub").join("target.jsonl");
         let original_header = r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-10-16T00:00:00.000Z","cwd":"/old","parentSession":"/p.jsonl","forkedFromLeafId":"leaf-1"}"#;
-        tokio::fs::write(&src, format!("{original_header}\n{{\"type\":\"message\",\"content\":\"hi\"}}\n")).await.expect("write");
+        tokio::fs::write(
+            &src,
+            format!("{original_header}\n{{\"type\":\"message\",\"content\":\"hi\"}}\n"),
+        )
+        .await
+        .expect("write");
         let result = move_session_file(&src, &dst, "/new").await.expect("move");
         assert_eq!(result, dst);
         let content = tokio::fs::read_to_string(&dst).await.expect("read");

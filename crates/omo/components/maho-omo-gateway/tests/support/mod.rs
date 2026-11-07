@@ -1,6 +1,6 @@
+use maho_ext_api::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use maho_ext_api::*;
 
 pub struct TestSession {
     pub session_id: String,
@@ -51,13 +51,28 @@ impl ModelRegistry for TestRegistry {
 
 pub struct TestUi(pub Arc<Mutex<Vec<String>>>);
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, _: NotificationType) {

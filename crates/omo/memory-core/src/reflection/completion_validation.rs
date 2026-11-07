@@ -269,14 +269,7 @@ fn screen_entries(
             }
         }
         let now_paths: BTreeSet<String> = now.into_iter().map(|(path, _)| path).collect();
-        tip_sha = squash_without_paths(
-            exec,
-            dir,
-            recorded_base,
-            &tip_sha,
-            &now_paths,
-            &dropped,
-        )?;
+        tip_sha = squash_without_paths(exec, dir, recorded_base, &tip_sha, &now_paths, &dropped)?;
         round += 1;
     }
 }
@@ -289,7 +282,11 @@ pub fn list_reflection_changed_paths(
     tip_sha: &str,
 ) -> Result<Vec<String>, String> {
     let range = format!("{base_sha}..{tip_sha}");
-    let changed = git_must(exec, dir, &["diff", "--name-only", "-z", range.as_str(), "--"])?;
+    let changed = git_must(
+        exec,
+        dir,
+        &["diff", "--name-only", "-z", range.as_str(), "--"],
+    )?;
     Ok(changed
         .stdout
         .split('\0')
@@ -326,7 +323,10 @@ fn find_frontmatter_failures(
         }
         failures.push((
             path.clone(),
-            format!("invalid frontmatter: {}", redact_secret_like_material(&violation)),
+            format!(
+                "invalid frontmatter: {}",
+                redact_secret_like_material(&violation)
+            ),
         ));
     }
     Ok(failures)

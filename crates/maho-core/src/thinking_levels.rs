@@ -1,7 +1,10 @@
 //! Port of senpi packages/coding-agent/src/core/thinking-levels.ts.
 
 use maho_ai::model::Model;
-use maho_ai::models::{get_supported_thinking_levels as model_supported_levels, supports_max as model_supports_max, supports_xhigh as model_supports_xhigh};
+use maho_ai::models::{
+    get_supported_thinking_levels as model_supported_levels, supports_max as model_supports_max,
+    supports_xhigh as model_supports_xhigh,
+};
 use maho_ai::types::{ModelThinkingLevel, ThinkingLevel};
 
 pub fn supports_xhigh(model: &Model) -> bool {
@@ -15,7 +18,11 @@ pub fn supports_max(model: &Model) -> bool {
 /// Supported levels, always non-empty: the model's own levels, else ["off"].
 pub fn get_supported_thinking_levels(model: &Model) -> Vec<ModelThinkingLevel> {
     let levels = model_supported_levels(model);
-    if levels.is_empty() { vec![ModelThinkingLevel::Off] } else { levels }
+    if levels.is_empty() {
+        vec![ModelThinkingLevel::Off]
+    } else {
+        levels
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,20 +55,40 @@ fn non_off(level: ModelThinkingLevel) -> Option<ThinkingLevel> {
 /// Classifies a model's reasoning capability purely from its reasoning flag and supported levels.
 pub fn classify_reasoning_capability(model: &Model) -> ReasoningCapability {
     if !model.reasoning {
-        return ReasoningCapability { kind: ReasoningCapabilityKind::None, levels: vec![ModelThinkingLevel::Off], non_off_levels: Vec::new() };
+        return ReasoningCapability {
+            kind: ReasoningCapabilityKind::None,
+            levels: vec![ModelThinkingLevel::Off],
+            non_off_levels: Vec::new(),
+        };
     }
     let levels = get_supported_thinking_levels(model);
     let non_off_levels: Vec<ThinkingLevel> = levels.iter().copied().filter_map(non_off).collect();
     if !levels.contains(&ModelThinkingLevel::Off) {
-        return ReasoningCapability { kind: ReasoningCapabilityKind::AlwaysOn, levels, non_off_levels };
+        return ReasoningCapability {
+            kind: ReasoningCapabilityKind::AlwaysOn,
+            levels,
+            non_off_levels,
+        };
     }
     if non_off_levels.len() == 1 {
-        return ReasoningCapability { kind: ReasoningCapabilityKind::OnOff, levels, non_off_levels };
+        return ReasoningCapability {
+            kind: ReasoningCapabilityKind::OnOff,
+            levels,
+            non_off_levels,
+        };
     }
     if non_off_levels.is_empty() {
-        return ReasoningCapability { kind: ReasoningCapabilityKind::None, levels, non_off_levels };
+        return ReasoningCapability {
+            kind: ReasoningCapabilityKind::None,
+            levels,
+            non_off_levels,
+        };
     }
-    ReasoningCapability { kind: ReasoningCapabilityKind::Graded, levels, non_off_levels }
+    ReasoningCapability {
+        kind: ReasoningCapabilityKind::Graded,
+        levels,
+        non_off_levels,
+    }
 }
 
 #[cfg(test)]
@@ -74,7 +101,8 @@ mod tests {
             "reasoning": reasoning, "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 1000, "maxTokens": 100
-        })).expect("model");
+        }))
+        .expect("model");
         model.reasoning = reasoning;
         model
     }
@@ -97,7 +125,10 @@ mod tests {
         let capability = classify_reasoning_capability(&model(true));
         assert!(matches!(
             capability.kind,
-            ReasoningCapabilityKind::AlwaysOn | ReasoningCapabilityKind::OnOff | ReasoningCapabilityKind::Graded | ReasoningCapabilityKind::None
+            ReasoningCapabilityKind::AlwaysOn
+                | ReasoningCapabilityKind::OnOff
+                | ReasoningCapabilityKind::Graded
+                | ReasoningCapabilityKind::None
         ));
     }
 }

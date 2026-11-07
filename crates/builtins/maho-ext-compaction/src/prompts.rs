@@ -211,9 +211,17 @@ The structured output portion MUST be wrapped as `<summary>...</summary>` XML.
 IMPORTANT: Respond with ONLY the <summary>...</summary> block as your text output."###;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PromptVariant { Default, Update, Branch, TurnPrefix }
+pub enum PromptVariant {
+    Default,
+    Update,
+    Branch,
+    TurnPrefix,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PromptFamily { Claude, Gpt }
+pub enum PromptFamily {
+    Claude,
+    Gpt,
+}
 pub struct PromptOptions<'a> {
     pub variant: PromptVariant,
     pub previous_summary: Option<&'a str>,
@@ -221,30 +229,74 @@ pub struct PromptOptions<'a> {
     pub prompt_family: Option<PromptFamily>,
     pub custom_instructions: Option<&'a str>,
 }
-pub struct CompactionPrompt { pub system: &'static str, pub user: String }
+pub struct CompactionPrompt {
+    pub system: &'static str,
+    pub user: String,
+}
 pub fn resolve_prompt_family(id: &str, provider: &str) -> PromptFamily {
-    if id.starts_with("gpt-") || (id.starts_with('o') && id.as_bytes().get(1).is_some_and(u8::is_ascii_digit)) || id.contains("codex") || matches!(provider, "openai" | "azure-openai") { PromptFamily::Gpt } else { PromptFamily::Claude }
+    if id.starts_with("gpt-")
+        || (id.starts_with('o') && id.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
+        || id.contains("codex")
+        || matches!(provider, "openai" | "azure-openai")
+    {
+        PromptFamily::Gpt
+    } else {
+        PromptFamily::Claude
+    }
 }
 pub fn build_prompt(options: &PromptOptions<'_>) -> CompactionPrompt {
-    let acquisition = if options.prompt_family == Some(PromptFamily::Gpt) { TASK_INTENT_ACQUISITION_GPT } else { TASK_INTENT_ACQUISITION_CLAUDE };
+    let acquisition = if options.prompt_family == Some(PromptFamily::Gpt) {
+        TASK_INTENT_ACQUISITION_GPT
+    } else {
+        TASK_INTENT_ACQUISITION_CLAUDE
+    };
     let mut user = match options.variant {
-        PromptVariant::Default => MERGED_COMPACTION_PROMPT_USER.replacen(TASK_INTENT_ACQUISITION_CLAUDE, acquisition, 1),
+        PromptVariant::Default => {
+            MERGED_COMPACTION_PROMPT_USER.replacen(TASK_INTENT_ACQUISITION_CLAUDE, acquisition, 1)
+        }
         PromptVariant::Update => {
             let instruction = match options.task_intent.filter(|text| !text.is_empty()) {
-                Some(intent) => TASK_INTENT_UPDATE_ANCHOR_CLAUDE.replacen("{{taskIntent}}", &intent.replace("</task-intent>", "[/task-intent]"), 1),
+                Some(intent) => TASK_INTENT_UPDATE_ANCHOR_CLAUDE.replacen(
+                    "{{taskIntent}}",
+                    &intent.replace("</task-intent>", "[/task-intent]"),
+                    1,
+                ),
                 None => acquisition.to_owned(),
             };
-            let previous = options.previous_summary.map(str::trim).filter(|text| !text.is_empty()).unwrap_or("None.").replace("</previous-summary>", "[/previous-summary]");
-            MERGED_COMPACTION_PROMPT_UPDATE.replacen("{{taskIntentInstruction}}", &instruction, 1).replacen("{{previousSummary}}", &previous, 1)
+            let previous = options
+                .previous_summary
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("None.")
+                .replace("</previous-summary>", "[/previous-summary]");
+            MERGED_COMPACTION_PROMPT_UPDATE
+                .replacen("{{taskIntentInstruction}}", &instruction, 1)
+                .replacen("{{previousSummary}}", &previous, 1)
         }
         PromptVariant::Branch => MERGED_COMPACTION_PROMPT_BRANCH.to_owned(),
-        PromptVariant::TurnPrefix => if options.task_intent.is_some_and(|text| !text.is_empty()) { MERGED_COMPACTION_PROMPT_TURN_PREFIX.to_owned() } else { MERGED_COMPACTION_PROMPT_TURN_PREFIX.replacen(TASK_INTENT_ACQUISITION_CLAUDE, acquisition, 1) },
+        PromptVariant::TurnPrefix => {
+            if options.task_intent.is_some_and(|text| !text.is_empty()) {
+                MERGED_COMPACTION_PROMPT_TURN_PREFIX.to_owned()
+            } else {
+                MERGED_COMPACTION_PROMPT_TURN_PREFIX.replacen(
+                    TASK_INTENT_ACQUISITION_CLAUDE,
+                    acquisition,
+                    1,
+                )
+            }
+        }
     };
-    if let Some(instructions) = options.custom_instructions.map(str::trim).filter(|text| !text.is_empty()) {
+    if let Some(instructions) = options
+        .custom_instructions
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
         user.push_str("\n\n<custom-instructions>\n");
         user.push_str(&instructions.replace("</custom-instructions>", "[/custom-instructions]"));
         user.push_str("\n</custom-instructions>");
     }
-    CompactionPrompt { system: MERGED_COMPACTION_PROMPT_SYSTEM, user }
+    CompactionPrompt {
+        system: MERGED_COMPACTION_PROMPT_SYSTEM,
+        user,
+    }
 }
-

@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{oneshot, watch};
 
@@ -99,6 +99,11 @@ struct Inner<T, R> {
     end_hook: Option<fn(&mut R)>,
     result_tx: watch::Sender<bool>,
     local_work_depth: AtomicUsize,
+    /// Monotonic count of provider chunks read off the wire, including frames the adapter
+    /// deliberately turns into no public event (an SSE keepalive with an empty delta). The agent
+    /// loop compares it around a read so a stream that keeps answering is not mistaken for a
+    /// silent provider and cancelled.
+    provider_chunks: AtomicU64,
     cancellation_handler: Mutex<Option<CancellationHandler>>,
     cancellation: OnceLock<watch::Receiver<Option<Result<(), StreamError>>>>,
     is_complete: fn(&T) -> bool,
@@ -150,6 +155,7 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
                 }),
                 result_tx,
                 local_work_depth: AtomicUsize::new(0),
+                provider_chunks: AtomicU64::new(0),
                 cancellation_handler: Mutex::new(None),
                 cancellation: OnceLock::new(),
                 is_complete,
@@ -465,6 +471,16 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
 
     pub fn has_pending_local_work(&self) -> bool {
         self.inner.local_work_depth.load(Ordering::SeqCst) > 0
+    }
+
+    /// Record one provider chunk consumed from the wire, whether or not it became an event.
+    pub fn note_provider_chunk(&self) {
+        self.inner.provider_chunks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Snapshot of the provider chunk counter, for read-bound re-arming.
+    pub fn provider_chunk_count(&self) -> u64 {
+        self.inner.provider_chunks.load(Ordering::SeqCst)
     }
 }
 

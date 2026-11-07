@@ -53,16 +53,28 @@ impl KibitzerRejectionCode {
     }
 }
 
-pub fn rejection(code: KibitzerRejectionCode, message: &str, path: Option<&str>) -> KibitzerToolResult {
+pub fn rejection(
+    code: KibitzerRejectionCode,
+    message: &str,
+    path: Option<&str>,
+) -> KibitzerToolResult {
     let mut body = serde_json::json!({ "rejected": code.as_str(), "message": message });
     if let Some(path) = path {
         body["path"] = Value::String(path.to_string());
     }
-    KibitzerToolResult { text: body.to_string(), is_error: true, terminate: false }
+    KibitzerToolResult {
+        text: body.to_string(),
+        is_error: true,
+        terminate: false,
+    }
 }
 
 pub fn ok_text(text: String) -> KibitzerToolResult {
-    KibitzerToolResult { text, is_error: false, terminate: false }
+    KibitzerToolResult {
+        text,
+        is_error: false,
+        terminate: false,
+    }
 }
 
 pub fn ok_json(value: &Value) -> KibitzerToolResult {
@@ -78,7 +90,10 @@ pub fn bounded_text(text: &str, cap: usize) -> String {
         return redacted;
     }
     let units: Vec<u16> = redacted.encode_utf16().take(cap).collect();
-    format!("{}\n[truncated: {cap} of {length} chars]", String::from_utf16_lossy(&units))
+    format!(
+        "{}\n[truncated: {cap} of {length} chars]",
+        String::from_utf16_lossy(&units)
+    )
 }
 
 #[cfg(test)]

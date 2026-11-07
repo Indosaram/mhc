@@ -61,7 +61,11 @@ impl FakeResidentSession {
     }
 
     fn last_assistant_text(&self) -> Option<String> {
-        self.state.lock().expect("state lock").last_assistant_text.clone()
+        self.state
+            .lock()
+            .expect("state lock")
+            .last_assistant_text
+            .clone()
     }
 
     fn follow_ups(&self) -> Vec<String> {
@@ -132,7 +136,10 @@ fn given_a_member_whose_initial_turn_ended_without_a_wait_when_lead_mail_is_inje
     assert!(!handle.is_idle());
     handle.steer("complete");
     assert!(handle.is_idle());
-    assert_eq!(handle.last_assistant_text(), Some("steered-complete".to_string()));
+    assert_eq!(
+        handle.last_assistant_text(),
+        Some("steered-complete".to_string())
+    );
     handle.dispose();
     poller.shutdown();
 }

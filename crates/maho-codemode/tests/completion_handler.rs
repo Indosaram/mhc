@@ -65,7 +65,10 @@ fn tier_cost_selection_preserves_registry_ties_and_current_default() {
 
 fn message(text: &str) -> maho_ai::types::AssistantMessage {
     use maho_ai::types::*;
-    AssistantMessage { credential_served_recently: None, timing: None, failure_source: None,
+    AssistantMessage {
+        credential_served_recently: None,
+        timing: None,
+        failure_source: None,
         thinking_level: None,
         provider_diagnostic: None,
         content: vec![ContentBlock::text(text)],

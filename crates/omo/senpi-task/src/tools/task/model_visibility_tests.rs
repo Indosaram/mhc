@@ -54,5 +54,8 @@ fn given_a_category_task_resolves_to_a_model_when_batch_spawn_renders_then_the_i
         item_line.contains("category:quick(quotio-openai/gpt-5.6-luna-fast)"),
         "item line was: {item_line}"
     );
-    assert!(!item_line.contains("requested/model"), "item line was: {item_line}");
+    assert!(
+        !item_line.contains("requested/model"),
+        "item line was: {item_line}"
+    );
 }

@@ -1,7 +1,9 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/protocols/antml/recovery-stream.ts.
 
 use super::config::ANTML_INVOKE_CONFIG;
-use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::{create_invoke_recovery_stream_parser, RecoveryStreamParser};
+use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::{
+    RecoveryStreamParser, create_invoke_recovery_stream_parser,
+};
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
 use crate::types::Tool;
 
@@ -31,7 +33,11 @@ struct AntmlInvokeRecoveryStreamParser {
 }
 
 impl AntmlInvokeRecoveryStreamParser {
-    fn collect_events(&mut self, events: &mut Vec<StreamParserEvent>, inner_events: Vec<StreamParserEvent>) {
+    fn collect_events(
+        &mut self,
+        events: &mut Vec<StreamParserEvent>,
+        inner_events: Vec<StreamParserEvent>,
+    ) {
         for event in inner_events {
             if self.synthetic_angle_pending {
                 if let StreamParserEvent::Text { text } = &event
@@ -40,7 +46,9 @@ impl AntmlInvokeRecoveryStreamParser {
                     self.synthetic_angle_pending = false;
                     let text = &text[1..];
                     if !text.is_empty() {
-                        events.push(StreamParserEvent::Text { text: text.to_string() });
+                        events.push(StreamParserEvent::Text {
+                            text: text.to_string(),
+                        });
                     }
                     continue;
                 }
@@ -61,7 +69,12 @@ impl AntmlInvokeRecoveryStreamParser {
         }
     }
 
-    fn collect_inner(&mut self, events: &mut Vec<StreamParserEvent>, input: &str, synthetic_angle: bool) {
+    fn collect_inner(
+        &mut self,
+        events: &mut Vec<StreamParserEvent>,
+        input: &str,
+        synthetic_angle: bool,
+    ) {
         self.synthetic_angle_pending = self.synthetic_angle_pending || synthetic_angle;
         let inner_events = self.inner.feed(input);
         self.collect_events(events, inner_events);
@@ -75,7 +88,12 @@ impl AntmlInvokeRecoveryStreamParser {
         self.collect_inner(events, &value, false);
     }
 
-    fn feed_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char, opening_boundary: bool) {
+    fn feed_character(
+        &mut self,
+        events: &mut Vec<StreamParserEvent>,
+        character: char,
+        opening_boundary: bool,
+    ) {
         match std::mem::replace(&mut self.pending, PendingState::None) {
             PendingState::Trailer(mut value) => {
                 value.push(character);
@@ -102,7 +120,9 @@ impl AntmlInvokeRecoveryStreamParser {
             }
             PendingState::Opening(mut value) => {
                 value.push(character);
-                if value.len() <= MISSING_ANGLE_INVOKE_PREFIX.len() && !MISSING_ANGLE_INVOKE_PREFIX.starts_with(&value) {
+                if value.len() <= MISSING_ANGLE_INVOKE_PREFIX.len()
+                    && !MISSING_ANGLE_INVOKE_PREFIX.starts_with(&value)
+                {
                     self.pending = PendingState::Opening(value);
                     self.flush_pending(events);
                     return;
@@ -162,7 +182,10 @@ impl RecoveryStreamParser for AntmlInvokeRecoveryStreamParser {
     }
 }
 
-pub fn create_antml_invoke_recovery_stream_parser(tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn RecoveryStreamParser + Send> {
+pub fn create_antml_invoke_recovery_stream_parser(
+    tools: Vec<Tool>,
+    options: Option<ParserOptions>,
+) -> Box<dyn RecoveryStreamParser + Send> {
     Box::new(AntmlInvokeRecoveryStreamParser {
         inner: create_invoke_recovery_stream_parser(tools, &ANTML_INVOKE_CONFIG, options),
         pending: PendingState::None,
@@ -179,7 +202,16 @@ mod tests {
 
     /// senpi emits one text event per idle character, so tests assert on the concatenation.
     fn text_of(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn tool(name: &str) -> Tool {
@@ -200,17 +232,33 @@ mod tests {
         let mut events =
             parser.feed(r#"<function_calls><invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke></function_calls>"#);
         events.extend(parser.finish());
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallEnd { incomplete: false, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. }))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: false,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn recovers_an_invoke_missing_its_leading_angle_bracket() {
         let tools = vec![tool("get_weather")];
         let mut parser = create_antml_invoke_recovery_stream_parser(tools, None);
-        let mut events = parser.feed(r#"antml:invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#);
+        let mut events = parser.feed(
+            r#"antml:invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#,
+        );
         events.extend(parser.finish());
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. }))
+        );
     }
 
     #[test]
@@ -221,7 +269,11 @@ mod tests {
         events.extend(parser.finish());
         // senpi's idle path emits one text event per character; the concatenation is what callers see.
         assert_eq!(text_of(&events), "hello world");
-        assert!(events.iter().all(|event| matches!(event, StreamParserEvent::Text { .. })));
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, StreamParserEvent::Text { .. }))
+        );
     }
 
     #[test]
@@ -259,7 +311,12 @@ mod tests {
         events
             .iter()
             .filter(|event| {
-                matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+                matches!(
+                    event,
+                    StreamParserEvent::ToolcallStart { .. }
+                        | StreamParserEvent::ToolcallDelta { .. }
+                        | StreamParserEvent::ToolcallEnd { .. }
+                )
             })
             .cloned()
             .collect()
@@ -269,14 +326,26 @@ mod tests {
     fn emits_start_at_the_known_invoke_opening_boundary() {
         let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
         let opening = parser.feed("<antml:invoke name=\"Bash\">");
-        assert_eq!(opening, vec![StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() }]);
+        assert_eq!(
+            opening,
+            vec![StreamParserEvent::ToolcallStart {
+                index: 0,
+                name: "Bash".into(),
+                id: "recovered-antml-0".into()
+            }]
+        );
 
-        let mut completion = parser.feed("<antml:parameter name=\"command\">echo recovered</antml:parameter></antml:invoke>");
+        let mut completion = parser.feed(
+            "<antml:parameter name=\"command\">echo recovered</antml:parameter></antml:invoke>",
+        );
         completion.extend(parser.finish());
         assert_eq!(
             completion,
             vec![
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo recovered"}"#.into() },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#"{"command":"echo recovered"}"#.into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "Bash".into(),
@@ -293,12 +362,14 @@ mod tests {
     fn keeps_unknown_and_ambiguous_tools_as_text() {
         let unknown = r#"<function_calls><invoke name="Missing"></invoke></function_calls>"#;
         let ambiguous = r#"<invoke name="bash"></invoke>"#;
-        let mut unknown_parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut unknown_parser =
+            create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
         let mut ambiguous_tools = vec![bash_tool()];
         let mut upper = bash_tool();
         upper.name = "BASH".into();
         ambiguous_tools.push(upper);
-        let mut ambiguous_parser = create_antml_invoke_recovery_stream_parser(ambiguous_tools, None);
+        let mut ambiguous_parser =
+            create_antml_invoke_recovery_stream_parser(ambiguous_tools, None);
 
         let mut unknown_events = unknown_parser.feed(unknown);
         unknown_events.extend(unknown_parser.finish());
@@ -321,8 +392,15 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: "{}".into() },
+                StreamParserEvent::ToolcallStart {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into()
+                },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: "{}".into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "Bash".into(),
@@ -338,10 +416,18 @@ mod tests {
     #[test]
     fn never_ends_or_makes_a_missing_invoke_close_executable() {
         let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
-        let mut events = parser.feed("<invoke name=\"Bash\"><parameter name=\"command\">echo no-close</parameter>");
+        let mut events = parser
+            .feed("<invoke name=\"Bash\"><parameter name=\"command\">echo no-close</parameter>");
         events.extend(parser.finish());
 
-        assert_eq!(events, vec![StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() }]);
+        assert_eq!(
+            events,
+            vec![StreamParserEvent::ToolcallStart {
+                index: 0,
+                name: "Bash".into(),
+                id: "recovered-antml-0".into()
+            }]
+        );
     }
 
     #[test]
@@ -354,8 +440,15 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo <invoke name=\"X\"></invoke>"}"#.into() },
+                StreamParserEvent::ToolcallStart {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into()
+                },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#"{"command":"echo <invoke name=\"X\"></invoke>"}"#.into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "Bash".into(),
@@ -379,8 +472,15 @@ mod tests {
         assert_eq!(
             tool_call_events(&events),
             vec![
-                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo wrapped"}"#.into() },
+                StreamParserEvent::ToolcallStart {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into()
+                },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#"{"command":"echo wrapped"}"#.into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "Bash".into(),

@@ -12,9 +12,10 @@ use super::notification::{
 use super::routing::{route_completion, should_notify_status};
 use super::types::{
     CompletionDetails, CompletionNotifierDeps, CompletionNotifierStore, CompletionRequest,
-    CompletionRetrySchedule, DeliveredDecision, DeliveryCallbacks, DeliveryState, FlushInput, FlushResult, NotifyResult,
-    ParentNotifierMessage, ParentState, ReconcileUnnotifiedNotificationsInput,
-    RoutingDecision, ScheduledCancel, ScheduledTask, SkipReason,
+    CompletionRetrySchedule, DeliveredDecision, DeliveryCallbacks, DeliveryState, FlushInput,
+    FlushResult, NotifyResult, ParentNotifierMessage, ParentState,
+    ReconcileUnnotifiedNotificationsInput, RoutingDecision, ScheduledCancel, ScheduledTask,
+    SkipReason,
 };
 use crate::host::HostError;
 use crate::state::{TaskRecord, TaskStatus};
@@ -85,7 +86,10 @@ impl CompletionNotifier {
         if record.notification.notified_epoch >= record.notification.run_epoch {
             return Ok(NotifyResult::Skipped(SkipReason::AlreadyNotified));
         }
-        if self.inner.lock().pending.contains(&format!("{}:{}", record.task_id, record.notification.run_epoch)) {
+        if self.inner.lock().pending.contains(&format!(
+            "{}:{}",
+            record.task_id, record.notification.run_epoch
+        )) {
             return Ok(NotifyResult::Skipped(SkipReason::DeliveryPending));
         }
         let details = self.inner.build_details(&record, request.tokens);
@@ -145,7 +149,11 @@ impl CompletionNotifier {
             if self
                 .inner
                 .has_buffered(&record.parent_session_id, &record.task_id, epoch)
-                || self.inner.lock().pending.contains(&format!("{}:{epoch}", record.task_id))
+                || self
+                    .inner
+                    .lock()
+                    .pending
+                    .contains(&format!("{}:{epoch}", record.task_id))
             {
                 continue;
             }
@@ -287,7 +295,9 @@ impl Inner {
             this.finish_retry_chain(&entry);
             return Ok(());
         }
-        if !this.lock().pending.insert(retry_key(&entry)) { return Ok(()); }
+        if !this.lock().pending.insert(retry_key(&entry)) {
+            return Ok(());
+        }
         Self::deliver_entries(this, vec![entry], None)?;
         Ok(())
     }
@@ -339,7 +349,11 @@ impl Inner {
                 let outcome = (|| -> Result<(), StoreError> {
                     match &result {
                         Ok(()) => {
-                            persist_notified(inner.deps.store.as_ref(), &entry.task_id, entry.epoch)?;
+                            persist_notified(
+                                inner.deps.store.as_ref(),
+                                &entry.task_id,
+                                entry.epoch,
+                            )?;
                             inner.finish_retry_chain(&entry);
                             inner.lock().pending.remove(&retry_key(&entry));
                         }
@@ -349,7 +363,12 @@ impl Inner {
                             }
                             inner.lock().pending.remove(&retry_key(&entry));
                             if inner.deps.store.load(&entry.task_id)?.is_some() {
-                                record_failure(inner.deps.store.as_ref(), &entry.task_id, entry.epoch, error)?;
+                                record_failure(
+                                    inner.deps.store.as_ref(),
+                                    &entry.task_id,
+                                    entry.epoch,
+                                    error,
+                                )?;
                             }
                             if buffered_session.is_none() {
                                 Self::schedule_retry(&inner, entry.clone());
@@ -366,7 +385,11 @@ impl Inner {
                     *errors.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
                 }
             });
-            match this.deps.notifier.enqueue_with_callbacks(&message, callbacks.clone()) {
+            match this
+                .deps
+                .notifier
+                .enqueue_with_callbacks(&message, callbacks.clone())
+            {
                 Ok(()) => {
                     final_state = callbacks.state();
                     break;
@@ -404,12 +427,8 @@ impl Inner {
         let mut has_pending = false;
 
         for entry in entries {
-            let entry_state = Self::deliver_entry(
-                this,
-                entry,
-                buffered_session.clone(),
-                &bookkeeping_error,
-            );
+            let entry_state =
+                Self::deliver_entry(this, entry, buffered_session.clone(), &bookkeeping_error);
             match entry_state {
                 DeliveryState::Failed => has_failed = true,
                 DeliveryState::Pending => has_pending = true,
@@ -528,7 +547,8 @@ fn record_failure(
     )?;
     store.mutate(task_id, &mut |fresh| {
         let mut next = fresh.clone();
-        if fresh.notification.run_epoch == epoch && fresh.notification.notified_epoch < epoch
+        if fresh.notification.run_epoch == epoch
+            && fresh.notification.notified_epoch < epoch
             && fresh.notification.notification_failed_epoch != Some(epoch)
         {
             next.notification.notification_failed_epoch = Some(epoch);

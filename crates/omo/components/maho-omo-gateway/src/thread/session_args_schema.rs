@@ -7,14 +7,26 @@
 
 use serde_json::{Map, Value};
 
-const TYPES: &[&str] = &["object", "string", "number", "integer", "boolean", "array", "null"];
+const TYPES: &[&str] = &[
+    "object", "string", "number", "integer", "boolean", "array", "null",
+];
 const ANNOTATIONS: &[&str] = &["title", "description", "default", "examples"];
 const COUNTS: &[&str] = &["minLength", "maxLength", "minItems", "maxItems"];
 const BOUNDS: &[&str] = &["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"];
 
 fn is_keyword(key: &str) -> bool {
-    matches!(key, "type" | "properties" | "required" | "additionalProperties" | "enum" | "const" | "pattern" | "items" | "anyOf")
-        || COUNTS.contains(&key)
+    matches!(
+        key,
+        "type"
+            | "properties"
+            | "required"
+            | "additionalProperties"
+            | "enum"
+            | "const"
+            | "pattern"
+            | "items"
+            | "anyOf"
+    ) || COUNTS.contains(&key)
         || BOUNDS.contains(&key)
         || ANNOTATIONS.contains(&key)
 }
@@ -46,11 +58,16 @@ pub fn schema_problem(schema: &Value, path: &str) -> Option<String> {
     }
     let types: Vec<&Value> = match object.get("type") {
         None => Vec::new(),
-        Some(Value::Array(entries)) if entries.is_empty() => return Some(format!("{path}.type must name JSON types")),
+        Some(Value::Array(entries)) if entries.is_empty() => {
+            return Some(format!("{path}.type must name JSON types"));
+        }
         Some(Value::Array(entries)) => entries.iter().collect(),
         Some(single) => vec![single],
     };
-    if types.iter().any(|entry| entry.as_str().is_none_or(|name| !TYPES.contains(&name))) {
+    if types
+        .iter()
+        .any(|entry| entry.as_str().is_none_or(|name| !TYPES.contains(&name)))
+    {
         return Some(format!("{path}.type must name JSON types"));
     }
     if let Some(properties) = object.get("properties") {
@@ -64,7 +81,9 @@ pub fn schema_problem(schema: &Value, path: &str) -> Option<String> {
         }
     }
     if let Some(required) = object.get("required")
-        && !required.as_array().is_some_and(|entries| entries.iter().all(|entry| entry.as_str().is_some()))
+        && !required
+            .as_array()
+            .is_some_and(|entries| entries.iter().all(|entry| entry.as_str().is_some()))
     {
         return Some(format!("{path}.required must list property names"));
     }
@@ -123,7 +142,9 @@ fn type_matches(name: &str, value: &Value) -> bool {
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),
         "number" => value.as_f64().is_some_and(f64::is_finite),
-        "integer" => value.as_i64().is_some() || value.as_f64().is_some_and(|number| number.fract() == 0.0),
+        "integer" => {
+            value.as_i64().is_some() || value.as_f64().is_some_and(|number| number.fract() == 0.0)
+        }
         _ => false,
     }
 }
@@ -138,7 +159,10 @@ fn pointer(path: &str, key: &str) -> String {
 
 /// The first place `value` breaks `schema`, or none.
 pub fn argument_failure(schema: &Value, value: &Value, path: &str) -> Option<ArgumentFailure> {
-    let fail = |message: String| ArgumentFailure { path: path.to_owned(), message };
+    let fail = |message: String| ArgumentFailure {
+        path: path.to_owned(),
+        message,
+    };
     let object = schema.as_object()?;
     if let Some(type_field) = object.get("type") {
         let types: Vec<&str> = match type_field {
@@ -214,7 +238,9 @@ pub fn argument_failure(schema: &Value, value: &Value, path: &str) -> Option<Arg
         }
         if let Some(items) = object.get("items").filter(|items| items.is_object()) {
             for (index, entry) in entries.iter().enumerate() {
-                if let Some(failure) = argument_failure(items, entry, &pointer(path, &index.to_string())) {
+                if let Some(failure) =
+                    argument_failure(items, entry, &pointer(path, &index.to_string()))
+                {
                     return Some(failure);
                 }
             }
@@ -244,7 +270,9 @@ pub fn argument_failure(schema: &Value, value: &Value, path: &str) -> Option<Arg
         }
     }
     if let Some(branches) = object.get("anyOf").and_then(Value::as_array)
-        && !branches.iter().any(|branch| branch.is_object() && argument_failure(branch, value, path).is_none())
+        && !branches
+            .iter()
+            .any(|branch| branch.is_object() && argument_failure(branch, value, path).is_none())
     {
         return Some(fail("must match one of the allowed shapes".to_owned()));
     }
@@ -262,35 +290,71 @@ mod tests {
 
     #[test]
     fn a_supported_object_schema_has_no_problem() {
-        let schema = object_schema(json!({ "thread": { "type": "string", "minLength": 1 } }), json!(["thread"]));
+        let schema = object_schema(
+            json!({ "thread": { "type": "string", "minLength": 1 } }),
+            json!(["thread"]),
+        );
         assert_eq!(schema_problem(&schema, "parameters"), None);
     }
 
     #[test]
     fn unknown_keywords_are_refused_not_ignored() {
         let schema = json!({ "type": "object", "oneOf": [] });
-        assert_eq!(schema_problem(&schema, "parameters"), Some("parameters uses oneOf, which the store cannot check".to_owned()));
+        assert_eq!(
+            schema_problem(&schema, "parameters"),
+            Some("parameters uses oneOf, which the store cannot check".to_owned())
+        );
         let metadata = json!({ "type": "object", "~kind": "Object" });
         assert_eq!(schema_problem(&metadata, "parameters"), None);
     }
 
     #[test]
     fn declared_constraints_are_checked() {
-        let schema = object_schema(json!({ "count": { "type": "integer", "minimum": 2 } }), json!(["count"]));
-        assert_eq!(argument_failure(&schema, &json!({ "count": 1 }), ""), Some(ArgumentFailure { path: "/count".into(), message: "must be >= 2".into() }));
-        assert_eq!(argument_failure(&schema, &json!({}), ""), Some(ArgumentFailure { path: "".into(), message: "must have property count".into() }));
-        assert_eq!(argument_failure(&schema, &json!({ "count": 3, "extra": true }), ""), Some(ArgumentFailure { path: "".into(), message: "must not have property extra".into() }));
+        let schema = object_schema(
+            json!({ "count": { "type": "integer", "minimum": 2 } }),
+            json!(["count"]),
+        );
+        assert_eq!(
+            argument_failure(&schema, &json!({ "count": 1 }), ""),
+            Some(ArgumentFailure {
+                path: "/count".into(),
+                message: "must be >= 2".into()
+            })
+        );
+        assert_eq!(
+            argument_failure(&schema, &json!({}), ""),
+            Some(ArgumentFailure {
+                path: "".into(),
+                message: "must have property count".into()
+            })
+        );
+        assert_eq!(
+            argument_failure(&schema, &json!({ "count": 3, "extra": true }), ""),
+            Some(ArgumentFailure {
+                path: "".into(),
+                message: "must not have property extra".into()
+            })
+        );
         assert_eq!(argument_failure(&schema, &json!({ "count": 3 }), ""), None);
     }
 
     #[test]
     fn arrays_anyof_and_enums_are_checked() {
         let schema = json!({ "type": "array", "minItems": 2, "items": { "type": "string", "enum": ["a", "b"] } });
-        assert_eq!(argument_failure(&schema, &json!(["a"]), "").map(|failure| failure.message), Some("must have at least 2 items".to_owned()));
-        assert_eq!(argument_failure(&schema, &json!(["a", "c"]), "").map(|failure| failure.path), Some("/1".to_owned()));
+        assert_eq!(
+            argument_failure(&schema, &json!(["a"]), "").map(|failure| failure.message),
+            Some("must have at least 2 items".to_owned())
+        );
+        assert_eq!(
+            argument_failure(&schema, &json!(["a", "c"]), "").map(|failure| failure.path),
+            Some("/1".to_owned())
+        );
         assert_eq!(argument_failure(&schema, &json!(["a", "b"]), ""), None);
         let any = json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] });
         assert_eq!(argument_failure(&any, &json!(null), ""), None);
-        assert_eq!(argument_failure(&any, &json!(3), "").map(|failure| failure.message), Some("must match one of the allowed shapes".to_owned()));
+        assert_eq!(
+            argument_failure(&any, &json!(3), "").map(|failure| failure.message),
+            Some("must match one of the allowed shapes".to_owned())
+        );
     }
 }

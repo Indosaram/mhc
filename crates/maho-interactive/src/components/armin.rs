@@ -13,18 +13,15 @@ const BYTES_PER_ROW: usize = WIDTH.div_ceil(8);
 const DISPLAY_HEIGHT: usize = HEIGHT.div_ceil(2);
 
 const BITS: [u8; 144] = [
-    0xff, 0xff, 0xff, 0x7f, 0xff, 0xf0, 0xff, 0x7f, 0xff, 0xed, 0xff, 0x7f,
-    0xff, 0xdb, 0xff, 0x7f, 0xff, 0xb7, 0xff, 0x7f, 0xff, 0x77, 0xfe, 0x7f,
-    0x3f, 0xf8, 0xfe, 0x7f, 0xdf, 0xff, 0xfe, 0x7f, 0xdf, 0x3f, 0xfc, 0x7f,
-    0x9f, 0xc3, 0xfb, 0x7f, 0x6f, 0xfc, 0xf4, 0x7f, 0xf7, 0x0f, 0xf7, 0x7f,
-    0xf7, 0xff, 0xf7, 0x7f, 0xf7, 0xff, 0xe3, 0x7f, 0xf7, 0x07, 0xe8, 0x7f,
-    0xef, 0xf8, 0x67, 0x70, 0x0f, 0xff, 0xbb, 0x6f, 0xf1, 0x00, 0xd0, 0x5b,
-    0xfd, 0x3f, 0xec, 0x53, 0xc1, 0xff, 0xef, 0x57, 0x9f, 0xfd, 0xee, 0x5f,
-    0x9f, 0xfc, 0xae, 0x5f, 0x1f, 0x78, 0xac, 0x5f, 0x3f, 0x00, 0x50, 0x6c,
-    0x7f, 0x00, 0xdc, 0x77, 0xff, 0xc0, 0x3f, 0x78, 0xff, 0x01, 0xf8, 0x7f,
-    0xff, 0x03, 0x9c, 0x78, 0xff, 0x07, 0x8c, 0x7c, 0xff, 0x0f, 0xce, 0x78,
-    0xff, 0xff, 0xcf, 0x7f, 0xff, 0xff, 0xcf, 0x78, 0xff, 0xff, 0xdf, 0x78,
-    0xff, 0xff, 0xdf, 0x7d, 0xff, 0xff, 0x3f, 0x7e, 0xff, 0xff, 0xff, 0x7f,
+    0xff, 0xff, 0xff, 0x7f, 0xff, 0xf0, 0xff, 0x7f, 0xff, 0xed, 0xff, 0x7f, 0xff, 0xdb, 0xff, 0x7f,
+    0xff, 0xb7, 0xff, 0x7f, 0xff, 0x77, 0xfe, 0x7f, 0x3f, 0xf8, 0xfe, 0x7f, 0xdf, 0xff, 0xfe, 0x7f,
+    0xdf, 0x3f, 0xfc, 0x7f, 0x9f, 0xc3, 0xfb, 0x7f, 0x6f, 0xfc, 0xf4, 0x7f, 0xf7, 0x0f, 0xf7, 0x7f,
+    0xf7, 0xff, 0xf7, 0x7f, 0xf7, 0xff, 0xe3, 0x7f, 0xf7, 0x07, 0xe8, 0x7f, 0xef, 0xf8, 0x67, 0x70,
+    0x0f, 0xff, 0xbb, 0x6f, 0xf1, 0x00, 0xd0, 0x5b, 0xfd, 0x3f, 0xec, 0x53, 0xc1, 0xff, 0xef, 0x57,
+    0x9f, 0xfd, 0xee, 0x5f, 0x9f, 0xfc, 0xae, 0x5f, 0x1f, 0x78, 0xac, 0x5f, 0x3f, 0x00, 0x50, 0x6c,
+    0x7f, 0x00, 0xdc, 0x77, 0xff, 0xc0, 0x3f, 0x78, 0xff, 0x01, 0xf8, 0x7f, 0xff, 0x03, 0x9c, 0x78,
+    0xff, 0x07, 0x8c, 0x7c, 0xff, 0x0f, 0xce, 0x78, 0xff, 0xff, 0xcf, 0x7f, 0xff, 0xff, 0xcf, 0x78,
+    0xff, 0xff, 0xdf, 0x78, 0xff, 0xff, 0xdf, 0x7d, 0xff, 0xff, 0x3f, 0x7e, 0xff, 0xff, 0xff, 0x7f,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,13 +124,30 @@ struct Drop {
 }
 
 enum EffectState {
-    Typewriter { pos: usize },
-    Scanline { row: usize },
-    Rain { drops: Vec<Drop> },
-    Fade { positions: Vec<(usize, usize)>, index: usize },
-    Crt { expansion: usize },
-    Glitch { phase: usize, glitch_frames: usize },
-    Dissolve { positions: Vec<(usize, usize)>, index: usize },
+    Typewriter {
+        pos: usize,
+    },
+    Scanline {
+        row: usize,
+    },
+    Rain {
+        drops: Vec<Drop>,
+    },
+    Fade {
+        positions: Vec<(usize, usize)>,
+        index: usize,
+    },
+    Crt {
+        expansion: usize,
+    },
+    Glitch {
+        phase: usize,
+        glitch_frames: usize,
+    },
+    Dissolve {
+        positions: Vec<(usize, usize)>,
+        index: usize,
+    },
 }
 
 fn init_effect(effect: Effect, rng: &mut Rng) -> EffectState {
@@ -142,13 +156,25 @@ fn init_effect(effect: Effect, rng: &mut Rng) -> EffectState {
         Effect::Scanline => EffectState::Scanline { row: 0 },
         Effect::Rain => EffectState::Rain {
             drops: (0..WIDTH)
-                .map(|_| Drop { y: -(rng.below(DISPLAY_HEIGHT * 2) as isize), settled: 0 })
+                .map(|_| Drop {
+                    y: -(rng.below(DISPLAY_HEIGHT * 2) as isize),
+                    settled: 0,
+                })
                 .collect(),
         },
-        Effect::Fade => EffectState::Fade { positions: shuffled_positions(rng), index: 0 },
+        Effect::Fade => EffectState::Fade {
+            positions: shuffled_positions(rng),
+            index: 0,
+        },
         Effect::Crt => EffectState::Crt { expansion: 0 },
-        Effect::Glitch => EffectState::Glitch { phase: 0, glitch_frames: 8 },
-        Effect::Dissolve => EffectState::Dissolve { positions: shuffled_positions(rng), index: 0 },
+        Effect::Glitch => EffectState::Glitch {
+            phase: 0,
+            glitch_frames: 8,
+        },
+        Effect::Dissolve => EffectState::Dissolve {
+            positions: shuffled_positions(rng),
+            index: 0,
+        },
     }
 }
 
@@ -172,9 +198,20 @@ impl ArminComponent {
     pub fn new(effect: Effect, seed: u64, theme: Theme) -> Self {
         let mut rng = Rng(seed | 1);
         let final_grid = build_final_grid();
-        let current_grid = if effect == Effect::Dissolve { random_noise(&mut rng) } else { empty_grid() };
+        let current_grid = if effect == Effect::Dissolve {
+            random_noise(&mut rng)
+        } else {
+            empty_grid()
+        };
         let state = init_effect(effect, &mut rng);
-        Self { effect, final_grid, current_grid, state, rng, theme }
+        Self {
+            effect,
+            final_grid,
+            current_grid,
+            state,
+            rng,
+            theme,
+        }
     }
 
     pub fn effect(&self) -> Effect {
@@ -299,7 +336,11 @@ impl ArminComponent {
     }
 
     fn tick_glitch(&mut self) -> bool {
-        let EffectState::Glitch { phase, glitch_frames } = &mut self.state else {
+        let EffectState::Glitch {
+            phase,
+            glitch_frames,
+        } = &mut self.state
+        else {
             return true;
         };
         if *phase < *glitch_frames {
@@ -356,12 +397,20 @@ impl Component for ArminComponent {
             .map(|row| {
                 let clipped: String = row.iter().take(available_width).collect();
                 let pad_right = width.saturating_sub(padding + clipped.chars().count());
-                format!(" {}{}", self.theme.fg(ThemeColor::Accent, &clipped), " ".repeat(pad_right))
+                format!(
+                    " {}{}",
+                    self.theme.fg(ThemeColor::Accent, &clipped),
+                    " ".repeat(pad_right)
+                )
             })
             .collect();
         let message = "ARMIN SAYS HI";
         let msg_pad_right = width.saturating_sub(padding + message.len());
-        lines.push(format!(" {}{}", self.theme.fg(ThemeColor::Accent, message), " ".repeat(msg_pad_right)));
+        lines.push(format!(
+            " {}{}",
+            self.theme.fg(ThemeColor::Accent, message),
+            " ".repeat(msg_pad_right)
+        ));
         lines
     }
 

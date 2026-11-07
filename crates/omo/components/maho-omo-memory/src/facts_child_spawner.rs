@@ -15,10 +15,7 @@ use std::{
     future::Future,
     path::PathBuf,
     pin::Pin,
-    sync::{
-        atomic::AtomicBool,
-        Arc,
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use memory_core::facts::queue::FactsAbortSignal;
@@ -162,7 +159,8 @@ mod tests {
 
         let child_exit: crate::worker::run_artifacts::RunChildExit =
             crate::worker::run_artifacts::read_run_json(
-                &dir.path().join(crate::worker::run_artifacts::CHILD_EXIT_FILENAME),
+                &dir.path()
+                    .join(crate::worker::run_artifacts::CHILD_EXIT_FILENAME),
             )
             .unwrap();
         assert_eq!(child_exit.code, Some(0));
@@ -209,4 +207,3 @@ mod tests {
         assert!(!outcome.timed_out);
     }
 }
-

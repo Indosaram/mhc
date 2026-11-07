@@ -1308,40 +1308,41 @@ pub fn apply_run_pause(record: &DagRunRecordV1, event: &DagRunEvent) -> Option<D
                 ..record.clone()
             })
         }
-        DagRunEventPayload::RunResumed { generation } => {
-            Some(DagRunRecordV1 {
-                status: DagRunStatus::Running,
-                pause: None,
-                completed_at: None,
-                retry_on_resume: None,
-                generation: *generation,
-                updated_at: event.at.clone(),
-                nodes: record
-                    .nodes
-                    .iter()
-                    .map(|node| {
-                        if node.state == DagNodeState::Paused {
-                            DagNode {
-                                state: if node.task_id.is_none() {
-                                    DagNodeState::Pending
-                                } else {
-                                    DagNodeState::Running
-                                },
-                                ..node.clone()
-                            }
-                        } else {
-                            node.clone()
+        DagRunEventPayload::RunResumed { generation } => Some(DagRunRecordV1 {
+            status: DagRunStatus::Running,
+            pause: None,
+            completed_at: None,
+            retry_on_resume: None,
+            generation: *generation,
+            updated_at: event.at.clone(),
+            nodes: record
+                .nodes
+                .iter()
+                .map(|node| {
+                    if node.state == DagNodeState::Paused {
+                        DagNode {
+                            state: if node.task_id.is_none() {
+                                DagNodeState::Pending
+                            } else {
+                                DagNodeState::Running
+                            },
+                            ..node.clone()
                         }
-                    })
-                    .collect(),
-                ..record.clone()
-            })
-        }
+                    } else {
+                        node.clone()
+                    }
+                })
+                .collect(),
+            ..record.clone()
+        }),
         _ => None,
     }
 }
 
-pub fn apply_paused_dag_event(record: &DagRunRecordV1, event: &DagRunEvent) -> Option<DagRunRecordV1> {
+pub fn apply_paused_dag_event(
+    record: &DagRunRecordV1,
+    event: &DagRunEvent,
+) -> Option<DagRunRecordV1> {
     match &event.payload {
         DagRunEventPayload::GuidanceAdded { guidance }
         | DagRunEventPayload::GuidanceEdited { guidance }
@@ -1395,28 +1396,26 @@ pub fn apply_paused_dag_event(record: &DagRunRecordV1, event: &DagRunEvent) -> O
                 ..record.clone()
             })
         }
-        DagRunEventPayload::NodePauseLost { node_id, error } => {
-            Some(DagRunRecordV1 {
-                updated_at: event.at.clone(),
-                nodes: record
-                    .nodes
-                    .iter()
-                    .map(|node| {
-                        if &node.id == node_id {
-                            DagNode {
-                                state: DagNodeState::Failed,
-                                error: Some(error.clone()),
-                                completed_at: Some(event.at.clone()),
-                                ..node.clone()
-                            }
-                        } else {
-                            node.clone()
+        DagRunEventPayload::NodePauseLost { node_id, error } => Some(DagRunRecordV1 {
+            updated_at: event.at.clone(),
+            nodes: record
+                .nodes
+                .iter()
+                .map(|node| {
+                    if &node.id == node_id {
+                        DagNode {
+                            state: DagNodeState::Failed,
+                            error: Some(error.clone()),
+                            completed_at: Some(event.at.clone()),
+                            ..node.clone()
                         }
-                    })
-                    .collect(),
-                ..record.clone()
-            })
-        }
+                    } else {
+                        node.clone()
+                    }
+                })
+                .collect(),
+            ..record.clone()
+        }),
         _ => None,
     }
 }
@@ -1628,7 +1627,10 @@ fn project_snapshot_with_state_dir(
         .cloned()
         .map(|mut node| {
             if let (Some(task_id), Some(state_dir)) = (&node.task_id, state_dir)
-                && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running | DagNodeState::Paused)
+                && matches!(
+                    node.state,
+                    DagNodeState::Scheduled | DagNodeState::Running | DagNodeState::Paused
+                )
             {
                 node.last_activity_at =
                     crate::dag::node_activity::read_dag_node_activity_at(state_dir, task_id);

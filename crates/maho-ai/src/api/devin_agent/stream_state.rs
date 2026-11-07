@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use crate::api::devin_agent::r#gen::cascade_pb::{ChatToolCall, GetChatMessageResponse, StopReason};
+use crate::api::devin_agent::r#gen::cascade_pb::{
+    ChatToolCall, GetChatMessageResponse, StopReason,
+};
 use crate::types::{AssistantMessage, ContentBlock, StopReason as MessageStopReason, ToolCall};
 use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::json_parse::parse_streaming_json;
@@ -62,8 +64,10 @@ pub fn apply_devin_response(
         output.usage.output = usage.output_tokens;
         output.usage.cache_read = usage.cache_read_tokens;
         output.usage.cache_write = usage.cache_write_tokens;
-        output.usage.total_tokens =
-            output.usage.input + output.usage.output + output.usage.cache_read + output.usage.cache_write;
+        output.usage.total_tokens = output.usage.input
+            + output.usage.output
+            + output.usage.cache_read
+            + output.usage.cache_write;
     }
     if message.stop_reason != StopReason::Unspecified as i32
         && let Ok(reason) = StopReason::try_from(message.stop_reason)
@@ -84,13 +88,15 @@ fn append_thinking(
         close_text(output, events, state);
     }
     if state.thinking_index.is_none() {
-        output.content.push(ContentBlock::Thinking(crate::types::ThinkingContent {
-            thinking: String::new(),
-            started_at: None,
-            ended_at: None,
-            thinking_signature: None,
-            redacted: message.thinking_redacted.then_some(true),
-        }));
+        output
+            .content
+            .push(ContentBlock::Thinking(crate::types::ThinkingContent {
+                thinking: String::new(),
+                started_at: None,
+                ended_at: None,
+                thinking_signature: None,
+                redacted: message.thinking_redacted.then_some(true),
+            }));
         let index = output.content.len() - 1;
         state.thinking_index = Some(index);
         events.push(crate::types::AssistantMessageEvent::ThinkingStart {
@@ -99,7 +105,9 @@ fn append_thinking(
         });
     }
     let index = state.thinking_index.expect("thinking index is set");
-    let ContentBlock::Thinking(block) = &mut output.content[index] else { return };
+    let ContentBlock::Thinking(block) = &mut output.content[index] else {
+        return;
+    };
     block.thinking.push_str(&message.delta_thinking);
     crate::utils::assistant_capture::push_assistant_signature(
         events,
@@ -107,7 +115,9 @@ fn append_thinking(
         &output.content[index],
         Some(&message.delta_signature),
     );
-    let ContentBlock::Thinking(block) = &mut output.content[index] else { return };
+    let ContentBlock::Thinking(block) = &mut output.content[index] else {
+        return;
+    };
     if !message.delta_signature.is_empty() {
         block.thinking_signature = Some(message.delta_signature.clone());
     }
@@ -128,17 +138,24 @@ fn append_text(
         close_thinking(output, events, state);
     }
     if state.text_index.is_none() {
-        output.content.push(ContentBlock::Text(crate::types::TextContent {
-            text: String::new(),
-            audience: None,
-            text_signature: None,
-        }));
+        output
+            .content
+            .push(ContentBlock::Text(crate::types::TextContent {
+                text: String::new(),
+                audience: None,
+                text_signature: None,
+            }));
         let index = output.content.len() - 1;
         state.text_index = Some(index);
-        events.push(crate::types::AssistantMessageEvent::TextStart { content_index: index, partial: output.clone() });
+        events.push(crate::types::AssistantMessageEvent::TextStart {
+            content_index: index,
+            partial: output.clone(),
+        });
     }
     let index = state.text_index.expect("text index is set");
-    let ContentBlock::Text(block) = &mut output.content[index] else { return };
+    let ContentBlock::Text(block) = &mut output.content[index] else {
+        return;
+    };
     block.text.push_str(delta);
     events.push(crate::types::AssistantMessageEvent::TextDelta {
         content_index: index,
@@ -159,8 +176,14 @@ fn append_tool_call(
     if state.thinking_index.is_some() {
         close_thinking(output, events, state);
     }
-    let tool_call_id = if !call.id.is_empty() { Some(call.id.clone()) } else { state.active_tool_call_id.clone() };
-    let Some(tool_call_id) = tool_call_id else { return };
+    let tool_call_id = if !call.id.is_empty() {
+        Some(call.id.clone())
+    } else {
+        state.active_tool_call_id.clone()
+    };
+    let Some(tool_call_id) = tool_call_id else {
+        return;
+    };
     state.active_tool_call_id = Some(tool_call_id.clone());
     if !state.tool_calls.contains_key(&tool_call_id) {
         output.content.push(ContentBlock::ToolCall(ToolCall {
@@ -173,12 +196,26 @@ fn append_tool_call(
             namespace: None,
         }));
         let content_index = output.content.len() - 1;
-        state.tool_calls.insert(tool_call_id.clone(), DevinToolCallState { content_index, arguments_json: String::new() });
-        events.push(crate::types::AssistantMessageEvent::ToolcallStart { content_index, partial: output.clone() });
+        state.tool_calls.insert(
+            tool_call_id.clone(),
+            DevinToolCallState {
+                content_index,
+                arguments_json: String::new(),
+            },
+        );
+        events.push(crate::types::AssistantMessageEvent::ToolcallStart {
+            content_index,
+            partial: output.clone(),
+        });
     }
-    let entry = state.tool_calls.get_mut(&tool_call_id).expect("tool call entry exists");
+    let entry = state
+        .tool_calls
+        .get_mut(&tool_call_id)
+        .expect("tool call entry exists");
     let content_index = entry.content_index;
-    let ContentBlock::ToolCall(block) = &mut output.content[content_index] else { return };
+    let ContentBlock::ToolCall(block) = &mut output.content[content_index] else {
+        return;
+    };
     if !call.name.is_empty() && call.name != block.name {
         crate::utils::assistant_capture::push_assistant_progress(
             events,
@@ -218,8 +255,14 @@ fn append_tool_call(
     }
 }
 
-fn close_text(output: &mut AssistantMessage, events: &AssistantMessageEventStream, state: &mut DevinStreamState) {
-    let Some(index) = state.text_index.take() else { return };
+fn close_text(
+    output: &mut AssistantMessage,
+    events: &AssistantMessageEventStream,
+    state: &mut DevinStreamState,
+) {
+    let Some(index) = state.text_index.take() else {
+        return;
+    };
     if let ContentBlock::Text(block) = &output.content[index] {
         events.push(crate::types::AssistantMessageEvent::TextEnd {
             content_index: index,
@@ -229,8 +272,14 @@ fn close_text(output: &mut AssistantMessage, events: &AssistantMessageEventStrea
     }
 }
 
-fn close_thinking(output: &mut AssistantMessage, events: &AssistantMessageEventStream, state: &mut DevinStreamState) {
-    let Some(index) = state.thinking_index.take() else { return };
+fn close_thinking(
+    output: &mut AssistantMessage,
+    events: &AssistantMessageEventStream,
+    state: &mut DevinStreamState,
+) {
+    let Some(index) = state.thinking_index.take() else {
+        return;
+    };
     if let ContentBlock::Thinking(block) = &output.content[index] {
         events.push(crate::types::AssistantMessageEvent::ThinkingEnd {
             content_index: index,

@@ -8,8 +8,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use maho_core::paths::canonicalize_path;
 use maho_tui::components::input::{Input, InputOptions};
@@ -36,7 +36,8 @@ pub enum SessionScope {
 /// since the previous publication (senpi passes the sorted cumulative list).
 pub type SessionListProgress<'a> = &'a mut dyn FnMut(usize, usize, Option<Vec<SessionInfo>>);
 /// senpi's SessionsLoader.
-pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo> + Send>;
+pub type SessionsLoader =
+    Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo> + Send>;
 
 pub type SessionPathHandler = Box<dyn FnMut(&str)>;
 pub type VoidHandler = Box<dyn FnMut()>;
@@ -146,7 +147,12 @@ pub struct SessionSelectorHeader {
 }
 
 impl SessionSelectorHeader {
-    pub fn new(theme: &Theme, scope: SessionScope, sort_mode: SortMode, name_filter: NameFilter) -> Self {
+    pub fn new(
+        theme: &Theme,
+        scope: SessionScope,
+        sort_mode: SortMode,
+        name_filter: NameFilter,
+    ) -> Self {
         Self {
             theme: theme.clone(),
             scope,
@@ -236,7 +242,8 @@ impl Component for SessionSelectorHeader {
             format!(
                 "{}{}",
                 self.theme.fg(ThemeColor::Muted, "○ Current Folder | "),
-                self.theme.fg(ThemeColor::Accent, &format!("Loading {progress_text}"))
+                self.theme
+                    .fg(ThemeColor::Accent, &format!("Loading {progress_text}"))
             )
         } else {
             match self.scope {
@@ -253,8 +260,15 @@ impl Component for SessionSelectorHeader {
             }
         };
 
-        let right_text = truncate_to_width(&format!("{scope_text}  {name_text}  {sort_text}"), width, "", false);
-        let available_left = width.saturating_sub(visible_width(&right_text)).saturating_sub(1);
+        let right_text = truncate_to_width(
+            &format!("{scope_text}  {name_text}  {sort_text}"),
+            width,
+            "",
+            false,
+        );
+        let available_left = width
+            .saturating_sub(visible_width(&right_text))
+            .saturating_sub(1);
         let left = truncate_to_width(&left_text, available_left, "", false);
         let spacing = width
             .saturating_sub(visible_width(&left))
@@ -267,14 +281,23 @@ impl Component for SessionSelectorHeader {
                 key_hint("tui.select.cancel", "cancel", &self.theme)
             );
             (
-                self.theme
-                    .fg(ThemeColor::Error, &truncate_to_width(&confirm_hint, width, "…", false)),
+                self.theme.fg(
+                    ThemeColor::Error,
+                    &truncate_to_width(&confirm_hint, width, "…", false),
+                ),
                 String::new(),
             )
         } else if let Some(status) = &self.status_message {
-            let color = if status.is_error { ThemeColor::Error } else { ThemeColor::Accent };
+            let color = if status.is_error {
+                ThemeColor::Error
+            } else {
+                ThemeColor::Accent
+            };
             (
-                self.theme.fg(color, &truncate_to_width(&status.message, width, "…", false)),
+                self.theme.fg(
+                    color,
+                    &truncate_to_width(&status.message, width, "…", false),
+                ),
                 String::new(),
             )
         } else {
@@ -284,13 +307,18 @@ impl Component for SessionSelectorHeader {
                 "{}{}{}",
                 key_hint("tui.input.tab", "scope", &self.theme),
                 sep,
-                self.theme.fg(ThemeColor::Muted, "re:<pattern> regex · \"phrase\" exact")
+                self.theme
+                    .fg(ThemeColor::Muted, "re:<pattern> regex · \"phrase\" exact")
             );
             let mut hint2_parts = vec![
                 key_hint("app.session.toggleSort", "sort", &self.theme),
                 key_hint("app.session.toggleNamedFilter", "named", &self.theme),
                 key_hint("app.session.delete", "delete", &self.theme),
-                key_hint("app.session.togglePath", &format!("path {path_state}"), &self.theme),
+                key_hint(
+                    "app.session.togglePath",
+                    &format!("path {path_state}"),
+                    &self.theme,
+                ),
             ];
             if self.show_rename_hint {
                 hint2_parts.push(key_hint("app.session.rename", "rename", &self.theme));
@@ -338,12 +366,17 @@ pub fn build_session_tree(sessions: &[SessionInfo]) -> Vec<SessionTreeNode> {
 }
 
 /// [`build_session_tree`] over borrowed sessions, resolving canonical paths through `canonical`.
-fn build_session_tree_with(sessions: &[&Rc<SessionInfo>], canonical: &dyn Fn(&str) -> String) -> Vec<SessionTreeNode> {
+fn build_session_tree_with(
+    sessions: &[&Rc<SessionInfo>],
+    canonical: &dyn Fn(&str) -> String,
+) -> Vec<SessionTreeNode> {
     // First session wins for a duplicated canonical path, as senpi's linear lookup does.
     let mut index_by_key: HashMap<String, usize> = HashMap::with_capacity(sessions.len());
     let mut nodes: Vec<Option<SessionTreeNode>> = Vec::with_capacity(sessions.len());
     for (index, session) in sessions.iter().enumerate() {
-        index_by_key.entry(canonical(session.path.as_str())).or_insert(index);
+        index_by_key
+            .entry(canonical(session.path.as_str()))
+            .or_insert(index);
         nodes.push(Some(SessionTreeNode {
             session: Rc::clone(session),
             children: Vec::new(),
@@ -371,12 +404,19 @@ fn build_session_tree_with(sessions: &[&Rc<SessionInfo>], canonical: &dyn Fn(&st
         let mut node = nodes.get_mut(index)?.take()?;
         node.children = children_by_parent
             .get(&index)
-            .map(|children| children.iter().filter_map(|child| build(*child, nodes, children_by_parent)).collect())
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|child| build(*child, nodes, children_by_parent))
+                    .collect()
+            })
             .unwrap_or_default();
         node.latest_activity = node
             .children
             .iter()
-            .fold(node.session.modified_ms, |latest, child| latest.max(child.latest_activity));
+            .fold(node.session.modified_ms, |latest, child| {
+                latest.max(child.latest_activity)
+            });
         Some(node)
     }
 
@@ -387,8 +427,10 @@ fn build_session_tree_with(sessions: &[&Rc<SessionInfo>], canonical: &dyn Fn(&st
         }
     }
 
-    let mut tree: Vec<SessionTreeNode> =
-        roots.iter().filter_map(|root| build(*root, &mut nodes, &children_by_parent)).collect();
+    let mut tree: Vec<SessionTreeNode> = roots
+        .iter()
+        .filter_map(|root| build(*root, &mut nodes, &children_by_parent))
+        .collect();
     sort_nodes(&mut tree);
     tree
 }
@@ -434,11 +476,13 @@ fn flatten_session_tree_owned(roots: Vec<SessionTreeNode>) -> Vec<FlatSessionNod
 
 fn canonical_session_paths(sessions: &[Rc<SessionInfo>]) -> HashMap<String, String> {
     let mut canonical = HashMap::new();
-    let paths = sessions
-        .iter()
-        .flat_map(|session| std::iter::once(&session.path).chain(session.parent_session_path.as_ref()));
+    let paths = sessions.iter().flat_map(|session| {
+        std::iter::once(&session.path).chain(session.parent_session_path.as_ref())
+    });
     for path in paths {
-        canonical.entry(path.clone()).or_insert_with(|| canonicalize_path(path));
+        canonical
+            .entry(path.clone())
+            .or_insert_with(|| canonicalize_path(path));
     }
     canonical
 }
@@ -548,7 +592,10 @@ impl SessionList {
     }
 
     pub fn filtered_session_paths(&self) -> Vec<String> {
-        self.filtered_sessions.iter().map(|node| node.session.path.clone()).collect()
+        self.filtered_sessions
+            .iter()
+            .map(|node| node.session.path.clone())
+            .collect()
     }
 
     pub fn show_path(&self) -> bool {
@@ -592,13 +639,22 @@ impl SessionList {
                 .filter(|session| !named_only || has_session_name(session))
                 .collect();
             let canonical_paths = &self.canonical_paths;
-            let canonical =
-                |path: &str| canonical_paths.get(path).cloned().unwrap_or_else(|| canonicalize_path(path));
+            let canonical = |path: &str| {
+                canonical_paths
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_else(|| canonicalize_path(path))
+            };
             let roots = build_session_tree_with(&name_filtered, &canonical);
             self.filtered_sessions = flatten_session_tree_owned(roots);
         } else {
             if !trimmed.is_empty() && self.search_texts.is_none() {
-                self.search_texts = Some(self.all_sessions.iter().map(|session| get_session_search_text(session)).collect());
+                self.search_texts = Some(
+                    self.all_sessions
+                        .iter()
+                        .map(|session| get_session_search_text(session))
+                        .collect(),
+                );
             }
             let search_texts = self.search_texts.as_deref();
             let candidates: Vec<(&Rc<SessionInfo>, &str)> = self
@@ -607,7 +663,12 @@ impl SessionList {
                 .enumerate()
                 .filter(|(_, session)| !named_only || has_session_name(session))
                 .map(|(index, session)| {
-                    (session, search_texts.and_then(|texts| texts.get(index)).map_or("", String::as_str))
+                    (
+                        session,
+                        search_texts
+                            .and_then(|texts| texts.get(index))
+                            .map_or("", String::as_str),
+                    )
                 })
                 .collect();
             let filtered = filter_and_sort_sessions_with_text(candidates, query, self.sort_mode);
@@ -621,7 +682,9 @@ impl SessionList {
                 })
                 .collect();
         }
-        self.selected_index = self.selected_index.min(self.filtered_sessions.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.filtered_sessions.len().saturating_sub(1));
     }
 
     fn set_confirming_delete_path(&mut self, path: Option<String>) {
@@ -658,13 +721,17 @@ impl SessionList {
     fn render_row(&self, node: &FlatSessionNode, index: usize, width: usize, now: i64) -> String {
         let session = &node.session;
         let is_selected = index == self.selected_index;
-        let is_confirming_delete = self.confirming_delete_path.as_deref() == Some(session.path.as_str());
+        let is_confirming_delete =
+            self.confirming_delete_path.as_deref() == Some(session.path.as_str());
         let is_current = self.is_current_session_path(&session.path);
 
         let prefix = build_tree_prefix(node);
 
         let has_name = session.name.is_some();
-        let display_text = session.name.clone().unwrap_or_else(|| session.first_message.clone());
+        let display_text = session
+            .name
+            .clone()
+            .unwrap_or_else(|| session.first_message.clone());
         let normalized_message = display_text
             .chars()
             .map(|ch| if ch.is_control() { ' ' } else { ch })
@@ -676,10 +743,16 @@ impl SessionList {
         let msg_count = session.message_count.to_string();
         let mut right_part = format!("{msg_count} {age}");
         if self.show_cwd && !session.cwd.is_empty() {
-            right_part = format!("{} {right_part}", shorten_path(&session.cwd, self.home.as_deref()));
+            right_part = format!(
+                "{} {right_part}",
+                shorten_path(&session.cwd, self.home.as_deref())
+            );
         }
         if self.show_path {
-            right_part = format!("{} {right_part}", shorten_path(&session.path, self.home.as_deref()));
+            right_part = format!(
+                "{} {right_part}",
+                shorten_path(&session.path, self.home.as_deref())
+            );
         }
 
         let cursor = if is_selected {
@@ -692,7 +765,12 @@ impl SessionList {
         let right_width = visible_width(&right_part) + 2;
         let available_for_msg = (width as i64) - 2 - prefix_width as i64 - right_width as i64;
 
-        let truncated_msg = truncate_to_width(&normalized_message, available_for_msg.max(10) as usize, "…", false);
+        let truncated_msg = truncate_to_width(
+            &normalized_message,
+            available_for_msg.max(10) as usize,
+            "…",
+            false,
+        );
 
         let message_color = if is_confirming_delete {
             Some(ThemeColor::Error)
@@ -711,11 +789,21 @@ impl SessionList {
             styled_msg = self.theme.bold(&styled_msg);
         }
 
-        let left_part = format!("{cursor}{}{styled_msg}", self.theme.fg(ThemeColor::Dim, &prefix));
+        let left_part = format!(
+            "{cursor}{}{styled_msg}",
+            self.theme.fg(ThemeColor::Dim, &prefix)
+        );
         let left_width = visible_width(&left_part);
-        let spacing = width.saturating_sub(left_width).saturating_sub(visible_width(&right_part)).max(1);
+        let spacing = width
+            .saturating_sub(left_width)
+            .saturating_sub(visible_width(&right_part))
+            .max(1);
         let styled_right = self.theme.fg(
-            if is_confirming_delete { ThemeColor::Error } else { ThemeColor::Dim },
+            if is_confirming_delete {
+                ThemeColor::Error
+            } else {
+                ThemeColor::Dim
+            },
             &right_part,
         );
 
@@ -748,30 +836,41 @@ impl Component for SessionList {
             } else {
                 "  No sessions in current folder. Press Tab to view all.".to_owned()
             };
-            lines.push(
-                self.theme
-                    .fg(ThemeColor::Muted, &truncate_to_width(&empty_message, width, "…", false)),
-            );
+            lines.push(self.theme.fg(
+                ThemeColor::Muted,
+                &truncate_to_width(&empty_message, width, "…", false),
+            ));
             return lines;
         }
 
         let start_index = self
             .selected_index
             .saturating_sub(self.max_visible / 2)
-            .min(self.filtered_sessions.len().saturating_sub(self.max_visible));
+            .min(
+                self.filtered_sessions
+                    .len()
+                    .saturating_sub(self.max_visible),
+            );
         let end_index = (start_index + self.max_visible).min(self.filtered_sessions.len());
 
         let now = now_ms();
-        for (offset, node) in self.filtered_sessions[start_index..end_index].iter().enumerate() {
+        for (offset, node) in self.filtered_sessions[start_index..end_index]
+            .iter()
+            .enumerate()
+        {
             lines.push(self.render_row(node, start_index + offset, width, now));
         }
 
         if start_index > 0 || end_index < self.filtered_sessions.len() {
-            let scroll_text = format!("  ({}/{})", self.selected_index + 1, self.filtered_sessions.len());
-            lines.push(
-                self.theme
-                    .fg(ThemeColor::Muted, &truncate_to_width(&scroll_text, width, "", false)),
+            let scroll_text = format!(
+                "  ({}/{})",
+                self.selected_index + 1,
+                self.filtered_sessions.len()
             );
+            lines.push(self.theme.fg(
+                ThemeColor::Muted,
+                &truncate_to_width(&scroll_text, width, "", false),
+            ));
         }
 
         lines
@@ -848,12 +947,13 @@ impl Component for SessionList {
         if kb.matches(data, "tui.select.up") {
             self.selected_index = self.selected_index.saturating_sub(1);
         } else if kb.matches(data, "tui.select.down") {
-            self.selected_index = (self.selected_index + 1).min(self.filtered_sessions.len().saturating_sub(1));
+            self.selected_index =
+                (self.selected_index + 1).min(self.filtered_sessions.len().saturating_sub(1));
         } else if kb.matches(data, "tui.select.pageUp") {
             self.selected_index = self.selected_index.saturating_sub(self.max_visible);
         } else if kb.matches(data, "tui.select.pageDown") {
-            self.selected_index =
-                (self.selected_index + self.max_visible).min(self.filtered_sessions.len().saturating_sub(1));
+            self.selected_index = (self.selected_index + self.max_visible)
+                .min(self.filtered_sessions.len().saturating_sub(1));
         } else if kb.matches(data, "tui.select.confirm") {
             if let Some(selected) = self.filtered_sessions.get(self.selected_index) {
                 let path = selected.session.path.clone();
@@ -983,8 +1083,12 @@ impl SessionSelectorComponent {
             current_session_file_path,
             home,
         )));
-        let mut header =
-            SessionSelectorHeader::new(theme, SessionScope::Current, SortMode::Threaded, NameFilter::All);
+        let mut header = SessionSelectorHeader::new(
+            theme,
+            SessionScope::Current,
+            SortMode::Threaded,
+            NameFilter::All,
+        );
         header.set_show_rename_hint(show_rename_hint.unwrap_or(can_rename));
         let (load_tx, load_rx) = mpsc::channel();
         #[cfg(test)]
@@ -1118,17 +1222,22 @@ impl SessionSelectorComponent {
         let finished = take_load_finished_hook();
         spawn_session_load(move || {
             let progress_tx = tx.clone();
-            let mut on_progress = move |loaded: usize, total: usize, rows: Option<Vec<SessionInfo>>| {
-                let _ = progress_tx.send(LoadUpdate::Progress {
-                    scope,
-                    seq,
-                    loaded,
-                    total,
-                    rows,
-                });
-            };
+            let mut on_progress =
+                move |loaded: usize, total: usize, rows: Option<Vec<SessionInfo>>| {
+                    let _ = progress_tx.send(LoadUpdate::Progress {
+                        scope,
+                        seq,
+                        loaded,
+                        total,
+                        rows,
+                    });
+                };
             let sessions = loader(Some(&mut on_progress));
-            let _ = tx.send(LoadUpdate::Finished { scope, seq, sessions });
+            let _ = tx.send(LoadUpdate::Finished {
+                scope,
+                seq,
+                sessions,
+            });
             if let Some(finished) = finished {
                 let _ = finished.send(());
             }
@@ -1153,7 +1262,9 @@ impl SessionSelectorComponent {
 
     fn take_loader(&mut self, scope: SessionScope) -> SessionsLoader {
         match scope {
-            SessionScope::Current => std::mem::replace(&mut self.current_sessions_loader, idle_loader()),
+            SessionScope::Current => {
+                std::mem::replace(&mut self.current_sessions_loader, idle_loader())
+            }
             SessionScope::All => std::mem::replace(&mut self.all_sessions_loader, idle_loader()),
         }
     }
@@ -1171,7 +1282,13 @@ impl SessionSelectorComponent {
         let mut changed = false;
         for update in updates {
             match update {
-                LoadUpdate::Progress { scope, seq, loaded, total, rows } => {
+                LoadUpdate::Progress {
+                    scope,
+                    seq,
+                    loaded,
+                    total,
+                    rows,
+                } => {
                     if seq.is_some_and(|seq| seq != self.all_load_seq) {
                         continue;
                     }
@@ -1181,7 +1298,9 @@ impl SessionSelectorComponent {
                     // rows painted are the sessions most likely to be resumed.
                     if let Some(rows) = rows {
                         let partial = match scope {
-                            SessionScope::Current => self.current_sessions.get_or_insert_with(Vec::new),
+                            SessionScope::Current => {
+                                self.current_sessions.get_or_insert_with(Vec::new)
+                            }
                             SessionScope::All => self.all_sessions.get_or_insert_with(Vec::new),
                         };
                         partial.extend(rows);
@@ -1198,7 +1317,11 @@ impl SessionSelectorComponent {
                         changed = true;
                     }
                 }
-                LoadUpdate::Finished { scope, seq, sessions } => {
+                LoadUpdate::Finished {
+                    scope,
+                    seq,
+                    sessions,
+                } => {
                     self.set_load_inflight(scope, false);
                     match scope {
                         SessionScope::Current => self.current_sessions = Some(sessions.clone()),
@@ -1230,10 +1353,11 @@ impl SessionSelectorComponent {
     /// Report a loader failure in the header (senpi's catch branch).
     pub fn report_load_error(&mut self, message: &str) {
         self.header.set_loading(false);
-        self.header.set_status_message(Some(SessionSelectorStatusMessage {
-            is_error: true,
-            message: format!("Failed to load sessions: {message}"),
-        }));
+        self.header
+            .set_status_message(Some(SessionSelectorStatusMessage {
+                is_error: true,
+                message: format!("Failed to load sessions: {message}"),
+            }));
         (self.request_render)();
     }
 
@@ -1254,7 +1378,9 @@ impl SessionSelectorComponent {
             NameFilter::Named => NameFilter::All,
         };
         self.header.set_name_filter(self.name_filter);
-        self.session_list.borrow_mut().set_name_filter(self.name_filter);
+        self.session_list
+            .borrow_mut()
+            .set_name_filter(self.name_filter);
         (self.request_render)();
     }
 
@@ -1297,10 +1423,11 @@ impl SessionSelectorComponent {
     }
 
     pub fn set_error_status(&mut self, message: &str) {
-        self.header.set_status_message(Some(SessionSelectorStatusMessage {
-            is_error: true,
-            message: message.to_owned(),
-        }));
+        self.header
+            .set_status_message(Some(SessionSelectorStatusMessage {
+                is_error: true,
+                message: message.to_owned(),
+            }));
         (self.request_render)();
     }
 
@@ -1349,7 +1476,9 @@ impl Component for SessionSelectorComponent {
                 lines.extend(self.session_list.borrow_mut().render(width));
             }
             SessionSelectorMode::Rename => {
-                lines.extend(Text::with_padding(self.theme.bold("Rename Session"), 1, 0).render(width));
+                lines.extend(
+                    Text::with_padding(self.theme.bold("Rename Session"), 1, 0).render(width),
+                );
                 lines.push(String::new());
                 lines.extend(self.rename_input.render(width));
                 lines.push(String::new());
@@ -1358,7 +1487,9 @@ impl Component for SessionSelectorComponent {
                     key_text("tui.select.confirm"),
                     key_text("tui.select.cancel")
                 );
-                lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Muted, &hint), 1, 0).render(width));
+                lines.extend(
+                    Text::with_padding(self.theme.fg(ThemeColor::Muted, &hint), 1, 0).render(width),
+                );
             }
         }
         lines.push(String::new());
@@ -1417,8 +1548,8 @@ mod tests {
     use maho_tui::keybindings::KeybindingsManager;
     use maho_tui::tui::Component;
     use std::future::Future;
-    use std::sync::mpsc::{self, Sender};
     use std::sync::Arc;
+    use std::sync::mpsc::{self, Sender};
 
     struct Release(Option<Sender<()>>);
 
@@ -1460,7 +1591,9 @@ mod tests {
     /// Ready, and the loading line cannot paint first.
     #[test]
     fn session_picker_paints_loading_before_loader_is_released() {
-        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
         let _entered = runtime.enter();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let mut release = Release(Some(release_tx));
@@ -1487,7 +1620,9 @@ mod tests {
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         let mut component = match opened.as_mut().poll(&mut cx) {
             std::task::Poll::Ready(component) => component,
-            std::task::Poll::Pending => panic!("picker open awaited the session loader before paint"),
+            std::task::Poll::Pending => {
+                panic!("picker open awaited the session loader before paint")
+            }
         };
         let loading = component.render(120).join("\n");
         assert!(

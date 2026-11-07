@@ -3,11 +3,11 @@ pub mod patch_mode;
 pub mod shared;
 
 pub use branch_mode::{
-    commit_to_branch, commit_to_branch_locked, merge_task_branch, merge_task_branch_locked,
-    BranchOptions, CommitMessage, TaskBranch,
+    BranchOptions, CommitMessage, TaskBranch, commit_to_branch, commit_to_branch_locked,
+    merge_task_branch, merge_task_branch_locked,
 };
 pub use patch_mode::{
-    apply_delta_patch, apply_delta_patch_locked, apply_nested_patches, NestedOutcome,
+    NestedOutcome, apply_delta_patch, apply_delta_patch_locked, apply_nested_patches,
 };
 pub use shared::*;
 
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::backend::{IsolationError, Result};
 use crate::git::baseline::WorktreeBaseline;
-use crate::git::delta::{capture_delta_patch, DeltaPatchResult};
+use crate::git::delta::{DeltaPatchResult, capture_delta_patch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeMode {

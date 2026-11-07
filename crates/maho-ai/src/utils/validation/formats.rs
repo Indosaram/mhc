@@ -10,22 +10,53 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::utils::js::utf16_len;
 
-const DURATION: (&str, bool) = (r#"^P((\d+Y(\d+M(\d+D)?)?|\d+M(\d+D)?|\d+D)(T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S))?|T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S)|\d+W)$"#, false);
-const EMAIL: (&str, bool) = (r#"^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[^"\\]|\\[\x20-\x7e])*")@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[(?:IPv6:[a-f0-9:]+|(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})\])$"#, true);
-const IDN_EMAIL: (&str, bool) = (r#"^(?:[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+(?:\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+)*|"(?:[^"\\]|\\.)*")@[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-)(?:\.[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-))*$"#, true);
-const IPV4: (&str, bool) = (r#"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$"#, false);
-const IPV6: (&str, bool) = (r#"^(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:)?[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)$"#, true);
-const JSON_POINTER_URI_FRAGMENT: (&str, bool) = (r#"^#(?:\/(?:[a-z0-9_\-.!$&'()*+,;:=@]|%[0-9a-f]{2}|~0|~1)*)*$"#, true);
+const DURATION: (&str, bool) = (
+    r#"^P((\d+Y(\d+M(\d+D)?)?|\d+M(\d+D)?|\d+D)(T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S))?|T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S)|\d+W)$"#,
+    false,
+);
+const EMAIL: (&str, bool) = (
+    r#"^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[^"\\]|\\[\x20-\x7e])*")@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[(?:IPv6:[a-f0-9:]+|(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})\])$"#,
+    true,
+);
+const IDN_EMAIL: (&str, bool) = (
+    r#"^(?:[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+(?:\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~\u{0080}-\u{10FFFF}-]+)*|"(?:[^"\\]|\\.)*")@[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-)(?:\.[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,62})(?<!-))*$"#,
+    true,
+);
+const IPV4: (&str, bool) = (
+    r#"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$"#,
+    false,
+);
+const IPV6: (&str, bool) = (
+    r#"^(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:)?[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)$"#,
+    true,
+);
+const JSON_POINTER_URI_FRAGMENT: (&str, bool) = (
+    r#"^#(?:\/(?:[a-z0-9_\-.!$&'()*+,;:=@]|%[0-9a-f]{2}|~0|~1)*)*$"#,
+    true,
+);
 const JSON_POINTER: (&str, bool) = (r#"^(?:\/(?:[^~/]|~0|~1)*)*$"#, false);
-const RELATIVE_JSON_POINTER: (&str, bool) = (r#"^(?:0|[1-9][0-9]*)(?:#|(?:\/(?:[^~/]|~0|~1)*)*)$"#, false);
-const URI_REFERENCE: (&str, bool) = (r#"^(?:[a-z][a-z0-9+\-.]*:(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?)(?:\?(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$"#, true);
-const URI_TEMPLATE: (&str, bool) = (r#"^(?:(?:[^\x00-\x20"<>%\\^`{|}\x7f]|%[0-9a-f]{2})|\{[+#./;?&=,!@|]?(?:[a-z0-9_]|%[0-9a-f]{2})+(?:\.(?:[a-z0-9_]|%[0-9a-f]{2})+)*(?::[1-9]\d{0,3}|\*)?(?:,(?:[a-z0-9_]|%[0-9a-f]{2})+(?:\.(?:[a-z0-9_]|%[0-9a-f]{2})+)*(?::[1-9]\d{0,3}|\*)?)*\})*$"#, true);
-const URI: (&str, bool) = (r#"^[a-z][a-z0-9+\-.]*:(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?(?:\?(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$"#, true);
+const RELATIVE_JSON_POINTER: (&str, bool) =
+    (r#"^(?:0|[1-9][0-9]*)(?:#|(?:\/(?:[^~/]|~0|~1)*)*)$"#, false);
+const URI_REFERENCE: (&str, bool) = (
+    r#"^(?:[a-z][a-z0-9+\-.]*:(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?)(?:\?(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$"#,
+    true,
+);
+const URI_TEMPLATE: (&str, bool) = (
+    r#"^(?:(?:[^\x00-\x20"<>%\\^`{|}\x7f]|%[0-9a-f]{2})|\{[+#./;?&=,!@|]?(?:[a-z0-9_]|%[0-9a-f]{2})+(?:\.(?:[a-z0-9_]|%[0-9a-f]{2})+)*(?::[1-9]\d{0,3}|\*)?(?:,(?:[a-z0-9_]|%[0-9a-f]{2})+(?:\.(?:[a-z0-9_]|%[0-9a-f]{2})+)*(?::[1-9]\d{0,3}|\*)?)*\})*$"#,
+    true,
+);
+const URI: (&str, bool) = (
+    r#"^[a-z][a-z0-9+\-.]*:(?:\/\/(?:(?:[-a-z0-9._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:[\da-f]{1,4}:){6}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|::(?:[\da-f]{1,4}:){5}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:[\da-f]{1,4})?::(?:[\da-f]{1,4}:){4}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,1}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){3}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,2}[\da-f]{1,4})?::(?:[\da-f]{1,4}:){2}(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,3}[\da-f]{1,4})?::[\da-f]{1,4}:(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,4}[\da-f]{1,4})?::(?:[\da-f]{1,4}:[\da-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))|(?:(?:[\da-f]{1,4}:){0,5}[\da-f]{1,4})?::[\da-f]{1,4}|(?:(?:[\da-f]{1,4}:){0,6}[\da-f]{1,4})?::)|v[0-9a-f]+\.[-a-z0-9._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|(?:[-a-z0-9._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[-a-z0-9._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?(?:\?(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[-a-z0-9._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$"#,
+    true,
+);
 const UUID: (&str, bool) = (r#"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#, true);
 const IRI_INVALID_CHARS: (&str, bool) = (r#"[\x00-\x20<>\^`{|}\\]"#, false);
 const IRI_REFERENCE_INVALID: (&str, bool) = (r#"[\x00-\x20\x7F\\]|%(?![0-9a-fA-F]{2})"#, false);
 const DATE: (&str, bool) = (r#"^(\d\d\d\d)-(\d\d)-(\d\d)$"#, false);
-const TIME: (&str, bool) = (r#"^(\d\d):(\d\d):(\d\d)(?:\.\d+)?(?:([Zz])|([+-])(\d\d):(\d\d))?$"#, false);
+const TIME: (&str, bool) = (
+    r#"^(\d\d):(\d\d):(\d\d)(?:\.\d+)?(?:([Zz])|([+-])(\d\d):(\d\d))?$"#,
+    false,
+);
 const IRI_INVALID_PERCENT: (&str, bool) = (r#"%(?![0-9a-fA-F]{2})"#, false);
 const IRI_MALFORMED_SCHEME: (&str, bool) = (r#"^[a-zA-Z][a-zA-Z0-9+\-.]*\/\/"#, false);
 
@@ -82,7 +113,9 @@ lazy_regex!(RE_DATE, DATE);
 lazy_regex!(RE_TIME, TIME);
 
 fn test(regex: &LazyLock<Option<Regex>>, value: &str) -> bool {
-    regex.as_ref().is_some_and(|re| re.is_match(value).unwrap_or(false))
+    regex
+        .as_ref()
+        .is_some_and(|re| re.is_match(value).unwrap_or(false))
 }
 
 /// `Format.Test`: unknown formats pass.
@@ -100,9 +133,15 @@ pub(super) fn test_format(format: &str, value: &str) -> bool {
         "iri-reference" => {
             !test(&RE_IRI_REFERENCE_INVALID, value)
                 && !test(&RE_IRI_MALFORMED_SCHEME, value)
-                && url::Url::parse("http://example.com").and_then(|base| base.join(value)).is_ok()
+                && url::Url::parse("http://example.com")
+                    .and_then(|base| base.join(value))
+                    .is_ok()
         }
-        "iri" => !test(&RE_IRI_INVALID_CHARS, value) && !test(&RE_IRI_INVALID_PERCENT, value) && url::Url::parse(value).is_ok(),
+        "iri" => {
+            !test(&RE_IRI_INVALID_CHARS, value)
+                && !test(&RE_IRI_INVALID_PERCENT, value)
+                && url::Url::parse(value).is_ok()
+        }
         "json-pointer-uri-fragment" => test(&RE_JSON_POINTER_URI_FRAGMENT, value),
         "json-pointer" => test(&RE_JSON_POINTER, value),
         "regex" => js_regex(value, false).is_some(),
@@ -119,28 +158,51 @@ pub(super) fn test_format(format: &str, value: &str) -> bool {
 
 fn captures(regex: &LazyLock<Option<Regex>>, value: &str) -> Option<Vec<Option<String>>> {
     let captures = regex.as_ref()?.captures(value).ok()??;
-    Some(captures.iter().map(|group| group.map(|m| m.as_str().to_owned())).collect())
+    Some(
+        captures
+            .iter()
+            .map(|group| group.map(|m| m.as_str().to_owned()))
+            .collect(),
+    )
 }
 
 fn group_number(groups: &[Option<String>], index: usize) -> u32 {
-    groups.get(index).and_then(|g| g.as_deref()).and_then(|g| g.parse().ok()).unwrap_or(0)
+    groups
+        .get(index)
+        .and_then(|g| g.as_deref())
+        .and_then(|g| g.parse().ok())
+        .unwrap_or(0)
 }
 
 fn is_date(value: &str) -> bool {
     const DAYS: [u32; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let Some(groups) = captures(&RE_DATE, value) else { return false };
-    let (year, month, day) = (group_number(&groups, 1), group_number(&groups, 2) as usize, group_number(&groups, 3));
+    let Some(groups) = captures(&RE_DATE, value) else {
+        return false;
+    };
+    let (year, month, day) = (
+        group_number(&groups, 1),
+        group_number(&groups, 2) as usize,
+        group_number(&groups, 3),
+    );
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    (1..=12).contains(&month) && day >= 1 && day <= if month == 2 && leap { 29 } else { DAYS[month] }
+    (1..=12).contains(&month)
+        && day >= 1
+        && day <= if month == 2 && leap { 29 } else { DAYS[month] }
 }
 
 fn is_time(value: &str) -> bool {
-    let Some(groups) = captures(&RE_TIME, value) else { return false };
+    let Some(groups) = captures(&RE_TIME, value) else {
+        return false;
+    };
     let has = |index: usize| groups.get(index).is_some_and(Option::is_some);
     if !has(4) && !has(5) {
         return false;
     }
-    let (hr, min, sec) = (group_number(&groups, 1), group_number(&groups, 2), group_number(&groups, 3));
+    let (hr, min, sec) = (
+        group_number(&groups, 1),
+        group_number(&groups, 2),
+        group_number(&groups, 3),
+    );
     if hr > 23 || min > 59 || sec > 60 {
         return false;
     }
@@ -151,7 +213,11 @@ fn is_time(value: &str) -> bool {
     if sec < 60 {
         return true;
     }
-    let sign: i64 = if groups.get(5).and_then(|g| g.as_deref()) == Some("-") { -1 } else { 1 };
+    let sign: i64 = if groups.get(5).and_then(|g| g.as_deref()) == Some("-") {
+        -1
+    } else {
+        1
+    };
     let total = i64::from(hr * 60 + min) - sign * i64::from(tz_h * 60 + tz_m);
     (total % 1440 + 1440) % 1440 == 1439
 }
@@ -172,14 +238,20 @@ fn puny_body(value: &str) -> Option<String> {
     value.get(4..).map(str::to_lowercase)
 }
 
-static RE_GREEK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| regex::Regex::new(r"\p{Greek}").ok());
-static RE_HEBREW: LazyLock<Option<regex::Regex>> = LazyLock::new(|| regex::Regex::new(r"\p{Hebrew}").ok());
-static RE_JAPANESE: LazyLock<Option<regex::Regex>> = LazyLock::new(|| regex::Regex::new(r"[\p{Hiragana}\p{Katakana}\p{Han}]").ok());
-static RE_ARABIC_LETTER: LazyLock<Option<regex::Regex>> = LazyLock::new(|| regex::Regex::new(r"[\p{Arabic}\p{Syriac}\p{Thaana}\p{Mandaic}]").ok());
+static RE_GREEK: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"\p{Greek}").ok());
+static RE_HEBREW: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"\p{Hebrew}").ok());
+static RE_JAPANESE: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"[\p{Hiragana}\p{Katakana}\p{Han}]").ok());
+static RE_ARABIC_LETTER: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"[\p{Arabic}\p{Syriac}\p{Thaana}\p{Mandaic}]").ok());
 
 fn in_script(regex: &LazyLock<Option<regex::Regex>>, c: char) -> bool {
     let mut buf = [0u8; 4];
-    regex.as_ref().is_some_and(|re| re.is_match(c.encode_utf8(&mut buf)))
+    regex
+        .as_ref()
+        .is_some_and(|re| re.is_match(c.encode_utf8(&mut buf)))
 }
 
 fn is_letter(c: char) -> bool {
@@ -198,15 +270,22 @@ fn is_mn(c: char) -> bool {
 }
 
 fn is_combining_mark(c: char) -> bool {
-    matches!(get_general_category(c), GeneralCategory::NonspacingMark | GeneralCategory::SpacingMark | GeneralCategory::EnclosingMark)
+    matches!(
+        get_general_category(c),
+        GeneralCategory::NonspacingMark
+            | GeneralCategory::SpacingMark
+            | GeneralCategory::EnclosingMark
+    )
 }
 
 const VIRAMA: &[u32] = &[
-    0x094d, 0x09cd, 0x0a4d, 0x0acd, 0x0b4d, 0x0bcd, 0x0c4d, 0x0ccd, 0x0d3b, 0x0d3c, 0x0d4d, 0x0dca, 0x1b44, 0x1baa, 0x1bab, 0xa9c0,
-    0x11046, 0x1107f, 0x110b9, 0x11133, 0x11134, 0x111c0, 0x11235, 0x1134d, 0x11442, 0x114c2, 0x115bf, 0x1163f, 0x116b6, 0x11c3f,
-    0x11d44, 0x11d45,
+    0x094d, 0x09cd, 0x0a4d, 0x0acd, 0x0b4d, 0x0bcd, 0x0c4d, 0x0ccd, 0x0d3b, 0x0d3c, 0x0d4d, 0x0dca,
+    0x1b44, 0x1baa, 0x1bab, 0xa9c0, 0x11046, 0x1107f, 0x110b9, 0x11133, 0x11134, 0x111c0, 0x11235,
+    0x1134d, 0x11442, 0x114c2, 0x115bf, 0x1163f, 0x116b6, 0x11c3f, 0x11d44, 0x11d45,
 ];
-const RFC5892_DISALLOWED: &[u32] = &[0x0640, 0x07fa, 0x302e, 0x302f, 0x3031, 0x3032, 0x3033, 0x3034, 0x3035, 0x303b];
+const RFC5892_DISALLOWED: &[u32] = &[
+    0x0640, 0x07fa, 0x302e, 0x302f, 0x3031, 0x3032, 0x3033, 0x3034, 0x3035, 0x303b,
+];
 const CONTEXTO_EXCEPTIONS: &[u32] = &[0x00b7, 0x0375, 0x05f3, 0x05f4, 0x200c, 0x200d, 0x30fb];
 const PVALID_EXCEPTIONS: &[u32] = &[0x00df, 0x03c2, 0x06fd, 0x06fe, 0x0f0b, 0x3007];
 
@@ -214,7 +293,12 @@ fn is_permitted_category(c: char) -> bool {
     let cp = u32::from(c);
     is_letter(c)
         || matches!(c, '-' | '+' | '.' | ',' | ':' | '/')
-        || matches!(get_general_category(c), GeneralCategory::DecimalNumber | GeneralCategory::NonspacingMark | GeneralCategory::SpacingMark)
+        || matches!(
+            get_general_category(c),
+            GeneralCategory::DecimalNumber
+                | GeneralCategory::NonspacingMark
+                | GeneralCategory::SpacingMark
+        )
         || CONTEXTO_EXCEPTIONS.contains(&cp)
         || PVALID_EXCEPTIONS.contains(&cp)
 }
@@ -249,12 +333,16 @@ fn bidi_class(c: char) -> Bidi {
 }
 
 fn has_rtl(value: &str) -> bool {
-    value.chars().any(|c| matches!(bidi_class(c), Bidi::R | Bidi::Al | Bidi::An))
+    value
+        .chars()
+        .any(|c| matches!(bidi_class(c), Bidi::R | Bidi::Al | Bidi::An))
 }
 
 fn has_bidi_chars(value: &str) -> bool {
     if is_ace_prefixed(value) {
-        return puny_body(value).and_then(|body| idna::punycode::decode_to_string(&body)).is_some_and(|decoded| has_rtl(&decoded));
+        return puny_body(value)
+            .and_then(|body| idna::punycode::decode_to_string(&body))
+            .is_some_and(|decoded| has_rtl(&decoded));
     }
     has_rtl(value)
 }
@@ -272,7 +360,10 @@ fn satisfies_bidi_rule(value: &str) -> bool {
             first = false;
         }
         let allowed = if is_rtl {
-            matches!(class, Bidi::R | Bidi::Al | Bidi::An | Bidi::En | Bidi::On | Bidi::Nsm)
+            matches!(
+                class,
+                Bidi::R | Bidi::Al | Bidi::An | Bidi::En | Bidi::On | Bidi::Nsm
+            )
         } else {
             matches!(class, Bidi::L | Bidi::En | Bidi::On | Bidi::Nsm)
         };
@@ -289,14 +380,19 @@ fn satisfies_bidi_rule(value: &str) -> bool {
 }
 
 fn is_unicode_label(value: &str) -> bool {
-    if !value.is_ascii() && idna::punycode::encode_str(value).is_none_or(|encoded| encoded.len() + 4 > 63) {
+    if !value.is_ascii()
+        && idna::punycode::encode_str(value).is_none_or(|encoded| encoded.len() + 4 > 63)
+    {
         return false;
     }
     if has_rtl(value) && !satisfies_bidi_rule(value) {
         return false;
     }
     let chars: Vec<char> = value.chars().collect();
-    if chars.first() == Some(&'-') || chars.last() == Some(&'-') || chars.get(2..4) == Some(&['-', '-'][..]) {
+    if chars.first() == Some(&'-')
+        || chars.last() == Some(&'-')
+        || chars.get(2..4) == Some(&['-', '-'][..])
+    {
         return false;
     }
     if chars.first().is_some_and(|c| is_combining_mark(*c)) {
@@ -332,11 +428,15 @@ fn is_puny_label(value: &str) -> bool {
     if !is_ace_prefixed(value) {
         return false;
     }
-    let Some(body) = puny_body(value) else { return false };
+    let Some(body) = puny_body(value) else {
+        return false;
+    };
     if body.rfind('-') == Some(0) {
         return false;
     }
-    let Some(decoded) = idna::punycode::decode_to_string(&body) else { return false };
+    let Some(decoded) = idna::punycode::decode_to_string(&body) else {
+        return false;
+    };
     !decoded.is_ascii() && is_unicode_label(&decoded)
 }
 
@@ -346,7 +446,9 @@ fn is_ascii_label(value: &str) -> bool {
     !value.starts_with('-')
         && !value.ends_with('-')
         && !has_reserved_hyphen_marker
-        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn valid_label_length(value: &str) -> bool {
@@ -358,7 +460,9 @@ fn is_hostname(value: &str) -> bool {
     if length == 0 || length > 253 || value.ends_with('.') {
         return false;
     }
-    value.split('.').all(|label| valid_label_length(label) && (is_puny_label(label) || is_ascii_label(label)))
+    value
+        .split('.')
+        .all(|label| valid_label_length(label) && (is_puny_label(label) || is_ascii_label(label)))
 }
 
 fn normalize_hostname(value: &str) -> String {
@@ -386,9 +490,11 @@ fn is_idn_hostname(value: &str) -> bool {
     }
     let labels: Vec<&str> = normalized.split('.').collect();
     let bidi = labels.iter().any(|label| has_bidi_chars(label));
-    labels
-        .iter()
-        .all(|label| valid_label_length(label) && (is_puny_label(label) || is_unicode_label(label)) && (!bidi || satisfies_bidi_rule(label)))
+    labels.iter().all(|label| {
+        valid_label_length(label)
+            && (is_puny_label(label) || is_unicode_label(label))
+            && (!bidi || satisfies_bidi_rule(label))
+    })
 }
 
 #[cfg(test)]
@@ -398,9 +504,24 @@ mod tests {
     #[test]
     fn every_registry_regex_compiles() {
         for regex in [
-            &RE_DURATION, &RE_EMAIL, &RE_IDN_EMAIL, &RE_IPV4, &RE_IPV6, &RE_JSON_POINTER_URI_FRAGMENT, &RE_JSON_POINTER,
-            &RE_RELATIVE_JSON_POINTER, &RE_URI_REFERENCE, &RE_URI_TEMPLATE, &RE_URI, &RE_UUID, &RE_IRI_INVALID_CHARS,
-            &RE_IRI_REFERENCE_INVALID, &RE_IRI_INVALID_PERCENT, &RE_IRI_MALFORMED_SCHEME, &RE_DATE, &RE_TIME,
+            &RE_DURATION,
+            &RE_EMAIL,
+            &RE_IDN_EMAIL,
+            &RE_IPV4,
+            &RE_IPV6,
+            &RE_JSON_POINTER_URI_FRAGMENT,
+            &RE_JSON_POINTER,
+            &RE_RELATIVE_JSON_POINTER,
+            &RE_URI_REFERENCE,
+            &RE_URI_TEMPLATE,
+            &RE_URI,
+            &RE_UUID,
+            &RE_IRI_INVALID_CHARS,
+            &RE_IRI_REFERENCE_INVALID,
+            &RE_IRI_INVALID_PERCENT,
+            &RE_IRI_MALFORMED_SCHEME,
+            &RE_DATE,
+            &RE_TIME,
         ] {
             assert!(regex.is_some());
         }

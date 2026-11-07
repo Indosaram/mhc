@@ -3,15 +3,17 @@
 //! Harness-neutral model resolution: model identity parsing, capability tables and lookup,
 //! hardcoded fallback chains, the resolution pipeline, and runtime-fallback error classification.
 
-mod connected_providers_cache;
-pub mod latest_models;
+mod agent_model_requirements;
+mod category_model_requirements;
 mod claude_model_mapper;
-mod context_overflow;
+mod connected_providers_cache;
 mod context_limit_resolver;
+mod context_overflow;
 mod fable_55_launch;
 mod fallback_chain_from_models;
 mod fallback_model_object;
 mod js_value;
+pub mod latest_models;
 mod model_availability;
 mod model_capabilities;
 mod model_capabilities_snapshot;
@@ -22,8 +24,6 @@ mod model_error_classifier;
 mod model_family_detectors;
 mod model_format_normalizer;
 mod model_normalization;
-mod agent_model_requirements;
-mod category_model_requirements;
 mod model_requirement_types;
 mod model_requirements;
 mod model_resolution_pipeline;
@@ -43,10 +43,10 @@ mod runtime_fallback_error_shape;
 mod runtime_fallback_model;
 mod runtime_fallback_retryable_patterns;
 
-pub use connected_providers_cache::*;
 pub use claude_model_mapper::*;
-pub use context_overflow::*;
+pub use connected_providers_cache::*;
 pub use context_limit_resolver::*;
+pub use context_overflow::*;
 pub use fable_55_launch::*;
 pub use fallback_chain_from_models::*;
 pub use fallback_model_object::*;
@@ -75,7 +75,9 @@ pub use model_resolution_pipeline::ResolutionIntent;
 pub use model_resolution_pipeline::ResolutionPolicy;
 pub use model_resolution_pipeline::resolve_model_pipeline;
 pub use model_resolution_pipeline::resolve_model_pipeline_with;
-pub use model_resolution_types::{DelegatedModelConfig, DelegatedModelThinking, DelegatedModelThinkingType};
+pub use model_resolution_types::{
+    DelegatedModelConfig, DelegatedModelThinking, DelegatedModelThinkingType,
+};
 pub use model_resolver::*;
 pub use model_sanitizer::*;
 pub use model_settings_compatibility::*;

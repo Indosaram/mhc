@@ -49,8 +49,7 @@ impl TaskToolResult {
 
 /// Starts one item; `Err` models a thrown start error.
 pub type StartItem = dyn Fn(&ResolvedSpawnItem) -> Result<StartResult, String> + Send + Sync;
-pub type SkillSummaryFor =
-    dyn Fn(&ResolvedSpawnItem) -> Option<TaskSkillSummary> + Send + Sync;
+pub type SkillSummaryFor = dyn Fn(&ResolvedSpawnItem) -> Option<TaskSkillSummary> + Send + Sync;
 
 pub struct ExecuteBatchInput<'a> {
     pub manager: &'a TaskManager,

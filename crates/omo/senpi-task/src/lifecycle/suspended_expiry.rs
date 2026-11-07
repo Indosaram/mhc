@@ -71,11 +71,13 @@ pub fn expire_suspended_child(
             payload: json!({"cause": cause}),
         },
     )?;
-    if record.execution_mode == "process" && !super::host_session::is_host_session_record(&record)
+    if record.execution_mode == "process"
+        && !super::host_session::is_host_session_record(&record)
         && let Some(pid) = record.pid
-            && !super::destroy::term_then_kill(context, &record.task_id, pid)? {
-                return Ok(());
-            }
+        && !super::destroy::term_then_kill(context, &record.task_id, pid)?
+    {
+        return Ok(());
+    }
     if let Some(host) = record.host_session.as_ref() {
         let cwd = super::destroy::spawn_spec_cwd(&record);
         if super::host_session_close::close_host_session(

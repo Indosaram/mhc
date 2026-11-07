@@ -33,13 +33,13 @@ impl GoalLifecycleService {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(goal) = &goal
             && goal.status == "complete"
-                && state
-                    .goal
-                    .as_ref()
-                    .is_none_or(|old| old.id != goal.id || old.status != "complete")
-            {
-                state.completed_goal_id = Some(goal.id.clone());
-            }
+            && state
+                .goal
+                .as_ref()
+                .is_none_or(|old| old.id != goal.id || old.status != "complete")
+        {
+            state.completed_goal_id = Some(goal.id.clone());
+        }
         state.goal = goal;
     }
     pub fn turn_end(&self, input: serde_json::Value) {

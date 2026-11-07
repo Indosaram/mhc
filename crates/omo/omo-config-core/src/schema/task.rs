@@ -200,20 +200,28 @@ pub fn omo_task_isolation_layer_schema() -> Node {
 
 pub fn omo_task_settings_schema() -> Node {
     strict_object(vec![
-        defaulted(
-            "isolation",
-            omo_task_isolation_schema(),
-            default_isolation,
-        ),
+        defaulted("isolation", omo_task_isolation_schema(), default_isolation),
         defaulted(
             "default_execution_mode",
             enumeration(&["auto", "in-process", "process"]),
             default_execution_mode,
         ),
-        defaulted("process_runner", enumeration(&["host", "child-process"]), || json!("host")),
-        defaulted("host_engine_policy", enumeration(&["upgrade", "fallback"]), || json!("upgrade")),
+        defaulted(
+            "process_runner",
+            enumeration(&["host", "child-process"]),
+            || json!("host"),
+        ),
+        defaulted(
+            "host_engine_policy",
+            enumeration(&["upgrade", "fallback"]),
+            || json!("upgrade"),
+        ),
         optional("host_idle_exit_ms", positive_integer()),
-        defaulted("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"]), || json!("first-turn")),
+        defaulted(
+            "host_shard_prewarm",
+            enumeration(&["off", "first-turn", "session-start"]),
+            || json!("first-turn"),
+        ),
         defaulted(
             "default_concurrency",
             nonnegative_integer(),
@@ -229,7 +237,11 @@ pub fn omo_task_settings_schema() -> Node {
             default_residency_max_children,
         ),
         defaulted("ttl_ms", positive_integer(), default_ttl_ms),
-        defaulted("resident_idle_timeout_ms", integer_between(1, 9_007_199_254_740_991), || json!(900000)),
+        defaulted(
+            "resident_idle_timeout_ms",
+            integer_between(1, 9_007_199_254_740_991),
+            || json!(900000),
+        ),
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         defaulted("resume_children", boolean(), default_resume_children),
@@ -293,7 +305,10 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("process_runner", enumeration(&["host", "child-process"])),
         optional("host_engine_policy", enumeration(&["upgrade", "fallback"])),
         optional("host_idle_exit_ms", positive_integer()),
-        optional("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"])),
+        optional(
+            "host_shard_prewarm",
+            enumeration(&["off", "first-turn", "session-start"]),
+        ),
         optional("default_concurrency", nonnegative_integer()),
         optional("global_concurrency", nonnegative_integer()),
         optional("provider_concurrency", record(nonnegative_integer())),
@@ -301,7 +316,10 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("max_depth", nonnegative_integer()),
         optional("residency_max_children", residency_max_children_schema()),
         optional("ttl_ms", positive_integer()),
-        optional("resident_idle_timeout_ms", integer_between(1, 9_007_199_254_740_991)),
+        optional(
+            "resident_idle_timeout_ms",
+            integer_between(1, 9_007_199_254_740_991),
+        ),
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         optional("resume_children", boolean()),
@@ -323,14 +341,23 @@ pub fn resolve_omo_task_settings(
     let Value::Object(mut merged) = record_value else {
         return Err(vec![crate::issue::invalid_type(&[], "object", input)]);
     };
-    if merged.get("residency_max_children").is_none_or(Value::is_null) {
-        merged.insert("residency_max_children".into(), default_residency_max_children());
+    if merged
+        .get("residency_max_children")
+        .is_none_or(Value::is_null)
+    {
+        merged.insert(
+            "residency_max_children".into(),
+            default_residency_max_children(),
+        );
     }
     if merged.get("global_concurrency").is_none_or(Value::is_null) {
         let parallelism = std::cmp::max(8, resolve_parallelism().saturating_mul(2));
         merged.insert("global_concurrency".into(), json!(parallelism));
     }
-    if let Some(val) = merged.get("completion_transport_limit").and_then(Value::as_i64) {
+    if let Some(val) = merged
+        .get("completion_transport_limit")
+        .and_then(Value::as_i64)
+    {
         merged.insert(
             "completion_transport_limit".into(),
             json!(val.clamp(1000, 64000)),

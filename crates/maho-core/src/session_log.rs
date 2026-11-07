@@ -40,13 +40,17 @@ fn sensitive_text() -> &'static Regex {
 fn serialize_value(value: &serde_json::Value) -> Option<serde_json::Value> {
     match value {
         serde_json::Value::String(text) => Some(serde_json::Value::String(safe_text(text))),
-        serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => Some(value.clone()),
+        serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null => {
+            Some(value.clone())
+        }
         _ => None,
     }
 }
 
 fn safe_text(value: &str) -> String {
-    let redacted = sensitive_text().replace_all(value, "$1[redacted]").into_owned();
+    let redacted = sensitive_text()
+        .replace_all(value, "$1[redacted]")
+        .into_owned();
     if redacted.chars().count() <= MAX_STRING_LENGTH {
         redacted
     } else {
@@ -62,14 +66,22 @@ fn valid_max_bytes(value: Option<u64>) -> u64 {
     }
 }
 
-fn format_line(level: &str, event: &str, data: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
+fn format_line(
+    level: &str,
+    event: &str,
+    data: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> String {
     let mut entry = serde_json::Map::new();
-    entry.insert("ts".into(), serde_json::Value::String(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)));
+    entry.insert(
+        "ts".into(),
+        serde_json::Value::String(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+    );
     entry.insert("level".into(), serde_json::Value::String(level.to_owned()));
     entry.insert("event".into(), serde_json::Value::String(safe_text(event)));
     if let Some(data) = data {
         for (key, value) in data {
-            if allowed_data_key().is_match(key) && !blocked_key().is_match(key)
+            if allowed_data_key().is_match(key)
+                && !blocked_key().is_match(key)
                 && let Some(safe) = serialize_value(value)
             {
                 entry.insert(key.clone(), safe);
@@ -107,7 +119,10 @@ fn write_line(file_path: &Path, line: &str, max_bytes: u64) -> std::io::Result<(
         let _ = std::fs::rename(file_path, &rotated);
         set_mode(&rotated, 0o600);
     }
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(file_path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file_path)?;
     file.write_all(text.as_bytes())?;
     drop(file);
     set_mode(file_path, 0o600);
@@ -169,17 +184,27 @@ impl SessionLogger {
         self.log("warn", event, data);
     }
 
-    fn log(&self, level: &str, event: &str, data: Option<&serde_json::Map<String, serde_json::Value>>) {
+    fn log(
+        &self,
+        level: &str,
+        event: &str,
+        data: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) {
         let Some(inner) = &self.inner else { return };
         let line = format_line(level, event, data);
         if let Some(sink) = &inner.options.sink {
             sink(&line);
         }
         if let Err(error) = write_line(&inner.file_path, &line, inner.max_bytes) {
-            let mut reported = inner.reported_write_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut reported = inner
+                .reported_write_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !*reported {
                 *reported = true;
-                crate::output_guard::maho_write_stderr(&format!("Unable to write session log {error}\n"));
+                crate::output_guard::maho_write_stderr(&format!(
+                    "Unable to write session log {error}\n"
+                ));
             }
             return;
         }
@@ -209,7 +234,9 @@ mod tests {
         let line = format_line(
             "info",
             "turn",
-            Some(&data(json!({ "attempt": 2, "password": "hunter2", "unknown": "x", "kind": "tool" }))),
+            Some(&data(
+                json!({ "attempt": 2, "password": "hunter2", "unknown": "x", "kind": "tool" }),
+            )),
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).expect("json");
         assert_eq!(parsed["attempt"], json!(2));
@@ -220,7 +247,10 @@ mod tests {
 
     #[test]
     fn sensitive_text_is_redacted_and_truncated() {
-        assert_eq!(safe_text("Authorization: Bearer abc123"), "Authorization: Bearer [redacted]");
+        assert_eq!(
+            safe_text("Authorization: Bearer abc123"),
+            "Authorization: Bearer [redacted]"
+        );
         let long = "x".repeat(500);
         let redacted = safe_text(&long);
         assert_eq!(redacted.chars().count(), MAX_STRING_LENGTH);
@@ -242,7 +272,10 @@ mod tests {
         let agent = dir.path().to_string_lossy().into_owned();
         let logger = SessionLogger::create(
             Some(&agent),
-            SessionLoggerOptions { max_bytes: Some(80), ..Default::default() },
+            SessionLoggerOptions {
+                max_bytes: Some(80),
+                ..Default::default()
+            },
         );
         for _ in 0..10 {
             logger.info("turn", None);
@@ -259,7 +292,9 @@ mod tests {
         let logger = SessionLogger::create(
             Some(&dir.path().to_string_lossy()),
             SessionLoggerOptions {
-                sink: Some(Arc::new(move |line: &str| sink_seen.lock().expect("lock").push(line.to_owned()))),
+                sink: Some(Arc::new(move |line: &str| {
+                    sink_seen.lock().expect("lock").push(line.to_owned())
+                })),
                 ..Default::default()
             },
         );

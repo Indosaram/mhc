@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use crate::layout_node::{LayoutComponent, LayoutNode, LayoutViewport, ScrollLayoutNode, ScrollLayoutState};
+use crate::layout_node::{
+    LayoutComponent, LayoutNode, LayoutViewport, ScrollLayoutNode, ScrollLayoutState,
+};
 use crate::tui::{Component, Container, TuiMouseEvent, TuiMouseEventResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +99,10 @@ impl ScrollView {
     ///
     /// Returns the shared handle itself (senpi's `ScrollView` is always used through a
     /// reference, and its layout node carries `state: this`).
-    pub fn new(component: Rc<std::cell::RefCell<dyn Component>>, options: ScrollViewOptions) -> Rc<std::cell::RefCell<ScrollView>> {
+    pub fn new(
+        component: Rc<std::cell::RefCell<dyn Component>>,
+        options: ScrollViewOptions,
+    ) -> Rc<std::cell::RefCell<ScrollView>> {
         let follow_end = options.follow == ScrollViewFollow::End;
         Rc::new_cyclic(|self_handle| {
             let mut container = Container::new();
@@ -167,7 +172,8 @@ impl ScrollView {
         match self.current_scrollbar {
             ScrollViewScrollbar::Always => self.current_viewport_height > 0,
             ScrollViewScrollbar::Auto => {
-                self.content_height > self.current_viewport_height && self.transient_scrollbar_visible
+                self.content_height > self.current_viewport_height
+                    && self.transient_scrollbar_visible
             }
             ScrollViewScrollbar::Hidden => false,
         }
@@ -223,7 +229,8 @@ impl ScrollView {
     }
 
     fn mark_scrollbar_activity(&mut self, now_ms: u64) {
-        if self.current_scrollbar != ScrollViewScrollbar::Auto || self.content_height <= self.current_viewport_height
+        if self.current_scrollbar != ScrollViewScrollbar::Auto
+            || self.content_height <= self.current_viewport_height
         {
             return;
         }
@@ -251,10 +258,13 @@ impl ScrollView {
 
     pub fn scroll_to(&mut self, scroll_top: i64, options: ScrollToOptions, now_ms: u64) {
         let requested = scroll_top.max(0) as usize;
-        let max_scroll_top = self.content_height.saturating_sub(self.current_viewport_height);
+        let max_scroll_top = self
+            .content_height
+            .saturating_sub(self.current_viewport_height);
         let next = requested.min(max_scroll_top);
         let next_follow_suppressed_at_end = options.disable_follow && next == max_scroll_top;
-        let next_following_end = !next_follow_suppressed_at_end && self.follow_end && next == max_scroll_top;
+        let next_following_end =
+            !next_follow_suppressed_at_end && self.follow_end && next == max_scroll_top;
         if next == self.current_scroll_top
             && next_following_end == self.following_end
             && next_follow_suppressed_at_end == self.follow_suppressed_at_end
@@ -276,7 +286,9 @@ impl ScrollView {
         if lines == 0 {
             return 0;
         }
-        let max_scroll_top = self.content_height.saturating_sub(self.current_viewport_height) as i64;
+        let max_scroll_top = self
+            .content_height
+            .saturating_sub(self.current_viewport_height) as i64;
         let start = if self.following_end {
             max_scroll_top
         } else {
@@ -298,7 +310,8 @@ impl ScrollView {
     }
 
     pub fn scroll_to_start(&mut self, now_ms: u64) {
-        let next_following_end = self.follow_end && self.content_height <= self.current_viewport_height;
+        let next_following_end =
+            self.follow_end && self.content_height <= self.current_viewport_height;
         let changed = self.current_scroll_top != 0 || self.following_end != next_following_end;
         self.current_scroll_top = 0;
         self.following_end = next_following_end;
@@ -310,7 +323,9 @@ impl ScrollView {
     }
 
     pub fn scroll_to_end(&mut self, now_ms: u64) {
-        let next = self.content_height.saturating_sub(self.current_viewport_height);
+        let next = self
+            .content_height
+            .saturating_sub(self.current_viewport_height);
         let changed = self.current_scroll_top != next || self.following_end != self.follow_end;
         self.current_scroll_top = next;
         self.following_end = self.follow_end;
@@ -324,7 +339,9 @@ impl ScrollView {
     pub fn update_layout(&mut self, content_height: usize, viewport_height: usize) {
         self.content_height = content_height;
         self.current_viewport_height = viewport_height;
-        let max_scroll_top = self.content_height.saturating_sub(self.current_viewport_height);
+        let max_scroll_top = self
+            .content_height
+            .saturating_sub(self.current_viewport_height);
         if self.following_end {
             self.current_scroll_top = max_scroll_top;
         } else {
@@ -333,7 +350,10 @@ impl ScrollView {
         if self.current_scroll_top < max_scroll_top {
             self.follow_suppressed_at_end = false;
         }
-        if self.follow_end && self.current_scroll_top == max_scroll_top && !self.follow_suppressed_at_end {
+        if self.follow_end
+            && self.current_scroll_top == max_scroll_top
+            && !self.follow_suppressed_at_end
+        {
             self.following_end = true;
         }
         if self.content_height <= self.current_viewport_height {

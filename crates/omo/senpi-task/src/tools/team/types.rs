@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use team_core::types::{MemberStatus, RuntimeBounds, RuntimeState, ShutdownRequest, Task, TaskStatus};
+use team_core::types::{
+    MemberStatus, RuntimeBounds, RuntimeState, ShutdownRequest, Task, TaskStatus,
+};
 
 use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
 use crate::team::runtime_types::{CreateTeamResult, DeleteTeamResult};
@@ -123,7 +125,11 @@ impl TeamToolServiceError {
         }
     }
 
-    pub fn with_code(name: impl Into<String>, message: impl Into<String>, code: impl Into<String>) -> Self {
+    pub fn with_code(
+        name: impl Into<String>,
+        message: impl Into<String>,
+        code: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             message: message.into(),
@@ -145,19 +151,39 @@ pub trait TeamToolsService: Send + Sync {
     ) -> TeamServiceResult<SendTeamMessageResult>;
     fn status(&self, team_run_id: &str) -> TeamServiceResult<RuntimeState>;
     fn list_teams(&self) -> TeamServiceResult<Vec<ActiveTeamSummary>>;
-    fn create_task(&self, team_run_id: &str, input: &CreateTeamTaskServiceInput) -> TeamServiceResult<Task>;
-    fn list_tasks(&self, team_run_id: &str, filter: Option<&TeamTaskListFilter>) -> TeamServiceResult<Vec<Task>>;
+    fn create_task(
+        &self,
+        team_run_id: &str,
+        input: &CreateTeamTaskServiceInput,
+    ) -> TeamServiceResult<Task>;
+    fn list_tasks(
+        &self,
+        team_run_id: &str,
+        filter: Option<&TeamTaskListFilter>,
+    ) -> TeamServiceResult<Vec<Task>>;
     fn update_task(&self, input: &UpdateTeamTaskServiceInput) -> TeamServiceResult<Task>;
     fn get_task(&self, team_run_id: &str, task_id: &str) -> TeamServiceResult<Task>;
     fn request_shutdown(&self, team_run_id: &str, member: &str) -> TeamServiceResult<RuntimeState>;
     fn approve_shutdown(&self, team_run_id: &str, member: &str) -> TeamServiceResult<RuntimeState>;
-    fn reject_shutdown(&self, team_run_id: &str, member: &str, reason: &str) -> TeamServiceResult<RuntimeState>;
+    fn reject_shutdown(
+        &self,
+        team_run_id: &str,
+        member: &str,
+        reason: &str,
+    ) -> TeamServiceResult<RuntimeState>;
     /// `aggregateStatus`: the full status projection of one team run (`team_status`).
     fn aggregate_status(&self, team_run_id: &str) -> TeamServiceResult<TeamStatus>;
     /// `discoverTeamSpecs`: every declared spec under `project_root/.omo/teams` and the user dir.
-    fn discover_team_specs(&self, project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>>;
+    fn discover_team_specs(
+        &self,
+        project_root: &Path,
+    ) -> TeamServiceResult<Vec<DiscoveredTeamSpec>>;
     /// `loadTeamSpec(...).members.length`: the declared member count of one named spec.
-    fn load_team_spec_member_count(&self, name: &str, project_root: &Path) -> TeamServiceResult<usize>;
+    fn load_team_spec_member_count(
+        &self,
+        name: &str,
+        project_root: &Path,
+    ) -> TeamServiceResult<usize>;
     fn project_root(&self) -> std::path::PathBuf {
         std::env::current_dir().unwrap_or_default()
     }

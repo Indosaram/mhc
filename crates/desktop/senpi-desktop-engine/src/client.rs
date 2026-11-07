@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const START_GUARD: Duration = Duration::from_secs(10);
 const BUSY_GUARD: Duration = Duration::from_secs(5);

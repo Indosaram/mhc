@@ -7,7 +7,8 @@ use crate::auth::oauth::devin_token::exchange_devin_authorization_code;
 use crate::auth::oauth::pkce::generate_pkce;
 use crate::auth::oauth::transport::{OAuthTransport, default_transport};
 use crate::auth::types::{
-    AuthEvent, AuthPrompt, AuthPromptKind, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction,
+    AuthEvent, AuthPrompt, AuthPromptKind, ModelAuth, OAuthAuth, OAuthCredential,
+    ProviderAuthInteraction,
 };
 use crate::utils::abort::{AbortController, AbortSignal};
 use async_trait::async_trait;
@@ -23,7 +24,10 @@ fn parse_authorization_input(input: &str) -> Option<String> {
         return None;
     }
     if let Ok(url) = Url::parse(value) {
-        return url.query_pairs().find(|(key, _)| key == "code").map(|(_, value)| value.into_owned());
+        return url
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .map(|(_, value)| value.into_owned());
     }
     if value.contains("code=") {
         return url::form_urlencoded::parse(value.as_bytes())
@@ -58,18 +62,27 @@ pub struct DevinOAuth {
 
 impl DevinOAuth {
     pub fn new(transport: Arc<dyn OAuthTransport>) -> Self {
-        Self { transport, callback_port: DEVIN_CALLBACK_PORT }
+        Self {
+            transport,
+            callback_port: DEVIN_CALLBACK_PORT,
+        }
     }
 
     pub fn with_callback_port(transport: Arc<dyn OAuthTransport>, callback_port: u16) -> Self {
-        Self { transport, callback_port }
+        Self {
+            transport,
+            callback_port,
+        }
     }
 
     pub fn transport(&self) -> &Arc<dyn OAuthTransport> {
         &self.transport
     }
 
-    async fn login_devin(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login_devin(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         let pkce = generate_pkce();
         let state = uuid::Uuid::new_v4().to_string();
         let callback = Arc::new(
@@ -194,16 +207,26 @@ impl OAuthAuth for DevinOAuth {
         Some("Sign in with Devin")
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         self.login_devin(interaction).await
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        _signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
         Ok(credential.clone())
     }
 
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        Ok(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            ..Default::default()
+        })
     }
 }
 
@@ -270,15 +293,26 @@ mod tests {
             let state = self.state_override.clone().unwrap_or(issued);
             let drive = self.drive.clone();
             let callback_url = format!("{redirect_uri}?code=authorization-code&state={state}");
-            self.drive.authorize_url.lock().unwrap_or_else(|p| p.into_inner()).replace(authorize_url);
+            self.drive
+                .authorize_url
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .replace(authorize_url);
             tokio::spawn(async move {
                 let response = reqwest::get(&callback_url).await.expect("callback request");
-                drive.callback_status.lock().unwrap_or_else(|p| p.into_inner()).replace(response.status().as_u16());
+                drive
+                    .callback_status
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .replace(response.status().as_u16());
             });
         }
     }
 
-    fn drive(transport: Arc<ScriptedTransport>, state_override: Option<&str>) -> (Arc<Drive>, ProviderAuthInteraction) {
+    fn drive(
+        transport: Arc<ScriptedTransport>,
+        state_override: Option<&str>,
+    ) -> (Arc<Drive>, ProviderAuthInteraction) {
         let drive = Arc::new(Drive {
             authorize_url: Mutex::new(None),
             callback_status: Mutex::new(None),
@@ -286,7 +320,11 @@ mod tests {
         let signal = AbortController::new().signal();
         let interaction = ProviderAuthInteraction::new(
             signal.clone(),
-            Arc::new(DriveInteraction { signal, drive: drive.clone(), state_override: state_override.map(str::to_string) }),
+            Arc::new(DriveInteraction {
+                signal,
+                drive: drive.clone(),
+                state_override: state_override.map(str::to_string),
+            }),
         );
         let _ = transport;
         (drive, interaction)
@@ -322,7 +360,10 @@ mod tests {
         let token = jwt(serde_json::json!({ "exp": exp }));
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": token }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": token }),
+            },
         )]));
         let (drive, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport.clone());
@@ -336,11 +377,20 @@ mod tests {
         let request = &transport.requests()[0];
         assert_eq!(request.method, "POST");
         assert_eq!(
-            request.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case("accept")).map(|(_, value)| value.as_str()),
+            request
+                .headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("accept"))
+                .map(|(_, value)| value.as_str()),
             Some("application/json")
         );
         let body: Value = serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
-        let mut keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(keys, vec!["code", "code_verifier"]);
         assert_eq!(body["code"], "authorization-code");
@@ -351,7 +401,10 @@ mod tests {
         let token = jwt(serde_json::json!({ "exp": 1_700_000_000 }));
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": token }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": token }),
+            },
         )]));
         let (drive, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport.clone());
@@ -361,20 +414,38 @@ mod tests {
         let url = wait_for(&drive.authorize_url).await;
         assert_eq!(url.origin().ascii_serialization(), "https://app.devin.ai");
         assert_eq!(url.path(), "/auth/cli/continue");
-        let params: std::collections::HashMap<_, _> =
-            url.query_pairs().map(|(key, value)| (key.into_owned(), value.into_owned())).collect();
-        assert_eq!(params.get("response_type").map(String::as_str), Some("code"));
-        assert_eq!(params.get("prompt").map(String::as_str), Some("select_account"));
-        assert_eq!(params.get("code_challenge_method").map(String::as_str), Some("S256"));
+        let params: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(
+            params.get("prompt").map(String::as_str),
+            Some("select_account")
+        );
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
         assert!(!params.contains_key("client_id"));
         let redirect_uri = params.get("redirect_uri").expect("redirect_uri");
-        assert!(redirect_uri.starts_with("http://127.0.0.1:"), "{redirect_uri}");
+        assert!(
+            redirect_uri.starts_with("http://127.0.0.1:"),
+            "{redirect_uri}"
+        );
         assert!(redirect_uri.ends_with("/callback"), "{redirect_uri}");
         let state = params.get("state").expect("state");
         assert_eq!(state.len(), 36);
-        assert_eq!(state.split('-').map(str::len).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert_eq!(
+            state.split('-').map(str::len).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
 
-        let body: Value = serde_json::from_str(transport.requests()[0].body.as_deref().unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_str(transport.requests()[0].body.as_deref().unwrap()).unwrap();
         let verifier = body["code_verifier"].as_str().unwrap();
         let challenge = params.get("code_challenge").expect("code_challenge");
         let digest = sha2::Sha256::digest(verifier.as_bytes());
@@ -386,7 +457,10 @@ mod tests {
         let token = jwt(serde_json::json!({ "sub": "user" }));
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": token }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": token }),
+            },
         )]));
         let (_, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport);
@@ -395,20 +469,28 @@ mod tests {
         let credential = oauth.login(&interaction).await.unwrap();
 
         assert!(credential.expires >= before + 31_536_000_000.0);
-        assert!(credential.expires <= crate::auth::oauth::transport::system_now_ms() + 31_536_000_000.0);
+        assert!(
+            credential.expires <= crate::auth::oauth::transport::system_now_ms() + 31_536_000_000.0
+        );
     }
 
     #[tokio::test]
     async fn rejects_a_callback_whose_state_does_not_match_the_issued_state() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": jwt(serde_json::json!({"exp": 1})) }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": jwt(serde_json::json!({"exp": 1})) }),
+            },
         )]));
         let (drive, interaction) = drive(transport.clone(), Some("forged-state"));
         let oauth = oauth(transport);
 
         let error = oauth.login(&interaction).await.unwrap_err();
-        assert!(error.to_string().to_lowercase().contains("state"), "{error}");
+        assert!(
+            error.to_string().to_lowercase().contains("state"),
+            "{error}"
+        );
         assert_eq!(wait_for(&drive.callback_status).await, 400);
     }
 
@@ -416,7 +498,10 @@ mod tests {
     async fn surfaces_a_failed_token_exchange_instead_of_storing_a_broken_credential() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 403, body: serde_json::json!({ "error": "invalid_grant" }) },
+            ScriptedResponse::Json {
+                status: 403,
+                body: serde_json::json!({ "error": "invalid_grant" }),
+            },
         )]));
         let (drive, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport);
@@ -430,21 +515,30 @@ mod tests {
     async fn rejects_a_token_response_that_is_not_usable_json() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Text { status: 200, body: "<html>gateway</html>".into() },
+            ScriptedResponse::Text {
+                status: 200,
+                body: "<html>gateway</html>".into(),
+            },
         )]));
         let (_, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport);
 
         let error = oauth.login(&interaction).await.unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("JSON") || message.contains("token"), "{message}");
+        assert!(
+            message.contains("JSON") || message.contains("token"),
+            "{message}"
+        );
     }
 
     #[tokio::test]
     async fn rejects_a_200_response_that_carries_no_token() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "ok": true }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "ok": true }),
+            },
         )]));
         let (_, interaction) = drive(transport.clone(), None);
         let oauth = oauth(transport);
@@ -459,7 +553,10 @@ mod tests {
         let oauth = oauth(Arc::new(ScriptedTransport::default()));
         let signal = AbortController::new().signal();
 
-        assert_eq!(oauth.refresh(&credential, &signal).await.unwrap(), credential);
+        assert_eq!(
+            oauth.refresh(&credential, &signal).await.unwrap(),
+            credential
+        );
         let auth = oauth.to_auth(&credential).await.unwrap();
         assert_eq!(auth.api_key.as_deref(), Some("devin-token"));
         assert!(auth.base_url.is_none());

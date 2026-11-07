@@ -54,11 +54,14 @@ fn candidate_scales(regions: &[EisRegion]) -> Option<Vec<f64>> {
 
 fn usable(regions: &[EisRegion]) -> bool {
     !regions.is_empty()
-        && regions.iter().all(|r| r.width > 0 && r.height > 0 && !r.scale.is_nan())
         && regions
             .iter()
-            .enumerate()
-            .all(|(index, region)| regions[index + 1..].iter().all(|other| !region.overlaps(other)))
+            .all(|r| r.width > 0 && r.height > 0 && !r.scale.is_nan())
+        && regions.iter().enumerate().all(|(index, region)| {
+            regions[index + 1..]
+                .iter()
+                .all(|other| !region.overlaps(other))
+        })
 }
 
 fn close(pixels: u32, logical: u64, scale: f64) -> bool {
@@ -141,9 +144,19 @@ pub fn derive_displays(
 /// Logical size of one ScreenCast monitor stream that reported none: the
 /// single region at the monitor's logical `position`, accepted only when
 /// the `width` x `height` frame is that region at one scale.
-pub fn monitor_size(position: (i32, i32), width: u32, height: u32, regions: &[EisRegion]) -> Option<(u32, u32)> {
-    let (x, y) = (u32::try_from(position.0).ok()?, u32::try_from(position.1).ok()?);
-    let mut at_position = regions.iter().filter(|region| region.x == x && region.y == y);
+pub fn monitor_size(
+    position: (i32, i32),
+    width: u32,
+    height: u32,
+    regions: &[EisRegion],
+) -> Option<(u32, u32)> {
+    let (x, y) = (
+        u32::try_from(position.0).ok()?,
+        u32::try_from(position.1).ok()?,
+    );
+    let mut at_position = regions
+        .iter()
+        .filter(|region| region.x == x && region.y == y);
     let region = *at_position.next()?;
     if at_position.next().is_some() {
         return None;

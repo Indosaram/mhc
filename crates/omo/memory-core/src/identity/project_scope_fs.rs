@@ -118,34 +118,31 @@ impl ProjectScopeProbe {
                             .next()
                             .and_then(|s| s.trim().strip_prefix("gitdir:"))
                             .map(str::trim)
+                    {
+                        let admin = crate::support::paths::resolve_from(dir, Path::new(target));
+                        let back = self.read_text(&admin.join("gitdir")).await;
+                        self.real_path(&marker).await;
+                        if let Some(back) =
+                            back.and_then(|s| s.lines().next().map(|s| s.trim().to_owned()))
                         {
-                            let admin = crate::support::paths::resolve_from(dir, Path::new(target));
-                            let back = self.read_text(&admin.join("gitdir")).await;
-                            self.real_path(&marker).await;
-                            if let Some(back) =
-                                back.and_then(|s| s.lines().next().map(|s| s.trim().to_owned()))
-                            {
-                                self.real_path(&crate::support::paths::resolve_from(
-                                    &admin,
-                                    Path::new(&back),
-                                ))
-                                .await;
-                            }
-                            if let Some(common) = self
-                                .read_text(&admin.join("commondir"))
-                                .await
-                                .and_then(|s| s.lines().next().map(|s| s.trim().to_owned()))
-                            {
-                                self.read_text(
-                                    &crate::support::paths::resolve_from(
-                                        &admin,
-                                        Path::new(&common),
-                                    )
-                                    .join("config"),
-                                )
-                                .await;
-                            }
+                            self.real_path(&crate::support::paths::resolve_from(
+                                &admin,
+                                Path::new(&back),
+                            ))
+                            .await;
                         }
+                        if let Some(common) = self
+                            .read_text(&admin.join("commondir"))
+                            .await
+                            .and_then(|s| s.lines().next().map(|s| s.trim().to_owned()))
+                        {
+                            self.read_text(
+                                &crate::support::paths::resolve_from(&admin, Path::new(&common))
+                                    .join("config"),
+                            )
+                            .await;
+                        }
+                    }
                     break;
                 }
                 _ => {}

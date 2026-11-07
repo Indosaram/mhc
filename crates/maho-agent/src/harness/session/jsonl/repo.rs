@@ -6,21 +6,26 @@ use std::sync::{Arc, Mutex};
 
 use crate::harness::context::{BACKGROUND_CONTEXT, Context};
 use crate::harness::session::session::{
-    SessionError, SessionErrorKind, StorageBackedSession, StorageBackedSessionOptions, session_invariant_error,
+    SessionError, SessionErrorKind, StorageBackedSession, StorageBackedSessionOptions,
+    session_invariant_error,
 };
 use crate::harness::session::types::{ForkOptions, Session};
 use crate::harness::types::{FileInfo, FileSystem};
 
-use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader};
+use super::codec::{JsonlParsedSessionHeader, parse_jsonl_session_header};
 use super::fork::{JsonlForkInput, JsonlForkSourceMetadata, run_jsonl_fork};
 use super::io::file_value;
 use super::storage::JsonlStorage;
 use super::types::{
-    JSONL_STORAGE_VERSION, JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
-    JsonlSessionRepoOptions, JsonlStorageHeader, JsonlStorageOptions,
+    JSONL_STORAGE_VERSION, JsonlSessionCreateOptions, JsonlSessionListOptions,
+    JsonlSessionMetadata, JsonlSessionRepoOptions, JsonlStorageHeader, JsonlStorageOptions,
 };
 
-fn metadata_from_header(header: &JsonlStorageHeader, path: &str, modified_at: i64) -> JsonlSessionMetadata {
+fn metadata_from_header(
+    header: &JsonlStorageHeader,
+    path: &str,
+    modified_at: i64,
+) -> JsonlSessionMetadata {
     JsonlSessionMetadata {
         id: header.id.clone(),
         created_at: header.created_at,
@@ -66,7 +71,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let mp = (5 * day_of_year + 2) / 153;
@@ -80,7 +86,10 @@ fn percent_encode(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         let unreserved = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')');
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            );
         if unreserved {
             encoded.push(byte as char);
         } else {
@@ -138,12 +147,21 @@ impl JsonlSessionRepo {
 
     async fn root(&self, context: &Context) -> Result<String, SessionError> {
         file_value(
-            self.file_system.absolute_path(&self.sessions_root_input, context).await,
-            &format!("Failed to resolve sessions root {}", self.sessions_root_input),
+            self.file_system
+                .absolute_path(&self.sessions_root_input, context)
+                .await,
+            &format!(
+                "Failed to resolve sessions root {}",
+                self.sessions_root_input
+            ),
         )
     }
 
-    async fn session_directory(&self, cwd: &str, context: &Context) -> Result<String, SessionError> {
+    async fn session_directory(
+        &self,
+        cwd: &str,
+        context: &Context,
+    ) -> Result<String, SessionError> {
         let root = self.root(context).await?;
         file_value(
             self.file_system
@@ -161,7 +179,8 @@ impl JsonlSessionRepo {
         context: &Context,
     ) -> Result<String, SessionError> {
         let directory = self.session_directory(cwd, context).await?;
-        self.assert_session_id_available(&directory, id, context).await?;
+        self.assert_session_id_available(&directory, id, context)
+            .await?;
         file_value(
             self.file_system.create_dir(&directory, None, context).await,
             &format!("Failed to create sessions directory {directory}"),
@@ -192,24 +211,40 @@ impl JsonlSessionRepo {
             &format!("Failed to list sessions directory {directory}"),
         )?
         .iter()
-        .any(|entry| entry.kind != crate::harness::types::FileKind::Directory && entry.name.ends_with(&suffix));
+        .any(|entry| {
+            entry.kind != crate::harness::types::FileKind::Directory
+                && entry.name.ends_with(&suffix)
+        });
         if id_exists {
-            return Err(session_invariant_error(format!("Session already exists: {id}")));
+            return Err(session_invariant_error(format!(
+                "Session already exists: {id}"
+            )));
         }
         Ok(())
     }
 
     fn reserve(&self, key: &str, id: &str) -> Result<(), SessionError> {
         let mut pending = self.pending_creates.lock().expect("pending creates");
-        if self.open_sessions.lock().expect("open sessions").contains_key(key) || pending.contains(key) {
-            return Err(session_invariant_error(format!("Session already exists: {id}")));
+        if self
+            .open_sessions
+            .lock()
+            .expect("open sessions")
+            .contains_key(key)
+            || pending.contains(key)
+        {
+            return Err(session_invariant_error(format!(
+                "Session already exists: {id}"
+            )));
         }
         pending.insert(key.to_owned());
         Ok(())
     }
 
     fn release(&self, key: &str) {
-        self.pending_creates.lock().expect("pending creates").remove(key);
+        self.pending_creates
+            .lock()
+            .expect("pending creates")
+            .remove(key);
     }
 
     fn publish_open_session(
@@ -218,7 +253,12 @@ impl JsonlSessionRepo {
         storage: Arc<JsonlStorage>,
     ) -> Result<Box<dyn Session>, SessionError> {
         let key = Self::session_key(&metadata.cwd, &metadata.id);
-        if self.open_sessions.lock().expect("open sessions").contains_key(&key) {
+        if self
+            .open_sessions
+            .lock()
+            .expect("open sessions")
+            .contains_key(&key)
+        {
             return Err(session_invariant_error(format!(
                 "Session is already open: {}",
                 metadata.id
@@ -308,7 +348,9 @@ impl JsonlSessionRepo {
         )?;
         let mut metadata: Vec<JsonlSessionMetadata> = Vec::new();
         for file in files {
-            if file.kind == crate::harness::types::FileKind::Directory || !file.name.ends_with(".jsonl") {
+            if file.kind == crate::harness::types::FileKind::Directory
+                || !file.name.ends_with(".jsonl")
+            {
                 continue;
             }
             let Some(discovered) = self.read_session_metadata(&file, context).await? else {
@@ -339,9 +381,11 @@ impl JsonlSessionRepo {
             return Ok(None);
         };
         match parsed {
-            JsonlParsedSessionHeader::V4(header) => {
-                Ok(Some(metadata_from_header(&header, &file.path, file.mtime_ms as i64)))
-            }
+            JsonlParsedSessionHeader::V4(header) => Ok(Some(metadata_from_header(
+                &header,
+                &file.path,
+                file.mtime_ms as i64,
+            ))),
             JsonlParsedSessionHeader::V3Legacy(header) => {
                 let mut metadata = super::legacy_v3::metadata_from_legacy_v3_header(
                     &self.file_system,
@@ -366,10 +410,9 @@ impl JsonlSessionRepo {
     ) -> Result<Box<dyn Session>, SessionError> {
         self.assert_open()?;
         let created_at = (self.now)();
-        let id = options
-            .id
-            .clone()
-            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
+        let id = options.id.clone().unwrap_or_else(|| {
+            maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default()
+        });
         let cwd = file_value(
             self.file_system.absolute_path(&options.cwd, context).await,
             &format!("Failed to resolve session cwd {}", options.cwd),
@@ -377,8 +420,11 @@ impl JsonlSessionRepo {
         let key = Self::session_key(&cwd, &id);
         self.reserve(&key, &id)?;
         let result = async {
-            let path = self.resolve_new_session_path(&cwd, created_at, &id, context).await?;
-            let mut header = JsonlStorageHeader::new(id.clone(), JSONL_STORAGE_VERSION, created_at, cwd.clone());
+            let path = self
+                .resolve_new_session_path(&cwd, created_at, &id, context)
+                .await?;
+            let mut header =
+                JsonlStorageHeader::new(id.clone(), JSONL_STORAGE_VERSION, created_at, cwd.clone());
             header.parent_session_id = options.parent_session_id.clone();
             let storage = JsonlStorage::create(
                 JsonlStorageOptions {
@@ -395,7 +441,10 @@ impl JsonlSessionRepo {
                 self.file_system.file_info(&path, context).await,
                 &format!("Failed to read session {path}"),
             )?;
-            Ok::<_, SessionError>((metadata_from_header(&header, &path, info.mtime_ms as i64), Arc::new(storage)))
+            Ok::<_, SessionError>((
+                metadata_from_header(&header, &path, info.mtime_ms as i64),
+                Arc::new(storage),
+            ))
         }
         .await;
         self.release(&key);
@@ -411,7 +460,12 @@ impl JsonlSessionRepo {
     ) -> Result<Box<dyn Session>, SessionError> {
         self.assert_open()?;
         let key = Self::session_key(&metadata.cwd, &metadata.id);
-        if self.open_sessions.lock().expect("open sessions").contains_key(&key) {
+        if self
+            .open_sessions
+            .lock()
+            .expect("open sessions")
+            .contains_key(&key)
+        {
             return Err(session_invariant_error(format!(
                 "Session is already open: {}",
                 metadata.id
@@ -456,7 +510,10 @@ impl JsonlSessionRepo {
         };
         let mut metadata: Vec<JsonlSessionMetadata> = Vec::new();
         for directory in directories {
-            metadata.extend(self.list_directory(&directory, cwd.as_deref(), context).await?);
+            metadata.extend(
+                self.list_directory(&directory, cwd.as_deref(), context)
+                    .await?,
+            );
         }
         metadata.sort_by(|left, right| {
             right
@@ -469,11 +526,23 @@ impl JsonlSessionRepo {
     }
 
     /// `delete(metadata: JsonlSessionMetadata)`.
-    pub async fn delete(&self, metadata: JsonlSessionMetadata, context: &Context) -> Result<(), SessionError> {
+    pub async fn delete(
+        &self,
+        metadata: JsonlSessionMetadata,
+        context: &Context,
+    ) -> Result<(), SessionError> {
         self.assert_open()?;
         let key = Self::session_key(&metadata.cwd, &metadata.id);
-        if self.open_sessions.lock().expect("open sessions").contains_key(&key) {
-            return Err(session_invariant_error(format!("Session is open: {}", metadata.id)));
+        if self
+            .open_sessions
+            .lock()
+            .expect("open sessions")
+            .contains_key(&key)
+        {
+            return Err(session_invariant_error(format!(
+                "Session is open: {}",
+                metadata.id
+            )));
         }
         if !file_value(
             self.file_system.exists(&metadata.path, context).await,
@@ -485,7 +554,9 @@ impl JsonlSessionRepo {
             )));
         }
         file_value(
-            self.file_system.remove(&metadata.path, None, None, context).await,
+            self.file_system
+                .remove(&metadata.path, None, None, context)
+                .await,
             &format!("Failed to delete session {}", metadata.path),
         )?;
         Ok(())
@@ -501,16 +572,18 @@ impl JsonlSessionRepo {
         self.assert_open()?;
         let created_at = (self.now)();
         let cwd = source.cwd.clone();
-        let id = options
-            .id()
-            .map(str::to_owned)
-            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
+        let id = options.id().map(str::to_owned).unwrap_or_else(|| {
+            maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default()
+        });
         let key = Self::session_key(&cwd, &id);
         self.reserve(&key, &id)?;
         let result = async {
             let input = self.resolve_fork_input(&source).await?;
-            let path = self.resolve_new_session_path(&cwd, created_at, &id, context).await?;
-            let mut header = JsonlStorageHeader::new(id.clone(), JSONL_STORAGE_VERSION, created_at, cwd.clone());
+            let path = self
+                .resolve_new_session_path(&cwd, created_at, &id, context)
+                .await?;
+            let mut header =
+                JsonlStorageHeader::new(id.clone(), JSONL_STORAGE_VERSION, created_at, cwd.clone());
             header.parent_session_id = Some(source.id.clone());
             run_jsonl_fork(&input, &self.file_system, &path, &header, &options, context).await?;
             let storage = JsonlStorage::open(
@@ -526,7 +599,10 @@ impl JsonlSessionRepo {
                 self.file_system.file_info(&path, context).await,
                 &format!("Failed to read session {path}"),
             )?;
-            Ok::<_, SessionError>((metadata_from_header(&header, &path, info.mtime_ms as i64), Arc::new(storage)))
+            Ok::<_, SessionError>((
+                metadata_from_header(&header, &path, info.mtime_ms as i64),
+                Arc::new(storage),
+            ))
         }
         .await;
         self.release(&key);
@@ -537,7 +613,6 @@ impl JsonlSessionRepo {
     pub async fn close(&self, _context: &Context) {
         self.closed.store(true, Ordering::SeqCst);
     }
-
 }
 
 impl JsonlSessionRepo {
@@ -568,14 +643,18 @@ impl JsonlSessionRepo {
             }
             None => {
                 let content = file_value(
-                    self.file_system.read_text_file(&source.path, &BACKGROUND_CONTEXT).await,
+                    self.file_system
+                        .read_text_file(&source.path, &BACKGROUND_CONTEXT)
+                        .await,
                     &format!("Failed to read session {}", source.path),
                 )?;
                 let is_legacy = content
                     .lines()
                     .next()
                     .and_then(|line| parse_jsonl_session_header(line).ok())
-                    .is_some_and(|parsed| matches!(parsed, super::codec::JsonlParsedSessionHeader::V3Legacy(_)));
+                    .is_some_and(|parsed| {
+                        matches!(parsed, super::codec::JsonlParsedSessionHeader::V3Legacy(_))
+                    });
                 if is_legacy {
                     let normalized = super::legacy_v3::LegacyV3Source::read(
                         self.file_system.clone(),
@@ -584,7 +663,10 @@ impl JsonlSessionRepo {
                     )
                     .await?;
                     if normalized.header.id != source.id || normalized.header.cwd != source.cwd {
-                        return Err(session_invariant_error(format!("Session identity does not match header: {}", source.id)));
+                        return Err(session_invariant_error(format!(
+                            "Session identity does not match header: {}",
+                            source.id
+                        )));
                     }
                     Ok(JsonlForkInput::LegacyV3 {
                         metadata,

@@ -17,12 +17,17 @@ use super::host_runtime::CliRuntimeConfiguration;
 pub const HOOKS_SETTING_KEY: &str = "hooks";
 
 pub fn hooks_value(settings: &Settings) -> Option<serde_json::Value> {
-    settings.get(HOOKS_SETTING_KEY).filter(|value| !value.is_null()).cloned()
+    settings
+        .get(HOOKS_SETTING_KEY)
+        .filter(|value| !value.is_null())
+        .cloned()
 }
 
 /// Path entries declared by a settings `hooks` value: a string, or objects with a `path`.
 pub fn settings_hook_paths(settings: &Settings) -> Vec<PathBuf> {
-    let Some(value) = settings.get(HOOKS_SETTING_KEY) else { return Vec::new() };
+    let Some(value) = settings.get(HOOKS_SETTING_KEY) else {
+        return Vec::new();
+    };
     let mut paths = Vec::new();
     match value {
         serde_json::Value::Array(entries) => {
@@ -57,15 +62,23 @@ pub fn merge_paths(first: Vec<PathBuf>, second: Vec<PathBuf>) -> Vec<PathBuf> {
 
 /// senpi `buildLoadedHookSources`: the real record for this launch, from the CLI configuration and
 /// the loaded settings.
-pub fn build_loaded_hook_sources(config: &CliRuntimeConfiguration, settings: &SettingsManager) -> LoadedHookSources {
+pub fn build_loaded_hook_sources(
+    config: &CliRuntimeConfiguration,
+    settings: &SettingsManager,
+) -> LoadedHookSources {
     let cwd = PathBuf::from(&config.cwd);
     let agent_dir = PathBuf::from(&config.agent_dir);
     let global_settings = settings.get_global();
     let project_settings = settings.get_project();
-    let pre_session = merge_paths(config.resolved_hook_paths(), config.additional_hook_paths.clone());
+    let pre_session = merge_paths(
+        config.resolved_hook_paths(),
+        config.additional_hook_paths.clone(),
+    );
     LoadedHookSources {
         global_hooks_path: agent_dir.join("hooks.json"),
-        project_hooks_path: cwd.join(maho_core::config::config_dir_name()).join("hooks.json"),
+        project_hooks_path: cwd
+            .join(maho_core::config::config_dir_name())
+            .join("hooks.json"),
         agent_dir,
         cwd,
         global_settings_hooks: hooks_value(global_settings),
@@ -78,7 +91,10 @@ pub fn build_loaded_hook_sources(config: &CliRuntimeConfiguration, settings: &Se
 }
 
 /// senpi `extendResources` for hooks: merge runtime-added hook paths into the record.
-pub fn with_runtime_hook_paths(mut sources: LoadedHookSources, added: Vec<PathBuf>) -> LoadedHookSources {
+pub fn with_runtime_hook_paths(
+    mut sources: LoadedHookSources,
+    added: Vec<PathBuf>,
+) -> LoadedHookSources {
     sources.runtime_hook_source_paths = merge_paths(sources.runtime_hook_source_paths, added);
     sources
 }

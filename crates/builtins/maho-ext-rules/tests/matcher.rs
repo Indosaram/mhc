@@ -1,8 +1,27 @@
-use maho_ext_rules::rules::{matcher::{MatcherCache, MatcherInput, normalize_globs, hash_content}, picomatch::{self, Options}, types::{RuleFrontmatter, MatchReason}};
+use maho_ext_rules::rules::{
+    matcher::{MatcherCache, MatcherInput, hash_content, normalize_globs},
+    picomatch::{self, Options},
+    types::{MatchReason, RuleFrontmatter},
+};
 
 fn match_patterns(patterns: &[&str], path: &str) -> bool {
-    let frontmatter = RuleFrontmatter { globs: patterns.iter().map(|pattern| (*pattern).to_string()).collect(), ..Default::default() };
-    MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).expect("compile fixture patterns").matched
+    let frontmatter = RuleFrontmatter {
+        globs: patterns
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect(),
+        ..Default::default()
+    };
+    MatcherCache::default()
+        .match_rule(MatcherInput {
+            frontmatter: &frontmatter,
+            is_single_file: false,
+            project_relative: path,
+            scope_relative: None,
+            basename: path,
+        })
+        .expect("compile fixture patterns")
+        .matched
 }
 
 fn match_one(pattern: &str, path: &str) -> bool {
@@ -11,12 +30,28 @@ fn match_one(pattern: &str, path: &str) -> bool {
 
 #[test]
 fn native_patterns_match_pinned_picomatch_generated_matrix() {
-    let cases: serde_json::Value = serde_json::from_str(include_str!("matcher-source.json")).unwrap();
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("matcher-source.json")).unwrap();
     for case in cases.as_array().unwrap() {
         let pattern = case["pattern"].as_str().unwrap();
         let path = case["path"].as_str().unwrap();
-        let frontmatter = RuleFrontmatter { globs: if pattern.starts_with('!') { vec!["**".into(), pattern.into()] } else { vec![pattern.into()] }, ..Default::default() };
-        let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap();
+        let frontmatter = RuleFrontmatter {
+            globs: if pattern.starts_with('!') {
+                vec!["**".into(), pattern.into()]
+            } else {
+                vec![pattern.into()]
+            },
+            ..Default::default()
+        };
+        let result = MatcherCache::default()
+            .match_rule(MatcherInput {
+                frontmatter: &frontmatter,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .unwrap();
         let expected = case["matched"].as_bool().unwrap();
         assert_eq!(result.matched, expected, "{pattern}: {path}");
     }
@@ -24,20 +59,43 @@ fn native_patterns_match_pinned_picomatch_generated_matrix() {
 
 #[test]
 fn native_matcher_matches_source_generated_corpus() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/latest-omo-rules-matcher.json");
-    let text = std::fs::read_to_string(path).unwrap_or_else(|error| panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/latest-omo-rules-matcher.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}")
+    });
     let corpus: serde_json::Value = serde_json::from_str(&text).unwrap();
     let cases = corpus["cases"].as_array().unwrap();
-    assert!(!cases.is_empty(), "source-generated corpus must not be empty");
+    assert!(
+        !cases.is_empty(),
+        "source-generated corpus must not be empty"
+    );
     let mut cache = MatcherCache::default();
     for case in cases {
         let pattern = case["pattern"].as_str().unwrap();
         let path = case["path"].as_str().unwrap();
         let expected = case["matched"].as_bool().unwrap();
         let exclusion = case["exclusion"].as_bool().unwrap_or(false);
-        let globs = if exclusion { vec!["**".to_string(), pattern.to_string()] } else { vec![pattern.to_string()] };
-        let frontmatter = RuleFrontmatter { globs, ..Default::default() };
-        let result = cache.match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap();
+        let globs = if exclusion {
+            vec!["**".to_string(), pattern.to_string()]
+        } else {
+            vec![pattern.to_string()]
+        };
+        let frontmatter = RuleFrontmatter {
+            globs,
+            ..Default::default()
+        };
+        let result = cache
+            .match_rule(MatcherInput {
+                frontmatter: &frontmatter,
+                is_single_file: false,
+                project_relative: path,
+                scope_relative: None,
+                basename: path,
+            })
+            .unwrap();
         assert_eq!(result.matched, expected, "{pattern}: {path}");
     }
 }
@@ -188,11 +246,21 @@ fn pinned_identity_and_octal_escapes_match_the_js_unit() {
 
 #[test]
 fn native_grammar_matches_source_generated_escape_corpus() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/latest-omo-rules-matcher.json");
-    let text = std::fs::read_to_string(path).unwrap_or_else(|error| panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/latest-omo-rules-matcher.json"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}")
+    });
     let corpus: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let cases = corpus["grammarCases"].as_array().unwrap_or_else(|| panic!("regenerate: `bun tools/golden/latest-omo-rules-matcher.mjs` writes grammarCases"));
-    assert!(!cases.is_empty(), "source-generated grammar corpus must not be empty");
+    let cases = corpus["grammarCases"].as_array().unwrap_or_else(|| {
+        panic!("regenerate: `bun tools/golden/latest-omo-rules-matcher.mjs` writes grammarCases")
+    });
+    assert!(
+        !cases.is_empty(),
+        "source-generated grammar corpus must not be empty"
+    );
     for case in cases {
         let pattern = case["pattern"].as_str().unwrap();
         let path = case["path"].as_str().unwrap();
@@ -229,21 +297,59 @@ fn pinned_fastpath_patterns_match_source() {
 
 #[test]
 fn single_files_precede_always_apply_and_globs() {
-    let frontmatter = RuleFrontmatter { always_apply: Some(true), ..Default::default() };
-    let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: true, project_relative: "a", scope_relative: None, basename: "a" }).unwrap();
+    let frontmatter = RuleFrontmatter {
+        always_apply: Some(true),
+        ..Default::default()
+    };
+    let result = MatcherCache::default()
+        .match_rule(MatcherInput {
+            frontmatter: &frontmatter,
+            is_single_file: true,
+            project_relative: "a",
+            scope_relative: None,
+            basename: "a",
+        })
+        .unwrap();
     assert_eq!(result.reason, MatchReason::SingleFile);
 }
 #[test]
 fn glob_exclusion_prevents_basename_fallback() {
-    let frontmatter = RuleFrontmatter { globs: vec!["**/*.rs".into(), "!src/excluded.rs".into()], ..Default::default() };
-    let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: "src/excluded.rs", scope_relative: None, basename: "excluded.rs" }).unwrap();
+    let frontmatter = RuleFrontmatter {
+        globs: vec!["**/*.rs".into(), "!src/excluded.rs".into()],
+        ..Default::default()
+    };
+    let result = MatcherCache::default()
+        .match_rule(MatcherInput {
+            frontmatter: &frontmatter,
+            is_single_file: false,
+            project_relative: "src/excluded.rs",
+            scope_relative: None,
+            basename: "excluded.rs",
+        })
+        .unwrap();
     assert!(!result.matched);
 }
 #[test]
 fn matching_patterns_are_cached_and_resettable() {
-    let frontmatter = RuleFrontmatter { globs: vec!["src/**/*.rs".into()], ..Default::default() };
+    let frontmatter = RuleFrontmatter {
+        globs: vec!["src/**/*.rs".into()],
+        ..Default::default()
+    };
     let mut cache = MatcherCache::default();
-    for _ in 0..2 { assert!(cache.match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: "src/a.rs", scope_relative: None, basename: "a.rs" }).unwrap().matched); }
+    for _ in 0..2 {
+        assert!(
+            cache
+                .match_rule(MatcherInput {
+                    frontmatter: &frontmatter,
+                    is_single_file: false,
+                    project_relative: "src/a.rs",
+                    scope_relative: None,
+                    basename: "a.rs"
+                })
+                .unwrap()
+                .matched
+        );
+    }
     assert_eq!(cache.stats().entries, 1);
     assert_eq!(cache.stats().compiled_patterns, 1);
     cache.reset();
@@ -254,26 +360,73 @@ fn cache_stays_bounded_across_unique_pattern_sets() {
     let mut cache = MatcherCache::default();
     for index in 0..300 {
         let pattern = format!("src/file-{index}.ts");
-        let frontmatter = RuleFrontmatter { globs: vec![pattern.clone()], ..Default::default() };
-        cache.match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: &pattern, scope_relative: None, basename: &pattern }).unwrap();
+        let frontmatter = RuleFrontmatter {
+            globs: vec![pattern.clone()],
+            ..Default::default()
+        };
+        cache
+            .match_rule(MatcherInput {
+                frontmatter: &frontmatter,
+                is_single_file: false,
+                project_relative: &pattern,
+                scope_relative: None,
+                basename: &pattern,
+            })
+            .unwrap();
     }
     assert!(cache.stats().entries <= 256);
 }
 #[test]
 fn normalized_patterns_deduplicate_in_source_order() {
-    let frontmatter = RuleFrontmatter { globs: vec!["src\\*.rs".into()], paths: vec!["src/*.rs".into()], apply_to: vec!["*.md".into()], ..Default::default() };
+    let frontmatter = RuleFrontmatter {
+        globs: vec!["src\\*.rs".into()],
+        paths: vec!["src/*.rs".into()],
+        apply_to: vec!["*.md".into()],
+        ..Default::default()
+    };
     assert_eq!(normalize_globs(&frontmatter), ["src/*.rs", "*.md"]);
-    assert_eq!(hash_content(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert_eq!(
+        hash_content(""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
 }
 #[test]
 fn oversized_and_empty_patterns_keep_source_errors() {
     let long = "a".repeat(65537);
-    let frontmatter = RuleFrontmatter { globs: vec![long], ..Default::default() };
-    let error = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: "a", scope_relative: None, basename: "a" }).unwrap_err();
-    assert_eq!(error.to_string(), "Input length: 65537, exceeds maximum allowed length: 65536");
-    let frontmatter = RuleFrontmatter { globs: vec![String::new()], ..Default::default() };
-    let error = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: "a", scope_relative: None, basename: "a" }).unwrap_err();
-    assert_eq!(error.to_string(), "Expected pattern to be a non-empty string");
+    let frontmatter = RuleFrontmatter {
+        globs: vec![long],
+        ..Default::default()
+    };
+    let error = MatcherCache::default()
+        .match_rule(MatcherInput {
+            frontmatter: &frontmatter,
+            is_single_file: false,
+            project_relative: "a",
+            scope_relative: None,
+            basename: "a",
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Input length: 65537, exceeds maximum allowed length: 65536"
+    );
+    let frontmatter = RuleFrontmatter {
+        globs: vec![String::new()],
+        ..Default::default()
+    };
+    let error = MatcherCache::default()
+        .match_rule(MatcherInput {
+            frontmatter: &frontmatter,
+            is_single_file: false,
+            project_relative: "a",
+            scope_relative: None,
+            basename: "a",
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Expected pattern to be a non-empty string"
+    );
 }
 #[test]
 fn malformed_patterns_stay_literal_like_source() {

@@ -1,5 +1,5 @@
 use maho_ai::types::{CacheRetention, ProviderHeaders, StopReason};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::harness::*;
 
@@ -39,7 +39,11 @@ async fn capture_request(
     options.stream.request.headers = headers;
     let message = finish(&run(model, &context, options, transport.clone())).await;
     let request = transport.last_request();
-    Capture { payload: request.body.clone(), headers: request.headers.clone(), message }
+    Capture {
+        payload: request.body.clone(),
+        headers: request.headers.clone(),
+        message,
+    }
 }
 
 fn default_model() -> maho_ai::types::Model {
@@ -84,7 +88,13 @@ async fn sets_a_clamped_prompt_cache_key_for_moonshot_requests_with_short_retent
     )
     .await;
 
-    assert_eq!(capture.payload.get("prompt_cache_key").and_then(Value::as_str), Some(&session_id[..64]));
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_key")
+            .and_then(Value::as_str),
+        Some(&session_id[..64])
+    );
 }
 
 #[tokio::test]
@@ -94,8 +104,14 @@ async fn does_not_set_prompt_cache_key_for_unknown_openai_compatible_providers()
         ("baseUrl", json!("https://proxy.example.com/v1")),
     ]);
 
-    let capture =
-        capture_request(Some(CacheRetention::Short), Some("custom-session"), None, &model, None).await;
+    let capture = capture_request(
+        Some(CacheRetention::Short),
+        Some("custom-session"),
+        None,
+        &model,
+        None,
+    )
+    .await;
 
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
 }
@@ -104,17 +120,42 @@ async fn does_not_set_prompt_cache_key_for_unknown_openai_compatible_providers()
 async fn sets_prompt_cache_key_for_direct_openai_requests_when_caching_is_enabled() {
     let capture = capture_request(None, Some("session-123"), None, &default_model(), None).await;
 
-    assert_eq!(capture.payload.get("prompt_cache_key").and_then(Value::as_str), Some("session-123"));
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_key")
+            .and_then(Value::as_str),
+        Some("session-123")
+    );
     assert_eq!(capture.payload.get("prompt_cache_retention"), None);
 }
 
 #[tokio::test]
-async fn sets_prompt_cache_retention_to_24h_for_direct_openai_requests_when_cache_retention_is_long() {
-    let capture =
-        capture_request(Some(CacheRetention::Long), Some("session-456"), None, &default_model(), None).await;
+async fn sets_prompt_cache_retention_to_24h_for_direct_openai_requests_when_cache_retention_is_long()
+ {
+    let capture = capture_request(
+        Some(CacheRetention::Long),
+        Some("session-456"),
+        None,
+        &default_model(),
+        None,
+    )
+    .await;
 
-    assert_eq!(capture.payload.get("prompt_cache_key").and_then(Value::as_str), Some("session-456"));
-    assert_eq!(capture.payload.get("prompt_cache_retention").and_then(Value::as_str), Some("24h"));
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_key")
+            .and_then(Value::as_str),
+        Some("session-456")
+    );
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_retention")
+            .and_then(Value::as_str),
+        Some("24h")
+    );
 }
 
 #[tokio::test]
@@ -122,13 +163,25 @@ async fn clamps_prompt_cache_key_to_openai_64_character_limit() {
     let session_id = "x".repeat(67);
     let capture = capture_request(None, Some(&session_id), None, &default_model(), None).await;
 
-    assert_eq!(capture.payload.get("prompt_cache_key").and_then(Value::as_str), Some(&"x".repeat(64)[..]));
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_key")
+            .and_then(Value::as_str),
+        Some(&"x".repeat(64)[..])
+    );
 }
 
 #[tokio::test]
 async fn omits_prompt_cache_fields_when_cache_retention_is_none() {
-    let capture =
-        capture_request(Some(CacheRetention::None), Some("session-789"), None, &default_model(), None).await;
+    let capture = capture_request(
+        Some(CacheRetention::None),
+        Some("session-789"),
+        None,
+        &default_model(),
+        None,
+    )
+    .await;
 
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
     assert_eq!(capture.payload.get("prompt_cache_retention"), None);
@@ -141,8 +194,14 @@ async fn omits_prompt_cache_fields_for_non_openai_base_urls_without_compatible_l
         ("compat", json!({ "supportsLongCacheRetention": false })),
     ]);
 
-    let capture =
-        capture_request(Some(CacheRetention::Long), Some("session-proxy"), None, &model, None).await;
+    let capture = capture_request(
+        Some(CacheRetention::Long),
+        Some("session-proxy"),
+        None,
+        &model,
+        None,
+    )
+    .await;
 
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
     assert_eq!(capture.payload.get("prompt_cache_retention"), None);
@@ -164,8 +223,16 @@ async fn uses_pi_cache_retention_for_direct_openai_requests() {
     let _ = finish(&run(&default_model(), &context, options, transport.clone())).await;
     let payload = transport.last_request().body;
 
-    assert_eq!(payload.get("prompt_cache_key").and_then(Value::as_str), Some("session-env"));
-    assert_eq!(payload.get("prompt_cache_retention").and_then(Value::as_str), Some("24h"));
+    assert_eq!(
+        payload.get("prompt_cache_key").and_then(Value::as_str),
+        Some("session-env")
+    );
+    assert_eq!(
+        payload
+            .get("prompt_cache_retention")
+            .and_then(Value::as_str),
+        Some("24h")
+    );
 }
 
 #[tokio::test]
@@ -175,12 +242,26 @@ async fn sends_known_session_affinity_headers_when_compat_enables_them() {
         ("compat", json!({ "sendSessionAffinityHeaders": true })),
     ]);
 
-    let capture =
-        capture_request(None, Some("session-affinity"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-affinity"), None, &model, None).await;
 
-    assert_eq!(capture.headers.get("session_id").map(String::as_str), Some("session-affinity"));
-    assert_eq!(capture.headers.get("x-client-request-id").map(String::as_str), Some("session-affinity"));
-    assert_eq!(capture.headers.get("x-session-affinity").map(String::as_str), Some("session-affinity"));
+    assert_eq!(
+        capture.headers.get("session_id").map(String::as_str),
+        Some("session-affinity")
+    );
+    assert_eq!(
+        capture
+            .headers
+            .get("x-client-request-id")
+            .map(String::as_str),
+        Some("session-affinity")
+    );
+    assert_eq!(
+        capture
+            .headers
+            .get("x-session-affinity")
+            .map(String::as_str),
+        Some("session-affinity")
+    );
 }
 
 #[tokio::test]
@@ -189,7 +270,13 @@ async fn sends_fireworks_session_affinity_for_glm_5p3() {
 
     let capture = capture_request(None, Some("fireworks-session"), None, &model, None).await;
 
-    assert_eq!(capture.headers.get("x-session-affinity").map(String::as_str), Some("fireworks-session"));
+    assert_eq!(
+        capture
+            .headers
+            .get("x-session-affinity")
+            .map(String::as_str),
+        Some("fireworks-session")
+    );
 }
 
 #[tokio::test]
@@ -198,7 +285,13 @@ async fn sends_fireworks_session_affinity_for_glm_5p3_fast() {
 
     let capture = capture_request(None, Some("fireworks-session"), None, &model, None).await;
 
-    assert_eq!(capture.headers.get("x-session-affinity").map(String::as_str), Some("fireworks-session"));
+    assert_eq!(
+        capture
+            .headers
+            .get("x-session-affinity")
+            .map(String::as_str),
+        Some("fireworks-session")
+    );
 }
 
 #[tokio::test]
@@ -208,14 +301,31 @@ async fn uses_openai_no_session_format_when_configured() {
         json!({ "sendSessionAffinityHeaders": true, "sessionAffinityFormat": "openai-nosession" }),
     )]);
 
-    let capture =
-        capture_request(None, Some("session-nosession"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-nosession"), None, &model, None).await;
 
     assert_eq!(capture.payload.get("session_id"), None);
-    assert_eq!(capture.payload.get("prompt_cache_key").and_then(Value::as_str), Some("session-nosession"));
+    assert_eq!(
+        capture
+            .payload
+            .get("prompt_cache_key")
+            .and_then(Value::as_str),
+        Some("session-nosession")
+    );
     assert_eq!(capture.headers.get("session_id"), None);
-    assert_eq!(capture.headers.get("x-client-request-id").map(String::as_str), Some("session-nosession"));
-    assert_eq!(capture.headers.get("x-session-affinity").map(String::as_str), Some("session-nosession"));
+    assert_eq!(
+        capture
+            .headers
+            .get("x-client-request-id")
+            .map(String::as_str),
+        Some("session-nosession")
+    );
+    assert_eq!(
+        capture
+            .headers
+            .get("x-session-affinity")
+            .map(String::as_str),
+        Some("session-nosession")
+    );
     assert_eq!(capture.headers.get("x-session-id"), None);
 }
 
@@ -223,15 +333,23 @@ async fn uses_openai_no_session_format_when_configured() {
 async fn uses_openrouter_session_affinity_header_and_body_field_when_configured() {
     let model = create_model(&[
         ("baseUrl", json!("https://proxy.example.com/v1")),
-        ("compat", json!({ "sendSessionAffinityHeaders": true, "sessionAffinityFormat": "openrouter" })),
+        (
+            "compat",
+            json!({ "sendSessionAffinityHeaders": true, "sessionAffinityFormat": "openrouter" }),
+        ),
     ]);
 
-    let capture =
-        capture_request(None, Some("session-proxy"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-proxy"), None, &model, None).await;
 
-    assert_eq!(capture.payload.get("session_id").and_then(Value::as_str), Some("session-proxy"));
+    assert_eq!(
+        capture.payload.get("session_id").and_then(Value::as_str),
+        Some("session-proxy")
+    );
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
-    assert_eq!(capture.headers.get("x-session-id").map(String::as_str), Some("session-proxy"));
+    assert_eq!(
+        capture.headers.get("x-session-id").map(String::as_str),
+        Some("session-proxy")
+    );
     assert_eq!(capture.headers.get("session_id"), None);
     assert_eq!(capture.headers.get("x-client-request-id"), None);
     assert_eq!(capture.headers.get("x-session-affinity"), None);
@@ -244,12 +362,17 @@ async fn auto_detects_openrouter_session_affinity_header_and_body_field_for_open
         ("baseUrl", json!("https://openrouter.ai/api/v1")),
     ]);
 
-    let capture =
-        capture_request(None, Some("session-openrouter"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-openrouter"), None, &model, None).await;
 
-    assert_eq!(capture.payload.get("session_id").and_then(Value::as_str), Some("session-openrouter"));
+    assert_eq!(
+        capture.payload.get("session_id").and_then(Value::as_str),
+        Some("session-openrouter")
+    );
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
-    assert_eq!(capture.headers.get("x-session-id").map(String::as_str), Some("session-openrouter"));
+    assert_eq!(
+        capture.headers.get("x-session-id").map(String::as_str),
+        Some("session-openrouter")
+    );
     assert_eq!(capture.headers.get("session_id"), None);
     assert_eq!(capture.headers.get("x-client-request-id"), None);
     assert_eq!(capture.headers.get("x-session-affinity"), None);
@@ -259,12 +382,17 @@ async fn auto_detects_openrouter_session_affinity_header_and_body_field_for_open
 async fn sends_openrouter_session_affinity_header_by_default_for_built_in_openrouter_models() {
     let model = catalog_model("openrouter", "auto");
 
-    let capture =
-        capture_request(None, Some("session-openrouter"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-openrouter"), None, &model, None).await;
 
-    assert_eq!(capture.payload.get("session_id").and_then(Value::as_str), Some("session-openrouter"));
+    assert_eq!(
+        capture.payload.get("session_id").and_then(Value::as_str),
+        Some("session-openrouter")
+    );
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
-    assert_eq!(capture.headers.get("x-session-id").map(String::as_str), Some("session-openrouter"));
+    assert_eq!(
+        capture.headers.get("x-session-id").map(String::as_str),
+        Some("session-openrouter")
+    );
     assert_eq!(capture.headers.get("session_id"), None);
     assert_eq!(capture.headers.get("x-client-request-id"), None);
     assert_eq!(capture.headers.get("x-session-affinity"), None);
@@ -278,8 +406,7 @@ async fn omits_openrouter_session_affinity_data_when_explicitly_disabled() {
         ("compat", json!({ "sendSessionAffinityHeaders": false })),
     ]);
 
-    let capture =
-        capture_request(None, Some("session-openrouter"), None, &model, None).await;
+    let capture = capture_request(None, Some("session-openrouter"), None, &model, None).await;
 
     assert_eq!(capture.payload.get("session_id"), None);
     assert_eq!(capture.payload.get("prompt_cache_key"), None);
@@ -293,8 +420,14 @@ async fn omits_session_affinity_headers_when_cache_retention_is_none() {
         ("compat", json!({ "sendSessionAffinityHeaders": true })),
     ]);
 
-    let capture =
-        capture_request(Some(CacheRetention::None), Some("session-affinity"), None, &model, None).await;
+    let capture = capture_request(
+        Some(CacheRetention::None),
+        Some("session-affinity"),
+        None,
+        &model,
+        None,
+    )
+    .await;
 
     assert_eq!(capture.headers.get("session_id"), None);
     assert_eq!(capture.headers.get("x-client-request-id"), None);
@@ -309,13 +442,34 @@ async fn lets_explicit_headers_override_generated_session_affinity_headers() {
     ]);
     let mut headers = ProviderHeaders::new();
     headers.insert("session_id".to_owned(), Some("override-session".to_owned()));
-    headers.insert("x-client-request-id".to_owned(), Some("override-request".to_owned()));
-    headers.insert("x-session-affinity".to_owned(), Some("override-affinity".to_owned()));
+    headers.insert(
+        "x-client-request-id".to_owned(),
+        Some("override-request".to_owned()),
+    );
+    headers.insert(
+        "x-session-affinity".to_owned(),
+        Some("override-affinity".to_owned()),
+    );
 
     let capture =
         capture_request(None, Some("session-affinity"), Some(headers), &model, None).await;
 
-    assert_eq!(capture.headers.get("session_id").map(String::as_str), Some("override-session"));
-    assert_eq!(capture.headers.get("x-client-request-id").map(String::as_str), Some("override-request"));
-    assert_eq!(capture.headers.get("x-session-affinity").map(String::as_str), Some("override-affinity"));
+    assert_eq!(
+        capture.headers.get("session_id").map(String::as_str),
+        Some("override-session")
+    );
+    assert_eq!(
+        capture
+            .headers
+            .get("x-client-request-id")
+            .map(String::as_str),
+        Some("override-request")
+    );
+    assert_eq!(
+        capture
+            .headers
+            .get("x-session-affinity")
+            .map(String::as_str),
+        Some("override-affinity")
+    );
 }

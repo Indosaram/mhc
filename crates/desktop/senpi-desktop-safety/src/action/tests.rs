@@ -14,7 +14,10 @@ fn mutating_actions_are_exactly_the_public_exec_methods() {
         .collect();
 
     // When
-    let gated: HashSet<_> = MutatingAction::ALL.iter().map(|action| action.method()).collect();
+    let gated: HashSet<_> = MutatingAction::ALL
+        .iter()
+        .map(|action| action.method())
+        .collect();
 
     // Then: no mutating request can reach a backend without a variant
     assert_eq!(gated, public_exec);

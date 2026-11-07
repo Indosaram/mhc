@@ -1,7 +1,7 @@
 //! Credential pool compatibility surface for the core storage callers.
 
-use serde::{Deserialize, Serialize};
 pub use maho_ai::auth::pool::slots::{CredentialSlot, CredentialSlotSource, DEFAULT_SLOT_NAME};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PooledCredential {
@@ -30,14 +30,21 @@ impl PooledCredential {
 
     /// The flat fields remain a valid credential, so they are the fallback slot.
     pub fn list_slots(&self) -> Vec<CredentialSlot> {
-        let mut slots: Vec<CredentialSlot> = self.accounts().iter().filter(|slot| !slot.name.is_empty()).cloned().collect();
+        let mut slots: Vec<CredentialSlot> = self
+            .accounts()
+            .iter()
+            .filter(|slot| !slot.name.is_empty())
+            .cloned()
+            .collect();
         if slots.is_empty() && (self.key.is_some() || self.access.is_some()) {
             slots.push(CredentialSlot {
                 name: DEFAULT_SLOT_NAME.to_owned(),
                 key: self.key.clone(),
                 access: self.access.clone(),
                 refresh: self.refresh.clone(),
-                expires: self.expires.and_then(|expires| expires.to_string().parse().ok()),
+                expires: self
+                    .expires
+                    .and_then(|expires| expires.to_string().parse().ok()),
                 ..CredentialSlot::default()
             });
         }
@@ -47,7 +54,10 @@ impl PooledCredential {
 
 /// rendezvousOrder (packages/ai/src/auth/pool/select.ts): a stable hash-based ordering.
 pub fn rendezvous_order(slot_ids: &[String], key: &str, hash: impl Fn(&str) -> u64) -> Vec<String> {
-    let mut scored: Vec<(u64, String)> = slot_ids.iter().map(|id| (hash(&format!("{key}\u{0}{id}")), id.clone())).collect();
+    let mut scored: Vec<(u64, String)> = slot_ids
+        .iter()
+        .map(|id| (hash(&format!("{key}\u{0}{id}")), id.clone()))
+        .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, id)| id).collect()
 }
@@ -72,7 +82,11 @@ mod tests {
             access: None,
             refresh: None,
             expires: None,
-            accounts: Some(vec![CredentialSlot { name: "login-1".to_owned(), key: Some("a".to_owned()), ..CredentialSlot::default() }]),
+            accounts: Some(vec![CredentialSlot {
+                name: "login-1".to_owned(),
+                key: Some("a".to_owned()),
+                ..CredentialSlot::default()
+            }]),
             pinned: None,
             extra: Default::default(),
         };
@@ -91,7 +105,16 @@ mod tests {
         };
         assert_eq!(flat.list_slots()[0].name, DEFAULT_SLOT_NAME);
         assert_eq!(flat.list_slots()[0].key.as_deref(), Some("flat"));
-        let empty = PooledCredential { credential_type: "oauth".to_owned(), key: None, access: None, refresh: None, expires: None, accounts: None, pinned: None, extra: Default::default() };
+        let empty = PooledCredential {
+            credential_type: "oauth".to_owned(),
+            key: None,
+            access: None,
+            refresh: None,
+            expires: None,
+            accounts: None,
+            pinned: None,
+            extra: Default::default(),
+        };
         assert!(empty.list_slots().is_empty());
     }
 

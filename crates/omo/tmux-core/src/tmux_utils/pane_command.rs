@@ -67,7 +67,10 @@ pub fn escape_tmux_format(value: &str) -> String {
 
 #[must_use]
 pub fn build_subagent_pane_title(description: &str) -> String {
-    let clean: String = description.chars().filter(|character| *character != '\0').collect();
+    let clean: String = description
+        .chars()
+        .filter(|character| *character != '\0')
+        .collect();
     let shown: String = clean.chars().take(PANE_TITLE_DESCRIPTION_LIMIT).collect();
     format!("omo-subagent-{}", escape_tmux_format(&shown))
 }
@@ -80,10 +83,22 @@ pub fn build_tmux_placeholder_command(description: &str) -> String {
 
 /// [`build_tmux_placeholder_command`] reading the pane-auth switch from `environment`.
 #[must_use]
-pub fn build_tmux_placeholder_command_from(description: &str, environment: &dyn EnvSource) -> String {
-    let clean: String = description.chars().filter(|character| *character != '\0').collect();
+pub fn build_tmux_placeholder_command_from(
+    description: &str,
+    environment: &dyn EnvSource,
+) -> String {
+    let clean: String = description
+        .chars()
+        .filter(|character| *character != '\0')
+        .collect();
     let shown: String = if clean.chars().count() > PLACEHOLDER_DESCRIPTION_LIMIT {
-        format!("{}…", clean.chars().take(PLACEHOLDER_DESCRIPTION_LIMIT).collect::<String>())
+        format!(
+            "{}…",
+            clean
+                .chars()
+                .take(PLACEHOLDER_DESCRIPTION_LIMIT)
+                .collect::<String>()
+        )
     } else {
         clean
     };
@@ -110,7 +125,14 @@ mod tests {
         let command = build_tmux_placeholder_command(description);
         let output = std::process::Command::new("/bin/sh")
             .args(["-c", &command])
-            .env("PATH", format!("{}:{}", temp.path().display(), std::env::var("PATH").unwrap_or_default()))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    temp.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
             .env("OMO_TMUX_CANARY_VAR", "LEAKED")
             .output()
             .expect("run nested placeholder shell");
@@ -123,14 +145,24 @@ mod tests {
         let canary = temp.path().join("canary");
         for description in [
             "Fix Bob's 100% broken pane".to_owned(),
-            format!("run $(touch {}) `touch {}` $HOME \"quoted\" a;b|c&d #e (f) back\\slash", canary.display(), canary.display()),
+            format!(
+                "run $(touch {}) `touch {}` $HOME \"quoted\" a;b|c&d #e (f) back\\slash",
+                canary.display(),
+                canary.display()
+            ),
             format!("first line\nsecond line $(touch {})", canary.display()),
             "ends in a backslash \\".to_owned(),
             "expands ${OMO_TMUX_CANARY_VAR} and $OMO_TMUX_CANARY_VAR".to_owned(),
             "before\0after".to_owned(),
         ] {
             let output = run_placeholder(&description);
-            assert_eq!(output, format!("OMO subagent pane ready: {}\nFocus this pane to attach.\n", description.replace('\0', "")));
+            assert_eq!(
+                output,
+                format!(
+                    "OMO subagent pane ready: {}\nFocus this pane to attach.\n",
+                    description.replace('\0', "")
+                )
+            );
             assert!(!canary.exists());
         }
     }
@@ -140,9 +172,12 @@ mod tests {
         let description = "$(printf UNEXPECTED) ".repeat(2_000);
         let command = build_tmux_placeholder_command(&description);
         assert!(command.len() < 12_000);
-        assert_eq!(run_placeholder(&description), format!(
-            "OMO subagent pane ready: {}…\nFocus this pane to attach.\n",
-            &description[..2_000],
-        ));
+        assert_eq!(
+            run_placeholder(&description),
+            format!(
+                "OMO subagent pane ready: {}…\nFocus this pane to attach.\n",
+                &description[..2_000],
+            )
+        );
     }
 }

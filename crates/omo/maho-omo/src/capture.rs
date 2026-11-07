@@ -25,6 +25,9 @@ impl ToolCaptureRegistry {
 
     /// Newest-last, matching upstream's registration order.
     pub fn get_captured_tools(&self) -> Vec<ToolDefinition> {
-        self.tools.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.tools
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }

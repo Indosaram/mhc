@@ -83,9 +83,9 @@ pub fn take(runtime: &Runtime) -> Result<RgbaImage, ShotError> {
             ))),
         }
     })?;
-    let path = uri
-        .to_file_path()
-        .map_err(|()| ShotError::Failed(format!("Screenshot portal returned a non-file URI {uri}")))?;
+    let path = uri.to_file_path().map_err(|()| {
+        ShotError::Failed(format!("Screenshot portal returned a non-file URI {uri}"))
+    })?;
     let image = decode(&path);
     // The file exists only for this capture; leaving it would pile full
     // screen contents up in /tmp or ~/Pictures.
@@ -100,7 +100,10 @@ pub fn take(runtime: &Runtime) -> Result<RgbaImage, ShotError> {
 
 fn decode(path: &Path) -> Result<RgbaImage, ShotError> {
     let failed = |error: &dyn std::fmt::Display| {
-        ShotError::Failed(format!("Screenshot portal file {}: {error}", path.display()))
+        ShotError::Failed(format!(
+            "Screenshot portal file {}: {error}",
+            path.display()
+        ))
     };
     let image = ImageReader::open(path)
         .and_then(ImageReader::with_guessed_format)

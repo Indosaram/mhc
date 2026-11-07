@@ -23,7 +23,10 @@ pub struct TeamTaskBounds {
 /// storage root so team-core writes runtime state under the senpi state dir instead of `~/.omo`.
 /// Fields team-core needs but senpi never drives (tmux + mailbox transport) are held at team-core's
 /// own defaults so runtime-state creation and the mailbox APIs stay well-formed.
-pub fn to_team_core_config(team: &TeamTaskBounds, base_dir: &str) -> Result<TeamCoreConfig, String> {
+pub fn to_team_core_config(
+    team: &TeamTaskBounds,
+    base_dir: &str,
+) -> Result<TeamCoreConfig, String> {
     let raw = json!({
         "enabled": true,
         "tmux_visualization": false,

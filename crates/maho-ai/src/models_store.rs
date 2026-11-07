@@ -22,21 +22,29 @@ pub struct ModelsStoreOperationOptions {
 }
 
 fn throw_if_aborted(options: Option<&ModelsStoreOperationOptions>) -> Result<(), AbortReason> {
-    options.and_then(|o| o.signal.as_ref()).map_or(Ok(()), AbortSignal::throw_if_aborted)
+    options
+        .and_then(|o| o.signal.as_ref())
+        .map_or(Ok(()), AbortSignal::throw_if_aborted)
 }
 
 /// Persistent model catalogs keyed by provider ID.
 pub trait ModelsStore: Send + Sync {
-    fn read<'a>(&'a self, provider_id: &'a str, options: Option<&'a ModelsStoreOperationOptions>)
-    -> BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>>;
+    fn read<'a>(
+        &'a self,
+        provider_id: &'a str,
+        options: Option<&'a ModelsStoreOperationOptions>,
+    ) -> BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>>;
     fn write<'a>(
         &'a self,
         provider_id: &'a str,
         entry: &'a ModelsStoreEntry,
         options: Option<&'a ModelsStoreOperationOptions>,
     ) -> BoxFuture<'a, Result<(), AbortReason>>;
-    fn delete<'a>(&'a self, provider_id: &'a str, options: Option<&'a ModelsStoreOperationOptions>)
-    -> BoxFuture<'a, Result<(), AbortReason>>;
+    fn delete<'a>(
+        &'a self,
+        provider_id: &'a str,
+        options: Option<&'a ModelsStoreOperationOptions>,
+    ) -> BoxFuture<'a, Result<(), AbortReason>>;
 }
 
 #[derive(Debug, Default)]
@@ -50,13 +58,18 @@ impl InMemoryModelsStore {
     }
 
     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<String, ModelsStoreEntry>> {
-        self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
 impl ModelsStore for InMemoryModelsStore {
-    fn read<'a>(&'a self, provider_id: &'a str, options: Option<&'a ModelsStoreOperationOptions>)
-    -> BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
+    fn read<'a>(
+        &'a self,
+        provider_id: &'a str,
+        options: Option<&'a ModelsStoreOperationOptions>,
+    ) -> BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
         Box::pin(async move {
             throw_if_aborted(options)?;
             Ok(self.entries().get(provider_id).cloned())
@@ -76,8 +89,11 @@ impl ModelsStore for InMemoryModelsStore {
         })
     }
 
-    fn delete<'a>(&'a self, provider_id: &'a str, options: Option<&'a ModelsStoreOperationOptions>)
-    -> BoxFuture<'a, Result<(), AbortReason>> {
+    fn delete<'a>(
+        &'a self,
+        provider_id: &'a str,
+        options: Option<&'a ModelsStoreOperationOptions>,
+    ) -> BoxFuture<'a, Result<(), AbortReason>> {
         Box::pin(async move {
             throw_if_aborted(options)?;
             self.entries().remove(provider_id);
@@ -94,14 +110,19 @@ mod tests {
     #[tokio::test]
     async fn round_trips_clones_and_honors_abort() {
         let store = InMemoryModelsStore::new();
-        let entry = ModelsStoreEntry { etag: Some("\"v1\"".into()), ..ModelsStoreEntry::default() };
+        let entry = ModelsStoreEntry {
+            etag: Some("\"v1\"".into()),
+            ..ModelsStoreEntry::default()
+        };
         store.write("p", &entry, None).await.expect("write");
         assert_eq!(store.read("p", None).await.expect("read"), Some(entry));
         store.delete("p", None).await.expect("delete");
         assert_eq!(store.read("p", None).await.expect("read"), None);
         let controller = AbortController::new();
         controller.abort(None);
-        let options = ModelsStoreOperationOptions { signal: Some(controller.signal()) };
+        let options = ModelsStoreOperationOptions {
+            signal: Some(controller.signal()),
+        };
         assert!(store.read("p", Some(&options)).await.is_err());
     }
 }

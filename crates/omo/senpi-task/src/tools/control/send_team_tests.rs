@@ -88,7 +88,12 @@ fn request_shutdown_stub() -> FakeTeamServiceOverrides {
     }
 }
 
-fn plain(to: &str, message: &str, team_run_id: Option<&str>, summary: Option<&str>) -> TaskSendInput {
+fn plain(
+    to: &str,
+    message: &str,
+    team_run_id: Option<&str>,
+    summary: Option<&str>,
+) -> TaskSendInput {
     TaskSendInput {
         to: to.to_string(),
         message: Some(TaskSendMessage::Plain(message.to_string())),
@@ -163,7 +168,8 @@ fn start_running(parent_session_id: &str, name: &str) -> Running {
 }
 
 #[test]
-fn given_a_string_recipient_that_is_a_team_member_when_team_routing_is_present_then_it_sends_a_team_message() {
+fn given_a_string_recipient_that_is_a_team_member_when_team_routing_is_present_then_it_sends_a_team_message()
+ {
     let manager = spy_manager("No task found for \"beta\".");
     let service = service_with(to_members_stub("msg-1", &["beta"]));
 
@@ -187,7 +193,8 @@ fn given_a_string_recipient_that_is_a_team_member_when_team_routing_is_present_t
 }
 
 #[test]
-fn given_a_team_route_without_a_run_id_when_child_lookup_misses_then_it_fails_before_service_calls() {
+fn given_a_team_route_without_a_run_id_when_child_lookup_misses_then_it_fails_before_service_calls()
+{
     let manager = spy_manager("No task found for \"beta\".");
     let service = service_with(FakeTeamServiceOverrides::default());
 
@@ -204,7 +211,8 @@ fn given_a_team_route_without_a_run_id_when_child_lookup_misses_then_it_fails_be
 }
 
 #[test]
-fn given_no_team_run_id_and_a_resolver_with_one_owned_team_when_child_lookup_misses_then_the_send_uses_the_resolved_team() {
+fn given_no_team_run_id_and_a_resolver_with_one_owned_team_when_child_lookup_misses_then_the_send_uses_the_resolved_team()
+ {
     let manager = spy_manager("No task found for \"beta\".");
     let service = service_with(to_members_stub("msg-1", &["beta"]));
     let routing = TaskSendTeamRouting {
@@ -229,13 +237,16 @@ fn given_no_team_run_id_and_a_resolver_with_one_owned_team_when_child_lookup_mis
 }
 
 #[test]
-fn given_no_team_run_id_and_an_ambiguous_resolver_when_child_lookup_misses_then_it_reports_the_owned_runs() {
+fn given_no_team_run_id_and_an_ambiguous_resolver_when_child_lookup_misses_then_it_reports_the_owned_runs()
+ {
     let manager = spy_manager("No task found for \"beta\".");
     let service = service_with(FakeTeamServiceOverrides::default());
     let routing = TaskSendTeamRouting {
-        resolve_default_team_run_id: Some(Arc::new(|| DefaultTeamRunIdResolution::Ambiguous {
+        resolve_default_team_run_id: Some(Arc::new(|| {
+            DefaultTeamRunIdResolution::Ambiguous {
             reason: "Multiple active teams: run-1 ('alpha-team'), run-2 ('beta-team'). Pass team_run_id."
                 .to_string(),
+        }
         })),
         ..lead_routing(&service)
     };
@@ -255,7 +266,8 @@ fn given_no_team_run_id_and_an_ambiguous_resolver_when_child_lookup_misses_then_
 }
 
 #[test]
-fn given_no_team_run_id_and_a_resolver_reporting_no_owned_team_when_child_lookup_misses_then_it_falls_back_to_not_found() {
+fn given_no_team_run_id_and_a_resolver_reporting_no_owned_team_when_child_lookup_misses_then_it_falls_back_to_not_found()
+ {
     let manager = spy_manager("No task found for \"beta\".");
     let service = service_with(FakeTeamServiceOverrides::default());
     let routing = TaskSendTeamRouting {
@@ -275,7 +287,8 @@ fn given_no_team_run_id_and_a_resolver_reporting_no_owned_team_when_child_lookup
 }
 
 #[test]
-fn given_a_shutdown_request_without_team_run_id_and_a_resolver_with_one_owned_team_then_request_shutdown_uses_the_resolved_team() {
+fn given_a_shutdown_request_without_team_run_id_and_a_resolver_with_one_owned_team_then_request_shutdown_uses_the_resolved_team()
+ {
     let manager = spy_manager("unused");
     let service = service_with(request_shutdown_stub());
     let routing = TaskSendTeamRouting {
@@ -323,7 +336,8 @@ fn given_the_member_scoped_factory_when_created_then_it_exposes_the_shared_task_
 }
 
 #[test]
-fn given_member_routing_with_a_bound_run_id_when_params_include_another_run_id_then_the_bound_run_id_wins() {
+fn given_member_routing_with_a_bound_run_id_when_params_include_another_run_id_then_the_bound_run_id_wins()
+ {
     let manager = spy_manager("No task found for \"lead\".");
     let service = service_with(FakeTeamServiceOverrides::default());
     let routing = TaskSendTeamRouting {
@@ -353,7 +367,8 @@ fn given_member_routing_with_a_bound_run_id_when_params_include_another_run_id_t
 }
 
 #[test]
-fn given_a_member_scoped_peer_send_when_the_recipient_is_running_then_the_steering_engine_delivers_as_steer() {
+fn given_a_member_scoped_peer_send_when_the_recipient_is_running_then_the_steering_engine_delivers_as_steer()
+ {
     let adapter = start_running("member-session", "lead");
     let service = service_with(FakeTeamServiceOverrides::default());
     let routing = TaskSendTeamRouting {
@@ -374,14 +389,18 @@ fn given_a_member_scoped_peer_send_when_the_recipient_is_running_then_the_steeri
         SendResultDetails::Steered { delivered, .. } => assert_eq!(delivered, "steer"),
         other => panic!("expected steered, got {}", other.kind()),
     }
-    let handle = adapter.runner.handle(&adapter.task_id).expect("expected member handle");
+    let handle = adapter
+        .runner
+        .handle(&adapter.task_id)
+        .expect("expected member handle");
     assert_eq!(handle.steer_calls(), vec!["peer update".to_string()]);
     assert_eq!(handle.follow_up_calls(), Vec::<String>::new());
     handle.complete("done");
 }
 
 #[test]
-fn given_a_lead_send_with_team_run_id_when_the_recipient_is_running_then_the_steering_engine_delivers_as_steer() {
+fn given_a_lead_send_with_team_run_id_when_the_recipient_is_running_then_the_steering_engine_delivers_as_steer()
+ {
     let adapter = start_running("lead-session", "beta");
     let service = service_with(FakeTeamServiceOverrides::default());
 
@@ -396,7 +415,10 @@ fn given_a_lead_send_with_team_run_id_when_the_recipient_is_running_then_the_ste
         SendResultDetails::Steered { delivered, .. } => assert_eq!(delivered, "steer"),
         other => panic!("expected steered, got {}", other.kind()),
     }
-    let handle = adapter.runner.handle(&adapter.task_id).expect("expected member handle");
+    let handle = adapter
+        .runner
+        .handle(&adapter.task_id)
+        .expect("expected member handle");
     assert_eq!(handle.steer_calls(), vec!["lead update".to_string()]);
     assert_eq!(handle.follow_up_calls(), Vec::<String>::new());
     handle.complete("done");
@@ -415,7 +437,10 @@ fn given_a_team_shutdown_message_when_lead_routing_sends_it_then_no_delivery_opt
     ));
 
     match &result.details {
-        SendResultDetails::ShutdownRequested { team_run_id, member } => {
+        SendResultDetails::ShutdownRequested {
+            team_run_id,
+            member,
+        } => {
             assert_eq!(team_run_id, "run-1");
             assert_eq!(member, "beta");
         }
@@ -423,5 +448,8 @@ fn given_a_team_shutdown_message_when_lead_routing_sends_it_then_no_delivery_opt
     }
     let calls = service.calls();
     assert_eq!(calls[0].method, "requestShutdown");
-    assert_eq!(calls[0].args, vec![Value::from("run-1"), Value::from("beta")]);
+    assert_eq!(
+        calls[0].args,
+        vec![Value::from("run-1"), Value::from("beta")]
+    );
 }

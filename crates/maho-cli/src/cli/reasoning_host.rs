@@ -20,26 +20,45 @@ impl NativeReasoningHost {
     }
 
     fn session(&self) -> Result<AgentSession, ExtensionFailure> {
-        (self.parent)().ok_or_else(|| ExtensionFailure::new("Reasoning requires a live parent session"))
+        (self.parent)()
+            .ok_or_else(|| ExtensionFailure::new("Reasoning requires a live parent session"))
     }
 
     fn model_level(value: Option<&Value>) -> Option<ModelThinkingLevel> {
         let value = value?.as_str()?;
-        ModelThinkingLevel::ALL.into_iter().find(|level| level.as_str() == value)
+        ModelThinkingLevel::ALL
+            .into_iter()
+            .find(|level| level.as_str() == value)
     }
 
-    pub fn remembered_level(settings: &maho_core::settings_manager::SettingsManager, model: &Model) -> Option<ModelThinkingLevel> {
+    pub fn remembered_level(
+        settings: &maho_core::settings_manager::SettingsManager,
+        model: &Model,
+    ) -> Option<ModelThinkingLevel> {
         let key = Self::model_key(model);
-        Self::model_level(settings.get_value("modelThinkingLevels").and_then(|levels| levels.get(&key)))
+        Self::model_level(
+            settings
+                .get_value("modelThinkingLevels")
+                .and_then(|levels| levels.get(&key)),
+        )
     }
 
-    pub fn last_on_level(settings: &maho_core::settings_manager::SettingsManager, model: &Model) -> Option<ModelThinkingLevel> {
+    pub fn last_on_level(
+        settings: &maho_core::settings_manager::SettingsManager,
+        model: &Model,
+    ) -> Option<ModelThinkingLevel> {
         let key = Self::model_key(model);
-        Self::model_level(settings.get_value("modelLastOnThinkingLevels").and_then(|levels| levels.get(&key)))
-            .filter(|level| *level != ModelThinkingLevel::Off)
+        Self::model_level(
+            settings
+                .get_value("modelLastOnThinkingLevels")
+                .and_then(|levels| levels.get(&key)),
+        )
+        .filter(|level| *level != ModelThinkingLevel::Off)
     }
 
-    pub fn default_level(settings: &maho_core::settings_manager::SettingsManager) -> Option<ModelThinkingLevel> {
+    pub fn default_level(
+        settings: &maho_core::settings_manager::SettingsManager,
+    ) -> Option<ModelThinkingLevel> {
         Self::model_level(settings.get_value("defaultThinkingLevel"))
     }
 
@@ -47,33 +66,66 @@ impl NativeReasoningHost {
         format!("{}/{}", model.provider, model.id)
     }
 
-    fn set_global_values(session: &AgentSession, values: Map<String, Value>) -> Result<(), ExtensionFailure> {
-        session.with_settings_manager_mut(|manager| manager.set(
-            maho_core::settings_manager::SettingsScope::Global,
-            &values,
-        )).map_err(ExtensionFailure::new)
+    fn set_global_values(
+        session: &AgentSession,
+        values: Map<String, Value>,
+    ) -> Result<(), ExtensionFailure> {
+        session
+            .with_settings_manager_mut(|manager| {
+                manager.set(maho_core::settings_manager::SettingsScope::Global, &values)
+            })
+            .map_err(ExtensionFailure::new)
     }
 
-    fn remember_last_on_value(session: &AgentSession, model: &Model, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+    fn remember_last_on_value(
+        session: &AgentSession,
+        model: &Model,
+        level: ModelThinkingLevel,
+    ) -> Result<(), ExtensionFailure> {
         let key = Self::model_key(model);
         let mut global = session.with_settings_manager(|manager| manager.get_global().clone());
-        let mut last_on = global.get("modelLastOnThinkingLevels").and_then(Value::as_object).cloned().unwrap_or_default();
+        let mut last_on = global
+            .get("modelLastOnThinkingLevels")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         last_on.insert(key, Value::String(level.as_str().to_owned()));
-        global.insert("modelLastOnThinkingLevels".to_owned(), Value::Object(last_on));
-        Self::set_global_values(session, Map::from_iter([(
-            "modelLastOnThinkingLevels".to_owned(), global["modelLastOnThinkingLevels"].clone(),
-        )]))
+        global.insert(
+            "modelLastOnThinkingLevels".to_owned(),
+            Value::Object(last_on),
+        );
+        Self::set_global_values(
+            session,
+            Map::from_iter([(
+                "modelLastOnThinkingLevels".to_owned(),
+                global["modelLastOnThinkingLevels"].clone(),
+            )]),
+        )
     }
 
-    fn restore_preferences(session: &AgentSession, model: &Model, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+    fn restore_preferences(
+        session: &AgentSession,
+        model: &Model,
+        level: ModelThinkingLevel,
+    ) -> Result<(), ExtensionFailure> {
         let key = Self::model_key(model);
         let global = session.with_settings_manager(|manager| manager.get_global().clone());
-        let mut levels = global.get("modelThinkingLevels").and_then(Value::as_object).cloned().unwrap_or_default();
+        let mut levels = global
+            .get("modelThinkingLevels")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         levels.insert(key, Value::String(level.as_str().to_owned()));
-        Self::set_global_values(session, Map::from_iter([
-            ("modelThinkingLevels".to_owned(), Value::Object(levels)),
-            ("defaultThinkingLevel".to_owned(), Value::String(level.as_str().to_owned())),
-        ]))
+        Self::set_global_values(
+            session,
+            Map::from_iter([
+                ("modelThinkingLevels".to_owned(), Value::Object(levels)),
+                (
+                    "defaultThinkingLevel".to_owned(),
+                    Value::String(level.as_str().to_owned()),
+                ),
+            ]),
+        )
     }
 }
 
@@ -82,15 +134,27 @@ impl ReasoningHost for NativeReasoningHost {
         Ok(self.session()?.thinking_level())
     }
 
-    fn set_level(&self, _: &ExtensionContext, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+    fn set_level(
+        &self,
+        _: &ExtensionContext,
+        level: ModelThinkingLevel,
+    ) -> Result<(), ExtensionFailure> {
         self.session()?.set_thinking_level(level);
         Ok(())
     }
 
-    fn preferences(&self, _: &ExtensionContext, model: &Model) -> Result<ThinkingPreferences, ExtensionFailure> {
+    fn preferences(
+        &self,
+        _: &ExtensionContext,
+        model: &Model,
+    ) -> Result<ThinkingPreferences, ExtensionFailure> {
         let session = self.session()?;
         let manager = session.with_settings_manager(|manager| {
-            (Self::last_on_level(manager, model), Self::remembered_level(manager, model), Self::default_level(manager))
+            (
+                Self::last_on_level(manager, model),
+                Self::remembered_level(manager, model),
+                Self::default_level(manager),
+            )
         });
         Ok(ThinkingPreferences {
             last_on: manager.0,
@@ -99,7 +163,12 @@ impl ReasoningHost for NativeReasoningHost {
         })
     }
 
-    fn remember_last_on<'a>(&'a self, _context: &'a ExtensionContext, model: &'a Model, level: ModelThinkingLevel) -> maho_ext_api::ExtensionFuture<'a, ()> {
+    fn remember_last_on<'a>(
+        &'a self,
+        _context: &'a ExtensionContext,
+        model: &'a Model,
+        level: ModelThinkingLevel,
+    ) -> maho_ext_api::ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let session = self.session()?;
             Self::remember_last_on_value(&session, model, level)?;
@@ -107,7 +176,12 @@ impl ReasoningHost for NativeReasoningHost {
         })
     }
 
-    fn restore_on<'a>(&'a self, _context: &'a ExtensionContext, model: &'a Model, level: ThinkingLevel) -> maho_ext_api::ExtensionFuture<'a, ()> {
+    fn restore_on<'a>(
+        &'a self,
+        _context: &'a ExtensionContext,
+        model: &'a Model,
+        level: ThinkingLevel,
+    ) -> maho_ext_api::ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let session = self.session()?;
             let level: ModelThinkingLevel = level.into();
@@ -121,7 +195,7 @@ impl ReasoningHost for NativeReasoningHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maho_core::settings_manager::{SettingsManager, SettingsScope, Settings};
+    use maho_core::settings_manager::{Settings, SettingsManager, SettingsScope};
     use serde_json::json;
 
     fn model() -> Model {
@@ -139,21 +213,49 @@ mod tests {
         let cwd = root.path().to_string_lossy();
         let agent_dir = root.path().join("agent").to_string_lossy().into_owned();
         let mut manager = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
-        manager.set(SettingsScope::Global, &Settings::from_iter([(
-            "defaultThinkingLevel".to_owned(), json!("low"),
-        )])).expect("write default level");
+        manager
+            .set(
+                SettingsScope::Global,
+                &Settings::from_iter([("defaultThinkingLevel".to_owned(), json!("low"))]),
+            )
+            .expect("write default level");
         let model = model();
         let mut model_levels = Map::from_iter([("provider-b/model-b".to_owned(), json!("xhigh"))]);
         model_levels.insert(NativeReasoningHost::model_key(&model), json!("high"));
-        manager.set(SettingsScope::Global, &Settings::from_iter([
-            ("modelThinkingLevels".to_owned(), Value::Object(model_levels)),
-            ("modelLastOnThinkingLevels".to_owned(), json!({"provider-a/model-a":"xhigh"})),
-        ])).expect("write model levels");
+        manager
+            .set(
+                SettingsScope::Global,
+                &Settings::from_iter([
+                    (
+                        "modelThinkingLevels".to_owned(),
+                        Value::Object(model_levels),
+                    ),
+                    (
+                        "modelLastOnThinkingLevels".to_owned(),
+                        json!({"provider-a/model-a":"xhigh"}),
+                    ),
+                ]),
+            )
+            .expect("write model levels");
         let reloaded = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
-        assert_eq!(NativeReasoningHost::remembered_level(&reloaded, &model), Some(ModelThinkingLevel::High));
-        assert_eq!(NativeReasoningHost::last_on_level(&reloaded, &model), Some(ModelThinkingLevel::Xhigh));
-        assert_eq!(NativeReasoningHost::default_level(&reloaded), Some(ModelThinkingLevel::Low));
-        assert_eq!(reloaded.get_value("modelThinkingLevels").and_then(|levels| levels.get("provider-b/model-b"))
-            .and_then(Value::as_str), Some("xhigh"));
+        assert_eq!(
+            NativeReasoningHost::remembered_level(&reloaded, &model),
+            Some(ModelThinkingLevel::High)
+        );
+        assert_eq!(
+            NativeReasoningHost::last_on_level(&reloaded, &model),
+            Some(ModelThinkingLevel::Xhigh)
+        );
+        assert_eq!(
+            NativeReasoningHost::default_level(&reloaded),
+            Some(ModelThinkingLevel::Low)
+        );
+        assert_eq!(
+            reloaded
+                .get_value("modelThinkingLevels")
+                .and_then(|levels| levels.get("provider-b/model-b"))
+                .and_then(Value::as_str),
+            Some("xhigh")
+        );
     }
 }

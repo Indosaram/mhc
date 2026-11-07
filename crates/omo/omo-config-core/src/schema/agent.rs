@@ -16,7 +16,10 @@ fn permission_value_schema() -> Node {
 }
 
 fn bash_permission_schema() -> Node {
-    union(vec![permission_value_schema(), record(permission_value_schema())])
+    union(vec![
+        permission_value_schema(),
+        record(permission_value_schema()),
+    ])
 }
 
 fn agent_permission_schema() -> Node {
@@ -28,12 +31,19 @@ fn refine_agent_permissions(
     path: &[String],
     issues: &mut crate::issue::Issues,
 ) {
-    if let Some(permissions) = value.get("permission").and_then(serde_json::Value::as_object) {
+    if let Some(permissions) = value
+        .get("permission")
+        .and_then(serde_json::Value::as_object)
+    {
         for (key, permission) in permissions {
             if key != "bash" {
-                let permission_path = crate::issue::field(&crate::issue::field(path, "permission"), key);
+                let permission_path =
+                    crate::issue::field(&crate::issue::field(path, "permission"), key);
                 let _parsed = crate::internal::validate::parse(
-                    &permission_value_schema(), permission, &permission_path, issues,
+                    &permission_value_schema(),
+                    permission,
+                    &permission_path,
+                    issues,
                 );
             }
         }

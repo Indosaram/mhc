@@ -40,7 +40,7 @@ use x11rb::protocol::xproto::Window;
 pub use connection::X11InputConnection;
 use held::{Held, HeldButton, HeldKey, Route};
 use keys::Stroke;
-pub use keys::{Keymap, keysym_variants};
+pub use keys::{keysym_variants, Keymap};
 pub use server::InputServer;
 use server::{FakeInput, SentEvent, Spot};
 

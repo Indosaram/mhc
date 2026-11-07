@@ -928,7 +928,12 @@ impl SettingsManager {
 
     /// senpi `getTodoFirstTurnPlan`: `remind` and `off` are honored; anything else is `force`.
     pub fn get_todo_first_turn_plan(&self) -> &'static str {
-        match self.settings.get("todo").and_then(|todo| todo.get("firstTurnPlan")).and_then(Value::as_str) {
+        match self
+            .settings
+            .get("todo")
+            .and_then(|todo| todo.get("firstTurnPlan"))
+            .and_then(Value::as_str)
+        {
             Some("remind") => "remind",
             Some("off") => "off",
             _ => "force",
@@ -1109,7 +1114,9 @@ impl SettingsManager {
             self.get_value("extensionEventHandlerTimeoutMs"),
             "extensionEventHandlerTimeoutMs",
         )?
-        .unwrap_or(maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_TIMEOUT_MS))
+        .unwrap_or(
+            maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_TIMEOUT_MS,
+        ))
     }
 
     /// `getEngineTurnSettings`: non-negative integer overrides of the engine-turn bounds (senpi#2967).
@@ -1271,7 +1278,8 @@ impl SettingsManager {
 
     /// The `BashToolOptions.env_passthrough` value: `Some(passthrough)` when scrubbing is enabled.
     pub fn get_bash_env_scrub_passthrough(&self) -> Option<Vec<String>> {
-        self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
+        self.get_bash_env_scrub()
+            .then(|| self.get_bash_env_passthrough())
     }
 
     /// senpi `getBashRedactSecretsInOutput`: `tools.bash.redactSecretsInOutput === true` (default false).
@@ -1286,7 +1294,9 @@ impl SettingsManager {
 
     /// The agent dir this manager was created for (the process default for storages without one).
     pub fn agent_dir(&self) -> String {
-        self.storage.agent_dir().unwrap_or_else(crate::config::get_agent_dir)
+        self.storage
+            .agent_dir()
+            .unwrap_or_else(crate::config::get_agent_dir)
     }
 
     /// `bashSandbox` (`off` default | `auto` | `required`): opt-in OS write confinement for bash.
@@ -2645,7 +2655,10 @@ mod tests {
         assert!(manager.get_enable_analytics());
         let id = manager.get_tracking_id().expect("tracking id");
         assert_eq!(id.len(), 36);
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'), "{id}");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "{id}"
+        );
     }
 
     #[test]
@@ -3112,7 +3125,10 @@ mod tests {
     fn extension_event_handler_budget_defaults_and_rejects_invalid_values() {
         let mut manager = SettingsManager::in_memory(Settings::new(), true);
         assert_eq!(manager.get_extension_event_handler_warn_ms(), Ok(60_000));
-        assert_eq!(manager.get_extension_event_handler_timeout_ms(), Ok(1_200_000));
+        assert_eq!(
+            manager.get_extension_event_handler_timeout_ms(),
+            Ok(1_200_000)
+        );
         manager.apply_overrides(&settings(
             r#"{"extensionEventHandlerWarnMs":0,"extensionEventHandlerTimeoutMs":"soon"}"#,
         ));

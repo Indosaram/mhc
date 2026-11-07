@@ -1528,7 +1528,10 @@ async fn a_stopped_multi_input_batch_never_dispatches_partial_answers() {
 /// A terminal host's selector widgets: every `select` mounts one widget whose answer slot the test fills by index,
 /// like upstream feeding `handleInput` to a captured `ExtensionSelectorComponent`. Enter picks the first choice,
 /// Escape cancels, and a settled widget ignores further input (upstream `answerSettled`).
-type SelectorWidget = (Vec<String>, Option<tokio::sync::oneshot::Sender<Option<String>>>);
+type SelectorWidget = (
+    Vec<String>,
+    Option<tokio::sync::oneshot::Sender<Option<String>>>,
+);
 
 struct WidgetUi {
     widgets: Mutex<Vec<SelectorWidget>>,

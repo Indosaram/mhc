@@ -20,7 +20,10 @@ fn left_press(x: i64) -> TuiMouseEvent {
 
 #[test]
 fn mouse_click_offsets_by_custom_prompt_width() {
-    let mut input = Input::new(InputOptions { prompt: Some("Search: ".into()), ..Default::default() });
+    let mut input = Input::new(InputOptions {
+        prompt: Some("Search: ".into()),
+        ..Default::default()
+    });
     input.set_value("abcdef");
     input.render(40);
     input.handle_mouse(&left_press(8 + 2));

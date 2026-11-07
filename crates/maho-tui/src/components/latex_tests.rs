@@ -17,7 +17,10 @@ fn converts_every_relational_algebra_join_command_to_its_unicode_operator() {
 
 #[test]
 fn converts_join_commands_inside_grouped_expressions() {
-    assert_eq!(latex(r"(R \ltimes S) \bowtie T"), "(R \u{22c9} S) \u{22c8} T");
+    assert_eq!(
+        latex(r"(R \ltimes S) \bowtie T"),
+        "(R \u{22c9} S) \u{22c8} T"
+    );
     assert_eq!(latex(r"\{R \fullouterjoin S\}"), "{R \u{27d7} S}");
 }
 
@@ -30,10 +33,19 @@ fn leaves_longer_commands_that_merely_share_a_join_prefix_literal() {
 #[test]
 fn converts_greek_and_operator_symbols() {
     assert_eq!(latex(r"\alpha + \beta"), "\u{3b1} + \u{3b2}");
-    assert_eq!(latex(r"\sum_{i=1}^{n} i"), "\u{2211}\u{1d62}\u{208c}\u{2081}\u{207f} i");
+    assert_eq!(
+        latex(r"\sum_{i=1}^{n} i"),
+        "\u{2211}\u{1d62}\u{208c}\u{2081}\u{207f} i"
+    );
     assert_eq!(latex(r"\int_0^\infty"), "\u{222b}\u{2080}^\u{221e}");
-    assert_eq!(latex(r"a \ne b \le c \ge d"), "a \u{2260} b \u{2264} c \u{2265} d");
-    assert_eq!(latex(r"\Omega \omega \Phi \phi"), "\u{3a9} \u{3c9} \u{3a6} \u{3d5}");
+    assert_eq!(
+        latex(r"a \ne b \le c \ge d"),
+        "a \u{2260} b \u{2264} c \u{2265} d"
+    );
+    assert_eq!(
+        latex(r"\Omega \omega \Phi \phi"),
+        "\u{3a9} \u{3c9} \u{3a6} \u{3d5}"
+    );
 }
 
 #[test]
@@ -83,7 +95,11 @@ fn falls_back_literally_beyond_the_conversion_budgets() {
     let over_budget = "x".repeat(MAX_FORMULA_LENGTH + 1).to_string();
     assert_eq!(latex(&over_budget), over_budget);
 
-    let deep = format!("{}{}", "{".repeat(MAX_NESTING_DEPTH + 2), "}".repeat(MAX_NESTING_DEPTH + 2));
+    let deep = format!(
+        "{}{}",
+        "{".repeat(MAX_NESTING_DEPTH + 2),
+        "}".repeat(MAX_NESTING_DEPTH + 2)
+    );
     assert_eq!(latex(&deep), deep);
 }
 

@@ -1,8 +1,8 @@
 //! `team/tasks.test.ts`
 
 use pretty_assertions::assert_eq;
-use tempfile::TempDir;
 use team_core::types::TaskStatus;
+use tempfile::TempDir;
 
 use crate::team::runtime_config::{TeamTaskBounds, to_team_core_config};
 use crate::team::tasks::{
@@ -92,7 +92,8 @@ fn given_two_tasks_with_a_dependency_when_the_blocked_task_is_claimed_before_its
 }
 
 #[test]
-fn given_a_claimed_task_when_a_non_owner_updates_its_status_then_a_typed_cross_owner_error_is_raised() {
+fn given_a_claimed_task_when_a_non_owner_updates_its_status_then_a_typed_cross_owner_error_is_raised()
+ {
     // given
     let (_dir, ctx) = temp_context();
     let task = create_team_task(&ctx, input("a", "x")).unwrap();
@@ -109,7 +110,8 @@ fn given_a_claimed_task_when_a_non_owner_updates_its_status_then_a_typed_cross_o
 }
 
 #[test]
-fn given_a_completed_task_when_a_reverse_transition_is_requested_then_a_typed_invalid_transition_error_is_raised() {
+fn given_a_completed_task_when_a_reverse_transition_is_requested_then_a_typed_invalid_transition_error_is_raised()
+ {
     // given
     let (_dir, ctx) = temp_context();
     let task = create_team_task(&ctx, input("a", "x")).unwrap();
@@ -126,7 +128,8 @@ fn given_a_completed_task_when_a_reverse_transition_is_requested_then_a_typed_in
 }
 
 #[test]
-fn given_an_already_claimed_task_when_a_second_member_claims_it_then_a_typed_already_claimed_error_is_raised() {
+fn given_an_already_claimed_task_when_a_second_member_claims_it_then_a_typed_already_claimed_error_is_raised()
+ {
     // given
     let (_dir, ctx) = temp_context();
     let task = create_team_task(&ctx, input("a", "x")).unwrap();
@@ -164,7 +167,10 @@ fn given_several_tasks_when_list_team_tasks_runs_with_an_owner_filter_then_only_
         vec!["1", "2"]
     );
     assert_eq!(
-        owned.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(),
+        owned
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["1"]
     );
 }

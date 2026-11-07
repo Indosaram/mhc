@@ -1,12 +1,22 @@
-use maho_core::source_info::{SourceInfo, SourceScope};
 use crate::theme::{Theme, ThemeColor};
+use maho_core::source_info::{SourceInfo, SourceScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourceScopeGroup { Project, User, Path, System }
+pub enum ResourceScopeGroup {
+    Project,
+    User,
+    Path,
+    System,
+}
 
 impl ResourceScopeGroup {
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Project => "project", Self::User => "user", Self::Path => "path", Self::System => "system" }
+        match self {
+            Self::Project => "project",
+            Self::User => "user",
+            Self::Path => "path",
+            Self::System => "system",
+        }
     }
 }
 
@@ -40,8 +50,12 @@ pub fn is_package_source_info(info: Option<&SourceInfo>) -> bool {
 
 pub fn get_resource_scope_group(info: Option<&SourceInfo>) -> ResourceScopeGroup {
     let scope = info.map_or(SourceScope::Project, |info| info.scope);
-    if scope == SourceScope::System { return ResourceScopeGroup::System; }
-    if info.is_some_and(|info| info.source == "cli") { return ResourceScopeGroup::Path; }
+    if scope == SourceScope::System {
+        return ResourceScopeGroup::System;
+    }
+    if info.is_some_and(|info| info.source == "cli") {
+        return ResourceScopeGroup::Path;
+    }
     match scope {
         SourceScope::Temporary => ResourceScopeGroup::Path,
         SourceScope::User => ResourceScopeGroup::User,
@@ -51,14 +65,30 @@ pub fn get_resource_scope_group(info: Option<&SourceInfo>) -> ResourceScopeGroup
 }
 
 pub fn build_resource_scope_groups(items: &[ScopedResource]) -> Vec<ResourceScopeGroups> {
-    let mut groups: Vec<_> = [ResourceScopeGroup::Project, ResourceScopeGroup::User, ResourceScopeGroup::Path, ResourceScopeGroup::System]
-        .into_iter().map(|scope| ResourceScopeGroups { scope, paths: Vec::new(), packages: Vec::new() }).collect();
+    let mut groups: Vec<_> = [
+        ResourceScopeGroup::Project,
+        ResourceScopeGroup::User,
+        ResourceScopeGroup::Path,
+        ResourceScopeGroup::System,
+    ]
+    .into_iter()
+    .map(|scope| ResourceScopeGroups {
+        scope,
+        paths: Vec::new(),
+        packages: Vec::new(),
+    })
+    .collect();
     for item in items {
         let scope = get_resource_scope_group(item.source_info.as_ref());
         if let Some(group) = groups.iter_mut().find(|group| group.scope == scope) {
             if is_package_source_info(item.source_info.as_ref()) {
-                let source = item.source_info.as_ref().map_or("local", |info| info.source.as_str());
-                if let Some((_, resources)) = group.packages.iter_mut().find(|(key, _)| key == source) {
+                let source = item
+                    .source_info
+                    .as_ref()
+                    .map_or("local", |info| info.source.as_str());
+                if let Some((_, resources)) =
+                    group.packages.iter_mut().find(|(key, _)| key == source)
+                {
                     resources.push(item.clone());
                 } else {
                     group.packages.push((source.into(), vec![item.clone()]));
@@ -77,28 +107,51 @@ pub trait ResourceScopeGroupFormat {
     fn format_package_path(&self, item: &ScopedResource, source: &str) -> String;
 }
 
-pub fn format_resource_scope_groups(groups: &[ResourceScopeGroups], format: &impl ResourceScopeGroupFormat, theme: &Theme) -> String {
-    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+pub fn format_resource_scope_groups(
+    groups: &[ResourceScopeGroups],
+    format: &impl ResourceScopeGroupFormat,
+    theme: &Theme,
+) -> String {
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+        .expect("compiled collation data is available");
     let mut lines = Vec::new();
     for group in groups {
-        lines.push(format!("  {}", theme.fg(ThemeColor::Accent, group.scope.as_str())));
+        lines.push(format!(
+            "  {}",
+            theme.fg(ThemeColor::Accent, group.scope.as_str())
+        ));
         let mut paths: Vec<_> = group.paths.iter().collect();
         paths.sort_by(|a, b| collator.compare(&a.path, &b.path));
-        for item in paths { lines.push(theme.fg(ThemeColor::Dim, &format!("    {}", format.format_path(item)))); }
+        for item in paths {
+            lines.push(theme.fg(
+                ThemeColor::Dim,
+                &format!("    {}", format.format_path(item)),
+            ));
+        }
         let mut packages: Vec<_> = group.packages.iter().collect();
         packages.sort_by(|a, b| collator.compare(&a.0, &b.0));
         for (source, items) in packages {
             lines.push(format!("    {}", theme.fg(ThemeColor::MdLink, source)));
             let mut paths: Vec<_> = items.iter().collect();
             paths.sort_by(|a, b| collator.compare(&a.path, &b.path));
-            for item in paths { lines.push(theme.fg(ThemeColor::Dim, &format!("      {}", format.format_package_path(item, source)))); }
+            for item in paths {
+                lines.push(theme.fg(
+                    ThemeColor::Dim,
+                    &format!("      {}", format.format_package_path(item, source)),
+                ));
+            }
         }
     }
     lines.join("\n")
 }
 
 pub const fn get_scope_autocomplete_tag(scope: SourceScope) -> &'static str {
-    match scope { SourceScope::User => "u", SourceScope::Project => "p", SourceScope::Temporary => "t", SourceScope::System => "s" }
+    match scope {
+        SourceScope::User => "u",
+        SourceScope::Project => "p",
+        SourceScope::Temporary => "t",
+        SourceScope::System => "s",
+    }
 }
 
 pub fn get_display_source_info(info: Option<&SourceInfo>) -> DisplaySourceInfo {
@@ -114,10 +167,22 @@ pub fn get_display_source_info(info: Option<&SourceInfo>) -> DisplaySourceInfo {
             SourceScope::System => ("system", None, ThemeColor::Muted),
         }
     } else if source == "cli" {
-        ("path", (scope == SourceScope::Temporary).then_some("temp"), ThemeColor::Muted)
+        (
+            "path",
+            (scope == SourceScope::Temporary).then_some("temp"),
+            ThemeColor::Muted,
+        )
     } else {
-        let label = match scope { SourceScope::User => "user", SourceScope::Project => "project", SourceScope::Temporary | SourceScope::System => "temp" };
+        let label = match scope {
+            SourceScope::User => "user",
+            SourceScope::Project => "project",
+            SourceScope::Temporary | SourceScope::System => "temp",
+        };
         (source, Some(label), ThemeColor::Accent)
     };
-    DisplaySourceInfo { label: label.into(), scope_label, color }
+    DisplaySourceInfo {
+        label: label.into(),
+        scope_label,
+        color,
+    }
 }

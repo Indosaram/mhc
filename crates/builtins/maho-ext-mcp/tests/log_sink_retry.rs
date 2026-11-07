@@ -1,8 +1,15 @@
-use std::{sync::{Arc, Mutex}, time::{Duration, Instant}};
 use maho_ext_mcp::log::McpLogger;
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 fn warnings(logger: &McpLogger) -> usize {
-    logger.get_ring_buffer().iter().filter(|line| line.contains("file sink disabled")).count()
+    logger
+        .get_ring_buffer()
+        .iter()
+        .filter(|line| line.contains("file sink disabled"))
+        .count()
 }
 
 #[test]
@@ -22,11 +29,22 @@ fn unwritable_sink_warns_once_skips_for_five_seconds_then_retries() {
     advance(Duration::from_millis(4999));
     logger.log("info", "three", None, None).unwrap();
     assert_eq!(warnings(&logger), 1);
-    assert_eq!(logger.get_ring_buffer().iter().filter(|line| line.contains("\"message\":\"three\"")).count(), 1);
+    assert_eq!(
+        logger
+            .get_ring_buffer()
+            .iter()
+            .filter(|line| line.contains("\"message\":\"three\""))
+            .count(),
+        1
+    );
 
     advance(Duration::from_millis(1));
     logger.log("info", "four", None, None).unwrap();
-    assert_eq!(warnings(&logger), 2, "retry after the window fails again and warns again");
+    assert_eq!(
+        warnings(&logger),
+        2,
+        "retry after the window fails again and warns again"
+    );
     advance(Duration::from_secs(4));
     logger.log("info", "five", None, None).unwrap();
     assert_eq!(warnings(&logger), 2);

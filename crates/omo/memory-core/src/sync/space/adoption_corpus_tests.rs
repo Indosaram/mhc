@@ -10,7 +10,10 @@ struct Header {
 
 fn header(random: &mut Random, source: usize, iteration: usize) -> Header {
     if random.chance(0.03) {
-        return Header { text: String::new(), keys: Vec::new() };
+        return Header {
+            text: String::new(),
+            keys: Vec::new(),
+        };
     }
     let mut fields = Vec::new();
     let mut keys = Vec::new();
@@ -22,19 +25,31 @@ fn header(random: &mut Random, source: usize, iteration: usize) -> Header {
         let name = format!("k{key}");
         let (name, text, value) = match random.index(7) {
             0 => (name, format!("\"{token}\""), Value::String(token)),
-            1 => (name, format!("[shared, \"{token}\"]"), Value::Seq(vec![
-                Value::String("shared".into()), Value::String(token),
-            ])),
+            1 => (
+                name,
+                format!("[shared, \"{token}\"]"),
+                Value::Seq(vec![Value::String("shared".into()), Value::String(token)]),
+            ),
             2 => {
                 let number = (source + iteration * 4).to_string();
                 (name, number.clone(), Value::Atom(number))
             }
             3 => (name, "[]".into(), Value::Seq(Vec::new())),
-            4 => (name, format!("\"shared\\n{token} --> end\""),
-                Value::String(format!("shared\n{token} --> end"))),
-            5 => (name, format!("\"한글-{token} 🙂\""),
-                Value::String(format!("한글-{token} 🙂"))),
-            6 => (format!("키{key}"), format!("\"{token}\""), Value::String(token)),
+            4 => (
+                name,
+                format!("\"shared\\n{token} --> end\""),
+                Value::String(format!("shared\n{token} --> end")),
+            ),
+            5 => (
+                name,
+                format!("\"한글-{token} 🙂\""),
+                Value::String(format!("한글-{token} 🙂")),
+            ),
+            6 => (
+                format!("키{key}"),
+                format!("\"{token}\""),
+                Value::String(token),
+            ),
             _ => unreachable!("seven choices"),
         };
         fields.push(format!("{name}: {text}"));
@@ -52,8 +67,15 @@ fn header(random: &mut Random, source: usize, iteration: usize) -> Header {
     } else {
         fields.join(eol)
     };
-    let closing = if random.chance(0.1) { "---".into() } else { format!("---{eol}") };
-    Header { text: format!("---{eol}{content}{eol}{closing}"), keys }
+    let closing = if random.chance(0.1) {
+        "---".into()
+    } else {
+        format!("---{eol}")
+    };
+    Header {
+        text: format!("---{eol}{content}{eol}{closing}"),
+        keys,
+    }
 }
 
 #[test]
@@ -64,12 +86,20 @@ fn seeded_mixed_kind_four_source_adoption_preserves_values_and_replays() {
             // Given: the same four-source generator, draw order and seeds as upstream A1.
             let sources: Vec<_> = (0..4).map(|n| header(&mut random, n, iteration)).collect();
             let files = [
-                Snapshot { path: "n.md".into(), text: format!("{}{}", sources[1].text, block(&sources[2].text)) },
-                Snapshot { path: "n.sync-conflict-20261015-device.md".into(), text: sources[3].text.clone() },
+                Snapshot {
+                    path: "n.md".into(),
+                    text: format!("{}{}", sources[1].text, block(&sources[2].text)),
+                },
+                Snapshot {
+                    path: "n.sync-conflict-20261015-device.md".into(),
+                    text: sources[3].text.clone(),
+                },
             ];
             let initial = ItemState {
-                current_text: Some(sources[0].text.clone()), last_materialised: None,
-                tombstoned: false, registers: sole_registers(&sources[0].text),
+                current_text: Some(sources[0].text.clone()),
+                last_materialised: None,
+                tombstoned: false,
+                registers: sole_registers(&sources[0].text),
             };
             // When: adopt T2 and T1 sources into the pre-existing space.
             let plan = plan_adoption(&files, &initial).expect("plan");
@@ -79,12 +109,21 @@ fn seeded_mixed_kind_four_source_adoption_preserves_values_and_replays() {
             for source in &sources {
                 facts.assert_keys(&source.keys, &context);
             }
-            assert!(!plan.rendered.contains("memory-sync frontmatter conflict"), "{context}");
+            assert!(
+                !plan.rendered.contains("memory-sync frontmatter conflict"),
+                "{context}"
+            );
             assert!(!matches!(plan.action, AdoptionAction::Remove), "{context}");
-            let repeated = plan_adoption(&files, &ItemState {
-                current_text: Some(plan.rendered.clone()), last_materialised: None,
-                tombstoned: false, registers: plan.registers.clone(),
-            }).expect("repeat");
+            let repeated = plan_adoption(
+                &files,
+                &ItemState {
+                    current_text: Some(plan.rendered.clone()),
+                    last_materialised: None,
+                    tombstoned: false,
+                    registers: plan.registers.clone(),
+                },
+            )
+            .expect("repeat");
             assert!(matches!(repeated.action, AdoptionAction::None), "{context}");
             if iteration % 25 == 0 {
                 let doc = seed(&sources[0].text);
@@ -92,7 +131,11 @@ fn seeded_mixed_kind_four_source_adoption_preserves_values_and_replays() {
                 if matches!(committed.action, AdoptionAction::Capture { .. }) {
                     commit(&doc, &committed);
                 }
-                assert_eq!(render_doc_content(&doc).expect("render"), committed.rendered, "{context}");
+                assert_eq!(
+                    render_doc_content(&doc).expect("render"),
+                    committed.rendered,
+                    "{context}"
+                );
                 let mut expected = committed.registers;
                 for values in expected.values_mut() {
                     values.sort();
@@ -119,7 +162,10 @@ fn duplicate_key_headers_remain_body_and_the_side_is_removable_only_with_its_lin
     assert!(output.lines().any(|line| line == "k: first"));
     assert!(output.lines().any(|line| line == "k: second"));
     assert!(!item::active_registers(&doc).contains_key("k"));
-    assert_eq!(confirm_removals(&doc, &plan, &files).expect("gate").remove, [files[0].path.clone()]);
+    assert_eq!(
+        confirm_removals(&doc, &plan, &files).expect("gate").remove,
+        [files[0].path.clone()]
+    );
 }
 
 #[test]
@@ -130,8 +176,14 @@ fn existing_key_hub_and_side_values_survive_capture_into_real_item() {
     let other = "---\ntitle: Other\ntags: [a, b]\nreviewed: false\n---\n";
     let side = "---\ntitle: Side\ntags: [c]\nreviewed: 3\n---\nside\n";
     let files = [
-        Snapshot { path: "n.md".into(), text: format!("{main}{}", block(other)) },
-        Snapshot { path: "n.sync-conflict-20261015-device.md".into(), text: side.into() },
+        Snapshot {
+            path: "n.md".into(),
+            text: format!("{main}{}", block(other)),
+        },
+        Snapshot {
+            path: "n.sync-conflict-20261015-device.md".into(),
+            text: side.into(),
+        },
     ];
     // When
     let plan = plan_adoption(&files, &state(&doc)).expect("plan");

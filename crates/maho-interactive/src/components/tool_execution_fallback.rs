@@ -35,7 +35,10 @@ fn sanitize_fallback_string(value: &str, max_length: usize) -> String {
     if collapsed.chars().count() <= max_length {
         return collapsed;
     }
-    let taken: String = collapsed.chars().take(max_length.saturating_sub(3)).collect();
+    let taken: String = collapsed
+        .chars()
+        .take(max_length.saturating_sub(3))
+        .collect();
     format!("{taken}...")
 }
 
@@ -46,14 +49,16 @@ fn sanitize_call_string(value: &str) -> String {
             !('\u{0}'..='\u{8}').contains(character)
                 && *character != '\u{b}'
                 && !('\u{b}'..='\u{1f}').contains(character)
-                && !( '\u{7f}'..='\u{9f}').contains(character)
+                && !('\u{7f}'..='\u{9f}').contains(character)
         })
         .collect()
 }
 
 fn sanitize_fallback_json_value(value: &Value) -> Value {
     match value {
-        Value::String(text) => Value::String(sanitize_fallback_string(text, FALLBACK_STRING_MAX_LENGTH)),
+        Value::String(text) => {
+            Value::String(sanitize_fallback_string(text, FALLBACK_STRING_MAX_LENGTH))
+        }
         other => other.clone(),
     }
 }
@@ -64,12 +69,22 @@ fn parse_renderable_json(text: &str) -> Option<Value> {
         return None;
     }
     let parsed: Value = serde_json::from_str(trimmed).ok()?;
-    if parsed.is_object() || parsed.is_array() { Some(parsed) } else { None }
+    if parsed.is_object() || parsed.is_array() {
+        Some(parsed)
+    } else {
+        None
+    }
 }
 
 fn truncate_json_view_value(value: &str) -> String {
     if value.chars().count() > JSON_VIEW_MAX_VALUE_LENGTH {
-        format!("{}…", value.chars().take(JSON_VIEW_MAX_VALUE_LENGTH).collect::<String>())
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(JSON_VIEW_MAX_VALUE_LENGTH)
+                .collect::<String>()
+        )
     } else {
         value.to_owned()
     }
@@ -80,21 +95,37 @@ fn style_json_primitive(value: &Value, theme: &Theme) -> String {
         Value::String(text) => theme.fg(ThemeColor::ToolOutput, &truncate_json_view_value(text)),
         Value::Number(_) | Value::Bool(_) => theme.fg(ThemeColor::Accent, &value.to_string()),
         Value::Null => theme.fg(ThemeColor::Dim, "null"),
-        other => theme.fg(ThemeColor::ToolOutput, &truncate_json_view_value(&other.to_string())),
+        other => theme.fg(
+            ThemeColor::ToolOutput,
+            &truncate_json_view_value(&other.to_string()),
+        ),
     }
 }
 
 fn style_json_compact(value: &Value, theme: &Theme) -> String {
-    theme.fg(ThemeColor::ToolOutput, &truncate_json_view_value(&value.to_string()))
+    theme.fg(
+        ThemeColor::ToolOutput,
+        &truncate_json_view_value(&value.to_string()),
+    )
 }
 
 fn collect_json_view_rows(value: &Value, theme: &Theme) -> (Vec<String>, usize) {
     let mut rows: Vec<String> = Vec::new();
     let mut omitted = 0usize;
 
-    fn walk(node: &Value, depth: usize, rows: &mut Vec<String>, omitted: &mut usize, theme: &Theme) {
+    fn walk(
+        node: &Value,
+        depth: usize,
+        rows: &mut Vec<String>,
+        omitted: &mut usize,
+        theme: &Theme,
+    ) {
         let entries: Vec<(String, &Value)> = match node {
-            Value::Array(items) => items.iter().enumerate().map(|(index, item)| (index.to_string(), item)).collect(),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| (index.to_string(), item))
+                .collect(),
             Value::Object(map) => map.iter().map(|(key, item)| (key.clone(), item)).collect(),
             _ => return,
         };
@@ -104,17 +135,26 @@ fn collect_json_view_rows(value: &Value, theme: &Theme) -> (Vec<String>, usize) 
                 *omitted += 1;
                 continue;
             }
-            let label = format!("{indent}{}", theme.fg(ThemeColor::Muted, &format!("{key}:")));
+            let label = format!(
+                "{indent}{}",
+                theme.fg(ThemeColor::Muted, &format!("{key}:"))
+            );
             if entry_value.is_object() || entry_value.is_array() {
                 if depth + 1 >= JSON_VIEW_MAX_DEPTH {
-                    rows.push(format!("{label} {}", style_json_compact(entry_value, theme)));
+                    rows.push(format!(
+                        "{label} {}",
+                        style_json_compact(entry_value, theme)
+                    ));
                     continue;
                 }
                 rows.push(label);
                 walk(entry_value, depth + 1, rows, omitted, theme);
                 continue;
             }
-            rows.push(format!("{label} {}", style_json_primitive(entry_value, theme)));
+            rows.push(format!(
+                "{label} {}",
+                style_json_primitive(entry_value, theme)
+            ));
         }
     }
 
@@ -137,37 +177,77 @@ pub fn create_tool_call_fallback(tool_name: &str, theme: &Theme) -> Rc<RefCell<d
     create_tool_call_fallback_with_args(tool_name, &Value::Null, false, theme)
 }
 
-pub fn create_tool_call_fallback_with_args(tool_name: &str, args: &Value, expanded: bool, theme: &Theme) -> Rc<RefCell<dyn Component>> {
-    let title = theme.fg(ThemeColor::ToolTitle, &theme.bold(&sanitize_fallback_string(tool_name, FALLBACK_STRING_MAX_LENGTH)));
+pub fn create_tool_call_fallback_with_args(
+    tool_name: &str,
+    args: &Value,
+    expanded: bool,
+    theme: &Theme,
+) -> Rc<RefCell<dyn Component>> {
+    let title = theme.fg(
+        ThemeColor::ToolTitle,
+        &theme.bold(&sanitize_fallback_string(
+            tool_name,
+            FALLBACK_STRING_MAX_LENGTH,
+        )),
+    );
     let safe = sanitize_call_args(args);
     let entries: Vec<_> = match &safe {
         Value::Null => Vec::new(),
-        Value::Object(map) => map.iter().map(|(key,value)|(key.as_str(),value)).collect(),
-        value => vec![("args",value)],
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+            .collect(),
+        value => vec![("args", value)],
     };
     let text = if entries.is_empty() {
         title
     } else if expanded {
-        let lines = entries.iter().map(|(key,value)| {
-            let text = value.as_str().map(str::to_owned).unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
-            format!("  {key}: {}", text.replace('\t', "   ").replace('\r', "").replace('\n', "\n    "))
-        }).collect::<Vec<_>>().join("\n");
-        format!("{title}\n{}",theme.fg(ThemeColor::Muted,&lines))
+        let lines = entries
+            .iter()
+            .map(|(key, value)| {
+                let text = value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+                format!(
+                    "  {key}: {}",
+                    text.replace('\t', "   ")
+                        .replace('\r', "")
+                        .replace('\n', "\n    ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{title}\n{}", theme.fg(ThemeColor::Muted, &lines))
     } else {
-        let pairs = entries.iter().map(|(key,value)|format!("{key}={value}")).collect::<Vec<_>>().join(" ");
-        let preview = if pairs.encode_utf16().count()>100 { format!("{}...",String::from_utf16_lossy(&pairs.encode_utf16().take(97).collect::<Vec<_>>())) } else { pairs };
-        format!("{title} {}",theme.fg(ThemeColor::Muted,&preview))
+        let pairs = entries
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let preview = if pairs.encode_utf16().count() > 100 {
+            format!(
+                "{}...",
+                String::from_utf16_lossy(&pairs.encode_utf16().take(97).collect::<Vec<_>>())
+            )
+        } else {
+            pairs
+        };
+        format!("{title} {}", theme.fg(ThemeColor::Muted, &preview))
     };
     Rc::new(RefCell::new(Text::with_padding(text, 0, 0)))
 }
 
 fn sanitize_call_args(value: &Value) -> Value {
     match value {
-        Value::String(text) => {
-            Value::String(sanitize_call_string(text))
-        }
+        Value::String(text) => Value::String(sanitize_call_string(text)),
         Value::Array(values) => Value::Array(values.iter().map(sanitize_call_args).collect()),
-        Value::Object(values) => Value::Object(values.iter().map(|(key, value)| (key.clone(), sanitize_call_args(value))).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), sanitize_call_args(value)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -182,8 +262,16 @@ pub fn create_tool_result_fallback(
         return None;
     }
     match parse_renderable_json(&output) {
-        Some(parsed) => Some(Rc::new(RefCell::new(Text::with_padding(render_json_view(&parsed, theme), 0, 0)))),
-        None => Some(Rc::new(RefCell::new(Text::with_padding(theme.fg(ThemeColor::ToolOutput, &output), 0, 0)))),
+        Some(parsed) => Some(Rc::new(RefCell::new(Text::with_padding(
+            render_json_view(&parsed, theme),
+            0,
+            0,
+        )))),
+        None => Some(Rc::new(RefCell::new(Text::with_padding(
+            theme.fg(ThemeColor::ToolOutput, &output),
+            0,
+            0,
+        )))),
     }
 }
 
@@ -194,17 +282,31 @@ pub fn format_tool_execution_fallback(
     show_images: bool,
     theme: &Theme,
 ) -> String {
-    let mut text = theme.fg(ThemeColor::ToolTitle, &theme.bold(&sanitize_fallback_string(tool_name, FALLBACK_STRING_MAX_LENGTH)));
+    let mut text = theme.fg(
+        ThemeColor::ToolTitle,
+        &theme.bold(&sanitize_fallback_string(
+            tool_name,
+            FALLBACK_STRING_MAX_LENGTH,
+        )),
+    );
     let sanitized_args = match args {
-        Value::Object(map) => {
-            Value::Object(map.iter().map(|(key, value)| (key.clone(), sanitize_fallback_json_value(value))).collect())
-        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), sanitize_fallback_json_value(value)))
+                .collect(),
+        ),
         other => sanitize_fallback_json_value(other),
     };
     let content = serde_json::to_string_pretty(&sanitized_args).unwrap_or_default();
     if !content.is_empty() {
         let bounded = if content.chars().count() > FALLBACK_JSON_MAX_LENGTH {
-            format!("{}...", content.chars().take(FALLBACK_JSON_MAX_LENGTH - 3).collect::<String>())
+            format!(
+                "{}...",
+                content
+                    .chars()
+                    .take(FALLBACK_JSON_MAX_LENGTH - 3)
+                    .collect::<String>()
+            )
         } else {
             content
         };
@@ -212,7 +314,10 @@ pub fn format_tool_execution_fallback(
     }
     let output = get_text_output(result, show_images);
     if !output.is_empty() {
-        text += &format!("\n{}", sanitize_fallback_string(&output, FALLBACK_JSON_MAX_LENGTH));
+        text += &format!(
+            "\n{}",
+            sanitize_fallback_string(&output, FALLBACK_JSON_MAX_LENGTH)
+        );
     }
     text
 }
@@ -223,12 +328,14 @@ mod tests {
 
     #[test]
     fn fallback_call_shows_sanitized_args_and_expands_json() {
-        let theme = Theme::builtin("dark", crate::theme::ColorMode::Color256).expect("builtin theme");
+        let theme =
+            Theme::builtin("dark", crate::theme::ColorMode::Color256).expect("builtin theme");
         let args = serde_json::json!({"query": "find\u{001b}[31m red\nfiles"});
         let compact = format_tool_execution_fallback("search", &args, None, false, &theme);
         assert!(compact.contains("find red files"));
         assert!(!compact.contains("\\u001b"));
-        let expanded = serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
+        let expanded =
+            serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
         assert!(expanded.contains("find red\\nfiles"));
     }
 }

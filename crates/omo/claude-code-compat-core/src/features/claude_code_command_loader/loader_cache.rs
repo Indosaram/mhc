@@ -1,6 +1,11 @@
-use std::{collections::HashMap, io, path::{Component, Path, PathBuf}, sync::{LazyLock, Mutex}};
-use futures::future::{BoxFuture, Shared};
 use super::types::CommandRecord;
+use futures::future::{BoxFuture, Shared};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Component, Path, PathBuf},
+    sync::{LazyLock, Mutex},
+};
 
 pub type CachedCommands = Shared<BoxFuture<'static, CommandRecord>>;
 
@@ -14,25 +19,42 @@ pub fn get_command_loader_cache_key(directory: Option<&Path>) -> io::Result<Path
     for component in resolved.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => { normalized.pop(); }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => normalized.push(component.as_os_str()),
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str())
+            }
         }
     }
     Ok(std::fs::canonicalize(&normalized).unwrap_or(normalized))
 }
 
 pub fn get_cached_commands(key: &Path) -> Option<CachedCommands> {
-    COMMAND_LOADER_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).cloned()
+    COMMAND_LOADER_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(key)
+        .cloned()
 }
 
 pub fn set_cached_commands(key: PathBuf, commands: CachedCommands) {
-    COMMAND_LOADER_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, commands);
+    COMMAND_LOADER_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, commands);
 }
 
 pub fn delete_cached_commands(key: &Path) {
-    COMMAND_LOADER_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
+    COMMAND_LOADER_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(key);
 }
 
 pub fn clear_command_loader_cache() {
-    COMMAND_LOADER_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    COMMAND_LOADER_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }

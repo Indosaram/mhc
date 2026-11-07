@@ -538,8 +538,12 @@ async fn prepares_command_cwd_and_explicit_environment() {
         assert_eq!(parts[0], "ready");
         assert_eq!(parts[1], "explicit");
         let pwd = parts[2];
-        let win_pwd = if let Some(rest) = pwd.strip_prefix("/tmp/").or_else(|| pwd.strip_prefix("/tmp")) {
-            let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        let win_pwd = if let Some(rest) = pwd
+            .strip_prefix("/tmp/")
+            .or_else(|| pwd.strip_prefix("/tmp"))
+        {
+            let temp = std::fs::canonicalize(std::env::temp_dir())
+                .unwrap_or_else(|_| std::env::temp_dir());
             let temp_str = temp.to_string_lossy();
             let stripped_temp = temp_str
                 .strip_prefix(r"\\?\UNC\")
@@ -549,11 +553,18 @@ async fn prepares_command_cwd_and_explicit_environment() {
             if rest.is_empty() {
                 stripped_temp
             } else {
-                std::path::Path::new(&stripped_temp).join(rest.replace('/', "\\")).to_string_lossy().into_owned()
+                std::path::Path::new(&stripped_temp)
+                    .join(rest.replace('/', "\\"))
+                    .to_string_lossy()
+                    .into_owned()
             }
         } else if let Some(stripped) = pwd.strip_prefix('/') {
             if let Some((drive, rest)) = stripped.split_once('/') {
-                format!("{}:\\{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"))
+                format!(
+                    "{}:\\{}",
+                    drive.to_ascii_uppercase(),
+                    rest.replace('/', "\\")
+                )
             } else {
                 format!("{}:\\", stripped.to_ascii_uppercase())
             }

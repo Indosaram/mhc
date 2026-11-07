@@ -4,7 +4,8 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::{FrameGeometry, MAX_COMPOSITE_PIXELS};
 use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{
-    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow, Target,
+    CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopPoint, DesktopWindow, FrontWindow,
+    Target,
 };
 
 use crate::fake::FakeBackend;
@@ -17,7 +18,8 @@ impl FakeBackend {
     fn frame(&self, target: &Target) -> CoreResult<(FrameGeometry, u32, u32)> {
         match target {
             Target::Desktop => {
-                let extent = |edge: fn(&DesktopDisplay) -> u32| self.displays.iter().map(edge).max();
+                let extent =
+                    |edge: fn(&DesktopDisplay) -> u32| self.displays.iter().map(edge).max();
                 let width = extent(|d| d.pixel_x.saturating_add(d.pixel_width)).unwrap_or(0);
                 let height = extent(|d| d.pixel_y.saturating_add(d.pixel_height)).unwrap_or(0);
                 Ok((FrameGeometry::for_displays(&self.displays), width, height))
@@ -35,7 +37,11 @@ impl FakeBackend {
         let Some(resize) = self.resize_window.take_if(|resize| &resize.id == id) else {
             return;
         };
-        if let Some(window) = self.windows.iter_mut().find(|window| window.id == resize.id) {
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.id == resize.id)
+        {
             window.width = resize.width;
             window.height = resize.height;
         }
@@ -58,7 +64,11 @@ impl Backend for FakeBackend {
     }
 
     /// Returns the native-size solid image; the session applies `caps`.
-    fn capture(&mut self, target: &Target, _caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        _caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         self.begin(FakeMethod::Capture)?;
         if !self.capabilities.capture {
             return Err(DesktopError::capture_failed(
@@ -162,7 +172,12 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.begin(FakeMethod::KeyChord)?;
         self.input_gate(target, mode)?;
         self.deliver_focus(target, mode);

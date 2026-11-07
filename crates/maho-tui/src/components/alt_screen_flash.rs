@@ -20,7 +20,9 @@ pub struct AltScreenFlashContainer {
 
 impl AltScreenFlashContainer {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     pub fn flash(&mut self, message: impl Into<String>, duration_ms: Option<u64>, now_ms: u64) {

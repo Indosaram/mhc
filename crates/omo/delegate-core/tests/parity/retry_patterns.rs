@@ -40,6 +40,14 @@ fn background_retry_pattern_recommends_standard_spawn() {
     let Some(pattern) = pattern else {
         panic!("background retry pattern is missing");
     };
-    assert!(pattern.fix_hint.contains("run_in_background=true (the standard spawn)"));
-    assert!(pattern.fix_hint.contains("run_in_background=false for a short child"));
+    assert!(
+        pattern
+            .fix_hint
+            .contains("run_in_background=true (the standard spawn)")
+    );
+    assert!(
+        pattern
+            .fix_hint
+            .contains("run_in_background=false for a short child")
+    );
 }

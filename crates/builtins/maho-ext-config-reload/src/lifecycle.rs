@@ -459,7 +459,16 @@ async fn start(
                 )
             };
             // Rebuilding recomputes the targets, so record which created paths were presence containers first.
-            let rearmed_containers: Vec<PathBuf> = change.created.iter().filter(|path| targets.iter().any(|target| target.rearm_on_creation.as_ref() == Some(*path))).cloned().collect();
+            let rearmed_containers: Vec<PathBuf> = change
+                .created
+                .iter()
+                .filter(|path| {
+                    targets
+                        .iter()
+                        .any(|target| target.rearm_on_creation.as_ref() == Some(*path))
+                })
+                .cloned()
+                .collect();
             if !rearmed_containers.is_empty() {
                 let previous = engine.engine.get_baseline_snapshot();
                 engine.close_async().await?;
@@ -494,7 +503,14 @@ async fn start(
                 // Files discovered by the rearm pass through the same self-write, routine and shim filters.
                 let discovered = {
                     let mut logger = logger.lock().map_err(|error| error.to_string())?;
-                    significant_changed_paths(&compare_snapshots(&previous, &current), &current, &mut contents, &ctx.agent_dir, &ctx.cwd, &mut logger)
+                    significant_changed_paths(
+                        &compare_snapshots(&previous, &current),
+                        &current,
+                        &mut contents,
+                        &ctx.agent_dir,
+                        &ctx.cwd,
+                        &mut logger,
+                    )
                 };
                 paths.extend(discovered);
                 crate::routine_settings::refresh_settings_content_snapshots(

@@ -2,9 +2,7 @@ use serde_json::{Map, Value, json};
 
 use crate::internal::jsonc::parse_jsonc_safe;
 use crate::internal::validate::safe_parse;
-use crate::loader::disabled_skills::{
-    CollectDisabledSkillsOptions, collect_excluded_models,
-};
+use crate::loader::disabled_skills::{CollectDisabledSkillsOptions, collect_excluded_models};
 use crate::loader::layer_validation::{
     OmoConfigLayerValidation, invalid_value_diagnostics, validate_config_layer,
     validation_diagnostic,
@@ -53,13 +51,7 @@ fn with_excluded_models(
     let mut config = config;
     config.insert(
         "exclude_models".into(),
-        Value::Array(
-            exclude_models
-                .iter()
-                .cloned()
-                .map(Value::String)
-                .collect(),
-        ),
+        Value::Array(exclude_models.iter().cloned().map(Value::String).collect()),
     );
     config
 }
@@ -338,7 +330,8 @@ pub fn load_omo_config(options: &LoadOmoConfigOptions<'_>) -> LoadOmoConfigResul
                 }
                 PruneResult::NotOk { .. } => {
                     let fallback = default_raw_config();
-                    let fallback = match safe_parse(&omo_config_schema(), &Value::Object(fallback)) {
+                    let fallback = match safe_parse(&omo_config_schema(), &Value::Object(fallback))
+                    {
                         Ok(Value::Object(map)) => map,
                         _ => Map::new(),
                     };

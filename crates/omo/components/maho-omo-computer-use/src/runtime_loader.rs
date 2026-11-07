@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use futures::future::BoxFuture;
 use maho_ext_api::{ExecuteToolOptions, ExtensionFailure, ExtensionRuntime};
 use senpi_desktop_core::error::PermissionDeniedData;
@@ -7,8 +6,9 @@ use senpi_desktop_tool::cua_definition::COMPUTER_ACTIONS_TOOL_NAME;
 use senpi_desktop_tool::settings::ComputerSettings;
 use senpi_desktop_tool::tool_definition::COMPUTER_TOOL_NAME;
 use serde_json::Value;
+use std::sync::Arc;
 
-use crate::runtime::{create_computer_use_runtime, ComputerUseRuntime, ComputerUseRuntimeOptions};
+use crate::runtime::{ComputerUseRuntime, ComputerUseRuntimeOptions, create_computer_use_runtime};
 
 pub trait ComputerHostApi: Send + Sync {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure>;
@@ -67,8 +67,11 @@ impl ComputerHostApi for ExtensionRuntimeHostBridge {
 pub type EngineChildFactory = Arc<dyn Fn(Option<&str>) -> ChildFactory + Send + Sync>;
 pub type EngineErrorCallback = Arc<dyn Fn(String) + Send + Sync>;
 pub type PermissionCallback = Arc<dyn Fn(PermissionDeniedData) + Send + Sync>;
-pub type RuntimeLoaderFn = Arc<dyn Fn() -> BoxFuture<'static, Result<ComputerUseRuntime, String>> + Send + Sync>;
-pub type StartedRuntimeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Arc<ComputerUseRuntime>, String>> + Send + 'static>>;
+pub type RuntimeLoaderFn =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<ComputerUseRuntime, String>> + Send + Sync>;
+pub type StartedRuntimeFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Arc<ComputerUseRuntime>, String>> + Send + 'static>,
+>;
 
 pub struct ComputerRuntimeLoaderOptions {
     pub host: Arc<dyn ComputerHostApi>,
@@ -104,12 +107,18 @@ impl ComputerRuntimeLoader {
     }
 
     pub fn is_started(&self) -> bool {
-        let guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         !matches!(*guard, LoaderState::Unstarted)
     }
 
     pub fn started(&self) -> Option<StartedRuntimeFuture> {
-        let guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &*guard {
             LoaderState::Unstarted => None,
             LoaderState::Loaded(rt) => {
@@ -144,7 +153,10 @@ impl ComputerRuntimeLoader {
         }
 
         let action = {
-            let mut guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match &*guard {
                 LoaderState::Loaded(rt) => LoadAction::Loaded(Arc::clone(rt)),
                 LoaderState::Loading(rx) => LoadAction::Wait(rx.clone()),
@@ -179,11 +191,13 @@ impl ComputerRuntimeLoader {
             None => {
                 let host_for_exec = Arc::clone(&self.options.host);
                 let execute_tool: senpi_desktop_run::runtime::ExecuteTool = Arc::new(
-                    move |tool_name: String, params: Value, signal: maho_ai::utils::abort::AbortSignal| {
+                    move |tool_name: String,
+                          params: Value,
+                          signal: maho_ai::utils::abort::AbortSignal| {
                         let h = Arc::clone(&host_for_exec);
-                        Box::pin(async move {
-                            h.execute_tool(&tool_name, params, Some(signal)).await
-                        })
+                        Box::pin(
+                            async move { h.execute_tool(&tool_name, params, Some(signal)).await },
+                        )
                     },
                 );
 
@@ -202,36 +216,51 @@ impl ComputerRuntimeLoader {
                 let host = Arc::clone(&self.options.host);
                 let cua_adapter = self.options.settings.cua_adapter;
                 let computer_tools = if cua_adapter {
-                    vec![COMPUTER_TOOL_NAME.to_string(), COMPUTER_ACTIONS_TOOL_NAME.to_string()]
+                    vec![
+                        COMPUTER_TOOL_NAME.to_string(),
+                        COMPUTER_ACTIONS_TOOL_NAME.to_string(),
+                    ]
                 } else {
                     vec![COMPUTER_TOOL_NAME.to_string()]
                 };
 
-                runtime.handle.on_activation_change(Arc::new(move |active: bool| {
-                    let current = match host.get_active_tools() {
-                        Ok(c) => c,
-                        Err(_) => return,
-                    };
-                    let next = if active {
-                        let mut next = current.clone();
-                        for tool in &computer_tools {
-                            if !next.contains(tool) {
-                                next.push(tool.clone());
+                runtime
+                    .handle
+                    .on_activation_change(Arc::new(move |active: bool| {
+                        let current = match host.get_active_tools() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        let next = if active {
+                            let mut next = current.clone();
+                            for tool in &computer_tools {
+                                if !next.contains(tool) {
+                                    next.push(tool.clone());
+                                }
                             }
+                            next
+                        } else {
+                            current
+                                .iter()
+                                .filter(|t| !computer_tools.contains(t))
+                                .cloned()
+                                .collect()
+                        };
+                        if next.len() == current.len()
+                            && next.iter().zip(current.iter()).all(|(a, b)| a == b)
+                        {
+                            return;
                         }
-                        next
-                    } else {
-                        current.iter().filter(|t| !computer_tools.contains(t)).cloned().collect()
-                    };
-                    if next.len() == current.len() && next.iter().zip(current.iter()).all(|(a, b)| a == b) {
-                        return;
-                    }
-                    let _ = host.set_active_tools(next);
-                })).await;
+                        let _ = host.set_active_tools(next);
+                    }))
+                    .await;
 
                 let arc_rt = Arc::new(runtime);
                 {
-                    let mut guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *guard = LoaderState::Loaded(Arc::clone(&arc_rt));
                 }
                 let _ = tx.send(Some(Ok(Arc::clone(&arc_rt))));
@@ -239,7 +268,10 @@ impl ComputerRuntimeLoader {
             }
             Err(err) => {
                 {
-                    let mut guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *guard = LoaderState::Unstarted;
                 }
                 let _ = tx.send(Some(Err(err.clone())));

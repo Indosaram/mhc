@@ -60,7 +60,9 @@ fn default_stderr_write() -> WriteSink {
 /// sink extension crates use for diagnostics) is routed through [`maho_write_stderr`] as well, so
 /// no diagnostic reaches the terminal behind the renderer (senpi patches `process.stderr.write`).
 fn guarded_process_stderr() -> maho_tui::process_stdio::StreamWrite {
-    Arc::new(|text: &str| { maho_write_stderr(text); })
+    Arc::new(|text: &str| {
+        maho_write_stderr(text);
+    })
 }
 
 struct OutputGuardState {
@@ -94,7 +96,10 @@ pub fn take_over_stdout() {
     if guard.stdout_takeover.is_some() {
         return;
     }
-    guard.stdout_takeover = Some(StdoutTakeover { raw_stdout_write: default_stdout_write(), raw_stderr_write: default_stderr_write() });
+    guard.stdout_takeover = Some(StdoutTakeover {
+        raw_stdout_write: default_stdout_write(),
+        raw_stderr_write: default_stderr_write(),
+    });
 }
 
 pub fn restore_stdout() {
@@ -103,7 +108,11 @@ pub fn restore_stdout() {
 }
 
 pub fn is_stdout_taken_over() -> bool {
-    state().lock().expect("output guard lock").stdout_takeover.is_some()
+    state()
+        .lock()
+        .expect("output guard lock")
+        .stdout_takeover
+        .is_some()
 }
 
 /// Write one chunk to the process stdout sink, honouring an active stdout takeover.
@@ -136,14 +145,21 @@ fn visible_stderr_sink() -> WriteSink {
         let original = Arc::clone(&original);
         let listeners = Arc::clone(&listeners);
         Arc::new(move |text: &str| {
-            let notified = listeners.lock().map(|listeners| listeners.clone()).unwrap_or_default();
+            let notified = listeners
+                .lock()
+                .map(|listeners| listeners.clone())
+                .unwrap_or_default();
             for notify in notified {
                 notify();
             }
             original(text);
         })
     };
-    guard.visible_stderr = Some(VisibleStderrObservation { original, writer: Arc::clone(&writer), listeners });
+    guard.visible_stderr = Some(VisibleStderrObservation {
+        original,
+        writer: Arc::clone(&writer),
+        listeners,
+    });
     writer
 }
 
@@ -152,12 +168,16 @@ pub fn observe_visible_stderr_writes(listener: Observer) -> StderrObservation {
     visible_stderr_sink();
     let listeners = {
         let guard = state().lock().expect("output guard lock");
-        guard.visible_stderr.as_ref().map(|observation| Arc::clone(&observation.listeners))
+        guard
+            .visible_stderr
+            .as_ref()
+            .map(|observation| Arc::clone(&observation.listeners))
     };
     if let Some(listeners) = listeners
-        && let Ok(mut listeners) = listeners.lock() {
-            listeners.push(Arc::clone(&listener));
-        }
+        && let Ok(mut listeners) = listeners.lock()
+    {
+        listeners.push(Arc::clone(&listener));
+    }
     StderrObservation { listener }
 }
 
@@ -169,27 +189,37 @@ impl Drop for StderrObservation {
     fn drop(&mut self) {
         let (remaining, original, writer) = {
             let guard = state().lock().expect("output guard lock");
-            let Some(observation) = &guard.visible_stderr else { return };
+            let Some(observation) = &guard.visible_stderr else {
+                return;
+            };
             let mut remaining = 0usize;
             if let Ok(mut listeners) = observation.listeners.lock() {
                 listeners.retain(|candidate| !Arc::ptr_eq(candidate, &self.listener));
                 remaining = listeners.len();
             }
-            (remaining, Arc::clone(&observation.original), Arc::clone(&observation.writer))
+            (
+                remaining,
+                Arc::clone(&observation.original),
+                Arc::clone(&observation.writer),
+            )
         };
         if remaining > 0 {
             return;
         }
         let mut guard = state().lock().expect("output guard lock");
         if let Some(takeover) = guard.stderr_takeover.as_mut()
-            && Arc::ptr_eq(&takeover.original_stderr_write, &writer) {
-                takeover.original_stderr_write = original;
-            }
+            && Arc::ptr_eq(&takeover.original_stderr_write, &writer)
+        {
+            takeover.original_stderr_write = original;
+        }
         guard.visible_stderr = None;
     }
 }
 
-pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_hidden_diagnostic_fallback: Option<DiagnosticFallback>) {
+pub fn take_over_stderr(
+    on_hidden_diagnostic: Option<HiddenDiagnostic>,
+    format_hidden_diagnostic_fallback: Option<DiagnosticFallback>,
+) {
     let mut guard = state().lock().expect("output guard lock");
     if guard.stderr_takeover.is_some() {
         return;
@@ -201,10 +231,14 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
     });
     drop(guard);
     let previous = maho_tui::process_stdio::set_stderr_writer(guarded_process_stderr());
-    *process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous);
+    *process_stderr_before_takeover()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous);
     // The default panic hook writes to fd 2 directly; route its report through the same guard.
     let previous_hook = std::panic::take_hook();
-    *process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous_hook);
+    *process_panic_hook_before_takeover()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous_hook);
     std::panic::set_hook(Box::new(|info| {
         let text = describe_panic(info);
         let reentrant = IN_GUARDED_PANIC_HOOK.with(|active| active.replace(true));
@@ -222,8 +256,13 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
         let handler_active = HANDLER_ACTIVE.with(Cell::get);
         if handler_active {
             let fallback = {
-                let guard = state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                guard.stderr_takeover.as_ref().and_then(|takeover| takeover.format_hidden_diagnostic_fallback.clone())
+                let guard = state()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard
+                    .stderr_takeover
+                    .as_ref()
+                    .and_then(|takeover| takeover.format_hidden_diagnostic_fallback.clone())
             };
             let text = fallback.map(|fallback| fallback(&text)).unwrap_or(text);
             if !text.is_empty() {
@@ -242,14 +281,20 @@ fn describe_panic(info: &std::panic::PanicHookInfo<'_>) -> String {
     if payload.is::<&str>() || payload.is::<String>() {
         return format!("{info}\n");
     }
-    let location = info.location().map_or_else(String::new, |location| format!(" at {location}"));
+    let location = info
+        .location()
+        .map_or_else(String::new, |location| format!(" at {location}"));
     let detail = payload
         .downcast_ref::<maho_ext_api::ExtensionFailure>()
-        .map_or_else(|| "non-string panic payload".to_owned(), |failure| format!("ExtensionFailure: {}", failure.message));
+        .map_or_else(
+            || "non-string panic payload".to_owned(),
+            |failure| format!("ExtensionFailure: {}", failure.message),
+        );
     format!("panicked{location}:\n{detail}\n")
 }
 
-fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_stdio::StreamWrite>> {
+fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_stdio::StreamWrite>>
+{
     static PREVIOUS: Mutex<Option<maho_tui::process_stdio::StreamWrite>> = Mutex::new(None);
     &PREVIOUS
 }
@@ -261,17 +306,27 @@ fn process_panic_hook_before_takeover() -> &'static Mutex<Option<PanicHook>> {
 
 pub fn restore_stderr() {
     // Called from drop guards, possibly while unwinding: a second panic here aborts the process.
-    let mut guard = state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.stderr_takeover = None;
     drop(guard);
-    if let Some(previous) = process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+    if let Some(previous) = process_stderr_before_takeover()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
         maho_tui::process_stdio::set_stderr_writer(previous);
         // take_hook/set_hook panic on a panicking thread; the guarded hook stays installed and
         // falls through to plain stderr once the takeover state is cleared.
         if std::thread::panicking() {
             return;
         }
-        if let Some(previous_hook) = process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(previous_hook) = process_panic_hook_before_takeover()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             drop(std::panic::take_hook());
             std::panic::set_hook(previous_hook);
         }
@@ -283,7 +338,12 @@ pub fn restore_stderr() {
 pub fn maho_write_stderr(text: &str) -> bool {
     let handler = {
         let guard = state().lock().expect("output guard lock");
-        guard.stderr_takeover.as_ref().map(|takeover| (takeover.on_hidden_diagnostic.clone(), takeover.format_hidden_diagnostic_fallback.clone()))
+        guard.stderr_takeover.as_ref().map(|takeover| {
+            (
+                takeover.on_hidden_diagnostic.clone(),
+                takeover.format_hidden_diagnostic_fallback.clone(),
+            )
+        })
     };
     let Some((handler, fallback)) = handler else {
         default_stderr_write()(text);
@@ -302,9 +362,12 @@ pub fn maho_write_stderr(text: &str) -> bool {
         HANDLER_ACTIVE.with(|active| active.set(true));
         let _reset = HandlerReset;
         handler(text);
-    })).is_err();
+    }))
+    .is_err();
     if handler_panicked {
-        let fallback_text = fallback.map(|fallback| fallback(text)).unwrap_or_else(|| text.to_owned());
+        let fallback_text = fallback
+            .map(|fallback| fallback(text))
+            .unwrap_or_else(|| text.to_owned());
         if !fallback_text.is_empty() {
             default_stderr_write()(&fallback_text);
         }
@@ -375,12 +438,23 @@ mod tests {
         reset();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let capture = Arc::clone(&seen);
-        take_over_stderr(Some(Arc::new(move |text| capture.lock().expect("lock").push(text.to_owned()))), None);
+        take_over_stderr(
+            Some(Arc::new(move |text| {
+                capture.lock().expect("lock").push(text.to_owned())
+            })),
+            None,
+        );
         assert!(maho_write_stderr("diagnostic"));
-        assert_eq!(seen.lock().expect("lock").as_slice(), &["diagnostic".to_owned()]);
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            &["diagnostic".to_owned()]
+        );
         restore_stderr();
         reset();
-        take_over_stderr(Some(Arc::new(|_| panic!("handler boom"))), Some(Arc::new(|text| format!("fallback: {text}"))));
+        take_over_stderr(
+            Some(Arc::new(|_| panic!("handler boom"))),
+            Some(Arc::new(|text| format!("fallback: {text}"))),
+        );
         assert!(!maho_write_stderr("hidden"));
         restore_stderr();
         reset();

@@ -6,9 +6,9 @@ use image::{Rgba, RgbaImage};
 use senpi_desktop_core::error::{ErrorCode, TccPermission};
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector, Target};
 
-use super::MacCapture;
 use super::displays::composite;
-use super::screencapture::{Screencapture, ShotError, display_rect_arg, window_args};
+use super::screencapture::{display_rect_arg, window_args, Screencapture, ShotError};
+use super::MacCapture;
 
 /// Hang guard for fakes that exit immediately; only the deadline test relies
 /// on expiry, so a loaded host cannot flip these results.

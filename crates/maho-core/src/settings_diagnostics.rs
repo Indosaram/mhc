@@ -17,7 +17,10 @@ pub struct AgentSessionRuntimeDiagnostic {
 
 impl AgentSessionRuntimeDiagnostic {
     pub fn warning(message: impl Into<String>) -> Self {
-        Self { kind: "warning".to_owned(), message: message.into() }
+        Self {
+            kind: "warning".to_owned(),
+            message: message.into(),
+        }
     }
 }
 
@@ -30,9 +33,17 @@ fn scope_label(scope: SettingsScope) -> &'static str {
 
 fn provider_settings_warnings(settings_manager: &SettingsManager) -> Vec<String> {
     let mut warnings = Vec::new();
-    let Some(providers) = settings_manager.get().get("providers").and_then(Value::as_object) else { return warnings };
+    let Some(providers) = settings_manager
+        .get()
+        .get("providers")
+        .and_then(Value::as_object)
+    else {
+        return warnings;
+    };
     for (provider_id, settings) in providers {
-        let Some(value) = settings.get("maxConcurrency") else { continue };
+        let Some(value) = settings.get("maxConcurrency") else {
+            continue;
+        };
         let valid = value.as_i64().map(|number| number >= 0).unwrap_or(false);
         if !valid {
             warnings.push(format!(
@@ -43,18 +54,28 @@ fn provider_settings_warnings(settings_manager: &SettingsManager) -> Vec<String>
     warnings
 }
 
-pub fn collect_settings_diagnostics(settings_manager: &SettingsManager) -> Vec<AgentSessionRuntimeDiagnostic> {
+pub fn collect_settings_diagnostics(
+    settings_manager: &SettingsManager,
+) -> Vec<AgentSessionRuntimeDiagnostic> {
     let mut diagnostics: Vec<AgentSessionRuntimeDiagnostic> = settings_manager
         .errors()
         .iter()
         .map(|error| {
             AgentSessionRuntimeDiagnostic::warning(match &error.path {
                 Some(path) => format!("Invalid settings file {path}: {}", error.error),
-                None => format!("Invalid {} settings: {}", scope_label(error.scope), error.error),
+                None => format!(
+                    "Invalid {} settings: {}",
+                    scope_label(error.scope),
+                    error.error
+                ),
             })
         })
         .collect();
-    diagnostics.extend(provider_settings_warnings(settings_manager).into_iter().map(AgentSessionRuntimeDiagnostic::warning));
+    diagnostics.extend(
+        provider_settings_warnings(settings_manager)
+            .into_iter()
+            .map(AgentSessionRuntimeDiagnostic::warning),
+    );
     diagnostics
 }
 
@@ -78,7 +99,9 @@ pub fn collect_settings_diagnostics_with_context(
     diagnostics.extend(
         provider_settings_warnings(settings_manager)
             .into_iter()
-            .map(|message| AgentSessionRuntimeDiagnostic::warning(format!("({context}) {message}"))),
+            .map(|message| {
+                AgentSessionRuntimeDiagnostic::warning(format!("({context}) {message}"))
+            }),
     );
     diagnostics
 }
@@ -129,7 +152,10 @@ mod tests {
     fn the_context_collector_prefixes_the_phase() {
         let mut manager = settings();
         let mut values = crate::settings_manager::Settings::new();
-        values.insert("providers".into(), json!({ "p": { "maxConcurrency": "x" } }));
+        values.insert(
+            "providers".into(),
+            json!({ "p": { "maxConcurrency": "x" } }),
+        );
         manager.set(SettingsScope::Global, &values).expect("set");
         let diagnostics = collect_settings_diagnostics_with_context(&manager, "startup");
         assert!(diagnostics[0].message.starts_with("(startup)"));

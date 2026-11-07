@@ -1,5 +1,5 @@
 //! Terminal outcome tracking (`manager/manager-outcome.ts`). Each tracked handle gets one watcher
-//! thread blocking on `wait_for_outcome`; stale epochs and detached handles are ignored.
+//! that blocks on `wait_for_outcome`; stale epochs and detached handles are ignored.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -38,9 +38,11 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     fn exit_confirmation_now(&self) -> i64 {
         chrono::Utc::now().timestamp_millis()
     }
-    fn wait_exit_confirmation(&self, remaining_ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(remaining_ms));
-    }
+    /// A point in this task's commit stream, taken BEFORE the record read it guards.
+    fn exit_confirmation_mark(&self, task_id: &str) -> u64;
+    /// Parks until the task commits past `since` or the remaining confirmation window elapses. A
+    /// commit after the mark ends the wait immediately; nothing else can wake it early.
+    fn wait_exit_confirmation(&self, task_id: &str, since: u64, remaining_ms: u64);
     fn live_handle(&self, task_id: &str) -> Option<Arc<dyn ManagedChildHandle>>;
     fn try_load(&self, task_id: &str) -> Option<TaskRecord>;
     fn run_stats_snapshot(&self, task_id: &str) -> Option<TaskRunStats>;
@@ -82,6 +84,40 @@ pub fn owns_outcome(
     })
 }
 
+/// Where a watcher parks. Inside a runtime the blocking pool owns it (bounded, reused); outside
+/// one there is no pool to borrow, so the watcher owns a thread.
+#[derive(Debug, PartialEq, Eq)]
+enum WatcherLane {
+    BlockingPool,
+    Thread,
+}
+
+fn watcher_lane() -> WatcherLane {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        WatcherLane::BlockingPool
+    } else {
+        WatcherLane::Thread
+    }
+}
+
+/// Parks one watcher until its child reports a terminal outcome.
+///
+/// The wait is as long as the child runs, so it must never occupy an async worker: inside a runtime
+/// it goes to the blocking pool. A handle tracked outside one (startup restore, sync tool paths)
+/// has no pool to borrow and owns a plain thread instead.
+fn spawn_watcher(watcher: impl FnOnce() + Send + 'static) {
+    match watcher_lane() {
+        WatcherLane::BlockingPool => {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn_blocking(watcher);
+            }
+        }
+        WatcherLane::Thread => {
+            std::thread::spawn(watcher);
+        }
+    }
+}
+
 pub fn track_outcome(
     ports: Arc<dyn OutcomeTrackerPorts>,
     task_id: String,
@@ -92,7 +128,7 @@ pub fn track_outcome(
     let generation = ports.next_tracking_generation(&task_id);
     #[cfg(test)]
     test_barrier::track(Arc::as_ptr(&handle) as *const () as usize);
-    std::thread::spawn(move || {
+    spawn_watcher(move || {
         let outcome = handle.wait_for_outcome();
         if ports.tracking_generation(&task_id) == generation {
             settle_outcome(
@@ -120,7 +156,7 @@ pub fn track_exact_outcome(
     outcome: crate::manager::child_handle::ExactTurnOutcome,
 ) {
     let generation = ports.next_tracking_generation(&task_id);
-    std::thread::spawn(move || {
+    spawn_watcher(move || {
         let outcome = outcome();
         if ports.tracking_generation(&task_id) == generation {
             settle_outcome(
@@ -315,7 +351,11 @@ const STOPPED_RUN_TERMINAL: [TaskStatus; 5] = [
     TaskStatus::Lost,
 ];
 
-fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInput, generation: u64) {
+fn settle_error_outcome(
+    ports: &dyn OutcomeTrackerPorts,
+    input: &ErrorOutcomeInput,
+    generation: u64,
+) {
     if ports.try_runtime_fallback(input) {
         return;
     }
@@ -570,5 +610,27 @@ pub(crate) mod test_barrier {
         note_consume(ptr);
         assert!(!has_outstanding(ptr));
         lock().remove(&ptr);
+    }
+}
+
+#[cfg(test)]
+mod watcher_lane_tests {
+    use super::{WatcherLane, watcher_lane};
+
+    #[test]
+    fn a_watcher_outside_a_runtime_owns_its_thread() {
+        assert_eq!(watcher_lane(), WatcherLane::Thread);
+    }
+
+    /// Inside a runtime the watcher must land on the blocking pool, not on a thread per child: the
+    /// pool is what keeps many concurrently tracked children from each costing an OS thread.
+    #[test]
+    fn a_watcher_inside_a_runtime_uses_the_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let lane = runtime.block_on(async { watcher_lane() });
+        assert_eq!(lane, WatcherLane::BlockingPool);
     }
 }

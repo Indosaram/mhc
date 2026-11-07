@@ -6,31 +6,62 @@ use serde_json::Value;
 
 use crate::kibitzer_tools_caps::KibitzerToolCaps;
 use crate::kibitzer_tools_path_safety::{PathCheck, resolve_workspace_path};
-use crate::kibitzer_tools_result::{KibitzerRejectionCode, KibitzerToolResult, bounded_text, ok_text, rejection};
+use crate::kibitzer_tools_result::{
+    KibitzerRejectionCode, KibitzerToolResult, bounded_text, ok_text, rejection,
+};
 
 pub const KIBITZER_READ_TOOL_NAME: &str = "read";
 
 /// Reads a workspace file bounded to `caps.read_chars`, redacting secrets first.
-pub fn execute_read(workspace_root: &Path, caps: KibitzerToolCaps, params: &Value) -> KibitzerToolResult {
+pub fn execute_read(
+    workspace_root: &Path,
+    caps: KibitzerToolCaps,
+    params: &Value,
+) -> KibitzerToolResult {
     let Some(path) = params.get("path").and_then(Value::as_str) else {
-        return rejection(KibitzerRejectionCode::MissingArgument, "read requires a path.", None);
+        return rejection(
+            KibitzerRejectionCode::MissingArgument,
+            "read requires a path.",
+            None,
+        );
     };
     let resolved = match resolve_workspace_path(workspace_root, path) {
         PathCheck::Ok { path } => path,
         PathCheck::Rejected { code, message } => return rejection(code, &message, Some(path)),
     };
     let Ok(info) = std::fs::metadata(&resolved) else {
-        return rejection(KibitzerRejectionCode::NotFound, &format!("\"{path}\" does not exist."), Some(path));
+        return rejection(
+            KibitzerRejectionCode::NotFound,
+            &format!("\"{path}\" does not exist."),
+            Some(path),
+        );
     };
     if !info.is_file() {
-        return rejection(KibitzerRejectionCode::NotAFile, &format!("\"{path}\" is not a regular file."), Some(path));
+        return rejection(
+            KibitzerRejectionCode::NotAFile,
+            &format!("\"{path}\" is not a regular file."),
+            Some(path),
+        );
     }
     let Ok(content) = std::fs::read_to_string(&resolved) else {
-        return rejection(KibitzerRejectionCode::NotFound, &format!("\"{path}\" could not be read."), Some(path));
+        return rejection(
+            KibitzerRejectionCode::NotFound,
+            &format!("\"{path}\" could not be read."),
+            Some(path),
+        );
     };
-    let offset = params.get("offset").and_then(Value::as_u64).map(|value| value as usize);
-    let limit = params.get("limit").and_then(Value::as_u64).map(|value| value as usize);
-    ok_text(bounded_text(&slice_lines(&content, offset, limit), caps.read_chars))
+    let offset = params
+        .get("offset")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    ok_text(bounded_text(
+        &slice_lines(&content, offset, limit),
+        caps.read_chars,
+    ))
 }
 
 /// `offset` is 1-based; absent `offset` and `limit` return the whole file, matching upstream.
@@ -67,7 +98,10 @@ mod tests {
 
     #[test]
     fn an_offset_windows_from_that_one_based_line() {
-        assert_eq!(read(json!({ "path": "note.txt", "offset": 2 })), "l2\nl3\nl4\nl5");
+        assert_eq!(
+            read(json!({ "path": "note.txt", "offset": 2 })),
+            "l2\nl3\nl4\nl5"
+        );
     }
 
     #[test]
@@ -77,7 +111,10 @@ mod tests {
 
     #[test]
     fn offset_and_limit_together_return_that_window() {
-        assert_eq!(read(json!({ "path": "note.txt", "offset": 2, "limit": 2 })), "l2\nl3");
+        assert_eq!(
+            read(json!({ "path": "note.txt", "offset": 2, "limit": 2 })),
+            "l2\nl3"
+        );
     }
 
     #[test]
@@ -87,7 +124,10 @@ mod tests {
 
     #[test]
     fn a_zero_offset_starts_at_the_first_line() {
-        assert_eq!(read(json!({ "path": "note.txt", "offset": 0 })), "l1\nl2\nl3\nl4\nl5");
+        assert_eq!(
+            read(json!({ "path": "note.txt", "offset": 0 })),
+            "l1\nl2\nl3\nl4\nl5"
+        );
     }
 
     #[test]
@@ -97,6 +137,9 @@ mod tests {
 
     #[test]
     fn offset_two_with_a_usize_max_limit_does_not_overflow_start_plus_limit() {
-        assert_eq!(read(json!({ "path": "note.txt", "offset": 2, "limit": u64::MAX })), "l2\nl3\nl4\nl5");
+        assert_eq!(
+            read(json!({ "path": "note.txt", "offset": 2, "limit": u64::MAX })),
+            "l2\nl3\nl4\nl5"
+        );
     }
 }

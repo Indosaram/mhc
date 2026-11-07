@@ -1,6 +1,6 @@
-use std::collections::VecDeque;
-use serde_json::Value;
 use super::{subprocess_contract::KernelRunInput, subprocess_run::*};
+use serde_json::Value;
+use std::collections::VecDeque;
 
 #[derive(Default)]
 pub struct SubprocessRunQueue {
@@ -11,10 +11,19 @@ pub struct SubprocessRunQueue {
 }
 
 impl SubprocessRunQueue {
-    pub fn active(&self) -> Option<&PendingRun> { self.active.as_ref() }
-    pub fn release_active(&mut self) -> Option<PendingRun> { self.active.take() }
+    pub fn active(&self) -> Option<&PendingRun> {
+        self.active.as_ref()
+    }
+    pub fn release_active(&mut self) -> Option<PendingRun> {
+        self.active.take()
+    }
 
-    pub fn enqueue(&mut self, input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>) -> tokio::sync::oneshot::Receiver<Value> {
+    pub fn enqueue(
+        &mut self,
+        input: KernelRunInput,
+        on_message: Option<KernelMessageCallback>,
+        on_started: Option<KernelStartedCallback>,
+    ) -> tokio::sync::oneshot::Receiver<Value> {
         let (resolve, receiver) = tokio::sync::oneshot::channel();
         let mut run = create_pending_run(input, resolve);
         run.on_message = on_message;
@@ -24,28 +33,48 @@ impl SubprocessRunQueue {
     }
 
     pub fn start_next(&mut self, started_at: f64) -> Option<&PendingRun> {
-        if self.active.is_some() { return None; }
+        if self.active.is_some() {
+            return None;
+        }
         self.active = self.queue.pop_front();
         if let Some(run) = &mut self.active {
             run.started_at = Some(started_at);
-            if let Some(callback) = &run.on_started { callback(); }
+            if let Some(callback) = &run.on_started {
+                callback();
+            }
         }
         self.active.as_ref()
     }
 
     pub fn remove(&mut self, cell_id: &str, reason: &str, now_ms: f64) -> bool {
-        let Some(index) = self.queue.iter().position(|run| run.input.cell_id == cell_id) else { return false; };
-        let Some(mut run) = self.queue.remove(index) else { return false; };
+        let Some(index) = self
+            .queue
+            .iter()
+            .position(|run| run.input.cell_id == cell_id)
+        else {
+            return false;
+        };
+        let Some(mut run) = self.queue.remove(index) else {
+            return false;
+        };
         let result = failure_result(&run, reason, now_ms);
         settle_pending_run(&mut run, result);
         true
     }
 
     pub fn snapshot(&self) -> (Option<String>, Vec<String>) {
-        (self.active.as_ref().map(|run| run.input.cell_id.clone()), self.queue.iter().map(|run| run.input.cell_id.clone()).collect())
+        (
+            self.active.as_ref().map(|run| run.input.cell_id.clone()),
+            self.queue
+                .iter()
+                .map(|run| run.input.cell_id.clone())
+                .collect(),
+        )
     }
 
-    pub fn drain(&mut self) -> Vec<PendingRun> { self.queue.drain(..).collect() }
+    pub fn drain(&mut self) -> Vec<PendingRun> {
+        self.queue.drain(..).collect()
+    }
 
     pub fn settle_all(&mut self, error: &str, now_ms: f64) {
         let runs = self.active.take().into_iter().chain(self.queue.drain(..));
@@ -55,12 +84,18 @@ impl SubprocessRunQueue {
         }
     }
 
-    pub fn clear_tool_calls(&mut self) { self.pending_calls.clear(); self.call_waiters.clear(); }
+    pub fn clear_tool_calls(&mut self) {
+        self.pending_calls.clear();
+        self.call_waiters.clear();
+    }
 
     pub fn next_tool_call(&mut self) -> tokio::sync::oneshot::Receiver<Value> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        if let Some(message) = self.pending_calls.pop_front() { let _ = sender.send(message); }
-        else { self.call_waiters.push_back(sender); }
+        if let Some(message) = self.pending_calls.pop_front() {
+            let _ = sender.send(message);
+        } else {
+            self.call_waiters.push_back(sender);
+        }
         receiver
     }
 
@@ -72,29 +107,56 @@ impl SubprocessRunQueue {
             }
         }
         self.pending_calls.push_back(message);
-        if self.pending_calls.len() > 256 { self.pending_calls.pop_front(); }
+        if self.pending_calls.len() > 256 {
+            self.pending_calls.pop_front();
+        }
     }
 
-    pub fn handle_message(&mut self, message: Value, fallback: Option<&KernelMessageCallback>) -> bool {
+    pub fn handle_message(
+        &mut self,
+        message: Value,
+        fallback: Option<&KernelMessageCallback>,
+    ) -> bool {
         match message["type"].as_str() {
             Some("result") => {
-                let Some(run) = self.active.as_ref() else { return false; };
-                if message["cellId"] != run.input.cell_id { return false; }
-                if let Some(callback) = run.on_message.as_ref().or(fallback) { callback(&message); }
-                if let Some(mut run) = self.active.take() { settle_pending_run(&mut run, message); }
+                let Some(run) = self.active.as_ref() else {
+                    return false;
+                };
+                if message["cellId"] != run.input.cell_id {
+                    return false;
+                }
+                if let Some(callback) = run.on_message.as_ref().or(fallback) {
+                    callback(&message);
+                }
+                if let Some(mut run) = self.active.take() {
+                    settle_pending_run(&mut run, message);
+                }
                 true
             }
             Some("tool-call") => {
-                let Some(run) = self.active.as_ref() else { return false; };
-                if let Some(callback) = run.on_message.as_ref().or(fallback) { callback(&message); }
+                let Some(run) = self.active.as_ref() else {
+                    return false;
+                };
+                if let Some(callback) = run.on_message.as_ref().or(fallback) {
+                    callback(&message);
+                }
                 self.push_tool_call(message);
                 false
             }
             Some("text" | "display" | "log" | "phase" | "status") => {
-                if let Some(run) = self.active.as_ref() && let Some(callback) = run.on_message.as_ref().or(fallback) { callback(&message); }
+                if let Some(run) = self.active.as_ref()
+                    && let Some(callback) = run.on_message.as_ref().or(fallback)
+                {
+                    callback(&message);
+                }
                 false
             }
-            _ => { if let Some(callback) = fallback { callback(&message); } false }
+            _ => {
+                if let Some(callback) = fallback {
+                    callback(&message);
+                }
+                false
+            }
         }
     }
 }

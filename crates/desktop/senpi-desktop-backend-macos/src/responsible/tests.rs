@@ -38,15 +38,13 @@ fn resolves_app_path_and_bundle_using_the_responsible_pid() {
 
 #[test]
 fn unresolved_responsibility_does_not_guess_a_path() {
-    assert!(
-        resolve_with(
-            41,
-            |_| None,
-            |_| panic!("path lookup"),
-            |_| panic!("bundle lookup")
-        )
-        .is_none()
-    );
+    assert!(resolve_with(
+        41,
+        |_| None,
+        |_| panic!("path lookup"),
+        |_| panic!("bundle lookup")
+    )
+    .is_none());
 }
 
 #[test]

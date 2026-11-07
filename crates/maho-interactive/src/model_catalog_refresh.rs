@@ -66,7 +66,9 @@ impl ModelCatalogRefreshCoordinator {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<ActiveRefresh>>> {
-        self.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// senpi's `refresh`: the first caller on a runtime starts the operation, later callers join it,
@@ -96,7 +98,10 @@ impl ModelCatalogRefreshCoordinator {
             tokio::spawn(async move {
                 let outcome = race_with_abort_signal(operation, &shared)
                     .await
-                    .unwrap_or_else(|_| ModelsRefreshResult { aborted: true, errors: Default::default() });
+                    .unwrap_or_else(|_| ModelsRefreshResult {
+                        aborted: true,
+                        errors: Default::default(),
+                    });
                 active_for_task.result.send_replace(Some(outcome));
                 coordinator.release(runtime_key, &active_for_task);
             });
@@ -112,14 +117,19 @@ impl ModelCatalogRefreshCoordinator {
             existing.waiters.fetch_add(1, Ordering::SeqCst);
             return (Arc::clone(existing), false);
         }
-        let created = Arc::new(ActiveRefresh::new(self.next_token.fetch_add(1, Ordering::SeqCst)));
+        let created = Arc::new(ActiveRefresh::new(
+            self.next_token.fetch_add(1, Ordering::SeqCst),
+        ));
         active.insert(runtime_key, Arc::clone(&created));
         (created, true)
     }
 
     fn release(&self, runtime_key: u64, active: &Arc<ActiveRefresh>) {
         let mut map = self.lock();
-        if map.get(&runtime_key).is_some_and(|current| current.token == active.token) {
+        if map
+            .get(&runtime_key)
+            .is_some_and(|current| current.token == active.token)
+        {
             map.remove(&runtime_key);
         }
     }
@@ -127,7 +137,10 @@ impl ModelCatalogRefreshCoordinator {
     fn decrement_waiters(&self, runtime_key: u64, active: &Arc<ActiveRefresh>) {
         if active.waiters.fetch_sub(1, Ordering::SeqCst) == 1 {
             let map = self.lock();
-            if map.get(&runtime_key).is_some_and(|current| current.token == active.token) {
+            if map
+                .get(&runtime_key)
+                .is_some_and(|current| current.token == active.token)
+            {
                 active.controller.abort(None);
             }
         }
@@ -158,7 +171,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     /// A deterministic two-way gate: the test opens it, the refresh closes it.
-    fn gate() -> (tokio::sync::watch::Sender<bool>, tokio::sync::watch::Receiver<bool>) {
+    fn gate() -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
         tokio::sync::watch::channel(false)
     }
 
@@ -166,7 +182,11 @@ mod tests {
         let _ = receiver.wait_for(|open| *open).await;
     }
 
-    async fn wait_for_waiters(coordinator: &ModelCatalogRefreshCoordinator, key: u64, count: usize) {
+    async fn wait_for_waiters(
+        coordinator: &ModelCatalogRefreshCoordinator,
+        key: u64,
+        count: usize,
+    ) {
         for _ in 0..1_000_000 {
             if coordinator.active_waiters(key) >= count {
                 return;
@@ -240,14 +260,18 @@ mod tests {
             tokio::spawn(async move {
                 coordinator
                     .refresh(3, &signal, move |shared: AbortSignal| {
-                        *shared_signal.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                            Some(shared);
+                        *shared_signal
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(shared);
                         let started_tx = started_tx.clone();
                         let release_rx = release_rx.clone();
                         async move {
                             started_tx.send_replace(true);
                             let _ = release_rx.clone().wait_for(|open| *open).await;
-                            ModelsRefreshResult { aborted: false, errors: Default::default() }
+                            ModelsRefreshResult {
+                                aborted: false,
+                                errors: Default::default(),
+                            }
                         }
                     })
                     .await

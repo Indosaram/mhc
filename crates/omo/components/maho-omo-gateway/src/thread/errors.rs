@@ -55,7 +55,9 @@ pub struct ThreadErrorCode(String);
 
 impl ThreadErrorCode {
     pub fn parse(value: &str) -> Option<Self> {
-        THREAD_ERROR_CODES.contains(&value).then(|| Self(value.to_owned()))
+        THREAD_ERROR_CODES
+            .contains(&value)
+            .then(|| Self(value.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -84,9 +86,20 @@ pub struct ThreadToolFailure {
 }
 
 /// Builds a failure for a known code; an unknown code panics exactly as upstream throws.
-pub fn thread_tool_failure(code: &str, message: impl Into<String>, next_action: impl Into<String>, details: Option<Value>) -> ThreadToolFailure {
-    let parsed = ThreadErrorCode::parse(code).unwrap_or_else(|| panic!("unknown thread error code: {code}"));
-    ThreadToolFailure { code: parsed, message: message.into(), next_action: next_action.into(), details }
+pub fn thread_tool_failure(
+    code: &str,
+    message: impl Into<String>,
+    next_action: impl Into<String>,
+    details: Option<Value>,
+) -> ThreadToolFailure {
+    let parsed =
+        ThreadErrorCode::parse(code).unwrap_or_else(|| panic!("unknown thread error code: {code}"));
+    ThreadToolFailure {
+        code: parsed,
+        message: message.into(),
+        next_action: next_action.into(),
+        details,
+    }
 }
 
 /// A details object built from one key, as most call sites need.
@@ -105,7 +118,10 @@ mod tests {
     #[test]
     fn every_code_round_trips_and_unknown_codes_are_refused() {
         for code in THREAD_ERROR_CODES {
-            assert_eq!(ThreadErrorCode::parse(code).map(|parsed| parsed.to_string()), Some((*code).to_owned()));
+            assert_eq!(
+                ThreadErrorCode::parse(code).map(|parsed| parsed.to_string()),
+                Some((*code).to_owned())
+            );
         }
         assert!(ThreadErrorCode::parse("nope").is_none());
     }
@@ -114,7 +130,15 @@ mod tests {
     fn failure_carries_details_only_when_given() {
         let plain = thread_tool_failure("not_found", "gone", "call thread_list", None);
         assert!(plain.details.is_none());
-        let detailed = thread_tool_failure("ambiguous_target", "two", "pick one", details_of([("candidates", Value::Array(vec![]))]));
-        assert_eq!(detailed.details.unwrap()["candidates"], Value::Array(vec![]));
+        let detailed = thread_tool_failure(
+            "ambiguous_target",
+            "two",
+            "pick one",
+            details_of([("candidates", Value::Array(vec![]))]),
+        );
+        assert_eq!(
+            detailed.details.unwrap()["candidates"],
+            Value::Array(vec![])
+        );
     }
 }

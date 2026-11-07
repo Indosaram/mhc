@@ -5,7 +5,7 @@ use crate::backend::{
     BackendKind, IsolationBackend, IsolationContext, IsolationError, ProbeResult, Result,
 };
 use crate::backend_marker::mark_started;
-use crate::backends::runtime::{checked, existing_parent, BackendRuntime, SystemRuntime};
+use crate::backends::runtime::{BackendRuntime, SystemRuntime, checked, existing_parent};
 use crate::git::command::exists;
 use crate::util::dirname;
 
@@ -33,14 +33,17 @@ impl BtrfsBackend {
             ));
         }
         if ctx.map(|ctx| ctx.cross_device).unwrap_or(false) {
-            return Ok(ProbeResult::unavailable("btrfs requires the same filesystem"));
+            return Ok(ProbeResult::unavailable(
+                "btrfs requires the same filesystem",
+            ));
         }
-        let result = self
-            .io
-            .run(&argv(&["btrfs", "subvolume", "show", &lower.to_string_lossy()]))?;
-        if result.code != 0
-            && is_not_a_subvolume(&result.stderr)
-        {
+        let result = self.io.run(&argv(&[
+            "btrfs",
+            "subvolume",
+            "show",
+            &lower.to_string_lossy(),
+        ]))?;
+        if result.code != 0 && is_not_a_subvolume(&result.stderr) {
             return Ok(ProbeResult::unavailable(result.stderr));
         }
         if result.code != 0 && !is_inconclusive(&result.stderr) {
@@ -66,7 +69,9 @@ impl BtrfsBackend {
                 &target.to_string_lossy(),
             ]))?;
             if fstype.code != 0 || fstype.stdout.trim() != "btrfs" {
-                return Ok(ProbeResult::unavailable("btrfs requires the same filesystem"));
+                return Ok(ProbeResult::unavailable(
+                    "btrfs requires the same filesystem",
+                ));
             }
             let lower_id = self.io.run(&argv(&[
                 "findmnt",
@@ -86,7 +91,9 @@ impl BtrfsBackend {
                 || target_id.code != 0
                 || lower_id.stdout.trim() != target_id.stdout.trim()
             {
-                return Ok(ProbeResult::unavailable("btrfs requires the same filesystem"));
+                return Ok(ProbeResult::unavailable(
+                    "btrfs requires the same filesystem",
+                ));
             }
         }
         Ok(ProbeResult::available())
@@ -157,7 +164,9 @@ impl IsolationBackend for BtrfsBackend {
     ) -> Result<Option<crate::backend::StartDetail>> {
         std::fs::create_dir_all(dirname(merged))?;
         if ctx.cross_device {
-            return Err(IsolationError::unavailable("btrfs requires the same device"));
+            return Err(IsolationError::unavailable(
+                "btrfs requires the same device",
+            ));
         }
         let probe = self.probe_inner(lower, None)?;
         if !probe.available {

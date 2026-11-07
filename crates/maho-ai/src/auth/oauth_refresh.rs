@@ -13,8 +13,11 @@
 //! keys by store object identity; this port keys the equivalent global registry by the store's
 //! `Arc` pointer address, cleaned up when the last registry entry referencing that store drops.
 
-use crate::auth::pool::slots::{merge_refreshed, merge_refreshed_slot, project_slot, PooledCredential};use crate::auth::types::{Credential, CredentialStore, OAuthAuth, OAuthCredential};
-use crate::utils::abort::{race_with_abort_signal, AbortController, AbortSignal};
+use crate::auth::pool::slots::{
+    PooledCredential, merge_refreshed, merge_refreshed_slot, project_slot,
+};
+use crate::auth::types::{Credential, CredentialStore, OAuthAuth, OAuthCredential};
+use crate::utils::abort::{AbortController, AbortSignal, race_with_abort_signal};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
@@ -73,12 +76,21 @@ pub fn project_oauth_slot(credential: &PooledCredential, name: &str) -> Option<O
 /// Resolves with the post-refresh stored credential (the whole provider entry), the newer stored
 /// value when another writer rotated the slot first, or `None` when the credential or slot is
 /// gone.
-pub async fn refresh_oauth_credential(request: OAuthRefreshRequest) -> Result<Option<Credential>, RefreshError> {
+pub async fn refresh_oauth_credential(
+    request: OAuthRefreshRequest,
+) -> Result<Option<Credential>, RefreshError> {
     let store_id = store_key(&request.credentials);
-    let key = format!("{}\u{0}{}\u{0}{}", request.provider_id, request.slot_name.as_deref().unwrap_or(""), request.stale.refresh);
+    let key = format!(
+        "{}\u{0}{}\u{0}{}",
+        request.provider_id,
+        request.slot_name.as_deref().unwrap_or(""),
+        request.stale.refresh
+    );
 
     let inflight = {
-        let mut registry = inflight_registry().lock().unwrap_or_else(|p| p.into_inner());
+        let mut registry = inflight_registry()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let store_registry = registry.entry(store_id).or_default();
         store_registry
             .entry(key.clone())
@@ -96,7 +108,12 @@ pub async fn refresh_oauth_credential(request: OAuthRefreshRequest) -> Result<Op
 
     let started = {
         let mut waiters = inflight.waiters.lock().unwrap_or_else(|p| p.into_inner());
-        let first = *waiters == 0 && inflight.result.lock().unwrap_or_else(|p| p.into_inner()).is_none();
+        let first = *waiters == 0
+            && inflight
+                .result
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none();
         *waiters += 1;
         first
     };
@@ -114,11 +131,24 @@ pub async fn refresh_oauth_credential(request: OAuthRefreshRequest) -> Result<Op
         let credentials = request.credentials.clone();
         let oauth = request.oauth.clone();
         tokio::spawn(async move {
-            let result = exchange_and_store(&credentials, &provider_id, &oauth, &stale, slot_name.as_deref(), &is_stale, &exchange_signal)
-                .await;
-            *inflight_clone.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+            let result = exchange_and_store(
+                &credentials,
+                &provider_id,
+                &oauth,
+                &stale,
+                slot_name.as_deref(),
+                &is_stale,
+                &exchange_signal,
+            )
+            .await;
+            *inflight_clone
+                .result
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(result);
             inflight_clone.done.notify_waiters();
-            let mut registry = inflight_registry().lock().unwrap_or_else(|p| p.into_inner());
+            let mut registry = inflight_registry()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if let Some(store_registry) = registry.get_mut(&store_id) {
                 store_registry.remove(&key);
                 if store_registry.is_empty() {
@@ -147,7 +177,12 @@ pub async fn refresh_oauth_credential(request: OAuthRefreshRequest) -> Result<Op
                 // `notify_waiters` between the check and the await is not lost.
                 let mut notified = std::pin::pin!(inflight.done.notified());
                 notified.as_mut().enable();
-                if let Some(result) = inflight.result.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+                if let Some(result) = inflight
+                    .result
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     return result;
                 }
                 notified.await;
@@ -208,7 +243,9 @@ async fn exchange_and_store(
         Ok(result) => result.map_err(|e| RefreshError::Exchange(e.to_string()))?,
         Err(_elapsed) => return Err(RefreshError::Exchange("timed out".into())),
     };
-    signal.throw_if_aborted().map_err(|reason| RefreshError::Exchange(reason.to_string()))?;
+    signal
+        .throw_if_aborted()
+        .map_err(|reason| RefreshError::Exchange(reason.to_string()))?;
 
     let refreshed_credential = Credential::OAuth(refreshed);
     let stored = credentials
@@ -219,7 +256,9 @@ async fn exchange_and_store(
                 let current_refresh = current.refresh.clone();
                 move |stored: Option<Credential>| {
                     Box::pin(async move {
-                        let Some(stored) = stored else { return Ok(None) };
+                        let Some(stored) = stored else {
+                            return Ok(None);
+                        };
                         if stored.as_oauth().is_none() {
                             return Ok(None);
                         }
@@ -234,7 +273,9 @@ async fn exchange_and_store(
                         }
                         let merged = match &slot_name {
                             None => merge_refreshed(&pooled, &refreshed_credential),
-                            Some(name) => merge_refreshed_slot(&pooled, name, &refreshed_credential),
+                            Some(name) => {
+                                merge_refreshed_slot(&pooled, name, &refreshed_credential)
+                            }
                         };
                         Ok(Some(merged.to_stored_credential()))
                     })
@@ -264,15 +305,29 @@ mod tests {
         fn name(&self) -> &str {
             "faux"
         }
-        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
             unimplemented!()
         }
-        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(OAuthCredential::new(format!("new-{}", credential.access), "new-refresh", 999_999_999_999.0))
+            Ok(OAuthCredential::new(
+                format!("new-{}", credential.access),
+                "new-refresh",
+                999_999_999_999.0,
+            ))
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-            Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+            Ok(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
@@ -282,13 +337,21 @@ mod tests {
         store
             .modify(
                 "p",
-                Box::new(|_| Box::pin(async { Ok(Some(Credential::OAuth(OAuthCredential::new("old", "r1", 1.0)))) })),
+                Box::new(|_| {
+                    Box::pin(async {
+                        Ok(Some(Credential::OAuth(OAuthCredential::new(
+                            "old", "r1", 1.0,
+                        ))))
+                    })
+                }),
                 None,
             )
             .await
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth { calls: calls.clone() });
+        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth {
+            calls: calls.clone(),
+        });
         let request = OAuthRefreshRequest {
             credentials: store.clone(),
             provider_id: "p".into(),
@@ -307,7 +370,9 @@ mod tests {
     #[tokio::test]
     async fn returns_none_when_credential_logged_out_meanwhile() {
         let store: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth { calls: Arc::new(AtomicUsize::new(0)) });
+        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
         let request = OAuthRefreshRequest {
             credentials: store,
             provider_id: "missing".into(),
@@ -328,13 +393,23 @@ mod tests {
         store
             .modify(
                 "p",
-                Box::new(|_| Box::pin(async { Ok(Some(Credential::OAuth(OAuthCredential::new("fresh", "r1", 999_999_999_999.0)))) })),
+                Box::new(|_| {
+                    Box::pin(async {
+                        Ok(Some(Credential::OAuth(OAuthCredential::new(
+                            "fresh",
+                            "r1",
+                            999_999_999_999.0,
+                        ))))
+                    })
+                }),
                 None,
             )
             .await
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth { calls: calls.clone() });
+        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth {
+            calls: calls.clone(),
+        });
         let request = OAuthRefreshRequest {
             credentials: store,
             provider_id: "p".into(),
@@ -346,18 +421,34 @@ mod tests {
             owning: true,
         };
         refresh_oauth_credential(request).await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "exchange must not run when not stale");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "exchange must not run when not stale"
+        );
     }
 
     #[tokio::test]
     async fn concurrent_refreshes_of_same_slot_join_one_exchange() {
         let store: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
         store
-            .modify("p", Box::new(|_| Box::pin(async { Ok(Some(Credential::OAuth(OAuthCredential::new("old", "shared-r", 1.0)))) })), None)
+            .modify(
+                "p",
+                Box::new(|_| {
+                    Box::pin(async {
+                        Ok(Some(Credential::OAuth(OAuthCredential::new(
+                            "old", "shared-r", 1.0,
+                        ))))
+                    })
+                }),
+                None,
+            )
             .await
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth { calls: calls.clone() });
+        let oauth: Arc<dyn OAuthAuth> = Arc::new(FauxOAuth {
+            calls: calls.clone(),
+        });
         let make_request = || OAuthRefreshRequest {
             credentials: store.clone(),
             provider_id: "p".into(),
@@ -368,10 +459,17 @@ mod tests {
             signal: AbortController::new().signal(),
             owning: true,
         };
-        let (a, b) = tokio::join!(refresh_oauth_credential(make_request()), refresh_oauth_credential(make_request()));
+        let (a, b) = tokio::join!(
+            refresh_oauth_credential(make_request()),
+            refresh_oauth_credential(make_request())
+        );
         a.unwrap();
         b.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "concurrent refreshes of the same slot must join one exchange");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "concurrent refreshes of the same slot must join one exchange"
+        );
     }
 
     #[test]

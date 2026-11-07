@@ -67,6 +67,8 @@ pub mod member_liveness;
 pub mod message_renderers;
 #[path = "parent_notifier.rs"]
 pub mod parent_notifier;
+#[path = "pause_resume_runtime.rs"]
+pub mod pause_resume_runtime;
 #[path = "planner_effort.rs"]
 pub mod planner_effort;
 #[path = "planner_fallback.rs"]
@@ -95,12 +97,12 @@ pub mod skill_invocation_tracker;
 pub mod status_goldens;
 #[path = "status_ui.rs"]
 pub mod status_ui;
-#[path = "subagent_cost_ledger.rs"]
-pub mod subagent_cost_ledger;
-#[path = "subagent_cost_feed.rs"]
-pub mod subagent_cost_feed;
 #[path = "store_mutation_observer.rs"]
 pub mod store_mutation_observer;
+#[path = "subagent_cost_feed.rs"]
+pub mod subagent_cost_feed;
+#[path = "subagent_cost_ledger.rs"]
+pub mod subagent_cost_ledger;
 #[path = "task_rpc_bridge.rs"]
 pub mod task_rpc_bridge;
 #[path = "task_rpc_live.rs"]
@@ -119,8 +121,6 @@ pub mod team_query_registered;
 pub mod team_service;
 #[path = "team_service_support.rs"]
 pub mod team_service_support;
-#[path = "pause_resume_runtime.rs"]
-pub mod pause_resume_runtime;
 
 // Helpers several test modules share, declared once so each file compiles once.
 // `production_composition` also reaches this file through examples/runtime_proof.rs, which must

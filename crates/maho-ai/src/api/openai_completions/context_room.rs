@@ -29,13 +29,26 @@ pub fn clamp_max_tokens_to_context(
     max_tokens: u64,
 ) -> Result<u64, ContextWindowExhaustedError> {
     if model.context_window == 0 {
-        return Ok(if max_tokens > 0 { MIN_MAX_TOKENS.max(max_tokens) } else { MIN_MAX_TOKENS });
+        return Ok(if max_tokens > 0 {
+            MIN_MAX_TOKENS.max(max_tokens)
+        } else {
+            MIN_MAX_TOKENS
+        });
     }
     let estimated_tokens = estimate_context_tokens(context).tokens;
-    let available = model.context_window as i128 - estimated_tokens as i128 - CONTEXT_SAFETY_TOKENS as i128;    if model.context_window >= CONTEXT_GUARD_MIN_WINDOW && available < MIN_ANSWER_TOKENS as i128 {
-        return Err(ContextWindowExhaustedError { estimated_tokens, context_window: model.context_window });
+    let available =
+        model.context_window as i128 - estimated_tokens as i128 - CONTEXT_SAFETY_TOKENS as i128;
+    if model.context_window >= CONTEXT_GUARD_MIN_WINDOW && available < MIN_ANSWER_TOKENS as i128 {
+        return Err(ContextWindowExhaustedError {
+            estimated_tokens,
+            context_window: model.context_window,
+        });
     }
     let safe_available = (MIN_MAX_TOKENS as i128).max(available);
-    let requested = if max_tokens > 0 { max_tokens as i128 } else { safe_available };
+    let requested = if max_tokens > 0 {
+        max_tokens as i128
+    } else {
+        safe_available
+    };
     Ok(requested.min(safe_available) as u64)
 }

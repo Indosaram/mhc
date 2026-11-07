@@ -81,7 +81,8 @@ impl LazySummaryRecovery {
         {
             return true;
         }
-        let own: std::collections::BTreeSet<String> = (self.own_window_keys)().into_iter().collect();
+        let own: std::collections::BTreeSet<String> =
+            (self.own_window_keys)().into_iter().collect();
         self.storage
             .window_keys()
             .into_iter()
@@ -99,13 +100,14 @@ impl LazySummaryRecovery {
         let runtime = self.load();
         runtime.recovery.sweep().await;
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_summary_store::{Probes, RecordConsent, WindowRecord, create_summary_storage};
+    use crate::session_summary_store::{
+        Probes, RecordConsent, WindowRecord, create_summary_storage,
+    };
     use futures::FutureExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -125,9 +127,12 @@ mod tests {
         );
         let publisher = Arc::new(SummaryPublisher::new(
             storage.clone(),
-            Arc::new(|_| -> futures::future::BoxFuture<'static, Result<(), telemetry_core::TelemetryDeliveryError>> {
-                async { Ok(()) }.boxed()
-            }),
+            Arc::new(
+                |_| -> futures::future::BoxFuture<
+                    'static,
+                    Result<(), telemetry_core::TelemetryDeliveryError>,
+                > { async { Ok(()) }.boxed() },
+            ),
             None,
             None,
             Arc::new(|_| true),
@@ -161,13 +166,8 @@ mod tests {
     async fn a_quiet_directory_loads_nothing() {
         let (_dir, storage, publisher) = fixture();
         let own: Arc<dyn Fn() -> Vec<String> + Send + Sync> = Arc::new(Vec::new);
-        let recovery = LazySummaryRecovery::new(
-            storage.clone(),
-            publisher,
-            Arc::new(|_| true),
-            None,
-            own,
-        );
+        let recovery =
+            LazySummaryRecovery::new(storage.clone(), publisher, Arc::new(|_| true), None, own);
         recovery.sweep().await;
         assert!(recovery.runtime().is_none());
     }
@@ -178,7 +178,10 @@ mod tests {
         // Match session-summary-lazy-recovery.test.ts: recovery starts from an open orphan window.
         let mut record = abandoned_record();
         record.window_id = Some("01234567-89ab-cdef-0123-456789abcdef".into());
-        record.window = Some(crate::session_summary_window::open_window(-1_000_000.0, 0.0));
+        record.window = Some(crate::session_summary_window::open_window(
+            -1_000_000.0,
+            0.0,
+        ));
         storage.write_window("peer", &record).unwrap();
         let loads = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&loads);
@@ -213,7 +216,11 @@ mod tests {
         let (dir, storage, publisher) = fixture();
         std::fs::create_dir_all(dir.path().join("session-summary")).unwrap();
         // A live owner's temp must survive; use an explicitly dead foreign owner here.
-        std::fs::write(dir.path().join("session-summary/x.json.9-boot-peer.tmp"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("session-summary/x.json.9-boot-peer.tmp"),
+            "{}",
+        )
+        .unwrap();
         let recovery = LazySummaryRecovery::new(
             storage.clone(),
             publisher,
@@ -223,7 +230,11 @@ mod tests {
         );
         recovery.sweep().await;
         assert!(recovery.runtime().is_some());
-        assert!(!dir.path().join("session-summary/x.json.9-boot-peer.tmp").exists());
+        assert!(
+            !dir.path()
+                .join("session-summary/x.json.9-boot-peer.tmp")
+                .exists()
+        );
     }
 
     #[tokio::test]

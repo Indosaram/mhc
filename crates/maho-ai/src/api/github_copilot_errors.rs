@@ -5,10 +5,16 @@ use serde_json::Value;
 
 /// Read only the provider-owned error envelope, never presentation text or `type` buckets.
 pub fn diagnostic_from_responses_event(event: &Value) -> Option<crate::types::ProviderDiagnostic> {
-    if !matches!(event.get("type").and_then(Value::as_str), Some("error" | "response.failed")) {
+    if !matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("error" | "response.failed")
+    ) {
         return None;
     }
-    let error = event.pointer("/response/error").or_else(|| event.get("error")).unwrap_or(event);
+    let error = event
+        .pointer("/response/error")
+        .or_else(|| event.get("error"))
+        .unwrap_or(event);
     let status = error.get("status").or_else(|| event.get("status"));
     let code = error.get("code");
     if code.is_some_and(|code| !code.is_null() && !code.is_string()) {
@@ -31,8 +37,13 @@ pub fn usage_limit_cause(
     if provider != "chatgpt-subscription" {
         return None;
     }
-    let error = payload.pointer("/response/error").or_else(|| payload.get("error"))?.as_object()?;
-    let code = error.get("code").and_then(Value::as_str)
+    let error = payload
+        .pointer("/response/error")
+        .or_else(|| payload.get("error"))?
+        .as_object()?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
         .filter(|code| !code.is_empty())
         .or_else(|| error.get("type").and_then(Value::as_str));
     let limited = matches!(code, Some("usage_limit_reached" | "usage_not_included"))
@@ -182,11 +193,18 @@ mod tests {
         // When projecting the producer-owned usage scope.
         let scope = usage_limit_cause("chatgpt-subscription", None, &event);
         // Then only the producer's structured evidence yields a cause.
-        assert_eq!(scope, Some(crate::types::AssistantErrorCause::UsageLimit { scope: crate::types::UsageLimitScope::Account }));
+        assert_eq!(
+            scope,
+            Some(crate::types::AssistantErrorCause::UsageLimit {
+                scope: crate::types::UsageLimitScope::Account
+            })
+        );
         assert!(usage_limit_cause("openai", None, &event).is_none());
         assert!(usage_limit_cause("chatgpt-subscription", None, &prose).is_none());
         assert!(usage_limit_cause("chatgpt-subscription", Some(429), &prose).is_some());
-        assert!(usage_limit_cause("chatgpt-subscription", Some(429), &serde_json::json!({})).is_none());
+        assert!(
+            usage_limit_cause("chatgpt-subscription", Some(429), &serde_json::json!({})).is_none()
+        );
     }
 
     #[test]

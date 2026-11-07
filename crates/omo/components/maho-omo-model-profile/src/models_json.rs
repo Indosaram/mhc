@@ -43,7 +43,10 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, CachedModelsJson>> {
 /// Upstream `fileStamp`: `None` when the file cannot be statted.
 fn file_stamp(path: &Path) -> Option<FileStamp> {
     let metadata = std::fs::metadata(path).ok()?;
-    Some(FileStamp { modified: metadata.modified().ok()?, size: metadata.len() })
+    Some(FileStamp {
+        modified: metadata.modified().ok()?,
+        size: metadata.len(),
+    })
 }
 
 /// Upstream `readModelsJson(agentDir)`: the parsed `<agent_dir>/models.json`, cached while its
@@ -62,6 +65,12 @@ pub fn read_models_json(agent_dir: &Path) -> Option<Arc<JsonValue>> {
         return Some(Arc::clone(&cached.parsed));
     }
     let parsed = Arc::new(utils::read_jsonc_file(&path).unwrap_or(JsonValue::Null));
-    cache.insert(path, CachedModelsJson { stamp, parsed: Arc::clone(&parsed) });
+    cache.insert(
+        path,
+        CachedModelsJson {
+            stamp,
+            parsed: Arc::clone(&parsed),
+        },
+    );
     Some(parsed)
 }

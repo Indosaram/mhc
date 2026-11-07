@@ -126,7 +126,10 @@ pub async fn consume_response(
             .result()
             .await
             .map_err(|e| session_invariant_error(e.message))?;
-        stream.cancel().await.map_err(|error| session_invariant_error(error.message))?;
+        stream
+            .cancel()
+            .await
+            .map_err(|error| session_invariant_error(error.message))?;
         if message.stop_reason == StopReason::Pending {
             return Err(session_invariant_error(
                 "Assistant stream settled with a pending stop reason",
@@ -183,10 +186,16 @@ pub async fn consume_response(
         } => Err(session_invariant_error("Assistant response consumption was aborted")),
         outcome = consume => outcome,
     };
-    let cancellation = stream.cancel().await.map_err(|error| session_invariant_error(error.message));
+    let cancellation = stream
+        .cancel()
+        .await
+        .map_err(|error| session_invariant_error(error.message));
     match outcome {
         Err(error) => Err(error),
-        Ok(message) => { cancellation?; Ok(message) }
+        Ok(message) => {
+            cancellation?;
+            Ok(message)
+        }
     }
 }
 
@@ -511,9 +520,9 @@ pub async fn publish_response(
             let entry = NewEntry::message(
                 &id,
                 state.tip_id,
-                crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
-                    message.clone(),
-                ))),
+                crate::types::AgentMessage::from(maho_ai::types::Message::Assistant(
+                    std::sync::Arc::new(message.clone()),
+                )),
             );
             let usage = NewUsageRow {
                 id: usage_id,

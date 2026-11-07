@@ -3,19 +3,23 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::team::member_extension::index::{CustomMessage, SendMessageOptions};
 use crate::team::member_extension::index::{
     ExtensionApi, ExtensionEventHandler, MemberExtensionOptions, register_member_extension,
 };
 use crate::team::member_extension::tools::MemberTaskSendTool;
-use crate::team::member_extension::index::{CustomMessage, SendMessageOptions};
 
 #[derive(Default)]
 struct NoopApi;
 
 impl ExtensionApi for NoopApi {
     fn send_message(&self, _message: CustomMessage, _options: SendMessageOptions) {}
-    fn register_tool(&self, _tool: MemberTaskSendTool) { panic!("workpool graph must not evaluate"); }
-    fn on(&self, _event: &str, _handler: ExtensionEventHandler) { panic!("workpool graph must not evaluate"); }
+    fn register_tool(&self, _tool: MemberTaskSendTool) {
+        panic!("workpool graph must not evaluate");
+    }
+    fn on(&self, _event: &str, _handler: ExtensionEventHandler) {
+        panic!("workpool graph must not evaluate");
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use super::errors::contract;
 use crate::{
-    delta::{valid_op, valid_wire_op, WireOp},
+    delta::{WireOp, valid_op, valid_wire_op},
     types::*,
 };
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,11 @@ pub fn decode_service_control_call(call: &ServiceCall) -> Option<ServiceControlC
         (Some("catalogue"), []) => Some(ServiceControlCall::Catalogue),
         (
             Some("subscribe"),
-            [JsonValue::String(subscription), JsonValue::String(service), JsonValue::String(mode)],
+            [
+                JsonValue::String(subscription),
+                JsonValue::String(service),
+                JsonValue::String(mode),
+            ],
         ) if !subscription.is_empty() && !service.is_empty() => {
             let mode = match mode.as_str() {
                 Some("singleton") => ServiceMode::Singleton,
@@ -152,10 +156,10 @@ fn keys(value: &JsonValue, required: &[&str], optional: &[&str]) -> Result<(), S
     if required
         .iter()
         .any(|k| !object.iter().any(|(key, _)| key == *k))
-        || object
-            .iter()
-            .map(|(key, _)| key)
-            .any(|k| !k.as_str().is_some_and(|key| required.contains(&key) || optional.contains(&key)))
+        || object.iter().map(|(key, _)| key).any(|k| {
+            !k.as_str()
+                .is_some_and(|key| required.contains(&key) || optional.contains(&key))
+        })
     {
         return Err(contract("Invalid service object fields"));
     }
@@ -178,9 +182,12 @@ fn js_integer(value: &JsonValue, minimum: u64) -> Result<ServiceSequence, Servic
     let number = match value {
         JsonValue::Number(number) => number.as_f64(),
         _ => None,
-    }.ok_or_else(|| contract("Invalid service integer"))?;
+    }
+    .ok_or_else(|| contract("Invalid service integer"))?;
     let sequence = ServiceSequence::new(number)?;
-    if sequence.number() < minimum as f64 { return Err(contract("Invalid service integer")); }
+    if sequence.number() < minimum as f64 {
+        return Err(contract("Invalid service integer"));
+    }
     Ok(sequence)
 }
 fn sequence_json(sequence: ServiceSequence) -> Result<JsonValue, ServiceError> {
@@ -190,31 +197,77 @@ fn sequence_json(sequence: ServiceSequence) -> Result<JsonValue, ServiceError> {
 }
 fn normalize_address(value: &JsonValue) -> Result<JsonValue, ServiceError> {
     address(value)?;
-    Ok(JsonValue::object(vec![("key".into(), value["key"].clone()), ("generation".into(), sequence_json(js_integer(&value["generation"], 1)?)?)]))
+    Ok(JsonValue::object(vec![
+        ("key".into(), value["key"].clone()),
+        (
+            "generation".into(),
+            sequence_json(js_integer(&value["generation"], 1)?)?,
+        ),
+    ]))
 }
 fn normalize_instance(value: &JsonValue) -> Result<JsonValue, ServiceError> {
-    let members = value["members"].as_array().ok_or_else(|| contract("Invalid service members"))?;
-    let members = members.iter().map(|member| {
-        let mut fields = member.as_object().ok_or_else(|| contract("Invalid service member"))?.clone();
-        if member["kind"].as_str() == Some("state") { for (key, value) in &mut fields { if key == "sequence" { *value = sequence_json(js_integer(value, 0)?)?; } } }
-        Ok(JsonValue::object(fields))
-    }).collect::<Result<Vec<_>, ServiceError>>()?;
+    let members = value["members"]
+        .as_array()
+        .ok_or_else(|| contract("Invalid service members"))?;
+    let members = members
+        .iter()
+        .map(|member| {
+            let mut fields = member
+                .as_object()
+                .ok_or_else(|| contract("Invalid service member"))?
+                .clone();
+            if member["kind"].as_str() == Some("state") {
+                for (key, value) in &mut fields {
+                    if key == "sequence" {
+                        *value = sequence_json(js_integer(value, 0)?)?;
+                    }
+                }
+            }
+            Ok(JsonValue::object(fields))
+        })
+        .collect::<Result<Vec<_>, ServiceError>>()?;
     let mut fields = vec![("members".into(), JsonValue::array(members))];
-    if let Some(address) = value.get("instance") { fields.push(("instance".into(), normalize_address(address)?)); }
+    if let Some(address) = value.get("instance") {
+        fields.push(("instance".into(), normalize_address(address)?));
+    }
     Ok(JsonValue::object(fields))
 }
 fn normalize_snapshot(value: &JsonValue) -> Result<JsonValue, ServiceError> {
-    let instances = value["instances"].as_array().ok_or_else(|| contract("Invalid service instances"))?.iter().map(normalize_instance).collect::<Result<Vec<_>, _>>()?;
-    Ok(JsonValue::object(vec![("serviceId".into(), value["serviceId"].clone()), ("mode".into(), value["mode"].clone()), ("instances".into(), JsonValue::array(instances))]))
+    let instances = value["instances"]
+        .as_array()
+        .ok_or_else(|| contract("Invalid service instances"))?
+        .iter()
+        .map(normalize_instance)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(JsonValue::object(vec![
+        ("serviceId".into(), value["serviceId"].clone()),
+        ("mode".into(), value["mode"].clone()),
+        ("instances".into(), JsonValue::array(instances)),
+    ]))
 }
 fn normalize_update(value: &JsonValue) -> Result<JsonValue, ServiceError> {
-    let mut fields = value.as_object().ok_or_else(|| contract("Invalid service update"))?.clone();
+    let mut fields = value
+        .as_object()
+        .ok_or_else(|| contract("Invalid service update"))?
+        .clone();
     for (key, field) in &mut fields {
         match key.as_str() {
             Some("sequence") => *field = sequence_json(js_integer(field, 1)?)?,
-            Some("snapshot") => *field = if value["type"].as_str() == Some("reset") { normalize_snapshot(field)? } else { normalize_instance(field)? },
-            Some("instance") => *field = if value["type"].as_str() == Some("spawned") { normalize_instance(field)? } else { normalize_address(field)? },
-            _ => {},
+            Some("snapshot") => {
+                *field = if value["type"].as_str() == Some("reset") {
+                    normalize_snapshot(field)?
+                } else {
+                    normalize_instance(field)?
+                }
+            }
+            Some("instance") => {
+                *field = if value["type"].as_str() == Some("spawned") {
+                    normalize_instance(field)?
+                } else {
+                    normalize_address(field)?
+                }
+            }
+            _ => {}
         }
     }
     Ok(JsonValue::object(fields))
@@ -227,7 +280,16 @@ pub fn parse_service_call(value: impl Into<JsonValue>) -> Result<ServiceCall, Se
     if let Some(instance) = value.get("instance") {
         address(instance)?;
     }
-    let value = if let Some(instance) = value.get("instance") { JsonValue::object(vec![("serviceId".into(), value["serviceId"].clone()), ("member".into(), value["member"].clone()), ("args".into(), value["args"].clone()), ("instance".into(), normalize_address(instance)?)]) } else { value };
+    let value = if let Some(instance) = value.get("instance") {
+        JsonValue::object(vec![
+            ("serviceId".into(), value["serviceId"].clone()),
+            ("member".into(), value["member"].clone()),
+            ("args".into(), value["args"].clone()),
+            ("instance".into(), normalize_address(instance)?),
+        ])
+    } else {
+        value
+    };
     Ok(serde_json::from_str(&serde_json::to_string(&value)?)?)
 }
 pub fn parse_service_catalogue(
@@ -241,7 +303,10 @@ pub fn parse_service_catalogue(
     for entry in entries {
         keys(entry, &["serviceId", "mode"], &[])?;
         id(&entry["serviceId"])?;
-        if !ids.insert(match &entry["serviceId"] { JsonValue::String(id) => id.clone(), _ => return Err(contract("Invalid service ID")) }) {
+        if !ids.insert(match &entry["serviceId"] {
+            JsonValue::String(id) => id.clone(),
+            _ => return Err(contract("Invalid service ID")),
+        }) {
             return Err(contract("Duplicate service ID"));
         }
     }

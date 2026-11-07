@@ -49,9 +49,14 @@ pub struct NoticeSpec {
     pub expanded_line: Option<String>,
 }
 
-pub fn build_notice_box(spec: &NoticeSpec, expanded: bool, theme: &Theme) -> Rc<RefCell<dyn Component>> {
+pub fn build_notice_box(
+    spec: &NoticeSpec,
+    expanded: bool,
+    theme: &Theme,
+) -> Rc<RefCell<dyn Component>> {
     let theme_for_bg = theme.clone();
-    let background: BackgroundFn = Rc::new(move |text: &str| theme_for_bg.bg(ThemeBg::CustomMessageBg, text));
+    let background: BackgroundFn =
+        Rc::new(move |text: &str| theme_for_bg.bg(ThemeBg::CustomMessageBg, text));
     let mut box_component = Box::with_padding(1, 1);
     box_component.set_bg_fn(Some(background));
     box_component.add_child(notice_text(theme.fg(
@@ -60,11 +65,11 @@ pub fn build_notice_box(spec: &NoticeSpec, expanded: bool, theme: &Theme) -> Rc<
     )));
     box_component.add_child(notice_text(theme.fg(ThemeColor::Dim, &spec.why)));
     for line in &spec.extra {
-        box_component.add_child(notice_text(theme.fg(line.tone.unwrap_or(ThemeColor::Dim), &line.text)));
+        box_component.add_child(notice_text(
+            theme.fg(line.tone.unwrap_or(ThemeColor::Dim), &line.text),
+        ));
     }
-    if expanded
-        && let Some(expanded_line) = &spec.expanded_line
-    {
+    if expanded && let Some(expanded_line) = &spec.expanded_line {
         box_component.add_child(notice_text(theme.fg(ThemeColor::Dim, expanded_line)));
     }
     Rc::new(RefCell::new(box_component))
@@ -128,7 +133,9 @@ impl EarendilAnnouncementComponent {
                 base64,
                 "image/png",
                 ImageTheme {
-                    fallback_color: Rc::new(move |text: &str| theme_for_fallback.fg(ThemeColor::Muted, text)),
+                    fallback_color: Rc::new(move |text: &str| {
+                        theme_for_fallback.fg(ThemeColor::Muted, text)
+                    }),
                 },
                 ImageOptions {
                     max_width_cells: Some(56),

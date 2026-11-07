@@ -1,11 +1,11 @@
 use anyhow::Result;
+#[cfg(test)]
+use maho_ai::utils::abort::AbortController;
 use maho_ai::{
     auth::types::{ApiKeyAuth, ApiKeyCredential, AuthContext, AuthResult},
     types::ProviderEnv,
     utils::abort::AbortSignal,
 };
-#[cfg(test)]
-use maho_ai::utils::abort::AbortController;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 /// The ADC file `gcloud auth application-default login` writes, same as the builtin google-vertex provider.

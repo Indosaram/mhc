@@ -845,16 +845,30 @@ impl<'a> DefaultPackageManager<'a> {
         Ok(path)
     }
 
+    /// The path a temporary install uses. Pure: the directory is hardened by
+    /// [`Self::harden_temporary_root`], so an async caller can move that filesystem work off the runtime.
     fn temporary_dir(&self, prefix: &str, suffix: &str) -> PackageResult<String> {
         let root = join_path(&self.agent_dir, "tmp/extensions");
-        std::fs::create_dir_all(&root)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
-        }
         let hash = hex::encode(Sha256::digest(format!("{prefix}-{suffix}")));
         self.managed_path(&root, &format!("{prefix}/{}/{suffix}", &hash[..8]))
+    }
+
+    /// Creates the shared temporary install root and makes it owner-only. Blocking work runs on the
+    /// blocking pool: `install_parsed` reaches this from an async caller.
+    async fn harden_temporary_root(&self) -> PackageResult<()> {
+        let root = join_path(&self.agent_dir, "tmp/extensions");
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&root)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .map_err(|error| PackageManagerError::Message(error.to_string()))??;
+        Ok(())
     }
 
     fn install_root(&self, kind: &str, scope: SourceScope) -> PackageResult<String> {
@@ -978,7 +992,9 @@ impl<'a> DefaultPackageManager<'a> {
         Ok(configured)
     }
 
-    fn ensure_npm_project(&self, root: &str) -> PackageResult<()> {
+    /// Npm project scaffolding. Awaiting the runner keeps the `xattr`/`setfattr` subprocess off the async
+    /// worker: `install_npm_specs` is async, so a blocking spawn here would stall the runtime thread.
+    async fn ensure_npm_project(&self, root: &str) -> PackageResult<()> {
         ensure_ignore(root)?;
         let attributes: &[&str] = if cfg!(target_os = "macos") {
             &["com.dropbox.ignored", "com.apple.fileprovider.ignore#P"]
@@ -1005,10 +1021,7 @@ impl<'a> DefaultPackageManager<'a> {
                     ],
                 )
             };
-            if let Err(error) = self
-                .runner
-                .run_sync(self.command(program, args, None, true))
-            {
+            if let Err(error) = self.run(program, args, None, true).await {
                 crate::output_guard::maho_write_stderr(&format!(
                     "Could not mark package storage ignored by cloud sync: {error}\n"
                 ));
@@ -1047,7 +1060,7 @@ impl<'a> DefaultPackageManager<'a> {
 
     async fn install_npm_specs(&self, specs: Vec<String>, scope: SourceScope) -> PackageResult<()> {
         let root = self.install_root("npm", scope)?;
-        self.ensure_npm_project(&root)?;
+        self.ensure_npm_project(&root).await?;
         self.npm(self.npm_install_args(specs, &root)?, None, false)
             .await?;
         Ok(())
@@ -1238,6 +1251,9 @@ impl<'a> DefaultPackageManager<'a> {
 
     async fn install_parsed(&self, parsed: &ParsedSource, scope: SourceScope) -> PackageResult<()> {
         self.trusted(scope)?;
+        if scope == SourceScope::Temporary {
+            self.harden_temporary_root().await?;
+        }
         match parsed {
             ParsedSource::Npm { spec, .. } => {
                 self.install_npm_specs(vec![spec.clone()], scope).await
@@ -2400,7 +2416,12 @@ fn finalize_paths(mut paths: ResolvedPaths) -> ResolvedPaths {
         let mut seen = std::collections::HashSet::new();
         target.retain(|resource| seen.insert(crate::paths::canonicalize_path(&resource.path)));
     }
-    paths.skill_roots = paths.skills.iter().filter(|r| r.enabled).filter_map(|r| r.metadata.skill_provenance.clone()).collect();
+    paths.skill_roots = paths
+        .skills
+        .iter()
+        .filter(|r| r.enabled)
+        .filter_map(|r| r.metadata.skill_provenance.clone())
+        .collect();
     paths
 }
 
@@ -2414,7 +2435,12 @@ impl DefaultPackageManager<'_> {
     ) {
         let manifest = crate::pi_manifest::read_pi_manifest(&join_path(root, "package.json"));
         metadata.base_dir = Some(root.to_owned());
-        metadata.skill_provenance = Some(crate::skill_access::select_skill_root(root, metadata.scope, &self.cwd, false));
+        metadata.skill_provenance = Some(crate::skill_access::select_skill_root(
+            root,
+            metadata.scope,
+            &self.cwd,
+            false,
+        ));
         if manifest
             .as_ref()
             .is_some_and(|manifest| manifest.system == Some(true))
@@ -2549,7 +2575,8 @@ impl DefaultPackageManager<'_> {
                 // senpi `resolveLocalExtensionSource`: a file is one extension; a directory without a
                 // manifest, filter or resource directory is itself the extension entry.
                 ParsedSource::Local(_) => {
-                    let metadata = PathMetadata { skill_provenance: None,
+                    let metadata = PathMetadata {
+                        skill_provenance: None,
                         source: source.to_owned(),
                         scope: *scope,
                         origin: SourceOrigin::Package,
@@ -2662,7 +2689,8 @@ impl DefaultPackageManager<'_> {
             self.collect_package_resources(
                 &installed,
                 pkg.is_object().then_some(pkg),
-                PathMetadata { skill_provenance: None,
+                PathMetadata {
+                    skill_provenance: None,
                     source: source.to_owned(),
                     scope: *scope,
                     origin: SourceOrigin::Package,
@@ -2731,7 +2759,8 @@ impl DefaultPackageManager<'_> {
             for kind in RESOURCE_TYPES {
                 let entries = strings(settings.get(kind.as_str()));
                 let split = split_patterns(&entries);
-                let metadata = PathMetadata { skill_provenance: None,
+                let metadata = PathMetadata {
+                    skill_provenance: None,
                     source: "local".into(),
                     scope,
                     origin: SourceOrigin::TopLevel,
@@ -2741,7 +2770,15 @@ impl DefaultPackageManager<'_> {
                     for path in resource_files(&self.resolve_path(&entry, &base), kind) {
                         let enabled = enabled_by_patterns(&path, &split.patterns, &base);
                         let mut selected = metadata.clone();
-                        if kind == ResourceType::Skills { selected.skill_provenance = Some(crate::skill_access::select_skill_root(&self.resolve_path(&entry, &base), scope, &self.cwd, true)); }
+                        if kind == ResourceType::Skills {
+                            selected.skill_provenance =
+                                Some(crate::skill_access::select_skill_root(
+                                    &self.resolve_path(&entry, &base),
+                                    scope,
+                                    &self.cwd,
+                                    true,
+                                ));
+                        }
                         add_resource(target_resources(&mut paths, kind), path, enabled, &selected);
                     }
                 }
@@ -2768,7 +2805,8 @@ impl DefaultPackageManager<'_> {
             };
             let enabled = project_enabled
                 .unwrap_or_else(|| enabled_by_patterns(&path, &global_overrides, &self.agent_dir));
-            let metadata = PathMetadata { skill_provenance: None,
+            let metadata = PathMetadata {
+                skill_provenance: None,
                 source: "builtin".into(),
                 scope: if project_enabled.is_some() {
                     SourceScope::Project
@@ -2818,7 +2856,8 @@ impl DefaultPackageManager<'_> {
             } else {
                 self.settings_manager.get_global()
             };
-            let metadata = PathMetadata { skill_provenance: None,
+            let metadata = PathMetadata {
+                skill_provenance: None,
                 source: "auto".into(),
                 scope,
                 origin: SourceOrigin::TopLevel,
@@ -2839,7 +2878,14 @@ impl DefaultPackageManager<'_> {
                 ) {
                     let enabled = enabled_by_patterns(&path, &overrides, &base);
                     let mut selected = metadata.clone();
-                    if kind == ResourceType::Skills { selected.skill_provenance = Some(crate::skill_access::select_skill_root(&join_path(&base, kind.as_str()), scope, &self.cwd, false)); }
+                    if kind == ResourceType::Skills {
+                        selected.skill_provenance = Some(crate::skill_access::select_skill_root(
+                            &join_path(&base, kind.as_str()),
+                            scope,
+                            &self.cwd,
+                            false,
+                        ));
+                    }
                     add_resource(target_resources(paths, kind), path, enabled, &selected);
                 }
             }
@@ -2957,7 +3003,6 @@ pub fn resource_precedence_rank(metadata: &PathMetadata) -> u8 {
     };
     scope_base + u8::from(metadata.source != "local")
 }
-
 
 /// senpi RESOURCE_TYPES.
 pub const RESOURCE_TYPES: [ResourceType; 5] = [
@@ -3330,7 +3375,8 @@ mod tests {
     use crate::source_info::SourceOrigin;
 
     fn metadata(source: &str, scope: SourceScope, origin: SourceOrigin) -> PathMetadata {
-        PathMetadata { skill_provenance: None,
+        PathMetadata {
+            skill_provenance: None,
             source: source.to_string(),
             scope,
             origin,

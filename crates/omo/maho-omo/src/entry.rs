@@ -6,7 +6,9 @@
 //! The required-slot entry functions here mirror that, and the `try_*` variants return
 //! [`MissingComponents`] rather than silently composing a short list.
 
-use crate::component_list::{MissingComponents, OmoComponentOptions, omo_components, try_omo_components};
+use crate::component_list::{
+    MissingComponents, OmoComponentOptions, omo_components, try_omo_components,
+};
 use crate::compose::{OmoExtension, OmoSenpiComponent, compose_omo_extension_with_options};
 use crate::provisioning::ProvisioningOptions;
 use crate::runtime::OmoRuntimeOptions;
@@ -18,7 +20,11 @@ pub fn omo_senpi_extension(
     runtime: OmoRuntimeOptions,
     provisioning: ProvisioningOptions,
 ) -> OmoExtension {
-    compose_omo_extension_with_options(omo_components(task, memory, components), runtime, provisioning)
+    compose_omo_extension_with_options(
+        omo_components(task, memory, components),
+        runtime,
+        provisioning,
+    )
 }
 
 pub fn try_omo_senpi_extension(
@@ -28,7 +34,11 @@ pub fn try_omo_senpi_extension(
     runtime: OmoRuntimeOptions,
     provisioning: ProvisioningOptions,
 ) -> Result<OmoExtension, MissingComponents> {
-    Ok(compose_omo_extension_with_options(try_omo_components(task, memory, components)?, runtime, provisioning))
+    Ok(compose_omo_extension_with_options(
+        try_omo_components(task, memory, components)?,
+        runtime,
+        provisioning,
+    ))
 }
 
 pub fn bundled_omo_senpi_extension(

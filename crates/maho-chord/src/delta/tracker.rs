@@ -1,12 +1,12 @@
 use super::{
-    apply_immutable_trusted::apply_immutable_trusted, diff::emit_string, DeltaError, JsonValue, Op,
-    Path, Result, Seg,
+    DeltaError, JsonValue, Op, Path, Result, Seg, apply_immutable_trusted::apply_immutable_trusted,
+    diff::emit_string,
 };
-use crate::json::{copy_json, CopyJsonOptions};
+use crate::json::{CopyJsonOptions, copy_json};
 use array_overlay::ArrayOverlay;
 
 mod array_overlay {
-    use super::{node, ArrayEntry, NodeRef};
+    use super::{ArrayEntry, NodeRef, node};
     use crate::types::JsonValue;
     use std::{
         cell::RefCell,
@@ -257,15 +257,20 @@ mod array_overlay {
                 let mut logical = 0;
                 let mut sources: HashMap<_, SourceLocations> = HashMap::new();
                 for piece in all {
-                    let source = sources.entry(Rc::as_ptr(&piece.source)).or_insert_with(|| SourceLocations {
-                        source: piece.source.clone(), ranges: Vec::new(),
+                    let source = sources.entry(Rc::as_ptr(&piece.source)).or_insert_with(|| {
+                        SourceLocations {
+                            source: piece.source.clone(),
+                            ranges: Vec::new(),
+                        }
                     });
                     source.ranges.push((logical, piece.clone()));
                     logical += piece.length;
                 }
                 let mut sources: Vec<_> = sources.into_values().collect();
                 for source in &mut sources {
-                    source.ranges.sort_by_key(|(_, piece)| piece.start.min(piece.index(piece.length - 1)));
+                    source
+                        .ranges
+                        .sort_by_key(|(_, piece)| piece.start.min(piece.index(piece.length - 1)));
                 }
                 *self.locations.borrow_mut() = Some(sources);
             }
@@ -276,7 +281,9 @@ mod array_overlay {
                     let at = source.ranges.partition_point(|(_, piece)| {
                         piece.start.min(piece.index(piece.length - 1)) <= index
                     });
-                    let Some((logical, piece)) = at.checked_sub(1).and_then(|at| source.ranges.get(at)) else {
+                    let Some((logical, piece)) =
+                        at.checked_sub(1).and_then(|at| source.ranges.get(at))
+                    else {
                         continue;
                     };
                     let offset = if piece.reversed {
@@ -512,21 +519,32 @@ struct ObjectOverlay {
 }
 impl ObjectOverlay {
     fn get(&mut self, key: &crate::types::JsString) -> Option<NodeRef> {
-        if self.deleted.contains(key) { return None; }
+        if self.deleted.contains(key) {
+            return None;
+        }
         if let Some(entry) = self.entries.iter().find(|entry| &entry.key == key) {
             return Some(entry.node.clone());
         }
         let (_, value) = self.base.iter().find(|(base_key, _)| base_key == key)?;
         let node = node(value.clone());
-        self.entries.push(Entry { key: key.clone(), node: node.clone(), original: true });
+        self.entries.push(Entry {
+            key: key.clone(),
+            node: node.clone(),
+            original: true,
+        });
         Some(node)
     }
     fn keys(&self, readded: &[crate::types::JsString]) -> Vec<crate::types::JsString> {
-        let mut keys: Vec<_> = self.base.iter()
+        let mut keys: Vec<_> = self
+            .base
+            .iter()
             .filter(|(key, _)| !self.deleted.contains(key))
-            .map(|(key, _)| key.clone()).collect();
+            .map(|(key, _)| key.clone())
+            .collect();
         for entry in &self.entries {
-            if !keys.contains(&entry.key) { keys.push(entry.key.clone()); }
+            if !keys.contains(&entry.key) {
+                keys.push(entry.key.clone());
+            }
         }
         keys.retain(|key| !readded.contains(key));
         keys.extend(readded.iter().cloned());
@@ -539,12 +557,23 @@ impl ObjectOverlay {
         keys
     }
     fn values(&self, readded: &[crate::types::JsString]) -> crate::types::JsonObject {
-        self.keys(readded).into_iter().filter_map(|key| {
-            let value = self.entries.iter().find(|entry| entry.key == key)
-                .map(|entry| materialize(&entry.node))
-                .or_else(|| self.base.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()))?;
-            Some((key, value))
-        }).collect()
+        self.keys(readded)
+            .into_iter()
+            .filter_map(|key| {
+                let value = self
+                    .entries
+                    .iter()
+                    .find(|entry| entry.key == key)
+                    .map(|entry| materialize(&entry.node))
+                    .or_else(|| {
+                        self.base
+                            .iter()
+                            .find(|(k, _)| k == &key)
+                            .map(|(_, v)| v.clone())
+                    })?;
+                Some((key, value))
+            })
+            .collect()
     }
 }
 #[derive(Clone)]
@@ -587,7 +616,9 @@ fn load(node: &mut Node) {
     node.contents = match &node.base {
         JsonValue::Array(values) => Contents::Array(ArrayOverlay::new(values.clone())),
         JsonValue::Object(values) => Contents::Object(ObjectOverlay {
-            base: values.clone(), entries: Vec::new(), deleted: HashSet::new(),
+            base: values.clone(),
+            entries: Vec::new(),
+            deleted: HashSet::new(),
         }),
         JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
             Contents::Primitive
@@ -713,7 +744,8 @@ impl Draft {
                 if node.deletes.contains(&key) {
                     node.deletes.retain(|k| k != &key);
                     if let JsonValue::Object(base) = &node.base
-                        && base.iter().any(|(k, _)| k == &key) && !node.readded.contains(&key)
+                        && base.iter().any(|(k, _)| k == &key)
+                        && !node.readded.contains(&key)
                     {
                         node.readded.push(key.clone());
                     }
@@ -890,10 +922,10 @@ impl Draft {
         let mut node = self.node.borrow_mut();
         load(&mut node);
         match &node.contents {
-            Contents::Object(entries) => {
-                Ok(entries.keys(&node.readded))
+            Contents::Object(entries) => Ok(entries.keys(&node.readded)),
+            Contents::Array(entries) => {
+                Ok((0..entries.len()).map(|i| i.to_string().into()).collect())
             }
-            Contents::Array(entries) => Ok((0..entries.len()).map(|i| i.to_string().into()).collect()),
             Contents::Unread | Contents::Primitive => Err(DeltaError::Shape("not a container")),
         }
     }
@@ -1173,19 +1205,15 @@ struct Schedule {
 impl Schedule {
     fn push(&mut self, node: NodeRef, path: Path) {
         let order = node.borrow().dirty_order;
-        self.nodes.insert((path.len(), order, self.serial), (node, path));
+        self.nodes
+            .insert((path.len(), order, self.serial), (node, path));
         self.serial += 1;
     }
     fn pop(&mut self) -> Option<(NodeRef, Path)> {
         self.nodes.pop_first().map(|(_, value)| value)
     }
 }
-fn emit_node(
-    reference: &NodeRef,
-    path: &[Seg],
-    operations: &mut Vec<Op>,
-    pending: &mut Schedule,
-) {
+fn emit_node(reference: &NodeRef, path: &[Seg], operations: &mut Vec<Op>, pending: &mut Schedule) {
     if operations.len() > 4_096 {
         return;
     }
@@ -1202,8 +1230,7 @@ fn emit_node(
                 .chain(node.deletes.iter())
                 .any(|k| k.reserved());
             let reserved_child = entries.entries.iter().filter(|e| e.original).any(|entry| {
-                entry.key.reserved()
-                    && materialize(&entry.node) != entry.node.borrow().base
+                entry.key.reserved() && materialize(&entry.node) != entry.node.borrow().base
             });
             if reserved || reserved_child {
                 operations.push(if path.is_empty() {
@@ -1370,19 +1397,32 @@ mod piece_tests {
 
     #[test]
     fn wide_object_reads_allocate_only_accessed_overlay_entries() -> Result<()> {
-        let tracker = track(JsonValue::object((0..40_000).map(|i| {
-            (format!("field{i}").into(), json!({"value":i}).into())
-        }).collect()))?;
+        let tracker = track(JsonValue::object(
+            (0..40_000)
+                .map(|i| (format!("field{i}").into(), json!({"value":i}).into()))
+                .collect(),
+        ))?;
         let mut change = tracker.begin_change();
         let draft = change.state()?;
-        draft.get("field20000")?.ok_or(DeltaError::Root)?.set("value", &json!(-1).into())?;
+        draft
+            .get("field20000")?
+            .ok_or(DeltaError::Root)?
+            .set("value", &json!(-1).into())?;
         {
             let node = draft.node.borrow();
-            let Contents::Object(object) = &node.contents else { return Err(DeltaError::Root); };
+            let Contents::Object(object) = &node.contents else {
+                return Err(DeltaError::Root);
+            };
             assert_eq!(object.entries.len(), 1);
         }
         let prepared = change.prepare()?;
-        assert_eq!(prepared.ops(), &[Op::Set(vec!["field20000".into(), "value".into()], json!(-1).into())]);
+        assert_eq!(
+            prepared.ops(),
+            &[Op::Set(
+                vec!["field20000".into(), "value".into()],
+                json!(-1).into()
+            )]
+        );
         Ok(())
     }
 

@@ -31,7 +31,9 @@ pub(crate) fn merge_login(
     let previous = list_accounts(before)?;
     let mut current = match current {
         Some(Credential::OAuth(current)) => current,
-        Some(Credential::ApiKey(_)) => anyhow::bail!("Provider account management requires an OAuth credential"),
+        Some(Credential::ApiKey(_)) => {
+            anyhow::bail!("Provider account management requires an OAuth credential")
+        }
         None => crate::accounts::empty_credential(),
     };
     for slot in list_accounts(&logged)? {
@@ -120,7 +122,9 @@ impl maho_ai::auth::types::OAuthAuth for CursorCliOAuth {
         let stored = self.store.read(PROVIDER_ID, None).await?;
         let current = match stored {
             Some(Credential::OAuth(current)) => current,
-            Some(Credential::ApiKey(_)) => anyhow::bail!("Provider account management requires an OAuth credential"),
+            Some(Credential::ApiKey(_)) => {
+                anyhow::bail!("Provider account management requires an OAuth credential")
+            }
             None => crate::accounts::empty_credential(),
         };
         let existing = list_accounts(&current)?;
@@ -421,21 +425,34 @@ mod tests {
     #[test]
     fn login_merge_preserves_latest_siblings_pinning_and_provider_metadata() {
         let slot = |name: &str| CursorCliAccountSlot {
-            name: name.into(), display_name: Some(name.into()), access: name.into(), refresh: "refresh".into(),
-            expires: 1000.0, source: AccountSource::Login, blocked_until: Some(500.0),
+            name: name.into(),
+            display_name: Some(name.into()),
+            access: name.into(),
+            refresh: "refresh".into(),
+            expires: 1000.0,
+            source: AccountSource::Login,
+            blocked_until: Some(500.0),
             block_reason: Some(crate::accounts::BlockReason::RateLimit),
         };
         let before = add_account(&empty_credential(), slot("default")).expect("initial slot");
-        let current = add_account(&before, slot("sibling")).expect("concurrent sibling")
+        let current = add_account(&before, slot("sibling"))
+            .expect("concurrent sibling")
             .with_extra("pinned", serde_json::json!("sibling"))
             .with_extra("providerMetadata", serde_json::json!({"revision": 2}));
         let logged = add_account(&before, slot("work")).expect("login result");
 
-        let merged = merge_login(Some(Credential::OAuth(current.clone())), &before, logged).expect("merge");
+        let merged =
+            merge_login(Some(Credential::OAuth(current.clone())), &before, logged).expect("merge");
 
-        assert_eq!(list_accounts(&merged).expect("accounts"), [slot("default"), slot("sibling"), slot("work")]);
+        assert_eq!(
+            list_accounts(&merged).expect("accounts"),
+            [slot("default"), slot("sibling"), slot("work")]
+        );
         assert_eq!(merged.get_extra_str("pinned"), Some("sibling"));
-        assert_eq!(merged.get_extra("providerMetadata"), current.get_extra("providerMetadata"));
+        assert_eq!(
+            merged.get_extra("providerMetadata"),
+            current.get_extra("providerMetadata")
+        );
         crate::accounts::assert_sentinel_invariant(&merged).expect("sentinel");
     }
 

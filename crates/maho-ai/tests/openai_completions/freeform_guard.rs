@@ -23,13 +23,17 @@ async fn rejects_freeform_tools_before_serializing_chat_completions_function_too
     };
     let model = model(&[("id", json!("gpt-4o-mini")), ("name", json!("GPT-4o mini"))]);
     let context = context(vec![user_message("patch")], Some(vec![freeform]));
-    let transport = ScriptedTransport::success([chunk(json!({ "content": "unused" }), Some("stop"))]);
+    let transport =
+        ScriptedTransport::success([chunk(json!({ "content": "unused" }), Some("stop"))]);
 
     let result = finish(&run(&model, &context, options("test-key"), transport)).await;
 
     assert_eq!(result.stop_reason, StopReason::Error);
     assert!(
-        result.error_message.unwrap_or_default().contains("Freeform tools cannot be sent to OpenAI Chat Completions"),
+        result
+            .error_message
+            .unwrap_or_default()
+            .contains("Freeform tools cannot be sent to OpenAI Chat Completions"),
         "freeform guard message"
     );
     let _ = std::mem::size_of::<AssistantMessageEvent>();

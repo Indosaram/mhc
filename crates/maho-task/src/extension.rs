@@ -6,7 +6,9 @@ use crate::agents::{DEFAULT_AGENT, Discovery, discover};
 use crate::control::{self, Caller, ContextUi, GatewaySteer, SteerChannel};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
 use crate::manager::{SpawnRequest, TaskManager, TaskManagerOptions};
-use crate::models::{ModelContext, ModelRequest, category_description, category_names, choose_model};
+use crate::models::{
+    ModelContext, ModelRequest, category_description, category_names, choose_model,
+};
 use crate::record::{StateDir, default_state_root};
 use crate::runner::{CancelToken, TaskRunner};
 use crate::settings::{Lineage, TASK_ID_ENV, TaskSettings, can_spawn_at_depth};
@@ -160,26 +162,32 @@ impl TaskScope {
     /// The session's message sender, when it has one.
     pub fn notifier(&self) -> Option<Notifier> {
         let sender = self.shared.sender.clone()?;
-        Some(Arc::new(move |custom_type: &str, text: &str, details: Value| {
-            let _ = sender.send_message(
-                CustomMessage {
-                    custom_type: custom_type.to_owned(),
-                    content: vec![ToolContent::text(text)],
-                    display: true,
-                    details: Some(details),
-                },
-                SendMessageOptions {
-                    trigger_turn: true,
-                    deliver_as: Some(DeliverAs::FollowUp),
-                },
-            );
-        }))
+        Some(Arc::new(
+            move |custom_type: &str, text: &str, details: Value| {
+                let _ = sender.send_message(
+                    CustomMessage {
+                        custom_type: custom_type.to_owned(),
+                        content: vec![ToolContent::text(text)],
+                        display: true,
+                        details: Some(details),
+                    },
+                    SendMessageOptions {
+                        trigger_turn: true,
+                        deliver_as: Some(DeliverAs::FollowUp),
+                    },
+                );
+            },
+        ))
     }
 }
 
 /// Handler of an addon tool.
 pub type AddonHandler = Arc<
-    dyn Fn(TaskScope, Value, CancelToken) -> crate::runner::BoxFuture<'static, Result<ToolResult, ToolError>>
+    dyn Fn(
+            TaskScope,
+            Value,
+            CancelToken,
+        ) -> crate::runner::BoxFuture<'static, Result<ToolResult, ToolError>>
         + Send
         + Sync,
 >;
@@ -244,12 +252,17 @@ struct Shared {
 
 impl Shared {
     fn available(&self) -> &[String] {
-        self.available.get_or_init(|| (self.config.available_models)())
+        self.available
+            .get_or_init(|| (self.config.available_models)())
     }
 
     fn state_root(&self, session_id: &str) -> PathBuf {
         if let Some(dir) = &self.settings.state_dir {
-            return if dir.is_absolute() { dir.clone() } else { self.cwd.join(dir) };
+            return if dir.is_absolute() {
+                dir.clone()
+            } else {
+                self.cwd.join(dir)
+            };
         }
         let base = self
             .config
@@ -407,9 +420,17 @@ fn outcome_result(outcome: control::Outcome) -> ToolResult {
     }
 }
 
-async fn run_send_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> Result<ToolResult, ToolError> {
+async fn run_send_tool(
+    shared: Arc<Shared>,
+    params: Value,
+    info: CallInfo,
+) -> Result<ToolResult, ToolError> {
     let to = str_param(&params, "to").unwrap_or_default().to_owned();
-    let message = params.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let message = params
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     if to.is_empty() {
         return Ok(outcome_result(control::Outcome {
             kind: "invalid_arguments",
@@ -433,10 +454,21 @@ async fn run_send_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> Re
         }
     }
     let manager = shared.manager(&info.session_id);
-    Ok(outcome_result(control::send(&manager, &caller(&shared, &info), &to, &message, all_sessions)))
+    Ok(outcome_result(control::send(
+        &manager,
+        &caller(&shared, &info),
+        &to,
+        &message,
+        all_sessions,
+    )))
 }
 
-async fn run_task_tool(shared: Arc<Shared>, params: Value, info: CallInfo, cancel: CancelToken) -> Result<ToolResult, ToolError> {
+async fn run_task_tool(
+    shared: Arc<Shared>,
+    params: Value,
+    info: CallInfo,
+    cancel: CancelToken,
+) -> Result<ToolResult, ToolError> {
     let manager = shared.manager(&info.session_id);
     let context = str_param(&params, "context");
     let background = bool_param(&params, "background");
@@ -446,7 +478,9 @@ async fn run_task_tool(shared: Arc<Shared>, params: Value, info: CallInfo, cance
     };
     let mut requests = Vec::new();
     for item in &items {
-        requests.push(spawn_request(&shared, item, context, background, &info).map_err(ToolError::Message)?);
+        requests.push(
+            spawn_request(&shared, item, context, background, &info).map_err(ToolError::Message)?,
+        );
     }
     let mut started = Vec::new();
     for request in requests {
@@ -482,15 +516,22 @@ async fn run_task_tool(shared: Arc<Shared>, params: Value, info: CallInfo, cance
     Ok(text_result(sections.join("\n\n"), json!({"ids": ids})))
 }
 
-async fn run_output_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> Result<ToolResult, ToolError> {
+async fn run_output_tool(
+    shared: Arc<Shared>,
+    params: Value,
+    info: CallInfo,
+) -> Result<ToolResult, ToolError> {
     let manager = shared.manager(&info.session_id);
-    let id = str_param(&params, "id").ok_or_else(|| ToolError::Message("Missing required parameter: id".into()))?;
+    let id = str_param(&params, "id")
+        .ok_or_else(|| ToolError::Message("Missing required parameter: id".into()))?;
     let record = if bool_param(&params, "wait").unwrap_or(false) {
         let requested = params
             .get("timeout_ms")
             .and_then(Value::as_u64)
             .map(Duration::from_millis);
-        manager.wait(id, Some(shared.settings.wait_for(requested))).await
+        manager
+            .wait(id, Some(shared.settings.wait_for(requested)))
+            .await
     } else {
         manager.get(id)
     };
@@ -498,11 +539,18 @@ async fn run_output_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> 
         return Err(ToolError::Message(format!("Unknown task \"{id}\"")));
     };
     let text = if record.status.is_active() {
-        format!("{}\nThe task is still {}.", status_line(&record), record.status.as_str())
+        format!(
+            "{}\nThe task is still {}.",
+            status_line(&record),
+            record.status.as_str()
+        )
     } else {
         manager.result_text(id).unwrap_or_default()
     };
-    Ok(text_result(text, json!({"id": record.id, "status": record.status.as_str()})))
+    Ok(text_result(
+        text,
+        json!({"id": record.id, "status": record.status.as_str()}),
+    ))
 }
 
 fn list_text(manager: &TaskManager) -> String {
@@ -510,7 +558,11 @@ fn list_text(manager: &TaskManager) -> String {
     if records.is_empty() {
         return "No tasks in this session.".to_owned();
     }
-    records.iter().map(status_line).collect::<Vec<_>>().join("\n")
+    records
+        .iter()
+        .map(status_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tool_description(shared: &Shared) -> String {
@@ -531,7 +583,9 @@ A finished task keeps its session: task_resume sends it a follow-up instead of s
     }
     let categories = category_names(Some(&shared.view));
     if !categories.is_empty() {
-        text.push_str("\nCategories (`category` picks the model configured for that kind of work):\n");
+        text.push_str(
+            "\nCategories (`category` picks the model configured for that kind of work):\n",
+        );
         for name in categories {
             match category_description(Some(&shared.view), &name) {
                 Some(description) => text.push_str(&format!("- `{name}`: {description}\n")),
@@ -556,12 +610,24 @@ fn task_item_properties() -> Value {
 }
 
 type Handler = Arc<
-    dyn Fn(Arc<Shared>, Value, CallInfo, CancelToken) -> crate::runner::BoxFuture<'static, Result<ToolResult, ToolError>>
+    dyn Fn(
+            Arc<Shared>,
+            Value,
+            CallInfo,
+            CancelToken,
+        ) -> crate::runner::BoxFuture<'static, Result<ToolResult, ToolError>>
         + Send
         + Sync,
 >;
 
-fn define(shared: &Arc<Shared>, name: &str, label: &str, description: String, parameters: Value, handler: Handler) -> ToolDefinition {
+fn define(
+    shared: &Arc<Shared>,
+    name: &str,
+    label: &str,
+    description: String,
+    parameters: Value,
+    handler: Handler,
+) -> ToolDefinition {
     let shared = Arc::clone(shared);
     let mut definition = ToolDefinition::new(
         name,
@@ -598,7 +664,11 @@ impl TaskExtension {
         if !can_spawn_at_depth(settings.max_depth, lineage.depth) {
             return None;
         }
-        let discovery = discover(&api.cwd, self.agent_dir.as_deref(), loaded.view.get("agents"));
+        let discovery = discover(
+            &api.cwd,
+            self.agent_dir.as_deref(),
+            loaded.view.get("agents"),
+        );
         let steer = steer_channel(self.agent_dir.as_deref(), &loaded.view);
         Some(Arc::new(Shared {
             config: self.clone(),
@@ -620,7 +690,9 @@ impl TaskExtension {
 
     /// The tool definitions for `api`'s session; empty when this session is too deep to spawn.
     pub fn tool_definitions(&self, api: &ExtensionApi) -> Vec<ToolDefinition> {
-        self.shared(api).map(|shared| definitions(&shared)).unwrap_or_default()
+        self.shared(api)
+            .map(|shared| definitions(&shared))
+            .unwrap_or_default()
     }
 }
 
@@ -703,7 +775,14 @@ fn addon_definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
                 tool.description.clone(),
                 tool.parameters.clone(),
                 Arc::new(move |shared, params, info, cancel| {
-                    handler(TaskScope { shared, info: Arc::new(info) }, params, cancel)
+                    handler(
+                        TaskScope {
+                            shared,
+                            info: Arc::new(info),
+                        },
+                        params,
+                        cancel,
+                    )
                 }),
             ));
         }
@@ -714,7 +793,10 @@ fn addon_definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
 /// Starts the gateway inbox of a delegated run (task-control.md §1.1) at session start and
 /// removes its endpoint record at shutdown.
 fn register_delegated_inbox(api: &mut ExtensionApi) {
-    let Some(task_id) = std::env::var(TASK_ID_ENV).ok().filter(|id| !id.trim().is_empty()) else {
+    let Some(task_id) = std::env::var(TASK_ID_ENV)
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+    else {
         return;
     };
     let sender = Arc::new(ExtensionApi::new(
@@ -736,9 +818,14 @@ fn register_delegated_inbox(api: &mut ExtensionApi) {
                     let env = |key: &str| std::env::var(key).ok();
                     let settings = maho_gateway::Settings::load(&ctx.cwd);
                     if settings.enabled {
-                        let store = maho_gateway::Store::new(maho_gateway::default_root(&ctx.agent_dir, &env));
+                        let store = maho_gateway::Store::new(maho_gateway::default_root(
+                            &ctx.agent_dir,
+                            &env,
+                        ));
                         let deliver: control::DeliverFn = Arc::new(move |message, options| {
-                            sender.send_message(message, options).map_err(|error| error.to_string())
+                            sender
+                                .send_message(message, options)
+                                .map_err(|error| error.to_string())
                         });
                         match control::DelegatedInbox::start(
                             store,

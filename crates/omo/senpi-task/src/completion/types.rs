@@ -148,20 +148,35 @@ impl DeliveryCallbacks {
     pub fn state(&self) -> DeliveryState {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner).0
     }
-    pub fn delivered(&self) { self.settle(Ok(())); }
-    pub fn failed(&self, error: HostError) { self.settle(Err(error)); }
+    pub fn delivered(&self) {
+        self.settle(Ok(()));
+    }
+    pub fn failed(&self, error: HostError) {
+        self.settle(Err(error));
+    }
     pub(crate) fn rejected(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        if inner.0 == DeliveryState::Pending { inner.0 = DeliveryState::Failed; inner.1.take(); }
+        if inner.0 == DeliveryState::Pending {
+            inner.0 = DeliveryState::Failed;
+            inner.1.take();
+        }
     }
     fn settle(&self, result: Result<(), HostError>) {
         let callback = {
             let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-            if inner.0 != DeliveryState::Pending { return; }
-            inner.0 = if result.is_ok() { DeliveryState::Delivered } else { DeliveryState::Failed };
+            if inner.0 != DeliveryState::Pending {
+                return;
+            }
+            inner.0 = if result.is_ok() {
+                DeliveryState::Delivered
+            } else {
+                DeliveryState::Failed
+            };
             inner.1.take()
         };
-        if let Some(callback) = callback { callback(result); }
+        if let Some(callback) = callback {
+            callback(result);
+        }
     }
 }
 

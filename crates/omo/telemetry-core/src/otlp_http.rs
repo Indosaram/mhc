@@ -97,12 +97,8 @@ pub struct PartialSuccess {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostOutcome {
-    Accepted {
-        partial: Option<PartialSuccess>,
-    },
-    Rejected {
-        status: u16,
-    },
+    Accepted { partial: Option<PartialSuccess> },
+    Rejected { status: u16 },
     RetryLater,
     Aborted,
     Lost,
@@ -172,9 +168,7 @@ fn partial_success(signal: Signal, response: &OtlpResponse) -> Option<PartialSuc
 
 fn gzip(body: &[u8]) -> Result<Vec<u8>, String> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(body)
-        .map_err(|error| error.to_string())?;
+    encoder.write_all(body).map_err(|error| error.to_string())?;
     encoder.finish().map_err(|error| error.to_string())
 }
 
@@ -279,9 +273,8 @@ pub async fn post_with_retry(deps: &PostDeps, signal: Signal, body: &[u8]) -> Po
                 let Some(backoff) = BACKOFF_MS.get(index).copied() else {
                     return PostOutcome::RetryLater;
                 };
-                let delay = retry_after.unwrap_or_else(|| {
-                    backoff + ((deps.random)() * backoff as f64 * 0.2) as u64
-                });
+                let delay = retry_after
+                    .unwrap_or_else(|| backoff + ((deps.random)() * backoff as f64 * 0.2) as u64);
                 (deps.sleep)(delay, deps.abort.clone()).await;
                 index += 1;
             }

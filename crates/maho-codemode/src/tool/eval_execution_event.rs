@@ -1,7 +1,13 @@
+use super::{
+    call_capture::{
+        EvalToolCallMetric, MAX_AGGREGATED_TOOL_NAMES, MAX_CAPTURED_IDENTIFIER_CODE_POINTS,
+        MAX_ENRICHED_TOOL_CALLS, MAX_RPC_EVENT_BYTES, cap_code_points,
+    },
+    types::EvalLanguage,
+};
 use maho_ext_api::{AgentToolResult, ContentBlock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use super::{call_capture::{EvalToolCallMetric, MAX_AGGREGATED_TOOL_NAMES, MAX_CAPTURED_IDENTIFIER_CODE_POINTS, MAX_ENRICHED_TOOL_CALLS, MAX_RPC_EVENT_BYTES, cap_code_points}, types::EvalLanguage};
 
 pub const EVAL_EXECUTION_EVENT: &str = "senpi.eval.execution";
 
@@ -50,7 +56,9 @@ pub fn build_eval_execution_event_payload(options: BuildEvalExecutionEventOption
     for metric in options.metrics {
         let item = EvalToolAggregate {
             count: 1,
-            total_duration_ms: metric.duration_ms.unwrap_or_else(|| (options.completed_at - metric.started_at).max(0.0)),
+            total_duration_ms: metric
+                .duration_ms
+                .unwrap_or_else(|| (options.completed_at - metric.started_at).max(0.0)),
             ok_count: usize::from(metric.ok == Some(true)),
             error_count: usize::from(metric.ok == Some(false)),
             pending_count: usize::from(metric.ok.is_none()),
@@ -61,10 +69,15 @@ pub fn build_eval_execution_event_payload(options: BuildEvalExecutionEventOption
         } else if aggregates.len() < MAX_AGGREGATED_TOOL_NAMES {
             aggregates.push((metric.name.clone(), item));
         } else {
-            overflow.get_or_insert_with(EvalToolAggregate::default).add(&item);
+            overflow
+                .get_or_insert_with(EvalToolAggregate::default)
+                .add(&item);
         }
     }
-    let result = match &options.outcome { EvalExecutionSettleOutcome::Result(result) => Some(*result), EvalExecutionSettleOutcome::Error(_) => None };
+    let result = match &options.outcome {
+        EvalExecutionSettleOutcome::Result(result) => Some(*result),
+        EvalExecutionSettleOutcome::Error(_) => None,
+    };
     let ok = result.is_some_and(|result| result.details["isError"] != true);
     let names: Vec<_> = aggregates.iter().map(|(name, _)| name.clone()).collect();
     let mut payload = json!({
@@ -76,19 +89,27 @@ pub fn build_eval_execution_event_payload(options: BuildEvalExecutionEventOption
         "distinctToolsCalled":names,"toolAggregates":aggregates.into_iter().map(|(name,item)|(name,json!(item))).collect::<serde_json::Map<_,_>>(),
         "toolAggregatesTruncated":overflow.is_some()
     });
-    if let Some(overflow) = overflow { payload["toolAggregateOverflow"] = json!(overflow); }
-    if let Some(result) = result && let Some(duration) = result.details.get("durationMs") {
+    if let Some(overflow) = overflow {
+        payload["toolAggregateOverflow"] = json!(overflow);
+    }
+    if let Some(result) = result
+        && let Some(duration) = result.details.get("durationMs")
+    {
         payload["kernelDurationMs"] = duration.clone();
     }
     if !ok {
         let error = options.state_error.or_else(|| match options.outcome {
             EvalExecutionSettleOutcome::Error(error) => Some(error),
-            EvalExecutionSettleOutcome::Result(result) => result.content.iter().find_map(|part| match part {
-                ContentBlock::Text(text) if !text.text.is_empty() => Some(text.text.trim_end()),
-                _ => None,
-            }),
+            EvalExecutionSettleOutcome::Result(result) => {
+                result.content.iter().find_map(|part| match part {
+                    ContentBlock::Text(text) if !text.text.is_empty() => Some(text.text.trim_end()),
+                    _ => None,
+                })
+            }
         });
-        if let Some(error) = error { payload["error"] = json!(cap_code_points(error,512)); }
+        if let Some(error) = error {
+            payload["error"] = json!(cap_code_points(error, 512));
+        }
     }
     payload
 }
@@ -96,25 +117,52 @@ pub fn build_eval_execution_event_payload(options: BuildEvalExecutionEventOption
 pub fn to_eval_execution_rpc_payload(payload: &Value) -> Value {
     // PERF-DIVERGENCE(senpi eval-execution-event): upstream measures JSON.stringify length; this port counts serialized bytes through a counting writer and deserializes aggregates from references, avoiding a throwaway String and per-aggregate clones. Byte length and branch taken are identical.
     let mut candidate = payload.clone();
-    candidate.as_object_mut().expect("execution payload is an object").remove("error");
+    candidate
+        .as_object_mut()
+        .expect("execution payload is an object")
+        .remove("error");
     candidate["detailLevel"] = json!("metadata");
     candidate["rpcTruncated"] = json!(false);
-    candidate["toolCalls"] = json!(payload["toolCalls"].as_array().expect("execution payload has calls").iter().map(|call| {
-        let mut summary = json!({"name":call["name"],"ok":call["ok"]});
-        if let Some(duration) = call.get("durationMs") { summary["durationMs"] = duration.clone(); }
-        summary
-    }).collect::<Vec<_>>());
+    candidate["toolCalls"] = json!(
+        payload["toolCalls"]
+            .as_array()
+            .expect("execution payload has calls")
+            .iter()
+            .map(|call| {
+                let mut summary = json!({"name":call["name"],"ok":call["ok"]});
+                if let Some(duration) = call.get("durationMs") {
+                    summary["durationMs"] = duration.clone();
+                }
+                summary
+            })
+            .collect::<Vec<_>>()
+    );
     struct Counter(usize);
     impl std::io::Write for Counter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { self.0 += buf.len(); Ok(buf.len()) }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     let mut counter = Counter(0);
     serde_json::to_writer(&mut counter, &candidate).expect("execution payload serializes");
-    if counter.0 <= MAX_RPC_EVENT_BYTES { return candidate; }
+    if counter.0 <= MAX_RPC_EVENT_BYTES {
+        return candidate;
+    }
     let mut total = EvalToolAggregate::default();
-    for aggregate in payload["toolAggregates"].as_object().expect("execution aggregates are an object").values().chain(payload.get("toolAggregateOverflow")) {
-        total.add(&<EvalToolAggregate as serde::Deserialize>::deserialize(aggregate).expect("execution aggregate has native shape"));
+    for aggregate in payload["toolAggregates"]
+        .as_object()
+        .expect("execution aggregates are an object")
+        .values()
+        .chain(payload.get("toolAggregateOverflow"))
+    {
+        total.add(
+            &<EvalToolAggregate as serde::Deserialize>::deserialize(aggregate)
+                .expect("execution aggregate has native shape"),
+        );
     }
     candidate["rpcTruncated"] = json!(true);
     candidate["toolCalls"] = json!([]);

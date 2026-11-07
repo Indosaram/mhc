@@ -277,9 +277,8 @@ pub fn native_shared_parent_tool_definition(
         let name = name.clone();
         Box::pin(async move {
             call.signal.check()?;
-            let parent = parent().ok_or_else(|| {
-                maho_tools::ToolError::Message("Parent session retired".into())
-            })?;
+            let parent = parent()
+                .ok_or_else(|| maho_tools::ToolError::Message("Parent session retired".into()))?;
             let controller = maho_ai::utils::abort::AbortController::new();
             let updates = call.on_update.map(|update| {
                 Arc::new(move |result| {
@@ -438,12 +437,17 @@ pub fn live_parent_tools(
     // completed child. Children share one `Arc` per unchanged parent tool instead.
     type ToolCache = std::collections::HashMap<
         String,
-        (String, senpi_task::runners::in_process::shared_tool_filter::ChildToolRef),
+        (
+            String,
+            senpi_task::runners::in_process::shared_tool_filter::ChildToolRef,
+        ),
     >;
     let cache: Arc<std::sync::Mutex<ToolCache>> = Arc::default();
     Arc::new(move || match parent() {
         Some(session) => {
-            let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut cache = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let tools: Vec<_> = session
                 .get_all_tools()
                 .into_iter()

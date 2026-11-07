@@ -62,7 +62,10 @@ impl From<PointerEvent> for RecordedPointer {
                 button,
                 modifiers,
             } => Self::Drag {
-                path: path.into_iter().map(|(x, y)| DesktopPoint { x, y }).collect(),
+                path: path
+                    .into_iter()
+                    .map(|(x, y)| DesktopPoint { x, y })
+                    .collect(),
                 button,
                 modifiers,
             },

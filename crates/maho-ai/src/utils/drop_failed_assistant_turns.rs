@@ -11,13 +11,20 @@ fn is_failed_stop(stop_reason: StopReason) -> bool {
 /// by dropped assistants. Every other message and the order are preserved.
 pub fn drop_failed_assistant_turns(messages: &[Message]) -> Vec<Message> {
     let failed_ids = failed_tool_call_ids(messages);
-    messages.iter().filter(|message| keep(message, &failed_ids)).cloned().collect()
+    messages
+        .iter()
+        .filter(|message| keep(message, &failed_ids))
+        .cloned()
+        .collect()
 }
 
 /// Owned variant of [`drop_failed_assistant_turns`]: same output and order, without cloning kept messages.
 pub fn drop_failed_assistant_turns_owned(messages: Vec<Message>) -> Vec<Message> {
     let failed_ids = failed_tool_call_ids(&messages);
-    messages.into_iter().filter(|message| keep(message, &failed_ids)).collect()
+    messages
+        .into_iter()
+        .filter(|message| keep(message, &failed_ids))
+        .collect()
 }
 
 fn keep(message: &Message, failed_ids: &HashSet<String>) -> bool {
@@ -33,7 +40,11 @@ fn failed_tool_call_ids(messages: &[Message]) -> HashSet<String> {
     let mut failed_ids = HashSet::new();
     for message in messages {
         if let Message::Assistant(assistant) = message {
-            let declared = if is_failed_stop(assistant.stop_reason) { &mut failed_ids } else { &mut kept_ids };
+            let declared = if is_failed_stop(assistant.stop_reason) {
+                &mut failed_ids
+            } else {
+                &mut kept_ids
+            };
             for block in &assistant.content {
                 if let ContentBlock::ToolCall(call) = block {
                     declared.insert(call.id.clone());
@@ -99,7 +110,10 @@ mod tests {
 
     #[test]
     fn keeps_a_successful_turn_and_its_tool_result() {
-        let list = messages(json!([assistant("stop", Some("call_1")), tool_result("call_1")]));
+        let list = messages(json!([
+            assistant("stop", Some("call_1")),
+            tool_result("call_1")
+        ]));
         let kept = drop_failed_assistant_turns(&list);
         assert_eq!(roles(&kept), vec!["assistant", "toolResult"]);
     }

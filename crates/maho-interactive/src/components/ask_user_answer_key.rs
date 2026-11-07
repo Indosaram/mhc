@@ -2,7 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use maho_core::keybindings::{QUESTION_ANSWER_FALLBACK_KEY, QUESTION_ANSWER_PRIMARY_KEY, host_platform};
+use maho_core::keybindings::{
+    QUESTION_ANSWER_FALLBACK_KEY, QUESTION_ANSWER_PRIMARY_KEY, host_platform,
+};
 use maho_tui::keybindings::{KeybindingsManager, get_keybindings};
 use maho_tui::keys::decode_kitty_printable;
 
@@ -124,7 +126,10 @@ pub fn darwin_option_glyphs(keys: &[String]) -> HashSet<String> {
         let Some(letter) = alt_letter(key) else {
             continue;
         };
-        if let Some((_, pair)) = DARWIN_OPTION_GLYPHS.iter().find(|(name, _)| *name == letter) {
+        if let Some((_, pair)) = DARWIN_OPTION_GLYPHS
+            .iter()
+            .find(|(name, _)| *name == letter)
+        {
             glyphs.insert(pair[0].to_string());
             glyphs.insert(pair[1].to_string());
         }

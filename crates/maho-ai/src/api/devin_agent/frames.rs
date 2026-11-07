@@ -7,13 +7,15 @@
 use std::io::Write;
 
 use bytes::Bytes;
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use futures::{Stream, StreamExt};
 use prost::Message;
 
-use crate::api::devin_agent::paths::{DEVIN_COMPRESSED_FLAG, DEVIN_MAX_FRAME_PAYLOAD, DEVIN_TRAILER_FLAG};
+use crate::api::devin_agent::paths::{
+    DEVIN_COMPRESSED_FLAG, DEVIN_MAX_FRAME_PAYLOAD, DEVIN_TRAILER_FLAG,
+};
 
 /// `DevinFrame`: one decoded frame - a message, or the raw end-of-stream trailer JSON.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +30,10 @@ pub enum DevinFrameError {
     #[error("Devin Connect frame length {length} exceeds the {DEVIN_MAX_FRAME_PAYLOAD}-byte cap")]
     FrameTooLarge { length: u32 },
     #[error("Devin Connect frame payload is not a {schema} message: {message}")]
-    Decode { schema: &'static str, message: String },
+    Decode {
+        schema: &'static str,
+        message: String,
+    },
     #[error("Devin Connect frame payload is not gzip: {message}")]
     Gunzip { message: String },
     #[error("{0}")]
@@ -74,11 +79,17 @@ where
             let flags = pending[0];
             let raw = pending[5..frame_length].to_vec();
             pending.drain(..frame_length);
-            let payload = if flags & DEVIN_COMPRESSED_FLAG == 0 { raw } else { gunzip(&raw)? };
+            let payload = if flags & DEVIN_COMPRESSED_FLAG == 0 {
+                raw
+            } else {
+                gunzip(&raw)?
+            };
             let frame = if flags & DEVIN_TRAILER_FLAG == 0 {
-                DevinFrame::Message(M::decode(payload.as_slice()).map_err(|error| DevinFrameError::Decode {
-                    schema: std::any::type_name::<M>(),
-                    message: error.to_string(),
+                DevinFrame::Message(M::decode(payload.as_slice()).map_err(|error| {
+                    DevinFrameError::Decode {
+                        schema: std::any::type_name::<M>(),
+                        message: error.to_string(),
+                    }
                 })?)
             } else {
                 DevinFrame::Trailer(String::from_utf8_lossy(&payload).into_owned())
@@ -91,14 +102,21 @@ where
 
 fn gzip(payload: &[u8]) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(payload).expect("gzip a Connect frame payload into memory");
-    encoder.finish().expect("finish a Connect frame gzip stream")
+    encoder
+        .write_all(payload)
+        .expect("gzip a Connect frame payload into memory");
+    encoder
+        .finish()
+        .expect("finish a Connect frame gzip stream")
 }
 
 fn gunzip(payload: &[u8]) -> Result<Vec<u8>, DevinFrameError> {
     let mut decoder = GzDecoder::new(payload);
     let mut out = Vec::new();
-    std::io::Read::read_to_end(&mut decoder, &mut out)
-        .map_err(|error| DevinFrameError::Gunzip { message: error.to_string() })?;
+    std::io::Read::read_to_end(&mut decoder, &mut out).map_err(|error| {
+        DevinFrameError::Gunzip {
+            message: error.to_string(),
+        }
+    })?;
     Ok(out)
 }

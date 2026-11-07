@@ -201,11 +201,12 @@ impl PendingPauses {
 
     fn acknowledge(&self, task_id: &str, epoch: i64) {
         if let Some((held_epoch, waiters)) = lock(&self.waiting).remove(task_id)
-            && held_epoch == epoch {
-                for waiter in waiters {
-                    let _ = waiter.send(());
-                }
+            && held_epoch == epoch
+        {
+            for waiter in waiters {
+                let _ = waiter.send(());
             }
+        }
     }
 
     fn clear(&self, task_id: &str) {

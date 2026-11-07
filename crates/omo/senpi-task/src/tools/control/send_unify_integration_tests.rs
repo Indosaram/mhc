@@ -15,7 +15,7 @@ fn is_resident(debug: &str) -> bool {
 
 #[test]
 fn given_a_completed_resident_child_when_task_send_sends_another_message_then_the_revived_turn_completes()
-{
+ {
     let harness = make_manager(HarnessOptions::default());
     let manager = &harness.manager;
 
@@ -47,9 +47,7 @@ fn given_a_completed_resident_child_when_task_send_sends_another_message_then_th
         manager,
         &TaskSendInput {
             to: task_id.clone(),
-            message: Some(TaskSendMessage::Plain(
-                "finish with new answer".to_string(),
-            )),
+            message: Some(TaskSendMessage::Plain("finish with new answer".to_string())),
             team_run_id: None,
             summary: None,
             all_scope: None,

@@ -385,7 +385,14 @@ mod tests {
         assert_eq!(agent.thinking_level.as_deref(), Some("high"));
         assert!(agent.background);
         assert_eq!(agent.system_prompt, "Body");
-        assert!(parse_agent("---\nname: main\ndescription: x\n---\n", AgentSource::User, None).is_none());
+        assert!(
+            parse_agent(
+                "---\nname: main\ndescription: x\n---\n",
+                AgentSource::User,
+                None
+            )
+            .is_none()
+        );
         assert!(parse_agent("no frontmatter", AgentSource::User, None).is_none());
         assert!(parse_agent("---\nname: x\n---\n", AgentSource::User, None).is_none());
     }
@@ -433,7 +440,10 @@ mod tests {
         assert_eq!(task.source, AgentSource::Project);
         assert_eq!(task.models, ["p/m", "q/n"]);
         assert_eq!(task.disallowed_tools, ["bash"]);
-        assert_eq!(found.get("writer").expect("writer").source, AgentSource::Config);
+        assert_eq!(
+            found.get("writer").expect("writer").source,
+            AgentSource::Config
+        );
         assert_eq!(found.searched.len(), 2);
     }
 }

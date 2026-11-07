@@ -60,7 +60,10 @@ fn providers(dir: &std::path::Path) -> telemetry_core::TelemetryProviders {
 }
 
 fn seal_logs(providers: &telemetry_core::TelemetryProviders, dir: &std::path::Path) -> Vec<u8> {
-    let sealed = providers.seal_logs(BATCH_ID).expect("seal").expect("sealed");
+    let sealed = providers
+        .seal_logs(BATCH_ID)
+        .expect("seal")
+        .expect("sealed");
     match read_spool_request(&dir.join(sealed)).expect("readable spool file") {
         SpoolRequest::Ok { body, .. } => body,
         SpoolRequest::Corrupt { .. } => panic!("corrupt spool file"),
@@ -104,7 +107,11 @@ async fn a_log_emitted_inside_an_active_span_carries_that_spans_trace_and_span_i
 
     let traces = decode_traces(&seal_spans(&created, &root.dir));
     let logs = decode_logs(&seal_logs(&created, &root.dir));
-    let encoded_span = spans_of(&traces).first().copied().cloned().expect("one span");
+    let encoded_span = spans_of(&traces)
+        .first()
+        .copied()
+        .cloned()
+        .expect("one span");
     let record = log_records_of(&logs)
         .first()
         .copied()
@@ -161,7 +168,11 @@ async fn only_the_status_code_travels_when_a_span_ends() {
     span.end();
 
     let traces = decode_traces(&seal_spans(&created, &root.dir));
-    let encoded = spans_of(&traces).first().copied().cloned().expect("one span");
+    let encoded = spans_of(&traces)
+        .first()
+        .copied()
+        .cloned()
+        .expect("one span");
     let status = encoded.status.as_ref().expect("status");
     assert_eq!(status.code, 2);
     assert_eq!(status.message, "");

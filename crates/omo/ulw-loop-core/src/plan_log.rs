@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
-use crate::paths::{ulw_loop_dir, UlwLoopScope};
+use crate::paths::{UlwLoopScope, ulw_loop_dir};
 use crate::runtime::UlwLoopError;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,8 +91,10 @@ pub fn reconcile_plan(dir: impl AsRef<Path>) -> Option<UlwLoopPlan> {
     // counts as a plan; serde defaults alone would accept a goals-less `{"version":1}` as empty.
     let cached: Option<UlwLoopPlan> = raw
         .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
-        .filter(|value| value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
-            && value.get("goals").is_some_and(serde_json::Value::is_array))
+        .filter(|value| {
+            value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
+                && value.get("goals").is_some_and(serde_json::Value::is_array)
+        })
         .and_then(|value| serde_json::from_value(value).ok());
     let latest = read_newest_record(&dir);
 
@@ -152,5 +154,3 @@ pub fn plan_exists(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopScope>) ->
     let dir = crate::paths::ulw_loop_dir(repo_root, scope);
     dir.join("goals.json").exists() || !log_names(&dir).is_empty()
 }
-
-

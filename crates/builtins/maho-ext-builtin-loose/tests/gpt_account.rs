@@ -1,6 +1,6 @@
-use maho_ext_builtin_loose::gpt_account::{parse_action, AccountAction, GptAccount, PROVIDER_ID};
 use maho_ai::auth::types::{AccountLoginOrigin, AccountLoginReceipt};
 use maho_ext_api::*;
+use maho_ext_builtin_loose::gpt_account::{AccountAction, GptAccount, PROVIDER_ID, parse_action};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -9,8 +9,14 @@ use std::{
 #[test]
 fn account_dispatch_preserves_aliases_and_missing_id_behavior() {
     assert_eq!(parse_action("").expect("parse"), AccountAction::List);
-    assert_eq!(parse_action("pin unpin").expect("parse"), AccountAction::Unpin);
-    assert_eq!(parse_action("pin slot ignored").expect("parse"), AccountAction::Pin("slot".into()));
+    assert_eq!(
+        parse_action("pin unpin").expect("parse"),
+        AccountAction::Unpin
+    );
+    assert_eq!(
+        parse_action("pin slot ignored").expect("parse"),
+        AccountAction::Pin("slot".into())
+    );
     assert_eq!(parse_action("remove").expect("parse"), AccountAction::Usage);
     assert_eq!(parse_action("other").expect("parse"), AccountAction::Usage);
 }
@@ -61,17 +67,35 @@ impl ModelRegistry for FixtureRegistry {
 #[derive(Default)]
 struct RecordingUi(pub Mutex<Vec<(String, NotificationType)>>);
 impl ExtensionUi for RecordingUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, kind: NotificationType) {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((message.into(), kind));
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((message.into(), kind));
     }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -128,29 +152,74 @@ fn context(ui: Arc<RecordingUi>) -> ExtensionContext {
 async fn a_successful_add_routes_accounts_changed_through_the_core_registry_and_unsubscribes() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let sink = observed.clone();
-    let unsubscribe = maho_core::provider_account_events::subscribe_provider_account_events(Arc::new(move |event| {
-        if let maho_core::provider_account_events::ProviderAccountEvent::AccountsChanged { provider } = event
-            && provider == PROVIDER_ID {
-            sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(provider);
-        }
-    }));
+    let unsubscribe = maho_core::provider_account_events::subscribe_provider_account_events(
+        Arc::new(move |event| {
+            if let maho_core::provider_account_events::ProviderAccountEvent::AccountsChanged {
+                provider,
+            } = event
+                && provider == PROVIDER_ID
+            {
+                sink.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(provider);
+            }
+        }),
+    );
 
-    let mut api = ExtensionApi::new(LoadedExtension::new("builtin-loose", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("builtin-loose", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
     GptAccount {
-        login: Arc::new(|_| Box::pin(async { Ok(Some(AccountLoginReceipt { provider_id: PROVIDER_ID.into(), name: "primary".into(), origin: AccountLoginOrigin::Generated })) })),
+        login: Arc::new(|_| {
+            Box::pin(async {
+                Ok(Some(AccountLoginReceipt {
+                    provider_id: PROVIDER_ID.into(),
+                    name: "primary".into(),
+                    origin: AccountLoginOrigin::Generated,
+                }))
+            })
+        }),
         open_browser: Arc::new(|_| {}),
     }
     .register(&mut api);
-    let handler = api.registered.commands.iter().find(|command| command.name == "gpt-account").expect("gpt-account command").handler.clone();
+    let handler = api
+        .registered
+        .commands
+        .iter()
+        .find(|command| command.name == "gpt-account")
+        .expect("gpt-account command")
+        .handler
+        .clone();
 
     let ui = Arc::new(RecordingUi::default());
     let ctx = context(ui.clone());
     handler("add", &ctx).await.expect("add");
 
-    assert_eq!(*observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner), vec![PROVIDER_ID.to_owned()], "exactly one AccountsChanged for the provider");
-    assert!(ui.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|(_, kind)| *kind == NotificationType::Info));
+    assert_eq!(
+        *observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        vec![PROVIDER_ID.to_owned()],
+        "exactly one AccountsChanged for the provider"
+    );
+    assert!(
+        ui.0.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|(_, kind)| *kind == NotificationType::Info)
+    );
 
     unsubscribe();
     maho_core::provider_account_events::emit_provider_accounts_changed(PROVIDER_ID);
-    assert_eq!(observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "unsubscribe stops delivery");
+    assert_eq!(
+        observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len(),
+        1,
+        "unsubscribe stops delivery"
+    );
 }

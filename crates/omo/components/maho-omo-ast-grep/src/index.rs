@@ -12,7 +12,11 @@ pub struct AstGrepComponentOptions {
 
 impl Default for AstGrepComponentOptions {
     fn default() -> Self {
-        let sibling_name = if cfg!(windows) { "ast-grep-mcp.exe" } else { "ast-grep-mcp" };
+        let sibling_name = if cfg!(windows) {
+            "ast-grep-mcp.exe"
+        } else {
+            "ast-grep-mcp"
+        };
         let entry = std::env::current_exe()
             .map(|path| path.with_file_name(sibling_name))
             .unwrap_or_else(|_| PathBuf::from(sibling_name));
@@ -111,7 +115,10 @@ mod tests {
         );
         assert_eq!(server.config.enabled, Some(true));
         assert_eq!(server.config.lifecycle, Some(McpLifecycle::Lazy));
-        assert_eq!(server.config.exposure, Some(maho_ext_api::McpExposure::Search));
+        assert_eq!(
+            server.config.exposure,
+            Some(maho_ext_api::McpExposure::Search)
+        );
         assert_eq!(server.config.env.as_ref().unwrap()[BUN_BE_BUN_ENV], "1");
     }
 

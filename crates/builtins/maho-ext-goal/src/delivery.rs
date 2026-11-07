@@ -434,9 +434,18 @@ impl GoalDelivery {
                     &self.lifecycle,
                 );
                 self.todo_backstop.lock().map_err(failure)?.reset_chain();
-                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                *self.last_facts.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .last_agent_end
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .last_todo_outcome
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .last_facts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let reference = self.reference.clone();
                 let context = ctx.clone();
                 let monitor = self.runtime.monitor.clone();
@@ -444,62 +453,68 @@ impl GoalDelivery {
                 let now = self.now.clone();
                 let last_agent_end = self.last_agent_end.clone();
                 let last_todo_outcome = self.last_todo_outcome.clone();
-                self.lifecycle
-                    .register_goal_lifecycle_collector(Arc::new(
-                        move |restored_end: Option<&maho_core::agent_abort_provenance::AgentEndEvent>, changed_goal: Option<Option<&Goal>>| {
-                            let goal = match changed_goal {
-                                Some(None) => None,
-                                Some(Some(goal)) => Some(goal.clone()),
-                                None => crate::store::read_goal(&reference(&context)).unwrap_or_else(|error| {
+                self.lifecycle.register_goal_lifecycle_collector(Arc::new(
+                    move |restored_end: Option<
+                        &maho_core::agent_abort_provenance::AgentEndEvent,
+                    >,
+                          changed_goal: Option<Option<&Goal>>| {
+                        let goal = match changed_goal {
+                            Some(None) => None,
+                            Some(Some(goal)) => Some(goal.clone()),
+                            None => crate::store::read_goal(&reference(&context)).unwrap_or_else(
+                                |error| {
                                     maho_ext_api::diagnostic(&format!(
                                         "goal lifecycle read failed: {error}"
                                     ));
                                     None
-                                }),
-                            };
-                            let last_end = last_agent_end
+                                },
+                            ),
+                        };
+                        let last_end = last_agent_end
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        let end = last_end.or_else(|| restored_end.cloned());
+                        let todo_outcome = last_todo_outcome
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        let input = if let Some(ref end_event) = end {
+                            let monitor = monitor
                                 .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .clone();
-                            let end = last_end.or_else(|| restored_end.cloned());
-                            let todo_outcome = last_todo_outcome
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .clone();
-                            let input = if let Some(ref end_event) = end {
-                                let monitor = monitor
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
-                                    &context,
-                                    end_event,
-                                    goal.as_ref(),
-                                    todo_outcome.as_deref(),
-                                    (
-                                        crate::turn_end_liveness_report::deadline_stop_pending(&context),
-                                        pending.load(Ordering::Acquire),
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                                &context,
+                                end_event,
+                                goal.as_ref(),
+                                todo_outcome.as_deref(),
+                                (
+                                    crate::turn_end_liveness_report::deadline_stop_pending(
+                                        &context,
                                     ),
-                                    &monitor,
-                                    now() as i64,
-                                ) {
-                                    Ok(input) => Some(input),
-                                    Err(error) => {
-                                        maho_ext_api::diagnostic(&format!(
-                                            "goal lifecycle collection failed: {error}"
-                                        ));
-                                        None
-                                    }
+                                    pending.load(Ordering::Acquire),
+                                ),
+                                &monitor,
+                                now() as i64,
+                            ) {
+                                Ok(input) => Some(input),
+                                Err(error) => {
+                                    maho_ext_api::diagnostic(&format!(
+                                        "goal lifecycle collection failed: {error}"
+                                    ));
+                                    None
                                 }
-                            } else {
-                                None
-                            };
-                            crate::lifecycle_facts::GoalLifecycleFacts {
-                                goal,
-                                input,
-                                todo_outcome,
                             }
-                        },
-                    ));
+                        } else {
+                            None
+                        };
+                        crate::lifecycle_facts::GoalLifecycleFacts {
+                            goal,
+                            input,
+                            todo_outcome,
+                        }
+                    },
+                ));
                 self.pending.store(false, Ordering::Release);
                 self.subscribe(ctx);
                 if let Some(goal) = goal {
@@ -679,10 +694,14 @@ impl GoalDelivery {
                 if let Some(service) = self.neutral_lifecycle.lock().map_err(failure)?.as_ref() {
                     service.turn_end(serde_json::to_value(&input).map_err(failure)?);
                 }
-                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(ended.clone());
-                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(outcome.clone());
+                *self
+                    .last_agent_end
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ended.clone());
+                *self
+                    .last_todo_outcome
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(outcome.clone());
                 *self.last_facts.lock().map_err(failure)? =
                     Some(crate::lifecycle_facts::GoalLifecycleFacts {
                         goal: goal.cloned(),
@@ -747,8 +766,14 @@ impl GoalDelivery {
                 self.lifecycle.retire();
                 self.neutral_lifecycle.lock().map_err(failure)?.take();
                 *self.last_facts.lock().map_err(failure)? = None;
-                *self.last_agent_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                *self.last_todo_outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .last_agent_end
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *self
+                    .last_todo_outcome
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();
                 *self.context.lock().map_err(failure)? = None;
@@ -1238,9 +1263,9 @@ mod tests {
             maho_ai::providers::faux::faux_assistant_message(text, Default::default())
         }
         fn narration(text: &str) -> Vec<AgentMessage> {
-            vec![AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(assistant(
-                text,
-            ))))]
+            vec![AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(
+                assistant(text),
+            )))]
         }
         fn tool_turn(
             turn: usize,
@@ -1659,15 +1684,18 @@ mod tests {
         assert_eq!(live_facts.input.expect("live input").ended_by, "user-abort");
         assert!(live_facts.todo_outcome.is_some());
 
-        delivery.event(
-            &ExtensionEvent::SessionShutdown(SessionShutdownEvent {
-                reason: SessionReason::Quit,
-                target_session_file: None,
-                signal: None,
-            }),
-            &ctx,
-            None,
-        ).await.expect("shutdown delivery");
+        delivery
+            .event(
+                &ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                    reason: SessionReason::Quit,
+                    target_session_file: None,
+                    signal: None,
+                }),
+                &ctx,
+                None,
+            )
+            .await
+            .expect("shutdown delivery");
         session.dispose().await;
     }
 }

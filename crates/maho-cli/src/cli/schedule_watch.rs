@@ -267,7 +267,9 @@ impl Reporter {
         Ok(ok)
     }
 }
-async fn guarded_pass<D: super::schedule_delivery::Delivery + ?Sized>(options: &RunDueOptions<'_, D>) -> RunDueResult {
+async fn guarded_pass<D: super::schedule_delivery::Delivery + ?Sized>(
+    options: &RunDueOptions<'_, D>,
+) -> RunDueResult {
     match run_due_jobs(options).await {
         Ok(result) => result,
         Err(error) => RunDueResult {

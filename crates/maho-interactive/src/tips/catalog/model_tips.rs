@@ -5,13 +5,20 @@ pub const MODEL_TIPS: &[TipDefinition] = &[
         id: "thinking-level",
         bindings: &["app.thinking.cycle"],
         requires_command: None,
-        render: |keys| format!("Use /thinking <level> to set the thinking level, /thinking to pick one, or {} to cycle through them.", keys("app.thinking.cycle")),
+        render: |keys| {
+            format!(
+                "Use /thinking <level> to set the thinking level, /thinking to pick one, or {} to cycle through them.",
+                keys("app.thinking.cycle")
+            )
+        },
     },
     TipDefinition {
         id: "efforts-command",
         bindings: &[],
         requires_command: Some("efforts"),
-        render: |_keys| "Use /efforts <level> to set the reasoning effort for the current model; /efforts alone lists the levels it supports.".to_string(),
+        render: |_keys| {
+            "Use /efforts <level> to set the reasoning effort for the current model; /efforts alone lists the levels it supports.".to_string()
+        },
     },
     TipDefinition {
         id: "favorite-model-rotation",
@@ -41,7 +48,9 @@ pub const MODEL_TIPS: &[TipDefinition] = &[
         id: "model-command-search",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Use /model to open the selector, or /model <pattern> to jump straight to a matching model.".to_string(),
+        render: |_keys| {
+            "Use /model to open the selector, or /model <pattern> to jump straight to a matching model.".to_string()
+        },
     },
     TipDefinition {
         id: "model-cycling-scope",
@@ -59,30 +68,41 @@ pub const MODEL_TIPS: &[TipDefinition] = &[
         id: "thinking-budgets",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Set thinkingBudgets in settings.json to choose the token budget behind each thinking level.".to_string(),
+        render: |_keys| {
+            "Set thinkingBudgets in settings.json to choose the token budget behind each thinking level.".to_string()
+        },
     },
     TipDefinition {
         id: "prompt-preset",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Set promptPreset in settings.json when a model does not auto-detect the system prompt you want.".to_string(),
+        render: |_keys| {
+            "Set promptPreset in settings.json when a model does not auto-detect the system prompt you want.".to_string()
+        },
     },
     TipDefinition {
         id: "provider-login",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "Use /login to add a subscription or API-key provider, and /logout to remove stored credentials.".to_string(),
+        render: |_keys| {
+            "Use /login to add a subscription or API-key provider, and /logout to remove stored credentials.".to_string()
+        },
     },
     TipDefinition {
         id: "fallback-chains-setting",
         bindings: &[],
         requires_command: None,
-        render: |_keys| "retry.fallbackChains in settings.json maps a model to ordered fallbacks, so a failed turn retries on the next one.".to_string(),
+        render: |_keys| {
+            "retry.fallbackChains in settings.json maps a model to ordered fallbacks, so a failed turn retries on the next one.".to_string()
+        },
     },
     TipDefinition {
         id: "fallback-command",
         bindings: &[],
         requires_command: Some("fallback"),
-        render: |_keys| "Use /fallback to inspect and manage the retry fallback chain for the current model.".to_string(),
+        render: |_keys| {
+            "Use /fallback to inspect and manage the retry fallback chain for the current model."
+                .to_string()
+        },
     },
 ];

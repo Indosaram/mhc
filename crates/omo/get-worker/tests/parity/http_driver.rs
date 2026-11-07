@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use get_worker::{route, Body, Headers, Method, Request, Response};
+use get_worker::{Body, Headers, Method, Request, Response, route};
 
 use crate::fakes::Harness;
 
@@ -50,7 +50,9 @@ pub struct Driver {
 impl Driver {
     pub fn new(harness: Harness) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        listener.set_nonblocking(true).expect("nonblocking listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
         let addr = listener.local_addr().expect("local address");
         Driver {
             harness,
@@ -68,8 +70,12 @@ impl Driver {
     pub fn exchange(&self, method: &str, path: &str, headers: &[(&str, &str)]) -> HttpResult {
         let mut client =
             TcpStream::connect_timeout(&self.addr, IO_TIMEOUT).expect("connect to the driver");
-        client.set_read_timeout(Some(IO_TIMEOUT)).expect("read timeout");
-        client.set_write_timeout(Some(IO_TIMEOUT)).expect("write timeout");
+        client
+            .set_read_timeout(Some(IO_TIMEOUT))
+            .expect("read timeout");
+        client
+            .set_write_timeout(Some(IO_TIMEOUT))
+            .expect("write timeout");
         client
             .write_all(&build_request(method, path, headers))
             .expect("write the request");
@@ -78,13 +84,23 @@ impl Driver {
         // connect() returning does not mean the kernel has queued the connection on the
         // listener yet: on macOS a nonblocking accept right after connect can see WouldBlock.
         // Accept blocking; connect already succeeded, so the connection is in flight.
-        self.listener.set_nonblocking(false).expect("blocking listener");
+        self.listener
+            .set_nonblocking(false)
+            .expect("blocking listener");
         let accepted = self.listener.accept();
-        self.listener.set_nonblocking(true).expect("nonblocking listener");
+        self.listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
         let (mut server, _) = accepted.unwrap_or_else(|error| panic!("accept failed: {error}"));
-        server.set_nonblocking(false).expect("blocking server stream");
-        server.set_read_timeout(Some(IO_TIMEOUT)).expect("read timeout");
-        server.set_write_timeout(Some(IO_TIMEOUT)).expect("write timeout");
+        server
+            .set_nonblocking(false)
+            .expect("blocking server stream");
+        server
+            .set_read_timeout(Some(IO_TIMEOUT))
+            .expect("read timeout");
+        server
+            .set_write_timeout(Some(IO_TIMEOUT))
+            .expect("write timeout");
 
         let request = read_request(&mut server).expect("read the request");
         let ctx = self.harness.context();
@@ -94,7 +110,9 @@ impl Driver {
                 .with_header("Content-Type", "text/plain; charset=utf-8"),
         };
         write_response(&mut server, &response).expect("write the response");
-        server.shutdown(Shutdown::Write).expect("close the response stream");
+        server
+            .shutdown(Shutdown::Write)
+            .expect("close the response stream");
 
         let mut bytes = Vec::new();
         client.read_to_end(&mut bytes).expect("read the response");
@@ -142,7 +160,11 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
 
 fn write_response(stream: &mut TcpStream, response: &Response) -> std::io::Result<()> {
     let body = response.body_bytes();
-    let mut head = format!("HTTP/1.1 {} {}\r\n", response.status, reason(response.status));
+    let mut head = format!(
+        "HTTP/1.1 {} {}\r\n",
+        response.status,
+        reason(response.status)
+    );
     let mut has_length = false;
     for (name, value) in response.headers.iter() {
         if name.eq_ignore_ascii_case("Content-Length") {
@@ -215,7 +237,8 @@ mod tests {
         for (name, body) in assets {
             h.bucket.put(&format!("releases/v{version}/{name}"), body);
         }
-        h.bucket.put(&format!("releases/v{version}/.complete"), "{}");
+        h.bucket
+            .put(&format!("releases/v{version}/.complete"), "{}");
     }
 
     fn driver(fetcher: StaticFetcher) -> Driver {
@@ -225,18 +248,28 @@ mod tests {
     #[test]
     fn mirrored_get_serves_the_object_and_its_headers_over_http() {
         let driver = driver(StaticFetcher::new());
-        mirror(driver.harness(), "5.1.1", &[("omo-linux-x64", "binary-bytes")]);
+        mirror(
+            driver.harness(),
+            "5.1.1",
+            &[("omo-linux-x64", "binary-bytes")],
+        );
 
         let response = driver.exchange("GET", "/v/5.1.1/omo-linux-x64", &[]);
         assert_eq!(response.status, 200);
         assert_eq!(response.body_text(), "binary-bytes");
-        assert_eq!(response.header("Content-Type"), Some("application/octet-stream"));
+        assert_eq!(
+            response.header("Content-Type"),
+            Some("application/octet-stream")
+        );
         assert_eq!(response.header("Content-Length"), Some("12"));
         assert_eq!(
             response.header("Content-Disposition"),
             Some("attachment; filename=\"omo-linux-x64\"")
         );
-        assert_eq!(response.header("ETag"), Some("\"releases/v5.1.1/omo-linux-x64\""));
+        assert_eq!(
+            response.header("ETag"),
+            Some("\"releases/v5.1.1/omo-linux-x64\"")
+        );
         assert_eq!(response.header("X-Omo-Source"), Some("r2"));
 
         let points = driver.harness().sink.points();
@@ -250,7 +283,11 @@ mod tests {
     #[test]
     fn head_returns_the_same_headers_with_no_body_and_records_nothing() {
         let driver = driver(StaticFetcher::new());
-        mirror(driver.harness(), "5.1.1", &[("omo-linux-x64", "binary-bytes")]);
+        mirror(
+            driver.harness(),
+            "5.1.1",
+            &[("omo-linux-x64", "binary-bytes")],
+        );
 
         let response = driver.exchange("HEAD", "/v/5.1.1/omo-linux-x64", &[]);
         assert_eq!(response.status, 200);
@@ -263,7 +300,11 @@ mod tests {
     #[test]
     fn a_repeat_get_is_served_from_the_edge_cache() {
         let driver = driver(StaticFetcher::new());
-        mirror(driver.harness(), "5.1.1", &[("omo-darwin-arm64", "arm-bytes")]);
+        mirror(
+            driver.harness(),
+            "5.1.1",
+            &[("omo-darwin-arm64", "arm-bytes")],
+        );
 
         let first = driver.exchange("GET", "/v/5.1.1/omo-darwin-arm64", &[]);
         assert_eq!(first.header("X-Omo-Source"), Some("r2"));
@@ -279,7 +320,11 @@ mod tests {
     #[test]
     fn an_invalid_asset_is_refused_before_any_storage_read() {
         let driver = driver(StaticFetcher::new());
-        mirror(driver.harness(), "5.1.1", &[("omo-linux-x64", "binary-bytes")]);
+        mirror(
+            driver.harness(),
+            "5.1.1",
+            &[("omo-linux-x64", "binary-bytes")],
+        );
 
         let response = driver.exchange("GET", "/v/5.1.1/omo-plan9-x64", &[]);
         assert_eq!(response.status, 404);
@@ -300,11 +345,22 @@ mod tests {
         assert_eq!(response.status, 302);
         assert_eq!(
             response.header("Location"),
-            Some("https://github.com/code-yeongyu/oh-my-openagent/releases/download/v5.1.0/omo-linux-x64")
+            Some(
+                "https://github.com/code-yeongyu/oh-my-openagent/releases/download/v5.1.0/omo-linux-x64"
+            )
         );
-        assert_eq!(response.header("X-Omo-Fallback-Reason"), Some("version-not-mirrored"));
         assert_eq!(
-            driver.harness().sink.points().last().expect("a point").blobs[1],
+            response.header("X-Omo-Fallback-Reason"),
+            Some("version-not-mirrored")
+        );
+        assert_eq!(
+            driver
+                .harness()
+                .sink
+                .points()
+                .last()
+                .expect("a point")
+                .blobs[1],
             "github"
         );
     }
@@ -312,7 +368,11 @@ mod tests {
     #[test]
     fn a_range_get_serves_the_object_and_never_populates_the_cache() {
         let driver = driver(StaticFetcher::new());
-        mirror(driver.harness(), "5.1.1", &[("omo-linux-x64", "binary-bytes")]);
+        mirror(
+            driver.harness(),
+            "5.1.1",
+            &[("omo-linux-x64", "binary-bytes")],
+        );
 
         let response = driver.exchange("GET", "/v/5.1.1/omo-linux-x64", &[("Range", "bytes=0-3")]);
         assert_eq!(response.status, 200);
@@ -345,7 +405,10 @@ mod tests {
 
         let browser = driver.exchange("GET", "/", &[("User-Agent", "Mozilla/5.0 Safari/605")]);
         assert_eq!(browser.status, 302);
-        assert_eq!(browser.header("Location"), Some("https://omo.dev/docs/install"));
+        assert_eq!(
+            browser.header("Location"),
+            Some("https://omo.dev/docs/install")
+        );
 
         let curl = driver.exchange("GET", "/", &[("User-Agent", "curl/8.7.1")]);
         assert_eq!(curl.status, 200);
@@ -382,7 +445,10 @@ mod tests {
 
         let response = driver.exchange("GET", "/stats/downloads", &[]);
         assert_eq!(response.status, 200);
-        assert_eq!(response.header("Cache-Control"), Some("public, max-age=300"));
+        assert_eq!(
+            response.header("Cache-Control"),
+            Some("public, max-age=300")
+        );
         assert_eq!(response.header("Access-Control-Allow-Origin"), Some("*"));
         let body: serde_json::Value = serde_json::from_slice(&response.body).expect("stats json");
         assert_eq!(body["servedFromMirror"], serde_json::json!(9));
@@ -422,23 +488,25 @@ mod tests {
 
     #[test]
     fn a_rollup_over_http_evidence_is_stored_and_exposed() {
-        let driver = driver(StaticFetcher::new().with(
-            ANALYTICS_SQL,
-            get_worker::FetchResponse::new(
-                200,
-                serde_json::json!({
-                    "data": [{
-                        "day": "2026-09-29",
-                        "kind": "binary",
-                        "source": "r2",
-                        "version": "5.1.1",
-                        "asset": "omo-linux-x64",
-                        "count": "6"
-                    }]
-                })
-                .to_string(),
+        let driver = driver(
+            StaticFetcher::new().with(
+                ANALYTICS_SQL,
+                get_worker::FetchResponse::new(
+                    200,
+                    serde_json::json!({
+                        "data": [{
+                            "day": "2026-09-29",
+                            "kind": "binary",
+                            "source": "r2",
+                            "version": "5.1.1",
+                            "asset": "omo-linux-x64",
+                            "count": "6"
+                        }]
+                    })
+                    .to_string(),
+                ),
             ),
-        ));
+        );
 
         let stored = get_worker::run_downloads_rollup(
             driver.harness().env(),

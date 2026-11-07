@@ -49,10 +49,14 @@ fn env(project_name: &str) -> Env {
     let project = std::fs::canonicalize(root.path())
         .expect("test")
         .join(project_name);
-    let outside = std::fs::canonicalize(root.path()).expect("test").join("outside");
+    let outside = std::fs::canonicalize(root.path())
+        .expect("test")
+        .join("outside");
     std::fs::create_dir_all(&project).expect("test");
     std::fs::create_dir_all(&outside).expect("test");
-    let agent_dir = std::fs::canonicalize(home.path()).expect("test").join("agent");
+    let agent_dir = std::fs::canonicalize(home.path())
+        .expect("test")
+        .join("agent");
     Env {
         _root: root,
         _home: home,
@@ -111,7 +115,9 @@ async fn sandbox_blocks_outside_writes_but_allows_inside() {
     let e = env("proj");
     let command = format!("echo x > {}/probe", e.outside.display());
     let off = tool(&e.project, BashSandboxMode::Off, &e.agent_dir);
-    let result = run(&off, &command, AbortSignal::default()).await.expect("test");
+    let result = run(&off, &command, AbortSignal::default())
+        .await
+        .expect("test");
     assert_eq!(exit_code(&result), 0);
     assert!(
         e.outside.join("probe").exists(),

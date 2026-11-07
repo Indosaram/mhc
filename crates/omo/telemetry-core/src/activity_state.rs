@@ -191,8 +191,14 @@ fn write_state(input: &DailyActiveCaptureStateInput<'_>, state: &Map<String, Val
         .map_err(|error| error.to_string())
         .and_then(|()| serde_json::to_string_pretty(state).map_err(|error| error.to_string()))
         .and_then(|json| {
-            write_file_atomically(&path, &format!("{json}
-")).map_err(|error| error.to_string())
+            write_file_atomically(
+                &path,
+                &format!(
+                    "{json}
+"
+                ),
+            )
+            .map_err(|error| error.to_string())
         });
     if let Err(error) = written {
         report(

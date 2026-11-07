@@ -18,7 +18,11 @@ pub fn normalize_tool_call_id(id: &str) -> String {
         return sanitized;
     }
     let suffix = format!("_{}", short_hash(id));
-    format!("{}{}", &sanitized[..TOOL_CALL_ID_MAX_LENGTH - suffix.len()], suffix)
+    format!(
+        "{}{}",
+        &sanitized[..TOOL_CALL_ID_MAX_LENGTH - suffix.len()],
+        suffix
+    )
 }
 
 #[cfg(test)]

@@ -1,140 +1,598 @@
-use std::{sync::{Arc,Mutex},time::Duration};
-use maho_ext_api::{ToolCall,AbortSignal,ToolContent};
-use maho_ext_mcp::{config_schema::*,transport::*,catalog::collect_tool_catalog,log::McpLogger,guard::output_guard::McpOutputArtifacts,expose::register::*};
-use serde_json::json;
 use crate::support;
+use maho_ext_api::{AbortSignal, ToolCall, ToolContent};
+use maho_ext_mcp::{
+    catalog::collect_tool_catalog, config_schema::*, expose::register::*,
+    guard::output_guard::McpOutputArtifacts, log::McpLogger, transport::*,
+};
+use serde_json::json;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 #[tokio::test]
 async fn native_tool_registration_calls_the_real_fixture_and_rejects_errors_before_spill() {
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into(),"--slow-tool-call".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
-    let transport=create_mcp_transport("fixture",&config,None,Arc::new(Mutex::new(McpLogger::new("fixture",root.path(),None).unwrap()))).unwrap();
-    let client=connect_mcp_transport(&transport).await.unwrap();
-    let catalog=collect_tool_catalog("fixture",client,Duration::from_secs(3)).await.unwrap();
-    let artifacts=Arc::new(McpOutputArtifacts::default());
-    let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),None);
-    assert_eq!(tools[0].name,"mcp_fixture_tool_1");
-    let updates=Arc::new(Mutex::new(Vec::new()));let capture=updates.clone();
-    let result=(tools[0].execute)(ToolCall {id:"native",params:json!({"value":"native"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{capture.lock().unwrap().push(update);Ok(())})),context:None}).await.unwrap();
-    assert_eq!(updates.lock().unwrap().len(),1);assert_eq!(updates.lock().unwrap()[0].details.as_ref().unwrap()["progress"]["progress"],1);
-    assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("value=native")));
-    let left_updates=Arc::new(Mutex::new(Vec::new()));let right_updates=Arc::new(Mutex::new(Vec::new()));let left=left_updates.clone();let right=right_updates.clone();
-    let (left_result,right_result)=tokio::join!(
-        (tools[0].execute)(ToolCall {id:"same",params:json!({"value":"left"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{left.lock().unwrap().push(update);Ok(())})),context:None}),
-        (tools[0].execute)(ToolCall {id:"same",params:json!({"value":"right"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{right.lock().unwrap().push(update);Ok(())})),context:None}));
-    left_result.unwrap();right_result.unwrap();{
-        let left=left_updates.lock().unwrap();let right=right_updates.lock().unwrap();assert_eq!(left.len(),1);assert_eq!(right.len(),1);assert_ne!(left[0].details.as_ref().unwrap()["progress"]["progressToken"],right[0].details.as_ref().unwrap()["progress"]["progressToken"]);
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        transport: Some(Transport::Stdio),
+        command: Some(support::node()),
+        args: Some(vec![
+            support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
+            "--tools".into(),
+            "1".into(),
+            "--slow-tool-call".into(),
+            "1".into(),
+        ]),
+        connect_timeout_ms: Some(5000.0),
+        ..Default::default()
+    };
+    let transport = create_mcp_transport(
+        "fixture",
+        &config,
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("fixture", root.path(), None).unwrap(),
+        )),
+    )
+    .unwrap();
+    let client = connect_mcp_transport(&transport).await.unwrap();
+    let catalog = collect_tool_catalog("fixture", client, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(&catalog, root.path().into(), artifacts.clone(), None);
+    assert_eq!(tools[0].name, "mcp_fixture_tool_1");
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let capture = updates.clone();
+    let result = (tools[0].execute)(ToolCall {
+        id: "native",
+        params: json!({"value":"native"}),
+        signal: AbortSignal::default(),
+        on_update: Some(Arc::new(move |update| {
+            capture.lock().unwrap().push(update);
+            Ok(())
+        })),
+        context: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(updates.lock().unwrap().len(), 1);
+    assert_eq!(
+        updates.lock().unwrap()[0].details.as_ref().unwrap()["progress"]["progress"],
+        1
+    );
+    assert!(
+        matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("value=native"))
+    );
+    let left_updates = Arc::new(Mutex::new(Vec::new()));
+    let right_updates = Arc::new(Mutex::new(Vec::new()));
+    let left = left_updates.clone();
+    let right = right_updates.clone();
+    let (left_result, right_result) = tokio::join!(
+        (tools[0].execute)(ToolCall {
+            id: "same",
+            params: json!({"value":"left"}),
+            signal: AbortSignal::default(),
+            on_update: Some(Arc::new(move |update| {
+                left.lock().unwrap().push(update);
+                Ok(())
+            })),
+            context: None
+        }),
+        (tools[0].execute)(ToolCall {
+            id: "same",
+            params: json!({"value":"right"}),
+            signal: AbortSignal::default(),
+            on_update: Some(Arc::new(move |update| {
+                right.lock().unwrap().push(update);
+                Ok(())
+            })),
+            context: None
+        })
+    );
+    left_result.unwrap();
+    right_result.unwrap();
+    {
+        let left = left_updates.lock().unwrap();
+        let right = right_updates.lock().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(right.len(), 1);
+        assert_ne!(
+            left[0].details.as_ref().unwrap()["progress"]["progressToken"],
+            right[0].details.as_ref().unwrap()["progress"]["progressToken"]
+        );
     }
-    let guard=OutputGuardSettings {max_bytes:Some(1.0),max_lines:Some(1.0),max_tokens:None};
-    let failure=mapped_guarded_result(&catalog[0],&json!({"isError":true,"content":[{"type":"text","text":"error text that would otherwise spill"}]}),root.path(),&artifacts,Some(&guard));
-    assert!(failure.is_err());assert!(!root.path().join("tmp/mcp-out").exists());
-    shutdown_mcp_transport(&transport).await.unwrap();artifacts.cleanup().unwrap();
+    let guard = OutputGuardSettings {
+        max_bytes: Some(1.0),
+        max_lines: Some(1.0),
+        max_tokens: None,
+    };
+    let failure = mapped_guarded_result(
+        &catalog[0],
+        &json!({"isError":true,"content":[{"type":"text","text":"error text that would otherwise spill"}]}),
+        root.path(),
+        &artifacts,
+        Some(&guard),
+    );
+    assert!(failure.is_err());
+    assert!(!root.path().join("tmp/mcp-out").exists());
+    shutdown_mcp_transport(&transport).await.unwrap();
+    artifacts.cleanup().unwrap();
 }
 #[tokio::test]
 async fn native_tool_runtime_reconnects_after_idle_generation_change() {
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
-    let connection=maho_ext_mcp::connection::ServerConnection::new("runtime",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("runtime",root.path(),None).unwrap())));
-    let client=connection.connect().await.unwrap();
-    let mut catalog=collect_tool_catalog("runtime",client,Duration::from_secs(3)).await.unwrap();
-    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    catalog[0].runtime=Some(Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()}));
-    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),None);
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Stdio),
+        command: Some(support::node()),
+        args: Some(vec![
+            support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
+            "--tools".into(),
+            "1".into(),
+        ]),
+        connect_timeout_ms: Some(5000.0),
+        ..Default::default()
+    };
+    let connection = maho_ext_mcp::connection::ServerConnection::new(
+        "runtime",
+        config.clone(),
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("runtime", root.path(), None).unwrap(),
+        )),
+    );
+    let client = connection.connect().await.unwrap();
+    let mut catalog = collect_tool_catalog("runtime", client, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let lifecycle =
+        maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(), config);
+    catalog[0].runtime = Some(Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {
+        connection: connection.clone(),
+        lifecycle: lifecycle.clone(),
+        health: Default::default(),
+    }));
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(&catalog, root.path().into(), artifacts.clone(), None);
     connection.bump_generation().await.unwrap();
-    let result=(tools[0].execute)(ToolCall {id:"reconnect",params:json!({"value":"fresh-client"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap();
-    assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("value=fresh-client")));
-    assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Connected);assert_eq!(lifecycle.in_flight(),0);
-    lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+    let result = (tools[0].execute)(ToolCall {
+        id: "reconnect",
+        params: json!({"value":"fresh-client"}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("value=fresh-client"))
+    );
+    assert_eq!(
+        connection.state(),
+        maho_ext_mcp::connection::ServerConnectionState::Connected
+    );
+    assert_eq!(lifecycle.in_flight(), 0);
+    lifecycle.dispose();
+    connection.dispose().await.unwrap();
+    artifacts.cleanup().unwrap();
 }
 #[tokio::test]
 async fn real_error_tool_execution_never_spills_output() {
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--iserror-tool".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
-    let transport=create_mcp_transport("errors",&config,None,Arc::new(Mutex::new(McpLogger::new("errors",root.path(),None).unwrap()))).unwrap();
-    let client=connect_mcp_transport(&transport).await.unwrap();let catalog=collect_tool_catalog("errors",client,Duration::from_secs(3)).await.unwrap();
-    let artifacts=Arc::new(McpOutputArtifacts::default());
-    let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),Some(OutputGuardSettings {max_bytes:Some(1.0),max_lines:Some(1.0),max_tokens:None}));
-    let tool=tools.iter().find(|tool|tool.name=="mcp_errors_iserror_tool").unwrap();
-    let result=(tool.execute)(ToolCall {id:"error",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
-    shutdown_mcp_transport(&transport).await.unwrap();artifacts.cleanup().unwrap();
-    assert!(result.is_err());assert!(!root.path().join("tmp/mcp-out").exists());
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        transport: Some(Transport::Stdio),
+        command: Some(support::node()),
+        args: Some(vec![
+            support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
+            "--iserror-tool".into(),
+        ]),
+        connect_timeout_ms: Some(5000.0),
+        ..Default::default()
+    };
+    let transport = create_mcp_transport(
+        "errors",
+        &config,
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("errors", root.path(), None).unwrap(),
+        )),
+    )
+    .unwrap();
+    let client = connect_mcp_transport(&transport).await.unwrap();
+    let catalog = collect_tool_catalog("errors", client, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(
+        &catalog,
+        root.path().into(),
+        artifacts.clone(),
+        Some(OutputGuardSettings {
+            max_bytes: Some(1.0),
+            max_lines: Some(1.0),
+            max_tokens: None,
+        }),
+    );
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name == "mcp_errors_iserror_tool")
+        .unwrap();
+    let result = (tool.execute)(ToolCall {
+        id: "error",
+        params: json!({}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    shutdown_mcp_transport(&transport).await.unwrap();
+    artifacts.cleanup().unwrap();
+    assert!(result.is_err());
+    assert!(!root.path().join("tmp/mcp-out").exists());
 }
 #[tokio::test]
 async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again() {
-    use tokio::io::{AsyncBufReadExt,BufReader};
-    let mut fixture=tokio::process::Command::new(support::node()).args([support::senpi("packages/coding-agent/test/mcp/fixtures/http-server.ts"),"--tools".into(),"1".into(),"--always-expire-tool-calls".into()]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
-    let mut lines=BufReader::new(fixture.stdout.take().unwrap()).lines();
-    let ready=tokio::time::timeout(Duration::from_secs(5),lines.next_line()).await.unwrap().unwrap().unwrap();let ready:serde_json::Value=serde_json::from_str(&ready).unwrap();
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Http),url:Some(ready["url"].as_str().unwrap().into()),auth:Some(Auth::Disabled(false)),connect_timeout_ms:Some(5000.0),..Default::default()};
-    let connection=maho_ext_mcp::connection::ServerConnection::new("expiry",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("expiry",root.path(),None).unwrap())));
-    let client=connection.connect().await.unwrap();let mut catalog=collect_tool_catalog("expiry",client,Duration::from_secs(3)).await.unwrap();
-    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    catalog[0].runtime=Some(Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()}));
-    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),None);
-    let result=(tools[0].execute)(ToolCall {id:"expire",params:json!({}),signal:AbortSignal::default(),on_update:None,context:None}).await;
-    assert!(result.is_err());assert_eq!(connection.generation(),1);assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Suspended);assert_eq!(lifecycle.in_flight(),0);
-    lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();fixture.kill().await.unwrap();fixture.wait().await.unwrap();
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut fixture = tokio::process::Command::new(support::node())
+        .args([
+            support::senpi("packages/coding-agent/test/mcp/fixtures/http-server.ts"),
+            "--tools".into(),
+            "1".into(),
+            "--always-expire-tool-calls".into(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(fixture.stdout.take().unwrap()).lines();
+    let ready = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Http),
+        url: Some(ready["url"].as_str().unwrap().into()),
+        auth: Some(Auth::Disabled(false)),
+        connect_timeout_ms: Some(5000.0),
+        ..Default::default()
+    };
+    let connection = maho_ext_mcp::connection::ServerConnection::new(
+        "expiry",
+        config.clone(),
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("expiry", root.path(), None).unwrap(),
+        )),
+    );
+    let client = connection.connect().await.unwrap();
+    let mut catalog = collect_tool_catalog("expiry", client, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let lifecycle =
+        maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(), config);
+    catalog[0].runtime = Some(Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {
+        connection: connection.clone(),
+        lifecycle: lifecycle.clone(),
+        health: Default::default(),
+    }));
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(&catalog, root.path().into(), artifacts.clone(), None);
+    let result = (tools[0].execute)(ToolCall {
+        id: "expire",
+        params: json!({}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    assert!(result.is_err());
+    assert_eq!(connection.generation(), 1);
+    assert_eq!(
+        connection.state(),
+        maho_ext_mcp::connection::ServerConnectionState::Suspended
+    );
+    assert_eq!(lifecycle.in_flight(), 0);
+    lifecycle.dispose();
+    connection.dispose().await.unwrap();
+    artifacts.cleanup().unwrap();
+    fixture.kill().await.unwrap();
+    fixture.wait().await.unwrap();
 }
 #[tokio::test]
 async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() {
-    let root=tempfile::tempdir().unwrap();let artifact_root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
-    let connection=maho_ext_mcp::connection::ServerConnection::new("cached",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("cached",root.path(),None).unwrap())));let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let catalog=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
-    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});let connect=connection.clone();
-    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("cached",&catalog,runtime,Duration::from_secs(3),Arc::new(move ||{let connection=connect.clone();Box::pin(async move {connection.connect().await?;Ok(())})}));
-    let artifacts=Arc::new(McpOutputArtifacts::default());entries[0].agent_dir=Some(artifact_root.path().into());entries[0].artifacts=Some(artifacts.clone());entries[0].output_guard=Some(maho_ext_mcp::config_schema::OutputGuardSettings {max_bytes:Some(1.0),max_lines:None,max_tokens:None});
-    let tools=build_mcp_tool_definitions(&entries,root.path().into(),Arc::new(McpOutputArtifacts::default()),None);assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Idle);
-    let result=(tools[0].execute)(ToolCall {id:"lazy",params:json!({"value":"lazy-call"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap();
-    assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("Full output saved to:")));assert!(artifact_root.path().join("tmp/mcp-out").exists());assert!(!root.path().join("tmp/mcp-out").exists());
-    lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let artifact_root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Stdio),
+        command: Some(support::node()),
+        args: Some(vec![
+            support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
+            "--tools".into(),
+            "1".into(),
+        ]),
+        connect_timeout_ms: Some(5000.0),
+        ..Default::default()
+    };
+    let connection = maho_ext_mcp::connection::ServerConnection::new(
+        "cached",
+        config.clone(),
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("cached", root.path(), None).unwrap(),
+        )),
+    );
+    let lifecycle =
+        maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(), config);
+    let catalog = maho_ext_mcp::catalog_cache::McpCachedServerCatalog {
+        modern: false,
+        credential_identity: None,
+        config_hash: "hash".into(),
+        fetched_at: 0.0,
+        tools: vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],
+        resources: vec![],
+        prompts: vec![],
+        instructions: None,
+    };
+    let runtime = Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {
+        connection: connection.clone(),
+        lifecycle: lifecycle.clone(),
+        health: Default::default(),
+    });
+    let connect = connection.clone();
+    let mut entries = maho_ext_mcp::catalog::cached_mcp_catalog_entries(
+        "cached",
+        &catalog,
+        runtime,
+        Duration::from_secs(3),
+        Arc::new(move || {
+            let connection = connect.clone();
+            Box::pin(async move {
+                connection.connect().await?;
+                Ok(())
+            })
+        }),
+    );
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    entries[0].agent_dir = Some(artifact_root.path().into());
+    entries[0].artifacts = Some(artifacts.clone());
+    entries[0].output_guard = Some(maho_ext_mcp::config_schema::OutputGuardSettings {
+        max_bytes: Some(1.0),
+        max_lines: None,
+        max_tokens: None,
+    });
+    let tools = build_mcp_tool_definitions(
+        &entries,
+        root.path().into(),
+        Arc::new(McpOutputArtifacts::default()),
+        None,
+    );
+    assert_eq!(
+        connection.state(),
+        maho_ext_mcp::connection::ServerConnectionState::Idle
+    );
+    let result = (tools[0].execute)(ToolCall {
+        id: "lazy",
+        params: json!({"value":"lazy-call"}),
+        signal: AbortSignal::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("Full output saved to:"))
+    );
+    assert!(artifact_root.path().join("tmp/mcp-out").exists());
+    assert!(!root.path().join("tmp/mcp-out").exists());
+    lifecycle.dispose();
+    connection.dispose().await.unwrap();
+    artifacts.cleanup().unwrap();
 }
 #[tokio::test]
 async fn terminal_auth_refresh_blocks_cached_connect_and_marks_needs_auth() {
-    use maho_ext_mcp::{connection::*,errors::*};
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
-    let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
-    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
-    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
-    let connected=Arc::new(std::sync::atomic::AtomicBool::new(false));let observed=connected.clone();
-    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(move ||{observed.store(true,std::sync::atomic::Ordering::SeqCst);Box::pin(async {Ok(())})}));
-    entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {Err(McpError::new(McpErrorKind::Auth,"fixture refresh requires auth"))})));
-    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&entries,root.path().into(),artifacts.clone(),None);
-    let result=(tools[0].execute)(ToolCall {id:"auth",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
-    let state=connection.state();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
-    assert!(result.is_err());assert!(!connected.load(std::sync::atomic::Ordering::SeqCst));assert_eq!(state,ServerConnectionState::NeedsAuth);
+    use maho_ext_mcp::{connection::*, errors::*};
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Stdio),
+        command: Some("/missing/never-spawn".into()),
+        ..Default::default()
+    };
+    let connection = ServerConnection::new(
+        "auth",
+        config.clone(),
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("auth", root.path(), None).unwrap(),
+        )),
+    );
+    let lifecycle =
+        maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(), config);
+    let cached = maho_ext_mcp::catalog_cache::McpCachedServerCatalog {
+        modern: false,
+        credential_identity: None,
+        config_hash: "hash".into(),
+        fetched_at: 0.0,
+        tools: vec![json!({"name":"tool","inputSchema":{"type":"object"}})],
+        resources: vec![],
+        prompts: vec![],
+        instructions: None,
+    };
+    let runtime = Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {
+        connection: connection.clone(),
+        lifecycle: lifecycle.clone(),
+        health: Default::default(),
+    });
+    let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = connected.clone();
+    let mut entries = maho_ext_mcp::catalog::cached_mcp_catalog_entries(
+        "auth",
+        &cached,
+        runtime,
+        Duration::from_secs(2),
+        Arc::new(move || {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }),
+    );
+    entries[0].ensure_fresh = Some(Arc::new(|| {
+        Box::pin(async {
+            Err(McpError::new(
+                McpErrorKind::Auth,
+                "fixture refresh requires auth",
+            ))
+        })
+    }));
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(&entries, root.path().into(), artifacts.clone(), None);
+    let result = (tools[0].execute)(ToolCall {
+        id: "auth",
+        params: json!({}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    let state = connection.state();
+    lifecycle.dispose();
+    connection.dispose().await.unwrap();
+    artifacts.cleanup().unwrap();
+    assert!(result.is_err());
+    assert!(!connected.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(state, ServerConnectionState::NeedsAuth);
 }
 #[tokio::test]
 async fn transient_auth_refresh_does_not_trigger_failed_send_reconnect() {
-    use maho_ext_mcp::{connection::*,errors::*};
-    let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
-    let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
-    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
-    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
-    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(||Box::pin(async {Ok(())})));
-    entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {let mut error=McpError::new(McpErrorKind::Connect,"fixture network auth refresh failure");error.retriable=true;Err(error)})));
-    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&entries,root.path().into(),artifacts.clone(),None);
-    let result=(tools[0].execute)(ToolCall {id:"auth",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
-    let state=connection.state();let generation=connection.generation();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
-    assert!(result.is_err());assert_eq!(state,ServerConnectionState::Idle);assert_eq!(generation,0);
+    use maho_ext_mcp::{connection::*, errors::*};
+    let root = tempfile::tempdir().unwrap();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Stdio),
+        command: Some("/missing/never-spawn".into()),
+        ..Default::default()
+    };
+    let connection = ServerConnection::new(
+        "auth",
+        config.clone(),
+        None,
+        Arc::new(Mutex::new(
+            McpLogger::new("auth", root.path(), None).unwrap(),
+        )),
+    );
+    let lifecycle =
+        maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(), config);
+    let cached = maho_ext_mcp::catalog_cache::McpCachedServerCatalog {
+        modern: false,
+        credential_identity: None,
+        config_hash: "hash".into(),
+        fetched_at: 0.0,
+        tools: vec![json!({"name":"tool","inputSchema":{"type":"object"}})],
+        resources: vec![],
+        prompts: vec![],
+        instructions: None,
+    };
+    let runtime = Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {
+        connection: connection.clone(),
+        lifecycle: lifecycle.clone(),
+        health: Default::default(),
+    });
+    let mut entries = maho_ext_mcp::catalog::cached_mcp_catalog_entries(
+        "auth",
+        &cached,
+        runtime,
+        Duration::from_secs(2),
+        Arc::new(|| Box::pin(async { Ok(()) })),
+    );
+    entries[0].ensure_fresh = Some(Arc::new(|| {
+        Box::pin(async {
+            let mut error = McpError::new(
+                McpErrorKind::Connect,
+                "fixture network auth refresh failure",
+            );
+            error.retriable = true;
+            Err(error)
+        })
+    }));
+    let artifacts = Arc::new(McpOutputArtifacts::default());
+    let tools = build_mcp_tool_definitions(&entries, root.path().into(), artifacts.clone(), None);
+    let result = (tools[0].execute)(ToolCall {
+        id: "auth",
+        params: json!({}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await;
+    let state = connection.state();
+    let generation = connection.generation();
+    lifecycle.dispose();
+    connection.dispose().await.unwrap();
+    artifacts.cleanup().unwrap();
+    assert!(result.is_err());
+    assert_eq!(state, ServerConnectionState::Idle);
+    assert_eq!(generation, 0);
 }
 #[test]
 fn direct_tool_renderers_match_upstream_call_and_result_lines() {
-    use crate::support::{padded,render_call_lines,render_result_lines};
-    let call=render_call_lines(mcp_tool_renderers("mcp_fx_echo"),json!({"value":"hi","n":2}),60).unwrap();
-    let visible="mcp_fx_echo {\"value\":\"hi\",\"n\":2}";
-    assert_eq!(call,vec![padded(&format!("\x1b[38;2;1;2;3m\x1b[1m{visible}\x1b[22m\x1b[39m"),visible,60)]);
+    use crate::support::{padded, render_call_lines, render_result_lines};
+    let call = render_call_lines(
+        mcp_tool_renderers("mcp_fx_echo"),
+        json!({"value":"hi","n":2}),
+        60,
+    )
+    .unwrap();
+    let visible = "mcp_fx_echo {\"value\":\"hi\",\"n\":2}";
+    assert_eq!(
+        call,
+        vec![padded(
+            &format!("\x1b[38;2;1;2;3m\x1b[1m{visible}\x1b[22m\x1b[39m"),
+            visible,
+            60
+        )]
+    );
     // JSON.stringify preview truncates past 120 UTF-16 units to 117 plus "...".
-    let long=render_call_lines(mcp_tool_renderers("t"),json!({"v":"x".repeat(200)}),200).unwrap();
-    let expected=format!("t {}...",&format!("{{\"v\":\"{}",&"x".repeat(200))[..117]);
-    assert_eq!(long,vec![padded(&format!("\x1b[38;2;1;2;3m\x1b[1m{expected}\x1b[22m\x1b[39m"),&expected,200)]);
-    let mut done=maho_ext_api::AgentToolResult::text("ok");done.details=json!({"preview":"value=hi","server":"fx","tool":"echo"});
-    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,true,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: running\x1b[39m","mcp_fx_echo: running",40)]);
-    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,false,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: value=hi\x1b[39m","mcp_fx_echo: value=hi",40)]);
-    done.details=serde_json::Value::Null;
-    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,false,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: (empty result)\x1b[39m","mcp_fx_echo: (empty result)",40)]);
+    let long =
+        render_call_lines(mcp_tool_renderers("t"), json!({"v":"x".repeat(200)}), 200).unwrap();
+    let expected = format!("t {}...", &format!("{{\"v\":\"{}", &"x".repeat(200))[..117]);
+    assert_eq!(
+        long,
+        vec![padded(
+            &format!("\x1b[38;2;1;2;3m\x1b[1m{expected}\x1b[22m\x1b[39m"),
+            &expected,
+            200
+        )]
+    );
+    let mut done = maho_ext_api::AgentToolResult::text("ok");
+    done.details = json!({"preview":"value=hi","server":"fx","tool":"echo"});
+    assert_eq!(
+        render_result_lines(mcp_tool_renderers("mcp_fx_echo"), &done, true, 40).unwrap(),
+        vec![padded(
+            "\x1b[38;2;4;5;6mmcp_fx_echo: running\x1b[39m",
+            "mcp_fx_echo: running",
+            40
+        )]
+    );
+    assert_eq!(
+        render_result_lines(mcp_tool_renderers("mcp_fx_echo"), &done, false, 40).unwrap(),
+        vec![padded(
+            "\x1b[38;2;4;5;6mmcp_fx_echo: value=hi\x1b[39m",
+            "mcp_fx_echo: value=hi",
+            40
+        )]
+    );
+    done.details = serde_json::Value::Null;
+    assert_eq!(
+        render_result_lines(mcp_tool_renderers("mcp_fx_echo"), &done, false, 40).unwrap(),
+        vec![padded(
+            "\x1b[38;2;4;5;6mmcp_fx_echo: (empty result)\x1b[39m",
+            "mcp_fx_echo: (empty result)",
+            40
+        )]
+    );
 }

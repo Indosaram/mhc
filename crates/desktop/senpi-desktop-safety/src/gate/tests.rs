@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use senpi_desktop_core::error::{DesktopError, ErrorCode, TccPermission};
 
-use super::{FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason, gate};
+use super::{gate, FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason};
 use crate::{
     action::MutatingAction,
     clock::FakeClock,
-    supervisor::{HEARTBEAT_FRESH_MS, StopPathId, StopPolicy, StopSource, Supervisor},
+    supervisor::{StopPathId, StopPolicy, StopSource, Supervisor, HEARTBEAT_FRESH_MS},
 };
 
 struct FakePerms {

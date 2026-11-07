@@ -4,7 +4,13 @@ async fn removed_app_server_command_exits_before_starting_a_session() {
         vec!["app-server"],
         vec!["app-server", "--help"],
         vec!["app-server", "--listen", "stdio://"],
-        vec!["app-server", "--listen", "ws://127.0.0.1:0", "--ws-auth", "off"],
+        vec![
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:0",
+            "--ws-auth",
+            "off",
+        ],
         vec!["app-server", "daemon", "status"],
     ] {
         let dir = tempfile::tempdir().expect("isolated CLI directory");

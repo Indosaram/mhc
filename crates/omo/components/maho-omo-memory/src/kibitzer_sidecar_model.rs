@@ -23,15 +23,17 @@
 
 use std::fmt;
 
-use serde_json::Value;
 use senpi_task::category::{CategoryResolutionResult, ResolveCategoryOptions, resolve_category};
 use senpi_task::host::{HostError, SenpiModelRegistry};
+use serde_json::Value;
 
 use crate::kibitzer_sidecar_connected_order::{
     KibitzerCandidateOrder, KibitzerCandidateOrderInput, order_kibitzer_candidates_by_connection,
 };
 use crate::kibitzer_sidecar_outcome::{KibitzerWakeConfiguration, KibitzerWakeConfigurationCause};
-use crate::memory_child_model_chain::{ChildModelChainInput, ChildModelChainSpec, child_model_chain_spec};
+use crate::memory_child_model_chain::{
+    ChildModelChainInput, ChildModelChainSpec, child_model_chain_spec,
+};
 use crate::worker::memory_model_attempts::ReflectionModelCandidate;
 use crate::worker::resolve_model::{ReflectionModelResolution, resolve_reflection_model};
 use senpi_task::runners::in_process::child_options::HostHandle;
@@ -81,7 +83,12 @@ pub struct KibitzerSidecarStartError {
 impl KibitzerSidecarStartError {
     /// A refusal from `code` with the given message and no category/providers attached.
     pub fn new(code: KibitzerSidecarStartCode, message: impl Into<String>) -> Self {
-        Self { code, category: None, missing_providers: None, message: message.into() }
+        Self {
+            code,
+            category: None,
+            missing_providers: None,
+            message: message.into(),
+        }
     }
 
     /// Attaches the pinned recall category a model refusal names.
@@ -111,9 +118,13 @@ impl std::error::Error for KibitzerSidecarStartError {}
 /// are configuration failures; every other start code (and a model refusal with no category) is
 /// `None`. The classifier reads the STRUCTURED fields only - never `message` - so a caller cannot
 /// smuggle a configuration state through prose.
-pub fn kibitzer_configuration_failure(error: &KibitzerSidecarStartError) -> Option<KibitzerWakeConfiguration> {
+pub fn kibitzer_configuration_failure(
+    error: &KibitzerSidecarStartError,
+) -> Option<KibitzerWakeConfiguration> {
     let cause = match error.code {
-        KibitzerSidecarStartCode::CategoryUnavailable => KibitzerWakeConfigurationCause::CategoryUnavailable,
+        KibitzerSidecarStartCode::CategoryUnavailable => {
+            KibitzerWakeConfigurationCause::CategoryUnavailable
+        }
         KibitzerSidecarStartCode::BeyondCategory => KibitzerWakeConfigurationCause::BeyondCategory,
         KibitzerSidecarStartCode::RegistrySnapshotUnavailable => return None,
         KibitzerSidecarStartCode::PersonaUnavailable => return None,
@@ -123,7 +134,11 @@ pub fn kibitzer_configuration_failure(error: &KibitzerSidecarStartError) -> Opti
     // Upstream requires `error.category !== undefined`: a model refusal that names no category is
     // not actionable, so it is not a configuration state.
     let category = error.category.clone()?;
-    Some(KibitzerWakeConfiguration { category, cause, missing_providers: error.missing_providers.clone() })
+    Some(KibitzerWakeConfiguration {
+        category,
+        cause,
+        missing_providers: error.missing_providers.clone(),
+    })
 }
 
 /// The pinned recall category a sidecar child runs under when the caller names none.
@@ -190,16 +205,22 @@ pub fn resolve_kibitzer_sidecar_model(
     };
     let (resolved_category, model, thinking, source, fallbacks) =
         match resolve_reflection_model(category, input.config, Some(registry), None)? {
-            ReflectionModelResolution::CategoryUnavailable { missing_providers, .. } => {
+            ReflectionModelResolution::CategoryUnavailable {
+                missing_providers, ..
+            } => {
                 return Ok(KibitzerSidecarModelResolution::Unavailable {
                     category: category.to_string(),
                     cause: KibitzerSidecarModelUnavailableCause::CategoryUnavailable,
                     missing_providers,
                 });
             }
-            ReflectionModelResolution::Resolved { category: resolved_category, model, thinking, source, fallbacks } => {
-                (resolved_category, model, thinking, source, fallbacks)
-            }
+            ReflectionModelResolution::Resolved {
+                category: resolved_category,
+                model,
+                thinking,
+                source,
+                fallbacks,
+            } => (resolved_category, model, thinking, source, fallbacks),
         };
     // A `source` names a resolution from OUTSIDE the pinned category, which the advisor refuses -
     // and it hides why the category itself came up empty, so the chain is asked again for the
@@ -220,7 +241,11 @@ pub fn resolve_kibitzer_sidecar_model(
             thinking: thinking.as_deref(),
             fallbacks: &fallbacks,
         })? {
-            KibitzerCandidateOrder::Ordered { model, thinking, fallbacks } => (model, thinking, fallbacks),
+            KibitzerCandidateOrder::Ordered {
+                model,
+                thinking,
+                fallbacks,
+            } => (model, thinking, fallbacks),
             KibitzerCandidateOrder::NoneConnected { missing_providers } => {
                 return Ok(KibitzerSidecarModelResolution::Unavailable {
                     category: resolved_category,
@@ -231,7 +256,10 @@ pub fn resolve_kibitzer_sidecar_model(
             // The availability list was unknown: the resolution stands exactly as it was.
             KibitzerCandidateOrder::AvailabilityUnknown => (model, thinking, fallbacks),
         };
-    let chain = child_model_chain_spec(ChildModelChainInput { model: &model, fallbacks: &fallbacks });
+    let chain = child_model_chain_spec(ChildModelChainInput {
+        model: &model,
+        fallbacks: &fallbacks,
+    });
     Ok(KibitzerSidecarModelResolution::Resolved {
         category: resolved_category,
         model,
@@ -248,7 +276,12 @@ fn chain_providers(
     config: &Value,
     registry: &dyn SenpiModelRegistry,
 ) -> Result<Option<Vec<String>>, HostError> {
-    let chain = resolve_category(category, config, registry, &ResolveCategoryOptions::default())?;
+    let chain = resolve_category(
+        category,
+        config,
+        registry,
+        &ResolveCategoryOptions::default(),
+    )?;
     Ok(match chain {
         CategoryResolutionResult::ModelUnavailable(unavailable) => unavailable.missing_providers,
         _ => None,
@@ -299,8 +332,19 @@ pub fn build_kibitzer_sidecar_spec(input: KibitzerSidecarSpecInput) -> ChildSpec
         fallback_models: input.chain.fallback_models,
         retry: input.chain.retry,
         thinking_level: input.thinking_level,
-        tool_allowlist: Some(KIBITZER_SIDECAR_TOOL_NAMES.iter().map(|name| (*name).to_string()).collect()),
-        member_scoped_tool_names: Some(input.tools.iter().map(|tool| tool.name().to_string()).collect()),
+        tool_allowlist: Some(
+            KIBITZER_SIDECAR_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        ),
+        member_scoped_tool_names: Some(
+            input
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect(),
+        ),
         member_scoped_tools: Some(input.tools),
         depth: 1,
         parent_session_id: input.session_id.clone(),
@@ -318,15 +362,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn given_category_unavailable_with_a_category_when_classified_then_it_is_a_structured_configuration() {
+    fn given_category_unavailable_with_a_category_when_classified_then_it_is_a_structured_configuration()
+     {
         let error = KibitzerSidecarStartError::new(
             KibitzerSidecarStartCode::CategoryUnavailable,
             "no connected provider",
         )
         .with_category("quick");
-        let configuration =
-            kibitzer_configuration_failure(&error).expect("a category refusal is a configuration state");
-        assert_eq!(configuration.cause, KibitzerWakeConfigurationCause::CategoryUnavailable);
+        let configuration = kibitzer_configuration_failure(&error)
+            .expect("a category refusal is a configuration state");
+        assert_eq!(
+            configuration.cause,
+            KibitzerWakeConfigurationCause::CategoryUnavailable
+        );
         assert_eq!(configuration.category, "quick");
     }
 
@@ -337,9 +385,12 @@ mod tests {
             "resolved outside the category",
         )
         .with_category("quick");
-        let configuration =
-            kibitzer_configuration_failure(&error).expect("a beyond-category refusal is a configuration state");
-        assert_eq!(configuration.cause, KibitzerWakeConfigurationCause::BeyondCategory);
+        let configuration = kibitzer_configuration_failure(&error)
+            .expect("a beyond-category refusal is a configuration state");
+        assert_eq!(
+            configuration.cause,
+            KibitzerWakeConfigurationCause::BeyondCategory
+        );
     }
 
     #[test]
@@ -352,7 +403,8 @@ mod tests {
     }
 
     #[test]
-    fn given_registry_snapshot_unavailable_with_a_category_when_classified_then_it_is_not_a_configuration() {
+    fn given_registry_snapshot_unavailable_with_a_category_when_classified_then_it_is_not_a_configuration()
+     {
         let error = KibitzerSidecarStartError::new(
             KibitzerSidecarStartCode::RegistrySnapshotUnavailable,
             "no registry snapshot",
@@ -362,15 +414,16 @@ mod tests {
     }
 
     #[test]
-    fn given_a_category_refusal_with_missing_providers_when_classified_then_the_providers_are_preserved() {
+    fn given_a_category_refusal_with_missing_providers_when_classified_then_the_providers_are_preserved()
+     {
         let error = KibitzerSidecarStartError::new(
             KibitzerSidecarStartCode::CategoryUnavailable,
             "no connected provider",
         )
         .with_category("quick")
         .with_missing_providers(vec!["anthropic".to_string(), "openai".to_string()]);
-        let configuration =
-            kibitzer_configuration_failure(&error).expect("a category refusal is a configuration state");
+        let configuration = kibitzer_configuration_failure(&error)
+            .expect("a category refusal is a configuration state");
         assert_eq!(
             configuration.missing_providers,
             Some(vec!["anthropic".to_string(), "openai".to_string()])

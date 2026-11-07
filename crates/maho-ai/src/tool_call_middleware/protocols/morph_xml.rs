@@ -774,7 +774,8 @@ impl MorphXmlStreamParser {
                 });
             }
             // PERF-DIVERGENCE(senpi morph-xml protocol): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid copying the tail. Buffer contents are identical.
-            self.buffer.drain(..opening_tag.index + opening_tag.tag.len());
+            self.buffer
+                .drain(..opening_tag.index + opening_tag.tag.len());
 
             if opening_tag.self_closing {
                 let tool = self.tool_by_name(&opening_tag.name).cloned();

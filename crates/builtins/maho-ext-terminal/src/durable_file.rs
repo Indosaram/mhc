@@ -1,129 +1,429 @@
-use crate::terminal_manifest_model::{TerminalManifestCheckpoint,ManifestMonitor};
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum DetachedChange {Created,Replaced,Modified,Gone}
-pub fn classify_detached_change(saved:&TerminalManifestCheckpoint,live:&TerminalManifestCheckpoint)->Option<DetachedChange> {
-    if !saved.present {return if live.present {Some(DetachedChange::Created)} else {None};}
-    if !live.present {return Some(DetachedChange::Gone);}
-    if live.dev!=saved.dev||live.ino!=saved.ino {return Some(DetachedChange::Replaced);}
-    if live.mtime_ms!=saved.mtime_ms||live.size!=saved.size||live.digest!=saved.digest {return Some(DetachedChange::Modified);}
+use crate::terminal_manifest_model::{ManifestMonitor, TerminalManifestCheckpoint};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetachedChange {
+    Created,
+    Replaced,
+    Modified,
+    Gone,
+}
+pub fn classify_detached_change(
+    saved: &TerminalManifestCheckpoint,
+    live: &TerminalManifestCheckpoint,
+) -> Option<DetachedChange> {
+    if !saved.present {
+        return if live.present {
+            Some(DetachedChange::Created)
+        } else {
+            None
+        };
+    }
+    if !live.present {
+        return Some(DetachedChange::Gone);
+    }
+    if live.dev != saved.dev || live.ino != saved.ino {
+        return Some(DetachedChange::Replaced);
+    }
+    if live.mtime_ms != saved.mtime_ms || live.size != saved.size || live.digest != saved.digest {
+        return Some(DetachedChange::Modified);
+    }
     None
 }
-pub fn remaining_ms(monitor:&ManifestMonitor,now:f64)->f64 {monitor.expires_at.map_or(300_000.0,|expiry|(expiry-now).max(1.0))}
-pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64)->crate::restore::RestoreOutcome {
-    restore_file_in(monitor,registry,manager,writer,now,None)
+pub fn remaining_ms(monitor: &ManifestMonitor, now: f64) -> f64 {
+    monitor
+        .expires_at
+        .map_or(300_000.0, |expiry| (expiry - now).max(1.0))
+}
+pub fn restore_file(
+    monitor: &ManifestMonitor,
+    registry: &mut crate::monitor_registry::MonitorRegistry,
+    manager: &mut crate::manager::TerminalManager,
+    writer: Option<&mut crate::terminal_manifest::TerminalManifestWriter>,
+    now: f64,
+) -> crate::restore::RestoreOutcome {
+    restore_file_in(monitor, registry, manager, writer, now, None)
 }
 /// `createCheckpointedFileRestoreHandler` with `RestoreContext.remainingMs`: an ephemeral watch
 /// resumes with only the time it had left, and one without time left is lost.
-pub fn restore_file_in(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64,remaining_ms:Option<f64>)->crate::restore::RestoreOutcome {
-    use crate::{restore::RestoreOutcome,terminal_manifest_model::{MonitorDurabilityClass,MonitorRuntimeKind}};
-    if monitor.runtime_kind!=MonitorRuntimeKind::File {return RestoreOutcome::Lost;}
-    let ephemeral=monitor.durability_class==MonitorDurabilityClass::Ephemeral;
-    if ephemeral&&remaining_ms.is_none() {return RestoreOutcome::Lost;}
-    let (Some(path),Some(cwd),Some(saved))=(&monitor.path,&monitor.cwd,&monitor.last_checkpoint) else {return RestoreOutcome::Lost;};
-    let target=std::path::Path::new(cwd).join(path);
-    if saved.present&&!target.is_file() {return RestoreOutcome::Lost;}
-    let Ok(Some(reservation))=manager.reserve() else {return RestoreOutcome::Lost;};
-    let registered=registry.restore_file_with_lifetime(monitor,&target,now,remaining_ms.filter(|_|ephemeral));
-    let Ok((id,_))=registered else {return RestoreOutcome::Lost;};
-    registry.reserve_file_capacity(&id,reservation);
-    let Some(live)=registry.file_checkpoint(&id) else {return RestoreOutcome::Lost;};
-    let change=classify_detached_change(saved,&live);
-    if change==Some(DetachedChange::Gone) {registry.stop_file(&id);return RestoreOutcome::Lost;}
-    manager.bind_monitor_id(&monitor.monitor_id,&id);
-    if let Some(change)=change {
-        let change=match change {DetachedChange::Created=>"created",DetachedChange::Replaced=>"replaced",DetachedChange::Modified=>"modified",DetachedChange::Gone=>unreachable!()};
-        registry.emit_file_line(&id,format!("changed while detached: {change} {path}"));
+pub fn restore_file_in(
+    monitor: &ManifestMonitor,
+    registry: &mut crate::monitor_registry::MonitorRegistry,
+    manager: &mut crate::manager::TerminalManager,
+    writer: Option<&mut crate::terminal_manifest::TerminalManifestWriter>,
+    now: f64,
+    remaining_ms: Option<f64>,
+) -> crate::restore::RestoreOutcome {
+    use crate::{
+        restore::RestoreOutcome,
+        terminal_manifest_model::{MonitorDurabilityClass, MonitorRuntimeKind},
+    };
+    if monitor.runtime_kind != MonitorRuntimeKind::File {
+        return RestoreOutcome::Lost;
     }
-    if let Some(writer)=writer {writer.schedule_checkpoint(&monitor.monitor_id,live);}
-    let outcome=crate::restore::reapply_persisted_mute(monitor,&id,|ids| {registry.pause(ids);});
-    registry.adopt_fire_window(&monitor.monitor_id,&monitor.fire_window);
+    let ephemeral = monitor.durability_class == MonitorDurabilityClass::Ephemeral;
+    if ephemeral && remaining_ms.is_none() {
+        return RestoreOutcome::Lost;
+    }
+    let (Some(path), Some(cwd), Some(saved)) =
+        (&monitor.path, &monitor.cwd, &monitor.last_checkpoint)
+    else {
+        return RestoreOutcome::Lost;
+    };
+    let target = std::path::Path::new(cwd).join(path);
+    if saved.present && !target.is_file() {
+        return RestoreOutcome::Lost;
+    }
+    let Ok(Some(reservation)) = manager.reserve() else {
+        return RestoreOutcome::Lost;
+    };
+    let registered = registry.restore_file_with_lifetime(
+        monitor,
+        &target,
+        now,
+        remaining_ms.filter(|_| ephemeral),
+    );
+    let Ok((id, _)) = registered else {
+        return RestoreOutcome::Lost;
+    };
+    registry.reserve_file_capacity(&id, reservation);
+    let Some(live) = registry.file_checkpoint(&id) else {
+        return RestoreOutcome::Lost;
+    };
+    let change = classify_detached_change(saved, &live);
+    if change == Some(DetachedChange::Gone) {
+        registry.stop_file(&id);
+        return RestoreOutcome::Lost;
+    }
+    manager.bind_monitor_id(&monitor.monitor_id, &id);
+    if let Some(change) = change {
+        let change = match change {
+            DetachedChange::Created => "created",
+            DetachedChange::Replaced => "replaced",
+            DetachedChange::Modified => "modified",
+            DetachedChange::Gone => unreachable!(),
+        };
+        registry.emit_file_line(&id, format!("changed while detached: {change} {path}"));
+    }
+    if let Some(writer) = writer {
+        writer.schedule_checkpoint(&monitor.monitor_id, live);
+    }
+    let outcome = crate::restore::reapply_persisted_mute(monitor, &id, |ids| {
+        registry.pause(ids);
+    });
+    registry.adopt_fire_window(&monitor.monitor_id, &monitor.fire_window);
     outcome
 }
-pub fn file_checkpoint(path:&std::path::Path)->std::io::Result<TerminalManifestCheckpoint> {
-    file_checkpoint_with_identity(path,None)
+pub fn file_checkpoint(path: &std::path::Path) -> std::io::Result<TerminalManifestCheckpoint> {
+    file_checkpoint_with_identity(path, None)
 }
-pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,f64)>)->std::io::Result<TerminalManifestCheckpoint> {
+pub fn file_checkpoint_with_identity(
+    path: &std::path::Path,
+    identity: Option<(f64, f64)>,
+) -> std::io::Result<TerminalManifestCheckpoint> {
     #[cfg(unix)]
     {
-    use std::os::unix::fs::MetadataExt;
-    let absent=||TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:0.0,mtime_ms:0.0,digest:String::new(),present:false};
-    let initial=match std::fs::symlink_metadata(path) {Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(absent()),Err(error)=>return Err(error)};
-    if initial.file_type().is_symlink() {return Err(std::io::Error::other(format!("Cannot watch file: target is a symbolic link: {}",path.display())));}
-    if !initial.is_file() {return Err(std::io::Error::other(format!("Cannot watch file: target is not a regular file: {}",path.display())));}
-    let mut handle=std::fs::File::open(path)?;
-    let opened=handle.metadata()?;
-    if identity.is_some_and(|(dev,ino)|opened.dev() as f64!=dev||opened.ino() as f64!=ino)&&opened.nlink()>1 {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
-    let rebound=std::fs::symlink_metadata(path)?;
-    if !opened.is_file()||rebound.file_type().is_symlink()||rebound.dev()!=opened.dev()||rebound.ino()!=opened.ino() {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
-    let digest=crate::monitor_file_digest::digest_file_handle(&mut handle)?;
-    let after=std::fs::symlink_metadata(path)?;
-    if after.file_type().is_symlink()||after.dev()!=opened.dev()||after.ino()!=opened.ino() {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
-    Ok(TerminalManifestCheckpoint {dev:opened.dev() as f64,ino:opened.ino() as f64,size:opened.len() as f64,mtime_ms:opened.mtime() as f64*1000.0+opened.mtime_nsec() as f64/1_000_000.0,digest,present:true})
+        use std::os::unix::fs::MetadataExt;
+        let absent = || TerminalManifestCheckpoint {
+            dev: 0.0,
+            ino: 0.0,
+            size: 0.0,
+            mtime_ms: 0.0,
+            digest: String::new(),
+            present: false,
+        };
+        let initial = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(absent()),
+            Err(error) => return Err(error),
+        };
+        if initial.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target is a symbolic link: {}",
+                path.display()
+            )));
+        }
+        if !initial.is_file() {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target is not a regular file: {}",
+                path.display()
+            )));
+        }
+        let mut handle = std::fs::File::open(path)?;
+        let opened = handle.metadata()?;
+        if identity
+            .is_some_and(|(dev, ino)| opened.dev() as f64 != dev || opened.ino() as f64 != ino)
+            && opened.nlink() > 1
+        {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target identity changed: {}",
+                path.display()
+            )));
+        }
+        let rebound = std::fs::symlink_metadata(path)?;
+        if !opened.is_file()
+            || rebound.file_type().is_symlink()
+            || rebound.dev() != opened.dev()
+            || rebound.ino() != opened.ino()
+        {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target identity changed: {}",
+                path.display()
+            )));
+        }
+        let digest = crate::monitor_file_digest::digest_file_handle(&mut handle)?;
+        let after = std::fs::symlink_metadata(path)?;
+        if after.file_type().is_symlink()
+            || after.dev() != opened.dev()
+            || after.ino() != opened.ino()
+        {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target identity changed: {}",
+                path.display()
+            )));
+        }
+        Ok(TerminalManifestCheckpoint {
+            dev: opened.dev() as f64,
+            ino: opened.ino() as f64,
+            size: opened.len() as f64,
+            mtime_ms: opened.mtime() as f64 * 1000.0 + opened.mtime_nsec() as f64 / 1_000_000.0,
+            digest,
+            present: true,
+        })
     }
     #[cfg(not(unix))]
     {
-        let absent=||TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:0.0,mtime_ms:0.0,digest:String::new(),present:false};
-        let initial=match std::fs::symlink_metadata(path) {Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(absent()),Err(error)=>return Err(error)};
-        if initial.file_type().is_symlink() {return Err(std::io::Error::other(format!("Cannot watch file: target is a symbolic link: {}",path.display())));}
-        if !initial.is_file() {return Err(std::io::Error::other(format!("Cannot watch file: target is not a regular file: {}",path.display())));}
-        let mut handle=std::fs::File::open(path)?;
-        let opened=handle.metadata()?;
-        let modified=opened.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0;
-        let rebound=std::fs::symlink_metadata(path)?;
-        if !opened.is_file()||rebound.file_type().is_symlink()||rebound.len()!=opened.len()||rebound.modified()?!=opened.modified()? {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
-        let digest=crate::monitor_file_digest::digest_file_handle(&mut handle)?;
-        let after=std::fs::symlink_metadata(path)?;
-        if after.file_type().is_symlink()||after.len()!=opened.len()||after.modified()?!=opened.modified()? {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
-        let _=identity;
+        let absent = || TerminalManifestCheckpoint {
+            dev: 0.0,
+            ino: 0.0,
+            size: 0.0,
+            mtime_ms: 0.0,
+            digest: String::new(),
+            present: false,
+        };
+        let initial = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(absent()),
+            Err(error) => return Err(error),
+        };
+        if initial.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target is a symbolic link: {}",
+                path.display()
+            )));
+        }
+        if !initial.is_file() {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target is not a regular file: {}",
+                path.display()
+            )));
+        }
+        let mut handle = std::fs::File::open(path)?;
+        let opened = handle.metadata()?;
+        let modified = opened
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+        let rebound = std::fs::symlink_metadata(path)?;
+        if !opened.is_file()
+            || rebound.file_type().is_symlink()
+            || rebound.len() != opened.len()
+            || rebound.modified()? != opened.modified()?
+        {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target identity changed: {}",
+                path.display()
+            )));
+        }
+        let digest = crate::monitor_file_digest::digest_file_handle(&mut handle)?;
+        let after = std::fs::symlink_metadata(path)?;
+        if after.file_type().is_symlink()
+            || after.len() != opened.len()
+            || after.modified()? != opened.modified()?
+        {
+            return Err(std::io::Error::other(format!(
+                "Cannot watch file: target identity changed: {}",
+                path.display()
+            )));
+        }
+        let _ = identity;
         // No portable dev/ino: report 0 so identity never differs and changes surface through size, mtime and digest.
-        Ok(TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:opened.len() as f64,mtime_ms:modified,digest,present:true})
+        Ok(TerminalManifestCheckpoint {
+            dev: 0.0,
+            ino: 0.0,
+            size: opened.len() as f64,
+            mtime_ms: modified,
+            digest,
+            present: true,
+        })
     }
 }
-#[cfg(all(test,unix))]
+#[cfg(all(test, unix))]
 mod filesystem_tests {
     use super::*;
     /// durable-file.ts `lifetime`: an ephemeral file watch resumes with only the time it had left (a
     /// live deadline, not persistent); without time left it is lost and registers nothing.
     #[tokio::test]
-    async fn ephemeral_file_watch_resumes_only_with_time_left()->std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"same")?;let saved=file_checkpoint(&path)?;
+    async fn ephemeral_file_watch_resumes_only_with_time_left() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("watched");
+        std::fs::write(&path, b"same")?;
+        let saved = file_checkpoint(&path)?;
         let manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_eph","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"ephemeral","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":false,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0},"deadlineMs":50_000}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
-        let monitor=&manifest.monitors[0];assert_eq!(monitor.deadline_ms,Some(50_000.0));
-        let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let mut manager=crate::manager::TerminalManager::default();
-        assert_eq!(restore_file_in(monitor,&mut registry,&mut manager,None,20.0,None),crate::restore::RestoreOutcome::Lost);assert!(registry.snapshot().is_empty());
-        assert_eq!(restore_file_in(monitor,&mut registry,&mut manager,None,20.0,Some(30_000.0)),crate::restore::RestoreOutcome::Restored);
-        let snapshot=registry.snapshot();assert_eq!(snapshot.len(),1);assert_eq!(snapshot[0].persistent,Some(false));assert!(snapshot[0].deadline_ms.is_some());assert_eq!(snapshot[0].monitor_id.as_deref(),Some("mon_eph"));
-        registry.dispose();Ok(())
+        let monitor = &manifest.monitors[0];
+        assert_eq!(monitor.deadline_ms, Some(50_000.0));
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let mut manager = crate::manager::TerminalManager::default();
+        assert_eq!(
+            restore_file_in(monitor, &mut registry, &mut manager, None, 20.0, None),
+            crate::restore::RestoreOutcome::Lost
+        );
+        assert!(registry.snapshot().is_empty());
+        assert_eq!(
+            restore_file_in(
+                monitor,
+                &mut registry,
+                &mut manager,
+                None,
+                20.0,
+                Some(30_000.0)
+            ),
+            crate::restore::RestoreOutcome::Restored
+        );
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].persistent, Some(false));
+        assert!(snapshot[0].deadline_ms.is_some());
+        assert_eq!(snapshot[0].monitor_id.as_deref(), Some("mon_eph"));
+        registry.dispose();
+        Ok(())
     }
     #[tokio::test]
-    async fn restored_mute_and_fire_window_use_fresh_file_runtime_id()->std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"unchanged")?;let saved=file_checkpoint(&path)?;
+    async fn restored_mute_and_fire_window_use_fresh_file_runtime_id() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("watched");
+        std::fs::write(&path, b"unchanged")?;
+        let saved = file_checkpoint(&path)?;
         let manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_muted","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"checkpointed-file","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":true,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":true,"fireWindow":{"startMs":12,"count":4}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
-        let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let mut manager=crate::manager::TerminalManager::default();assert_eq!(restore_file(&manifest.monitors[0],&mut registry,&mut manager,None,20.0),crate::restore::RestoreOutcome::Muted);
-        let snapshot=registry.snapshot();assert_eq!(snapshot[0].id,"watch_1");assert!(snapshot[0].paused);let window=snapshot[0].fire_window.as_ref().unwrap();assert_eq!(window.start_ms,12.0);assert_eq!(window.count,4);
-        assert_eq!(registry.resume(Some(&["watch_1".to_owned()])),vec![("watch_1".to_owned(),0)]);let resumed=registry.snapshot();assert!(!resumed[0].paused);assert_eq!(resumed[0].fire_window.as_ref().unwrap().count,0);assert_eq!(resumed[0].fire_window.as_ref().unwrap().start_ms,12.0);registry.dispose();assert_eq!(manager.active_size().unwrap(),0);Ok(())
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let mut manager = crate::manager::TerminalManager::default();
+        assert_eq!(
+            restore_file(
+                &manifest.monitors[0],
+                &mut registry,
+                &mut manager,
+                None,
+                20.0
+            ),
+            crate::restore::RestoreOutcome::Muted
+        );
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot[0].id, "watch_1");
+        assert!(snapshot[0].paused);
+        let window = snapshot[0].fire_window.as_ref().unwrap();
+        assert_eq!(window.start_ms, 12.0);
+        assert_eq!(window.count, 4);
+        assert_eq!(
+            registry.resume(Some(&["watch_1".to_owned()])),
+            vec![("watch_1".to_owned(), 0)]
+        );
+        let resumed = registry.snapshot();
+        assert!(!resumed[0].paused);
+        assert_eq!(resumed[0].fire_window.as_ref().unwrap().count, 0);
+        assert_eq!(resumed[0].fire_window.as_ref().unwrap().start_ms, 12.0);
+        registry.dispose();
+        assert_eq!(manager.active_size().unwrap(), 0);
+        Ok(())
     }
     #[tokio::test]
-    async fn restore_reports_detached_change_once_and_rebinds_kill_identity()->std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"old")?;let saved=file_checkpoint(&path)?;std::fs::write(&path,b"new")?;
+    async fn restore_reports_detached_change_once_and_rebinds_kill_identity() -> std::io::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("watched");
+        std::fs::write(&path, b"old")?;
+        let saved = file_checkpoint(&path)?;
+        std::fs::write(&path, b"new")?;
         let mut manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"checkpointed-file","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":true,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
-        let monitor=manifest.monitors.remove(0);let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=crate::monitor_registry::MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=crate::manager::TerminalManager::default();
-        assert_eq!(restore_file(&monitor,&mut registry,&mut manager,None,2.0),crate::restore::RestoreOutcome::Restored);
-        assert_eq!(registry.snapshot()[0].expires_at,monitor.expires_at);assert_eq!(registry.snapshot()[0].persistent,Some(true));assert!(registry.snapshot()[0].deadline_ms.is_none());
-        assert!(matches!(events.try_recv(),Ok(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="changed while detached: modified watched"));assert!(events.try_recv().is_err());
-        let runtime=manager.resolve_id("mon_saved").unwrap();assert_eq!(runtime,"watch_1");assert_eq!(manager.active_size().unwrap(),1);assert!(registry.stop_file(&runtime));assert_eq!(manager.active_size().unwrap(),0);Ok(())
+        let monitor = manifest.monitors.remove(0);
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let mut manager = crate::manager::TerminalManager::default();
+        assert_eq!(
+            restore_file(&monitor, &mut registry, &mut manager, None, 2.0),
+            crate::restore::RestoreOutcome::Restored
+        );
+        assert_eq!(registry.snapshot()[0].expires_at, monitor.expires_at);
+        assert_eq!(registry.snapshot()[0].persistent, Some(true));
+        assert!(registry.snapshot()[0].deadline_ms.is_none());
+        assert!(
+            matches!(events.try_recv(),Ok(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="changed while detached: modified watched")
+        );
+        assert!(events.try_recv().is_err());
+        let runtime = manager.resolve_id("mon_saved").unwrap();
+        assert_eq!(runtime, "watch_1");
+        assert_eq!(manager.active_size().unwrap(), 1);
+        assert!(registry.stop_file(&runtime));
+        assert_eq!(manager.active_size().unwrap(), 0);
+        Ok(())
     }
     #[test]
-    fn snapshot_hashes_regular_files_and_rejects_symlinks()->std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");
+    fn snapshot_hashes_regular_files_and_rejects_symlinks() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("watched");
         assert!(!file_checkpoint(&path)?.present);
-        std::fs::write(&path,b"old")?;let saved=file_checkpoint(&path)?;
-        std::fs::write(&path,b"new")?;assert_eq!(classify_detached_change(&saved,&file_checkpoint(&path)?),Some(DetachedChange::Modified));
-        let link=dir.path().join("link");std::os::unix::fs::symlink(&path,&link)?;assert!(file_checkpoint(&link).is_err());assert!(file_checkpoint(dir.path()).is_err());Ok(())
+        std::fs::write(&path, b"old")?;
+        let saved = file_checkpoint(&path)?;
+        std::fs::write(&path, b"new")?;
+        assert_eq!(
+            classify_detached_change(&saved, &file_checkpoint(&path)?),
+            Some(DetachedChange::Modified)
+        );
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert!(file_checkpoint(&link).is_err());
+        assert!(file_checkpoint(dir.path()).is_err());
+        Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn detached_change_precedence_and_digest_only_modification() {let saved=TerminalManifestCheckpoint {dev:1.0,ino:2.0,size:4.0,mtime_ms:5.0,digest:"old".to_owned(),present:true};let mut live=saved.clone();assert_eq!(classify_detached_change(&saved,&live),None);live.digest="new".to_owned();assert_eq!(classify_detached_change(&saved,&live),Some(DetachedChange::Modified));live.ino=3.0;assert_eq!(classify_detached_change(&saved,&live),Some(DetachedChange::Replaced));live.present=false;assert_eq!(classify_detached_change(&saved,&live),Some(DetachedChange::Gone));let mut absent=saved;absent.present=false;assert_eq!(classify_detached_change(&absent,&live),None);live.present=true;assert_eq!(classify_detached_change(&absent,&live),Some(DetachedChange::Created));}
+    #[test]
+    fn detached_change_precedence_and_digest_only_modification() {
+        let saved = TerminalManifestCheckpoint {
+            dev: 1.0,
+            ino: 2.0,
+            size: 4.0,
+            mtime_ms: 5.0,
+            digest: "old".to_owned(),
+            present: true,
+        };
+        let mut live = saved.clone();
+        assert_eq!(classify_detached_change(&saved, &live), None);
+        live.digest = "new".to_owned();
+        assert_eq!(
+            classify_detached_change(&saved, &live),
+            Some(DetachedChange::Modified)
+        );
+        live.ino = 3.0;
+        assert_eq!(
+            classify_detached_change(&saved, &live),
+            Some(DetachedChange::Replaced)
+        );
+        live.present = false;
+        assert_eq!(
+            classify_detached_change(&saved, &live),
+            Some(DetachedChange::Gone)
+        );
+        let mut absent = saved;
+        absent.present = false;
+        assert_eq!(classify_detached_change(&absent, &live), None);
+        live.present = true;
+        assert_eq!(
+            classify_detached_change(&absent, &live),
+            Some(DetachedChange::Created)
+        );
+    }
 }

@@ -231,7 +231,10 @@ mod tests {
     impl SnapshotFetcher for FixtureFetcher {
         async fn fetch(&self, url: &str) -> Result<FetchResponse, SnapshotFetchError> {
             assert_eq!(url, self.expected_url);
-            Ok(FetchResponse { status: self.status, body: self.body.to_string() })
+            Ok(FetchResponse {
+                status: self.status,
+                body: self.body.to_string(),
+            })
         }
     }
 
@@ -244,16 +247,33 @@ mod tests {
                 body: r#"{"openai":{"models":{"gpt-5.4":{"id":"gpt-5.4","limit":{"output":128000}}}}}"#,
                 expected_url,
             };
-            let snapshot = futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(&fetcher, source_url))
-                .expect("fixture fetch succeeds");
+            let snapshot = futures::executor::block_on(
+                fetch_model_capabilities_snapshot_with_fetcher(&fetcher, source_url),
+            )
+            .expect("fixture fetch succeeds");
             assert_eq!(snapshot.source_url, expected_url);
-            assert_eq!(snapshot.models["gpt-5.4"].limit.as_ref().and_then(|limit| limit.output), Some(128_000));
+            assert_eq!(
+                snapshot.models["gpt-5.4"]
+                    .limit
+                    .as_ref()
+                    .and_then(|limit| limit.output),
+                Some(128_000)
+            );
         }
     }
 
     #[test]
     fn status_failure_precedes_json_parsing() {
-        let fetcher = FixtureFetcher { status: 503, body: "not JSON", expected_url: MODELS_DEV_SOURCE_URL };
-        assert!(matches!(futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(&fetcher, None)), Err(SnapshotFetchError::Status(503))));
+        let fetcher = FixtureFetcher {
+            status: 503,
+            body: "not JSON",
+            expected_url: MODELS_DEV_SOURCE_URL,
+        };
+        assert!(matches!(
+            futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(
+                &fetcher, None
+            )),
+            Err(SnapshotFetchError::Status(503))
+        ));
     }
 }

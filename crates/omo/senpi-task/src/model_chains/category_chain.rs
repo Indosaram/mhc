@@ -1,12 +1,12 @@
 use super::rungs::{DeclaredRung, builtin_rungs, classify_rungs};
 use super::types::ModelChainEntry;
 use crate::category::category_model_candidates;
+use crate::category::exclude_model_patterns;
 use crate::category::{
     CategoryResolutionResult, ResolveCategoryOptions, builtin_category, category_fallback_chain,
     resolve_category,
 };
 use crate::host::{HostError, SenpiModelRegistry};
-use crate::category::exclude_model_patterns;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -75,9 +75,10 @@ pub fn describe_category_chain(
         .map(|builtin| builtin.config.to_value())
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(user) = user.and_then(Value::as_object)
-        && let Some(merged) = merged.as_object_mut() {
-            merged.extend(user.clone());
-        }
+        && let Some(merged) = merged.as_object_mut()
+    {
+        merged.extend(user.clone());
+    }
     let mut declared = Vec::new();
     for candidate in category_model_candidates(&merged) {
         if user_models.contains(&candidate.model) {

@@ -7,47 +7,89 @@ const NONEMPTY: &str = r"\S";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WorkpoolToolAgent {
-    Category { category: String, prompt: String, model: Option<String> },
-    SubagentType { subagent_type: String, prompt: String, model: Option<String> },
+    Category {
+        category: String,
+        prompt: String,
+        model: Option<String>,
+    },
+    SubagentType {
+        subagent_type: String,
+        prompt: String,
+        model: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkpoolToolItem { pub key: String, pub input: Value }
+pub struct WorkpoolToolItem {
+    pub key: String,
+    pub input: Value,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkpoolToolYieldError { pub code: String, pub message: String }
+pub struct WorkpoolToolYieldError {
+    pub code: String,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WorkpoolToolYieldResult {
-    Data { key: String, data: Value },
-    Error { key: String, error: WorkpoolToolYieldError },
+    Data {
+        key: String,
+        data: Value,
+    },
+    Error {
+        key: String,
+        error: WorkpoolToolYieldError,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkpoolWorkerYieldParams { pub op: WorkpoolOperation, pub results: Vec<Value> }
+pub struct WorkpoolWorkerYieldParams {
+    pub op: WorkpoolOperation,
+    pub results: Vec<Value>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkpoolToolParams {
     pub op: WorkpoolOperation,
-    #[serde(default)] pub name: Option<String>,
-    #[serde(default)] pub agent: Option<WorkpoolToolAgent>,
-    #[serde(default)] pub mode: Option<WorkpoolModeInput>,
-    #[serde(default)] pub tools: Option<Vec<String>>,
-    #[serde(default)] pub pool_id: Option<String>,
-    #[serde(default)] pub items: Option<Vec<WorkpoolToolItem>>,
-    #[serde(default)] pub results: Option<Vec<WorkpoolToolYieldResult>>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub agent: Option<WorkpoolToolAgent>,
+    #[serde(default)]
+    pub mode: Option<WorkpoolModeInput>,
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub pool_id: Option<String>,
+    #[serde(default)]
+    pub items: Option<Vec<WorkpoolToolItem>>,
+    #[serde(default)]
+    pub results: Option<Vec<WorkpoolToolYieldResult>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkpoolOperation { Create, Push, Close, Inspect, Cancel, Yield }
+pub enum WorkpoolOperation {
+    Create,
+    Push,
+    Close,
+    Inspect,
+    Cancel,
+    Yield,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkpoolModeInput { Fresh, KeepAlive }
+pub enum WorkpoolModeInput {
+    Fresh,
+    KeepAlive,
+}
 
-fn nonempty() -> Value { json!({"type":"string", "minLength":1, "pattern":NONEMPTY}) }
+fn nonempty() -> Value {
+    json!({"type":"string", "minLength":1, "pattern":NONEMPTY})
+}
 
 pub fn workpool_params_schema() -> Value {
     json!({

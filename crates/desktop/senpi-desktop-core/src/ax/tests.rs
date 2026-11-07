@@ -195,11 +195,9 @@ fn unreadable_subtree_is_skipped_with_trailer() {
     };
     let limited = snapshot(&mut m, &mut AxRegistry::default(), &window(), &options).unwrap();
     assert!(limited.truncated);
-    assert!(
-        limited
-            .text
-            .ends_with("… truncated (2 nodes)\n… skipped 1 unreadable nodes")
-    );
+    assert!(limited
+        .text
+        .ends_with("… truncated (2 nodes)\n… skipped 1 unreadable nodes"));
     let q = AxQuery {
         role: Some("button".into()),
         title: None,

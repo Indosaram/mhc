@@ -62,7 +62,10 @@ impl NodeState {
         }
     }
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled | Self::Skipped)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Skipped
+        )
     }
     /// Has a child that may still be working.
     pub fn is_active(self) -> bool {
@@ -287,7 +290,8 @@ mod tests {
     #[test]
     fn parent_model_round_trips_and_is_optional() {
         let definition: WorkflowDefinition =
-            serde_json::from_value(serde_json::json!({"key": "k", "name": "n", "nodes": []})).expect("definition");
+            serde_json::from_value(serde_json::json!({"key": "k", "name": "n", "nodes": []}))
+                .expect("definition");
         let mut run = WorkflowRun {
             version: RECORD_VERSION,
             run_id: "wf_1".into(),
@@ -321,7 +325,12 @@ mod tests {
         let loaded: WorkflowRun = serde_json::from_value(old).expect("old record loads");
         assert_eq!(loaded.parent_model, None);
         run.parent_model = None;
-        assert!(serde_json::to_value(&run).expect("json").get("parent_model").is_none());
+        assert!(
+            serde_json::to_value(&run)
+                .expect("json")
+                .get("parent_model")
+                .is_none()
+        );
     }
 
     #[test]

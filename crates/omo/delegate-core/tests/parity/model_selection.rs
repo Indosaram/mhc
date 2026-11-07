@@ -218,10 +218,6 @@ fn unlisted_and_later_rung_providers_same_model_listed_later_rung_wins() {
             "long-custom-provider/gpt-5.6-sol",
             "github-copilot/gpt-5.6-sol",
         ]),
-        chain_match(
-            "github-copilot/gpt-5.6-sol",
-            "high",
-            copilot_sol_entry()
-        )
+        chain_match("github-copilot/gpt-5.6-sol", "high", copilot_sol_entry())
     );
 }

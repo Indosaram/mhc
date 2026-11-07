@@ -1,5 +1,5 @@
-use maho_chord::{delta::*, JsonValue};
-use serde_json::{json, Value};
+use maho_chord::{JsonValue, delta::*};
+use serde_json::{Value, json};
 
 fn random(seed: &mut u32) -> u32 {
     *seed = seed.wrapping_add(0x6d2b79f5);
@@ -9,8 +9,8 @@ fn random(seed: &mut u32) -> u32 {
 }
 
 #[test]
-fn upstream_eleven_mutation_random_transactions_match_policy_replay_and_authority(
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn upstream_eleven_mutation_random_transactions_match_policy_replay_and_authority()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     for seed in 1u32..=40 {
         let mut rng = seed;
         let mut expected = json!({"values":(0..4).map(|id|json!({"id":id,"score":0})).collect::<Vec<_>>(),"text":"start","meta":{"revision":0}});
@@ -130,8 +130,8 @@ fn upstream_eleven_mutation_random_transactions_match_policy_replay_and_authorit
 }
 
 #[test]
-fn hundred_thousand_item_insertions_and_wide_operation_folding(
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn hundred_thousand_item_insertions_and_wide_operation_folding()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     for unshift in [false, true] {
         let tracker = track(json!([-1]).into())?;
         let mut change = tracker.begin_change();

@@ -1,10 +1,10 @@
+use super::file_location::PostEditFileLocation;
+use super::not_installed_guidance::{PostEditNotInstalledOutcome, not_installed_guidance};
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::PoisonError;
-use super::file_location::PostEditFileLocation;
-use super::not_installed_guidance::{not_installed_guidance, PostEditNotInstalledOutcome};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
 const CLEAN_DIAGNOSTICS_TEXT: &str = "No diagnostics found";
@@ -96,7 +96,11 @@ pub fn create_post_edit_not_configured_cache() -> PostEditNotConfiguredCache {
 
 pub fn reset_post_edit_not_configured_cache(cache: &PostEditNotConfiguredCache) {
     cache.lock().clear();
-    cache.not_installed_servers.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    cache
+        .not_installed_servers
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
 }
 
 /// TS `CollectPostEditDiagnosticsInput`.
@@ -127,7 +131,12 @@ where
     for (file_path, outcome) in targets.into_iter().zip(outcomes) {
         let kind = match outcome {
             PostEditDiagnosticsOutcome::NotInstalled(outcome) => {
-                match not_installed_guidance(&file_path, &outcome, &cache.not_installed_servers, input.locate_file) {
+                match not_installed_guidance(
+                    &file_path,
+                    &outcome,
+                    &cache.not_installed_servers,
+                    input.locate_file,
+                ) {
                     Some(text) if !text.is_empty() && text != CLEAN_DIAGNOSTICS_TEXT => {
                         result.blocks.push(PostEditDiagnosticsBlock {
                             file_path: file_path.clone(),

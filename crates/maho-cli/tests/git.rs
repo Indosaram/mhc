@@ -11,39 +11,144 @@ fn generic_git_urls_preserve_clone_address_and_separate_ref() {
 }
 #[test]
 fn generic_git_install_paths_reject_encoded_traversal_and_invalid_escapes() {
-    for source in ["git:example.org/team/%2e%2e/repo", "git:example.org/team/repo%5cfile", "git:example.org/team/repo%xx"] { assert!(parse_generic_git_url(source).is_none()); }
+    for source in [
+        "git:example.org/team/%2e%2e/repo",
+        "git:example.org/team/repo%5cfile",
+        "git:example.org/team/repo%xx",
+    ] {
+        assert!(parse_generic_git_url(source).is_none());
+    }
 }
-#[test] fn upstream_https_url() { let result = parse_git_url("https://github.com/user/repo").unwrap(); assert_eq!((result.host.as_str(), result.path.as_str(), result.repo.as_str()), ("github.com", "user/repo", "https://github.com/user/repo")); }
-#[test] fn upstream_ssh_url() { let result = parse_git_url("ssh://git@github.com/user/repo").unwrap(); assert_eq!(result.repo, "ssh://git@github.com/user/repo"); assert_eq!(result.path, "user/repo"); }
-#[test] fn upstream_protocol_ref() { let result = parse_git_url("https://github.com/user/repo@v1.0.0").unwrap(); assert_eq!(result.repo, "https://github.com/user/repo"); assert_eq!(result.reference.as_deref(), Some("v1.0.0")); }
-#[test] fn upstream_prefixed_scp() { let result = parse_git_url("git:git@github.com:user/repo").unwrap(); assert_eq!(result.repo, "git@github.com:user/repo"); assert_eq!(result.path, "user/repo"); }
-#[test] fn upstream_prefixed_host() { let result = parse_git_url("git:github.com/user/repo").unwrap(); assert_eq!(result.repo, "https://github.com/user/repo"); }
-#[test] fn upstream_prefixed_scp_ref() { let result = parse_git_url("git:git@github.com:user/repo@v1.0.0").unwrap(); assert_eq!(result.repo, "git@github.com:user/repo"); assert_eq!(result.reference.as_deref(), Some("v1.0.0")); }
-#[test] fn upstream_unsafe_paths() { for source in ["git:git@evil.example:../../victim/repo", "https://evil.example/..%2F..%2Fvictim/repo", "https://evil.example/..%2F..%2Fvictim/repo%", "git:git@evil.example:/absolute/repo", "git:git@evil.example:user\\repo/name", "git:git@evil.example:user/repo\0name"] { assert!(parse_git_url(source).is_none()); } }
-#[test] fn upstream_unprefixed_scp_rejected() { assert!(parse_git_url("git@github.com:user/repo").is_none()); }
-#[test] fn upstream_unprefixed_host_rejected() { assert!(parse_git_url("github.com/user/repo").is_none()); }
-#[test] fn upstream_user_repo_rejected() { assert!(parse_git_url("user/repo").is_none()); }
+#[test]
+fn upstream_https_url() {
+    let result = parse_git_url("https://github.com/user/repo").unwrap();
+    assert_eq!(
+        (
+            result.host.as_str(),
+            result.path.as_str(),
+            result.repo.as_str()
+        ),
+        ("github.com", "user/repo", "https://github.com/user/repo")
+    );
+}
+#[test]
+fn upstream_ssh_url() {
+    let result = parse_git_url("ssh://git@github.com/user/repo").unwrap();
+    assert_eq!(result.repo, "ssh://git@github.com/user/repo");
+    assert_eq!(result.path, "user/repo");
+}
+#[test]
+fn upstream_protocol_ref() {
+    let result = parse_git_url("https://github.com/user/repo@v1.0.0").unwrap();
+    assert_eq!(result.repo, "https://github.com/user/repo");
+    assert_eq!(result.reference.as_deref(), Some("v1.0.0"));
+}
+#[test]
+fn upstream_prefixed_scp() {
+    let result = parse_git_url("git:git@github.com:user/repo").unwrap();
+    assert_eq!(result.repo, "git@github.com:user/repo");
+    assert_eq!(result.path, "user/repo");
+}
+#[test]
+fn upstream_prefixed_host() {
+    let result = parse_git_url("git:github.com/user/repo").unwrap();
+    assert_eq!(result.repo, "https://github.com/user/repo");
+}
+#[test]
+fn upstream_prefixed_scp_ref() {
+    let result = parse_git_url("git:git@github.com:user/repo@v1.0.0").unwrap();
+    assert_eq!(result.repo, "git@github.com:user/repo");
+    assert_eq!(result.reference.as_deref(), Some("v1.0.0"));
+}
+#[test]
+fn upstream_unsafe_paths() {
+    for source in [
+        "git:git@evil.example:../../victim/repo",
+        "https://evil.example/..%2F..%2Fvictim/repo",
+        "https://evil.example/..%2F..%2Fvictim/repo%",
+        "git:git@evil.example:/absolute/repo",
+        "git:git@evil.example:user\\repo/name",
+        "git:git@evil.example:user/repo\0name",
+    ] {
+        assert!(parse_git_url(source).is_none());
+    }
+}
+#[test]
+fn upstream_unprefixed_scp_rejected() {
+    assert!(parse_git_url("git@github.com:user/repo").is_none());
+}
+#[test]
+fn upstream_unprefixed_host_rejected() {
+    assert!(parse_git_url("github.com/user/repo").is_none());
+}
+#[test]
+fn upstream_user_repo_rejected() {
+    assert!(parse_git_url("user/repo").is_none());
+}
 #[test]
 fn hosted_shorthands_preserve_upstream_clone_address() {
-    for (input, host, path) in [("git:user/repo", "github.com", "user/repo"), ("git:github:user/repo", "github.com", "user/repo"), ("git:gitlab:group/sub/repo", "gitlab.com", "group/sub/repo"), ("git:bitbucket:user/repo", "bitbucket.org", "user/repo"), ("git:gist:abcdef", "gist.github.com", "null/abcdef")] {
+    for (input, host, path) in [
+        ("git:user/repo", "github.com", "user/repo"),
+        ("git:github:user/repo", "github.com", "user/repo"),
+        ("git:gitlab:group/sub/repo", "gitlab.com", "group/sub/repo"),
+        ("git:bitbucket:user/repo", "bitbucket.org", "user/repo"),
+        ("git:gist:abcdef", "gist.github.com", "null/abcdef"),
+    ] {
         let parsed = parse_git_url(input).unwrap();
-        assert_eq!(parsed.host, host); assert_eq!(parsed.path, path);
-        assert_eq!(parsed.repo, format!("https://{}", &input[4..])); assert!(!parsed.pinned);
+        assert_eq!(parsed.host, host);
+        assert_eq!(parsed.path, path);
+        assert_eq!(parsed.repo, format!("https://{}", &input[4..]));
+        assert!(!parsed.pinned);
     }
-    let parsed = parse_git_url("git:user/repo@release").unwrap(); assert_eq!(parsed.repo, "https://user/repo"); assert_eq!(parsed.reference.as_deref(), Some("release"));
+    let parsed = parse_git_url("git:user/repo@release").unwrap();
+    assert_eq!(parsed.repo, "https://user/repo");
+    assert_eq!(parsed.reference.as_deref(), Some("release"));
 }
 // git-ssh-url.test.ts `toMatchObject` fields that the one-line ports above leave unchecked.
 #[test]
 fn upstream_parsed_sources_carry_host_and_path() {
     for (input, repo, reference) in [
-        ("https://github.com/user/repo", "https://github.com/user/repo", None),
-        ("ssh://git@github.com/user/repo", "ssh://git@github.com/user/repo", None),
-        ("https://github.com/user/repo@v1.0.0", "https://github.com/user/repo", Some("v1.0.0")),
-        ("git:git@github.com:user/repo", "git@github.com:user/repo", None),
-        ("git:github.com/user/repo", "https://github.com/user/repo", None),
-        ("git:git@github.com:user/repo@v1.0.0", "git@github.com:user/repo", Some("v1.0.0")),
+        (
+            "https://github.com/user/repo",
+            "https://github.com/user/repo",
+            None,
+        ),
+        (
+            "ssh://git@github.com/user/repo",
+            "ssh://git@github.com/user/repo",
+            None,
+        ),
+        (
+            "https://github.com/user/repo@v1.0.0",
+            "https://github.com/user/repo",
+            Some("v1.0.0"),
+        ),
+        (
+            "git:git@github.com:user/repo",
+            "git@github.com:user/repo",
+            None,
+        ),
+        (
+            "git:github.com/user/repo",
+            "https://github.com/user/repo",
+            None,
+        ),
+        (
+            "git:git@github.com:user/repo@v1.0.0",
+            "git@github.com:user/repo",
+            Some("v1.0.0"),
+        ),
     ] {
         let parsed = parse_git_url(input).unwrap();
-        assert_eq!((parsed.host.as_str(), parsed.path.as_str(), parsed.repo.as_str(), parsed.reference.as_deref()), ("github.com", "user/repo", repo, reference), "{input}");
+        assert_eq!(
+            (
+                parsed.host.as_str(),
+                parsed.path.as_str(),
+                parsed.repo.as_str(),
+                parsed.reference.as_deref()
+            ),
+            ("github.com", "user/repo", repo, reference),
+            "{input}"
+        );
     }
 }

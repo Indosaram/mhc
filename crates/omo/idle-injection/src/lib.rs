@@ -72,8 +72,12 @@ pub fn into_slot(coordinator: Arc<dyn IdleInjectionCoordinator>) -> Arc<dyn Any 
 
 /// Read the coordinator back out of `ExtensionContext::idle_coordinator`. `None` when the slot is
 /// empty or holds a value that was not stored through [`into_slot`].
-pub fn from_slot(slot: &Option<Arc<dyn Any + Send + Sync>>) -> Option<Arc<dyn IdleInjectionCoordinator>> {
-    slot.as_ref()?.downcast_ref::<Arc<dyn IdleInjectionCoordinator>>().cloned()
+pub fn from_slot(
+    slot: &Option<Arc<dyn Any + Send + Sync>>,
+) -> Option<Arc<dyn IdleInjectionCoordinator>> {
+    slot.as_ref()?
+        .downcast_ref::<Arc<dyn IdleInjectionCoordinator>>()
+        .cloned()
 }
 
 #[cfg(test)]
@@ -104,7 +108,9 @@ mod tests {
     #[test]
     fn slot_round_trip_returns_the_same_coordinator() {
         let counter = Arc::new(Counter::default());
-        let slot = Some(into_slot(counter.clone() as Arc<dyn IdleInjectionCoordinator>));
+        let slot = Some(into_slot(
+            counter.clone() as Arc<dyn IdleInjectionCoordinator>
+        ));
         let coordinator = from_slot(&slot).expect("coordinator in slot");
         assert!(coordinator.enqueue(IdleInjection {
             key: "k".into(),

@@ -62,19 +62,33 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
 pub use maho_ext_api::DynamicSystemPromptPart;
 
 fn part(name: &str, source: &str, text: String) -> DynamicSystemPromptPart {
-    DynamicSystemPromptPart { name: name.to_owned(), source: Some(source.to_owned()), text }
+    DynamicSystemPromptPart {
+        name: name.to_owned(),
+        source: Some(source.to_owned()),
+        text,
+    }
 }
 
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
     let parts = build_dynamic_system_prompt_parts(options);
-    if let Some(on_parts) = options.on_parts { on_parts(&parts); }
+    if let Some(on_parts) = options.on_parts {
+        on_parts(&parts);
+    }
     parts.iter().map(|part| part.text.as_str()).collect()
 }
 
-pub fn build_dynamic_system_prompt_parts(options: &BuildDynamicSystemPromptOptions<'_>) -> Vec<DynamicSystemPromptPart> {
+pub fn build_dynamic_system_prompt_parts(
+    options: &BuildDynamicSystemPromptOptions<'_>,
+) -> Vec<DynamicSystemPromptPart> {
     if let Some(custom) = &options.custom_prompt {
         let mut parts = vec![part("custom_prompt", "loader", custom.clone())];
-        if let Some(append) = &options.append_system_prompt { parts.push(part("append_system_prompt", "loader", format!("\n\n{append}"))); }
+        if let Some(append) = &options.append_system_prompt {
+            parts.push(part(
+                "append_system_prompt",
+                "loader",
+                format!("\n\n{append}"),
+            ));
+        }
         return parts;
     }
     let tools = categorize_tools(&options.selected_tools);
@@ -108,27 +122,67 @@ pub fn build_dynamic_system_prompt_parts(options: &BuildDynamicSystemPromptOptio
     };
 
     let mut parts = vec![part("core", "dynamic-prompt", sections.join("\n"))];
-    if let Some(tuning) = options.tuning_section.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+    if let Some(tuning) = options
+        .tuning_section
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
         parts.push(part("tuning", "prompt-preset", format!("\n\n{tuning}")));
     }
     // Instruction files outrank the core's and presets' default working style, asking included.
-    let user_files: Vec<&ContextFile> = options.context_files.iter().filter(|file| file.scope == Some(ContextFileScope::User)).collect();
-    let project_files: Vec<&ContextFile> = options.context_files.iter().filter(|file| file.scope != Some(ContextFileScope::User)).collect();
-    for (files, header) in [(user_files, USER_INSTRUCTIONS_HEADER), (project_files, PROJECT_CONTEXT_HEADER)] {
-        if files.is_empty() { continue; }
+    let user_files: Vec<&ContextFile> = options
+        .context_files
+        .iter()
+        .filter(|file| file.scope == Some(ContextFileScope::User))
+        .collect();
+    let project_files: Vec<&ContextFile> = options
+        .context_files
+        .iter()
+        .filter(|file| file.scope != Some(ContextFileScope::User))
+        .collect();
+    for (files, header) in [
+        (user_files, USER_INSTRUCTIONS_HEADER),
+        (project_files, PROJECT_CONTEXT_HEADER),
+    ] {
+        if files.is_empty() {
+            continue;
+        }
         parts.push(part("project_context", "dynamic-prompt", header.to_owned()));
         for (index, file) in files.iter().enumerate() {
             let text = format!("### {}\n\n{}", file.path, file.content.trim_end());
-            parts.push(part("project_context", &file.path, if index + 1 == files.len() { text.trim_end().to_owned() } else { format!("{text}\n\n") }));
+            parts.push(part(
+                "project_context",
+                &file.path,
+                if index + 1 == files.len() {
+                    text.trim_end().to_owned()
+                } else {
+                    format!("{text}\n\n")
+                },
+            ));
         }
     }
     let skills = format_skills_for_prompt(&options.skills, FileReadTool::Read);
-    if !skills.is_empty() { parts.push(part("skills", "skills", format!("\n{skills}"))); }
+    if !skills.is_empty() {
+        parts.push(part("skills", "skills", format!("\n{skills}")));
+    }
     let workstation = build_workstation_section(&BuildWorkstationSectionOptions {
-        selected_tools: options.selected_tools.clone(), dialect: options.workstation_dialect, facts: None,
+        selected_tools: options.selected_tools.clone(),
+        dialect: options.workstation_dialect,
+        facts: None,
     });
-    parts.push(part("workstation", "dynamic-prompt", format!("\n\n{workstation}")));
-    if let Some(append) = &options.append_system_prompt { parts.push(part("append_system_prompt", "loader", format!("\n\n{append}"))); }
+    parts.push(part(
+        "workstation",
+        "dynamic-prompt",
+        format!("\n\n{workstation}"),
+    ));
+    if let Some(append) = &options.append_system_prompt {
+        parts.push(part(
+            "append_system_prompt",
+            "loader",
+            format!("\n\n{append}"),
+        ));
+    }
     parts
 }
 
@@ -142,7 +196,9 @@ mod tests {
         let mut tool_snippets: HashMap<String, String> = HashMap::new();
         tool_snippets.insert("read".to_string(), "Read file contents".to_string());
         BuildDynamicSystemPromptOptions {
-            custom_prompt: None, append_system_prompt: None, on_parts: None,
+            custom_prompt: None,
+            append_system_prompt: None,
+            on_parts: None,
             cwd: "/work".to_string(),
             selected_tools: vec!["read".to_string()],
             tool_snippets,
@@ -182,7 +238,13 @@ mod tests {
         options.custom_prompt = Some("custom".into());
         options.append_system_prompt = Some("append".into());
         let parts = build_dynamic_system_prompt_parts(&options);
-        assert_eq!(parts.iter().map(|part| part.text.as_str()).collect::<String>(), build_dynamic_system_prompt(&options));
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            build_dynamic_system_prompt(&options)
+        );
         assert_eq!(parts[0].name, "custom_prompt");
         assert_eq!(parts[1].name, "append_system_prompt");
         assert_eq!(parts[0].source.as_deref(), Some("loader"));
@@ -243,7 +305,9 @@ mod tests {
         let prompt = build_dynamic_system_prompt(&options);
         assert!(prompt.contains("## Project Context"));
         assert!(prompt.contains("### /work/AGENTS.md\n\nrules\n"));
-        assert!(prompt.contains("apply to work under their directory and override the default working style above"));
+        assert!(prompt.contains(
+            "apply to work under their directory and override the default working style above"
+        ));
         assert!(!prompt.contains("## User Instructions"));
     }
 
@@ -251,8 +315,16 @@ mod tests {
     fn user_scoped_files_get_their_own_section_before_project_context() {
         let mut options = options();
         options.context_files = vec![
-            ContextFile { path: "/work/AGENTS.md".to_string(), content: "project".to_string(), scope: None },
-            ContextFile { path: "/home/u/AGENTS.md".to_string(), content: "mine".to_string(), scope: Some(ContextFileScope::User) },
+            ContextFile {
+                path: "/work/AGENTS.md".to_string(),
+                content: "project".to_string(),
+                scope: None,
+            },
+            ContextFile {
+                path: "/home/u/AGENTS.md".to_string(),
+                content: "mine".to_string(),
+                scope: Some(ContextFileScope::User),
+            },
         ];
         let prompt = build_dynamic_system_prompt(&options);
         let user = prompt.find("## User Instructions").expect("user section");

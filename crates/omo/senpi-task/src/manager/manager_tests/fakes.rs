@@ -90,7 +90,8 @@ struct HandleState {
     durable_listeners: DurableListenersCallback,
     /// `Some` makes this a host-session handle with liveness.
     liveness: Option<crate::state::host_liveness::HostLivenessStatus>,
-    liveness_listeners: Vec<Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>>,
+    liveness_listeners:
+        Vec<Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>>,
 }
 
 pub(crate) struct FakeHandle {

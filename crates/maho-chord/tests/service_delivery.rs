@@ -18,7 +18,8 @@ fn provider_activation_appends_reentrant_updates_in_fifo_order() -> Result<(), S
         mode: ServiceMode::Singleton,
     }])?;
     let state = MutableReplicatedStateImpl::new(json!({"value":0}).into())?;
-    provider.provide(&"counter".into(),
+    provider.provide(
+        &"counter".into(),
         ProviderImplementation::new(
             Arc::new(()),
             BTreeMap::from([("state".into(), ProviderMember::State(state.clone()))]),
@@ -27,11 +28,15 @@ fn provider_activation_appends_reentrant_updates_in_fifo_order() -> Result<(), S
     let received = Arc::new(Mutex::new(Vec::new()));
     let output = received.clone();
     let target = state.clone();
-    let mut subscription = provider.subscribe(&"counter".into(),
+    let mut subscription = provider.subscribe(
+        &"counter".into(),
         ServiceMode::Singleton,
         Arc::new(move |update, _| {
             if let ServiceProviderUpdate::State { sequence, .. } = update {
-                output.lock().map_err(|_| "poisoned")?.push(sequence.number() as u64);
+                output
+                    .lock()
+                    .map_err(|_| "poisoned")?
+                    .push(sequence.number() as u64);
                 if sequence.number() == 1.0 {
                     target.replace(BACKGROUND_CONTEXT.clone(), json!({"value":3}).into())?;
                 }

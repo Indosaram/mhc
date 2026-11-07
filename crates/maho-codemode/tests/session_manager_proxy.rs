@@ -1,47 +1,98 @@
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
-use maho_codemode::extension::session_manager_proxy::*;
 use maho_ai::utils::abort::AbortController;
+use maho_codemode::extension::session_manager_proxy::*;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
-struct FakeManager { disposals: AtomicUsize, failure: Option<String>, contexts:Arc<Mutex<std::collections::HashSet<String>>>, session_cwds: Arc<Mutex<Vec<String>>> }
+struct FakeManager {
+    disposals: AtomicUsize,
+    failure: Option<String>,
+    contexts: Arc<Mutex<std::collections::HashSet<String>>>,
+    session_cwds: Arc<Mutex<Vec<String>>>,
+}
 impl maho_codemode::tool::eval_tool_options::EvalKernelManager for FakeManager {
-    fn get_kernel(&self, language: maho_codemode::tool::types::EvalLanguage) -> maho_codemode::tool::types::EvalKernelFuture<'_, Arc<dyn maho_codemode::tool::types::EvalKernel>> {
+    fn get_kernel(
+        &self,
+        language: maho_codemode::tool::types::EvalLanguage,
+    ) -> maho_codemode::tool::types::EvalKernelFuture<
+        '_,
+        Arc<dyn maho_codemode::tool::types::EvalKernel>,
+    > {
         Box::pin(async move { Err(format!("fixture kernel {language:?}")) })
     }
-    fn set_invocation_context(&self,id:&str,_:maho_codemode::tool::eval_tool_options::EvalInvocationContext)->Option<Box<dyn FnOnce()+Send>> {
-        self.contexts.lock().expect("fixture contexts").insert(id.into());let contexts=self.contexts.clone();let id=id.to_owned();
-        Some(Box::new(move || {contexts.lock().expect("fixture contexts").remove(&id);}))
+    fn set_invocation_context(
+        &self,
+        id: &str,
+        _: maho_codemode::tool::eval_tool_options::EvalInvocationContext,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
+        self.contexts
+            .lock()
+            .expect("fixture contexts")
+            .insert(id.into());
+        let contexts = self.contexts.clone();
+        let id = id.to_owned();
+        Some(Box::new(move || {
+            contexts.lock().expect("fixture contexts").remove(&id);
+        }))
     }
 }
 impl SessionManagerLifecycle for FakeManager {
     fn dispose(&self) -> SessionDisposeFuture<'_> {
-        Box::pin(async { self.disposals.fetch_add(1, Ordering::SeqCst); self.failure.clone().map_or(Ok(()), Err) })
+        Box::pin(async {
+            self.disposals.fetch_add(1, Ordering::SeqCst);
+            self.failure.clone().map_or(Ok(()), Err)
+        })
     }
     fn set_context(&self, context: maho_codemode::tool::eval_tool_options::EvalInvocationContext) {
-        self.session_cwds.lock().expect("session contexts").push(context.cwd.to_string_lossy().into_owned());
+        self.session_cwds
+            .lock()
+            .expect("session contexts")
+            .push(context.cwd.to_string_lossy().into_owned());
     }
 }
 fn manager(failure: Option<&str>) -> Arc<FakeManager> {
-    Arc::new(FakeManager { disposals:AtomicUsize::new(0), failure:failure.map(str::to_owned),contexts:Default::default(),session_cwds:Default::default() })
+    Arc::new(FakeManager {
+        disposals: AtomicUsize::new(0),
+        failure: failure.map(str::to_owned),
+        contexts: Default::default(),
+        session_cwds: Default::default(),
+    })
 }
 fn proxy() -> (Arc<SessionManagerProxy>, Arc<Mutex<Vec<String>>>) {
     let failures = Arc::new(Mutex::new(Vec::new()));
     let reported = failures.clone();
-    (Arc::new(SessionManagerProxy::new(Arc::new(move |failure| reported.lock().expect("failure list").push(failure.into())))), failures)
+    (
+        Arc::new(SessionManagerProxy::new(Arc::new(move |failure| {
+            reported.lock().expect("failure list").push(failure.into())
+        }))),
+        failures,
+    )
 }
 
 #[tokio::test]
 async fn old_invocation_cleanup_preserves_replacement_same_id_context() {
-    use maho_codemode::tool::eval_tool_options::{EvalKernelManager,EvalInvocationContext};
-    let (proxy,_)=proxy();let old=manager(None);let new=manager(None);
-    assert!(proxy.replace(proxy.begin_replacement(),old.clone()).await);
-    let context=EvalInvocationContext {model:None,cwd:"/fixture".into(),thinking_level:None,goal_store_file:None};
-    let clear_old=proxy.set_invocation_context("same-id",context.clone()).unwrap();
-    assert!(proxy.replace(proxy.begin_replacement(),new.clone()).await);
-    let clear_new=proxy.set_invocation_context("same-id",context).unwrap();
+    use maho_codemode::tool::eval_tool_options::{EvalInvocationContext, EvalKernelManager};
+    let (proxy, _) = proxy();
+    let old = manager(None);
+    let new = manager(None);
+    assert!(proxy.replace(proxy.begin_replacement(), old.clone()).await);
+    let context = EvalInvocationContext {
+        model: None,
+        cwd: "/fixture".into(),
+        thinking_level: None,
+        goal_store_file: None,
+    };
+    let clear_old = proxy
+        .set_invocation_context("same-id", context.clone())
+        .unwrap();
+    assert!(proxy.replace(proxy.begin_replacement(), new.clone()).await);
+    let clear_new = proxy.set_invocation_context("same-id", context).unwrap();
     clear_old();
     assert!(old.contexts.lock().unwrap().is_empty());
     assert!(new.contexts.lock().unwrap().contains("same-id"));
-    clear_new();proxy.dispose().await;
+    clear_new();
+    proxy.dispose().await;
     assert!(new.contexts.lock().unwrap().is_empty());
 }
 
@@ -49,25 +100,48 @@ async fn old_invocation_cleanup_preserves_replacement_same_id_context() {
 async fn kernel_delegation_is_gated_by_live_session_generation() {
     use maho_codemode::tool::{eval_tool_options::EvalKernelManager, types::EvalLanguage};
     let (proxy, _) = proxy();
-    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "codemode session has not started");
-    assert!(proxy.replace(proxy.begin_replacement(), manager(None)).await);
-    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "fixture kernel Js");
+    assert_eq!(
+        proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(),
+        "codemode session has not started"
+    );
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), manager(None))
+            .await
+    );
+    assert_eq!(
+        proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(),
+        "fixture kernel Js"
+    );
     proxy.begin_replacement();
-    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "codemode session manager is disposed");
+    assert_eq!(
+        proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(),
+        "codemode session manager is disposed"
+    );
     proxy.dispose().await;
 }
 
 #[tokio::test]
 async fn outgoing_teardown_failure_does_not_prevent_installation() {
     let (proxy, failures) = proxy();
-    assert_eq!(proxy.assert_eval_execution_allowed(), Err(SessionProxyError::NotStarted));
+    assert_eq!(
+        proxy.assert_eval_execution_allowed(),
+        Err(SessionProxyError::NotStarted)
+    );
     let outgoing = manager(Some("close failed"));
-    assert!(proxy.replace(proxy.begin_replacement(), outgoing.clone()).await);
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), outgoing.clone())
+            .await
+    );
     let next = manager(None);
     assert!(proxy.replace(proxy.begin_replacement(), next.clone()).await);
     assert_eq!(outgoing.disposals.load(Ordering::SeqCst), 1);
     assert_eq!(*failures.lock().unwrap(), ["close failed"]);
-    assert!(Arc::ptr_eq(&proxy.current().unwrap(), &(next as Arc<dyn SessionManagerLifecycle>)));
+    assert!(Arc::ptr_eq(
+        &proxy.current().unwrap(),
+        &(next as Arc<dyn SessionManagerLifecycle>)
+    ));
     proxy.dispose().await;
 }
 
@@ -75,14 +149,33 @@ async fn outgoing_teardown_failure_does_not_prevent_installation() {
 async fn session_context_is_forwarded_to_current_and_replacement_managers() {
     use maho_codemode::tool::eval_tool_options::EvalInvocationContext;
     let (proxy, _) = proxy();
-    let context = EvalInvocationContext { model: None, cwd: "/session-context".into(), thinking_level: None, goal_store_file: None };
+    let context = EvalInvocationContext {
+        model: None,
+        cwd: "/session-context".into(),
+        thinking_level: None,
+        goal_store_file: None,
+    };
     proxy.set_context(context.clone());
     let first = manager(None);
-    assert!(proxy.replace(proxy.begin_replacement(), first.clone()).await);
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), first.clone())
+            .await
+    );
     let second = manager(None);
-    assert!(proxy.replace(proxy.begin_replacement(), second.clone()).await);
-    assert_eq!(*first.session_cwds.lock().expect("first context"), ["/session-context"]);
-    assert_eq!(*second.session_cwds.lock().expect("replacement context"), ["/session-context"]);
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), second.clone())
+            .await
+    );
+    assert_eq!(
+        *first.session_cwds.lock().expect("first context"),
+        ["/session-context"]
+    );
+    assert_eq!(
+        *second.session_cwds.lock().expect("replacement context"),
+        ["/session-context"]
+    );
     proxy.dispose().await;
 }
 
@@ -90,11 +183,18 @@ async fn session_context_is_forwarded_to_current_and_replacement_managers() {
 async fn dispose_reports_failure_and_remains_disposed() {
     let (proxy, failures) = proxy();
     let active = manager(Some("close failed"));
-    assert!(proxy.replace(proxy.begin_replacement(), active.clone()).await);
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), active.clone())
+            .await
+    );
     proxy.dispose().await;
     assert_eq!(active.disposals.load(Ordering::SeqCst), 1);
     assert_eq!(*failures.lock().unwrap(), ["close failed"]);
-    assert_eq!(proxy.assert_eval_execution_allowed(), Err(SessionProxyError::Disposed));
+    assert_eq!(
+        proxy.assert_eval_execution_allowed(),
+        Err(SessionProxyError::Disposed)
+    );
 }
 
 #[tokio::test]
@@ -112,18 +212,31 @@ async fn superseded_replacement_is_retired_and_failure_reported() {
 async fn replacement_aborts_and_waits_for_tracked_execution() {
     let (proxy, _) = proxy();
     let active = manager(None);
-    assert!(proxy.replace(proxy.begin_replacement(), active.clone()).await);
+    assert!(
+        proxy
+            .replace(proxy.begin_replacement(), active.clone())
+            .await
+    );
     let controller = AbortController::new();
     let signal = controller.signal();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let execution_proxy = proxy.clone();
     let execution = tokio::spawn(async move {
-        execution_proxy.track_eval_execution(async move {
-            started_tx.send(()).unwrap();
-            signal.cancelled().await;
-            assert_eq!(signal.reason().unwrap().name, "CodemodeSessionDisposedError");
-            42
-        }, controller).await.unwrap()
+        execution_proxy
+            .track_eval_execution(
+                async move {
+                    started_tx.send(()).unwrap();
+                    signal.cancelled().await;
+                    assert_eq!(
+                        signal.reason().unwrap().name,
+                        "CodemodeSessionDisposedError"
+                    );
+                    42
+                },
+                controller,
+            )
+            .await
+            .unwrap()
     });
     started_rx.await.unwrap();
     let generation = proxy.begin_replacement();

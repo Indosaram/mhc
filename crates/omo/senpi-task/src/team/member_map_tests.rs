@@ -2,7 +2,9 @@
 
 use pretty_assertions::assert_eq;
 
-use crate::team::member_map::{MemberTaskMap, member_task_map_path, read_member_task_map, write_member_task_map};
+use crate::team::member_map::{
+    MemberTaskMap, member_task_map_path, read_member_task_map, write_member_task_map,
+};
 
 #[test]
 fn given_a_written_map_when_read_back_then_the_member_task_mapping_round_trips() {
@@ -51,7 +53,13 @@ fn given_a_completed_write_when_the_directory_is_listed_then_no_temp_file_remain
     // when
     let entries: Vec<String> = std::fs::read_dir(dir.path())
         .expect("read_dir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
 
     // then

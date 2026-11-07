@@ -13,10 +13,15 @@ use crate::theme::{Theme, ThemeColor};
 use crate::tools::render_utils::{get_text_output, render_tool_path, str_value};
 
 fn format_ls_call(args: Option<&Value>, theme: &Theme, cwd: &str) -> String {
-    let limit = args.and_then(|args| args.get("limit")).and_then(Value::as_u64);
+    let limit = args
+        .and_then(|args| args.get("limit"))
+        .and_then(Value::as_u64);
     let path = args.and_then(|args| str_value(args.get("path"))).flatten();
     let path_display = render_tool_path(path, theme, cwd, Some("."));
-    let mut text = format!("{} {path_display}", theme.fg(ThemeColor::ToolTitle, &theme.bold("ls")));
+    let mut text = format!(
+        "{} {path_display}",
+        theme.fg(ThemeColor::ToolTitle, &theme.bold("ls"))
+    );
     if let Some(limit) = limit {
         text += &theme.fg(ThemeColor::ToolOutput, &format!(" (limit {limit})"));
     }
@@ -39,12 +44,19 @@ fn format_ls_result(
         let remaining = lines.len().saturating_sub(max_lines);
         text += &format!(
             "\n{}",
-            display_lines.iter().map(|line| theme.fg(ThemeColor::ToolOutput, line)).collect::<Vec<_>>().join("\n")
+            display_lines
+                .iter()
+                .map(|line| theme.fg(ThemeColor::ToolOutput, line))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         if remaining > 0 {
             text += &format!(
                 "{} {}{}",
-                theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines,")),
+                theme.fg(
+                    ThemeColor::Muted,
+                    &format!("\n... ({remaining} more lines,")
+                ),
                 key_hint("app.tools.expand", "to expand", theme),
                 theme.fg(ThemeColor::Muted, ")")
             );
@@ -54,7 +66,10 @@ fn format_ls_result(
     let details = result.details.clone().unwrap_or(Value::Null);
     let entry_limit = details.get("entryLimitReached").and_then(Value::as_u64);
     let truncation = details.get("truncation");
-    let truncated = truncation.and_then(|value| value.get("truncated")).and_then(Value::as_bool).unwrap_or(false);
+    let truncated = truncation
+        .and_then(|value| value.get("truncated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if entry_limit.is_some() || truncated {
         let mut warnings: Vec<String> = Vec::new();
         if let Some(entry_limit) = entry_limit {
@@ -67,7 +82,13 @@ fn format_ls_result(
                 .map_or(DEFAULT_MAX_BYTES, |value| value as usize);
             warnings.push(format!("{} limit", format_size(max_bytes)));
         }
-        text += &format!("\n{}", theme.fg(ThemeColor::Warning, &format!("[Truncated: {}]", warnings.join(", "))));
+        text += &format!(
+            "\n{}",
+            theme.fg(
+                ThemeColor::Warning,
+                &format!("[Truncated: {}]", warnings.join(", "))
+            )
+        );
     }
     text
 }
@@ -79,7 +100,11 @@ impl ToolRenderers for LsRenderers {
     fn is_built_in(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
         let text = format_ls_call(Some(context.args), theme, context.cwd);
         Some(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))))
     }

@@ -1,5 +1,11 @@
-use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, handoff::{build_handoff_section, CHAT_FINAL_MESSAGE}, verification::build_test_discipline_section, workstation::WorkstationDialect};
-
+use maho_core::dynamic_prompt::{
+    build::{
+        BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt,
+    },
+    handoff::{CHAT_FINAL_MESSAGE, build_handoff_section},
+    verification::build_test_discipline_section,
+    workstation::WorkstationDialect,
+};
 
 fn build_gpt55_core(context: &DynamicPromptCoreContext) -> String {
     let surface = context.surface;

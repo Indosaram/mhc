@@ -27,10 +27,17 @@ fn write_skill(cwd: &std::path::Path, name: &str, body: &str) {
 }
 
 fn skill_prompt(cwd: &std::path::Path, name: &str, body: &str, prompt: &str) -> String {
-    let skill_path = cwd.join(".senpi").join("skills").join(name).join("SKILL.md");
+    let skill_path = cwd
+        .join(".senpi")
+        .join("skills")
+        .join(name)
+        .join("SKILL.md");
     let skill_dir = cwd.join(".senpi").join("skills").join(name);
     [
-        format!("<skill name=\"{name}\" location=\"{}\">", skill_path.display()),
+        format!(
+            "<skill name=\"{name}\" location=\"{}\">",
+            skill_path.display()
+        ),
         format!("References are relative to {}.", skill_dir.display()),
         String::new(),
         body.to_string(),
@@ -69,11 +76,15 @@ fn definition(nodes: Vec<DagNodeInput>) -> DagDefinition {
 
 fn dag_store(project: &std::path::Path) -> std::sync::Arc<DagFileStore> {
     std::sync::Arc::new(
-        create_dag_file_store(&DagStoreConfig::new(project), DagStoreOptions::default()).expect("dag store opens"),
+        create_dag_file_store(&DagStoreConfig::new(project), DagStoreOptions::default())
+            .expect("dag store opens"),
     )
 }
 
-fn materializer(store: std::sync::Arc<DagFileStore>, cwd: &std::path::Path) -> DagMaterializeSkills {
+fn materializer(
+    store: std::sync::Arc<DagFileStore>,
+    cwd: &std::path::Path,
+) -> DagMaterializeSkills {
     create_dag_skill_materializer(DagSkillMaterializerOptions {
         store,
         cwd: cwd.to_string_lossy().into_owned(),
@@ -84,7 +95,8 @@ fn materializer(store: std::sync::Arc<DagFileStore>, cwd: &std::path::Path) -> D
 }
 
 #[test]
-fn given_a_node_requesting_a_present_skill_when_materialized_then_the_skill_block_precedes_the_original_prompt() {
+fn given_a_node_requesting_a_present_skill_when_materialized_then_the_skill_block_precedes_the_original_prompt()
+ {
     let project = temp_dir();
     let cwd = temp_dir();
     write_skill(&cwd, "programming", "programming skill body");
@@ -92,15 +104,26 @@ fn given_a_node_requesting_a_present_skill_when_materialized_then_the_skill_bloc
 
     let result = materializer(std::sync::Arc::clone(&store), &cwd)(DagMaterializeSkillsInput {
         run_id: &RUN_ID.to_string(),
-        definition: &definition(vec![node("build", "ship the feature", Some(vec!["programming"]))]),
+        definition: &definition(vec![node(
+            "build",
+            "ship the feature",
+            Some(vec!["programming"]),
+        )]),
         at: AT,
     });
 
     let result = result.expect("materialization");
     let effective_prompt = &result.nodes[0].1;
-    let expected = skill_prompt(&cwd, "programming", "programming skill body", "ship the feature");
+    let expected = skill_prompt(
+        &cwd,
+        "programming",
+        "programming skill body",
+        "ship the feature",
+    );
     assert_eq!(effective_prompt, &expected);
-    assert!(effective_prompt.find("programming skill body") < effective_prompt.find("ship the feature"));
+    assert!(
+        effective_prompt.find("programming skill body") < effective_prompt.find("ship the feature")
+    );
 }
 
 #[test]
@@ -116,16 +139,22 @@ fn given_a_resolved_skill_when_materialized_then_the_manifest_records_the_reques
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("commit", "commit it", Some(vec!["git-master"]))]),
         at: AT,
-    }).expect("materialization");
+    })
+    .expect("materialization");
 
-    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists");
+    let manifest = read_dag_skill_manifest(&store, RUN_ID)
+        .expect("read manifest")
+        .expect("manifest exists");
     assert_eq!(manifest.cwd, cwd.to_string_lossy());
     let recorded = &manifest.nodes[0];
     assert_eq!(recorded.node_id, "commit");
     assert_eq!(recorded.requested, vec!["git-master".to_string()]);
     assert_eq!(
         recorded.resolved,
-        vec![DagSkillDigestWire { name: "git-master".to_string(), sha256: sha256_hex(body) }]
+        vec![DagSkillDigestWire {
+            name: "git-master".to_string(),
+            sha256: sha256_hex(body)
+        }]
     );
     assert_eq!(recorded.missing, Vec::<String>::new());
     assert_eq!(recorded.prompt, "commit it");
@@ -141,22 +170,42 @@ fn given_a_node_requesting_an_absent_skill_when_materialized_then_a_missing_skil
 
     let result = materializer(std::sync::Arc::clone(&store), &cwd)(DagMaterializeSkillsInput {
         run_id: &RUN_ID.to_string(),
-        definition: &definition(vec![node("build", "ship the feature", Some(vec!["programming", "nonexistent"]))]),
+        definition: &definition(vec![node(
+            "build",
+            "ship the feature",
+            Some(vec!["programming", "nonexistent"]),
+        )]),
         at: AT,
-    }).expect("materialization");
+    })
+    .expect("materialization");
 
     assert_eq!(result.diagnostics.len(), 1);
-    let DagDiagnostic::MissingSkill { node_id, skill, message, at } = &result.diagnostics[0] else {
+    let DagDiagnostic::MissingSkill {
+        node_id,
+        skill,
+        message,
+        at,
+    } = &result.diagnostics[0]
+    else {
         panic!("expected missing_skill diagnostic");
     };
     assert_eq!(node_id, "build");
     assert_eq!(skill, "nonexistent");
     assert_eq!(message, "Skill \"nonexistent\" was not found.");
     assert_eq!(at, AT);
-    let expected = skill_prompt(&cwd, "programming", "programming skill body", "ship the feature");
+    let expected = skill_prompt(
+        &cwd,
+        "programming",
+        "programming skill body",
+        "ship the feature",
+    );
     assert_eq!(result.nodes[0].1, expected);
     assert_eq!(
-        read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists").nodes[0].missing,
+        read_dag_skill_manifest(&store, RUN_ID)
+            .expect("read manifest")
+            .expect("manifest exists")
+            .nodes[0]
+            .missing,
         vec!["nonexistent".to_string()]
     );
 }
@@ -171,24 +220,35 @@ fn given_a_materialized_run_when_skill_md_is_rewritten_on_disk_then_the_persiste
     let materialize = materializer(std::sync::Arc::clone(&store), &cwd);
     materialize(DagMaterializeSkillsInput {
         run_id: &RUN_ID.to_string(),
-        definition: &definition(vec![node("build", "ship the feature", Some(vec!["programming"]))]),
+        definition: &definition(vec![node(
+            "build",
+            "ship the feature",
+            Some(vec!["programming"]),
+        )]),
         at: AT,
-    }).expect("materialization");
+    })
+    .expect("materialization");
 
     write_skill(&cwd, "programming", "v2 skill body");
 
-    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists");
+    let manifest = read_dag_skill_manifest(&store, RUN_ID)
+        .expect("read manifest")
+        .expect("manifest exists");
     let persisted = &manifest.nodes[0];
     assert!(persisted.effective_prompt.contains("v1 skill body"));
     assert!(!persisted.effective_prompt.contains("v2 skill body"));
     assert_eq!(
         persisted.resolved,
-        vec![DagSkillDigestWire { name: "programming".to_string(), sha256: sha256_hex("v1 skill body") }]
+        vec![DagSkillDigestWire {
+            name: "programming".to_string(),
+            sha256: sha256_hex("v1 skill body")
+        }]
     );
 }
 
 #[test]
-fn given_a_node_without_load_skills_when_materialized_then_the_effective_prompt_is_the_untouched_original() {
+fn given_a_node_without_load_skills_when_materialized_then_the_effective_prompt_is_the_untouched_original()
+ {
     let project = temp_dir();
     let cwd = temp_dir();
     let store = dag_store(&project);
@@ -197,9 +257,13 @@ fn given_a_node_without_load_skills_when_materialized_then_the_effective_prompt_
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("plain", "no skills here", None)]),
         at: AT,
-    }).expect("materialization");
+    })
+    .expect("materialization");
 
-    assert_eq!(result.nodes, vec![("plain".to_string(), "no skills here".to_string())]);
+    assert_eq!(
+        result.nodes,
+        vec![("plain".to_string(), "no skills here".to_string())]
+    );
     assert_eq!(result.diagnostics.len(), 0);
 }
 
@@ -207,27 +271,42 @@ fn given_a_node_without_load_skills_when_materialized_then_the_effective_prompt_
 fn given_a_corrupt_skill_manifest_when_read_then_the_parse_failure_is_propagated() {
     let project = temp_dir();
     let store = dag_store(&project);
-    let path = store.paths.root.join("skills").join(format!("{RUN_ID}.json"));
-    std::fs::create_dir_all(path.parent().expect("manifest parent")).expect("create manifest directory");
+    let path = store
+        .paths
+        .root
+        .join("skills")
+        .join(format!("{RUN_ID}.json"));
+    std::fs::create_dir_all(path.parent().expect("manifest parent"))
+        .expect("create manifest directory");
     std::fs::write(path, "{").expect("write corrupt manifest");
     let error = read_dag_skill_manifest(&store, RUN_ID).expect_err("invalid manifest must fail");
     assert!(error.message.contains("invalid DAG skill manifest"));
 }
 
 #[test]
-fn given_a_manifest_path_that_is_a_directory_when_materialized_then_the_write_failure_is_propagated() {
+fn given_a_manifest_path_that_is_a_directory_when_materialized_then_the_write_failure_is_propagated()
+ {
     let project = temp_dir();
     let cwd = temp_dir();
     let store = dag_store(&project);
-    let path = store.paths.root.join("skills").join(format!("{RUN_ID}.json"));
+    let path = store
+        .paths
+        .root
+        .join("skills")
+        .join(format!("{RUN_ID}.json"));
     std::fs::create_dir_all(&path).expect("plant directory at manifest path");
     let materialize = materializer(std::sync::Arc::clone(&store), &cwd);
     let error = materialize(DagMaterializeSkillsInput {
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("plain", "prompt", None)]),
         at: AT,
-    }).expect_err("manifest write failure must escape materialization");
-    assert!(error.message.contains("DAG skill manifest persistence failed"));
+    })
+    .expect_err("manifest write failure must escape materialization");
+    assert!(
+        error
+            .message
+            .contains("DAG skill manifest persistence failed")
+    );
 }
 
 #[test]
@@ -245,8 +324,13 @@ fn given_a_run_created_with_a_materializer_when_the_cwd_loses_the_skill_afterwar
         settings: None,
     });
     let started = manager
-        .start(DagStartParams { parent_model: None,
-            definition: definition(vec![node("build", "ship the feature", Some(vec!["programming"]))]),
+        .start(DagStartParams {
+            parent_model: None,
+            definition: definition(vec![node(
+                "build",
+                "ship the feature",
+                Some(vec!["programming"]),
+            )]),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
@@ -254,14 +338,17 @@ fn given_a_run_created_with_a_materializer_when_the_cwd_loses_the_skill_afterwar
 
     std::fs::remove_dir_all(cwd.join(".senpi")).expect("remove skill dir");
 
-    let record = manager.record(&started.snapshot.run_id, PARENT_SESSION_ID).expect("record");
+    let record = manager
+        .record(&started.snapshot.run_id, PARENT_SESSION_ID)
+        .expect("record");
     let expected = skill_prompt(&cwd, "programming", "v1 skill body", "ship the feature");
     assert_eq!(record.definition.nodes[0].effective_prompt, expected);
     assert_eq!(record.definition.nodes[0].prompt, "ship the feature");
 }
 
 #[test]
-fn given_a_missing_skill_when_the_run_is_created_then_the_run_exists_with_a_missing_skill_diagnostic_and_no_failure() {
+fn given_a_missing_skill_when_the_run_is_created_then_the_run_exists_with_a_missing_skill_diagnostic_and_no_failure()
+ {
     let project = temp_dir();
     let cwd = temp_dir();
     let store = dag_store(&project);
@@ -274,8 +361,13 @@ fn given_a_missing_skill_when_the_run_is_created_then_the_run_exists_with_a_miss
     });
 
     let started = manager
-        .start(DagStartParams { parent_model: None,
-            definition: definition(vec![node("build", "ship the feature", Some(vec!["nonexistent"]))]),
+        .start(DagStartParams {
+            parent_model: None,
+            definition: definition(vec![node(
+                "build",
+                "ship the feature",
+                Some(vec!["nonexistent"]),
+            )]),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
@@ -289,7 +381,10 @@ fn given_a_missing_skill_when_the_run_is_created_then_the_run_exists_with_a_miss
                 if node_id == "build" && skill == "nonexistent" && message == "Skill \"nonexistent\" was not found."
         )
     });
-    assert!(found, "expected a missing_skill diagnostic for node build/nonexistent");
+    assert!(
+        found,
+        "expected a missing_skill diagnostic for node build/nonexistent"
+    );
     assert_eq!(started.snapshot.nodes[0].state, DagNodeState::Pending);
 }
 
@@ -300,7 +395,11 @@ fn given_a_materialized_run_when_the_same_definition_is_submitted_again_then_the
     let cwd = temp_dir();
     write_skill(&cwd, "programming", "v1 skill body");
     let store = dag_store(&project);
-    let nodes = definition(vec![node("build", "ship the feature", Some(vec!["programming"]))]);
+    let nodes = definition(vec![node(
+        "build",
+        "ship the feature",
+        Some(vec!["programming"]),
+    )]);
     let with_skills = create_dag_manager(DagManagerOptions {
         store: std::sync::Arc::clone(&store),
         new_run_id: None,
@@ -316,7 +415,8 @@ fn given_a_materialized_run_when_the_same_definition_is_submitted_again_then_the
         settings: None,
     });
     let materialized = with_skills
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: nodes.clone(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -324,12 +424,16 @@ fn given_a_materialized_run_when_the_same_definition_is_submitted_again_then_the
         .expect("start with skills");
 
     let plain = bare
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: nodes,
             parent_session_id: "other-session".to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("start bare");
 
-    assert_eq!(materialized.snapshot.definition_fingerprint, plain.snapshot.definition_fingerprint);
+    assert_eq!(
+        materialized.snapshot.definition_fingerprint,
+        plain.snapshot.definition_fingerprint
+    );
 }

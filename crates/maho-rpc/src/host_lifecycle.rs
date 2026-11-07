@@ -640,7 +640,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                         "supervised host did not become ready",
                     ));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(crate::deadline::POLL_INTERVAL).await;
             }
             crate::host_daemon_registration::write_host_registration(
                 &paths,

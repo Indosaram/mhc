@@ -8,9 +8,10 @@ pub fn lifecycle_delivery_entries(entries: &[Value]) -> indexmap::IndexMap<Strin
     let mut result = indexmap::IndexMap::new();
     for e in entries {
         if e["type"] == "custom_message"
-            && let (Some(ticket), Some(id)) = (message_ticket(e), e["id"].as_str()) {
-                result.entry(ticket.into()).or_insert_with(|| id.into());
-            }
+            && let (Some(ticket), Some(id)) = (message_ticket(e), e["id"].as_str())
+        {
+            result.entry(ticket.into()).or_insert_with(|| id.into());
+        }
     }
     result
 }

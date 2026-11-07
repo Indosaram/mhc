@@ -2,7 +2,7 @@
 //! the window's logical bounds, from AT-SPI, scaled by the monitor its origin
 //! lies on. A window whose origin is on no captured monitor is not captured.
 
-use image::{RgbaImage, imageops};
+use image::{imageops, RgbaImage};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow};

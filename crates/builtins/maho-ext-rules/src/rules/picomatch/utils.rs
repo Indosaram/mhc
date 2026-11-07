@@ -6,7 +6,9 @@
 //! lazy `[...]` matching) are explicit.
 
 /// `REGEX_SPECIAL_CHARS` character set — `[-*+?.^${}(|)[\]]`.
-const SPECIAL_CHARS: &[char] = &['-', '*', '+', '?', '.', '^', '$', '{', '}', '(', '|', ')', '[', ']'];
+const SPECIAL_CHARS: &[char] = &[
+    '-', '*', '+', '?', '.', '^', '$', '{', '}', '(', '|', ')', '[', ']',
+];
 
 /// `hasRegexChars` — `REGEX_SPECIAL_CHARS.test(str)`.
 #[must_use]
@@ -43,7 +45,9 @@ pub fn to_posix_slashes(value: &str) -> String {
     while index < chars.len() {
         let ch = chars[index];
         if ch == '\\' {
-            let excluded = chars.get(index + 1).is_some_and(|next| SPECIAL_CHARS.contains(next));
+            let excluded = chars
+                .get(index + 1)
+                .is_some_and(|next| SPECIAL_CHARS.contains(next));
             if !excluded {
                 out.push('/');
                 index += 1;
@@ -163,7 +167,11 @@ pub fn basename(path: &str, windows: bool) -> String {
     };
     let last = segments.last().copied().unwrap_or("");
     if last.is_empty() {
-        segments.get(segments.len().wrapping_sub(2)).copied().unwrap_or("").to_string()
+        segments
+            .get(segments.len().wrapping_sub(2))
+            .copied()
+            .unwrap_or("")
+            .to_string()
     } else {
         last.to_string()
     }
@@ -183,7 +191,11 @@ pub fn js_units(value: &str) -> String {
     value
         .encode_utf16()
         .filter_map(|unit| {
-            char::from_u32(if (0xd800..=0xdfff).contains(&unit) { 0x10000 + u32::from(unit) } else { u32::from(unit) })
+            char::from_u32(if (0xd800..=0xdfff).contains(&unit) {
+                0x10000 + u32::from(unit)
+            } else {
+                u32::from(unit)
+            })
         })
         .collect()
 }
@@ -218,7 +230,11 @@ pub fn code_at(chars: &[char], index: usize) -> Option<u32> {
 #[must_use]
 pub fn unit_value(value: char) -> u32 {
     let code = value as u32;
-    if is_unit_char(value) { code - 0x10000 } else { code }
+    if is_unit_char(value) {
+        code - 0x10000
+    } else {
+        code
+    }
 }
 
 /// `Array#sort`'s default string comparison key: the UTF-16 code units of a

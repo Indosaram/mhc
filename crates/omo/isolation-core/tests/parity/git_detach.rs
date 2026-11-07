@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::test_support::fixture;
 use isolation_core::{
-    cleanup_isolation, detach_git_dir, ensure_isolation, scan_nested_git_dirs, BackendRef,
-    DetachOutcome, EnsureIsolationOptions, IsolationError,
+    BackendRef, DetachOutcome, EnsureIsolationOptions, IsolationError, cleanup_isolation,
+    detach_git_dir, ensure_isolation, scan_nested_git_dirs,
 };
 
 fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -25,13 +25,40 @@ fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
 fn linked_worktree_detach_uses_private_metadata_and_alternates_and_removes_own_registration() {
     let f = repo();
     let source = f.repo_root.clone();
-    git(&source, &["config", "remote.origin.url", "https://example.invalid/private"])
-        .expect("remote");
+    git(
+        &source,
+        &[
+            "config",
+            "remote.origin.url",
+            "https://example.invalid/private",
+        ],
+    )
+    .expect("remote");
     git(&source, &["config", "core.hooksPath", "/untrusted/hooks"]).expect("hooks");
     let lower = f.root.join("linked");
-    git(&source, &["worktree", "add", "--detach", &lower.to_string_lossy(), "HEAD"]).expect("worktree");
+    git(
+        &source,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &lower.to_string_lossy(),
+            "HEAD",
+        ],
+    )
+    .expect("worktree");
     let merged = f.root.join("merged");
-    git(&lower, &["worktree", "add", "--detach", &merged.to_string_lossy(), "HEAD"]).expect("worktree");
+    git(
+        &lower,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &merged.to_string_lossy(),
+            "HEAD",
+        ],
+    )
+    .expect("worktree");
     let admin = PathBuf::from(
         std::fs::read_to_string(merged.join(".git"))
             .expect("gitfile")
@@ -40,17 +67,23 @@ fn linked_worktree_detach_uses_private_metadata_and_alternates_and_removes_own_r
             .expect("gitdir prefix")
             .to_string(),
     );
-    let common = git(&lower, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .expect("common dir");
+    let common = git(
+        &lower,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .expect("common dir");
     assert_eq!(
         detach_git_dir(&merged, Path::new(&common)).expect("detach"),
         DetachOutcome::Detached
     );
-    let resolved = isolation_core::resolve_path(&merged.join(
-        git(&merged, &["rev-parse", "--git-common-dir"]).expect("common dir"),
-    ));
+    let resolved = isolation_core::resolve_path(
+        &merged.join(git(&merged, &["rev-parse", "--git-common-dir"]).expect("common dir")),
+    );
     assert_eq!(resolved, merged.join(".git"));
-    assert_eq!(git(&merged, &["log", "-1", "--format=%s"]).expect("log"), "fixture");
+    assert_eq!(
+        git(&merged, &["log", "-1", "--format=%s"]).expect("log"),
+        "fixture"
+    );
     let worktrees = git(&source, &["worktree", "list", "--porcelain"])
         .expect("worktrees")
         .replace('\\', "/");
@@ -69,7 +102,10 @@ fn linked_worktree_detach_uses_private_metadata_and_alternates_and_removes_own_r
     let config = std::fs::read_to_string(merged.join(".git/config")).expect("config");
     assert!(!config.contains("origin"));
     assert!(!config.contains("hooksPath"));
-    assert_eq!(git(&merged, &["config", "user.name"]).expect("user.name"), "Fixture");
+    assert_eq!(
+        git(&merged, &["config", "user.name"]).expect("user.name"),
+        "Fixture"
+    );
 }
 
 #[test]
@@ -78,7 +114,11 @@ fn directory_metadata_removes_nested_locks_and_worktree_bare_configuration_and_a
     std::fs::write(f.repo_root.join(".git/index.lock"), "stale").expect("index.lock");
     std::fs::create_dir_all(f.repo_root.join(".git/refs/heads/nested")).expect("nested refs");
     std::fs::write(f.repo_root.join(".git/refs/heads/nested/ref.lock"), "stale").expect("ref.lock");
-    git(&f.repo_root, &["config", "core.worktree", &f.root.to_string_lossy()]).expect("worktree cfg");
+    git(
+        &f.repo_root,
+        &["config", "core.worktree", &f.root.to_string_lossy()],
+    )
+    .expect("worktree cfg");
     git(&f.repo_root, &["config", "core.bare", "false"]).expect("bare cfg");
     assert_eq!(
         detach_git_dir(&f.repo_root, &f.repo_root.join(".git")).expect("detach"),
@@ -103,18 +143,33 @@ fn copied_linked_metadata_never_deletes_the_source_worktree_admin() {
     let f = repo();
     let linked = f.root.join("linked");
     let merged = f.root.join("merged");
-    git(&f.repo_root, &["worktree", "add", "--detach", &linked.to_string_lossy(), "HEAD"])
-        .expect("worktree");
+    git(
+        &f.repo_root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &linked.to_string_lossy(),
+            "HEAD",
+        ],
+    )
+    .expect("worktree");
     copy_dir_all(&linked, &merged).expect("copy");
     detach_git_dir(&merged, &f.repo_root.join(".git")).expect("detach");
-    assert_eq!(git(&linked, &["status", "--porcelain"]).expect("status"), "");
-    assert!(git(&f.repo_root, &["worktree", "list", "--porcelain"])
-        .expect("worktrees")
-        .contains(&linked.to_string_lossy().into_owned()));
+    assert_eq!(
+        git(&linked, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
+    assert!(
+        git(&f.repo_root, &["worktree", "list", "--porcelain"])
+            .expect("worktrees")
+            .contains(&linked.to_string_lossy().into_owned())
+    );
 }
 
 #[test]
-fn nested_relative_submodule_metadata_remains_functional_and_external_metadata_rewrites_or_fails_closed() {
+fn nested_relative_submodule_metadata_remains_functional_and_external_metadata_rewrites_or_fails_closed()
+ {
     let f = repo();
     let sub = repo();
     git(
@@ -133,10 +188,12 @@ fn nested_relative_submodule_metadata_remains_functional_and_external_metadata_r
     let merged = f.root.join("merged");
     copy_dir_all(&f.repo_root, &merged).expect("copy");
     detach_git_dir(&merged, &f.repo_root.join(".git")).expect("detach");
-    assert!(scan_nested_git_dirs(&merged)
-        .expect("scan")
-        .nested_git_rewritten
-        .is_empty());
+    assert!(
+        scan_nested_git_dirs(&merged)
+            .expect("scan")
+            .nested_git_rewritten
+            .is_empty()
+    );
     assert_eq!(
         git(&merged.join("libs/sub"), &["status", "--porcelain"]).expect("status"),
         ""
@@ -171,7 +228,8 @@ fn nested_relative_submodule_metadata_remains_functional_and_external_metadata_r
 }
 
 #[test]
-fn ensure_retries_one_inconsistent_clone_detaches_before_publication_then_refuses_repeated_corruption() {
+fn ensure_retries_one_inconsistent_clone_detaches_before_publication_then_refuses_repeated_corruption()
+ {
     let f = repo();
     let starts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&starts);
@@ -193,10 +251,15 @@ fn ensure_retries_one_inconsistent_clone_detaches_before_publication_then_refuse
     })
     .expect("handle");
     assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert!(std::fs::metadata(handle.merged_dir.join(".git"))
-        .expect("git dir")
-        .is_dir());
-    assert_eq!(git(&handle.merged_dir, &["status", "--porcelain"]).expect("status"), "");
+    assert!(
+        std::fs::metadata(handle.merged_dir.join(".git"))
+            .expect("git dir")
+            .is_dir()
+    );
+    assert_eq!(
+        git(&handle.merged_dir, &["status", "--porcelain"]).expect("status"),
+        ""
+    );
     cleanup_isolation(&handle).expect("cleanup");
     let _ = IsolationError::other("placeholder");
 }
@@ -223,12 +286,22 @@ fn nested_directory_form_git_metadata_is_sanitized_for_absolute_worktree_targets
     copy_dir_all(&inner.repo_root, &f.repo_root.join("inner")).expect("copy");
     git(
         &f.repo_root.join("inner"),
-        &["config", "core.worktree", &inner.repo_root.to_string_lossy()],
+        &[
+            "config",
+            "core.worktree",
+            &inner.repo_root.to_string_lossy(),
+        ],
     )
     .expect("config");
     let result = scan_nested_git_dirs(&f.repo_root).expect("scan");
     assert!(result.nested_git_rewritten.is_empty());
-    assert!(git(&f.repo_root.join("inner"), &["config", "--get", "core.worktree"]).is_err());
+    assert!(
+        git(
+            &f.repo_root.join("inner"),
+            &["config", "--get", "core.worktree"]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -242,7 +315,9 @@ fn deeply_nested_file_form_gitdir_pointers_are_still_rewritten() {
     std::fs::create_dir_all(f.root.join("outside-admin")).expect("outside admin");
     let modules = depth
         .iter()
-        .fold(f.repo_root.join(".git/modules"), |path, part| path.join(part));
+        .fold(f.repo_root.join(".git/modules"), |path, part| {
+            path.join(part)
+        });
     std::fs::create_dir_all(&modules).expect("modules");
     std::fs::write(
         deep.join(".git"),
@@ -250,9 +325,7 @@ fn deeply_nested_file_form_gitdir_pointers_are_still_rewritten() {
     )
     .expect("gitfile");
     let result = scan_nested_git_dirs(&f.repo_root).expect("scan");
-    assert!(result
-        .nested_git_rewritten
-        .contains(&depth.join("/")));
+    assert!(result.nested_git_rewritten.contains(&depth.join("/")));
 }
 
 #[test]
@@ -262,8 +335,11 @@ fn admin_directories_outside_the_common_worktrees_area_are_never_deleted() {
     std::fs::create_dir_all(&merged).expect("merged");
     let admin = f.root.join("planted-admin");
     std::fs::create_dir_all(&admin).expect("admin");
-    std::fs::write(admin.join("gitdir"), format!("{}\n", merged.join(".git").display()))
-        .expect("gitdir");
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", merged.join(".git").display()),
+    )
+    .expect("gitdir");
     std::fs::write(admin.join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
     std::fs::write(
         merged.join(".git"),

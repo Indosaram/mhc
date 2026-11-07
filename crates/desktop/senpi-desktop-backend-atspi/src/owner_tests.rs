@@ -6,7 +6,7 @@ use senpi_desktop_core::ax::{AxBackend, AxOwner};
 use senpi_desktop_core::types::DesktopWindow;
 
 use crate::bus::Extents;
-use crate::fake::{EDITOR_RECT, FakeBus, FakeNode, editor, node};
+use crate::fake::{editor, node, FakeBus, FakeNode, EDITOR_RECT};
 use crate::{AtSpiAx, WindowIds};
 
 fn frames_backend(bus: FakeBus) -> AtSpiAx<FakeBus> {

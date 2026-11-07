@@ -1,16 +1,16 @@
 //! Desktop service coordinator matching `src/service/service.ts`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 
 use senpi_desktop_core::protocol::{ABI as ENGINE_ABI, PROTOCOL_VERSION};
 use senpi_desktop_protocol::{AuditEvent, DesktopCapabilities, StopPathStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::child::{engine_child_factory, ChildFactory};
+use crate::child::{ChildFactory, engine_child_factory};
 use crate::notifications::{NotificationHub, Subscription};
 use crate::parse::{parse_hello, parse_session_opened};
 use crate::rpc_client::{
@@ -21,7 +21,9 @@ use crate::timeouts::{
 };
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-#[error("desktop engine ABI mismatch at {engine_path}: expected abi {expected_abi} protocol {expected_protocol}, engine reported abi {actual_abi} protocol {actual_protocol}")]
+#[error(
+    "desktop engine ABI mismatch at {engine_path}: expected abi {expected_abi} protocol {expected_protocol}, engine reported abi {actual_abi} protocol {actual_protocol}"
+)]
 pub struct DesktopEngineAbiMismatchError {
     pub engine_path: String,
     pub expected_abi: String,
@@ -183,7 +185,9 @@ impl DesktopService {
         {
             let current_chord = conn.armed_chord.lock().await;
             if current_chord.as_deref() == Some(chord) {
-                return self.call_stop_path(&conn, "stopPath.status", json!({})).await;
+                return self
+                    .call_stop_path(&conn, "stopPath.status", json!({}))
+                    .await;
             }
         }
 
@@ -227,7 +231,8 @@ impl DesktopService {
 
     pub async fn stop_path_status(&self) -> Result<StopPathStatus, DesktopError> {
         let conn = self.live().await?;
-        self.call_stop_path(&conn, "stopPath.status", json!({})).await
+        self.call_stop_path(&conn, "stopPath.status", json!({}))
+            .await
     }
 
     pub async fn stop(&self) -> Result<StopPathStatus, DesktopError> {
@@ -274,8 +279,9 @@ impl DesktopService {
 
     async fn live(&self) -> Result<Arc<Connection>, DesktopError> {
         if let Some(conn) = self.connection.read().await.clone()
-            && conn.rpc.is_alive() {
-                return Ok(conn);
+            && conn.rpc.is_alive()
+        {
+            return Ok(conn);
         }
         let _guard = self.lifecycle.lock().await;
         self.live_locked().await
@@ -406,13 +412,15 @@ impl DesktopService {
         })?;
 
         if hello.abi != ENGINE_ABI || hello.protocol_version != PROTOCOL_VERSION {
-            return Err(DesktopError::AbiMismatch(Box::new(DesktopEngineAbiMismatchError {
-                engine_path: conn.rpc.engine_path().to_string(),
-                expected_abi: ENGINE_ABI.to_string(),
-                expected_protocol: PROTOCOL_VERSION.to_string(),
-                actual_abi: hello.abi,
-                actual_protocol: hello.protocol_version,
-            })));
+            return Err(DesktopError::AbiMismatch(Box::new(
+                DesktopEngineAbiMismatchError {
+                    engine_path: conn.rpc.engine_path().to_string(),
+                    expected_abi: ENGINE_ABI.to_string(),
+                    expected_protocol: PROTOCOL_VERSION.to_string(),
+                    actual_abi: hello.abi,
+                    actual_protocol: hello.protocol_version,
+                },
+            )));
         }
 
         let caps = self.open_session(conn, &desired.params).await?;
@@ -425,9 +433,10 @@ impl DesktopService {
 
         let last_status = self.last_stop_path.lock().unwrap().clone();
         if let Some(ref status) = last_status
-            && status.suspended {
-                self.call_stop_path(conn, "stopPath.stop", json!({ "source": "host-relay" }))
-                    .await?;
+            && status.suspended
+        {
+            self.call_stop_path(conn, "stopPath.stop", json!({ "source": "host-relay" }))
+                .await?;
         }
 
         Ok(caps)

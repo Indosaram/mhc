@@ -4,13 +4,19 @@ use std::sync::Arc;
 
 use crate::api::bedrock_converse_stream;
 use crate::types::{
-    AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions,
+    StreamOptions,
 };
 
 struct BedrockProviderModule;
 
 impl ProviderStreams for BedrockProviderModule {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         bedrock_converse_stream::stream(model, context, options)
     }
 
@@ -35,8 +41,9 @@ mod tests {
     #[tokio::test]
     async fn provider_module_forwards_to_the_converse_stream_implementation() {
         let module = bedrock_provider_module();
-        let mut model =
-            crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
         model.api = "bedrock-converse-stream".into();
         model.base_url = "http://127.0.0.1:1".into();
         let stream = module.stream(&model, &Context::default(), None);

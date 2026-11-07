@@ -22,5 +22,11 @@ pub struct InjectionConfig<'a> {
     pub max_bytes_per_read: usize,
 }
 impl Default for InjectionConfig<'_> {
-    fn default() -> Self { Self { file_names: DEFAULT_FILE_NAMES, max_bytes_per_file: DEFAULT_MAX_BYTES_PER_FILE, max_bytes_per_read: DEFAULT_MAX_BYTES_PER_READ } }
+    fn default() -> Self {
+        Self {
+            file_names: DEFAULT_FILE_NAMES,
+            max_bytes_per_file: DEFAULT_MAX_BYTES_PER_FILE,
+            max_bytes_per_read: DEFAULT_MAX_BYTES_PER_READ,
+        }
+    }
 }

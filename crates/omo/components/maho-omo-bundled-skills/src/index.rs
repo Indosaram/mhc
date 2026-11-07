@@ -50,7 +50,12 @@ impl BundledSkillsComponent {
     }
 
     pub fn from_env(env: &BTreeMap<String, String>) -> Self {
-        Self { options: BundledSkillsComponentOptions { env: Some(env.clone()), skills_dir: None } }
+        Self {
+            options: BundledSkillsComponentOptions {
+                env: Some(env.clone()),
+                skills_dir: None,
+            },
+        }
     }
 }
 
@@ -81,12 +86,15 @@ fn resources_discover(
     ctx: &ExtensionContext,
     options: &BundledSkillsComponentOptions,
 ) -> Result<EventResult, ExtensionFailure> {
-    let ExtensionEvent::ResourcesDiscover(discover) = event else { return Ok(EventResult::None) };
+    let ExtensionEvent::ResourcesDiscover(discover) = event else {
+        return Ok(EventResult::None);
+    };
     let env = options.env.clone().unwrap_or_else(process_env);
     let Some(skills_dir) = options
         .skills_dir
         .clone()
-        .or_else(|| resolve_bundled_skills_dir_logged(&env, ctx.logger.as_deref())) else {
+        .or_else(|| resolve_bundled_skills_dir_logged(&env, ctx.logger.as_deref()))
+    else {
         return Ok(EventResult::None);
     };
     let cwd = read_discover_cwd(discover).unwrap_or_else(|| ctx.cwd.clone());
@@ -104,7 +112,10 @@ fn collect_skill_paths(
     let mut skill_paths = Vec::new();
     let mut hidden = Vec::new();
     for name in read_sorted_names(skills_dir).map_err(|error| {
-        ExtensionFailure::new(format!("bundled skills directory {}: {error}", skills_dir.display()))
+        ExtensionFailure::new(format!(
+            "bundled skills directory {}: {error}",
+            skills_dir.display()
+        ))
     })? {
         let skill_file = skills_dir.join(&name).join("SKILL.md");
         if !skill_file.exists() {
@@ -127,7 +138,10 @@ fn collect_skill_paths(
             Some(&serde_json::json!({ "component": BUNDLED_SKILLS_COMPONENT_NAME, "hidden": hidden })),
         );
     }
-    Ok(ResourcesDiscoverResult { skill_paths, ..Default::default() })
+    Ok(ResourcesDiscoverResult {
+        skill_paths,
+        ..Default::default()
+    })
 }
 
 /// Upstream `readdirSync(skillsDir).sort()`: the directory's entries in a stable order.
@@ -159,11 +173,19 @@ pub fn resolve_bundled_skills_dir_logged(
 
 /// Upstream `resolveBundledSkillsDir(importerUrl = import.meta.url)`: the importer's directory is
 /// the native executable's directory (the analogue of the bundled extension's own URL).
-pub fn resolve_bundled_skills_dir_from(env: &BTreeMap<String, String>, importer_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(root) = env.get(BUNDLED_SKILLS_ROOT_ENV).filter(|root| !root.is_empty()) {
+pub fn resolve_bundled_skills_dir_from(
+    env: &BTreeMap<String, String>,
+    importer_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(root) = env
+        .get(BUNDLED_SKILLS_ROOT_ENV)
+        .filter(|root| !root.is_empty())
+    {
         return Some(PathBuf::from(root));
     }
-    bundled_skills_dir_candidates(env, importer_dir).into_iter().find(|candidate| candidate.exists())
+    bundled_skills_dir_candidates(env, importer_dir)
+        .into_iter()
+        .find(|candidate| candidate.exists())
 }
 
 /// `OMO_SENPI_SKILLS_ROOT` is the native packaged-root contract (`maho_omo::component_list::skills_root_from`,
@@ -171,8 +193,14 @@ pub fn resolve_bundled_skills_dir_from(env: &BTreeMap<String, String>, importer_
 /// unconditionally, so a misconfigured root is reported by the discover pass instead of silently
 /// contributing from a different directory. Only when it is unset do upstream's two
 /// importer-relative candidates apply, with the first existing one winning.
-fn bundled_skills_dir_candidates(env: &BTreeMap<String, String>, importer_dir: Option<&Path>) -> Vec<PathBuf> {
-    if let Some(root) = env.get(BUNDLED_SKILLS_ROOT_ENV).filter(|root| !root.is_empty()) {
+fn bundled_skills_dir_candidates(
+    env: &BTreeMap<String, String>,
+    importer_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    if let Some(root) = env
+        .get(BUNDLED_SKILLS_ROOT_ENV)
+        .filter(|root| !root.is_empty())
+    {
         return vec![PathBuf::from(root)];
     }
     let mut candidates = Vec::new();
@@ -184,7 +212,9 @@ fn bundled_skills_dir_candidates(env: &BTreeMap<String, String>, importer_dir: O
 }
 
 fn executable_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf))
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
 fn process_env() -> BTreeMap<String, String> {

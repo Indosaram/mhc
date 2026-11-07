@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use maho_interactive::theme::{ColorMode, Theme};
 use maho_interactive::tui_renderer::{
-    create_interactive_tui, InteractiveTui, InteractiveTuiOptions, TuiMode,
+    InteractiveTui, InteractiveTuiOptions, TuiMode, create_interactive_tui,
 };
 use maho_tui::components::text::Text;
 use maho_tui::terminal::{InputHandler, ResizeHandler, Terminal, TerminalError};

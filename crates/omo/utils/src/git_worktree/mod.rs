@@ -177,7 +177,11 @@ pub fn format_file_changes(stats: &[GitFileStat], notepad_path: Option<&str>) ->
             .find(|stat| stat.path.replace('\\', "/") == normalized)
         {
             lines.push("[NOTEPAD UPDATED]".to_string());
-            lines.push(format!("  {}  (+{})", escape_display_path(&stat.path), stat.added));
+            lines.push(format!(
+                "  {}  (+{})",
+                escape_display_path(&stat.path),
+                stat.added
+            ));
             lines.push(String::new());
         }
     }

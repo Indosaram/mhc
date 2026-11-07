@@ -1,7 +1,7 @@
 //! Durable scheduled prompts, ported from coding-agent's builtin/schedule modules.
+pub(crate) mod moved_paths;
 pub mod native_probes;
 pub mod occurrences;
-pub(crate) mod moved_paths;
 pub mod runner;
 pub mod runner_lease;
 pub mod store;

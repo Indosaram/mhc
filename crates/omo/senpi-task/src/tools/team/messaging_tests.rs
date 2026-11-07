@@ -34,7 +34,8 @@ fn given_a_message_to_the_lead_when_it_is_enqueued_then_it_reports_the_lead_inbo
         ..Default::default()
     });
 
-    let result = run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("lead", "hi")).expect("send");
+    let result =
+        run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("lead", "hi")).expect("send");
 
     assert_eq!(
         serde_json::to_value(&result.content).expect("content"),
@@ -58,7 +59,8 @@ fn given_a_member_direction_message_when_enqueued_then_it_reports_the_recipient_
         ..Default::default()
     });
 
-    let result = run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("beta", "go")).expect("send");
+    let result =
+        run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("beta", "go")).expect("send");
 
     assert_eq!(
         serde_json::to_value(&result.content).expect("content"),
@@ -82,7 +84,8 @@ fn given_a_recipient_backpressure_error_when_send_runs_then_it_surfaces_recipien
         ..Default::default()
     });
 
-    let result = run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("beta", "x")).expect("send");
+    let result =
+        run_team_send(&service, "run-1", TEAM_LEAD_SENTINEL, &input("beta", "x")).expect("send");
 
     assert_eq!(result.details.kind(), "recipient_backpressure");
 }
@@ -91,7 +94,10 @@ fn given_a_recipient_backpressure_error_when_send_runs_then_it_surfaces_recipien
 fn given_a_non_lead_broadcast_when_send_runs_then_it_surfaces_broadcast_denied() {
     let service = create_fake_team_service(FakeTeamServiceOverrides {
         send_message: Some(Box::new(|_, _| {
-            Err(named_error("BroadcastNotPermittedError", "broadcast requires lead role"))
+            Err(named_error(
+                "BroadcastNotPermittedError",
+                "broadcast requires lead role",
+            ))
         })),
         ..Default::default()
     });

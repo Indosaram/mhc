@@ -1,4 +1,5 @@
-pub type WarnCallback<'a> = Option<&'a (dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>;
+pub type WarnCallback<'a> =
+    Option<&'a (dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>;
 use super::{
     reservation_run_ledger::{
         ReservationRunLedger, parse_reservation_run_ledger, worktree_from_ledger,
@@ -6,6 +7,8 @@ use super::{
     run_artifacts::{RunOutcome, read_run_json, read_run_text_tail, update_run_ledger},
     run_finalization_types::DurableFinalizationDecision,
 };
+use memory_core::git::exec::GitExecOptions;
+use memory_core::receipts::owner::{SuppressionSet, TipScrub, markdown_content_lines};
 use memory_core::{
     identity::resolve::MemoryIdentity,
     reflection::{
@@ -16,8 +19,6 @@ use memory_core::{
         probe_reflection_integration, read_dropped_trailers, validate_completion,
     },
 };
-use memory_core::git::exec::GitExecOptions;
-use memory_core::receipts::owner::{SuppressionSet, TipScrub, markdown_content_lines};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -99,34 +100,103 @@ fn decision(
 /// edits to them never vanish silently (surfaced in the finalize detail).
 const REVERTED_PATHS_KEY: &str = "suppressionRevertedPaths";
 
-fn git_in(worktree: &memory_core::reflection::ReflectionWorktree, args: &[&str]) -> Result<String, String> {
-    let output = worktree.exec.run_in(&worktree.dir, args).map_err(|error| error.to_string())?;
-    if output.code == 0 { Ok(output.stdout) } else { Err(format!("git {} failed: {}", args.join(" "), output.stderr.trim())) }
+fn git_in(
+    worktree: &memory_core::reflection::ReflectionWorktree,
+    args: &[&str],
+) -> Result<String, String> {
+    let output = worktree
+        .exec
+        .run_in(&worktree.dir, args)
+        .map_err(|error| error.to_string())?;
+    if output.code == 0 {
+        Ok(output.stdout)
+    } else {
+        Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            output.stderr.trim()
+        ))
+    }
 }
 
-fn exists_in(worktree: &memory_core::reflection::ReflectionWorktree, revision: &str, relative: &str) -> Result<bool, String> {
-    Ok(worktree.exec.run_in(&worktree.dir, &["cat-file", "-e", format!("{revision}:{relative}").as_str()]).map_err(|error| error.to_string())?.code == 0)
+fn exists_in(
+    worktree: &memory_core::reflection::ReflectionWorktree,
+    revision: &str,
+    relative: &str,
+) -> Result<bool, String> {
+    Ok(worktree
+        .exec
+        .run_in(
+            &worktree.dir,
+            &["cat-file", "-e", format!("{revision}:{relative}").as_str()],
+        )
+        .map_err(|error| error.to_string())?
+        .code
+        == 0)
 }
 
 fn owner_path(relative: &str) -> bool {
     // Case-insensitive: on a case-insensitive checkout `System/Owner/x.md` is the owner file.
     let dir = crate::owner_memory::OWNER_MEMORY_DIR;
-    relative.get(..dir.len()).is_some_and(|head| head.eq_ignore_ascii_case(dir)) && relative[dir.len()..].starts_with('/')
+    relative
+        .get(..dir.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(dir))
+        && relative[dir.len()..].starts_with('/')
 }
 
 /// Puts `text` in the index as `relative` and lets git write the file. Git never writes through a
 /// symlinked ancestor (it replaces the symlink with a directory), so a run that committed a
 /// symlink cannot redirect the scrub outside the worktree. The mode is `100755` when `relative` is
 /// executable at `mode_from` (the version the text derives from), else `100644`.
-fn stage_text(worktree: &memory_core::reflection::ReflectionWorktree, relative: &str, text: &str, mode_from: &str) -> Result<(), String> {
-    let entry = git_in(worktree, &["--literal-pathspecs", "ls-tree", mode_from, "--", relative])?;
-    let mode = if entry.starts_with("100755 ") { "100755" } else { "100644" };
-    let argv: Vec<String> = ["hash-object", "-w", "--stdin"].into_iter().map(str::to_owned).collect();
-    let options = GitExecOptions { cwd: worktree.dir.clone(), timeout_ms: 30_000, stdin: Some(text.as_bytes().to_vec()), ..GitExecOptions::default() };
-    let output = memory_core::git::exec::GitExec::run(worktree.exec.as_ref(), &argv, &options).map_err(|error| error.to_string())?;
-    if output.code != 0 { return Err(format!("git hash-object failed for {relative}: {}", output.stderr.trim())); }
-    git_in(worktree, &["update-index", "--add", "--replace", "--cacheinfo", mode, output.stdout.trim(), relative])?;
-    git_in(worktree, &["--literal-pathspecs", "checkout", "--", relative])?;
+fn stage_text(
+    worktree: &memory_core::reflection::ReflectionWorktree,
+    relative: &str,
+    text: &str,
+    mode_from: &str,
+) -> Result<(), String> {
+    let entry = git_in(
+        worktree,
+        &["--literal-pathspecs", "ls-tree", mode_from, "--", relative],
+    )?;
+    let mode = if entry.starts_with("100755 ") {
+        "100755"
+    } else {
+        "100644"
+    };
+    let argv: Vec<String> = ["hash-object", "-w", "--stdin"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let options = GitExecOptions {
+        cwd: worktree.dir.clone(),
+        timeout_ms: 30_000,
+        stdin: Some(text.as_bytes().to_vec()),
+        ..GitExecOptions::default()
+    };
+    let output = memory_core::git::exec::GitExec::run(worktree.exec.as_ref(), &argv, &options)
+        .map_err(|error| error.to_string())?;
+    if output.code != 0 {
+        return Err(format!(
+            "git hash-object failed for {relative}: {}",
+            output.stderr.trim()
+        ));
+    }
+    git_in(
+        worktree,
+        &[
+            "update-index",
+            "--add",
+            "--replace",
+            "--cacheinfo",
+            mode,
+            output.stdout.trim(),
+            relative,
+        ],
+    )?;
+    git_in(
+        worktree,
+        &["--literal-pathspecs", "checkout", "--", relative],
+    )?;
     Ok(())
 }
 
@@ -145,22 +215,64 @@ struct TipSnapshot {
 }
 
 impl TipSnapshot {
-    fn read(worktree: &memory_core::reflection::ReflectionWorktree, base_sha: &str, validated: &ValidatedReflectionTip) -> Result<Self, String> {
+    fn read(
+        worktree: &memory_core::reflection::ReflectionWorktree,
+        base_sha: &str,
+        validated: &ValidatedReflectionTip,
+    ) -> Result<Self, String> {
         let mut tips: BTreeMap<String, Option<String>> = BTreeMap::new();
-        for relative in validated.changed_paths.iter().filter(|path| path.ends_with(".md") && !owner_path(path)) {
-            let tip = if exists_in(worktree, &validated.tip_sha, relative)? { Some(git_in(worktree, &["show", format!("{}:{relative}", validated.tip_sha).as_str()])?) } else { None };
+        for relative in validated
+            .changed_paths
+            .iter()
+            .filter(|path| path.ends_with(".md") && !owner_path(path))
+        {
+            let tip = if exists_in(worktree, &validated.tip_sha, relative)? {
+                Some(git_in(
+                    worktree,
+                    &["show", format!("{}:{relative}", validated.tip_sha).as_str()],
+                )?)
+            } else {
+                None
+            };
             tips.insert(relative.clone(), tip);
         }
         let mut base_files: BTreeMap<String, String> = BTreeMap::new();
         if !tips.is_empty() {
-            for relative in git_in(worktree, &["ls-tree", "-r", "--name-only", "-z", base_sha])?.split('\0').filter(|path| path.ends_with(".md")) {
-                base_files.insert(relative.to_owned(), git_in(worktree, &["show", format!("{base_sha}:{relative}").as_str()])?);
+            for relative in git_in(worktree, &["ls-tree", "-r", "--name-only", "-z", base_sha])?
+                .split('\0')
+                .filter(|path| path.ends_with(".md"))
+            {
+                base_files.insert(
+                    relative.to_owned(),
+                    git_in(
+                        worktree,
+                        &["show", format!("{base_sha}:{relative}").as_str()],
+                    )?,
+                );
             }
         }
         let existing = markdown_content_lines(base_files.values().map(String::as_str));
-        let at_tip = markdown_content_lines(base_files.iter().filter(|(path, _)| !tips.contains_key(*path)).map(|(_, content)| content.as_str()).chain(tips.values().flatten().map(String::as_str)));
-        let lost = markdown_content_lines(tips.keys().filter_map(|path| base_files.get(path)).map(String::as_str)).into_iter().filter(|line| !at_tip.contains(line)).collect();
-        Ok(Self { tips, base_files, existing, lost })
+        let at_tip = markdown_content_lines(
+            base_files
+                .iter()
+                .filter(|(path, _)| !tips.contains_key(*path))
+                .map(|(_, content)| content.as_str())
+                .chain(tips.values().flatten().map(String::as_str)),
+        );
+        let lost = markdown_content_lines(
+            tips.keys()
+                .filter_map(|path| base_files.get(path))
+                .map(String::as_str),
+        )
+        .into_iter()
+        .filter(|line| !at_tip.contains(line))
+        .collect();
+        Ok(Self {
+            tips,
+            base_files,
+            existing,
+            lost,
+        })
     }
 }
 
@@ -181,35 +293,75 @@ impl TipSnapshot {
 /// checkpoint can integrate the unscrubbed tip. `snapshot` is read before the lock when the store
 /// already held a suppression, else here. An unreadable suppression store is an error: nothing
 /// integrates.
-fn scrub_suppressed_tip(identity: &MemoryIdentity, worktree: &memory_core::reflection::ReflectionWorktree, ledger_path: &Path, base_sha: &str, validated: ValidatedReflectionTip, snapshot: Option<TipSnapshot>, inside_writer_lock: &mut dyn FnMut()) -> Result<(ValidatedReflectionTip, Vec<String>), String> {
+fn scrub_suppressed_tip(
+    identity: &MemoryIdentity,
+    worktree: &memory_core::reflection::ReflectionWorktree,
+    ledger_path: &Path,
+    base_sha: &str,
+    validated: ValidatedReflectionTip,
+    snapshot: Option<TipSnapshot>,
+    inside_writer_lock: &mut dyn FnMut(),
+) -> Result<(ValidatedReflectionTip, Vec<String>), String> {
     inside_writer_lock();
     let set = SuppressionSet::load(&identity.paths.runtime)?;
     // Without the worktree nothing can integrate the tip (only an already-merged probe proceeds).
-    if !worktree.dir.exists() { return Ok((validated, Vec::new())); }
+    if !worktree.dir.exists() {
+        return Ok((validated, Vec::new()));
+    }
     // The version each path is put back to; `None`: its base, byte for byte (absent there: removed).
-    let mut fixes: BTreeMap<String, Option<String>> = validated.changed_paths.iter().filter(|path| owner_path(path)).map(|path| (path.clone(), None)).collect();
+    let mut fixes: BTreeMap<String, Option<String>> = validated
+        .changed_paths
+        .iter()
+        .filter(|path| owner_path(path))
+        .map(|path| (path.clone(), None))
+        .collect();
     let mut reverted: Vec<String> = fixes.keys().cloned().collect();
-    if !set.is_empty() && validated.changed_paths.iter().any(|path| path.ends_with(".md") && !owner_path(path)) {
-        let snapshot = match snapshot { Some(snapshot) => snapshot, None => TipSnapshot::read(worktree, base_sha, &validated)? };
+    if !set.is_empty()
+        && validated
+            .changed_paths
+            .iter()
+            .any(|path| path.ends_with(".md") && !owner_path(path))
+    {
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => TipSnapshot::read(worktree, base_sha, &validated)?,
+        };
         // Removed existing lines a revert must bring back (an exact restatement stays removed).
-        let restore: BTreeSet<&String> = snapshot.lost.iter().filter(|line| set.suppresses(line) && !set.suppresses_exactly(line)).collect();
+        let restore: BTreeSet<&String> = snapshot
+            .lost
+            .iter()
+            .filter(|line| set.suppresses(line) && !set.suppresses_exactly(line))
+            .collect();
         for (relative, tip) in &snapshot.tips {
             let base = snapshot.base_files.get(relative).map(String::as_str);
             let scrub = match (base, tip) {
-                (Some(base), _) if markdown_content_lines([base]).iter().any(|line| restore.contains(line)) => TipScrub::Reverted(set.scrub_base(base, &snapshot.existing)),
+                (Some(base), _)
+                    if markdown_content_lines([base])
+                        .iter()
+                        .any(|line| restore.contains(line)) =>
+                {
+                    TipScrub::Reverted(set.scrub_base(base, &snapshot.existing))
+                }
                 (_, Some(tip)) => set.scrub_tip(tip, base, &snapshot.existing),
                 (_, None) => TipScrub::Clean,
             };
             match scrub {
                 TipScrub::Clean => {}
-                TipScrub::Edited(text) => { fixes.insert(relative.clone(), Some(text)); }
+                TipScrub::Edited(text) => {
+                    fixes.insert(relative.clone(), Some(text));
+                }
                 // The base without its exact restatements is what the run itself wrote: nothing to do.
                 TipScrub::Reverted(Some(text)) if tip.as_ref() == Some(&text) => {}
-                TipScrub::Reverted(text) => { fixes.insert(relative.clone(), text); reverted.push(relative.clone()); }
+                TipScrub::Reverted(text) => {
+                    fixes.insert(relative.clone(), text);
+                    reverted.push(relative.clone());
+                }
             }
         }
     }
-    if fixes.is_empty() { return Ok((validated, Vec::new())); }
+    if fixes.is_empty() {
+        return Ok((validated, Vec::new()));
+    }
     let git = |args: &[&str]| git_in(worktree, args);
     git(&["reset", "--hard", validated.tip_sha.as_str()])?;
     // Paths are run-chosen: every pathspec is literal (a file named `system/owner/[x].md` must
@@ -217,33 +369,107 @@ fn scrub_suppressed_tip(identity: &MemoryIdentity, worktree: &memory_core::refle
     for (relative, fix) in &fixes {
         match fix {
             // A revert derives from the base, an edit from the run's version.
-            Some(text) => stage_text(worktree, relative, text, if reverted.contains(relative) { base_sha } else { validated.tip_sha.as_str() })?,
-            None if exists_in(worktree, base_sha, relative)? => { git(&["--literal-pathspecs", "checkout", base_sha, "--", relative.as_str()])?; }
-            None => { git(&["--literal-pathspecs", "rm", "-q", "-f", "--ignore-unmatch", "--", relative.as_str()])?; }
+            Some(text) => stage_text(
+                worktree,
+                relative,
+                text,
+                if reverted.contains(relative) {
+                    base_sha
+                } else {
+                    validated.tip_sha.as_str()
+                },
+            )?,
+            None if exists_in(worktree, base_sha, relative)? => {
+                git(&[
+                    "--literal-pathspecs",
+                    "checkout",
+                    base_sha,
+                    "--",
+                    relative.as_str(),
+                ])?;
+            }
+            None => {
+                git(&[
+                    "--literal-pathspecs",
+                    "rm",
+                    "-q",
+                    "-f",
+                    "--ignore-unmatch",
+                    "--",
+                    relative.as_str(),
+                ])?;
+            }
         }
     }
     git(&["add", "--all"])?;
-    if git(&["status", "--porcelain"])?.trim().is_empty() { return Ok((validated, Vec::new())); }
-    git(&["-c", "user.name=memory-suppression", "-c", "user.email=memory-suppression@localhost", "commit", "-m", "Drop suppressed owner memory"])?;
+    if git(&["status", "--porcelain"])?.trim().is_empty() {
+        return Ok((validated, Vec::new()));
+    }
+    git(&[
+        "-c",
+        "user.name=memory-suppression",
+        "-c",
+        "user.email=memory-suppression@localhost",
+        "commit",
+        "-m",
+        "Drop suppressed owner memory",
+    ])?;
     // `-z`: raw path bytes; without it a non-ASCII path is quoted and the resume scrub skips it.
-    let changed_paths: Vec<String> = git(&["diff", "--name-only", "-z", base_sha, "HEAD"])?.split('\0').filter(|path| !path.is_empty()).map(str::to_owned).collect();
-    let tip_sha = if changed_paths.is_empty() { base_sha.to_owned() } else { git(&["rev-parse", "HEAD"])?.trim().to_owned() };
-    let recorded: serde_json::Value = read_run_json(ledger_path).map_err(|error| error.to_string())?;
-    let all_reverted: BTreeSet<String> = recorded[REVERTED_PATHS_KEY].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::to_owned).chain(reverted.iter().cloned()).collect();
+    let changed_paths: Vec<String> = git(&["diff", "--name-only", "-z", base_sha, "HEAD"])?
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let tip_sha = if changed_paths.is_empty() {
+        base_sha.to_owned()
+    } else {
+        git(&["rev-parse", "HEAD"])?.trim().to_owned()
+    };
+    let recorded: serde_json::Value =
+        read_run_json(ledger_path).map_err(|error| error.to_string())?;
+    let all_reverted: BTreeSet<String> = recorded[REVERTED_PATHS_KEY]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .chain(reverted.iter().cloned())
+        .collect();
     let mut fields = serde_json::Map::new();
     fields.insert("validatedTipSha".into(), tip_sha.clone().into());
     fields.insert("validatedChangedPaths".into(), changed_paths.clone().into());
-    fields.insert(REVERTED_PATHS_KEY.into(), all_reverted.into_iter().collect::<Vec<_>>().into());
+    fields.insert(
+        REVERTED_PATHS_KEY.into(),
+        all_reverted.into_iter().collect::<Vec<_>>().into(),
+    );
     update_run_ledger(ledger_path, &fields).map_err(|error| error.to_string())?;
-    Ok((ValidatedReflectionTip { tip_sha, changed_paths }, reverted))
+    Ok((
+        ValidatedReflectionTip {
+            tip_sha,
+            changed_paths,
+        },
+        reverted,
+    ))
 }
 
 /// `detail` plus the paths the scrub reverted, if any: a `system/owner/` change from the run, or a
 /// file whose run version would have dropped or restated owner-suppressed memory.
 fn with_reverted(detail: Option<String>, reverted: &BTreeSet<String>) -> Option<String> {
-    if reverted.is_empty() { return detail; }
-    let note = format!("kept the base version (owner memory protection: system/owner change or owner suppression) of: {}", reverted.iter().map(String::as_str).collect::<Vec<_>>().join(", "));
-    Some(match detail { Some(detail) => format!("{detail}; {note}"), None => note })
+    if reverted.is_empty() {
+        return detail;
+    }
+    let note = format!(
+        "kept the base version (owner memory protection: system/owner change or owner suppression) of: {}",
+        reverted
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Some(match detail {
+        Some(detail) => format!("{detail}; {note}"),
+        None => note,
+    })
 }
 
 pub fn resolve_finalization_decision(
@@ -253,7 +479,15 @@ pub fn resolve_finalization_decision(
     child: &RunOutcome,
     warn: WarnCallback<'_>,
 ) -> Result<DurableFinalizationDecision, String> {
-    finalize(identity, run_dir, input, child, warn, &mut || {}, &mut || {})
+    finalize(
+        identity,
+        run_dir,
+        input,
+        child,
+        warn,
+        &mut || {},
+        &mut || {},
+    )
 }
 
 /// [`resolve_finalization_decision`] with test seams: `before_writer_lock` runs after the tip is
@@ -797,138 +1031,472 @@ mod tests {
             serde_json::json!(["reference-fact.md"])
         );
     }
-    #[test] fn an_unreadable_suppression_store_integrates_nothing() {
-        let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());
-        std::fs::write(worktree.dir.join("reference-fact.md"), "---\ndescription: Fact\n---\nNew fact\n").unwrap();
-        for args in [vec!["add", "reference-fact.md"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection fact"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+    #[test]
+    fn an_unreadable_suppression_store_integrates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let (identity, ledger, child, worktree) = fixture(root.path());
+        std::fs::write(
+            worktree.dir.join("reference-fact.md"),
+            "---\ndescription: Fact\n---\nNew fact\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["add", "reference-fact.md"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "-m",
+                "Record reflection fact",
+            ],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        std::fs::create_dir_all(identity.paths.runtime.join(memory_core::receipts::owner::SUPPRESSIONS_FILE)).unwrap();
-        let head = memory_core::git::GitMemoryRepo::open(&identity.paths.repo, "agent").unwrap().head().unwrap();
-        assert!(resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).is_err(), "fails closed");
-        assert!(!identity.paths.repo.join("reference-fact.md").exists(), "nothing merged");
-        assert_eq!(memory_core::git::GitMemoryRepo::open(&identity.paths.repo, "agent").unwrap().head().unwrap(), head);
+        std::fs::create_dir_all(
+            identity
+                .paths
+                .runtime
+                .join(memory_core::receipts::owner::SUPPRESSIONS_FILE),
+        )
+        .unwrap();
+        let head = memory_core::git::GitMemoryRepo::open(&identity.paths.repo, "agent")
+            .unwrap()
+            .head()
+            .unwrap();
+        assert!(
+            resolve_finalization_decision(
+                &identity,
+                &root.path().join("run"),
+                &ledger,
+                &child,
+                None
+            )
+            .is_err(),
+            "fails closed"
+        );
+        assert!(
+            !identity.paths.repo.join("reference-fact.md").exists(),
+            "nothing merged"
+        );
+        assert_eq!(
+            memory_core::git::GitMemoryRepo::open(&identity.paths.repo, "agent")
+                .unwrap()
+                .head()
+                .unwrap(),
+            head
+        );
         assert!(worktree.dir.exists(), "the run stays resumable");
-        assert!(!memory_core::locks::memory_writer_lock_path(&identity.paths.locks).exists(), "the writer lock is released");
-        let checkpoint: serde_json::Value = read_run_json(&root.path().join("run/ledger.json")).unwrap(); assert!(checkpoint.get("finalizeOutcome").is_none());
+        assert!(
+            !memory_core::locks::memory_writer_lock_path(&identity.paths.locks).exists(),
+            "the writer lock is released"
+        );
+        let checkpoint: serde_json::Value =
+            read_run_json(&root.path().join("run/ledger.json")).unwrap();
+        assert!(checkpoint.get("finalizeOutcome").is_none());
     }
-    #[test] fn a_run_change_under_system_owner_never_integrates_and_is_surfaced() {
-        let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());
+    #[test]
+    fn a_run_change_under_system_owner_never_integrates_and_is_surfaced() {
+        let root = tempfile::tempdir().unwrap();
+        let (identity, ledger, child, worktree) = fixture(root.path());
         std::fs::create_dir_all(worktree.dir.join("system/owner")).unwrap();
-        std::fs::write(worktree.dir.join("system/owner/rcpt_forged.md"), "---\ndescription: Forged\n---\nForged owner rule\n").unwrap();
-        std::fs::write(worktree.dir.join("reference-fact.md"), "---\ndescription: Fact\n---\nNew fact\n").unwrap();
-        for args in [vec!["add", "--all"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+        std::fs::write(
+            worktree.dir.join("system/owner/rcpt_forged.md"),
+            "---\ndescription: Forged\n---\nForged owner rule\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree.dir.join("reference-fact.md"),
+            "---\ndescription: Fact\n---\nNew fact\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["add", "--all"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "-m",
+                "Record reflection",
+            ],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
+        let result = resolve_finalization_decision(
+            &identity,
+            &root.path().join("run"),
+            &ledger,
+            &child,
+            None,
+        )
+        .unwrap();
         assert_eq!(result.outcome, "merged");
         assert!(identity.paths.repo.join("reference-fact.md").exists());
-        assert!(!identity.paths.repo.join("system/owner/rcpt_forged.md").exists(), "a forged owner file never merges");
-        assert!(result.detail.as_deref().is_some_and(|detail| detail.contains("system/owner/rcpt_forged.md")), "{:?}", result.detail);
-        let checkpoint: serde_json::Value = read_run_json(&root.path().join("run/ledger.json")).unwrap();
-        assert_eq!(checkpoint["validatedChangedPaths"], serde_json::json!(["reference-fact.md"]));
-        assert_eq!(checkpoint["suppressionRevertedPaths"], serde_json::json!(["system/owner/rcpt_forged.md"]));
-        assert_eq!(checkpoint["finalizeDetail"].as_str(), result.detail.as_deref());
+        assert!(
+            !identity
+                .paths
+                .repo
+                .join("system/owner/rcpt_forged.md")
+                .exists(),
+            "a forged owner file never merges"
+        );
+        assert!(
+            result
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("system/owner/rcpt_forged.md")),
+            "{:?}",
+            result.detail
+        );
+        let checkpoint: serde_json::Value =
+            read_run_json(&root.path().join("run/ledger.json")).unwrap();
+        assert_eq!(
+            checkpoint["validatedChangedPaths"],
+            serde_json::json!(["reference-fact.md"])
+        );
+        assert_eq!(
+            checkpoint["suppressionRevertedPaths"],
+            serde_json::json!(["system/owner/rcpt_forged.md"])
+        );
+        assert_eq!(
+            checkpoint["finalizeDetail"].as_str(),
+            result.detail.as_deref()
+        );
     }
-    #[test] fn a_glob_named_owner_file_reverts_only_itself() {
+    #[test]
+    fn a_glob_named_owner_file_reverts_only_itself() {
         let root = tempfile::tempdir().unwrap();
-        let (identity, ledger, child, worktree) = fixture_seeded(root.path(), &[
-            ("system/owner/rcpt_a.md", "---\ndescription: A\n---\n- Owner rule A.\n"),
-            ("system/owner/rcpt_b.md", "---\ndescription: B\n---\n- Owner rule B.\n"),
-        ]);
+        let (identity, ledger, child, worktree) = fixture_seeded(
+            root.path(),
+            &[
+                (
+                    "system/owner/rcpt_a.md",
+                    "---\ndescription: A\n---\n- Owner rule A.\n",
+                ),
+                (
+                    "system/owner/rcpt_b.md",
+                    "---\ndescription: B\n---\n- Owner rule B.\n",
+                ),
+            ],
+        );
         // `[ab]` is a glob character class matching rcpt_a.md and rcpt_b.md; valid on Windows too.
-        std::fs::write(worktree.dir.join("system/owner/rcpt_[ab].md"), "---\ndescription: Glob\n---\n- Glob\n").unwrap();
-        std::fs::write(worktree.dir.join("reference-fact.md"), "---\ndescription: Fact\n---\nNew fact\n").unwrap();
-        for args in [vec!["add", "--all"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+        std::fs::write(
+            worktree.dir.join("system/owner/rcpt_[ab].md"),
+            "---\ndescription: Glob\n---\n- Glob\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree.dir.join("reference-fact.md"),
+            "---\ndescription: Fact\n---\nNew fact\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["add", "--all"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "-m",
+                "Record reflection",
+            ],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
+        let result = resolve_finalization_decision(
+            &identity,
+            &root.path().join("run"),
+            &ledger,
+            &child,
+            None,
+        )
+        .unwrap();
         assert_eq!(result.outcome, "merged", "{:?}", result.detail);
-        assert_eq!(std::fs::read_to_string(identity.paths.repo.join("system/owner/rcpt_a.md")).unwrap(), "---\ndescription: A\n---\n- Owner rule A.\n");
-        assert_eq!(std::fs::read_to_string(identity.paths.repo.join("system/owner/rcpt_b.md")).unwrap(), "---\ndescription: B\n---\n- Owner rule B.\n");
-        assert!(!identity.paths.repo.join("system/owner/rcpt_[ab].md").exists());
+        assert_eq!(
+            std::fs::read_to_string(identity.paths.repo.join("system/owner/rcpt_a.md")).unwrap(),
+            "---\ndescription: A\n---\n- Owner rule A.\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(identity.paths.repo.join("system/owner/rcpt_b.md")).unwrap(),
+            "---\ndescription: B\n---\n- Owner rule B.\n"
+        );
+        assert!(
+            !identity
+                .paths
+                .repo
+                .join("system/owner/rcpt_[ab].md")
+                .exists()
+        );
         assert!(identity.paths.repo.join("reference-fact.md").exists());
-        let checkpoint: serde_json::Value = read_run_json(&root.path().join("run/ledger.json")).unwrap();
-        assert_eq!(checkpoint["suppressionRevertedPaths"], serde_json::json!(["system/owner/rcpt_[ab].md"]));
-        assert_eq!(checkpoint["validatedChangedPaths"], serde_json::json!(["reference-fact.md"]));
+        let checkpoint: serde_json::Value =
+            read_run_json(&root.path().join("run/ledger.json")).unwrap();
+        assert_eq!(
+            checkpoint["suppressionRevertedPaths"],
+            serde_json::json!(["system/owner/rcpt_[ab].md"])
+        );
+        assert_eq!(
+            checkpoint["validatedChangedPaths"],
+            serde_json::json!(["reference-fact.md"])
+        );
     }
-    #[test] fn owner_path_ignores_case() {
+    #[test]
+    fn owner_path_ignores_case() {
         assert!(owner_path("system/owner/rcpt_a.md"));
         assert!(owner_path("System/Owner/rcpt_a.md"));
         assert!(!owner_path("system/owners/rcpt_a.md"));
         assert!(!owner_path("system/owner"));
     }
     #[cfg(unix)]
-    #[test] fn a_restored_file_is_never_written_through_a_symlink_the_run_committed() {
+    #[test]
+    fn a_restored_file_is_never_written_through_a_symlink_the_run_committed() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let base = "- Never use the QA remote host for prod deploys.\n- Use the QA remote host.\n";
-        let (identity, ledger, child, worktree) = fixture_seeded(root.path(), &[("notes/rules.md", base)]);
+        let (identity, ledger, child, worktree) =
+            fixture_seeded(root.path(), &[("notes/rules.md", base)]);
         // The forget lands after the run started: the base still restates it exactly.
-        memory_core::receipts::owner::append_suppressions(&identity.paths.runtime, memory_core::receipts::owner::SUPPRESSION_FORGET, "Use the QA remote host.", None, "forget-src").unwrap();
+        memory_core::receipts::owner::append_suppressions(
+            &identity.paths.runtime,
+            memory_core::receipts::owner::SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-src",
+        )
+        .unwrap();
         // The run deletes notes/rules.md and commits `notes` as a symlink to a directory outside.
         std::fs::remove_dir_all(worktree.dir.join("notes")).unwrap();
         std::os::unix::fs::symlink(outside.path(), worktree.dir.join("notes")).unwrap();
         // `--no-verify`: a hostile run bypasses the staged-memory hook that refuses symlinks.
-        for args in [vec!["add", "--all"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "--no-verify", "-m", "Record reflection"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+        for args in [
+            vec!["add", "--all"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "--no-verify",
+                "-m",
+                "Record reflection",
+            ],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None);
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "nothing is written outside the worktree");
+        let result = resolve_finalization_decision(
+            &identity,
+            &root.path().join("run"),
+            &ledger,
+            &child,
+            None,
+        );
+        assert_eq!(
+            std::fs::read_dir(outside.path()).unwrap().count(),
+            0,
+            "nothing is written outside the worktree"
+        );
         let result = result.unwrap();
         assert_eq!(result.outcome, "merged", "{:?}", result.detail);
         let restored = identity.paths.repo.join("notes/rules.md");
-        assert!(!std::fs::symlink_metadata(identity.paths.repo.join("notes")).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(restored).unwrap(), "- Never use the QA remote host for prod deploys.\n");
-        let checkpoint: serde_json::Value = read_run_json(&root.path().join("run/ledger.json")).unwrap();
-        assert_eq!(checkpoint["suppressionRevertedPaths"], serde_json::json!(["notes/rules.md"]));
+        assert!(
+            !std::fs::symlink_metadata(identity.paths.repo.join("notes"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(restored).unwrap(),
+            "- Never use the QA remote host for prod deploys.\n"
+        );
+        let checkpoint: serde_json::Value =
+            read_run_json(&root.path().join("run/ledger.json")).unwrap();
+        assert_eq!(
+            checkpoint["suppressionRevertedPaths"],
+            serde_json::json!(["notes/rules.md"])
+        );
     }
-    #[test] fn a_non_ascii_path_is_recorded_raw_and_scrubbed_on_resume() {
+    #[test]
+    fn a_non_ascii_path_is_recorded_raw_and_scrubbed_on_resume() {
         let root = tempfile::tempdir().unwrap();
         let person = "people/김철수.md";
-        let (identity, _ledger, _child, worktree) = fixture_seeded(root.path(), &[(person, "---\ndescription: Kim\n---\n- Kim likes tea.\n")]);
+        let (identity, _ledger, _child, worktree) = fixture_seeded(
+            root.path(),
+            &[(person, "---\ndescription: Kim\n---\n- Kim likes tea.\n")],
+        );
         let rule = "Use the QA remote host for every build.";
-        std::fs::write(worktree.dir.join(person), format!("---\ndescription: Kim\n---\n- Kim likes tea.\n- {rule}\n")).unwrap();
+        std::fs::write(
+            worktree.dir.join(person),
+            format!("---\ndescription: Kim\n---\n- Kim likes tea.\n- {rule}\n"),
+        )
+        .unwrap();
         std::fs::create_dir_all(worktree.dir.join("system/owner")).unwrap();
-        std::fs::write(worktree.dir.join("system/owner/rcpt_forged.md"), "---\ndescription: Forged\n---\n- Forged\n").unwrap();
-        for args in [vec!["add", "--all"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+        std::fs::write(
+            worktree.dir.join("system/owner/rcpt_forged.md"),
+            "---\ndescription: Forged\n---\n- Forged\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["add", "--all"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "-m",
+                "Record reflection",
+            ],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
         let ledger_path = root.path().join("run/ledger.json");
         let base_sha = worktree.base_commit_sha.clone();
-        let tip_sha = git_in(&worktree, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        let tip_sha = git_in(&worktree, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
         // First scrub, no suppression yet: only the owner file reverts, and the checkpoint records the raw path.
-        let first = ValidatedReflectionTip { tip_sha, changed_paths: vec![person.to_owned(), "system/owner/rcpt_forged.md".to_owned()] };
-        let (scrubbed, _) = scrub_suppressed_tip(&identity, &worktree, &ledger_path, &base_sha, first, None, &mut || {}).unwrap();
+        let first = ValidatedReflectionTip {
+            tip_sha,
+            changed_paths: vec![person.to_owned(), "system/owner/rcpt_forged.md".to_owned()],
+        };
+        let (scrubbed, _) = scrub_suppressed_tip(
+            &identity,
+            &worktree,
+            &ledger_path,
+            &base_sha,
+            first,
+            None,
+            &mut || {},
+        )
+        .unwrap();
         assert_eq!(scrubbed.changed_paths, vec![person.to_owned()]);
         let checkpoint: serde_json::Value = read_run_json(&ledger_path).unwrap();
-        assert_eq!(checkpoint["validatedChangedPaths"], serde_json::json!([person]));
+        assert_eq!(
+            checkpoint["validatedChangedPaths"],
+            serde_json::json!([person])
+        );
         // A forget lands before integration (the crash window); the resume rebuilds the tip from the ledger.
-        memory_core::receipts::owner::append_suppressions(&identity.paths.runtime, memory_core::receipts::owner::SUPPRESSION_FORGET, rule, None, "forget-src").unwrap();
-        let resumed = ValidatedReflectionTip { tip_sha: checkpoint["validatedTipSha"].as_str().unwrap().to_owned(), changed_paths: checkpoint["validatedChangedPaths"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect() };
-        let (rescrubbed, _) = scrub_suppressed_tip(&identity, &worktree, &ledger_path, &base_sha, resumed, None, &mut || {}).unwrap();
-        assert_ne!(rescrubbed.tip_sha, scrubbed.tip_sha, "the resume scrub committed");
-        assert_eq!(git_in(&worktree, &["show", format!("{}:{person}", rescrubbed.tip_sha).as_str()]).unwrap(), "---\ndescription: Kim\n---\n- Kim likes tea.\n");
+        memory_core::receipts::owner::append_suppressions(
+            &identity.paths.runtime,
+            memory_core::receipts::owner::SUPPRESSION_FORGET,
+            rule,
+            None,
+            "forget-src",
+        )
+        .unwrap();
+        let resumed = ValidatedReflectionTip {
+            tip_sha: checkpoint["validatedTipSha"].as_str().unwrap().to_owned(),
+            changed_paths: checkpoint["validatedChangedPaths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        };
+        let (rescrubbed, _) = scrub_suppressed_tip(
+            &identity,
+            &worktree,
+            &ledger_path,
+            &base_sha,
+            resumed,
+            None,
+            &mut || {},
+        )
+        .unwrap();
+        assert_ne!(
+            rescrubbed.tip_sha, scrubbed.tip_sha,
+            "the resume scrub committed"
+        );
+        assert_eq!(
+            git_in(
+                &worktree,
+                &["show", format!("{}:{person}", rescrubbed.tip_sha).as_str()]
+            )
+            .unwrap(),
+            "---\ndescription: Kim\n---\n- Kim likes tea.\n"
+        );
     }
-    #[test] fn an_edited_executable_file_keeps_its_mode() {
-        let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());
+    #[test]
+    fn an_edited_executable_file_keeps_its_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let (identity, ledger, child, worktree) = fixture(root.path());
         let rule = "Use the QA remote host for every build.";
         std::fs::create_dir_all(worktree.dir.join("reference")).unwrap();
-        std::fs::write(worktree.dir.join("reference/tool.md"), format!("---\ndescription: Tool\n---\n- Tool runs fast.\n- {rule}\n")).unwrap();
+        std::fs::write(
+            worktree.dir.join("reference/tool.md"),
+            format!("---\ndescription: Tool\n---\n- Tool runs fast.\n- {rule}\n"),
+        )
+        .unwrap();
         // `update-index --chmod`: the mode is set in the index, so this works without a filesystem exec bit (Windows).
         // The closing checkout makes git materialize that mode in the worktree, so with core.filemode=true the
         // run's committed state is clean (completion validation reports a mode-only diff as dirty_uncommitted).
-        for args in [vec!["add", "--all"], vec!["update-index", "--chmod=+x", "reference/tool.md"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection"], vec!["checkout", "--", "reference/tool.md"]] {
-            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
+        for args in [
+            vec!["add", "--all"],
+            vec!["update-index", "--chmod=+x", "reference/tool.md"],
+            vec![
+                "-c",
+                "user.name=agent",
+                "-c",
+                "user.email=agent@example.invalid",
+                "commit",
+                "-m",
+                "Record reflection",
+            ],
+            vec!["checkout", "--", "reference/tool.md"],
+        ] {
+            let output = worktree.exec.run_in(&worktree.dir, &args).unwrap();
+            assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        let status = worktree.exec.run_in(&worktree.dir, &["status", "--porcelain"]).unwrap().stdout;
-        assert!(status.trim().is_empty(), "the run commits a clean worktree: {status}");
-        memory_core::receipts::owner::append_suppressions(&identity.paths.runtime, memory_core::receipts::owner::SUPPRESSION_FORGET, rule, None, "forget-src").unwrap();
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
+        let status = worktree
+            .exec
+            .run_in(&worktree.dir, &["status", "--porcelain"])
+            .unwrap()
+            .stdout;
+        assert!(
+            status.trim().is_empty(),
+            "the run commits a clean worktree: {status}"
+        );
+        memory_core::receipts::owner::append_suppressions(
+            &identity.paths.runtime,
+            memory_core::receipts::owner::SUPPRESSION_FORGET,
+            rule,
+            None,
+            "forget-src",
+        )
+        .unwrap();
+        let result = resolve_finalization_decision(
+            &identity,
+            &root.path().join("run"),
+            &ledger,
+            &child,
+            None,
+        )
+        .unwrap();
         assert_eq!(result.outcome, "merged", "{:?}", result.detail);
         let exec = memory_core::git::exec::create_git_exec(Default::default());
-        let entry = exec.run_in(&identity.paths.repo, &["ls-tree", "HEAD", "--", "reference/tool.md"]).unwrap().stdout;
+        let entry = exec
+            .run_in(
+                &identity.paths.repo,
+                &["ls-tree", "HEAD", "--", "reference/tool.md"],
+            )
+            .unwrap()
+            .stdout;
         assert!(entry.starts_with("100755 "), "{entry}");
-        assert_eq!(exec.run_in(&identity.paths.repo, &["show", "HEAD:reference/tool.md"]).unwrap().stdout, "---\ndescription: Tool\n---\n- Tool runs fast.\n");
+        assert_eq!(
+            exec.run_in(&identity.paths.repo, &["show", "HEAD:reference/tool.md"])
+                .unwrap()
+                .stdout,
+            "---\ndescription: Tool\n---\n- Tool runs fast.\n"
+        );
     }
 }

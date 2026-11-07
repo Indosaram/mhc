@@ -56,11 +56,17 @@ pub struct HostListSessions {
 
 impl HostListSessions {
     pub fn ok(sessions: Vec<HostSession>) -> Self {
-        Self { sessions, error: None }
+        Self {
+            sessions,
+            error: None,
+        }
     }
 
     pub fn failed(error: impl Into<String>) -> Self {
-        Self { sessions: Vec::new(), error: Some(error.into()) }
+        Self {
+            sessions: Vec::new(),
+            error: Some(error.into()),
+        }
     }
 }
 
@@ -149,14 +155,21 @@ pub fn thread_title(name: Option<&str>, first_user_text: Option<&str>) -> Option
 }
 
 /// senpi's surface for a session, from what serves it.
-pub fn derive_surface(endpoint_kind: Option<GatewayEndpointKind>, session_kind: Option<&str>, socket: &str) -> ThreadSurface {
+pub fn derive_surface(
+    endpoint_kind: Option<GatewayEndpointKind>,
+    session_kind: Option<&str>,
+    socket: &str,
+) -> ThreadSurface {
     if endpoint_kind == Some(GatewayEndpointKind::Tui) {
         return ThreadSurface::Tui;
     }
     if session_kind == Some("worker") {
         return ThreadSurface::Child;
     }
-    let name = Path::new(socket).file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    let name = Path::new(socket)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
     if name.starts_with("i-") {
         return ThreadSurface::Desktop;
     }
@@ -177,9 +190,15 @@ fn host_failure(host: &AddressBookHost) -> Option<String> {
     None
 }
 
-fn from_disk(session: &DiskSession, host: Option<&AddressBookHost>, failure: Option<&str>) -> AddressEntry {
+fn from_disk(
+    session: &DiskSession,
+    host: Option<&AddressBookHost>,
+    failure: Option<&str>,
+) -> AddressEntry {
     let endpoint = session.source_host.as_ref().map(|socket| AddressEndpoint {
-        kind: host.and_then(|host| host.endpoint_kind).unwrap_or(GatewayEndpointKind::RpcHost),
+        kind: host
+            .and_then(|host| host.endpoint_kind)
+            .unwrap_or(GatewayEndpointKind::RpcHost),
         socket: socket.clone(),
         routing_id: None,
         durable_session_id: session.durable_id.clone(),
@@ -197,7 +216,9 @@ fn from_disk(session: &DiskSession, host: Option<&AddressBookHost>, failure: Opt
         updated_at: session.updated_at.clone(),
         thread_id: session.durable_id.clone(),
         error_note: failure.map(str::to_owned),
-        surface: endpoint.as_ref().map(|endpoint| derive_surface(Some(endpoint.kind), None, &endpoint.socket)),
+        surface: endpoint
+            .as_ref()
+            .map(|endpoint| derive_surface(Some(endpoint.kind), None, &endpoint.socket)),
         endpoint,
         alive: false,
         title: thread_title(session.name.as_deref(), session.first_user_text.as_deref()),
@@ -205,18 +226,39 @@ fn from_disk(session: &DiskSession, host: Option<&AddressBookHost>, failure: Opt
 }
 
 /// Assemble one fresh view from this call's host results and the durable disk sessions.
-pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSession], assembled_at: &str) -> Vec<AddressEntry> {
+pub fn assemble_address_book(
+    hosts: &[AddressBookHost],
+    disk_sessions: &[DiskSession],
+    assembled_at: &str,
+) -> Vec<AddressEntry> {
     let mut by_durable_id: BTreeMap<String, AddressEntry> = BTreeMap::new();
-    let failures: BTreeMap<String, String> = hosts.iter().filter_map(|host| host_failure(host).map(|failure| (host.socket.clone(), failure))).collect();
-    let by_socket: BTreeMap<String, &AddressBookHost> = hosts.iter().map(|host| (host.socket.clone(), host)).collect();
+    let failures: BTreeMap<String, String> = hosts
+        .iter()
+        .filter_map(|host| host_failure(host).map(|failure| (host.socket.clone(), failure)))
+        .collect();
+    let by_socket: BTreeMap<String, &AddressBookHost> = hosts
+        .iter()
+        .map(|host| (host.socket.clone(), host))
+        .collect();
 
     for session in disk_sessions {
         if session.durable_id.is_empty() {
             continue;
         }
-        let failure = session.source_host.as_ref().and_then(|socket| failures.get(socket)).map(String::as_str);
-        let host = session.source_host.as_ref().and_then(|socket| by_socket.get(socket)).copied();
-        by_durable_id.insert(session.durable_id.clone(), from_disk(session, host, failure));
+        let failure = session
+            .source_host
+            .as_ref()
+            .and_then(|socket| failures.get(socket))
+            .map(String::as_str);
+        let host = session
+            .source_host
+            .as_ref()
+            .and_then(|socket| by_socket.get(socket))
+            .copied();
+        by_durable_id.insert(
+            session.durable_id.clone(),
+            from_disk(session, host, failure),
+        );
     }
 
     for host in hosts {
@@ -231,19 +273,36 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
                 continue;
             }
             // A terminal endpoint lists its one session by its durable id: there is no routing layer.
-            let durable_id = session
-                .durable_session_id
-                .clone()
-                .or_else(|| (host.endpoint_kind == Some(GatewayEndpointKind::Tui)).then(|| session.session_id.clone()));
+            let durable_id = session.durable_session_id.clone().or_else(|| {
+                (host.endpoint_kind == Some(GatewayEndpointKind::Tui))
+                    .then(|| session.session_id.clone())
+            });
             let Some(durable_id) = durable_id.filter(|id| !id.is_empty()) else {
                 continue;
             };
             let disk = by_durable_id.get(&durable_id);
-            let session_path = session.session_path.clone().or_else(|| disk.and_then(|disk| disk.session_path.clone()));
-            let created_at = session.created_at.clone().or_else(|| disk.map(|disk| disk.created_at.clone())).unwrap_or_else(|| assembled_at.to_owned());
-            let updated_at = session.updated_at.clone().or_else(|| disk.and_then(|disk| disk.updated_at.clone()));
-            let name = session.name.clone().or_else(|| disk.and_then(|disk| disk.name.clone()));
-            let disk_title = disk.and_then(|disk| disk.title.clone().or_else(|| thread_title(disk.name.as_deref(), None)));
+            let session_path = session
+                .session_path
+                .clone()
+                .or_else(|| disk.and_then(|disk| disk.session_path.clone()));
+            let created_at = session
+                .created_at
+                .clone()
+                .or_else(|| disk.map(|disk| disk.created_at.clone()))
+                .unwrap_or_else(|| assembled_at.to_owned());
+            let updated_at = session
+                .updated_at
+                .clone()
+                .or_else(|| disk.and_then(|disk| disk.updated_at.clone()));
+            let name = session
+                .name
+                .clone()
+                .or_else(|| disk.and_then(|disk| disk.name.clone()));
+            let disk_title = disk.and_then(|disk| {
+                disk.title
+                    .clone()
+                    .or_else(|| thread_title(disk.name.as_deref(), None))
+            });
             let kind = host.endpoint_kind.unwrap_or(GatewayEndpointKind::RpcHost);
             by_durable_id.insert(
                 durable_id.clone(),
@@ -260,8 +319,17 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
                     updated_at,
                     thread_id: durable_id.clone(),
                     error_note: None,
-                    endpoint: Some(AddressEndpoint { kind, socket: host.socket.clone(), routing_id: Some(session.session_id.clone()), durable_session_id: durable_id }),
-                    surface: Some(derive_surface(Some(kind), session.kind.as_deref(), &host.socket)),
+                    endpoint: Some(AddressEndpoint {
+                        kind,
+                        socket: host.socket.clone(),
+                        routing_id: Some(session.session_id.clone()),
+                        durable_session_id: durable_id,
+                    }),
+                    surface: Some(derive_surface(
+                        Some(kind),
+                        session.kind.as_deref(),
+                        &host.socket,
+                    )),
                     alive: host.alive != Some(false),
                     title: thread_title(name.as_deref(), None).or_else(|| disk_title.clone()),
                 },
@@ -271,7 +339,9 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
 
     let mut entries: Vec<AddressEntry> = by_durable_id.into_values().collect();
     entries.sort_by(|left, right| match (&left.updated_at, &right.updated_at) {
-        (Some(left_updated), Some(right_updated)) if left_updated != right_updated => right_updated.cmp(left_updated),
+        (Some(left_updated), Some(right_updated)) if left_updated != right_updated => {
+            right_updated.cmp(left_updated)
+        }
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         _ => left.durable_id.cmp(&right.durable_id),
@@ -309,17 +379,26 @@ fn json_str(value: Option<&Value>, key: &str) -> Option<String> {
 
 /// One session file's durable identity, or none when the file is unreadable or has no header.
 pub fn read_disk_session(path: &Path, source_host: Option<&str>) -> Option<DiskSession> {
-    let header = std::fs::read_to_string(path).ok()?.lines().next()?.to_owned();
+    let header = std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .next()?
+        .to_owned();
     let value: Value = serde_json::from_str(&header).ok()?;
-    let durable_id = json_str(Some(&value), "session_id").or_else(|| json_str(Some(&value), "sessionId")).or_else(|| json_str(Some(&value), "durable_id"))?;
+    let durable_id = json_str(Some(&value), "session_id")
+        .or_else(|| json_str(Some(&value), "sessionId"))
+        .or_else(|| json_str(Some(&value), "durable_id"))?;
     let cwd = json_str(Some(&value), "cwd").unwrap_or_default();
-    let created_at = json_str(Some(&value), "created_at").or_else(|| json_str(Some(&value), "createdAt")).unwrap_or_default();
+    let created_at = json_str(Some(&value), "created_at")
+        .or_else(|| json_str(Some(&value), "createdAt"))
+        .unwrap_or_default();
     Some(DiskSession {
         durable_id,
         name: json_str(Some(&value), "name"),
         cwd,
         created_at,
-        updated_at: json_str(Some(&value), "updated_at").or_else(|| json_str(Some(&value), "updatedAt")),
+        updated_at: json_str(Some(&value), "updated_at")
+            .or_else(|| json_str(Some(&value), "updatedAt")),
         session_path: path.to_string_lossy().into_owned(),
         source_host: source_host.map(str::to_owned),
         first_user_text: None,
@@ -328,7 +407,9 @@ pub fn read_disk_session(path: &Path, source_host: Option<&str>) -> Option<DiskS
 
 /// senpi's session directory name for a cwd, without the closing `--`.
 pub fn session_directory_prefix(root: &str) -> String {
-    let stripped = root.trim_start_matches(['/', '\\']).replace(['/', '\\', ':'], "-");
+    let stripped = root
+        .trim_start_matches(['/', '\\'])
+        .replace(['/', '\\', ':'], "-");
     format!("--{stripped}-")
 }
 
@@ -356,13 +437,21 @@ fn session_files(directory: &Path) -> Vec<PathBuf> {
 }
 
 /// The session files an address names, for a session no endpoint lists.
-pub fn find_disk_sessions(sessions_dir: &Path, address: &str, all_scope: bool, workspace_roots: &[String]) -> Vec<DiskSession> {
+pub fn find_disk_sessions(
+    sessions_dir: &Path,
+    address: &str,
+    all_scope: bool,
+    workspace_roots: &[String],
+) -> Vec<DiskSession> {
     let directories = project_directories(sessions_dir);
     let suffix = format!("_{address}.jsonl");
     let mut by_id: Vec<DiskSession> = Vec::new();
     for directory in &directories {
         for file in session_files(&sessions_dir.join(directory)) {
-            if file.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(&suffix))
+            if file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
                 && let Some(session) = read_disk_session(&file, None)
                 && session.durable_id == address
             {
@@ -377,17 +466,28 @@ pub fn find_disk_sessions(sessions_dir: &Path, address: &str, all_scope: bool, w
     if wanted.is_empty() {
         return Vec::new();
     }
-    let prefixes: Vec<String> = if all_scope { Vec::new() } else { workspace_roots.iter().map(|root| session_directory_prefix(root)).collect() };
+    let prefixes: Vec<String> = if all_scope {
+        Vec::new()
+    } else {
+        workspace_roots
+            .iter()
+            .map(|root| session_directory_prefix(root))
+            .collect()
+    };
     directories
         .into_iter()
-        .filter(|directory| prefixes.is_empty() || prefixes.iter().any(|prefix| directory.starts_with(prefix)))
+        .filter(|directory| {
+            prefixes.is_empty() || prefixes.iter().any(|prefix| directory.starts_with(prefix))
+        })
         .flat_map(|directory| {
             let wanted = wanted.clone();
-            session_files(&sessions_dir.join(&directory)).into_iter().filter_map(move |file| {
-                let session = read_disk_session(&file, None)?;
-                let name = session.name.as_deref()?;
-                (name.trim().to_lowercase() == wanted).then_some(session)
-            })
+            session_files(&sessions_dir.join(&directory))
+                .into_iter()
+                .filter_map(move |file| {
+                    let session = read_disk_session(&file, None)?;
+                    let name = session.name.as_deref()?;
+                    (name.trim().to_lowercase() == wanted).then_some(session)
+                })
         })
         .collect()
 }
@@ -400,7 +500,9 @@ pub fn scan_disk_sessions(sessions_dir: &Path, source_host: Option<&str>) -> Vec
         .filter_map(|file| read_disk_session(&file, source_host))
         .collect();
     found.sort_by(|left, right| match (&left.updated_at, &right.updated_at) {
-        (Some(left_updated), Some(right_updated)) if left_updated != right_updated => right_updated.cmp(left_updated),
+        (Some(left_updated), Some(right_updated)) if left_updated != right_updated => {
+            right_updated.cmp(left_updated)
+        }
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         _ => left.durable_id.cmp(&right.durable_id),
@@ -452,14 +554,21 @@ mod tests {
 
     #[test]
     fn a_live_host_listing_turns_a_disk_session_into_a_live_routable_entry() {
-        let entries = assemble_address_book(&[host(vec![live_session()])], &[disk("d-1")], "2026-01-04T00:00:00.000Z");
+        let entries = assemble_address_book(
+            &[host(vec![live_session()])],
+            &[disk("d-1")],
+            "2026-01-04T00:00:00.000Z",
+        );
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
         assert_eq!(entry.status, ThreadStatus::Live);
         assert_eq!(entry.routing_id.as_deref(), Some("r-1"));
         assert_eq!(entry.surface, Some(ThreadSurface::Desktop));
         assert!(entry.alive);
-        assert_eq!(to_gateway_address_entries(&entries)[0].liveness, EndpointLiveness::Routable);
+        assert_eq!(
+            to_gateway_address_entries(&entries)[0].liveness,
+            EndpointLiveness::Routable
+        );
     }
 
     #[test]
@@ -470,7 +579,10 @@ mod tests {
         assert_eq!(entries[0].status, ThreadStatus::Resumable);
         assert_eq!(entries[0].error_note.as_deref(), Some("connection refused"));
         assert!(!entries[0].alive);
-        assert_eq!(to_gateway_address_entries(&entries)[0].liveness, EndpointLiveness::Dead);
+        assert_eq!(
+            to_gateway_address_entries(&entries)[0].liveness,
+            EndpointLiveness::Dead
+        );
     }
 
     #[test]
@@ -478,28 +590,60 @@ mod tests {
         let mut unresponsive = host(vec![]);
         unresponsive.reason = Some("live_unresponsive".into());
         unresponsive.alive = Some(false);
-        let entries = assemble_address_book(&[unresponsive], &[disk("d-1")], "2026-01-04T00:00:00.000Z");
-        assert_eq!(to_gateway_address_entries(&entries)[0].liveness, EndpointLiveness::LiveUnresponsive);
+        let entries =
+            assemble_address_book(&[unresponsive], &[disk("d-1")], "2026-01-04T00:00:00.000Z");
+        assert_eq!(
+            to_gateway_address_entries(&entries)[0].liveness,
+            EndpointLiveness::LiveUnresponsive
+        );
     }
 
     #[test]
     fn the_surface_follows_what_serves_the_session() {
-        assert_eq!(derive_surface(Some(GatewayEndpointKind::Tui), None, "/run/tui-1.sock"), ThreadSurface::Tui);
-        assert_eq!(derive_surface(Some(GatewayEndpointKind::RpcHost), Some("worker"), "/run/x.sock"), ThreadSurface::Child);
-        assert_eq!(derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/i-7.sock"), ThreadSurface::Desktop);
-        assert_eq!(derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/p-7.sock"), ThreadSurface::Child);
-        assert_eq!(derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/host.sock"), ThreadSurface::Daemon);
+        assert_eq!(
+            derive_surface(Some(GatewayEndpointKind::Tui), None, "/run/tui-1.sock"),
+            ThreadSurface::Tui
+        );
+        assert_eq!(
+            derive_surface(
+                Some(GatewayEndpointKind::RpcHost),
+                Some("worker"),
+                "/run/x.sock"
+            ),
+            ThreadSurface::Child
+        );
+        assert_eq!(
+            derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/i-7.sock"),
+            ThreadSurface::Desktop
+        );
+        assert_eq!(
+            derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/p-7.sock"),
+            ThreadSurface::Child
+        );
+        assert_eq!(
+            derive_surface(Some(GatewayEndpointKind::RpcHost), None, "/run/host.sock"),
+            ThreadSurface::Daemon
+        );
     }
 
     #[test]
     fn a_title_never_falls_back_to_the_durable_id() {
-        assert_eq!(thread_title(Some("Build"), Some("first words")), Some("Build".to_owned()));
-        assert_eq!(thread_title(None, Some("first words")), Some("first words".to_owned()));
+        assert_eq!(
+            thread_title(Some("Build"), Some("first words")),
+            Some("Build".to_owned())
+        );
+        assert_eq!(
+            thread_title(None, Some("first words")),
+            Some("first words".to_owned())
+        );
         assert_eq!(thread_title(None, None), None);
     }
 
     #[test]
     fn a_session_directory_prefix_encodes_the_workspace() {
-        assert_eq!(session_directory_prefix("/home/indo/work"), "--home-indo-work-");
+        assert_eq!(
+            session_directory_prefix("/home/indo/work"),
+            "--home-indo-work-"
+        );
     }
 }

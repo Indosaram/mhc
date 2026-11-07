@@ -1,4 +1,4 @@
-use super::{apply_one, JsonValue, Op, Result};
+use super::{JsonValue, Op, Result, apply_one};
 
 pub fn apply_immutable_trusted(target: &JsonValue, operations: &[Op]) -> Result<JsonValue> {
     let mut root = target.clone();

@@ -17,7 +17,7 @@ use senpi_desktop_core::types::{
     DesktopCapabilities, DesktopSessionOptions, PointerOptions, Target,
 };
 use senpi_desktop_safety::{Clock, FakeClock, MutatingAction, StopPathId, Supervisor};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::mutate::{Mutation, SessionSafety};
 use crate::request::{Op, Response};

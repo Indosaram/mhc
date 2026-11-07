@@ -105,7 +105,13 @@ fn exclude_models(config: &JsonValue) -> Option<Vec<String>> {
     let JsonValue::Array(entries) = config.get("exclude_models")? else {
         return None;
     };
-    Some(entries.iter().filter_map(JsonValue::as_str).map(str::to_owned).collect())
+    Some(
+        entries
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// Upstream `rungsOf`: the labels of one profile's chain and where they came from. A pin is a
@@ -123,7 +129,11 @@ fn rungs_of(profile: &str, config: &JsonValue) -> Vec<(String, ModelProfileRungS
     } else {
         ModelProfileRungSource::BuiltIn
     };
-    definition.models.iter().map(|rung| (rung_label(rung), source)).collect()
+    definition
+        .models
+        .iter()
+        .map(|rung| (rung_label(rung), source))
+        .collect()
 }
 
 /// Upstream `view`: the resolved selector, then every rung's state - applied, excluded by an
@@ -135,9 +145,12 @@ fn view(
     config: &JsonValue,
 ) -> ModelProfileView {
     let (applied, applied_index): (Option<String>, i64) = match resolution {
-        ModelProfileResolution::Resolved { provider, model_id, skipped, .. } => {
-            (Some(format!("{provider}/{model_id}")), skipped.len() as i64)
-        }
+        ModelProfileResolution::Resolved {
+            provider,
+            model_id,
+            skipped,
+            ..
+        } => (Some(format!("{provider}/{model_id}")), skipped.len() as i64),
         _ => (None, -1),
     };
     let patterns = exclude_models(config);
@@ -167,7 +180,12 @@ fn view(
             } else {
                 ModelProfileRungState::NoLogin
             };
-            ModelProfileRungView { model: label, source, state, excluded_by: None }
+            ModelProfileRungView {
+                model: label,
+                source,
+                state,
+                excluded_by: None,
+            }
         })
         .collect();
     let reason = match resolution {
@@ -175,7 +193,13 @@ fn view(
         ModelProfileResolution::Empty { .. } => Some("the profile lists no models".to_owned()),
         _ => None,
     };
-    ModelProfileView { profile: profile.to_owned(), selection, applied, rungs, reason }
+    ModelProfileView {
+        profile: profile.to_owned(),
+        selection,
+        applied,
+        rungs,
+        reason,
+    }
 }
 
 /// The lane the main session would start on, by the session-start walk minus its credential probe:
@@ -196,7 +220,9 @@ pub fn describe_model_profile(config: &JsonValue, available_models: &[String]) -
     // A retired builtin id starts the unset default; a user's own entry of that name still applies.
     let explicit = named.filter(|name| {
         !(RETIRED_MODEL_PROFILE_IDS.contains(name)
-            && user_profiles(config).and_then(|profiles| profiles.get(*name)).is_none())
+            && user_profiles(config)
+                .and_then(|profiles| profiles.get(*name))
+                .is_none())
     });
     let resolve = |active: &str| {
         resolve_model_profile(&ResolveModelProfileInput {

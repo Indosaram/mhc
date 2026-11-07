@@ -15,7 +15,8 @@ use maho_interactive::{
 };
 use serde_json::{Value, json};
 fn theme() -> Theme {
-    Theme::builtin("dark", ColorMode::Truecolor).expect("valid test fixture and successful operation")
+    Theme::builtin("dark", ColorMode::Truecolor)
+        .expect("valid test fixture and successful operation")
 }
 fn snapshot() -> FooterSnapshot {
     FooterSnapshot {
@@ -99,8 +100,14 @@ fn footer_path_elides_before_cache_and_cost() {
     assert!(p.contains("cache 25%"));
     assert!(p.contains("$1.23"));
     let narrow = plain(&s, 60);
-    assert!(narrow.starts_with('…') && narrow.contains("agent  main"), "{narrow}");
-    assert!(narrow.contains("$1.23") && narrow.contains("ctx 12%"), "{narrow}");
+    assert!(
+        narrow.starts_with('…') && narrow.contains("agent  main"),
+        "{narrow}"
+    );
+    assert!(
+        narrow.contains("$1.23") && narrow.contains("ctx 12%"),
+        "{narrow}"
+    );
     assert!(!narrow.contains("cache 25%"));
 }
 #[test]
@@ -163,20 +170,38 @@ fn kimi_costs_are_subscription_estimates() {
 #[test]
 fn sdk_marker_toggles() {
     let mut f = FooterComponent::new(snapshot());
-    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
+    assert!(
+        !f.render(120, &theme())
+            .expect("valid test fixture and successful operation")[0]
+            .contains(" sdk")
+    );
     f.set_compaction_delegated(true);
-    assert!(f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
+    assert!(
+        f.render(120, &theme())
+            .expect("valid test fixture and successful operation")[0]
+            .contains(" sdk")
+    );
     f.set_compaction_delegated(false);
-    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
+    assert!(
+        !f.render(120, &theme())
+            .expect("valid test fixture and successful operation")[0]
+            .contains(" sdk")
+    );
 }
 #[test]
 fn sdk_marker_is_complete_or_absent_at_every_width() {
     let mut f = FooterComponent::new(snapshot());
     f.set_compaction_delegated(true);
     for w in 20..=100 {
-        let p = maho_tui::utils::strip_terminal_sequences(&f.render(w, &theme()).expect("valid test fixture and successful operation")[0]);
+        let p = maho_tui::utils::strip_terminal_sequences(
+            &f.render(w, &theme())
+                .expect("valid test fixture and successful operation")[0],
+        );
         assert!(maho_tui::utils::visible_width(&p) <= w);
-        assert!(!p.contains(" sd ") && !p.ends_with(" sd") && !p.ends_with(" s"), "{w}: {p}");
+        assert!(
+            !p.contains(" sd ") && !p.ends_with(" sd") && !p.ends_with(" s"),
+            "{w}: {p}"
+        );
     }
 }
 fn pooled(display: Option<&str>) -> maho_ai::auth::pool::slots::PooledCredential {
@@ -350,7 +375,8 @@ fn color_mode_uses_palette_or_truecolor() {
     );
 }
 fn dark_document() -> Value {
-    serde_json::from_str(include_str!("../src/theme/dark.json")).expect("valid test fixture and successful operation")
+    serde_json::from_str(include_str!("../src/theme/dark.json"))
+        .expect("valid test fixture and successful operation")
 }
 #[test]
 fn optional_scrollbar_colors_fall_back() {
@@ -424,8 +450,10 @@ fn export_resolves_recursive_vars_and_palette_indices() {
     doc["vars"]["page"] = json!("#abcdef");
     doc["vars"]["alias"] = json!("page");
     doc["export"] = json!({"pageBg":"alias","cardBg":24,"infoBg":""});
-    let doc: ThemeJson = serde_json::from_value(doc).expect("valid test fixture and successful operation");
-    let colors = get_theme_export_colors(&doc).expect("valid test fixture and successful operation");
+    let doc: ThemeJson =
+        serde_json::from_value(doc).expect("valid test fixture and successful operation");
+    let colors =
+        get_theme_export_colors(&doc).expect("valid test fixture and successful operation");
     assert_eq!(colors["pageBg"], "#abcdef");
     assert_eq!(colors["cardBg"], "#005f87");
     assert!(!colors.contains_key("infoBg"));
@@ -439,8 +467,11 @@ fn stale_detection_cannot_replace_explicit_selection() {
         ColorMode::Truecolor,
     )
     .expect("valid test fixture and successful operation");
-    let generation = c.apply_from_settings().expect("valid test fixture and successful operation");
-    c.set_theme_name("dark").expect("valid test fixture and successful operation");
+    let generation = c
+        .apply_from_settings()
+        .expect("valid test fixture and successful operation");
+    c.set_theme_name("dark")
+        .expect("valid test fixture and successful operation");
     assert!(
         !c.resolve_detection(generation, TerminalTheme::Light)
             .expect("valid test fixture and successful operation")

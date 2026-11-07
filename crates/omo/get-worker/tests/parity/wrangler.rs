@@ -17,7 +17,10 @@ fn value_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
 fn the_deploy_config_keeps_its_bindings_routes_and_cron() {
     assert_eq!(value_after(WRANGLER, "\"name\": \""), Some("omo-get"));
     assert_eq!(value_after(WRANGLER, "\"main\": \""), Some("src/index.ts"));
-    assert_eq!(value_after(WRANGLER, "\"compatibility_date\": \""), Some("2026-09-20"));
+    assert_eq!(
+        value_after(WRANGLER, "\"compatibility_date\": \""),
+        Some("2026-09-20")
+    );
 
     assert!(WRANGLER.contains("\"binding\": \"RELEASES\", \"bucket_name\": \"omo-releases\""));
     assert!(WRANGLER.contains("\"binding\": \"DB\""));
@@ -41,7 +44,10 @@ fn the_text_loader_rules_keep_the_install_scripts_importable_as_strings() {
 fn the_served_install_scripts_are_the_shipped_wrapper_and_bash_body() {
     assert!(get_worker::INSTALL_SH.starts_with("#!/bin/sh\n"));
     assert!(get_worker::INSTALL_SH.contains("<<'OMO_INSTALL_BASH'\n"));
-    assert!(get_worker::INSTALL_SH.contains("if [[ \"${BASH_SOURCE[0]}\" == \"$0\" ]]; then main \"$@\"; fi\n"));
+    assert!(
+        get_worker::INSTALL_SH
+            .contains("if [[ \"${BASH_SOURCE[0]}\" == \"$0\" ]]; then main \"$@\"; fi\n")
+    );
     assert!(get_worker::INSTALL_SH.contains("omo installer: bash is required"));
     assert!(get_worker::INSTALL_PS1.starts_with("# OmO native installer for Windows"));
     assert!(get_worker::INSTALL_PS1.contains("Install-Omo -Target $OmoTarget"));

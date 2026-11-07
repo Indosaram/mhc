@@ -6,8 +6,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -65,7 +65,10 @@ impl FakeCommandUi {
     }
 
     pub fn set_select_result(&self, value: Option<String>) {
-        *self.select_result.lock().unwrap_or_else(PoisonError::into_inner) = value;
+        *self
+            .select_result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = value;
     }
 
     pub fn notifications(&self) -> Vec<(String, NotifyLevel)> {
@@ -76,9 +79,7 @@ impl FakeCommandUi {
     }
 
     pub fn last_level(&self) -> Option<NotifyLevel> {
-        self.notifications()
-            .last()
-            .map(|(_, level)| *level)
+        self.notifications().last().map(|(_, level)| *level)
     }
 }
 
@@ -124,7 +125,10 @@ pub struct FakeActions {
 
 impl FakeActions {
     pub fn new(order: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { user_messages: Mutex::new(Vec::new()), order }
+        Self {
+            user_messages: Mutex::new(Vec::new()),
+            order,
+        }
     }
 
     pub fn user_messages(&self) -> Vec<UserMessageContent> {
@@ -160,7 +164,11 @@ impl ExtensionActions for FakeActions {
         Ok(())
     }
 
-    fn append_entry(&self, _custom_type: &str, _data: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+    fn append_entry(
+        &self,
+        _custom_type: &str,
+        _data: Option<JsonValue>,
+    ) -> Result<(), ExtensionFailure> {
         Ok(())
     }
 
@@ -218,7 +226,10 @@ pub fn temp_identity() -> (tempfile::TempDir, MemoryCommandIdentity) {
     let identity_paths = build_identity_paths(root.path(), TEST_IDENTITY);
     (
         root,
-        MemoryCommandIdentity { identity: TEST_IDENTITY.to_owned(), identity_paths },
+        MemoryCommandIdentity {
+            identity: TEST_IDENTITY.to_owned(),
+            identity_paths,
+        },
     )
 }
 
@@ -235,7 +246,10 @@ pub fn identity_context(identity: &MemoryCommandIdentity) -> MemoryIdentityConte
 }
 
 pub fn seed(relative_path: &str, content: &str) -> GitSeedFile {
-    GitSeedFile { relative_path: relative_path.to_owned(), content: content.to_owned() }
+    GitSeedFile {
+        relative_path: relative_path.to_owned(),
+        content: content.to_owned(),
+    }
 }
 
 pub fn hook_installer() -> GitHookInstaller {
@@ -252,7 +266,10 @@ pub fn open_repo(identity: &MemoryCommandIdentity) -> GitMemoryRepo {
     .expect("repo")
 }
 
-pub fn seeded_repo(identity: &MemoryCommandIdentity, seed_files: Vec<GitSeedFile>) -> GitMemoryRepo {
+pub fn seeded_repo(
+    identity: &MemoryCommandIdentity,
+    seed_files: Vec<GitSeedFile>,
+) -> GitMemoryRepo {
     let repo = open_repo(identity);
     repo.init(Some(InitializeGitRepoOptions {
         author_name: None,
@@ -386,19 +403,17 @@ pub fn fake_deps(
 
     let bound_identity = overrides.identity.or_else(|| identity.clone());
     let resolve_bound = bound_identity.clone();
-    let resolve_context: crate::prompt::PromptContextResolver = Arc::new(move |_session: &str| {
-        resolve_bound.as_ref().map(identity_context)
-    });
+    let resolve_context: crate::prompt::PromptContextResolver =
+        Arc::new(move |_session: &str| resolve_bound.as_ref().map(identity_context));
     let resolve_identity_source = overrides
         .resolve_identity
         .clone()
         .unwrap_or_else(|| identity.clone());
-    let resolve_identity: Option<
-        Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>,
-    > = resolve_identity_source.map(|identity| {
-        Arc::new(move || Some(identity_context(&identity)))
-            as Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>
-    });
+    let resolve_identity: Option<Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>> =
+        resolve_identity_source.map(|identity| {
+            Arc::new(move || Some(identity_context(&identity)))
+                as Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>
+        });
 
     let settings_value = overrides.settings.clone().unwrap_or_else(memory_settings);
     let settings: Arc<dyn Fn() -> Result<serde_json::Value, String> + Send + Sync> =
@@ -422,30 +437,43 @@ pub fn fake_deps(
 
     let reflect_requests = reflection_requests.clone();
     let reflect_receipt = receipt.clone();
-    let reflect: Option<super::types::Reflect> =
-        match overrides.reflection_sink.unwrap_or(true) {
-            true => Some(Arc::new(move |_session: String, event: ReflectionEvent| {
-                let request = match event {
-                    ReflectionEvent::Manual { focus, recent_n, conversation_ids } => {
-                        ManualReflectionRequest { focus, recent_n, conversation_ids }
-                    }
-                    _ => ManualReflectionRequest::default(),
-                };
-                reflect_requests
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(request);
-                let receipt = reflect_receipt
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                Box::pin(async move { Ok(super::types::ReflectionRequestReceipt {
-                    disposition: if receipt.0 == "active" { super::types::ReflectionDisposition::Reserved } else { super::types::ReflectionDisposition::Pending },
-                    run_id: receipt.1, recovered_run_id: None, stuck: None,
-                }) })
-            })),
-            false => None,
-        };
+    let reflect: Option<super::types::Reflect> = match overrides.reflection_sink.unwrap_or(true) {
+        true => Some(Arc::new(move |_session: String, event: ReflectionEvent| {
+            let request = match event {
+                ReflectionEvent::Manual {
+                    focus,
+                    recent_n,
+                    conversation_ids,
+                } => ManualReflectionRequest {
+                    focus,
+                    recent_n,
+                    conversation_ids,
+                },
+                _ => ManualReflectionRequest::default(),
+            };
+            reflect_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+            let receipt = reflect_receipt
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                Ok(super::types::ReflectionRequestReceipt {
+                    disposition: if receipt.0 == "active" {
+                        super::types::ReflectionDisposition::Reserved
+                    } else {
+                        super::types::ReflectionDisposition::Pending
+                    },
+                    run_id: receipt.1,
+                    recovered_run_id: None,
+                    stuck: None,
+                })
+            })
+        })),
+        false => None,
+    };
 
     let dream: Option<Arc<dyn DreamRequestSink>> = match overrides.dream_sink.unwrap_or(true) {
         true => Some(Arc::new(FakeDreamSink {
@@ -534,7 +562,10 @@ pub fn set_receipt(fake: &FakeDeps, status: &str, run_id: &str) {
 }
 
 pub fn set_dream_outcome(fake: &FakeDeps, outcome: DreamCommandOutcome) {
-    *fake.dream_outcome.lock().unwrap_or_else(PoisonError::into_inner) = outcome;
+    *fake
+        .dream_outcome
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = outcome;
 }
 
 pub fn reflection_requests(fake: &FakeDeps) -> Vec<ManualReflectionRequest> {
@@ -552,7 +583,10 @@ pub fn dream_requests(fake: &FakeDeps) -> Vec<ManualDreamCommandRequest> {
 }
 
 pub fn busts(fake: &FakeDeps) -> Vec<String> {
-    fake.busts.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    fake.busts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 pub fn retry_triggers(fake: &FakeDeps) -> Vec<String> {
@@ -644,7 +678,13 @@ impl ExtensionUi for RecordingUi {
 
     fn set_status(&self, _key: &str, _text: Option<&str>) {}
 
-    fn set_widget(&self, _key: &str, _content: Option<WidgetContent>, _options: ExtensionWidgetOptions) {}
+    fn set_widget(
+        &self,
+        _key: &str,
+        _content: Option<WidgetContent>,
+        _options: ExtensionWidgetOptions,
+    ) {
+    }
 
     fn set_header(&self, _factory: Option<ComponentFactory>) {}
 
@@ -722,7 +762,10 @@ impl ModelRegistry for TestRegistry {
         false
     }
 
-    fn get_api_key_for_provider<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _provider: &'a str,
+    ) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
 }

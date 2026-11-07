@@ -19,7 +19,9 @@ fn valid_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 128
         && !version.starts_with('.')
-        && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
 fn install_root() -> Result<PathBuf, String> {
@@ -34,19 +36,30 @@ fn install_root() -> Result<PathBuf, String> {
 
 fn payload(root: &Path) -> Result<PathBuf, String> {
     let pointer_path = root.join("current.json");
-    let bytes = std::fs::read(&pointer_path)
-        .map_err(|error| format!("cannot read {}: {error}; {REINSTALL}", pointer_path.display()))?;
+    let bytes = std::fs::read(&pointer_path).map_err(|error| {
+        format!(
+            "cannot read {}: {error}; {REINSTALL}",
+            pointer_path.display()
+        )
+    })?;
     let pointer: Pointer = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid {}: {error}; {REINSTALL}", pointer_path.display()))?;
     if pointer.schema_version != 1 || !valid_version(&pointer.current) {
-        return Err(format!("unsupported {}; {REINSTALL}", pointer_path.display()));
+        return Err(format!(
+            "unsupported {}; {REINSTALL}",
+            pointer_path.display()
+        ));
     }
     let target = root
         .join("versions")
         .join(&pointer.current)
         .join(format!("mhc{}", std::env::consts::EXE_SUFFIX));
     if !target.is_file() {
-        return Err(format!("mhc {} is missing at {}; {REINSTALL}", pointer.current, target.display()));
+        return Err(format!(
+            "mhc {} is missing at {}; {REINSTALL}",
+            pointer.current,
+            target.display()
+        ));
     }
     Ok(target)
 }
@@ -57,7 +70,11 @@ fn launch(mut command: Command, target: &Path) -> Result<i32, String> {
     if let Some(argv0) = std::env::args_os().next() {
         command.arg0(argv0);
     }
-    Err(format!("cannot execute {}: {}", target.display(), command.exec()))
+    Err(format!(
+        "cannot execute {}: {}",
+        target.display(),
+        command.exec()
+    ))
 }
 
 #[cfg(windows)]
@@ -81,7 +98,9 @@ fn run() -> Result<i32, String> {
     let root = install_root()?;
     let target = payload(&root)?;
     let mut command = Command::new(&target);
-    command.args(std::env::args_os().skip(1)).env("MHC_INSTALL_ROOT", &root);
+    command
+        .args(std::env::args_os().skip(1))
+        .env("MHC_INSTALL_ROOT", &root);
     launch(command, &target)
 }
 
@@ -105,12 +124,18 @@ mod tests {
         for version in ["1.0.0", "1.1.0"] {
             let directory = root.path().join("versions").join(version);
             std::fs::create_dir_all(&directory)?;
-            std::fs::write(directory.join(format!("mhc{}", std::env::consts::EXE_SUFFIX)), version)?;
+            std::fs::write(
+                directory.join(format!("mhc{}", std::env::consts::EXE_SUFFIX)),
+                version,
+            )?;
         }
         let publish = |version: &str| -> Result<(), Box<dyn std::error::Error>> {
-            std::fs::write(root.path().join("current.json"), serde_json::to_vec(
-                &serde_json::json!({"schemaVersion": 1, "current": version, "previous": null}),
-            )?)?;
+            std::fs::write(
+                root.path().join("current.json"),
+                serde_json::to_vec(
+                    &serde_json::json!({"schemaVersion": 1, "current": version, "previous": null}),
+                )?,
+            )?;
             Ok(())
         };
         publish("1.0.0")?;

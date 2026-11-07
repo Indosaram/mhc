@@ -203,8 +203,11 @@ mod tests {
     #[test]
     fn native_roots_and_session_directories_have_distinct_cache_keys() {
         // Given
-        let root = PluginLoaderOptions { cwd: Some(PathBuf::from("/project/a")),
-            plugins_home_override: Some(PathBuf::from("/home/a/plugins")), ..Default::default() };
+        let root = PluginLoaderOptions {
+            cwd: Some(PathBuf::from("/project/a")),
+            plugins_home_override: Some(PathBuf::from("/home/a/plugins")),
+            ..Default::default()
+        };
         let mut other_project = root.clone();
         other_project.cwd = Some(PathBuf::from("/project/b"));
         let mut other_home = root.clone();

@@ -601,10 +601,18 @@ mod tests {
         };
         let tool = |module: Option<&str>, source: &str| RegisteredToolChildModule {
             child_module: module.map(|path| ToolChildModule {
-                path: if path.starts_with('/') { abs(path) } else { path.into() },
+                path: if path.starts_with('/') {
+                    abs(path)
+                } else {
+                    path.into()
+                },
                 export: "run".into(),
             }),
-            source_path: if source.starts_with('/') { abs(source) } else { source.into() },
+            source_path: if source.starts_with('/') {
+                abs(source)
+            } else {
+                source.into()
+            },
         };
         let roots = tool_child_module_roots(&[
             tool(Some("./job.ts"), "/ext/a/index.ts"),
@@ -616,7 +624,11 @@ mod tests {
         ]);
         assert_eq!(
             roots,
-            vec![abs("/ext/a/job.ts"), abs("/abs/job.ts"), abs("/ext/c/up.ts")]
+            vec![
+                abs("/ext/a/job.ts"),
+                abs("/abs/job.ts"),
+                abs("/ext/c/up.ts")
+            ]
         );
     }
 

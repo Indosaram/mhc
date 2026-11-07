@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use isolation_core::test_support::{fixture, Fixture};
+use isolation_core::test_support::{Fixture, fixture};
 use isolation_core::{
-    hostname, read_owner_liveness, write_owner_marker, IsolationOwner, OwnerChild, OwnerLiveness,
-    OwnerProbe, OwnerStatus,
+    IsolationOwner, OwnerChild, OwnerLiveness, OwnerProbe, OwnerStatus, hostname,
+    read_owner_liveness, write_owner_marker,
 };
 
 const NOW: u64 = 2_000_000;
@@ -32,7 +32,9 @@ impl OwnerProbe for Probe {
     }
 
     fn host_session_alive(&self, socket: &str, session_path: &str) -> Option<OwnerStatus> {
-        self.session.as_ref().map(|probe| probe(socket, session_path))
+        self.session
+            .as_ref()
+            .map(|probe| probe(socket, session_path))
     }
 }
 

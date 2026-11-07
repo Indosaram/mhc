@@ -1,10 +1,10 @@
 //! Spawn budget I/O helpers.
 
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::Path;
-use serde_json::Value;
 
 pub fn read_admission_breaker(session_id: &str) -> Option<String> {
     read_admission_breaker_with_env(session_id, None, |key| env::var(key).ok())
@@ -24,7 +24,9 @@ pub fn read_admission_breaker_with_env(
     } else {
         data_dir.to_path_buf()
     };
-    let path = data_dir.join("spawn-breaker").join(format!("{session_id}.json"));
+    let path = data_dir
+        .join("spawn-breaker")
+        .join(format!("{session_id}.json"));
     let content = fs::read_to_string(path).ok()?;
     let parsed: Value = serde_json::from_str(&content).ok()?;
     let reason = parsed.get("reason").and_then(|v| v.as_str());
@@ -37,13 +39,16 @@ pub fn atomic_write_json<T: serde::Serialize>(target_path: &Path, data: &T) -> s
     }
     let rand_str = uuid::Uuid::new_v4().to_string();
     let tmp = target_path.with_file_name(format!(".tmp-{}", rand_str));
-    let json = serde_json::to_string(data).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string(data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     fs::write(&tmp, json)?;
     fs::rename(tmp, target_path)
 }
 
 pub fn is_non_empty_file(path: &Path) -> bool {
-    fs::metadata(path).map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
 }
 
 pub fn read_count(counter_path: &Path) -> u32 {
@@ -53,7 +58,11 @@ pub fn read_count(counter_path: &Path) -> u32 {
     let Ok(parsed) = serde_json::from_str::<Value>(&content) else {
         return 0;
     };
-    parsed.get("count").and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(0)
+    parsed
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(0)
 }
 
 pub fn read_counts(counter_path: &Path) -> BTreeMap<String, u32> {

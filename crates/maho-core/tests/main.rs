@@ -1,14 +1,14 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
-#[path = "keyword_paint_arm_parity.rs"]
-mod keyword_paint_arm_parity;
 #[path = "compaction_estimate.rs"]
 mod compaction_estimate;
 #[path = "context_selection.rs"]
 mod context_selection;
 #[path = "extension_lock_release.rs"]
 mod extension_lock_release;
+#[path = "keyword_paint_arm_parity.rs"]
+mod keyword_paint_arm_parity;
 #[path = "sdk_accounts.rs"]
 mod sdk_accounts;
 #[path = "sdk_async_hook_contract.rs"]
@@ -25,8 +25,6 @@ mod sdk_custom_tools;
 mod sdk_extension_resources;
 #[path = "sdk_filesystem_policy.rs"]
 mod sdk_filesystem_policy;
-#[path = "tool_barrier_read_only.rs"]
-mod tool_barrier_read_only;
 #[path = "sdk_minimal_resources.rs"]
 mod sdk_minimal_resources;
 #[path = "sdk_model_auth.rs"]
@@ -49,3 +47,5 @@ mod sdk_tool_selection;
 mod sdk_tool_updates;
 #[path = "session_qa.rs"]
 mod session_qa;
+#[path = "tool_barrier_read_only.rs"]
+mod tool_barrier_read_only;

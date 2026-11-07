@@ -1,7 +1,10 @@
 use maho_cli::cli::{args::Args, help_fast_path::*};
 #[test]
 fn plain_help_excludes_print_and_modes() {
-    let mut args = Args { help: true, ..Default::default() };
+    let mut args = Args {
+        help: true,
+        ..Default::default()
+    };
     assert!(is_plain_help_request(&args));
     args.print = true;
     assert!(!is_plain_help_request(&args));
@@ -9,9 +12,28 @@ fn plain_help_excludes_print_and_modes() {
 #[test]
 fn no_extension_help_needs_no_cache_and_trust_override_wins() {
     let directory = tempfile::tempdir().unwrap();
-    assert_eq!(cached_help_flags(&["--help".to_owned(), "--no-extensions".to_owned()], false, directory.path(), directory.path(), "1"), Some(Vec::new()));
-    let args = Args { project_trust_override: Some(false), ..Default::default() };
-    assert!(!resolve_help_project_trust(&args, directory.path().to_str().unwrap(), directory.path().to_str().unwrap()).unwrap());
+    assert_eq!(
+        cached_help_flags(
+            &["--help".to_owned(), "--no-extensions".to_owned()],
+            false,
+            directory.path(),
+            directory.path(),
+            "1"
+        ),
+        Some(Vec::new())
+    );
+    let args = Args {
+        project_trust_override: Some(false),
+        ..Default::default()
+    };
+    assert!(
+        !resolve_help_project_trust(
+            &args,
+            directory.path().to_str().unwrap(),
+            directory.path().to_str().unwrap()
+        )
+        .unwrap()
+    );
 }
 
 const ALL_SUBCOMMANDS: &[&str] = &[
@@ -39,7 +61,9 @@ fn scan_dispatch_subcommand_match_arms(main_src: &str) -> Vec<String> {
             let mut rest = line;
             while let Some(idx) = rest.find(marker) {
                 let after = &rest[idx + marker.len()..];
-                let Some(end_idx) = after.find('"') else { break };
+                let Some(end_idx) = after.find('"') else {
+                    break;
+                };
                 let name = &after[..end_idx];
                 if !name.is_empty() && !name.starts_with("--") && !names.iter().any(|n| n == name) {
                     names.push(name.to_owned());
@@ -104,16 +128,41 @@ fn help_trust_reads_only_a_recorded_decision_and_the_scope_mirrors_the_launch() 
     let cwd = root.path().join("project");
     let agent = root.path().join("agent");
     std::fs::create_dir_all(&agent).unwrap();
-    std::fs::create_dir_all(cwd.join(maho_core::config::config_dir_name()).join("extensions")).unwrap();
+    std::fs::create_dir_all(
+        cwd.join(maho_core::config::config_dir_name())
+            .join("extensions"),
+    )
+    .unwrap();
     let (cwd_text, agent_text) = (cwd.to_str().unwrap(), agent.to_str().unwrap());
-    let args = Args { help: true, extensions: vec!["./ext.js".to_owned()], ..Default::default() };
-    assert!(!resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(), "unrecorded project stays untrusted");
-    maho_core::trust_manager::ProjectTrustStore::new(agent_text).set(cwd_text, Some(true)).unwrap();
-    assert!(resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(), "a recorded trust lets it in");
-    let override_args = Args { project_trust_override: Some(false), ..args.clone() };
-    assert!(!resolve_help_project_trust(&override_args, cwd_text, agent_text).unwrap(), "the explicit override wins");
+    let args = Args {
+        help: true,
+        extensions: vec!["./ext.js".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(),
+        "unrecorded project stays untrusted"
+    );
+    maho_core::trust_manager::ProjectTrustStore::new(agent_text)
+        .set(cwd_text, Some(true))
+        .unwrap();
+    assert!(
+        resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(),
+        "a recorded trust lets it in"
+    );
+    let override_args = Args {
+        project_trust_override: Some(false),
+        ..args.clone()
+    };
+    assert!(
+        !resolve_help_project_trust(&override_args, cwd_text, agent_text).unwrap(),
+        "the explicit override wins"
+    );
     let scope = help_flags_scope(&args, &cwd, &agent, true);
-    assert_eq!(scope.cli_extension_paths, vec![std::path::PathBuf::from("./ext.js")]);
+    assert_eq!(
+        scope.cli_extension_paths,
+        vec![std::path::PathBuf::from("./ext.js")]
+    );
     assert!(!scope.no_extensions && scope.project_trusted);
     assert_eq!((scope.cwd, scope.agent_dir), (cwd.clone(), agent.clone()));
 }

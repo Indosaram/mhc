@@ -19,7 +19,8 @@ use crate::team::registry::TeamSpecSource;
 use crate::team::runtime::create_team;
 use crate::team::runtime_config::to_team_core_config;
 use crate::team::runtime_fakes::{
-    FakeTeamManager, FakeTeamManagerOptions, StartBehavior, TeamBoundsOverrides, task_status, team_bounds,
+    FakeTeamManager, FakeTeamManagerOptions, StartBehavior, TeamBoundsOverrides, task_status,
+    team_bounds,
 };
 use crate::team::runtime_types::{
     CreateTeamDeps, CreateTeamResult, CreatedMemberRole, TeamMemberExtensionConfig,
@@ -101,14 +102,23 @@ fn given_a_member_extension_launch_config_when_a_team_member_starts_then_extensi
     assert!(!created.runtime_state.team_run_id.is_empty());
     assert_eq!(
         assemble_member_extensions("/tmp/omo-member.js", &["/tmp/mock-provider.ts"]),
-        vec!["/tmp/omo-member.js".to_string(), "/tmp/mock-provider.ts".to_string()]
+        vec![
+            "/tmp/omo-member.js".to_string(),
+            "/tmp/mock-provider.ts".to_string()
+        ]
     );
     let base_dir = team_storage_base_dir(&state_dir);
-    let config = to_team_core_config(&team_bounds(TeamBoundsOverrides::default()), &path_string(&base_dir))
-        .expect("team core config");
+    let config = to_team_core_config(
+        &team_bounds(TeamBoundsOverrides::default()),
+        &path_string(&base_dir),
+    )
+    .expect("team core config");
     let raw = build_team_config_json(&config, &state_dir, &["alpha".to_string()]);
     let parsed: Value = serde_json::from_str(&raw).expect("team config json");
-    assert_eq!(parsed["stateDir"], json!(path_string(&resolve_state_dir(&state_dir))));
+    assert_eq!(
+        parsed["stateDir"],
+        json!(path_string(&resolve_state_dir(&state_dir)))
+    );
     assert_eq!(parsed["base_dir"], json!(path_string(&base_dir)));
     assert_eq!(parsed["members"], json!(["alpha"]));
 }
@@ -128,11 +138,19 @@ fn given_a_3_member_spec_when_created_then_the_team_is_active_with_3_mapped_runn
     assert_eq!(created.runtime_state.members.len(), 3);
     for member in &created.runtime_state.members {
         assert_eq!(member.status, project_member_status(task_status("running")));
-        assert!(member.session_id.as_deref().is_some_and(|id| id.starts_with("sess-")));
+        assert!(
+            member
+                .session_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("sess-"))
+        );
     }
     let mut keys: Vec<String> = created.member_task_ids.keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+    assert_eq!(
+        keys,
+        vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+    );
     let started = manager.started();
     assert_eq!(started.len(), 3);
     let name_pattern = regex::Regex::new(r"^team:[0-9a-f-]+:(alpha|beta|gamma)$").expect("regex");
@@ -193,7 +211,8 @@ fn given_roles_prompts_and_a_resolved_model_when_created_then_member_views_carry
 }
 
 #[test]
-fn given_member_prompts_when_members_start_then_every_bootstrap_teaches_injection_driven_work_after_the_role() {
+fn given_member_prompts_when_members_start_then_every_bootstrap_teaches_injection_driven_work_after_the_role()
+ {
     // given
     let project = tempfile::tempdir().expect("tempdir");
     let state_dir = state_dir_config(project.path());
@@ -237,7 +256,10 @@ fn given_the_created_team_when_the_sidecar_is_read_then_it_maps_every_member_to_
     let project = tempfile::tempdir().expect("tempdir");
     let state_dir = state_dir_config(project.path());
     let manager = new_manager();
-    let created = create(&three_member_spec(), &deps(&manager, state_dir.clone(), None));
+    let created = create(
+        &three_member_spec(),
+        &deps(&manager, state_dir.clone(), None),
+    );
 
     // when
     let runtime_dir = resolve_team_runtime_dirs(&state_dir, &created.runtime_state.team_run_id)

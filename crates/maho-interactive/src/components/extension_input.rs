@@ -109,7 +109,10 @@ impl ExtensionInputComponent {
 
 impl Component for ExtensionInputComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
         lines.extend(Text::with_padding(self.title_text(), 1, 0).render(width));
         lines.push(String::new());
         lines.extend(self.input.render(width));

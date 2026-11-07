@@ -7,13 +7,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
-use crate::completion::{CompletionRequest, FlushInput, NotifyResult, ParentState, ReconcileUnnotifiedNotificationsInput};
+use crate::completion::{
+    CompletionRequest, FlushInput, NotifyResult, ParentState, ReconcileUnnotifiedNotificationsInput,
+};
 use crate::manager::types::ManagerStartSpec;
 use crate::state::{DeliverAs, TaskRecord, TaskStatus};
 
 use super::chaos_engine_factory::ChaosEngine;
 use super::chaos_harness::{CHAOS_MODEL, CHAOS_SESSION, ChaosHarness};
-use super::chaos_lifecycle_actions::{crash_mid_suspend, mass_revive_at_cap, resume_session, sibling_reconcile_race, suspend_session};
+use super::chaos_lifecycle_actions::{
+    crash_mid_suspend, mass_revive_at_cap, resume_session, sibling_reconcile_race, suspend_session,
+};
 pub use super::observing_store::is_terminal_status;
 use super::prng::{RandomSource, WeightedChoice};
 
@@ -91,7 +95,8 @@ impl ChaosState {
         self.task_ids_snapshot()
             .into_iter()
             .filter(|id| {
-                self.load(id).is_some_and(|record| record.status == TaskStatus::Running)
+                self.load(id)
+                    .is_some_and(|record| record.status == TaskStatus::Running)
                     && self
                         .harness
                         .engines
@@ -108,7 +113,10 @@ impl ChaosState {
             .find(|engine| engine.manager.get_resident_handle(task_id).is_some())
     }
 
-    fn fake_handle_for(&self, task_id: &str) -> Option<std::sync::Arc<crate::manager::manager_tests::fakes::FakeHandle>> {
+    fn fake_handle_for(
+        &self,
+        task_id: &str,
+    ) -> Option<std::sync::Arc<crate::manager::manager_tests::fakes::FakeHandle>> {
         for engine in &self.harness.engines {
             if let Some(handle) = engine.in_process_runner.handle(task_id) {
                 return Some(handle);
@@ -121,15 +129,24 @@ impl ChaosState {
     }
 }
 
-const NOTIFYING_TERMINALS: [TaskStatus; 3] = [TaskStatus::Completed, TaskStatus::Error, TaskStatus::Lost];
-const REVIVABLE: [TaskStatus; 3] = [TaskStatus::Completed, TaskStatus::Error, TaskStatus::Interrupted];
+const NOTIFYING_TERMINALS: [TaskStatus; 3] =
+    [TaskStatus::Completed, TaskStatus::Error, TaskStatus::Lost];
+const REVIVABLE: [TaskStatus; 3] = [
+    TaskStatus::Completed,
+    TaskStatus::Error,
+    TaskStatus::Interrupted,
+];
 
 fn deliver_states() -> [ParentState; 2] {
     [ParentState::Idle, ParentState::Streaming]
 }
 
 fn buffer_states() -> [ParentState; 3] {
-    [ParentState::Compacting, ParentState::SessionSwitching, ParentState::SessionShutdown]
+    [
+        ParentState::Compacting,
+        ParentState::SessionSwitching,
+        ParentState::SessionShutdown,
+    ]
 }
 
 fn act_start(state: &ChaosState) {
@@ -180,19 +197,23 @@ fn settle_with(state: &ChaosState, outcome: &str) {
 
 fn act_steer(state: &ChaosState) {
     let Some(id) = state.rng_pick(&state.by_status(|record| {
-        record.status == TaskStatus::Running && record.residency_state == crate::state::ResidencyState::Resident
+        record.status == TaskStatus::Running
+            && record.residency_state == crate::state::ResidencyState::Resident
     })) else {
         return;
     };
     if let Some(engine) = state.owner_for(&id) {
         state.harness.observe_mutation(&id, || {
-            let _ = engine.manager.continue_task(&id, "keep going", Some(DeliverAs::Steer));
+            let _ = engine
+                .manager
+                .continue_task(&id, "keep going", Some(DeliverAs::Steer));
         });
     }
 }
 
 fn act_interrupt(state: &ChaosState) {
-    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Running)) else {
+    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Running))
+    else {
         return;
     };
     if let Some(engine) = state.owner_for(&id) {
@@ -203,29 +224,36 @@ fn act_interrupt(state: &ChaosState) {
 }
 
 fn act_cancel(state: &ChaosState) {
-    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Running)) else {
+    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Running))
+    else {
         return;
     };
     let reason = lock(&state.rng).coin().then(|| "user aborted".to_string());
     if let Some(engine) = state.owner_for(&id) {
         state.harness.observe_mutation(&id, || {
-            let _ = engine
-                .manager
-                .cancel_task(&id, reason.as_deref(), crate::steering::CancelOptions::default());
+            let _ = engine.manager.cancel_task(
+                &id,
+                reason.as_deref(),
+                crate::steering::CancelOptions::default(),
+            );
         });
     }
 }
 
 fn act_cancel_pending(state: &ChaosState) {
-    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Pending)) else {
+    let Some(id) = state.rng_pick(&state.by_status(|record| record.status == TaskStatus::Pending))
+    else {
         return;
     };
-    let reason = lock(&state.rng).coin().then(|| "cancelled while queued".to_string());
+    let reason = lock(&state.rng)
+        .coin()
+        .then(|| "cancelled while queued".to_string());
     let outcome = state.harness.observe_mutation(&id, || {
-        state
-            .harness
-            .manager
-            .cancel_task(&id, reason.as_deref(), crate::steering::CancelOptions::default())
+        state.harness.manager.cancel_task(
+            &id,
+            reason.as_deref(),
+            crate::steering::CancelOptions::default(),
+        )
     });
     if let Ok(crate::steering::CancelOutcome::Cancelled {
         task_id,
@@ -241,12 +269,16 @@ fn act_abort_parent_wait(state: &ChaosState) {
         return;
     };
     let steps = lock(&state.rng).int(1, 6) as u64;
-    state.harness.waiters.register(&state.harness.manager, &id, steps);
+    state
+        .harness
+        .waiters
+        .register(&state.harness.manager, &id, steps);
 }
 
 fn act_revive(state: &ChaosState) {
     let Some(id) = state.rng_pick(&state.by_status(|record| {
-        REVIVABLE.contains(&record.status) && record.residency_state == crate::state::ResidencyState::Resident
+        REVIVABLE.contains(&record.status)
+            && record.residency_state == crate::state::ResidencyState::Resident
     })) else {
         return;
     };
@@ -274,11 +306,17 @@ fn check_delta(state: &ChaosState, before: usize, result: &NotifyResult) {
 fn unobserved_notifying(state: &ChaosState) -> Vec<String> {
     state.by_status(|record| {
         if !NOTIFYING_TERMINALS.contains(&record.status)
-            || !lock(&state.background).get(&record.task_id).copied().unwrap_or(false)
+            || !lock(&state.background)
+                .get(&record.task_id)
+                .copied()
+                .unwrap_or(false)
         {
             return false;
         }
-        !lock(&state.observed_edges).contains(&format!("{}:{}", record.task_id, record.notification.run_epoch))
+        !lock(&state.observed_edges).contains(&format!(
+            "{}:{}",
+            record.task_id, record.notification.run_epoch
+        ))
     })
 }
 
@@ -377,10 +415,12 @@ fn act_evict(state: &ChaosState) {
 
 fn act_reconcile(state: &ChaosState) {
     resume_session(state, CHAOS_SESSION);
-    let _ = state.harness.notifier.reconcile_failed_notifications(ReconcileUnnotifiedNotificationsInput {
-        session_id: CHAOS_SESSION,
-        parent_state: ParentState::Idle,
-    });
+    let _ = state.harness.notifier.reconcile_failed_notifications(
+        ReconcileUnnotifiedNotificationsInput {
+            session_id: CHAOS_SESSION,
+            parent_state: ParentState::Idle,
+        },
+    );
     state.harness.observe_reconcile();
 }
 
@@ -415,30 +455,106 @@ struct Action {
 
 fn actions() -> [Action; 18] {
     [
-        Action { name: "start", run: act_start, weight: 8.0 },
-        Action { name: "settle_clean", run: |state| settle_with(state, "clean"), weight: 7.0 },
-        Action { name: "settle_signal", run: |state| settle_with(state, "signal"), weight: 4.0 },
-        Action { name: "steer", run: act_steer, weight: 3.0 },
-        Action { name: "interrupt", run: act_interrupt, weight: 3.0 },
-        Action { name: "cancel", run: act_cancel, weight: 3.0 },
-        Action { name: "cancel_pending", run: act_cancel_pending, weight: 4.0 },
-        Action { name: "abort_wait", run: act_abort_parent_wait, weight: 4.0 },
-        Action { name: "revive", run: act_revive, weight: 3.0 },
-        Action { name: "notify", run: act_notify, weight: 6.0 },
-        Action { name: "replay_notify", run: act_replay_notify, weight: 3.0 },
-        Action { name: "flush", run: act_flush, weight: 4.0 },
-        Action { name: "evict", run: act_evict, weight: 3.0 },
-        Action { name: "reconcile", run: act_reconcile, weight: 2.0 },
-        Action { name: "suspend_session", run: suspend_session, weight: 2.0 },
-        Action { name: "crash_mid_suspend", run: crash_mid_suspend, weight: 1.0 },
-        Action { name: "sibling_reconcile_race", run: sibling_reconcile_race, weight: 1.0 },
-        Action { name: "mass_revive_at_cap", run: mass_revive_at_cap, weight: 1.0 },
+        Action {
+            name: "start",
+            run: act_start,
+            weight: 8.0,
+        },
+        Action {
+            name: "settle_clean",
+            run: |state| settle_with(state, "clean"),
+            weight: 7.0,
+        },
+        Action {
+            name: "settle_signal",
+            run: |state| settle_with(state, "signal"),
+            weight: 4.0,
+        },
+        Action {
+            name: "steer",
+            run: act_steer,
+            weight: 3.0,
+        },
+        Action {
+            name: "interrupt",
+            run: act_interrupt,
+            weight: 3.0,
+        },
+        Action {
+            name: "cancel",
+            run: act_cancel,
+            weight: 3.0,
+        },
+        Action {
+            name: "cancel_pending",
+            run: act_cancel_pending,
+            weight: 4.0,
+        },
+        Action {
+            name: "abort_wait",
+            run: act_abort_parent_wait,
+            weight: 4.0,
+        },
+        Action {
+            name: "revive",
+            run: act_revive,
+            weight: 3.0,
+        },
+        Action {
+            name: "notify",
+            run: act_notify,
+            weight: 6.0,
+        },
+        Action {
+            name: "replay_notify",
+            run: act_replay_notify,
+            weight: 3.0,
+        },
+        Action {
+            name: "flush",
+            run: act_flush,
+            weight: 4.0,
+        },
+        Action {
+            name: "evict",
+            run: act_evict,
+            weight: 3.0,
+        },
+        Action {
+            name: "reconcile",
+            run: act_reconcile,
+            weight: 2.0,
+        },
+        Action {
+            name: "suspend_session",
+            run: suspend_session,
+            weight: 2.0,
+        },
+        Action {
+            name: "crash_mid_suspend",
+            run: crash_mid_suspend,
+            weight: 1.0,
+        },
+        Action {
+            name: "sibling_reconcile_race",
+            run: sibling_reconcile_race,
+            weight: 1.0,
+        },
+        Action {
+            name: "mass_revive_at_cap",
+            run: mass_revive_at_cap,
+            weight: 1.0,
+        },
     ]
 }
 
 fn actions_with_notify_retry() -> Vec<Action> {
     let mut list: Vec<Action> = actions().into_iter().collect();
-    list.push(Action { name: "notify_retry", run: act_notifier_fail_then_retry, weight: 4.0 });
+    list.push(Action {
+        name: "notify_retry",
+        run: act_notifier_fail_then_retry,
+        weight: 4.0,
+    });
     list
 }
 
@@ -448,9 +564,14 @@ pub fn apply_random_action(state: &ChaosState) {
     let choices: Vec<WeightedChoice<usize>> = table
         .iter()
         .enumerate()
-        .map(|(index, action)| WeightedChoice { value: index, weight: action.weight })
+        .map(|(index, action)| WeightedChoice {
+            value: index,
+            weight: action.weight,
+        })
         .collect();
-    let chosen = *lock(&state.rng).weighted(&choices).expect("non-empty action table");
+    let chosen = *lock(&state.rng)
+        .weighted(&choices)
+        .expect("non-empty action table");
     let action = &table[chosen];
     state.harness.lifecycle_observations.push_trace(action.name);
     (action.run)(state);

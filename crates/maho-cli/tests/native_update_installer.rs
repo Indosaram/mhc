@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 fn repo_script(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(name)
 }
 
 fn stage_env(fx: &Fixture, command: &mut tokio::process::Command) {
@@ -31,7 +33,13 @@ fn stage_env(fx: &Fixture, command: &mut tokio::process::Command) {
 fn installer(fx: &Fixture, package: &Path) -> tokio::process::Command {
     let mut command = if cfg!(windows) {
         let mut command = tokio::process::Command::new("powershell.exe");
-        command.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]);
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
         command.arg(repo_script("install.ps1"));
         command
     } else {
@@ -69,12 +77,19 @@ fn built(work: &Path, name: &str, payload: Payload) -> PathBuf {
     let package = build_package(&parent, payload);
     let payload_exe = package.join(format!("mhc{}", std::env::consts::EXE_SUFFIX));
     assert!(payload_exe.is_file(), "missing {}", payload_exe.display());
-    assert!(package.join("manifest.json").is_file(), "missing manifest in {}", package.display());
+    assert!(
+        package.join("manifest.json").is_file(),
+        "missing manifest in {}",
+        package.display()
+    );
     package
 }
 
 fn probe(version: &str) -> Payload {
-    Payload::Probe { version: version.to_owned(), fail_when_installed: false }
+    Payload::Probe {
+        version: version.to_owned(),
+        fail_when_installed: false,
+    }
 }
 
 fn expect_ok(output: &Output, action: &str) {
@@ -90,7 +105,10 @@ fn expect_ok(output: &Output, action: &str) {
 fn reported_version(stdout: &[u8]) -> String {
     let text = String::from_utf8(stdout.to_vec()).expect("version stdout is utf-8");
     let trimmed = text.trim();
-    trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed).to_owned()
+    trimmed
+        .strip_prefix(['v', 'V'])
+        .unwrap_or(trimmed)
+        .to_owned()
 }
 
 async fn launcher_version(fx: &Fixture) -> String {
@@ -104,7 +122,10 @@ async fn launcher_version(fx: &Fixture) -> String {
 /// Flat real package at `R` (no `current.json`), then the installer migrates it under the probe.
 async fn install_flat_then_probe(fx: &Fixture, work: &Path) {
     copy_tree(&built(work, "real", Payload::RealMhc), &fx.root).expect("copy flat package");
-    assert!(!fx.root.join("current.json").exists(), "flat layout has no current.json");
+    assert!(
+        !fx.root.join("current.json").exists(),
+        "flat layout has no current.json"
+    );
     let output = run(installer(fx, &built(work, "new", probe(NEW_VERSION)))).await;
     expect_ok(&output, "installer over flat layout");
     let real = real_version();
@@ -114,7 +135,11 @@ async fn install_flat_then_probe(fx: &Fixture, work: &Path) {
         String::from_utf8_lossy(&output.stdout),
     );
     assert_eq!(pointer(fx), (NEW_VERSION.to_owned(), Some(real.clone())));
-    assert!(versions(fx).contains(&real), "versions/{real} missing, have {:?}", versions(fx));
+    assert!(
+        versions(fx).contains(&real),
+        "versions/{real} missing, have {:?}",
+        versions(fx)
+    );
 }
 
 #[tokio::test]
@@ -151,15 +176,25 @@ async fn update_after_migration() {
     let dist = work.path().join("dist");
     std::fs::create_dir_all(&dist).expect("archive directory");
     let (archive_path, sha) = archive(&package, &dist);
-    let asset = archive_path.file_name().and_then(|name| name.to_str()).expect("archive file name");
+    let asset = archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("archive file name");
     let server = serve_release(NEWER_VERSION, &archive_path, format!("{sha}  {asset}\n")).await;
 
     // `current` is the probe after migration, so drive the update from the migrated real payload.
     // Its own session lease keeps versions/<real> during this run; retention is covered elsewhere.
     let real = real_version();
-    let migrated = fx.root.join("versions").join(&real).join(format!("mhc{}", std::env::consts::EXE_SUFFIX));
+    let migrated = fx
+        .root
+        .join("versions")
+        .join(&real)
+        .join(format!("mhc{}", std::env::consts::EXE_SUFFIX));
     let mut command = mhc(&fx, &migrated);
-    command.arg("update").env("MHC_UPDATE_RELEASE_URL", &server.url).env_remove("MAHO_BRAND");
+    command
+        .arg("update")
+        .env("MHC_UPDATE_RELEASE_URL", &server.url)
+        .env_remove("MAHO_BRAND");
     let output = run(command).await;
     expect_ok(&output, "migrated mhc update");
     let stdout = String::from_utf8(output.stdout).expect("update stdout is utf-8");
@@ -168,6 +203,9 @@ async fn update_after_migration() {
         "{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(pointer(&fx), (NEWER_VERSION.to_owned(), Some(NEW_VERSION.to_owned())));
+    assert_eq!(
+        pointer(&fx),
+        (NEWER_VERSION.to_owned(), Some(NEW_VERSION.to_owned()))
+    );
     assert_eq!(launcher_version(&fx).await, NEWER_VERSION);
 }

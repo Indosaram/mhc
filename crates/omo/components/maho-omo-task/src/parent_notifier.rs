@@ -1,8 +1,14 @@
 pub type OnDeliveryFailedCallback = Option<Arc<dyn Fn(&[String], String) + Send + Sync>>;
-use std::sync::{Arc, Mutex, PoisonError};
 use idle_injection::{IdleInjection, IdleInjectionSource};
 use maho_ext_api::{CustomMessage, DeliverAs, ExtensionActions, SendMessageOptions, ToolContent};
-use senpi_task::{completion::{DeliveryCallbacks, ParentNotifier, ParentNotifierMessage, build_completion_message}, host::HostError, pause::ports::{RunRef, RunRefKind}};
+use senpi_task::{
+    completion::{
+        DeliveryCallbacks, ParentNotifier, ParentNotifierMessage, build_completion_message,
+    },
+    host::HostError,
+    pause::ports::{RunRef, RunRefKind},
+};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// The senpi-task completion custom-message type; the component registers a renderer for it.
 pub const TASK_COMPLETION_MESSAGE_TYPE: &str = "senpi-task.completion";
@@ -10,17 +16,28 @@ pub const TASK_COMPLETION_MESSAGE_TYPE: &str = "senpi-task.completion";
 pub trait CompletionCoordinator: Send + Sync {
     /// Returns `false` when the coordinator is retired: the injection is NOT queued, so the caller
     /// still owns the notification and must fail it durably.
-    fn enqueue(&self, key: &str, source: &str, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<bool, HostError>;
+    fn enqueue(
+        &self,
+        key: &str,
+        source: &str,
+        message: &ParentNotifierMessage,
+        callbacks: DeliveryCallbacks,
+    ) -> Result<bool, HostError>;
     fn schedule_flush(&self);
     fn flush_soon(&self);
     /// The idle-injection queue behind this coordinator, for non-completion sources (the
     /// `task-status` liveness notice). `None` makes those notices steer directly.
-    fn idle_coordinator(&self) -> Option<Arc<dyn idle_injection::IdleInjectionCoordinator>> { None }
+    fn idle_coordinator(&self) -> Option<Arc<dyn idle_injection::IdleInjectionCoordinator>> {
+        None
+    }
 }
 
 /// The run a completion belongs to: the engine's own reference, or the task it names.
 pub fn completion_run_ref(detail: &senpi_task::completion::CompletionDetails) -> RunRef {
-    detail.run_ref.clone().unwrap_or_else(|| RunRef::new(RunRefKind::Task, detail.task_id.clone()))
+    detail
+        .run_ref
+        .clone()
+        .unwrap_or_else(|| RunRef::new(RunRefKind::Task, detail.task_id.clone()))
 }
 
 struct BatchSettlement {
@@ -38,7 +55,11 @@ pub struct TaskParentNotifier {
 }
 
 impl ParentNotifier for TaskParentNotifier {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: DeliveryCallbacks,
+    ) -> Result<(), HostError> {
         if let Some(coordinator) = &self.coordinator {
             if message.details.is_empty() {
                 callbacks.delivered();
@@ -57,7 +78,9 @@ impl ParentNotifier for TaskParentNotifier {
                 let caller = callbacks.clone();
                 let batch = Arc::clone(&batch_state);
                 let receipt = DeliveryCallbacks::new(move |result: Result<(), HostError>| {
-                    if let Err(error) = &result && let Some(failed) = &failure_hook {
+                    if let Err(error) = &result
+                        && let Some(failed) = &failure_hook
+                    {
                         failed(std::slice::from_ref(&task_id), error.message.clone());
                     }
                     let to_settle = {
@@ -109,11 +132,33 @@ impl ParentNotifier for TaskParentNotifier {
 
             // Mid-turn: collect in the batch window. Idle: flush on the next microtask so same-tick
             // completions batch but delivery is immediate.
-            if (self.is_streaming)() { coordinator.schedule_flush(); } else { coordinator.flush_soon(); }
+            if (self.is_streaming)() {
+                coordinator.schedule_flush();
+            } else {
+                coordinator.flush_soon();
+            }
             return Ok(());
         }
-        let details = serde_json::to_value(&message.details).map_err(|error| HostError { message: error.to_string() })?;
-        let receipt = self.actions.send_message_with_receipt(CustomMessage { custom_type: message.custom_type.into(), content: vec![ToolContent::text(&message.content)], display: message.display, details: Some(details) }, SendMessageOptions { trigger_turn: true, deliver_as: Some(DeliverAs::Steer) }).map_err(|error| HostError { message: error.to_string() })?;
+        let details = serde_json::to_value(&message.details).map_err(|error| HostError {
+            message: error.to_string(),
+        })?;
+        let receipt = self
+            .actions
+            .send_message_with_receipt(
+                CustomMessage {
+                    custom_type: message.custom_type.into(),
+                    content: vec![ToolContent::text(&message.content)],
+                    display: message.display,
+                    details: Some(details),
+                },
+                SendMessageOptions {
+                    trigger_turn: true,
+                    deliver_as: Some(DeliverAs::Steer),
+                },
+            )
+            .map_err(|error| HostError {
+                message: error.to_string(),
+            })?;
         receipt.on_settled(move |outcome| match outcome {
             Ok(()) => callbacks.delivered(),
             Err(message) => callbacks.failed(HostError { message }),
@@ -125,5 +170,15 @@ impl ParentNotifier for TaskParentNotifier {
 /// The injection a single completion becomes when the coordinator owns delivery.
 pub fn completion_injection(detail: &senpi_task::completion::CompletionDetails) -> IdleInjection {
     let single = build_completion_message(std::slice::from_ref(detail));
-    IdleInjection { key: format!("task-completion:{}", detail.task_id), source: IdleInjectionSource::TaskCompletion, custom_type: Some(single.custom_type.into()), content: single.content, display: Some(single.display), details: serde_json::to_value(&single.details).ok(), passive: None, on_flushed: None, on_delivery_failed: None }
+    IdleInjection {
+        key: format!("task-completion:{}", detail.task_id),
+        source: IdleInjectionSource::TaskCompletion,
+        custom_type: Some(single.custom_type.into()),
+        content: single.content,
+        display: Some(single.display),
+        details: serde_json::to_value(&single.details).ok(),
+        passive: None,
+        on_flushed: None,
+        on_delivery_failed: None,
+    }
 }

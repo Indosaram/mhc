@@ -4,12 +4,12 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::cli_arg_parser::{has_flag, read_value};
-use crate::cli_output::{print_json_error, ULW_LOOP_HELP};
+use crate::cli_output::{ULW_LOOP_HELP, print_json_error};
 use crate::cli_subcommands::{
     add_goal, capture_evidence, checkpoint_cli, complete_goals, create_goals, criteria,
     review_blockers, status, steer,
 };
-use crate::paths::{resolve_ulw_loop_session_id_from_env, UlwLoopScope};
+use crate::paths::{UlwLoopScope, resolve_ulw_loop_session_id_from_env};
 use crate::plan_io::list_ulw_loop_session_ids;
 use crate::plan_missing_recovery::{session_id_required_message, session_scope_required_message};
 use crate::runtime::UlwLoopError;
@@ -34,7 +34,10 @@ pub fn is_ulw_loop_subcommand(value: &str) -> bool {
 const SESSION_ID_FLAG: &str = "--session-id";
 
 fn session_id_flag_present(argv: &[String]) -> bool {
-    has_flag(argv, SESSION_ID_FLAG) || argv.iter().any(|arg| arg.starts_with(&format!("{SESSION_ID_FLAG}=")))
+    has_flag(argv, SESSION_ID_FLAG)
+        || argv
+            .iter()
+            .any(|arg| arg.starts_with(&format!("{SESSION_ID_FLAG}=")))
 }
 
 fn command_scope(repo_root: &Path, argv: &[String]) -> Result<UlwLoopScope, UlwLoopError> {

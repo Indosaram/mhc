@@ -38,12 +38,18 @@ pub fn build_requested_model_fields(
         parameters: resolved
             .parameters
             .into_iter()
-            .map(|parameter| RequestedModelParameter { id: parameter.id.to_owned(), value: parameter.value })
+            .map(|parameter| RequestedModelParameter {
+                id: parameter.id.to_owned(),
+                value: parameter.value,
+            })
             .collect(),
     }
 }
 
-pub fn build_requested_model(model: &Model, selection: Option<&ThinkingSelection>) -> RequestedModel {
+pub fn build_requested_model(
+    model: &Model,
+    selection: Option<&ThinkingSelection>,
+) -> RequestedModel {
     let fields = build_requested_model_fields(model, selection);
     RequestedModel {
         model_id: fields.model_id,
@@ -51,7 +57,10 @@ pub fn build_requested_model(model: &Model, selection: Option<&ThinkingSelection
         parameters: fields
             .parameters
             .into_iter()
-            .map(|parameter| RequestedModelModelParameterbytes { id: parameter.id, value: parameter.value })
+            .map(|parameter| RequestedModelModelParameterbytes {
+                id: parameter.id,
+                value: parameter.value,
+            })
             .collect(),
         ..Default::default()
     }

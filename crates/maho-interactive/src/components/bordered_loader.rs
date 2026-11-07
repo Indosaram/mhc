@@ -1,27 +1,45 @@
 //! Port of components/bordered-loader.ts.
-use std::rc::Rc;
-use maho_tui::{components::{cancellable_loader::CancellableLoader, loader::Loader, text::Text}, tui::Component};
-use crate::theme::{Theme, ThemeColor};
 use super::dynamic_border::DynamicBorder;
+use crate::theme::{Theme, ThemeColor};
+use maho_tui::{
+    components::{cancellable_loader::CancellableLoader, loader::Loader, text::Text},
+    tui::Component,
+};
+use std::rc::Rc;
 
-enum LoaderKind { Cancellable(CancellableLoader), Plain(Loader) }
+enum LoaderKind {
+    Cancellable(CancellableLoader),
+    Plain(Loader),
+}
 pub struct BorderedLoader {
     loader: LoaderKind,
     border: DynamicBorder,
     hint: Text,
 }
 impl BorderedLoader {
-    pub fn new(theme: Theme, message: &str, cancellable: bool, cancel_hint: &str, now_ms: u64) -> Self {
+    pub fn new(
+        theme: Theme,
+        message: &str,
+        cancellable: bool,
+        cancel_hint: &str,
+        now_ms: u64,
+    ) -> Self {
         let spinner_theme = theme.clone();
         let message_theme = theme.clone();
         let spinner = Rc::new(move |text: &str| spinner_theme.fg(ThemeColor::Accent, text));
         let color = Rc::new(move |text: &str| message_theme.fg(ThemeColor::Muted, text));
         let loader = if cancellable {
-            LoaderKind::Cancellable(CancellableLoader::new(spinner, color, message, None, now_ms))
+            LoaderKind::Cancellable(CancellableLoader::new(
+                spinner, color, message, None, now_ms,
+            ))
         } else {
             LoaderKind::Plain(Loader::new(spinner, color, message, None, now_ms))
         };
-        Self { loader, border: DynamicBorder::new(theme), hint: Text::with_padding(cancel_hint, 1, 0) }
+        Self {
+            loader,
+            border: DynamicBorder::new(theme),
+            hint: Text::with_padding(cancel_hint, 1, 0),
+        }
     }
     pub fn aborted(&self) -> bool {
         match &self.loader {
@@ -30,7 +48,9 @@ impl BorderedLoader {
         }
     }
     pub fn set_on_abort(&mut self, callback: Option<Box<dyn FnMut()>>) {
-        if let LoaderKind::Cancellable(loader) = &mut self.loader { loader.on_abort = callback; }
+        if let LoaderKind::Cancellable(loader) = &mut self.loader {
+            loader.on_abort = callback;
+        }
     }
     pub fn tick(&mut self, now_ms: u64) -> bool {
         match &mut self.loader {
@@ -55,9 +75,13 @@ impl Component for BorderedLoader {
         lines
     }
     fn handle_input(&mut self, data: &str) {
-        if let LoaderKind::Cancellable(loader) = &mut self.loader { loader.handle_input(data); }
+        if let LoaderKind::Cancellable(loader) = &mut self.loader {
+            loader.handle_input(data);
+        }
     }
-    fn has_input_handler(&self) -> bool { true }
+    fn has_input_handler(&self) -> bool {
+        true
+    }
     fn invalidate(&mut self) {
         match &mut self.loader {
             LoaderKind::Cancellable(loader) => loader.invalidate(),

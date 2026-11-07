@@ -1126,7 +1126,8 @@ impl McpService {
             }
         }
         // Upstream `for (const listener of this.#registrationListeners) listener()`.
-        self.registration_events.send_modify(|generation| *generation += 1);
+        self.registration_events
+            .send_modify(|generation| *generation += 1);
         Ok(())
     }
     /// Upstream `onMcpRegistrationChanged`: a receiver whose `changed()` fires after each completed
@@ -1137,9 +1138,8 @@ impl McpService {
     /// The state-change stream of every live connection (upstream `getConnection(name).onStateChange`).
     pub async fn connection_state_changes(
         &self,
-    ) -> Vec<
-        tokio::sync::broadcast::Receiver<crate::connection::ServerConnectionStateChangedEvent>,
-    > {
+    ) -> Vec<tokio::sync::broadcast::Receiver<crate::connection::ServerConnectionStateChangedEvent>>
+    {
         let mut receivers = Vec::new();
         for name in self.connections.keys() {
             if let Some(connection) = self.get_connection(name) {
@@ -1180,7 +1180,11 @@ impl McpService {
     /// OAuth servers are logged in when their credential identity resolves (a non-empty access token).
     pub async fn server_auth_status(&self, name: &str) -> crate::service_types::McpWireAuthStatus {
         use crate::service_types::McpWireAuthStatus;
-        let Some(server) = self.config.as_ref().and_then(|config| config.servers.get(name)) else {
+        let Some(server) = self
+            .config
+            .as_ref()
+            .and_then(|config| config.servers.get(name))
+        else {
             return McpWireAuthStatus::Unsupported;
         };
         // Upstream `#entryForName`: unfiltered, unlike `getConnection`.
@@ -1188,7 +1192,11 @@ impl McpService {
             Some(connection) => Some(connection.entry.lock().await.connection.state()),
             None => None,
         };
-        match server.config.as_ref().map(crate::auth::context::resolve_auth_mode) {
+        match server
+            .config
+            .as_ref()
+            .map(crate::auth::context::resolve_auth_mode)
+        {
             Some(crate::auth::context::ServerAuthMode::Bearer) => {
                 if state == Some(crate::connection::ServerConnectionState::NeedsAuth) {
                     McpWireAuthStatus::NotLoggedIn

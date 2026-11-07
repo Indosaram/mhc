@@ -8,20 +8,22 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use maho_agent::harness::runtime::reducer::{reduce_lane_snapshot, LaneSnapshotReduction};
+use maho_agent::harness::runtime::reducer::{LaneSnapshotReduction, reduce_lane_snapshot};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::shared::protocol::{
-    AuthEventPayload, CommandResult, LaneEvent, LaneSubscription, ModelRef, ModelsEvent, SessionSnapshot,
-    SessionSummary, LANE, MODELS,
+    AuthEventPayload, CommandResult, LANE, LaneEvent, LaneSubscription, MODELS, ModelRef,
+    ModelsEvent, SessionSnapshot, SessionSummary,
 };
-use super::shared::rpc::{create_peer, CallOptions, PeerOptions, RpcPeer};
+use super::shared::rpc::{CallOptions, PeerOptions, RpcPeer, create_peer};
 use super::shared::transport::SocketTransport;
 
 #[cfg(unix)]
 async fn open_peer(transport: &SocketTransport) -> Result<RpcPeer, String> {
-    let socket = tokio::net::UnixStream::connect(&transport.path).await.map_err(|error| error.to_string())?;
+    let socket = tokio::net::UnixStream::connect(&transport.path)
+        .await
+        .map_err(|error| error.to_string())?;
     let (input, output) = socket.into_split();
     Ok(create_peer(input, output, PeerOptions::default()))
 }
@@ -33,8 +35,22 @@ pub async fn list_sessions(transport: &SocketTransport) -> Result<Vec<SessionSum
     serde_json::from_value(result).map_err(|error| error.to_string())
 }
 
-pub async fn attach(peer: &RpcPeer, session_id: Option<&str>, cwd: &str, presentation_id: &str) -> Result<String, String> {
-    let value = peer.call_with(CallOptions { timeout_ms: Some(60_000), signal: None }, "sessions.attach", vec![json!(session_id), json!(cwd), json!(presentation_id)]).await?;
+pub async fn attach(
+    peer: &RpcPeer,
+    session_id: Option<&str>,
+    cwd: &str,
+    presentation_id: &str,
+) -> Result<String, String> {
+    let value = peer
+        .call_with(
+            CallOptions {
+                timeout_ms: Some(60_000),
+                signal: None,
+            },
+            "sessions.attach",
+            vec![json!(session_id), json!(cwd), json!(presentation_id)],
+        )
+        .await?;
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
@@ -56,7 +72,11 @@ struct Shared {
 impl Shared {
     fn publish(&self) {
         self.revision.fetch_add(1, Ordering::SeqCst);
-        let listeners = self.listeners.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         for listener in listeners {
             listener();
         }
@@ -85,15 +105,27 @@ pub struct AttachedSession {
 }
 
 fn handle_lane_event(shared: &Arc<Shared>, payload: &Value) {
-    let Ok(event) = LaneEvent::deserialize(payload) else { return; };
-    let current = shared.subscription_id.lock().unwrap_or_else(|error| error.into_inner()).clone();
+    let Ok(event) = LaneEvent::deserialize(payload) else {
+        return;
+    };
+    let current = shared
+        .subscription_id
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     if current.as_deref() != Some(event.subscription_id.as_str()) {
         return;
     }
     let rebase = {
-        let mut state = shared.state.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(snapshot) = state.as_mut() else { return; };
-        reduce_lane_snapshot(&mut snapshot.lane, &event.event) == Some(LaneSnapshotReduction::Rebase)
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(snapshot) = state.as_mut() else {
+            return;
+        };
+        reduce_lane_snapshot(&mut snapshot.lane, &event.event)
+            == Some(LaneSnapshotReduction::Rebase)
     };
     if rebase {
         let shared = shared.clone();
@@ -106,11 +138,16 @@ fn handle_lane_event(shared: &Arc<Shared>, payload: &Value) {
 }
 
 fn handle_models_event(shared: &Arc<Shared>, payload: &Value) {
-    let Ok(event) = ModelsEvent::deserialize(payload) else { return; };
+    let Ok(event) = ModelsEvent::deserialize(payload) else {
+        return;
+    };
     match &event {
         ModelsEvent::State { state } => {
             {
-                let mut snapshot = shared.state.lock().unwrap_or_else(|error| error.into_inner());
+                let mut snapshot = shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 if let Some(current) = snapshot.as_mut() {
                     current.models = state.clone();
                 }
@@ -119,7 +156,11 @@ fn handle_models_event(shared: &Arc<Shared>, payload: &Value) {
         }
         _ => {
             if let Some(payload) = AuthEventPayload::from_models_event(&event) {
-                let handlers = shared.auth_handlers.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                let handlers = shared
+                    .auth_handlers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
                 for handler in handlers {
                     handler(payload.clone());
                 }
@@ -130,23 +171,47 @@ fn handle_models_event(shared: &Arc<Shared>, payload: &Value) {
 
 async fn resubscribe(shared: &Arc<Shared>) -> Result<(), String> {
     let _guard = shared.resubscribe.lock().await;
-    let previous = shared.subscription_id.lock().unwrap_or_else(|error| error.into_inner()).clone();
-    let value = shared.peer.call("lane.watch", vec![json!(shared.presentation_id)]).await?;
-    let opened: LaneSubscription = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    let previous = shared
+        .subscription_id
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let value = shared
+        .peer
+        .call("lane.watch", vec![json!(shared.presentation_id)])
+        .await?;
+    let opened: LaneSubscription =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
     {
-        *shared.state.lock().unwrap_or_else(|error| error.into_inner()) = Some(opened.snapshot);
-        *shared.subscription_id.lock().unwrap_or_else(|error| error.into_inner()) = Some(opened.subscription_id.clone());
+        *shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(opened.snapshot);
+        *shared
+            .subscription_id
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(opened.subscription_id.clone());
     }
     shared.publish();
-    shared.peer.call("lane.start", vec![json!(opened.subscription_id)]).await?;
+    shared
+        .peer
+        .call("lane.start", vec![json!(opened.subscription_id)])
+        .await?;
     if let Some(previous) = previous {
-        let _ = shared.peer.call("lane.unwatch", vec![json!(previous)]).await;
+        let _ = shared
+            .peer
+            .call("lane.unwatch", vec![json!(previous)])
+            .await;
     }
     Ok(())
 }
 
 #[cfg(unix)]
-pub async fn connect(transport: &SocketTransport, session_id: Option<&str>, cwd: &str) -> Result<AttachedSession, String> {
+pub async fn connect(
+    transport: &SocketTransport,
+    session_id: Option<&str>,
+    cwd: &str,
+) -> Result<AttachedSession, String> {
     let peer = Arc::new(open_peer(transport).await?);
     let shared = Arc::new(Shared {
         peer: peer.clone(),
@@ -196,12 +261,23 @@ impl AttachedSession {
 
     pub fn subscribe(&self, listener: impl Fn() + Send + Sync + 'static) -> Subscription {
         let listener: Listener = Arc::new(listener);
-        self.shared.listeners.lock().unwrap_or_else(|error| error.into_inner()).push(listener.clone());
-        Subscription { shared: Arc::downgrade(&self.shared), listener }
+        self.shared
+            .listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(listener.clone());
+        Subscription {
+            shared: Arc::downgrade(&self.shared),
+            listener,
+        }
     }
 
     pub fn on_auth(&self, handler: impl Fn(AuthEventPayload) + Send + Sync + 'static) {
-        self.shared.auth_handlers.lock().unwrap_or_else(|error| error.into_inner()).push(Arc::new(handler));
+        self.shared
+            .auth_handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(Arc::new(handler));
     }
 
     async fn command(&self, method: &str, args: Vec<Value>) -> Result<CommandResult, String> {
@@ -238,17 +314,31 @@ impl AttachedSession {
         self.command("models.refresh", Vec::new()).await
     }
 
-    pub async fn models_login(&self, provider_id: &str, auth_type: super::shared::protocol::AuthType) -> Result<CommandResult, String> {
+    pub async fn models_login(
+        &self,
+        provider_id: &str,
+        auth_type: super::shared::protocol::AuthType,
+    ) -> Result<CommandResult, String> {
         let value = serde_json::to_value(auth_type).map_err(|error| error.to_string())?;
-        self.command("models.login", vec![json!(provider_id), value]).await
+        self.command("models.login", vec![json!(provider_id), value])
+            .await
     }
 
     pub async fn models_logout(&self, provider_id: &str) -> Result<CommandResult, String> {
-        self.command("models.logout", vec![json!(provider_id)]).await
+        self.command("models.logout", vec![json!(provider_id)])
+            .await
     }
 
-    pub async fn models_auth_reply(&self, request_id: &str, answer: Option<&str>) -> Result<(), String> {
-        self.shared.peer.call("models.authReply", vec![json!(request_id), json!(answer)]).await.map(|_| ())
+    pub async fn models_auth_reply(
+        &self,
+        request_id: &str,
+        answer: Option<&str>,
+    ) -> Result<(), String> {
+        self.shared
+            .peer
+            .call("models.authReply", vec![json!(request_id), json!(answer)])
+            .await
+            .map(|_| ())
     }
 
     pub fn close(&self) {

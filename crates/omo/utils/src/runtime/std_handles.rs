@@ -20,14 +20,20 @@ pub fn keep_std_handles_private() -> std::io::Result<()> {
         fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
     }
     let mut first_error = None;
-    for handle in [std::io::stdin().as_raw_handle(), std::io::stdout().as_raw_handle(), std::io::stderr().as_raw_handle()] {
+    for handle in [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ] {
         // Null: launched without that std handle (a detached parent); nothing to keep private.
         if handle.is_null() {
             continue;
         }
         // SAFETY: `handle` is this process's own live std handle (std maps an absent one to null,
         // skipped above); only its inherit flag changes, nothing is closed or replaced.
-        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 && first_error.is_none() {
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+            && first_error.is_none()
+        {
             first_error = Some(std::io::Error::last_os_error());
         }
     }

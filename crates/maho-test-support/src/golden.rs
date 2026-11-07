@@ -32,7 +32,10 @@ pub fn fixture_path(crate_name: &str, file: &str) -> PathBuf {
 #[derive(Debug)]
 pub enum GoldenError {
     /// The fixture could not be read (missing fixtures are never created here).
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// The bytes differ; `diff` is a unified diff from expected (fixture) to actual.
     Mismatch { path: PathBuf, diff: String },
 }
@@ -71,7 +74,11 @@ pub fn compare(path: &Path, actual: &str) -> Result<(), GoldenError> {
 
 /// Compares rendered lines, joined with `\n` exactly as the generator writes them.
 pub fn compare_lines<S: AsRef<str>>(path: &Path, lines: &[S]) -> Result<(), GoldenError> {
-    let joined = lines.iter().map(AsRef::as_ref).collect::<Vec<_>>().join("\n");
+    let joined = lines
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<Vec<_>>()
+        .join("\n");
     compare(path, &joined)
 }
 

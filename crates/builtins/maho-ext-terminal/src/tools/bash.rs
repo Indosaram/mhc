@@ -1031,16 +1031,19 @@ mod tests {
         let running = manager.clone();
         let command = escaped_descendant_command(&pid_file);
         let task = tokio::spawn(async move {
-            execute_bash(running, ToolCall {
-                id: "escaped-abort",
-                params: json!({"command": command, "timeout": 60}),
-                signal,
-                on_update: Some(Arc::new(move |update| {
-                    sender.send(update).unwrap();
-                    Ok(())
-                })),
-                context: None,
-            })
+            execute_bash(
+                running,
+                ToolCall {
+                    id: "escaped-abort",
+                    params: json!({"command": command, "timeout": 60}),
+                    signal,
+                    on_update: Some(Arc::new(move |update| {
+                        sender.send(update).unwrap();
+                        Ok(())
+                    })),
+                    context: None,
+                },
+            )
             .await
         });
         let result = tokio::time::timeout(Duration::from_secs(10), async {

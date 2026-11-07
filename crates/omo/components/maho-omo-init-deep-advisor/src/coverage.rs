@@ -81,7 +81,9 @@ fn walk(root: &Path, dir: &Path, depth: usize, candidates: &mut Vec<DirInfo>) ->
                     .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext))
             {
                 files += 1;
-                loc += String::from_utf8_lossy(&fs::read(entry.path())?).split('\n').count();
+                loc += String::from_utf8_lossy(&fs::read(entry.path())?)
+                    .split('\n')
+                    .count();
             }
         }
         if files >= CANDIDATE_MIN_FILES || loc >= CANDIDATE_MIN_LOC {
@@ -126,7 +128,12 @@ mod tests {
             fs::write(t.path().join("bin").join(format!("{n}.ts")), b"\xff\xfe\na").unwrap();
         }
         let dirs = compute_candidate_dirs(t.path()).unwrap();
-        assert_eq!(dirs.iter().find(|d| d.path == t.path().join("bin")).map(|d| d.loc), Some(CANDIDATE_MIN_FILES * 2));
+        assert_eq!(
+            dirs.iter()
+                .find(|d| d.path == t.path().join("bin"))
+                .map(|d| d.loc),
+            Some(CANDIDATE_MIN_FILES * 2)
+        );
     }
     #[test]
     fn candidate_files() {

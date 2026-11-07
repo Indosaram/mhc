@@ -46,14 +46,19 @@ fn namespaces() -> &'static Mutex<HashMap<TimingLabel, TimingNamespace>> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, HashMap<TimingLabel, TimingNamespace>> {
-    namespaces().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    namespaces()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 static ENABLED_OVERRIDE: Mutex<Option<bool>> = Mutex::new(None);
 
 /// senpi computes ENABLED once at import time; the Rust port reads it lazily and lets tests pin it.
 fn enabled() -> bool {
-    if let Some(value) = *ENABLED_OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+    if let Some(value) = *ENABLED_OVERRIDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         return value;
     }
     env_value("TIMING", &current_env()).as_deref() == Some("1")
@@ -74,7 +79,13 @@ pub fn reset_timings(namespace: TimingLabel) {
     if !enabled() {
         return;
     }
-    lock().insert(namespace, TimingNamespace { timings: Vec::new(), last_time: now() });
+    lock().insert(
+        namespace,
+        TimingNamespace {
+            timings: Vec::new(),
+            last_time: now(),
+        },
+    );
 }
 
 pub fn time(label: &str, namespace: TimingLabel) {
@@ -83,8 +94,14 @@ pub fn time(label: &str, namespace: TimingLabel) {
     }
     let current = now();
     let mut map = lock();
-    let entry = map.entry(namespace).or_insert_with(|| TimingNamespace { timings: Vec::new(), last_time: now() });
-    entry.timings.push(TimingEntry { label: label.to_owned(), ms: millis_between(entry.last_time, current) });
+    let entry = map.entry(namespace).or_insert_with(|| TimingNamespace {
+        timings: Vec::new(),
+        last_time: now(),
+    });
+    entry.timings.push(TimingEntry {
+        label: label.to_owned(),
+        ms: millis_between(entry.last_time, current),
+    });
     entry.last_time = current;
 }
 
@@ -94,16 +111,28 @@ pub fn record_timing(label: &str, ms: f64, namespace: TimingLabel) {
         return;
     }
     let mut map = lock();
-    let entry = map.entry(namespace).or_insert_with(|| TimingNamespace { timings: Vec::new(), last_time: now() });
-    entry.timings.push(TimingEntry { label: label.to_owned(), ms });
+    let entry = map.entry(namespace).or_insert_with(|| TimingNamespace {
+        timings: Vec::new(),
+        last_time: now(),
+    });
+    entry.timings.push(TimingEntry {
+        label: label.to_owned(),
+        ms,
+    });
 }
 
 pub fn get_timings(namespace: TimingLabel) -> Vec<TimingEntry> {
-    lock().get(&namespace).map(|entry| entry.timings.clone()).unwrap_or_default()
+    lock()
+        .get(&namespace)
+        .map(|entry| entry.timings.clone())
+        .unwrap_or_default()
 }
 
 pub fn format_timings(namespace: TimingLabel) -> Option<String> {
-    let entries: Vec<TimingEntry> = get_timings(namespace).into_iter().filter(|entry| entry.ms >= 0.0).collect();
+    let entries: Vec<TimingEntry> = get_timings(namespace)
+        .into_iter()
+        .filter(|entry| entry.ms >= 0.0)
+        .collect();
     if entries.is_empty() {
         return None;
     }
@@ -134,10 +163,15 @@ pub fn print_timings() {
     if !enabled() {
         return;
     }
-    let snapshot: Vec<(TimingLabel, Vec<TimingEntry>)> =
-        lock().iter().map(|(namespace, entry)| (*namespace, entry.timings.clone())).collect();
+    let snapshot: Vec<(TimingLabel, Vec<TimingEntry>)> = lock()
+        .iter()
+        .map(|(namespace, entry)| (*namespace, entry.timings.clone()))
+        .collect();
     for (namespace, timings) in snapshot {
-        print_timing_group(&format!("Startup Timings: {}", namespace.as_str()), &timings);
+        print_timing_group(
+            &format!("Startup Timings: {}", namespace.as_str()),
+            &timings,
+        );
     }
 }
 
@@ -148,8 +182,12 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn enable() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        *ENABLED_OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(true);
+        let guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ENABLED_OVERRIDE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(true);
         guard
     }
 

@@ -25,12 +25,18 @@ fn selected_assets_root() -> PathBuf {
 }
 
 fn skills_root() -> PathBuf {
-    std::env::var(SELECTED_SKILLS_ENV).map(PathBuf::from).unwrap_or_else(|_| selected_assets_root().join("skills"))
+    std::env::var(SELECTED_SKILLS_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| selected_assets_root().join("skills"))
 }
 
 fn require_skills_root() -> PathBuf {
     let root = skills_root();
-    assert!(root.is_dir(), "the selected latest skill assets are required at {} (override with {SELECTED_SKILLS_ENV}); stage the packaging overlay first", root.display());
+    assert!(
+        root.is_dir(),
+        "the selected latest skill assets are required at {} (override with {SELECTED_SKILLS_ENV}); stage the packaging overlay first",
+        root.display()
+    );
     root
 }
 
@@ -38,11 +44,20 @@ fn require_skills_root() -> PathBuf {
 /// The native repo ships no `docs/guide/`, so the README is the one guide file that exists; it is
 /// read unconditionally, so a missing README fails the scan instead of shrinking it silently.
 fn guide_files() -> Vec<PathBuf> {
-    vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..").join("README.md")]
+    vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .join("README.md"),
+    ]
 }
 
 fn read_required(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|error| panic!("required shipped file {} could not be read: {error}", path.display()))
+    std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!(
+            "required shipped file {} could not be read: {error}",
+            path.display()
+        )
+    })
 }
 
 /// Upstream `DOCUMENTED_COMMAND = /(?:^|[\s(|"'>])`\/([a-z][a-z0-9-]*)(?=[\s`])/gm`.
@@ -51,10 +66,15 @@ fn read_required(path: &Path) -> String {
 /// delimiter and the name stays in capture 1. `(?m)` keeps upstream's `m` flag so `^` also matches
 /// at a line start; against the shipped assets both forms select the same names.
 fn documented_commands(root: &Path) -> BTreeSet<String> {
-    let pattern = Regex::new(r#"(?m)(?:^|[\s(|"'>])`/([a-z][a-z0-9-]*)([\s`]|$)"#).expect("documented-command regex");
+    let pattern = Regex::new(r#"(?m)(?:^|[\s(|"'>])`/([a-z][a-z0-9-]*)([\s`]|$)"#)
+        .expect("documented-command regex");
     let mut found = BTreeSet::new();
     for name in read_bundled_skill_names(Some(root)).expect("bundled skill names") {
-        collect_documented(&pattern, &read_required(&root.join(&name).join("SKILL.md")), &mut found);
+        collect_documented(
+            &pattern,
+            &read_required(&root.join(&name).join("SKILL.md")),
+            &mut found,
+        );
     }
     for path in guide_files() {
         collect_documented(&pattern, &read_required(&path), &mut found);
@@ -76,21 +96,35 @@ fn collect_documented(pattern: &Regex, source: &str, found: &mut BTreeSet<String
 /// the dispatch assertion below - fail.
 fn omo_registered_commands() -> BTreeSet<String> {
     let mut api = ExtensionApi::new(
-        LoadedExtension::new("omo-command-owners", PathBuf::from(env!("CARGO_MANIFEST_DIR")), SourceInfo::default()),
+        LoadedExtension::new(
+            "omo-command-owners",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            SourceInfo::default(),
+        ),
         ExtensionSessionProfile::default(),
         EventBus::default(),
         ExtensionRuntime::default(),
     );
     maho_omo_task::commands::register_task_commands(&mut api, Arc::new(NoTasks));
     maho_omo_task::dag_commands::register_dag_commands(&mut api, Arc::new(NoDags));
-    maho_omo_memory::commands::register::register_memory_commands(&mut api, Arc::new(memory_command_deps()));
-    api.registered.commands.iter().map(|command| command.name.clone()).collect()
+    maho_omo_memory::commands::register::register_memory_commands(
+        &mut api,
+        Arc::new(memory_command_deps()),
+    );
+    api.registered
+        .commands
+        .iter()
+        .map(|command| command.name.clone())
+        .collect()
 }
 
 struct NoTasks;
 
 impl maho_omo_task::commands::CommandManager for NoTasks {
-    fn list(&self, _: &senpi_task::manager::types::ListScope) -> Vec<senpi_task::state::TaskRecord> {
+    fn list(
+        &self,
+        _: &senpi_task::manager::types::ListScope,
+    ) -> Vec<senpi_task::state::TaskRecord> {
         Vec::new()
     }
 
@@ -102,7 +136,11 @@ impl maho_omo_task::commands::CommandManager for NoTasks {
 struct NoDags;
 
 impl maho_omo_task::dag_commands::DagCommandManager for NoDags {
-    fn list(&self, _: &str, _: usize) -> Result<Vec<senpi_task::dag::manager::DagRunSummary>, ExtensionFailure> {
+    fn list(
+        &self,
+        _: &str,
+        _: usize,
+    ) -> Result<Vec<senpi_task::dag::manager::DagRunSummary>, ExtensionFailure> {
         Ok(Vec::new())
     }
 
@@ -118,11 +156,19 @@ impl maho_omo_task::dag_commands::DagCommandManager for NoDags {
 struct NoActions;
 
 impl ExtensionActions for NoActions {
-    fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_message(
+        &self,
+        _: CustomMessage,
+        _: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         Ok(())
     }
 
-    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_user_message(
+        &self,
+        _: UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         Ok(())
     }
 
@@ -139,7 +185,9 @@ impl ExtensionActions for NoActions {
 /// set and nothing else.
 fn memory_command_deps() -> maho_omo_memory::commands::types::MemoryCommandDeps {
     maho_omo_memory::commands::types::MemoryCommandDeps {
-        resolve_context: Arc::new(|_: &str| -> Option<maho_omo_memory::context::MemoryIdentityContext> { None }),
+        resolve_context: Arc::new(
+            |_: &str| -> Option<maho_omo_memory::context::MemoryIdentityContext> { None },
+        ),
         resolve_identity: None,
         settings: Arc::new(|| Ok(serde_json::json!({}))),
         bust_prompt_cache: Arc::new(|| {}),
@@ -161,27 +209,44 @@ fn memory_command_deps() -> maho_omo_memory::commands::types::MemoryCommandDeps 
 }
 
 fn known_commands(root: &Path) -> BTreeSet<String> {
-    let mut known: BTreeSet<String> = read_bundled_skill_names(Some(root)).expect("bundled skill names");
-    known.extend(builtin_slash_commands().iter().map(|command| command.name.to_owned()));
+    let mut known: BTreeSet<String> =
+        read_bundled_skill_names(Some(root)).expect("bundled skill names");
+    known.extend(
+        builtin_slash_commands()
+            .iter()
+            .map(|command| command.name.to_owned()),
+    );
     known.extend(omo_registered_commands());
     known
 }
 
 #[test]
-fn given_the_shipped_skills_and_guides_when_they_name_a_slash_command_then_that_command_dispatches() {
+fn given_the_shipped_skills_and_guides_when_they_name_a_slash_command_then_that_command_dispatches()
+{
     let root = require_skills_root();
     let known = known_commands(&root);
 
-    let unregistered: Vec<String> = documented_commands(&root).into_iter().filter(|command| !known.contains(command)).collect();
+    let unregistered: Vec<String> = documented_commands(&root)
+        .into_iter()
+        .filter(|command| !known.contains(command))
+        .collect();
 
-    assert!(unregistered.is_empty(), "documented but not dispatchable: {unregistered:?}");
+    assert!(
+        unregistered.is_empty(),
+        "documented but not dispatchable: {unregistered:?}"
+    );
 }
 
 #[test]
-fn given_the_scan_inputs_when_resolved_then_each_source_is_populated_so_an_empty_set_cannot_pass_vacuously() {
+fn given_the_scan_inputs_when_resolved_then_each_source_is_populated_so_an_empty_set_cannot_pass_vacuously()
+ {
     let root = require_skills_root();
-    let bundled: BTreeSet<String> = read_bundled_skill_names(Some(&root)).expect("bundled skill names");
-    let builtin: BTreeSet<String> = builtin_slash_commands().iter().map(|command| command.name.to_owned()).collect();
+    let bundled: BTreeSet<String> =
+        read_bundled_skill_names(Some(&root)).expect("bundled skill names");
+    let builtin: BTreeSet<String> = builtin_slash_commands()
+        .iter()
+        .map(|command| command.name.to_owned())
+        .collect();
     let omo = omo_registered_commands();
     let documented = documented_commands(&root);
 

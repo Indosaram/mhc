@@ -635,7 +635,6 @@ fn cache_replacement_updates_existing_file_without_leaving_temporary_files() {
     );
 }
 
-
 #[tokio::test]
 async fn offline_cache_read_requires_no_release_server() {
     let root = tempfile::tempdir().expect("cache directory");
@@ -645,10 +644,13 @@ async fn offline_cache_read_requires_no_release_server() {
         endpoint: "http://127.0.0.1:1/releases/latest".into(),
         target: "linux-x86_64".into(),
         checked_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs(),
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs(),
         success: true,
         release: Some(Release {
-            version: "9999.12.31".into(), tag: "v9999.12.31".into(),
+            version: "9999.12.31".into(),
+            tag: "v9999.12.31".into(),
             asset_name: "mhc-linux-x86_64.tar.gz".into(),
             asset_url: "http://127.0.0.1:1/package".into(),
             checksum_url: "http://127.0.0.1:1/checksum".into(),
@@ -657,8 +659,17 @@ async fn offline_cache_read_requires_no_release_server() {
         failure_reason: None,
     };
     write_cache_atomic(&path, &record).expect("cache publication");
-    let cached = available_cached_with(&path, Some(&record.endpoint), Some(&record.target), Some(true)).await;
-    assert_eq!(cached.map(|release| release.version), Some("9999.12.31".into()));
+    let cached = available_cached_with(
+        &path,
+        Some(&record.endpoint),
+        Some(&record.target),
+        Some(true),
+    )
+    .await;
+    assert_eq!(
+        cached.map(|release| release.version),
+        Some("9999.12.31".into())
+    );
 }
 
 mod signature_cases {
@@ -670,16 +681,27 @@ mod signature_cases {
     const OLD: &str = "2026.10.19.1";
 
     fn pubkey() -> String {
-        TEST_PUB.lines().nth(1).expect("fixture public key line").trim().to_owned()
+        TEST_PUB
+            .lines()
+            .nth(1)
+            .expect("fixture public key line")
+            .trim()
+            .to_owned()
     }
 
     fn sign(bytes: &[u8]) -> String {
         let secret = minisign::SecretKeyBox::from_string(TEST_KEY)
             .and_then(|boxed| boxed.into_secret_key(Some(String::new())))
             .expect("fixture secret key");
-        minisign::sign(None, &secret, std::io::Cursor::new(bytes), Some("mhc test"), None)
-            .expect("sign")
-            .into_string()
+        minisign::sign(
+            None,
+            &secret,
+            std::io::Cursor::new(bytes),
+            Some("mhc test"),
+            None,
+        )
+        .expect("sign")
+        .into_string()
     }
 
     fn archive(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -693,7 +715,16 @@ mod signature_cases {
     fn valid_signature_is_accepted() {
         let (_dir, path) = archive(b"archive bytes");
         let key = pubkey();
-        assert_eq!(verify_archive(Some(&key), &path, Some(&sign(b"archive bytes")), SIGNED, false), Ok(()));
+        assert_eq!(
+            verify_archive(
+                Some(&key),
+                &path,
+                Some(&sign(b"archive bytes")),
+                SIGNED,
+                false
+            ),
+            Ok(())
+        );
     }
 
     // `minisign -S -l` with the fixture key over b"archive bytes"; windows-x86_64 of v2026.11.01 shipped this mode.
@@ -706,7 +737,10 @@ mod signature_cases {
     fn legacy_signature_is_accepted() {
         let (_dir, path) = archive(b"archive bytes");
         let key = pubkey();
-        assert_eq!(verify_archive(Some(&key), &path, Some(LEGACY_SIGNATURE), SIGNED, false), Ok(()));
+        assert_eq!(
+            verify_archive(Some(&key), &path, Some(LEGACY_SIGNATURE), SIGNED, false),
+            Ok(())
+        );
     }
 
     #[test]
@@ -714,7 +748,10 @@ mod signature_cases {
         let (_dir, path) = archive(b"archive bytez");
         let key = pubkey();
         let result = verify_archive(Some(&key), &path, Some(LEGACY_SIGNATURE), SIGNED, true);
-        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(SignatureError::Invalid(_))),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -723,19 +760,31 @@ mod signature_cases {
         let (_dir, path) = archive(b"archive bytez");
         let key = pubkey();
         let result = verify_archive(Some(&key), &path, Some(&signature), SIGNED, true);
-        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(SignatureError::Invalid(_))),
+            "{result:?}"
+        );
     }
 
     #[test]
     fn signature_from_a_different_key_is_rejected() {
         let pair = minisign::KeyPair::generate_unencrypted_keypair().expect("key pair");
-        let other = minisign::sign(None, &pair.sk, std::io::Cursor::new(b"archive bytes"), None, None)
-            .expect("sign")
-            .into_string();
+        let other = minisign::sign(
+            None,
+            &pair.sk,
+            std::io::Cursor::new(b"archive bytes"),
+            None,
+            None,
+        )
+        .expect("sign")
+        .into_string();
         let (_dir, path) = archive(b"archive bytes");
         let key = pubkey();
         let result = verify_archive(Some(&key), &path, Some(&other), SIGNED, true);
-        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(SignatureError::Invalid(_))),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -756,7 +805,10 @@ mod signature_cases {
     fn missing_signature_before_the_first_signed_version_needs_allow_unsigned() {
         let (_dir, path) = archive(b"archive bytes");
         let key = pubkey();
-        assert_eq!(verify_archive(Some(&key), &path, None, OLD, false), Err(SignatureError::UnsignedNotAllowed));
+        assert_eq!(
+            verify_archive(Some(&key), &path, None, OLD, false),
+            Err(SignatureError::UnsignedNotAllowed)
+        );
         assert_eq!(verify_archive(Some(&key), &path, None, OLD, true), Ok(()));
     }
 
@@ -768,7 +820,10 @@ mod signature_cases {
                 verify_archive(None, &path, Some(&sign(b"archive bytes")), SIGNED, allow),
                 Err(SignatureError::NoTrustRoot)
             );
-            assert_eq!(verify_archive(None, &path, None, OLD, allow), Err(SignatureError::NoTrustRoot));
+            assert_eq!(
+                verify_archive(None, &path, None, OLD, allow),
+                Err(SignatureError::NoTrustRoot)
+            );
         }
     }
 }

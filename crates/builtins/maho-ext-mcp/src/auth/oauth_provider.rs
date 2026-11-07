@@ -1,4 +1,5 @@
 use super::{
+    oauth::OAuthRequestError,
     oauth_errors::{OAuthFailureKind, OAuthFlowError},
     token_store::{McpStoredAuth, McpTokenStore, TokenStoreError},
 };
@@ -59,6 +60,15 @@ pub fn merge_tokens_into_stored_auth(
     }
     next.expires_at = token_expires_at(tokens, now);
     next
+}
+/// Runs a store operation on a blocking thread so the file lock waits there rather than on an async worker.
+async fn spawn_store<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, TokenStoreError> + Send + 'static,
+) -> Result<T, OAuthRequestError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| OAuthRequestError::Invalid(error.to_string()))?
+        .map_err(OAuthRequestError::from)
 }
 pub struct McpOAuthProvider {
     pub store: McpTokenStore,
@@ -160,9 +170,39 @@ impl McpOAuthProvider {
         }
         Ok(self.store.read()?.and_then(|r| r.client_info))
     }
+    /// `client_information` on a blocking thread: the stored-record read may wait on the legacy
+    /// migration lock.
+    pub async fn client_information_async(&self) -> Result<Option<Value>, OAuthRequestError> {
+        if let Some(id) = self
+            .client_id
+            .as_ref()
+            .or(self.client_metadata_url.as_ref())
+        {
+            return Ok(Some(json!({"client_id":id})));
+        }
+        let store = self.store.clone();
+        spawn_store(move || Ok(store.read()?.and_then(|r| r.client_info))).await
+    }
     /// Persists a registration stamped with the validated issuer that registered it (senpi#4194).
     pub fn save_client_information(
         &self,
+        info: Value,
+        issuer: Option<&str>,
+    ) -> Result<(), TokenStoreError> {
+        Self::save_client_information_in(&self.store, info, issuer)
+    }
+    /// `save_client_information` on a blocking thread: the store update waits on the file lock.
+    pub async fn save_client_information_async(
+        &self,
+        info: Value,
+        issuer: Option<&str>,
+    ) -> Result<(), OAuthRequestError> {
+        let store = self.store.clone();
+        let issuer = issuer.map(str::to_owned);
+        spawn_store(move || Self::save_client_information_in(&store, info, issuer.as_deref())).await
+    }
+    fn save_client_information_in(
+        store: &McpTokenStore,
         mut info: Value,
         issuer: Option<&str>,
     ) -> Result<(), TokenStoreError> {
@@ -174,7 +214,7 @@ impl McpOAuthProvider {
         if let (Some(issuer), Some(object)) = (issuer, info.as_object_mut()) {
             object.insert("issuer".into(), Value::String(issuer));
         }
-        self.store.update(|r| {
+        store.update(|r| {
             let mut next = r.unwrap_or_default();
             next.client_info = Some(info);
             Some(next)
@@ -185,7 +225,16 @@ impl McpOAuthProvider {
     /// credentials stamped for another issuer are dropped, and a registration that cannot be attributed is never
     /// sent to the server discovered now.
     pub fn bind_issuer(&self, issuer: &str) -> Result<(), TokenStoreError> {
-        self.store.update(|current| {
+        Self::bind_issuer_in(&self.store, issuer)
+    }
+    /// `bind_issuer` on a blocking thread: the store update waits on the file lock.
+    pub async fn bind_issuer_async(&self, issuer: &str) -> Result<(), OAuthRequestError> {
+        let store = self.store.clone();
+        let issuer = issuer.to_owned();
+        spawn_store(move || Self::bind_issuer_in(&store, &issuer)).await
+    }
+    fn bind_issuer_in(store: &McpTokenStore, issuer: &str) -> Result<(), TokenStoreError> {
+        store.update(|current| {
             let mut next = current?;
             // senpi#2940 `freezeGrantAttribution`: discovery made now never attributes an existing grant, so an
             // unattributed grant loses its refresh token instead of being sent to the server discovered now.
@@ -220,6 +269,11 @@ impl McpOAuthProvider {
     pub fn tokens(&self, now: f64) -> Result<Option<OAuthTokens>, TokenStoreError> {
         Ok(stored_auth_to_tokens(self.store.read()?.as_ref(), now))
     }
+    /// `tokens` on a blocking thread: the stored-record read may wait on the legacy migration lock.
+    pub async fn tokens_async(&self, now: f64) -> Result<Option<OAuthTokens>, OAuthRequestError> {
+        let store = self.store.clone();
+        spawn_store(move || Ok(stored_auth_to_tokens(store.read()?.as_ref(), now))).await
+    }
     pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(), TokenStoreError> {
         self.save_tokens_with_issuer(tokens, now, None)
     }
@@ -230,16 +284,47 @@ impl McpOAuthProvider {
         now: f64,
         issuer: Option<&str>,
     ) -> Result<(), TokenStoreError> {
-        self.store.update(|r| {
+        Self::save_tokens_with_issuer_in(&self.store, self.logger.as_deref(), tokens, now, issuer)
+    }
+    /// `save_tokens_with_issuer` on a blocking thread: the store update waits on the file lock.
+    pub async fn save_tokens_with_issuer_async(
+        &self,
+        tokens: &OAuthTokens,
+        now: f64,
+        issuer: Option<&str>,
+    ) -> Result<(), OAuthRequestError> {
+        let store = self.store.clone();
+        let logger = self.logger.clone();
+        let tokens = tokens.clone();
+        let issuer = issuer.map(str::to_owned);
+        spawn_store(move || {
+            Self::save_tokens_with_issuer_in(
+                &store,
+                logger.as_deref(),
+                &tokens,
+                now,
+                issuer.as_deref(),
+            )
+        })
+        .await
+    }
+    fn save_tokens_with_issuer_in(
+        store: &McpTokenStore,
+        logger: Option<&std::sync::Mutex<crate::log::McpLogger>>,
+        tokens: &OAuthTokens,
+        now: f64,
+        issuer: Option<&str>,
+    ) -> Result<(), TokenStoreError> {
+        store.update(|r| {
             Some(merge_tokens_into_stored_auth(
                 r,
                 tokens,
-                &self.store.server_url,
+                &store.server_url,
                 now,
                 issuer,
             ))
         })?;
-        if let Some(logger) = &self.logger {
+        if let Some(logger) = logger {
             let _ = logger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -260,6 +345,20 @@ impl McpOAuthProvider {
         })?;
         Ok(())
     }
+    /// `save_code_verifier` on a blocking thread: the store update waits on the file lock.
+    pub async fn save_code_verifier_async(&self, verifier: &str) -> Result<(), OAuthRequestError> {
+        let store = self.store.clone();
+        let verifier = verifier.to_owned();
+        spawn_store(move || {
+            store.update(|r| {
+                let mut next = r.unwrap_or_default();
+                next.code_verifier = Some(verifier);
+                Some(next)
+            })?;
+            Ok(())
+        })
+        .await
+    }
     pub fn code_verifier(&self) -> Result<String, ProviderError> {
         self.store
             .read()?
@@ -274,6 +373,20 @@ impl McpOAuthProvider {
                     ),
                 )))
             })
+    }
+    /// `code_verifier` on a blocking thread: the stored-record read may wait on the legacy
+    /// migration lock.
+    pub async fn code_verifier_async(&self) -> Result<String, OAuthRequestError> {
+        let store = self.store.clone();
+        let server_name = self.store.server_name.clone();
+        let stored = spawn_store(move || Ok(store.read()?.and_then(|r| r.code_verifier))).await?;
+        stored.filter(|s| !s.is_empty()).ok_or_else(|| {
+            ProviderError::OAuth(Box::new(OAuthFlowError::new(
+                OAuthFailureKind::NoVerifier,
+                format!("Missing PKCE code verifier for MCP server {server_name}"),
+            )))
+            .into()
+        })
     }
     pub async fn redirect_to_authorization(
         &mut self,
@@ -292,14 +405,28 @@ impl McpOAuthProvider {
         url::Url::parse(resource.unwrap_or(server_url))
     }
     pub fn invalidate_credentials(&self, scope: CredentialScope) -> Result<(), TokenStoreError> {
+        Self::invalidate_credentials_in(&self.store, scope)
+    }
+    /// `invalidate_credentials` on a blocking thread: the store update waits on the file lock.
+    pub async fn invalidate_credentials_async(
+        &self,
+        scope: CredentialScope,
+    ) -> Result<(), OAuthRequestError> {
+        let store = self.store.clone();
+        spawn_store(move || Self::invalidate_credentials_in(&store, scope)).await
+    }
+    fn invalidate_credentials_in(
+        store: &McpTokenStore,
+        scope: CredentialScope,
+    ) -> Result<(), TokenStoreError> {
         if matches!(scope, CredentialScope::All) {
-            return self.store.clear();
+            return store.clear();
         }
         if matches!(scope, CredentialScope::Discovery) {
             super::oauth::reset_discovery_cache();
             return Ok(());
         }
-        self.store.update(|current| {
+        store.update(|current| {
             current.map(|mut next| {
                 match scope {
                     CredentialScope::All => (),

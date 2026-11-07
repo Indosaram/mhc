@@ -8,9 +8,11 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::dag::graph::{DagDefinition, DagNodeInput};
-use crate::dag::types::DagNodeTarget;
-use crate::dag::store::{DagEventReadOptions, DagStoreConfig, DagStoreOptions, create_dag_file_store};
+use crate::dag::store::{
+    DagEventReadOptions, DagStoreConfig, DagStoreOptions, create_dag_file_store,
+};
 use crate::dag::types::DagNodeState;
+use crate::dag::types::DagNodeTarget;
 
 const PARENT_SESSION_ID: &str = "ses_parent";
 const OTHER_SESSION_ID: &str = "ses_other";
@@ -21,25 +23,35 @@ fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_reje
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { parent_model: None,
-        definition: plan_build_definition(),
-        parent_session_id: PARENT_SESSION_ID.to_string(),
-        root_session_id: ROOT_SESSION_ID.to_string(),
-    }).expect("start run");
-    let key = store.read_key(PARENT_SESSION_ID, "release-plan")
-        .expect("key read").expect("key");
-    store.write_key(&crate::dag::store::DagKeyRecord {
-        schema_version: crate::dag::types::SchemaVersion1,
-        parent_session_id: key.parent_session_id,
-        run_key: key.run_key,
-        run_id: started.snapshot.run_id,
-        definition_fingerprint: Some("mismatch".to_string()),
-    }).expect("rewrite key");
-    let error = dag.start(DagStartParams { parent_model: None,
-        definition: plan_build_definition(),
-        parent_session_id: PARENT_SESSION_ID.to_string(),
-        root_session_id: ROOT_SESSION_ID.to_string(),
-    }).expect_err("mismatched key stamp must refuse reuse");
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+        })
+        .expect("start run");
+    let key = store
+        .read_key(PARENT_SESSION_ID, "release-plan")
+        .expect("key read")
+        .expect("key");
+    store
+        .write_key(&crate::dag::store::DagKeyRecord {
+            schema_version: crate::dag::types::SchemaVersion1,
+            parent_session_id: key.parent_session_id,
+            run_key: key.run_key,
+            run_id: started.snapshot.run_id,
+            definition_fingerprint: Some("mismatch".to_string()),
+        })
+        .expect("rewrite key");
+    let error = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+        })
+        .expect_err("mismatched key stamp must refuse reuse");
     assert_eq!(error.code, DagManagerErrorCode::DefinitionConflict);
 }
 
@@ -78,17 +90,34 @@ fn plan_build_definition() -> DagDefinition {
 
 fn diamond(b_prompt: &str, extra: Vec<DagNodeInput>) -> DagDefinition {
     let node = |id: &str, prompt: &str, depends_on: Option<Vec<&str>>| DagNodeInput {
-        id: id.into(), prompt: prompt.into(), target: DagNodeTarget::Category("quick".into()),
-        label: None, depends_on: depends_on.map(|deps| deps.into_iter().map(str::to_string).collect()),
-        task_summary: None, description: None, load_skills: None,
+        id: id.into(),
+        prompt: prompt.into(),
+        target: DagNodeTarget::Category("quick".into()),
+        label: None,
+        depends_on: depends_on.map(|deps| deps.into_iter().map(str::to_string).collect()),
+        task_summary: None,
+        description: None,
+        load_skills: None,
     };
-    let mut nodes = vec![node("A", "build a", None), node("B", b_prompt, Some(vec!["A"])), node("C", "build c", Some(vec!["A"])), node("D", "build d", Some(vec!["B", "C"]))];
+    let mut nodes = vec![
+        node("A", "build a", None),
+        node("B", b_prompt, Some(vec!["A"])),
+        node("C", "build c", Some(vec!["A"])),
+        node("D", "build d", Some(vec!["B", "C"])),
+    ];
     nodes.extend(extra);
-    DagDefinition { key: "diamond".into(), name: "diamond".into(), nodes }
+    DagDefinition {
+        key: "diamond".into(),
+        name: "diamond".into(),
+        nodes,
+    }
 }
 
 fn complete_diamond(store: &DagFileStore, run_id: &str) -> DagRunRecordV1 {
-    let mut record = store.read_checkpoint::<DagRunRecordV1>(run_id).expect("checkpoint read").expect("checkpoint exists");
+    let mut record = store
+        .read_checkpoint::<DagRunRecordV1>(run_id)
+        .expect("checkpoint read")
+        .expect("checkpoint exists");
     record.status = DagRunStatus::Completed;
     record.completed_at = Some("2026-01-01T00:01:00.000Z".into());
     for node in &mut record.nodes {
@@ -97,117 +126,484 @@ fn complete_diamond(store: &DagFileStore, run_id: &str) -> DagRunRecordV1 {
         node.attempt = 1;
         node.completed_at = Some("2026-01-01T00:01:00.000Z".into());
     }
-    store.write_checkpoint(run_id, &record).expect("completed checkpoint");
+    store
+        .write_checkpoint(run_id, &record)
+        .expect("completed checkpoint");
     record
 }
 
 #[test]
-fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_invalidated_and_history_is_recorded() {
+fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_invalidated_and_history_is_recorded()
+ {
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { parent_model: None, definition: plan_build_definition(), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
     let mut definition = plan_build_definition();
     definition.nodes[0].prompt = "revise plan".into();
-    let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition, parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
-    assert_eq!(amended.nodes.iter().map(|node| node.exec_attempt).collect::<Vec<_>>(), vec![Some(1), Some(1)]);
+    let amended = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id.clone()),
+            key: None,
+            definition,
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect("amend");
+    assert_eq!(
+        amended
+            .nodes
+            .iter()
+            .map(|node| node.exec_attempt)
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(1)]
+    );
     assert_eq!(amended.amend_history.expect("history").len(), 1);
     assert_eq!(amended.definition.nodes[0].prompt, "revise plan");
 }
 
 #[test]
-fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_invalidated_and_cached_siblings_survive() {
-    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_invalidated_and_cached_siblings_survive()
+ {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("build b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
     complete_diamond(&store, &started.snapshot.run_id);
-    let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
-    assert_eq!(amended.nodes.iter().map(|n| (n.id.as_str(), n.state, n.exec_attempt)).collect::<Vec<_>>(), vec![("A", DagNodeState::Completed, None), ("B", DagNodeState::Pending, Some(1)), ("C", DagNodeState::Completed, None), ("D", DagNodeState::Pending, Some(1))]);
+    let amended = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id.clone()),
+            key: None,
+            definition: diamond("changed b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect("amend");
+    assert_eq!(
+        amended
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.state, n.exec_attempt))
+            .collect::<Vec<_>>(),
+        vec![
+            ("A", DagNodeState::Completed, None),
+            ("B", DagNodeState::Pending, Some(1)),
+            ("C", DagNodeState::Completed, None),
+            ("D", DagNodeState::Pending, Some(1))
+        ]
+    );
     assert_eq!(amended.amend_history.as_ref().expect("history").len(), 1);
-    assert_eq!(dag.snapshot(&started.snapshot.run_id, PARENT_SESSION_ID).expect("snapshot").amend_history.expect("projected history").len(), 1);
-    let reused=dag.start(DagStartParams { parent_model: None, definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("reuse");
+    assert_eq!(
+        dag.snapshot(&started.snapshot.run_id, PARENT_SESSION_ID)
+            .expect("snapshot")
+            .amend_history
+            .expect("projected history")
+            .len(),
+        1
+    );
+    let reused = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("changed b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("reuse");
     assert!(reused.reused);
-    let conflict=dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect_err("conflict");
-    assert_eq!(conflict.code,DagManagerErrorCode::DefinitionConflict);
+    let conflict = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("build b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect_err("conflict");
+    assert_eq!(conflict.code, DagManagerErrorCode::DefinitionConflict);
 }
 
 #[test]
-fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_nodes_and_dangling_removals_are_rejected_but_leaf_removal_is_allowed() {
-    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_nodes_and_dangling_removals_are_rejected_but_leaf_removal_is_allowed()
+ {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("build b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
     let complete = complete_diamond(&store, &started.snapshot.run_id);
-    let mut running = complete.clone(); running.status = DagRunStatus::Running; running.completed_at = None;
-    running.nodes.iter_mut().find(|n| n.id == "B").expect("B").state = DagNodeState::Running;
-    store.write_checkpoint(&started.snapshot.run_id, &running).expect("running checkpoint");
-    let error = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: diamond("changed", vec![]), parent_session_id: PARENT_SESSION_ID.into() }).expect_err("running node refusal");
-    assert_eq!(error.code, DagManagerErrorCode::AmendRunningNode); assert_eq!(error.node_ids(), &["B"]);
-    store.write_checkpoint(&started.snapshot.run_id, &complete).expect("restore checkpoint");
-    let dangling = diamond("build b", vec![]).nodes.into_iter().filter(|n| n.id != "A").collect();
-    assert_eq!(dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: DagDefinition { key:"diamond".into(), name:"diamond".into(), nodes:dangling }, parent_session_id:PARENT_SESSION_ID.into() }).expect_err("dangling graph").code, DagManagerErrorCode::InvalidDefinition);
-    let leaf_removed = diamond("build b", vec![]).nodes.into_iter().filter(|n| n.id != "D").collect();
-    assert_eq!(dag.amend(DagAmendParams { run_id:None, key:Some("diamond".into()), definition:DagDefinition { key:"diamond".into(), name:"diamond".into(), nodes:leaf_removed }, parent_session_id:PARENT_SESSION_ID.into() }).expect("leaf removal").nodes.len(), 3);
+    let mut running = complete.clone();
+    running.status = DagRunStatus::Running;
+    running.completed_at = None;
+    running
+        .nodes
+        .iter_mut()
+        .find(|n| n.id == "B")
+        .expect("B")
+        .state = DagNodeState::Running;
+    store
+        .write_checkpoint(&started.snapshot.run_id, &running)
+        .expect("running checkpoint");
+    let error = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id.clone()),
+            key: None,
+            definition: diamond("changed", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect_err("running node refusal");
+    assert_eq!(error.code, DagManagerErrorCode::AmendRunningNode);
+    assert_eq!(error.node_ids(), &["B"]);
+    store
+        .write_checkpoint(&started.snapshot.run_id, &complete)
+        .expect("restore checkpoint");
+    let dangling = diamond("build b", vec![])
+        .nodes
+        .into_iter()
+        .filter(|n| n.id != "A")
+        .collect();
+    assert_eq!(
+        dag.amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id.clone()),
+            key: None,
+            definition: DagDefinition {
+                key: "diamond".into(),
+                name: "diamond".into(),
+                nodes: dangling
+            },
+            parent_session_id: PARENT_SESSION_ID.into()
+        })
+        .expect_err("dangling graph")
+        .code,
+        DagManagerErrorCode::InvalidDefinition
+    );
+    let leaf_removed = diamond("build b", vec![])
+        .nodes
+        .into_iter()
+        .filter(|n| n.id != "D")
+        .collect();
+    assert_eq!(
+        dag.amend(DagAmendParams {
+            run_id: None,
+            key: Some("diamond".into()),
+            definition: DagDefinition {
+                key: "diamond".into(),
+                name: "diamond".into(),
+                nodes: leaf_removed
+            },
+            parent_session_id: PARENT_SESSION_ID.into()
+        })
+        .expect("leaf removal")
+        .nodes
+        .len(),
+        3
+    );
 }
 
 #[test]
-fn given_a_completed_run_when_a_node_is_added_then_compiled_graph_projections_include_the_new_node() {
-    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let base = diamond("build b", vec![]); let started = dag.start(DagStartParams { parent_model: None, definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store, &started.snapshot.run_id);
-    let mut added=base; added.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:Some(vec!["D".into()]), task_summary:None, description:None, load_skills:None });
-    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id), key:None, definition:added, parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
-    assert_eq!(amended.nodes.iter().find(|n| n.id=="E").expect("E").state,DagNodeState::Pending);
-    assert_eq!(amended.waves.last().expect("last wave").node_ids, vec!["E"]);
-    assert!(amended.edges.iter().any(|e| e.from=="D" && e.to=="E"));
-}
-
-#[test]
-fn given_a_materialized_run_when_changed_and_added_nodes_are_amended_then_only_those_nodes_are_rematerialized() {
-    let project=temp_project(); let store=open_store(&project); let calls=Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new())); let seen=Arc::clone(&calls);
-    let materializer: DagMaterializeSkills=Arc::new(move |input| {
-        seen.lock().expect("calls").push(input.definition.nodes.iter().map(|node| node.id.clone()).collect());
-        Ok(DagSkillMaterialization { nodes:input.definition.nodes.iter().map(|node|(node.id.clone(),format!("skill:{}",node.prompt))).collect(),diagnostics:Vec::new() })
+fn given_a_completed_run_when_a_node_is_added_then_compiled_graph_projections_include_the_new_node()
+{
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let base = diamond("build b", vec![]);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: base.clone(),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
+    complete_diamond(&store, &started.snapshot.run_id);
+    let mut added = base;
+    added.nodes.push(DagNodeInput {
+        id: "E".into(),
+        prompt: "build e".into(),
+        target: DagNodeTarget::Category("quick".into()),
+        label: None,
+        depends_on: Some(vec!["D".into()]),
+        task_summary: None,
+        description: None,
+        load_skills: None,
     });
-    let dag=create_dag_manager(DagManagerOptions { store:Arc::clone(&store), new_run_id:Some(counter_run_ids()), now:None, materialize_skills:Some(materializer), settings:None });
-    let base=diamond("build b",vec![]); let started=dag.start(DagStartParams { parent_model: None, definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
-    let mut changed=base; changed.nodes[1].prompt="changed".into(); changed.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:None, task_summary:None, description:None, load_skills:None });
-    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id),key:None,definition:changed,parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
+    let amended = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id),
+            key: None,
+            definition: added,
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect("amend");
+    assert_eq!(
+        amended.nodes.iter().find(|n| n.id == "E").expect("E").state,
+        DagNodeState::Pending
+    );
+    assert_eq!(amended.waves.last().expect("last wave").node_ids, vec!["E"]);
+    assert!(amended.edges.iter().any(|e| e.from == "D" && e.to == "E"));
+}
+
+#[test]
+fn given_a_materialized_run_when_changed_and_added_nodes_are_amended_then_only_those_nodes_are_rematerialized()
+ {
+    let project = temp_project();
+    let store = open_store(&project);
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+    let seen = Arc::clone(&calls);
+    let materializer: DagMaterializeSkills = Arc::new(move |input| {
+        seen.lock().expect("calls").push(
+            input
+                .definition
+                .nodes
+                .iter()
+                .map(|node| node.id.clone())
+                .collect(),
+        );
+        Ok(DagSkillMaterialization {
+            nodes: input
+                .definition
+                .nodes
+                .iter()
+                .map(|node| (node.id.clone(), format!("skill:{}", node.prompt)))
+                .collect(),
+            diagnostics: Vec::new(),
+        })
+    });
+    let dag = create_dag_manager(DagManagerOptions {
+        store: Arc::clone(&store),
+        new_run_id: Some(counter_run_ids()),
+        now: None,
+        materialize_skills: Some(materializer),
+        settings: None,
+    });
+    let base = diamond("build b", vec![]);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: base.clone(),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
+    complete_diamond(&store, &started.snapshot.run_id);
+    let mut changed = base;
+    changed.nodes[1].prompt = "changed".into();
+    changed.nodes.push(DagNodeInput {
+        id: "E".into(),
+        prompt: "build e".into(),
+        target: DagNodeTarget::Category("quick".into()),
+        label: None,
+        depends_on: None,
+        task_summary: None,
+        description: None,
+        load_skills: None,
+    });
+    let amended = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id),
+            key: None,
+            definition: changed,
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect("amend");
     let expected_calls = vec![
-        vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()],
+        vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "D".to_string(),
+        ],
         vec!["B".to_string(), "E".to_string()],
     ];
     assert_eq!(*calls.lock().expect("calls"), expected_calls);
-    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="A").expect("A").effective_prompt,"skill:build a");
-    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="B").expect("B").effective_prompt,"skill:changed");
-    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="E").expect("E").effective_prompt,"skill:build e");
+    assert_eq!(
+        amended
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.id == "A")
+            .expect("A")
+            .effective_prompt,
+        "skill:build a"
+    );
+    assert_eq!(
+        amended
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.id == "B")
+            .expect("B")
+            .effective_prompt,
+        "skill:changed"
+    );
+    assert_eq!(
+        amended
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.id == "E")
+            .expect("E")
+            .effective_prompt,
+        "skill:build e"
+    );
 }
 
 #[test]
-fn given_invalid_amend_selectors_or_missing_runs_when_amended_then_invalid_arguments_and_not_found_are_returned() {
-    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let definition=diamond("build b",vec![]);
-    assert_eq!(dag.amend(DagAmendParams { run_id:Some("run-missing".into()), key:Some("missing".into()), definition:definition.clone(), parent_session_id:PARENT_SESSION_ID.into() }).expect_err("both selectors").code,DagManagerErrorCode::InvalidArguments);
-    assert_eq!(dag.amend(DagAmendParams { run_id:Some("run-missing".into()), key:None, definition, parent_session_id:PARENT_SESSION_ID.into() }).expect_err("missing run").code,DagManagerErrorCode::RunNotFound);
+fn given_invalid_amend_selectors_or_missing_runs_when_amended_then_invalid_arguments_and_not_found_are_returned()
+ {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let definition = diamond("build b", vec![]);
+    assert_eq!(
+        dag.amend(DagAmendParams {
+            run_id: Some("run-missing".into()),
+            key: Some("missing".into()),
+            definition: definition.clone(),
+            parent_session_id: PARENT_SESSION_ID.into()
+        })
+        .expect_err("both selectors")
+        .code,
+        DagManagerErrorCode::InvalidArguments
+    );
+    assert_eq!(
+        dag.amend(DagAmendParams {
+            run_id: Some("run-missing".into()),
+            key: None,
+            definition,
+            parent_session_id: PARENT_SESSION_ID.into()
+        })
+        .expect_err("missing run")
+        .code,
+        DagManagerErrorCode::RunNotFound
+    );
 }
 
 #[test]
-fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_reducer_rebuilds_the_same_record() {
-    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { parent_model: None, definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); let old=complete_diamond(&store,&started.snapshot.run_id);
-    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
-    let expected=amended;
-    store.write_checkpoint(&started.snapshot.run_id,&DagRunRecordV1 { checkpoint_seq:1,..old.clone() }).expect("restore old checkpoint");
-    let events=store.read_events(&started.snapshot.run_id,1,&DagEventReadOptions { limit:10,..Default::default() }).expect("events").events;
-    let _amendment=events.first().expect("amendment event");
-    let replayed=create_dag_journal(DagJournalOptions { store:Arc::clone(&store),run_id:started.snapshot.run_id.clone(),initial_checkpoint:old.clone(),apply_event:Arc::new(apply_run_event),subscriber_ring:None,now:None }).expect("replay journal").snapshot();
-    assert_eq!(replayed.definition_fingerprint,expected.definition_fingerprint);
-    assert_eq!(replayed.nodes,expected.nodes);
-    assert_eq!(replayed.amend_history,expected.amend_history);
+fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_reducer_rebuilds_the_same_record()
+ {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("build b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
+    let old = complete_diamond(&store, &started.snapshot.run_id);
+    let amended = dag
+        .amend(DagAmendParams {
+            run_id: Some(started.snapshot.run_id.clone()),
+            key: None,
+            definition: diamond("changed", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+        })
+        .expect("amend");
+    let expected = amended;
+    store
+        .write_checkpoint(
+            &started.snapshot.run_id,
+            &DagRunRecordV1 {
+                checkpoint_seq: 1,
+                ..old.clone()
+            },
+        )
+        .expect("restore old checkpoint");
+    let events = store
+        .read_events(
+            &started.snapshot.run_id,
+            1,
+            &DagEventReadOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .expect("events")
+        .events;
+    let _amendment = events.first().expect("amendment event");
+    let replayed = create_dag_journal(DagJournalOptions {
+        store: Arc::clone(&store),
+        run_id: started.snapshot.run_id.clone(),
+        initial_checkpoint: old.clone(),
+        apply_event: Arc::new(apply_run_event),
+        subscriber_ring: None,
+        now: None,
+    })
+    .expect("replay journal")
+    .snapshot();
+    assert_eq!(
+        replayed.definition_fingerprint,
+        expected.definition_fingerprint
+    );
+    assert_eq!(replayed.nodes, expected.nodes);
+    assert_eq!(replayed.amend_history, expected.amend_history);
 }
 
 #[test]
 fn given_a_durable_amendment_with_stale_preconditions_when_replayed_then_the_reducer_noops() {
-    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { parent_model: None, definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
-    dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
-    let event=store.read_events(&started.snapshot.run_id,1,&DagEventReadOptions { limit:1,..Default::default() }).expect("read").events.remove(0);
-    let mut hostile=store.read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id).expect("read checkpoint").expect("record");
-    hostile.definition_fingerprint="stale-fingerprint".into(); hostile.status=DagRunStatus::Running; hostile.nodes.iter_mut().find(|n|n.id=="B").expect("B").state=DagNodeState::Running;
-    assert_eq!(apply_run_event(&hostile,&event),hostile);
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: diamond("build b", vec![]),
+            parent_session_id: PARENT_SESSION_ID.into(),
+            root_session_id: ROOT_SESSION_ID.into(),
+        })
+        .expect("start");
+    complete_diamond(&store, &started.snapshot.run_id);
+    dag.amend(DagAmendParams {
+        run_id: Some(started.snapshot.run_id.clone()),
+        key: None,
+        definition: diamond("changed", vec![]),
+        parent_session_id: PARENT_SESSION_ID.into(),
+    })
+    .expect("amend");
+    let event = store
+        .read_events(
+            &started.snapshot.run_id,
+            1,
+            &DagEventReadOptions {
+                limit: 1,
+                ..Default::default()
+            },
+        )
+        .expect("read")
+        .events
+        .remove(0);
+    let mut hostile = store
+        .read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id)
+        .expect("read checkpoint")
+        .expect("record");
+    hostile.definition_fingerprint = "stale-fingerprint".into();
+    hostile.status = DagRunStatus::Running;
+    hostile
+        .nodes
+        .iter_mut()
+        .find(|n| n.id == "B")
+        .expect("B")
+        .state = DagNodeState::Running;
+    assert_eq!(apply_run_event(&hostile, &event), hostile);
 }
 
 fn counter_run_ids() -> Arc<dyn Fn() -> DagRunId + Send + Sync> {
@@ -258,7 +654,8 @@ fn given_a_valid_two_node_definition_when_started_then_a_run_a_key_file_and_one_
     let dag = manager_over(&store);
 
     let started = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -304,7 +701,14 @@ fn given_a_valid_two_node_definition_when_started_then_a_run_a_key_file_and_one_
         Some(started.snapshot.definition_fingerprint.clone())
     );
     let events = store
-        .read_events(&started.snapshot.run_id, 0, &DagEventReadOptions { limit: 10, ..Default::default() })
+        .read_events(
+            &started.snapshot.run_id,
+            0,
+            &DagEventReadOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
         .expect("read events")
         .events;
     assert_eq!(events.len(), 1);
@@ -320,7 +724,10 @@ fn given_a_valid_two_node_definition_when_started_then_a_run_a_key_file_and_one_
     };
     assert_eq!(events[0].seq, 1);
     assert_eq!(run_key, "release-plan");
-    assert_eq!(definition_fingerprint, &started.snapshot.definition_fingerprint);
+    assert_eq!(
+        definition_fingerprint,
+        &started.snapshot.definition_fingerprint
+    );
     assert_eq!(*node_count, 2);
     assert_eq!(*edge_count, 1);
 }
@@ -346,7 +753,8 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -354,7 +762,8 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
         .expect("first start");
 
     let second = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -366,7 +775,14 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
     assert_eq!(run_files(&store).len(), 1);
     assert_eq!(
         store
-            .read_events(&first.snapshot.run_id, 0, &DagEventReadOptions { limit: 10, ..Default::default() })
+            .read_events(
+                &first.snapshot.run_id,
+                0,
+                &DagEventReadOptions {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
             .expect("read events")
             .events
             .len(),
@@ -381,7 +797,8 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -402,7 +819,8 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
         description: None,
         load_skills: None,
     }];
-    let conflicting = dag.start(DagStartParams { parent_model: None,
+    let conflicting = dag.start(DagStartParams {
+        parent_model: None,
         definition: conflicting_definition,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -420,7 +838,14 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
     assert_eq!(run_files(&store).len(), 1);
     assert_eq!(
         store
-            .read_events(&first.snapshot.run_id, 0, &DagEventReadOptions { limit: 10, ..Default::default() })
+            .read_events(
+                &first.snapshot.run_id,
+                0,
+                &DagEventReadOptions {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
             .expect("read events")
             .events
             .len(),
@@ -442,7 +867,8 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -453,7 +879,8 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     let mut changed_definition = plan_build_definition();
     changed_definition.nodes[0].prompt = "a different plan".to_string();
     let second = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: changed_definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -483,7 +910,8 @@ fn given_a_definition_with_a_cyclic_dependency_when_started_then_invalid_definit
     cyclic.nodes[0].depends_on = Some(vec!["build".to_string()]);
     cyclic.nodes[1].depends_on = Some(vec!["plan".to_string()]);
 
-    let rejected = dag.start(DagStartParams { parent_model: None,
+    let rejected = dag.start(DagStartParams {
+        parent_model: None,
         definition: cyclic,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -492,16 +920,24 @@ fn given_a_definition_with_a_cyclic_dependency_when_started_then_invalid_definit
     let error = rejected.expect_err("expected invalid_definition");
     assert_eq!(error.code, DagManagerErrorCode::InvalidDefinition);
     assert_eq!(
-        error.errors().iter().map(|entry| entry.code).collect::<Vec<_>>(),
+        error
+            .errors()
+            .iter()
+            .map(|entry| entry.code)
+            .collect::<Vec<_>>(),
         vec![crate::dag::graph::DagCompileErrorCode::Cycle]
     );
     assert_eq!(run_files(&store), Vec::<String>::new());
     assert_eq!(
-        std::fs::read_dir(&store.paths.keys).map(|e| e.count()).unwrap_or(0),
+        std::fs::read_dir(&store.paths.keys)
+            .map(|e| e.count())
+            .unwrap_or(0),
         0
     );
     assert_eq!(
-        std::fs::read_dir(&store.paths.events).map(|e| e.count()).unwrap_or(0),
+        std::fs::read_dir(&store.paths.events)
+            .map(|e| e.count())
+            .unwrap_or(0),
         0
     );
 }
@@ -522,7 +958,8 @@ fn given_a_configured_node_ceiling_when_a_definition_exceeds_it_then_invalid_def
         }),
     });
 
-    let rejected = dag.start(DagStartParams { parent_model: None,
+    let rejected = dag.start(DagStartParams {
+        parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -530,7 +967,11 @@ fn given_a_configured_node_ceiling_when_a_definition_exceeds_it_then_invalid_def
 
     let error = rejected.expect_err("expected invalid_definition");
     assert_eq!(
-        error.errors().iter().map(|entry| entry.code).collect::<Vec<_>>(),
+        error
+            .errors()
+            .iter()
+            .map(|entry| entry.code)
+            .collect::<Vec<_>>(),
         vec![crate::dag::graph::DagCompileErrorCode::NodeCountExceeded]
     );
     assert!(error.message.contains("max_nodes_per_run 1"));
@@ -545,14 +986,16 @@ fn given_the_same_run_key_in_two_different_sessions_when_both_start_then_each_se
     let dag = manager_over(&store);
 
     let mine = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("mine");
     let theirs = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -569,25 +1012,36 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { parent_model: None,
-        definition: plan_build_definition(),
-        parent_session_id: PARENT_SESSION_ID.to_string(),
-        root_session_id: ROOT_SESSION_ID.to_string(),
-    }).expect("start");
-    let key = store.read_key(PARENT_SESSION_ID, "release-plan").expect("read key").expect("key");
-    store.write_key(&crate::dag::store::DagKeyRecord {
-        schema_version: crate::dag::types::SchemaVersion1,
-        parent_session_id: key.parent_session_id,
-        run_key: key.run_key,
-        run_id: started.snapshot.run_id,
-        definition_fingerprint: Some("wrong-fingerprint".to_string()),
-    }).expect("tamper key fingerprint");
+    let started = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+        })
+        .expect("start");
+    let key = store
+        .read_key(PARENT_SESSION_ID, "release-plan")
+        .expect("read key")
+        .expect("key");
+    store
+        .write_key(&crate::dag::store::DagKeyRecord {
+            schema_version: crate::dag::types::SchemaVersion1,
+            parent_session_id: key.parent_session_id,
+            run_key: key.run_key,
+            run_id: started.snapshot.run_id,
+            definition_fingerprint: Some("wrong-fingerprint".to_string()),
+        })
+        .expect("tamper key fingerprint");
 
-    let error = dag.start(DagStartParams { parent_model: None,
-        definition: plan_build_definition(),
-        parent_session_id: PARENT_SESSION_ID.to_string(),
-        root_session_id: ROOT_SESSION_ID.to_string(),
-    }).expect_err("fingerprint mismatch must block reuse");
+    let error = dag
+        .start(DagStartParams {
+            parent_model: None,
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+        })
+        .expect_err("fingerprint mismatch must block reuse");
     assert_eq!(error.code, DagManagerErrorCode::DefinitionConflict);
 }
 
@@ -621,14 +1075,16 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
     });
 
     let materialized = with_skills
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("materialized start");
     let bare = plain
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -669,13 +1125,13 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
 }
 
 #[test]
-fn given_a_run_owned_by_one_session_when_another_session_attaches_then_run_not_owned_is_returned()
- {
+fn given_a_run_owned_by_one_session_when_another_session_attaches_then_run_not_owned_is_returned() {
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -721,7 +1177,8 @@ fn given_a_run_owned_by_one_session_when_a_foreign_session_reads_history_then_ru
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -771,7 +1228,8 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -796,7 +1254,8 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
             at: "2026-01-01T00:00:03.000Z".to_string(),
             lane: DagEventLane::Boundary,
             payload: DagRunEventPayload::RunPaused {
-                reason: Some("session_shutdown".to_string()), pause_seq: None,
+                reason: Some("session_shutdown".to_string()),
+                pause_seq: None,
             },
         })
         .expect("append paused");
@@ -814,7 +1273,10 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
         .expect("history");
 
     assert_eq!(
-        page.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        page.events
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
         vec![2]
     );
     assert_eq!(page.head_seq, 3);
@@ -842,7 +1304,8 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut alpha = plan_build_definition();
     alpha.key = "alpha".to_string();
     let first = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: alpha,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -851,7 +1314,8 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut beta = plan_build_definition();
     beta.key = "beta".to_string();
     let second = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: beta,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -861,7 +1325,8 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut gamma = plan_build_definition();
     gamma.key = "gamma".to_string();
     let third = dag
-        .start(DagStartParams { parent_model: None,
+        .start(DagStartParams {
+            parent_model: None,
             definition: gamma,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -869,7 +1334,8 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
         .expect("gamma start");
     let mut delta = plan_build_definition();
     delta.key = "delta".to_string();
-    dag.start(DagStartParams { parent_model: None,
+    dag.start(DagStartParams {
+        parent_model: None,
         definition: delta,
         parent_session_id: OTHER_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -879,7 +1345,10 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let listed = dag.list(PARENT_SESSION_ID, None).expect("list");
 
     assert_eq!(
-        listed.iter().map(|entry| entry.run_id.clone()).collect::<Vec<_>>(),
+        listed
+            .iter()
+            .map(|entry| entry.run_id.clone())
+            .collect::<Vec<_>>(),
         vec![
             third.snapshot.run_id.clone(),
             first.snapshot.run_id.clone(),
@@ -900,7 +1369,8 @@ fn given_more_runs_than_the_requested_limit_when_listed_then_the_limit_is_clampe
     for index in 0..3 {
         let mut definition = plan_build_definition();
         definition.key = format!("key-{index}");
-        dag.start(DagStartParams { parent_model: None,
+        dag.start(DagStartParams {
+            parent_model: None,
             definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -909,7 +1379,9 @@ fn given_more_runs_than_the_requested_limit_when_listed_then_the_limit_is_clampe
     }
 
     let limited = dag.list(PARENT_SESSION_ID, Some(2)).expect("list limited");
-    let clamped = dag.list(PARENT_SESSION_ID, Some(9_000)).expect("list clamped");
+    let clamped = dag
+        .list(PARENT_SESSION_ID, Some(9_000))
+        .expect("list clamped");
 
     assert_eq!(limited.len(), 2);
     assert_eq!(clamped.len(), 3);
@@ -945,7 +1417,8 @@ fn given_two_threads_starting_the_same_run_key_concurrently_when_both_race_then_
                     settings: None,
                 });
                 barrier.wait();
-                dag.start(DagStartParams { parent_model: None,
+                dag.start(DagStartParams {
+                    parent_model: None,
                     definition: plan_build_definition(),
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -959,7 +1432,8 @@ fn given_two_threads_starting_the_same_run_key_concurrently_when_both_race_then_
         .collect();
 
     assert_eq!(run_files(&store).len(), 1);
-    let run_ids: std::collections::HashSet<_> = outcomes.iter().map(|o| o.snapshot.run_id.clone()).collect();
+    let run_ids: std::collections::HashSet<_> =
+        outcomes.iter().map(|o| o.snapshot.run_id.clone()).collect();
     assert_eq!(run_ids.len(), 1);
     assert_eq!(outcomes.iter().filter(|o| !o.reused).count(), 1);
     assert_eq!(outcomes.iter().filter(|o| o.reused).count(), 1);
@@ -992,7 +1466,8 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
                 let mut definition = plan_build_definition();
                 definition.nodes[0].prompt = prompt;
                 barrier.wait();
-                dag.start(DagStartParams { parent_model: None,
+                dag.start(DagStartParams {
+                    parent_model: None,
                     definition,
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1031,7 +1506,14 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
     );
     assert_eq!(
         store
-            .read_events(&winner_run_id, 0, &DagEventReadOptions { limit: 10, ..Default::default() })
+            .read_events(
+                &winner_run_id,
+                0,
+                &DagEventReadOptions {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
             .expect("read events")
             .events
             .iter()

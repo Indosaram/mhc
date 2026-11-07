@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use isolation_core::test_support::{backend, fixture, TestBackend};
-use isolation_core::{hostname, sweep_stale_isolations, BackendRef, OwnerProbe, OwnerStatus, SweepOptions};
+use isolation_core::test_support::{TestBackend, backend, fixture};
+use isolation_core::{
+    BackendRef, OwnerProbe, OwnerStatus, SweepOptions, hostname, sweep_stale_isolations,
+};
 
 struct DeadUnless {
     alive_pid: u32,
@@ -60,8 +62,7 @@ fn sweep_stops_dead_backends_and_retains_live_foreign_unknown_retained_and_skips
         };
         write_marker(&base, kind, (index + 1) as u32, &host);
     }
-    std::os::unix::fs::symlink(&f.repo_root, sweep_root.join("t9999999999"))
-        .expect("symlink");
+    std::os::unix::fs::symlink(&f.repo_root, sweep_root.join("t9999999999")).expect("symlink");
     let stopped: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let stop_sink = Arc::clone(&stopped);
@@ -122,10 +123,12 @@ fn sweep_keeps_dead_trees_when_backend_teardown_fails() {
     )
     .expect("sweep");
     assert!(result.reclaimed.is_empty());
-    assert!(result
-        .skipped
-        .iter()
-        .any(|entry| entry.path == base && entry.reason.contains("unmount denied")));
+    assert!(
+        result
+            .skipped
+            .iter()
+            .any(|entry| entry.path == base && entry.reason.contains("unmount denied"))
+    );
     std::fs::metadata(&base).expect("tree preserved");
 }
 

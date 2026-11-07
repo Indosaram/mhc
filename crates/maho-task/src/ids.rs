@@ -105,7 +105,10 @@ mod tests {
 
     #[test]
     fn names_from_task_text() {
-        assert_eq!(name_from_task("fix the login bug in auth.rs"), "FixTheLoginBug");
+        assert_eq!(
+            name_from_task("fix the login bug in auth.rs"),
+            "FixTheLoginBug"
+        );
         assert_eq!(name_from_task("!!!"), "Task");
     }
 }

@@ -27,8 +27,8 @@ pub use harness::env::windows_process_tree::{
 };
 
 pub use agent::{
-    Agent, AgentContinueError, AgentContinuationOptions, AgentListener, AgentOptions, AgentPromptInput,
-    AgentSubscription, PartialAgentState, PrepareNextTurnWithContext,
+    Agent, AgentContinuationOptions, AgentContinueError, AgentListener, AgentOptions,
+    AgentPromptInput, AgentSubscription, PartialAgentState, PrepareNextTurnWithContext,
     PrepareNextTurnWithoutContext, ShouldStopAfterTurnWithSignal, agent_event_sink,
     empty_failure_usage,
 };
@@ -40,11 +40,13 @@ pub use assistant_terminal_state::{
     AgentStreamError, EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC, ProviderRetryWatchdogAbortError,
     TerminalAssistantMessageEvent, create_terminal_failure_assistant_message,
     demote_tool_use_without_tool_calls, is_stream_idle_timeout_error,
-    normalize_terminal_assistant_message, promote_stop_with_pending_tool_calls,
-    settle_stop_reason, should_finalize_idle_as_stop, should_terminate_assistant_turn,
+    normalize_terminal_assistant_message, promote_stop_with_pending_tool_calls, settle_stop_reason,
+    should_finalize_idle_as_stop, should_terminate_assistant_turn,
 };
 pub use empty_assistant_recovery::with_empty_assistant_recovery;
-pub use internal_events::{InternalAgentChannel, OrderedAgentRecord, create_internal_agent_channel};
+pub use internal_events::{
+    InternalAgentChannel, OrderedAgentRecord, create_internal_agent_channel,
+};
 pub use local_failure::{LocalFailure, LocalFailurePort, is_local_failure, local_failure_port};
 pub use proxy::{
     ProxyAssistantMessageEvent, ProxySerializableStreamOptions, ProxyStreamOptions, stream_proxy,

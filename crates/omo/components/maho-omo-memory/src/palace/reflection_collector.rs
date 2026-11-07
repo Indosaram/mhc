@@ -145,9 +145,16 @@ mod tests {
         let cursor = reflection.cursor.unwrap();
         assert_eq!(cursor.total_completed_steps, 2);
         assert_eq!(cursor.reflected_completed_steps, 1);
-        assert_eq!(reflection.conversation_id.as_deref(), Some("conversation-1"));
         assert_eq!(
-            reflection.outcomes.iter().map(|entry| entry.run_id.as_str()).collect::<Vec<_>>(),
+            reflection.conversation_id.as_deref(),
+            Some("conversation-1")
+        );
+        assert_eq!(
+            reflection
+                .outcomes
+                .iter()
+                .map(|entry| entry.run_id.as_str())
+                .collect::<Vec<_>>(),
             ["run-new", "run-old"]
         );
         assert_eq!(reflection.outcomes[0].outcome, "failed");
@@ -170,7 +177,11 @@ mod tests {
         let reflection = collect_reflection(&fixture.paths, 2).unwrap();
 
         assert_eq!(
-            reflection.outcomes.iter().map(|entry| entry.run_id.as_str()).collect::<Vec<_>>(),
+            reflection
+                .outcomes
+                .iter()
+                .map(|entry| entry.run_id.as_str())
+                .collect::<Vec<_>>(),
             ["run-4", "run-3"]
         );
     }

@@ -21,7 +21,10 @@ pub fn select_tip<'a>(
     let mut oldest_timestamp = f64::INFINITY;
 
     for tip in definitions {
-        if options.exclude.is_some_and(|exclude| exclude.contains(tip.id)) {
+        if options
+            .exclude
+            .is_some_and(|exclude| exclude.contains(tip.id))
+        {
             continue;
         }
         if let Some(keys) = options.keys

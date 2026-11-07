@@ -1,6 +1,8 @@
 use std::path::Path;
 pub async fn run(
-    run_dir: &Path, executable: &Path, prefix: &[String],
+    run_dir: &Path,
+    executable: &Path,
+    prefix: &[String],
     gate: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
 ) -> Result<(), String> {
     let _unrelated_handle = tokio::spawn(std::future::pending::<()>());

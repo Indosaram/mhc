@@ -103,14 +103,20 @@ async fn given_the_checker_exits_0_when_run_then_it_is_a_clean_result_without_a_
 
 #[tokio::test]
 async fn given_the_checker_exits_2_when_run_then_its_stderr_is_the_comment_feedback() {
-    let result = run(2, "found a comment
-", true).await;
+    let result = run(
+        2,
+        "found a comment
+",
+        true,
+    )
+    .await;
     assert_eq!(
         result,
         CheckResult {
             has_comments: true,
             message: "found a comment
-".to_string(),
+"
+            .to_string(),
             failure: None,
         }
     );
@@ -132,8 +138,13 @@ async fn given_the_checker_exits_outside_the_protocol_status_dll_not_found() {
 
 #[tokio::test]
 async fn given_the_checker_exits_outside_the_protocol_generic_failure() {
-    let result = run(1, "exec format error
-", true).await;
+    let result = run(
+        1,
+        "exec format error
+",
+        true,
+    )
+    .await;
     assert!(!result.has_comments);
     assert_eq!(result.message, "");
     assert_eq!(
@@ -147,7 +158,7 @@ async fn given_the_checker_exits_outside_the_protocol_generic_failure() {
 
 #[tokio::test]
 async fn given_a_checker_that_cannot_start_exits_before_reading_its_input_when_run_then_the_failure_is_still_exposed()
-{
+ {
     let result = run(3221225781_i64 as i32, "", false).await;
     assert_eq!(
         result,
@@ -215,7 +226,7 @@ async fn given_the_spawn_fails_after_it_returned_eacces_when_run_then_the_start_
 
 #[tokio::test]
 async fn given_a_checker_that_exits_0_before_reading_its_input_when_run_then_it_is_a_clean_result_without_a_failure()
-{
+ {
     let result = run(0, "", false).await;
     assert_eq!(
         result,

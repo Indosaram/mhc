@@ -1,6 +1,6 @@
 use super::*;
-use crate::git::{GitMemoryRepo, InitializeGitRepoOptions};
 use crate::git::exec::{GitExecOptions, GitExecResult};
+use crate::git::{GitMemoryRepo, InitializeGitRepoOptions};
 use tempfile::tempdir;
 
 fn owner(name: &str) -> Option<(String, Option<f64>)> {
@@ -17,10 +17,7 @@ fn owners_parse_from_directories_branches_and_legacy_branches() {
         owner("memory/reflection-1700000000000-run-7"),
         Some(("run-7".to_string(), Some(1_700_000_000_000.0)))
     );
-    assert_eq!(
-        owner("reflection/run-7"),
-        Some(("run-7".to_string(), None))
-    );
+    assert_eq!(owner("reflection/run-7"), Some(("run-7".to_string(), None)));
     assert_eq!(owner("writer.lock"), None);
     assert_eq!(owner("1700000000000"), None);
 }
@@ -135,7 +132,10 @@ fn registered_worktrees_parse_from_porcelain_output() {
     let porcelain = "worktree /root/1700000000000-run-1\nHEAD abc\nbranch refs/heads/memory/reflection-1700000000000-run-1\n\nworktree /elsewhere/other\nHEAD def\nbranch refs/heads/main\n";
     let parsed = parse_registered_worktrees(porcelain);
     assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].branch.as_deref(), Some("memory/reflection-1700000000000-run-1"));
+    assert_eq!(
+        parsed[0].branch.as_deref(),
+        Some("memory/reflection-1700000000000-run-1")
+    );
     assert_eq!(parsed[1].branch.as_deref(), Some("main"));
 }
 
@@ -143,7 +143,8 @@ fn registered_worktrees_parse_from_porcelain_output() {
 fn sweep_reclaims_a_stale_worktree_directory_and_branch() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let worktrees = dir.path().join("worktrees");
     std::fs::create_dir_all(&worktrees).expect("mkdir");
 
@@ -174,7 +175,14 @@ fn sweep_reclaims_a_stale_worktree_directory_and_branch() {
     assert!(receipts.iter().all(|receipt| receipt.removed));
     assert!(!worktree.dir.exists());
     let branch = exec
-        .run_in(&repo.dir, &["show-ref", "--verify", &format!("refs/heads/{}", worktree.branch)])
+        .run_in(
+            &repo.dir,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", worktree.branch),
+            ],
+        )
         .expect("show-ref");
     assert_ne!(branch.code, 0);
 }
@@ -317,18 +325,26 @@ fn sweep_leaves_a_locked_worktree_inside_the_grace_window_alone() {
 fn sweep_reclaims_a_locked_worktree_whose_directory_is_gone() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let worktrees = dir.path().join("worktrees");
     std::fs::create_dir_all(&worktrees).expect("mkdir");
     let exec = repo.exec();
     let worktree = super::super::worktree::create_reflection_worktree(
-        &repo, "run-locked", &worktrees, exec.as_ref(), None,
+        &repo,
+        "run-locked",
+        &worktrees,
+        exec.as_ref(),
+        None,
     )
     .expect("create worktree");
     // What an interrupted `git worktree add` leaves behind: the lock and the registration.
     let dir_text = worktree.dir.to_string_lossy().into_owned();
     let lock = exec
-        .run_in(&repo.dir, &["worktree", "lock", "--reason", "initializing", &dir_text])
+        .run_in(
+            &repo.dir,
+            &["worktree", "lock", "--reason", "initializing", &dir_text],
+        )
         .expect("lock");
     assert_eq!(lock.code, 0, "{}", lock.stderr);
     std::fs::remove_dir_all(&worktree.dir).expect("remove checkout");
@@ -350,10 +366,19 @@ fn sweep_reclaims_a_locked_worktree_whose_directory_is_gone() {
         .find(|receipt| receipt.kind == OrphanKind::Worktree)
         .expect("worktree receipt");
     assert!(receipt.removed, "{receipt:?}");
-    let listed = exec.run_in(&repo.dir, &["worktree", "list", "--porcelain"]).expect("list");
+    let listed = exec
+        .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
+        .expect("list");
     assert!(!listed.stdout.contains("run-locked"), "{}", listed.stdout);
     let branch = exec
-        .run_in(&repo.dir, &["show-ref", "--verify", &format!("refs/heads/{}", worktree.branch)])
+        .run_in(
+            &repo.dir,
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", worktree.branch),
+            ],
+        )
         .expect("show-ref");
     assert_ne!(branch.code, 0);
 }
@@ -362,7 +387,8 @@ fn sweep_reclaims_a_locked_worktree_whose_directory_is_gone() {
 fn sweep_leaves_a_live_run_untouched() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let worktrees = dir.path().join("worktrees");
     std::fs::create_dir_all(&worktrees).expect("mkdir");
 
@@ -404,7 +430,8 @@ fn sweep_leaves_a_live_run_untouched() {
 fn a_stray_directory_is_reclaimed_and_reported() {
     let dir = tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let worktrees = dir.path().join("worktrees");
     let stray = worktrees.join("1600000000000-stray");
     std::fs::create_dir_all(&stray).expect("mkdir stray");
@@ -461,37 +488,71 @@ impl GitExec for RefusingBranchDelete<'_> {
 #[test]
 fn a_failing_item_reports_removed_false_with_detail_and_the_rest_still_sweep() {
     let dir = tempdir().expect("tempdir");
-    let dir_path = crate::support::paths::strip_verbatim_prefix(&dir.path().canonicalize().expect("canonical tempdir"));
+    let dir_path = crate::support::paths::strip_verbatim_prefix(
+        &dir.path().canonicalize().expect("canonical tempdir"),
+    );
     let repo = GitMemoryRepo::open(dir_path.join("repo"), "orphan-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let worktrees = dir_path.join("worktrees");
     std::fs::create_dir_all(&worktrees).expect("mkdir");
     let exec = repo.exec();
     let head = repo.head().expect("head").expect("seeded head");
     let refused_branch = "memory/reflection-1600000000000-run-refused".to_owned();
-    assert_eq!(exec.run_in(&repo.dir, &["branch", &refused_branch, &head]).expect("branch").code, 0);
+    assert_eq!(
+        exec.run_in(&repo.dir, &["branch", &refused_branch, &head])
+            .expect("branch")
+            .code,
+        0
+    );
     let reclaimable = super::super::worktree::create_reflection_worktree(
-        &repo, "run-gone", &worktrees, exec.as_ref(), None,
-    ).expect("create worktree");
-    let scripted = RefusingBranchDelete { inner: exec.as_ref(), branch: refused_branch.clone() };
-    let receipts = sweep_reflection_orphans(&repo, &worktrees, &ReflectionOrphanSweepOptions {
-        live_run_ids: BTreeSet::new(),
-        now_ms: 4_000_000_000_000.0,
-        grace_ms: None,
-        exec: Some(&scripted),
-    }).expect("sweep");
-    let refused = receipts.iter().find(|receipt|
-        receipt.kind == OrphanKind::Branch && receipt.target == refused_branch,
-    ).expect("refused branch receipt");
+        &repo,
+        "run-gone",
+        &worktrees,
+        exec.as_ref(),
+        None,
+    )
+    .expect("create worktree");
+    let scripted = RefusingBranchDelete {
+        inner: exec.as_ref(),
+        branch: refused_branch.clone(),
+    };
+    let receipts = sweep_reflection_orphans(
+        &repo,
+        &worktrees,
+        &ReflectionOrphanSweepOptions {
+            live_run_ids: BTreeSet::new(),
+            now_ms: 4_000_000_000_000.0,
+            grace_ms: None,
+            exec: Some(&scripted),
+        },
+    )
+    .expect("sweep");
+    let refused = receipts
+        .iter()
+        .find(|receipt| receipt.kind == OrphanKind::Branch && receipt.target == refused_branch)
+        .expect("refused branch receipt");
     assert!(!refused.removed);
     assert_eq!(refused.detail.as_deref(), Some("refusing to delete"));
-    let reclaimed = receipts.iter().find(|receipt|
-        receipt.kind == OrphanKind::Worktree && receipt.target == reclaimable.dir.to_string_lossy(),
-    ).expect("reclaimed worktree receipt");
+    let reclaimed = receipts
+        .iter()
+        .find(|receipt| {
+            receipt.kind == OrphanKind::Worktree
+                && receipt.target == reclaimable.dir.to_string_lossy()
+        })
+        .expect("reclaimed worktree receipt");
     assert!(reclaimed.removed);
     assert!(!reclaimable.dir.exists());
-    assert!(!receipts.iter().any(|receipt|
-        receipt.kind == OrphanKind::Branch && receipt.target == reclaimable.branch,
-    ));
-    assert_eq!(exec.run_in(&repo.dir, &["branch", "-D", &refused_branch]).expect("cleanup branch").code, 0);
+    assert!(
+        !receipts
+            .iter()
+            .any(|receipt| receipt.kind == OrphanKind::Branch
+                && receipt.target == reclaimable.branch,)
+    );
+    assert_eq!(
+        exec.run_in(&repo.dir, &["branch", "-D", &refused_branch])
+            .expect("cleanup branch")
+            .code,
+        0
+    );
 }

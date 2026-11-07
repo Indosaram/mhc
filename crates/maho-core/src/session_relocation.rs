@@ -170,6 +170,9 @@ mod tests {
         let host = MockHost { offered: false };
         assert!(!host.offered());
         let targets = host.targets().await;
-        assert!(matches!(targets, RelocationTargetsResult::Unavailable { .. }));
+        assert!(matches!(
+            targets,
+            RelocationTargetsResult::Unavailable { .. }
+        ));
     }
 }

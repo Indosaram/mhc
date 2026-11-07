@@ -1,7 +1,7 @@
 use maho_ext_api::{
-    ExtensionContext, ExtensionMode, ExtensionUi, ExtensionUiDialogOptions, JsonValue,
-    Model, ModelRegistry, NotificationType, SessionEntry, SessionManager, Theme,
-    ToolSessionManager, UiFuture,
+    ExtensionContext, ExtensionMode, ExtensionUi, ExtensionUiDialogOptions, JsonValue, Model,
+    ModelRegistry, NotificationType, SessionEntry, SessionManager, Theme, ToolSessionManager,
+    UiFuture,
 };
 use std::sync::{Arc, Mutex};
 
@@ -142,8 +142,7 @@ fn test_context(session_id: &str) -> ExtensionContext {
 
 use maho_ai::utils::abort::AbortSignal;
 use maho_ext_api::{
-    ComponentLogger, EventResult, ExtensionEvent, ExtensionFailure,
-    ExtensionHandler,
+    ComponentLogger, EventResult, ExtensionEvent, ExtensionFailure, ExtensionHandler,
 };
 use maho_omo::settle_observers::{SettleObservers, current_settle_observer};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -188,7 +187,9 @@ async fn an_expired_budget_logs_the_stalled_phase_and_aborts_the_signal() {
         Some("dreamTrigger"),
         handler(move || {
             let observer = current_settle_observer().expect("observer");
-            observer.phase("awaiting-dream").expect("settle observer fixture");
+            observer
+                .phase("awaiting-dream")
+                .expect("settle observer fixture");
             signal_tx
                 .lock()
                 .expect("settle observer fixture")
@@ -225,7 +226,10 @@ async fn retiring_a_session_ends_its_observer_and_leaves_other_sessions_running(
         "memory",
         None,
         handler(move || {
-            tx.lock().expect("settle observer fixture").send(()).expect("settle observer fixture");
+            tx.lock()
+                .expect("settle observer fixture")
+                .send(())
+                .expect("settle observer fixture");
             Box::pin(std::future::pending())
         }),
     );
@@ -245,7 +249,11 @@ async fn retiring_a_session_ends_its_observer_and_leaves_other_sessions_running(
     assert!(matches!(result, Ok(EventResult::None)));
     assert_eq!(observers.pending_count(), 0);
     assert!(
-        warnings.0.lock().expect("settle observer fixture").is_empty(),
+        warnings
+            .0
+            .lock()
+            .expect("settle observer fixture")
+            .is_empty(),
         "retirement is not a stall"
     );
 }
@@ -334,7 +342,9 @@ async fn concurrent_settles_sharing_work_when_observer_cancels_absorbs_cancellat
     observers.retire(Some("first"));
     let (res1, res2) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         tokio::join!(task1, task2)
-    }).await.expect("both observers settle after explicit retirement");
+    })
+    .await
+    .expect("both observers settle after explicit retirement");
     let res1 = res1.expect("task1 joined");
     let res2 = res2.expect("task2 joined");
 
@@ -355,10 +365,14 @@ async fn concurrent_settles_sharing_work_when_observer_cancels_absorbs_cancellat
     let unrelated = ExtensionFailure::classified(reason.message, Some(reason.name), None);
     assert!(!observers.is_cancellation(&unrelated));
     let expected = unrelated.clone();
-    let wrapped = observers.wrap("fixture", None, Arc::new(move |_, _| {
-        let unrelated = unrelated.clone();
-        Box::pin(async move { Err(unrelated) })
-    }));
+    let wrapped = observers.wrap(
+        "fixture",
+        None,
+        Arc::new(move |_, _| {
+            let unrelated = unrelated.clone();
+            Box::pin(async move { Err(unrelated) })
+        }),
+    );
     let mut event = ExtensionEvent::AgentSettled;
     let context = test_context("unrelated");
     assert!(matches!(wrapped(&mut event, &context).await, Err(error) if error == expected));
@@ -584,7 +598,10 @@ async fn pending_settle_when_session_retires_releases_immediately_and_handles_la
     });
 
     let signal = entered_rx.await.expect("entered");
-    assert!(!signal.aborted(), "observer should not be aborted before retire");
+    assert!(
+        !signal.aborted(),
+        "observer should not be aborted before retire"
+    );
 
     observers.retire(Some("retiring"));
 
@@ -607,7 +624,11 @@ async fn pending_settle_when_session_retires_releases_immediately_and_handles_la
     );
 
     assert!(
-        warnings.0.lock().expect("settle observer fixture").is_empty(),
+        warnings
+            .0
+            .lock()
+            .expect("settle observer fixture")
+            .is_empty(),
         "retirement is not a stall warning"
     );
 }

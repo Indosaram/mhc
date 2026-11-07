@@ -320,7 +320,8 @@ impl ComponentLogger for RecordingLogger {
 // Pin index.test.ts: "#given config diagnostics without a UI #when session_start fires #then it logs a
 // single fallback warning".
 #[tokio::test]
-async fn config_diagnostics_without_ui_log_one_fallback_warning() -> Result<(), Box<dyn std::error::Error>> {
+async fn config_diagnostics_without_ui_log_one_fallback_warning()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let mut api = ExtensionApi::new(
         LoadedExtension::new("startup", root.path().into(), SourceInfo::default()),

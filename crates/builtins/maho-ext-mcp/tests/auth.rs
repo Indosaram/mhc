@@ -438,10 +438,7 @@ async fn async_read_claims_url_keyed_credentials_once() {
     write_legacy_credentials(root.path(), url);
     let work_store = McpTokenStore::new(root.path(), "work", url);
     let personal_store = McpTokenStore::new(root.path(), "personal", url);
-    let (work, personal) = tokio::join!(
-        work_store.read_async(),
-        personal_store.read_async()
-    );
+    let (work, personal) = tokio::join!(work_store.read_async(), personal_store.read_async());
     let adopted = [work.unwrap(), personal.unwrap()]
         .into_iter()
         .flatten()

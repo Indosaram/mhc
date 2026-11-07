@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/api/cursor-agent/exec-lifecycle.ts.
 // ported by todo 12
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -76,7 +76,11 @@ pub fn arm_exec_heartbeat<W: ExecHeartbeatWriter>(interval: Duration, writer: W)
         }
     });
 
-    ExecHeartbeat { active, stop, task: Some(task) }
+    ExecHeartbeat {
+        active,
+        stop,
+        task: Some(task),
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +100,10 @@ mod tests {
         }
 
         fn write_heartbeat(&self) -> Result<(), ()> {
-            let mut writes = self.writes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut writes = self
+                .writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *writes += 1;
             self.notify.notify_waiters();
             Ok(())
@@ -108,7 +115,11 @@ mod tests {
         let closed = Arc::new(AtomicBool::new(false));
         let writes = Arc::new(Mutex::new(0u32));
         let notify = Arc::new(Notify::new());
-        let writer = CountingWriter { closed: closed.clone(), writes: writes.clone(), notify: notify.clone() };
+        let writer = CountingWriter {
+            closed: closed.clone(),
+            writes: writes.clone(),
+            notify: notify.clone(),
+        };
         let heartbeat = arm_exec_heartbeat(Duration::from_millis(5), writer);
 
         tokio::time::timeout(Duration::from_secs(2), notify.notified())
@@ -116,7 +127,12 @@ mod tests {
             .expect("heartbeat should write within timeout");
 
         heartbeat.disarm();
-        assert!(*writes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) >= 1);
+        assert!(
+            *writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                >= 1
+        );
     }
 
     #[tokio::test]
@@ -124,12 +140,21 @@ mod tests {
         let closed = Arc::new(AtomicBool::new(true));
         let writes = Arc::new(Mutex::new(0u32));
         let notify = Arc::new(Notify::new());
-        let writer = CountingWriter { closed: closed.clone(), writes: writes.clone(), notify: notify.clone() };
+        let writer = CountingWriter {
+            closed: closed.clone(),
+            writes: writes.clone(),
+            notify: notify.clone(),
+        };
         let heartbeat = arm_exec_heartbeat(Duration::from_millis(5), writer);
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         heartbeat.disarm();
-        assert_eq!(*writes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), 0);
+        assert_eq!(
+            *writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            0
+        );
     }
 
     #[tokio::test]
@@ -137,16 +162,24 @@ mod tests {
         let closed = Arc::new(AtomicBool::new(false));
         let writes = Arc::new(Mutex::new(0u32));
         let notify = Arc::new(Notify::new());
-        let writer = CountingWriter { closed: closed.clone(), writes: writes.clone(), notify: notify.clone() };
+        let writer = CountingWriter {
+            closed: closed.clone(),
+            writes: writes.clone(),
+            notify: notify.clone(),
+        };
         let heartbeat = arm_exec_heartbeat(Duration::from_millis(5), writer);
         tokio::time::timeout(Duration::from_secs(2), notify.notified())
             .await
             .expect("heartbeat should write within timeout");
         drop(heartbeat);
 
-        let count_after_drop = *writes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count_after_drop = *writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let count_after_wait = *writes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count_after_wait = *writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(count_after_drop, count_after_wait);
     }
 }

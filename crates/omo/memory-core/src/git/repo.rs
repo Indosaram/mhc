@@ -42,7 +42,10 @@ pub const NO_AUTO_MAINTENANCE: [&str; 4] = ["-c", "maintenance.auto=false", "-c"
 const SKIP_COMMIT_CHECKS: &str = "--no-verify";
 
 fn no_auto_maintenance_argv(command: &str) -> Vec<String> {
-    let mut argv: Vec<String> = NO_AUTO_MAINTENANCE.iter().map(|arg| (*arg).to_string()).collect();
+    let mut argv: Vec<String> = NO_AUTO_MAINTENANCE
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect();
     argv.push(command.to_string());
     argv
 }
@@ -138,7 +141,9 @@ impl GitMemoryRepo {
         if !paths.is_empty() {
             self.stage(&paths)?;
             if self.has_path_changes(&paths)? {
-                return Ok(self.commit_staged_with(INITIAL_COMMIT, &author, &[SKIP_COMMIT_CHECKS])?.sha);
+                return Ok(self
+                    .commit_staged_with(INITIAL_COMMIT, &author, &[SKIP_COMMIT_CHECKS])?
+                    .sha);
             }
         }
 
@@ -606,7 +611,11 @@ impl GitMemoryRepo {
         self.git_with_timeout(argv, GIT_TIMEOUT_MS)
     }
 
-    fn git_with_timeout(&self, argv: &[String], timeout_ms: u64) -> Result<GitExecResult, GitError> {
+    fn git_with_timeout(
+        &self,
+        argv: &[String],
+        timeout_ms: u64,
+    ) -> Result<GitExecResult, GitError> {
         let res = self.git_result_with_timeout(argv, timeout_ms)?;
         if res.code != 0 {
             return Err(command_error(argv, &res));
@@ -618,7 +627,11 @@ impl GitMemoryRepo {
         self.git_result_with_timeout(argv, GIT_TIMEOUT_MS)
     }
 
-    fn git_result_with_timeout(&self, argv: &[String], timeout_ms: u64) -> Result<GitExecResult, GitError> {
+    fn git_result_with_timeout(
+        &self,
+        argv: &[String],
+        timeout_ms: u64,
+    ) -> Result<GitExecResult, GitError> {
         let mut env = BTreeMap::new();
         env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
         let opts = GitExecOptions {

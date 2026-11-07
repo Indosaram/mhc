@@ -13,12 +13,7 @@ use memory_core::sync::{
         trust_pin::{PinLoad, load_trust_anchor},
         vendor::sync_format::object_types::{ObjectKind, SyncObjectRecord},
     },
-    engine::{
-        SyncSession,
-        adapters::http_transport::*,
-        error::EngineError,
-        ports::*,
-    },
+    engine::{SyncSession, adapters::http_transport::*, error::EngineError, ports::*},
     keyring_port::{DeviceKeyring, create_device_keyring},
     recovery::{
         keyring_append::own_material,
@@ -164,9 +159,10 @@ impl Chain {
             let head = state.head().map_or(0, |head| head.seq);
             for entry in entries {
                 if let Some(seq) = entry["seq"].as_u64().filter(|seq| *seq <= head)
-                    && let Some(link) = entry["link"].as_str() {
-                        self.links.insert(seq, link.into());
-                    }
+                    && let Some(link) = entry["link"].as_str()
+                {
+                    self.links.insert(seq, link.into());
+                }
             }
             for step in steps {
                 let seq = match &step {
@@ -208,7 +204,10 @@ impl Chain {
 }
 struct Crypto(Rc<tokio::sync::Mutex<Chain>>);
 fn hex_of_b64url(value: &str) -> String {
-    URL_SAFE_NO_PAD.decode(value).map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect()).unwrap_or_default()
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+        .unwrap_or_default()
 }
 impl Verifier for Crypto {
     fn verify_entry<'a>(
@@ -224,12 +223,25 @@ impl Verifier for Crypto {
             };
             let batch = match position {
                 ChainStep::Keyring { .. } => {
-                    if entry.kind != EntryKind::Keyring { return Ok(Verdict::Refused(RefusalCode::ObjectBinding)); }
-                    return Ok(Verdict::Ok { payload: BatchPayload { items: vec![] }, batch_id: format!("keyring:{}", entry.seq) });
+                    if entry.kind != EntryKind::Keyring {
+                        return Ok(Verdict::Refused(RefusalCode::ObjectBinding));
+                    }
+                    return Ok(Verdict::Ok {
+                        payload: BatchPayload { items: vec![] },
+                        batch_id: format!("keyring:{}", entry.seq),
+                    });
                 }
                 ChainStep::Vetoed { .. } => {
-                    if entry.kind != EntryKind::Batch { return Ok(Verdict::Refused(RefusalCode::ObjectBinding)); }
-                    return Ok(Verdict::Ok { payload: BatchPayload { items: vec![] }, batch_id: entry.batch_id.clone().unwrap_or_else(|| format!("vetoed:{}", entry.seq)) });
+                    if entry.kind != EntryKind::Batch {
+                        return Ok(Verdict::Refused(RefusalCode::ObjectBinding));
+                    }
+                    return Ok(Verdict::Ok {
+                        payload: BatchPayload { items: vec![] },
+                        batch_id: entry
+                            .batch_id
+                            .clone()
+                            .unwrap_or_else(|| format!("vetoed:{}", entry.seq)),
+                    });
                 }
                 ChainStep::Batch(batch) => batch,
             };
@@ -427,13 +439,36 @@ pub fn open_account_session(
     })
 }
 
-#[cfg(test)]mod tests{
- use super::*;use memory_core::sync::keyring_port::generate_device_key_material;
- #[tokio::test]async fn missing_and_corrupt_trust_pins_open_no_network_session(){
- let root=tempfile::tempdir().unwrap();
- let options=||AccountSessionOptions{api:"http://127.0.0.1:1".into(),account_id:"account".into(),device_id:"device".into(),material:generate_device_key_material().unwrap().material,pin_dir:root.path().into(),space_id:[0;16],token:Rc::new(||panic!("trust refusal must not request a token"))};
- assert!(matches!(open_account_session(options()).await.unwrap(),Err(AccountSessionIdle::NoPin)));
- use sha2::{Digest,Sha256};let pin=root.path().join("trust-anchor").join(URL_SAFE_NO_PAD.encode(Sha256::digest(b"account")));std::fs::create_dir_all(&pin).unwrap();std::fs::write(pin.join("pin.json"),"invalid").unwrap();
- assert!(matches!(open_account_session(options()).await.unwrap(),Err(AccountSessionIdle::CorruptPin)));
- }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memory_core::sync::keyring_port::generate_device_key_material;
+    #[tokio::test]
+    async fn missing_and_corrupt_trust_pins_open_no_network_session() {
+        let root = tempfile::tempdir().unwrap();
+        let options = || AccountSessionOptions {
+            api: "http://127.0.0.1:1".into(),
+            account_id: "account".into(),
+            device_id: "device".into(),
+            material: generate_device_key_material().unwrap().material,
+            pin_dir: root.path().into(),
+            space_id: [0; 16],
+            token: Rc::new(|| panic!("trust refusal must not request a token")),
+        };
+        assert!(matches!(
+            open_account_session(options()).await.unwrap(),
+            Err(AccountSessionIdle::NoPin)
+        ));
+        use sha2::{Digest, Sha256};
+        let pin = root
+            .path()
+            .join("trust-anchor")
+            .join(URL_SAFE_NO_PAD.encode(Sha256::digest(b"account")));
+        std::fs::create_dir_all(&pin).unwrap();
+        std::fs::write(pin.join("pin.json"), "invalid").unwrap();
+        assert!(matches!(
+            open_account_session(options()).await.unwrap(),
+            Err(AccountSessionIdle::CorruptPin)
+        ));
+    }
 }

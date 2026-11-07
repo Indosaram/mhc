@@ -30,7 +30,8 @@ fn expect_error(spec: &TeamSpec, ports: &SenpiTeamMemberPorts) -> SenpiTeamSpecE
 }
 
 #[test]
-fn given_an_unknown_category_with_named_ports_when_validated_then_the_error_lists_the_available_categories() {
+fn given_an_unknown_category_with_named_ports_when_validated_then_the_error_lists_the_available_categories()
+ {
     let spec = spec(
         &json!({ "members": [{ "kind": "category", "category": "quikc", "prompt": "work" }] }),
         "typo-team",
@@ -48,7 +49,8 @@ fn given_an_unknown_category_with_named_ports_when_validated_then_the_error_list
 }
 
 #[test]
-fn given_an_unknown_subagent_type_with_named_ports_when_validated_then_the_error_lists_the_available_agents() {
+fn given_an_unknown_subagent_type_with_named_ports_when_validated_then_the_error_lists_the_available_agents()
+ {
     let spec = spec(
         &json!({ "members": [{ "kind": "subagent_type", "subagent_type": "orakel", "prompt": "work" }] }),
         "typo-team",
@@ -120,7 +122,8 @@ fn given_an_unknown_subagent_type_when_validated_then_it_throws_a_typed_diagnost
 }
 
 #[test]
-fn given_a_curated_read_only_agent_when_validated_then_it_is_rejected_before_the_known_agent_check() {
+fn given_a_curated_read_only_agent_when_validated_then_it_is_rejected_before_the_known_agent_check()
+{
     let spec = spec(
         &json!({ "members": [{ "kind": "agent", "subagent_type": "plan-reviewer" }] }),
         "curated-agent-team",

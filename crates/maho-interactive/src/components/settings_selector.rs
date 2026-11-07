@@ -16,9 +16,9 @@ use maho_tui::tui::Component;
 
 use super::keybinding_hints::key_display_text;
 use super::theme_selector::{dynamic_border, select_list_theme};
+use crate::theme::TerminalTheme;
 use crate::theme::system_theme::SYSTEM_THEME_NAME;
 use crate::theme::theme::{Theme, ThemeColor, parse_auto_theme_setting};
-use crate::theme::TerminalTheme;
 
 /// pi-agent-core ThinkingLevel, including "off".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,22 +114,50 @@ pub enum FullscreenExitOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuietStartup { Off, Initial, All }
+pub enum QuietStartup {
+    Off,
+    Initial,
+    All,
+}
 
 impl QuietStartup {
     pub const ALL: [Self; 3] = [Self::Off, Self::Initial, Self::All];
-    pub const fn as_str(self) -> &'static str { match self { Self::Off => "off", Self::Initial => "initial", Self::All => "all" } }
-    pub fn from_name(value: &str) -> Option<Self> { Self::ALL.into_iter().find(|mode| mode.as_str() == value) }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Initial => "initial",
+            Self::All => "all",
+        }
+    }
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FullscreenWheelScrollLines { Auto, Lines(u32) }
+pub enum FullscreenWheelScrollLines {
+    Auto,
+    Lines(u32),
+}
 
 impl FullscreenWheelScrollLines {
     pub fn from_setting(value: &str) -> Option<Self> {
-        if value == "auto" { Some(Self::Auto) } else { value.parse::<u32>().ok().filter(|n| *n > 0).map(Self::Lines) }
+        if value == "auto" {
+            Some(Self::Auto)
+        } else {
+            value
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n > 0)
+                .map(Self::Lines)
+        }
     }
-    pub fn as_setting(self) -> String { match self { Self::Auto => "auto".to_owned(), Self::Lines(n) => n.to_string() } }
+    pub fn as_setting(self) -> String {
+        match self {
+            Self::Auto => "auto".to_owned(),
+            Self::Lines(n) => n.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -138,10 +166,19 @@ mod parity_settings_tests {
 
     #[test]
     fn quiet_startup_and_wheel_settings_preserve_modes() {
-        assert_eq!(QuietStartup::from_name("initial"), Some(QuietStartup::Initial));
+        assert_eq!(
+            QuietStartup::from_name("initial"),
+            Some(QuietStartup::Initial)
+        );
         assert_eq!(QuietStartup::from_name("all"), Some(QuietStartup::All));
-        assert_eq!(FullscreenWheelScrollLines::from_setting("auto"), Some(FullscreenWheelScrollLines::Auto));
-        assert_eq!(FullscreenWheelScrollLines::from_setting("5"), Some(FullscreenWheelScrollLines::Lines(5)));
+        assert_eq!(
+            FullscreenWheelScrollLines::from_setting("auto"),
+            Some(FullscreenWheelScrollLines::Auto)
+        );
+        assert_eq!(
+            FullscreenWheelScrollLines::from_setting("5"),
+            Some(FullscreenWheelScrollLines::Lines(5))
+        );
     }
 }
 
@@ -234,7 +271,10 @@ const THINKING_DESCRIPTIONS: [(&str, &str); 7] = [
     ("low", "Light reasoning (~2k tokens)"),
     ("medium", "Moderate reasoning (~8k tokens)"),
     ("high", "Deep reasoning (~16k tokens)"),
-    ("xhigh", "Extended reasoning (~32k tokens or native xhigh effort)"),
+    (
+        "xhigh",
+        "Extended reasoning (~32k tokens or native xhigh effort)",
+    ),
     ("max", "Maximum reasoning"),
 ];
 
@@ -416,15 +456,19 @@ impl SelectSubmenu {
                 truncate_primary: None,
             },
         );
-        if let Some(index) = options.iter().position(|option| option.value == current_value) {
+        if let Some(index) = options
+            .iter()
+            .position(|option| option.value == current_value)
+        {
             select_list.set_selected_index(index);
         }
         let mut on_select = on_select;
         select_list.on_select = Some(Box::new(move |item: &SelectItem| on_select(&item.value)));
         select_list.on_cancel = Some(on_cancel);
         if let Some(mut on_selection_change) = on_selection_change {
-            select_list.on_selection_change =
-                Some(Box::new(move |item: &SelectItem| on_selection_change(&item.value)));
+            select_list.on_selection_change = Some(Box::new(move |item: &SelectItem| {
+                on_selection_change(&item.value)
+            }));
         }
         Self {
             theme: theme.clone(),
@@ -440,17 +484,27 @@ impl Component for SelectSubmenu {
     fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
         lines.extend(
-            Text::with_padding(self.theme.bold(&self.theme.fg(ThemeColor::Accent, &self.title)), 0, 0)
-                .render(width),
+            Text::with_padding(
+                self.theme
+                    .bold(&self.theme.fg(ThemeColor::Accent, &self.title)),
+                0,
+                0,
+            )
+            .render(width),
         );
         if let Some(description) = self.description.clone() {
             lines.push(String::new());
-            lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Muted, &description), 0, 0).render(width));
+            lines.extend(
+                Text::with_padding(self.theme.fg(ThemeColor::Muted, &description), 0, 0)
+                    .render(width),
+            );
         }
         lines.push(String::new());
         lines.extend(self.select_list.render(width));
         lines.push(String::new());
-        lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Dim, &self.hint), 0, 0).render(width));
+        lines.extend(
+            Text::with_padding(self.theme.fg(ThemeColor::Dim, &self.hint), 0, 0).render(width),
+        );
         lines
     }
 
@@ -486,8 +540,12 @@ impl WarningSettingsSubmenu {
             description: Some(
                 "Warn when Anthropic subscription auth may use paid extra usage".to_owned(),
             ),
-            current_value: if state.anthropic_extra_usage.unwrap_or(true) { "true" } else { "false" }
-                .to_owned(),
+            current_value: if state.anthropic_extra_usage.unwrap_or(true) {
+                "true"
+            } else {
+                "false"
+            }
+            .to_owned(),
             values: Some(vec!["true".to_owned(), "false".to_owned()]),
             submenu: None,
         }];
@@ -560,7 +618,10 @@ pub const AUTOMATIC_THEME_VALUE: &str = "/";
 
 /// settings-selector.ts singleModeThemeItems: the system theme first, then automatic mode, then
 /// the remaining themes.
-pub fn single_mode_theme_items(available_themes: &[String], current_theme: &str) -> Vec<SelectItem> {
+pub fn single_mode_theme_items(
+    available_themes: &[String],
+    current_theme: &str,
+) -> Vec<SelectItem> {
     let mut items = theme_items(available_themes, current_theme);
     let system = items.remove(0);
     let mut ordered = vec![system];
@@ -578,7 +639,10 @@ pub fn single_mode_theme_items(available_themes: &[String], current_theme: &str)
 /// instead of dropping to the first scanned theme.
 fn preferred_theme(available_themes: &[String], preferred: Option<&str>, fallback: &str) -> String {
     let offered = |name: &str| {
-        name == SYSTEM_THEME_NAME || available_themes.iter().any(|offered| offered.as_str() == name)
+        name == SYSTEM_THEME_NAME
+            || available_themes
+                .iter()
+                .any(|offered| offered.as_str() == name)
     };
     if let Some(preferred) = preferred
         && offered(preferred)
@@ -588,10 +652,16 @@ fn preferred_theme(available_themes: &[String], preferred: Option<&str>, fallbac
     if offered(fallback) {
         return fallback.to_owned();
     }
-    available_themes.first().cloned().unwrap_or_else(|| fallback.to_owned())
+    available_themes
+        .first()
+        .cloned()
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
-fn default_automatic_themes(current_theme_setting: &str, available_themes: &[String]) -> (String, String) {
+fn default_automatic_themes(
+    current_theme_setting: &str,
+    available_themes: &[String],
+) -> (String, String) {
     if let Some((light, dark)) = parse_auto_theme_setting(Some(current_theme_setting)) {
         return (light.to_owned(), dark.to_owned());
     }
@@ -608,7 +678,11 @@ pub fn settings_list_theme(theme: &Theme) -> SettingsListTheme {
     let hint_theme = theme.clone();
     SettingsListTheme {
         label: Rc::new(move |text: &str, selected: bool| {
-            if selected { label_theme.fg(ThemeColor::Accent, text) } else { text.to_owned() }
+            if selected {
+                label_theme.fg(ThemeColor::Accent, text)
+            } else {
+                text.to_owned()
+            }
         }),
         value: Rc::new(move |text: &str, selected: bool| {
             if selected {
@@ -678,10 +752,18 @@ impl ThemeSubmenu {
         } else {
             automatic.1.clone()
         };
-        let mode = if auto_theme.is_some() { ThemeSubmenuMode::Automatic } else { ThemeSubmenuMode::Single };
+        let mode = if auto_theme.is_some() {
+            ThemeSubmenuMode::Automatic
+        } else {
+            ThemeSubmenuMode::Single
+        };
         let single_theme = preferred_theme(
             &available_themes,
-            fixed_theme.or(if auto_theme.is_some() { Some(active_automatic.as_str()) } else { None }),
+            fixed_theme.or(if auto_theme.is_some() {
+                Some(active_automatic.as_str())
+            } else {
+                None
+            }),
             SYSTEM_THEME_NAME,
         );
         let mut submenu = Self {
@@ -816,32 +898,43 @@ impl ThemeSubmenu {
             let theme = theme.clone();
             let state = Rc::clone(&state);
             SettingItem {
-                id: if is_light { "light-theme" } else { "dark-theme" }.to_owned(),
-                label: if is_light { "Light theme" } else { "Dark theme" }.to_owned(),
+                id: if is_light {
+                    "light-theme"
+                } else {
+                    "dark-theme"
+                }
+                .to_owned(),
+                label: if is_light {
+                    "Light theme"
+                } else {
+                    "Dark theme"
+                }
+                .to_owned(),
                 description: Some(description.to_owned()),
                 current_value,
                 values: None,
                 submenu: Some(Rc::new(move |current_value: &str, done: SubmenuDone| {
                     let state = Rc::clone(&state);
                     let done_for_select = Rc::clone(&done);
-                    let component: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(SelectSubmenu::new(
-                        &theme,
-                        title,
-                        description,
-                        theme_items(&themes, current_value),
-                        current_value,
-                        Box::new(move |value| {
-                            let mut state = state.borrow_mut();
-                            if is_light {
-                                state.light_theme = value.to_owned();
-                            } else {
-                                state.dark_theme = value.to_owned();
-                            }
-                            done_for_select(Some(value.to_owned()), None);
-                        }),
-                        Box::new(move || done(None, None)),
-                        None,
-                    )));
+                    let component: Rc<RefCell<dyn Component>> =
+                        Rc::new(RefCell::new(SelectSubmenu::new(
+                            &theme,
+                            title,
+                            description,
+                            theme_items(&themes, current_value),
+                            current_value,
+                            Box::new(move |value| {
+                                let mut state = state.borrow_mut();
+                                if is_light {
+                                    state.light_theme = value.to_owned();
+                                } else {
+                                    state.dark_theme = value.to_owned();
+                                }
+                                done_for_select(Some(value.to_owned()), None);
+                            }),
+                            Box::new(move || done(None, None)),
+                            None,
+                        )));
                     component
                 })),
             }
@@ -891,7 +984,10 @@ impl ThemeSubmenu {
             "single-mode" => mode_switch_for_change.set(true),
             "apply" => {
                 let state = state_for_change.borrow();
-                done_for_change(Some(format!("{}/{}", state.light_theme, state.dark_theme)), None);
+                done_for_change(
+                    Some(format!("{}/{}", state.light_theme, state.dark_theme)),
+                    None,
+                );
             }
             _ => {
                 if let Some(callback) = &mut callbacks_for_change.borrow_mut().on_theme_preview {
@@ -1320,7 +1416,8 @@ impl SettingsSelectorComponent {
                 id: "auto-resize-images".to_owned(),
                 label: "Auto-resize images".to_owned(),
                 description: Some(
-                    "Resize large images to 2000x2000 max for better model compatibility".to_owned(),
+                    "Resize large images to 2000x2000 max for better model compatibility"
+                        .to_owned(),
                 ),
                 current_value: config.auto_resize_images.to_string(),
                 values: Some(vec!["true".to_owned(), "false".to_owned()]),
@@ -1359,7 +1456,8 @@ impl SettingsSelectorComponent {
                 id: "show-hardware-cursor".to_owned(),
                 label: "Show hardware cursor".to_owned(),
                 description: Some(
-                    "Show the terminal cursor while still positioning it for IME support".to_owned(),
+                    "Show the terminal cursor while still positioning it for IME support"
+                        .to_owned(),
                 ),
                 current_value: config.show_hardware_cursor.to_string(),
                 values: Some(vec!["true".to_owned(), "false".to_owned()]),
@@ -1374,7 +1472,12 @@ impl SettingsSelectorComponent {
                 label: "Editor padding".to_owned(),
                 description: Some("Horizontal padding for input editor (0-3)".to_owned()),
                 current_value: config.editor_padding_x.to_string(),
-                values: Some(vec!["0".to_owned(), "1".to_owned(), "2".to_owned(), "3".to_owned()]),
+                values: Some(vec![
+                    "0".to_owned(),
+                    "1".to_owned(),
+                    "2".to_owned(),
+                    "3".to_owned(),
+                ]),
                 submenu: None,
             },
         );
@@ -1385,7 +1488,8 @@ impl SettingsSelectorComponent {
                 id: "output-padding".to_owned(),
                 label: "Output padding".to_owned(),
                 description: Some(
-                    "Horizontal padding for user messages, assistant messages, and thinking".to_owned(),
+                    "Horizontal padding for user messages, assistant messages, and thinking"
+                        .to_owned(),
                 ),
                 current_value: config.output_pad.to_string(),
                 values: Some(vec!["0".to_owned(), "1".to_owned()]),
@@ -1417,7 +1521,9 @@ impl SettingsSelectorComponent {
             SettingItem {
                 id: "clear-on-shrink".to_owned(),
                 label: "Clear on shrink".to_owned(),
-                description: Some("Clear empty rows when content shrinks (may cause flicker)".to_owned()),
+                description: Some(
+                    "Clear empty rows when content shrinks (may cause flicker)".to_owned(),
+                ),
                 current_value: config.clear_on_shrink.to_string(),
                 values: Some(vec!["true".to_owned(), "false".to_owned()]),
                 submenu: None,
@@ -1429,7 +1535,9 @@ impl SettingsSelectorComponent {
             SettingItem {
                 id: "terminal-progress".to_owned(),
                 label: "Terminal progress".to_owned(),
-                description: Some("Show OSC 9;4 progress indicators in the terminal tab bar".to_owned()),
+                description: Some(
+                    "Show OSC 9;4 progress indicators in the terminal tab bar".to_owned(),
+                ),
                 current_value: config.show_terminal_progress.to_string(),
                 values: Some(vec!["true".to_owned(), "false".to_owned()]),
                 submenu: None,
@@ -1440,7 +1548,9 @@ impl SettingsSelectorComponent {
             items.clone(),
             10,
             settings_list_theme(theme),
-            SettingsListOptions { enable_search: true },
+            SettingsListOptions {
+                enable_search: true,
+            },
         );
         let callbacks_for_change = Rc::clone(&callbacks);
         settings_list.on_change = Some(Box::new(move |id, new_value| {
@@ -1454,14 +1564,25 @@ impl SettingsSelectorComponent {
                     }
                 }
                 "auto-resize-images" => {
-                    call(&mut callbacks.on_auto_resize_images_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_auto_resize_images_change,
+                        new_value == "true",
+                    );
                 }
                 "block-images" => call(&mut callbacks.on_block_images_change, new_value == "true"),
                 "skill-commands" => {
-                    call(&mut callbacks.on_enable_skill_commands_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_enable_skill_commands_change,
+                        new_value == "true",
+                    );
                 }
-                "steering-mode" => call(&mut callbacks.on_steering_mode_change, new_value.to_owned()),
-                "follow-up-mode" => call(&mut callbacks.on_follow_up_mode_change, new_value.to_owned()),
+                "steering-mode" => {
+                    call(&mut callbacks.on_steering_mode_change, new_value.to_owned())
+                }
+                "follow-up-mode" => call(
+                    &mut callbacks.on_follow_up_mode_change,
+                    new_value.to_owned(),
+                ),
                 "transport" => call(&mut callbacks.on_transport_change, new_value.to_owned()),
                 "http-idle-timeout" => {
                     if let Some((_, timeout_ms)) = HTTP_IDLE_TIMEOUT_CHOICES
@@ -1471,8 +1592,14 @@ impl SettingsSelectorComponent {
                         call(&mut callbacks.on_http_idle_timeout_ms_change, *timeout_ms);
                     }
                 }
-                "hide-thinking" => call(&mut callbacks.on_hide_thinking_block_change, new_value == "true"),
-                "smooth-streaming" => call(&mut callbacks.on_smooth_streaming_change, new_value == "true"),
+                "hide-thinking" => call(
+                    &mut callbacks.on_hide_thinking_block_change,
+                    new_value == "true",
+                ),
+                "smooth-streaming" => call(
+                    &mut callbacks.on_smooth_streaming_change,
+                    new_value == "true",
+                ),
                 "streaming-fps" => {
                     if let Ok(value) = new_value.parse::<u32>() {
                         call(&mut callbacks.on_smooth_streaming_fps_change, value);
@@ -1484,14 +1611,27 @@ impl SettingsSelectorComponent {
                     }
                 }
                 "cache-miss-notices" => {
-                    call(&mut callbacks.on_show_cache_miss_notices_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_show_cache_miss_notices_change,
+                        new_value == "true",
+                    );
                 }
                 "collapse-changelog" => {
-                    call(&mut callbacks.on_collapse_changelog_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_collapse_changelog_change,
+                        new_value == "true",
+                    );
                 }
-                "quiet-startup" => if let Some(value) = QuietStartup::from_name(new_value) { call(&mut callbacks.on_quiet_startup_change, value); },
+                "quiet-startup" => {
+                    if let Some(value) = QuietStartup::from_name(new_value) {
+                        call(&mut callbacks.on_quiet_startup_change, value);
+                    }
+                }
                 "install-telemetry" => {
-                    call(&mut callbacks.on_enable_install_telemetry_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_enable_install_telemetry_change,
+                        new_value == "true",
+                    );
                 }
                 "default-project-trust" => {
                     if let Some(value) = DefaultProjectTrust::from_label(new_value) {
@@ -1499,13 +1639,22 @@ impl SettingsSelectorComponent {
                     }
                 }
                 "double-escape-action" => {
-                    call(&mut callbacks.on_double_escape_action_change, new_value.to_owned());
+                    call(
+                        &mut callbacks.on_double_escape_action_change,
+                        new_value.to_owned(),
+                    );
                 }
                 "tree-filter-mode" => {
-                    call(&mut callbacks.on_tree_filter_mode_change, new_value.to_owned());
+                    call(
+                        &mut callbacks.on_tree_filter_mode_change,
+                        new_value.to_owned(),
+                    );
                 }
                 "show-hardware-cursor" => {
-                    call(&mut callbacks.on_show_hardware_cursor_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_show_hardware_cursor_change,
+                        new_value == "true",
+                    );
                 }
                 "editor-padding" => {
                     if let Ok(value) = new_value.parse::<usize>() {
@@ -1521,12 +1670,21 @@ impl SettingsSelectorComponent {
                         call(&mut callbacks.on_autocomplete_max_visible_change, value);
                     }
                 }
-                "clear-on-shrink" => call(&mut callbacks.on_clear_on_shrink_change, new_value == "true"),
+                "clear-on-shrink" => call(
+                    &mut callbacks.on_clear_on_shrink_change,
+                    new_value == "true",
+                ),
                 "terminal-progress" => {
-                    call(&mut callbacks.on_show_terminal_progress_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_show_terminal_progress_change,
+                        new_value == "true",
+                    );
                 }
                 "terminal-mouse" if is_terminal_mouse_mode(new_value) => {
-                    call(&mut callbacks.on_terminal_mouse_change, new_value.to_owned());
+                    call(
+                        &mut callbacks.on_terminal_mouse_change,
+                        new_value.to_owned(),
+                    );
                 }
                 "tui-mode" => {
                     if let Some(mode) = TuiMode::from_name(new_value) {
@@ -1539,14 +1697,23 @@ impl SettingsSelectorComponent {
                     }
                 }
                 "fullscreen-scrollbar" => {
-                    call(&mut callbacks.on_fullscreen_scrollbar_change, new_value.to_owned());
+                    call(
+                        &mut callbacks.on_fullscreen_scrollbar_change,
+                        new_value.to_owned(),
+                    );
                 }
                 "fullscreen-copy-on-select" => {
-                    call(&mut callbacks.on_fullscreen_copy_on_select_change, new_value == "true");
+                    call(
+                        &mut callbacks.on_fullscreen_copy_on_select_change,
+                        new_value == "true",
+                    );
                 }
-            "fullscreen-wheel-scroll-lines" => {
+                "fullscreen-wheel-scroll-lines" => {
                     if let Some(value) = FullscreenWheelScrollLines::from_setting(new_value) {
-                        call(&mut callbacks.on_fullscreen_wheel_scroll_lines_change, value);
+                        call(
+                            &mut callbacks.on_fullscreen_wheel_scroll_lines_change,
+                            value,
+                        );
                     }
                 }
                 "theme" => call(&mut callbacks.on_theme_change, new_value.to_owned()),

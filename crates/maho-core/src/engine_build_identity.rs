@@ -40,7 +40,9 @@ fn parse_calver(version: &str) -> Option<(i64, i64, i64, i64)> {
     let mut rest = version;
     let mut parts = [0i64; 4];
     for index in 0..4 {
-        let take = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let take = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         if take == 0 {
             return None;
         }
@@ -52,7 +54,9 @@ fn parse_calver(version: &str) -> Option<(i64, i64, i64, i64)> {
             }
             _ => {
                 if let Some(after) = rest.strip_prefix('-') {
-                    let take = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+                    let take = after
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(after.len());
                     if take == 0 {
                         return None;
                     }
@@ -84,16 +88,28 @@ pub fn engine_build_identity_from(build: &EngineBuildInput) -> EngineBuildIdenti
     EngineBuildIdentity {
         text,
         ordinal: [year, month, day, increment, epoch],
-        scheme: if epoch == 0 { EngineOrdinalScheme::Nodef } else { EngineOrdinalScheme::Epoch },
+        scheme: if epoch == 0 {
+            EngineOrdinalScheme::Nodef
+        } else {
+            EngineOrdinalScheme::Epoch
+        },
     }
 }
 
 fn built() -> &'static EngineBuildIdentity {
     static BUILT: OnceLock<EngineBuildIdentity> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let epoch = std::env::var("MAHO_BUILD_EPOCH").ok().and_then(|value| value.parse::<i64>().ok());
-        let sha7 = std::env::var("MAHO_BUILD_SHA7").ok().filter(|value| !value.is_empty());
-        engine_build_identity_from(&EngineBuildInput { version: ENGINE_VERSION.to_owned(), epoch, sha7 })
+        let epoch = std::env::var("MAHO_BUILD_EPOCH")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok());
+        let sha7 = std::env::var("MAHO_BUILD_SHA7")
+            .ok()
+            .filter(|value| !value.is_empty());
+        engine_build_identity_from(&EngineBuildInput {
+            version: ENGINE_VERSION.to_owned(),
+            epoch,
+            sha7,
+        })
     })
 }
 
@@ -107,10 +123,17 @@ pub fn engine_build_identity() -> &'static EngineBuildIdentity {
 pub fn compare_engine_ordinal(a: &EngineBuildIdentity, b: &EngineBuildIdentity) -> i32 {
     for index in 0..4 {
         if a.ordinal[index] != b.ordinal[index] {
-            return if a.ordinal[index] > b.ordinal[index] { 1 } else { -1 };
+            return if a.ordinal[index] > b.ordinal[index] {
+                1
+            } else {
+                -1
+            };
         }
     }
-    if a.scheme != EngineOrdinalScheme::Epoch || b.scheme != EngineOrdinalScheme::Epoch || a.ordinal[4] == b.ordinal[4] {
+    if a.scheme != EngineOrdinalScheme::Epoch
+        || b.scheme != EngineOrdinalScheme::Epoch
+        || a.ordinal[4] == b.ordinal[4]
+    {
         return 0;
     }
     if a.ordinal[4] > b.ordinal[4] { 1 } else { -1 }
@@ -138,7 +161,10 @@ mod tests {
 
     #[test]
     fn parses_a_post_release_increment() {
-        assert_eq!(identity("2026.9.16-3", None, None).ordinal, [2026, 9, 16, 3, 0]);
+        assert_eq!(
+            identity("2026.9.16-3", None, None).ordinal,
+            [2026, 9, 16, 3, 0]
+        );
     }
 
     #[test]
@@ -150,13 +176,22 @@ mod tests {
 
     #[test]
     fn a_zero_or_absent_epoch_selects_nodef() {
-        assert_eq!(identity("2026.9.16", Some(0), Some("abc")).scheme, EngineOrdinalScheme::Nodef);
-        assert_eq!(identity("2026.9.16", Some(0), Some("abc")).text, "2026.9.16");
+        assert_eq!(
+            identity("2026.9.16", Some(0), Some("abc")).scheme,
+            EngineOrdinalScheme::Nodef
+        );
+        assert_eq!(
+            identity("2026.9.16", Some(0), Some("abc")).text,
+            "2026.9.16"
+        );
     }
 
     #[test]
     fn an_unparseable_version_is_ordinal_zero() {
-        assert_eq!(identity("not-a-version", None, None).ordinal, [0, 0, 0, 0, 0]);
+        assert_eq!(
+            identity("not-a-version", None, None).ordinal,
+            [0, 0, 0, 0, 0]
+        );
     }
 
     #[test]

@@ -264,7 +264,10 @@ mod command {
             Box::pin(async { None })
         }
         fn notify(&self, message: &str, kind: NotificationType) {
-            self.notices.lock().expect("fixture notices").push((message.into(), kind));
+            self.notices
+                .lock()
+                .expect("fixture notices")
+                .push((message.into(), kind));
         }
         fn set_status(&self, _: &str, _: Option<&str>) {}
         fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}

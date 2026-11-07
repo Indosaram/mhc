@@ -23,7 +23,9 @@ pub mod tool;
 #[cfg(test)]
 mod tests;
 
-pub use engine::{AGGREGATE_MESSAGE_TYPE, CreateRequest, PoolEngine, PoolEvent, assignment_message, choose_idle};
+pub use engine::{
+    AGGREGATE_MESSAGE_TYPE, CreateRequest, PoolEngine, PoolEvent, assignment_message, choose_idle,
+};
 pub use extension::{TaskHost, WorkerExtension, WorkpoolAddon};
 pub use host::{StartedWorker, ToolCatalog, WorkerEntry, WorkerHost, WorkerIndex, WorkerStart};
 pub use model::{

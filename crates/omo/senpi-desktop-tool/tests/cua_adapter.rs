@@ -1,20 +1,23 @@
 //! Tests matching upstream `test/cua-adapter.test.ts`.
 
-use std::collections::HashMap;
 use maho_tools::definition::AbortSignal;
 use maho_tools::definition::ToolCall;
 use senpi_desktop_tool::cua_adapter::create_computer_actions_tool;
 use senpi_desktop_tool::cua_definition::computer_actions_permission_parser;
 use senpi_desktop_tool::tool::ComputerToolDeps;
 use serde_json::json;
+use std::collections::HashMap;
 
 use crate::fixtures;
-use fixtures::{desktop_fixture, methods_of, TestToolContext};
+use fixtures::{TestToolContext, desktop_fixture, methods_of};
 
 #[tokio::test]
 async fn kill_switch_bypass_stop_path_refusal_halts_batch_and_never_dispatches_followup() {
     let mut env = HashMap::new();
-    env.insert("FAKE_ENGINE_INPUT_ERROR".into(), "StopPathUnavailable".into());
+    env.insert(
+        "FAKE_ENGINE_INPUT_ERROR".into(),
+        "StopPathUnavailable".into(),
+    );
     let fixture = desktop_fixture(None, env);
 
     let tool = create_computer_actions_tool(ComputerToolDeps {
@@ -31,7 +34,12 @@ async fn kill_switch_bypass_stop_path_refusal_halts_batch_and_never_dispatches_f
         ]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -45,14 +53,25 @@ async fn kill_switch_bypass_stop_path_refusal_halts_batch_and_never_dispatches_f
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
 
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_SUPERVISOR_NOT_LIVE"));
 
-    let text = result.content.iter().filter_map(|c| match c {
-        maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("
-");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
     assert!(text.contains("Stop and wait for the user"));
 
     let methods = methods_of(&fixture.log).await;
@@ -81,7 +100,12 @@ async fn suspended_enforcement_suspended_session_refuses_input_and_stops_batch()
         ]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -93,7 +117,11 @@ async fn suspended_enforcement_suspended_session_refuses_input_and_stops_batch()
     let result = (tool.execute)(call).await.expect("execute");
     let details = result.details.expect("details");
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_SUSPENDED"));
 
     let methods = methods_of(&fixture.log).await;
@@ -117,7 +145,12 @@ async fn permission_revoked_os_refusal_maps_to_computer_permission_required() {
         "keys": ["cmd", "a"]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -131,13 +164,28 @@ async fn permission_revoked_os_refusal_maps_to_computer_permission_required() {
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
 
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_PERMISSION_REQUIRED"));
 
     let failure_obj = val.get("failure").unwrap_or(val);
-    assert_eq!(failure_obj.get("permission").and_then(|v| v.as_str()), Some("accessibility"));
-    assert_eq!(failure_obj.get("app").and_then(|v| v.as_str()), Some("QA App"));
-    assert_eq!(failure_obj.get("relaunchRequired").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        failure_obj.get("permission").and_then(|v| v.as_str()),
+        Some("accessibility")
+    );
+    assert_eq!(
+        failure_obj.get("app").and_then(|v| v.as_str()),
+        Some("QA App")
+    );
+    assert_eq!(
+        failure_obj
+            .get("relaunchRequired")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
 
 #[tokio::test]
@@ -154,7 +202,12 @@ async fn display_stale_pointer_input_without_current_frame_is_computer_display_s
         "y": 5
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -168,14 +221,25 @@ async fn display_stale_pointer_input_without_current_frame_is_computer_display_s
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
 
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_DISPLAY_STALE"));
 
-    let text = result.content.iter().filter_map(|c| match c {
-        maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("
-");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
     assert!(text.contains("Capture a fresh screenshot"));
 }
 
@@ -187,7 +251,12 @@ async fn out_of_bounds_drift_max_minus_one_lands_max_and_neg_refused() {
         execute_tool: None,
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
 
     // 1. Take a screenshot
     let call_shot = ToolCall {
@@ -208,7 +277,14 @@ async fn out_of_bounds_drift_max_minus_one_lands_max_and_neg_refused() {
         context: Some(&ctx),
     };
     let res_edge = (tool.execute)(call_edge).await.expect("execute");
-    assert_ne!(res_edge.details.as_ref().and_then(|d| d.get("isError")).and_then(|v| v.as_bool()), Some(true));
+    assert_ne!(
+        res_edge
+            .details
+            .as_ref()
+            .and_then(|d| d.get("isError"))
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // 3. Click out of bounds (1280, 10)
     let call_over = ToolCall {
@@ -220,7 +296,11 @@ async fn out_of_bounds_drift_max_minus_one_lands_max_and_neg_refused() {
     };
     let res_over = (tool.execute)(call_over).await.expect("execute");
     let val_over = res_over.details.as_ref().unwrap().get("value").unwrap();
-    let code_over = val_over.get("failure").and_then(|f| f.get("code")).or_else(|| val_over.get("code")).and_then(|v| v.as_str());
+    let code_over = val_over
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val_over.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(code_over, Some("COMPUTER_COORD_INVALID"));
 
     // 4. Drag with negative coordinate (-1, 10)
@@ -233,7 +313,11 @@ async fn out_of_bounds_drift_max_minus_one_lands_max_and_neg_refused() {
     };
     let res_neg = (tool.execute)(call_neg).await.expect("execute");
     let val_neg = res_neg.details.as_ref().unwrap().get("value").unwrap();
-    let code_neg = val_neg.get("failure").and_then(|f| f.get("code")).or_else(|| val_neg.get("code")).and_then(|v| v.as_str());
+    let code_neg = val_neg
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val_neg.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(code_neg, Some("COMPUTER_COORD_INVALID"));
 
     let methods = methods_of(&fixture.log).await;
@@ -257,7 +341,12 @@ async fn runaway_loop_halt_batch_deadline_cancels_step_that_never_finishes() {
         "actions": [{ "action": "wait", "ms": 600_000 }]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -271,7 +360,11 @@ async fn runaway_loop_halt_batch_deadline_cancels_step_that_never_finishes() {
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
 
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_CANCELLED"));
 }
 
@@ -293,7 +386,12 @@ async fn blast_radius_in_batch_screenshot_reanchors_and_first_failure_stops_ever
         ]
     });
 
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: input,
@@ -305,14 +403,25 @@ async fn blast_radius_in_batch_screenshot_reanchors_and_first_failure_stops_ever
     let result = (tool.execute)(call).await.expect("execute");
     let details = result.details.expect("details");
     let val = details.get("value").expect("value");
-    let fail_code = val.get("failure").and_then(|f| f.get("code")).or_else(|| val.get("code")).and_then(|v| v.as_str());
+    let fail_code = val
+        .get("failure")
+        .and_then(|f| f.get("code"))
+        .or_else(|| val.get("code"))
+        .and_then(|v| v.as_str());
     assert_eq!(fail_code, Some("COMPUTER_COORD_INVALID"));
 
-    let text = result.content.iter().filter_map(|c| match c {
-        maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("
-");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            maho_tools::definition::ToolContent::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
     assert!(text.contains("Action 3 (click) failed"));
 
     let methods = methods_of(&fixture.log).await;
@@ -327,11 +436,25 @@ fn publishes_one_root_object_schema_whose_action_enum_includes_batch() {
     let schema = senpi_desktop_tool::cua_definition::computer_actions_params_schema();
     assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
     assert!(schema.get("anyOf").is_none());
-    let act_enum = schema["properties"]["action"]["enum"].as_array().expect("enum");
+    let act_enum = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("enum");
     let names: Vec<_> = act_enum.iter().filter_map(|v| v.as_str()).collect();
-    assert_eq!(names, vec![
-        "screenshot", "click", "double_click", "move", "drag", "scroll", "type", "keypress", "wait", "batch"
-    ]);
+    assert_eq!(
+        names,
+        vec![
+            "screenshot",
+            "click",
+            "double_click",
+            "move",
+            "drag",
+            "scroll",
+            "type",
+            "keypress",
+            "wait",
+            "batch"
+        ]
+    );
 }
 
 // 4 it.each parameter expansions for invalid arguments before engine starts
@@ -342,7 +465,12 @@ async fn refuses_unknown_action_frobnicate() {
         handle: fixture.handle.clone(),
         execute_tool: None,
     });
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: json!({ "action": "frobnicate" }),
@@ -354,8 +482,17 @@ async fn refuses_unknown_action_frobnicate() {
     let details = result.details.expect("details");
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_INVALID_ARGUMENTS"));
-    assert_eq!(fixture.log.children_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_INVALID_ARGUMENTS")
+    );
+    assert_eq!(
+        fixture
+            .log
+            .children_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -365,7 +502,12 @@ async fn refuses_click_missing_y() {
         handle: fixture.handle.clone(),
         execute_tool: None,
     });
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: json!({ "action": "click", "x": 1 }),
@@ -377,8 +519,17 @@ async fn refuses_click_missing_y() {
     let details = result.details.expect("details");
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_INVALID_ARGUMENTS"));
-    assert_eq!(fixture.log.children_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_INVALID_ARGUMENTS")
+    );
+    assert_eq!(
+        fixture
+            .log
+            .children_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -388,7 +539,12 @@ async fn refuses_type_with_extra_keys() {
         handle: fixture.handle.clone(),
         execute_tool: None,
     });
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: json!({ "action": "type", "text": "hi", "keys": ["a"] }),
@@ -400,8 +556,17 @@ async fn refuses_type_with_extra_keys() {
     let details = result.details.expect("details");
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_INVALID_ARGUMENTS"));
-    assert_eq!(fixture.log.children_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_INVALID_ARGUMENTS")
+    );
+    assert_eq!(
+        fixture
+            .log
+            .children_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -411,7 +576,12 @@ async fn refuses_batch_with_unknown_action_teleport() {
         handle: fixture.handle.clone(),
         execute_tool: None,
     });
-    let ctx = TestToolContext::new(env!("CARGO_MANIFEST_DIR"), None, "session-1", "/sessions/project");
+    let ctx = TestToolContext::new(
+        env!("CARGO_MANIFEST_DIR"),
+        None,
+        "session-1",
+        "/sessions/project",
+    );
     let call = ToolCall {
         id: "call",
         params: json!({
@@ -426,8 +596,17 @@ async fn refuses_batch_with_unknown_action_teleport() {
     let details = result.details.expect("details");
     assert_eq!(details.get("isError").and_then(|v| v.as_bool()), Some(true));
     let val = details.get("value").expect("value");
-    assert_eq!(val.get("code").and_then(|v| v.as_str()), Some("COMPUTER_INVALID_ARGUMENTS"));
-    assert_eq!(fixture.log.children_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        val.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_INVALID_ARGUMENTS")
+    );
+    assert_eq!(
+        fixture
+            .log
+            .children_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 }
 
 #[test]
@@ -440,11 +619,15 @@ fn computer_actions_permission_tier_classification() {
     };
 
     assert_eq!(
-        p(json!({ "action": "batch", "actions": [{ "action": "screenshot" }, { "action": "wait", "ms": 5 }] })),
+        p(
+            json!({ "action": "batch", "actions": [{ "action": "screenshot" }, { "action": "wait", "ms": 5 }] })
+        ),
         vec!["read"]
     );
     assert_eq!(
-        p(json!({ "action": "batch", "actions": [{ "action": "screenshot" }, { "action": "click", "x": 1, "y": 1 }] })),
+        p(
+            json!({ "action": "batch", "actions": [{ "action": "screenshot" }, { "action": "click", "x": 1, "y": 1 }] })
+        ),
         vec!["exec"]
     );
     assert_eq!(p(json!({ "action": "batch", "actions": [] })), vec!["exec"]);
@@ -472,6 +655,9 @@ fn launch_context_failure_maps_to_structured_computer_failure() {
         value.get("code").and_then(|v| v.as_str()),
         Some("COMPUTER_LAUNCH_CONTEXT_REQUIRED")
     );
-    assert_eq!(value.get("reason").and_then(|v| v.as_str()), Some("self-responsible"));
+    assert_eq!(
+        value.get("reason").and_then(|v| v.as_str()),
+        Some("self-responsible")
+    );
     assert!(value.get("permission").is_none());
 }

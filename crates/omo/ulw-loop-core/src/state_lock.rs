@@ -38,7 +38,11 @@ pub struct LockRecord {
     #[serde(rename = "createdAt")]
     pub created_at: String,
     pub token: String,
-    #[serde(rename = "leaseUntil", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "leaseUntil",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lease_until: Option<u64>,
 }
 
@@ -83,7 +87,10 @@ pub fn with_state_lock_sync<T>(
         .open(&guard_path)
         .map_err(|e| {
             UlwLoopError::new(
-                format!("Failed to open state lock guard at {}: {e}", guard_path.display()),
+                format!(
+                    "Failed to open state lock guard at {}: {e}",
+                    guard_path.display()
+                ),
                 "ULW_LOOP_LOCK_ERROR",
             )
         })?;
@@ -97,7 +104,10 @@ pub fn with_state_lock_sync<T>(
             Err(std::fs::TryLockError::WouldBlock) => {
                 if start.elapsed() >= timeout {
                     return Err(UlwLoopError::new(
-                        format!("Timed out acquiring ulw-loop state lock at {}", path.display()),
+                        format!(
+                            "Timed out acquiring ulw-loop state lock at {}",
+                            path.display()
+                        ),
                         ULW_LOOP_LOCK_TIMEOUT_CODE,
                     ));
                 }

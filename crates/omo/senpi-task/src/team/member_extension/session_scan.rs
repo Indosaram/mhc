@@ -143,9 +143,15 @@ impl SessionAckScan {
             }
             let mut file = fs::File::open(&path)?;
             file.seek(SeekFrom::Start(state.offset))?;
-            let read = file.take(len - state.offset).read_to_end(&mut state.residual)?;
+            let read = file
+                .take(len - state.offset)
+                .read_to_end(&mut state.residual)?;
             state.offset += read as u64;
-            let complete = state.residual.iter().rposition(|byte| *byte == b'\n').map_or(0, |at| at + 1);
+            let complete = state
+                .residual
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |at| at + 1);
             for line in state.residual[..complete].split(|byte| *byte == b'\n') {
                 collect_line_marker_ids(line, &mut state.seen);
             }
@@ -190,8 +196,12 @@ fn collect_value_marker_ids(value: &Value, out: &mut HashSet<String>) {
                 }
             }
         }
-        Value::Array(items) => items.iter().for_each(|entry| collect_value_marker_ids(entry, out)),
-        Value::Object(map) => map.values().for_each(|entry| collect_value_marker_ids(entry, out)),
+        Value::Array(items) => items
+            .iter()
+            .for_each(|entry| collect_value_marker_ids(entry, out)),
+        Value::Object(map) => map
+            .values()
+            .for_each(|entry| collect_value_marker_ids(entry, out)),
         _ => {}
     }
 }

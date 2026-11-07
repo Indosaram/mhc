@@ -1,22 +1,24 @@
 //! Final review blocker recording.
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::codex_goal_snapshot::{
-    format_codex_goal_reconciliation, read_codex_goal_snapshot_input, reconcile_codex_goal_snapshot,
-    ReconcileCodexGoalOptions,
+    ReconcileCodexGoalOptions, format_codex_goal_reconciliation, read_codex_goal_snapshot_input,
+    reconcile_codex_goal_snapshot,
 };
 use crate::command_types::RecordFinalReviewBlockersOptions;
 use crate::domain_types::{UlwLoopItem, UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::driver_objective_ack::{acknowledge_driver_objective, acknowledged_driver_objectives};
-use crate::goal_status::{compatible_codex_objectives, expected_codex_objective, is_final_run_completion_candidate};
+use crate::goal_status::{
+    compatible_codex_objectives, expected_codex_objective, is_final_run_completion_candidate,
+};
 use crate::paths::UlwLoopScope;
-use crate::plan_commit::{commit, CommitMutation};
+use crate::plan_commit::{CommitMutation, commit};
 use crate::plan_crud::clear_goal_blocker_fields;
-use crate::plan_goal_factory::{seed_default_success_criteria, GoalSeedOptions};
+use crate::plan_goal_factory::{GoalSeedOptions, seed_default_success_criteria};
 use crate::plan_io::{read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::runtime::{iso, UlwLoopError};
+use crate::runtime::{UlwLoopError, iso};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordFinalReviewBlockersResult {
@@ -136,7 +138,10 @@ pub fn record_final_review_blockers(
             ));
         }
 
-        acknowledge_driver_objective(&mut plan, reconciliation.unacknowledged_objective.as_deref());
+        acknowledge_driver_objective(
+            &mut plan,
+            reconciliation.unacknowledged_objective.as_deref(),
+        );
 
         let now = iso();
         let target_goal = &mut plan.goals[goal_idx];
@@ -180,7 +185,10 @@ pub fn record_final_review_blockers(
             status: Some(blocked_goal.status.clone()),
             evidence: Some(args.evidence.clone()),
             codex_goal,
-            message: Some(format!("Review blockers recorded; appended {}.", new_goal.id)),
+            message: Some(format!(
+                "Review blockers recorded; appended {}.",
+                new_goal.id
+            )),
             ..Default::default()
         };
 

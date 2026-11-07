@@ -1,8 +1,8 @@
 //! Quality gate field parsing and defect collection.
 
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use serde_json::Value;
 
 use crate::runtime::UlwLoopError;
 
@@ -23,7 +23,9 @@ thread_local! {
     static ACTIVE_COLLECTOR: RefCell<Option<QualityGateCollector>> = const { RefCell::new(None) };
 }
 
-pub fn with_quality_gate_collector<T>(f: impl FnOnce() -> Result<T, UlwLoopError>) -> Result<T, UlwLoopError> {
+pub fn with_quality_gate_collector<T>(
+    f: impl FnOnce() -> Result<T, UlwLoopError>,
+) -> Result<T, UlwLoopError> {
     ACTIVE_COLLECTOR.with(|c| {
         *c.borrow_mut() = Some(QualityGateCollector::default());
     });
@@ -119,17 +121,24 @@ pub fn is_poisoned_artifact_kind(id: &str) -> bool {
     })
 }
 
-pub fn section<'a>(value: Option<&'a Value>, field: &str) -> Option<&'a serde_json::Map<String, Value>> {
+pub fn section<'a>(
+    value: Option<&'a Value>,
+    field: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
     let Some(v) = value else {
         invalid(
-            format!("Final quality gate is missing {field} evidence (accepted input: a bare object with manualQa/gateReview/iteration/criteriaCoverage and optional codeReview, or the same object under a top-level \"qualityGate\" key)."),
+            format!(
+                "Final quality gate is missing {field} evidence (accepted input: a bare object with manualQa/gateReview/iteration/criteriaCoverage and optional codeReview, or the same object under a top-level \"qualityGate\" key)."
+            ),
             field,
         );
         return None;
     };
     let Some(obj) = v.as_object() else {
         invalid(
-            format!("Final quality gate is missing {field} evidence (accepted input: a bare object with manualQa/gateReview/iteration/criteriaCoverage and optional codeReview, or the same object under a top-level \"qualityGate\" key)."),
+            format!(
+                "Final quality gate is missing {field} evidence (accepted input: a bare object with manualQa/gateReview/iteration/criteriaCoverage and optional codeReview, or the same object under a top-level \"qualityGate\" key)."
+            ),
             field,
         );
         return None;
@@ -149,27 +158,42 @@ fn is_placeholder(s: &str) -> bool {
 
 pub fn text_field(value: Option<&Value>, field: &str) -> String {
     let Some(v) = value else {
-        invalid(format!("Final quality gate requires non-empty {field}."), field);
+        invalid(
+            format!("Final quality gate requires non-empty {field}."),
+            field,
+        );
         return String::new();
     };
     let Some(s) = v.as_str() else {
-        invalid(format!("Final quality gate requires non-empty {field}."), field);
+        invalid(
+            format!("Final quality gate requires non-empty {field}."),
+            field,
+        );
         return String::new();
     };
     let trimmed = s.trim();
     if trimmed.is_empty() {
-        invalid(format!("Final quality gate requires non-empty {field}."), field);
+        invalid(
+            format!("Final quality gate requires non-empty {field}."),
+            field,
+        );
         return String::new();
     }
     if is_placeholder(trimmed) {
-        invalid(format!("Final quality gate rejects placeholder {field}."), field);
+        invalid(
+            format!("Final quality gate rejects placeholder {field}."),
+            field,
+        );
     }
     trimmed.to_string()
 }
 
 pub fn number_field(value: Option<&Value>, field: &str) -> usize {
     let Some(v) = value else {
-        invalid(format!("Final quality gate requires numeric {field}."), field);
+        invalid(
+            format!("Final quality gate requires numeric {field}."),
+            field,
+        );
         return 0;
     };
     if let Some(n) = v.as_u64() {
@@ -180,7 +204,10 @@ pub fn number_field(value: Option<&Value>, field: &str) -> usize {
             return n as usize;
         }
     }
-    invalid(format!("Final quality gate requires numeric {field}."), field);
+    invalid(
+        format!("Final quality gate requires numeric {field}."),
+        field,
+    );
     0
 }
 
@@ -197,7 +224,9 @@ pub fn string_array(value: Option<&Value>, field: &str) -> Vec<String> {
         invalid(format!("Final quality gate requires {field}."), field);
         return Vec::new();
     }
-    arr.iter().map(|item| text_field(Some(item), field)).collect()
+    arr.iter()
+        .map(|item| text_field(Some(item), field))
+        .collect()
 }
 
 pub fn string_array_allow_empty(value: Option<&Value>, field: &str) -> Vec<String> {
@@ -209,7 +238,9 @@ pub fn string_array_allow_empty(value: Option<&Value>, field: &str) -> Vec<Strin
         invalid(format!("Final quality gate requires {field}."), field);
         return Vec::new();
     };
-    arr.iter().map(|item| text_field(Some(item), field)).collect()
+    arr.iter()
+        .map(|item| text_field(Some(item), field))
+        .collect()
 }
 
 pub fn empty_blockers(value: Option<&Value>, field: &str) -> Vec<Value> {

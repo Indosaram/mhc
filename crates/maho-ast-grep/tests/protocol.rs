@@ -11,9 +11,12 @@ use std::time::Duration;
 
 async fn rpc(server: &maho_ast_grep::Server, line: &str) -> Option<Value> {
     let (_handle, mut signal) = abort_channel();
-    tokio::time::timeout(Duration::from_secs(30), handle_message(server, line, &mut signal))
-        .await
-        .expect("reply within bound")
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        handle_message(server, line, &mut signal),
+    )
+    .await
+    .expect("reply within bound")
 }
 
 fn empty_server() -> maho_ast_grep::Server {
@@ -30,7 +33,8 @@ fn empty_server() -> maho_ast_grep::Server {
 fn has_composition_keyword(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, inner)| {
-            matches!(key.as_str(), "oneOf" | "anyOf" | "allOf" | "not") || has_composition_keyword(inner)
+            matches!(key.as_str(), "oneOf" | "anyOf" | "allOf" | "not")
+                || has_composition_keyword(inner)
         }),
         Value::Array(items) => items.iter().any(has_composition_keyword),
         _ => false,
@@ -40,12 +44,18 @@ fn has_composition_keyword(value: &Value) -> bool {
 #[tokio::test]
 async fn t3_initialize_defaults_and_echoes_the_version() {
     let server = empty_server();
-    let reply = rpc(&server, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
-        .await
-        .expect("reply");
+    let reply = rpc(
+        &server,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+    )
+    .await
+    .expect("reply");
     assert_eq!(reply["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(reply["result"]["serverInfo"]["name"], "ast_grep");
-    assert_eq!(reply["result"]["capabilities"]["tools"]["listChanged"], false);
+    assert_eq!(
+        reply["result"]["capabilities"]["tools"]["listChanged"],
+        false
+    );
     let reply = rpc(
         &server,
         r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}"#,
@@ -65,27 +75,41 @@ async fn t4_tools_list_has_three_tools_without_composition_keywords() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(names, ["search", "rewrite", "scan"]);
     for tool in tools {
-        assert!(!has_composition_keyword(&tool["inputSchema"]), "{}", tool["name"]);
+        assert!(
+            !has_composition_keyword(&tool["inputSchema"]),
+            "{}",
+            tool["name"]
+        );
     }
 }
 
 #[tokio::test]
 async fn t5_protocol_requests_and_errors() {
     let server = empty_server();
-    let ping = rpc(&server, r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#).await.expect("reply");
+    let ping = rpc(&server, r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+        .await
+        .expect("reply");
     assert_eq!(ping["result"], json!({}));
     assert!(
-        rpc(&server, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
-            .await
-            .is_none()
+        rpc(
+            &server,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        )
+        .await
+        .is_none()
     );
     let array = rpc(&server, "[1]").await.expect("reply");
     assert_eq!(array["error"]["code"], -32600);
-    let unknown = rpc(&server, r#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#).await.expect("reply");
-    assert_eq!(unknown["error"]["code"], -32601);
-    let nameless = rpc(&server, r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}"#)
+    let unknown = rpc(&server, r#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#)
         .await
         .expect("reply");
+    assert_eq!(unknown["error"]["code"], -32601);
+    let nameless = rpc(
+        &server,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}"#,
+    )
+    .await
+    .expect("reply");
     assert_eq!(nameless["error"]["code"], -32602);
     let broken = rpc(&server, "{not json").await.expect("reply");
     assert_eq!(broken["error"]["code"], -32700);
@@ -94,7 +118,9 @@ async fn t5_protocol_requests_and_errors() {
 #[tokio::test]
 async fn t6_without_the_program_initialize_works_and_search_fails_with_hints() {
     let server = empty_server();
-    let init = rpc(&server, r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#).await.expect("reply");
+    let init = rpc(&server, r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
+        .await
+        .expect("reply");
     assert!(init["result"]["serverInfo"].is_object());
     let dir = tempfile::tempdir().expect("tempdir");
     let (value, is_error) = call(
@@ -106,7 +132,9 @@ async fn t6_without_the_program_initialize_works_and_search_fails_with_hints() {
     assert!(is_error);
     assert_eq!(value["ok"], false);
     assert_eq!(code_of(&value), "BINARY_NOT_FOUND");
-    let hints = value["error"]["details"]["hints"].as_array().expect("hints");
+    let hints = value["error"]["details"]["hints"]
+        .as_array()
+        .expect("hints");
     assert!(!hints.is_empty());
 }
 
@@ -154,7 +182,12 @@ async fn unknown_tool_lists_the_available_ones() {
     assert!(is_error);
     assert_eq!(code_of(&value), "INVALID_ARGUMENT");
     assert_eq!(value["error"]["phase"], "preflight");
-    assert!(value["error"]["message"].as_str().unwrap_or_default().contains("search"));
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("search")
+    );
 }
 
 #[test]
@@ -173,7 +206,10 @@ fn t27_idle_timeout_values() {
     assert_eq!(idle_timeout(env(Some("inf"))), default);
     assert_eq!(idle_timeout(env(Some("-5"))), None);
     assert_eq!(idle_timeout(env(Some("0"))), None);
-    assert_eq!(idle_timeout(env(Some("2500"))), Some(Duration::from_millis(2500)));
+    assert_eq!(
+        idle_timeout(env(Some("2500"))),
+        Some(Duration::from_millis(2500))
+    );
     let legacy = |name: &str| (name == "OMO_AST_GREP_IDLE_TIMEOUT_MS").then(|| "1000".to_owned());
     assert_eq!(idle_timeout(legacy), Some(Duration::from_millis(1000)));
 }
@@ -212,6 +248,8 @@ async fn mcp_argument_serves_until_stdin_closes() {
     .await;
     assert_eq!(code, 0);
     let mut out = String::new();
-    tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut out).await.expect("read");
+    tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut out)
+        .await
+        .expect("read");
     assert!(out.contains("\"result\":{}"));
 }

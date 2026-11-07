@@ -1,6 +1,6 @@
-use maho_chord::{delta::*, JsonValue};
-use std::result::Result;
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
+use std::result::Result;
 
 fn check(before: JsonValue, after: JsonValue, expected: Vec<Op>) -> Result<(), DeltaError> {
     let operations = diff_revisions(&before, &after);
@@ -265,8 +265,8 @@ fn equal_length_large_semantic_region_does_not_field_diff_positionally() -> Resu
 }
 
 #[test]
-fn all_canonical_removal_positions_and_deep_equal_reconstruction(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn all_canonical_removal_positions_and_deep_equal_reconstruction()
+-> Result<(), Box<dyn std::error::Error>> {
     for (after, expected) in [
         (json!([2, 3, 4]), json!([["p", ["values"], 0, 1, []]])),
         (json!([1, 2, 3]), json!([["p", ["values"], 3, 1, []]])),
@@ -291,11 +291,13 @@ fn all_canonical_removal_positions_and_deep_equal_reconstruction(
     let first: JsonValue = json!({"nested":{"value":1}}).into();
     let second: JsonValue = json!({"nested":{"value":1}}).into();
     assert!(!first.same_identity(&second));
-    assert!(diff_revisions(
-        &rows(vec![first.clone(), second.clone()]),
-        &rows(vec![second, first])
-    )
-    .is_empty());
+    assert!(
+        diff_revisions(
+            &rows(vec![first.clone(), second.clone()]),
+            &rows(vec![second, first])
+        )
+        .is_empty()
+    );
     check(json!({"values":[{"type":"row","value":1},{"type":"row","value":2},{"type":"row","value":3}]}).into(),json!({"values":[{"type":"row","value":2},{"type":"row","value":3},{"type":"row","value":4}]}).into(),vec![Op::Splice(vec!["values".into()],0,1,vec![]),Op::Splice(vec!["values".into()],2,0,vec![json!({"type":"row","value":4}).into()])])?;
     Ok(())
 }

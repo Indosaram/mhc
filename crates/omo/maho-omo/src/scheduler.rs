@@ -69,7 +69,9 @@ impl TurnBarrier {
 
     pub fn enter(self: &Arc<Self>) -> TurnGuard {
         self.depth.fetch_add(1, Ordering::AcqRel);
-        TurnGuard { barrier: Arc::clone(self) }
+        TurnGuard {
+            barrier: Arc::clone(self),
+        }
     }
 
     pub fn depth(&self) -> usize {
@@ -93,7 +95,8 @@ impl TurnBarrier {
             let result = future.as_mut().poll(cx);
             guard.take();
             result
-        }).await
+        })
+        .await
     }
 
     /// Resolves once no turn scope is open. `enable()` registers the waiter before the check, so a
@@ -150,7 +153,12 @@ impl DeferredScheduler {
         Self::build(barrier, spawn, None, false)
     }
 
-    fn build(barrier: Arc<TurnBarrier>, spawn: SpawnSeam, delay: Option<Duration>, manual: bool) -> Self {
+    fn build(
+        barrier: Arc<TurnBarrier>,
+        spawn: SpawnSeam,
+        delay: Option<Duration>,
+        manual: bool,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 barrier,
@@ -179,14 +187,22 @@ impl DeferredScheduler {
     }
 
     pub fn schedule(&self, task: DeferredTask) {
-        self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner).push_back(task);
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(task);
         if !self.inner.manual {
             self.ensure_drain();
         }
     }
 
     pub fn pending_count(&self) -> usize {
-        self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -194,8 +210,14 @@ impl DeferredScheduler {
     }
 
     pub fn run_pending(&self) -> usize {
-        let batch: Vec<DeferredTask> =
-            std::mem::take(&mut *self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner)).into();
+        let batch: Vec<DeferredTask> = std::mem::take(
+            &mut *self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+        .into();
         let count = batch.len();
         for task in batch {
             task();
@@ -240,7 +262,10 @@ fn spawn_tokio(future: DrainFuture) {
         }
         Err(_) => {
             std::thread::spawn(move || {
-                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
                     runtime.block_on(future);
                 }
             });

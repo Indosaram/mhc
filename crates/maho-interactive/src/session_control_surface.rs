@@ -94,7 +94,10 @@ impl InteractiveControlSurface {
 
 impl TuiSessionControls for InteractiveControlSurface {
     fn select_model(&self, model: Model) -> BoxFuture<'static, Result<Option<String>, String>> {
-        let receiver = self.request(|reply| ControlSurfaceAction::SelectModel { model: Box::new(model), reply });
+        let receiver = self.request(|reply| ControlSurfaceAction::SelectModel {
+            model: Box::new(model),
+            reply,
+        });
         Box::pin(async move {
             receiver
                 .await

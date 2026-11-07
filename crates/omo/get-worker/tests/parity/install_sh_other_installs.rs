@@ -168,7 +168,10 @@ fn accepting_the_interactive_prompt_removes_the_bun_global_install_and_leaves_on
         "{stderr}"
     );
     assert!(
-        stderr.contains(&format!("Removed the other omo install at {}.", f.old_omo.display())),
+        stderr.contains(&format!(
+            "Removed the other omo install at {}.",
+            f.old_omo.display()
+        )),
         "{stderr}"
     );
     let stdout = stdout_of(&output);
@@ -176,7 +179,10 @@ fn accepting_the_interactive_prompt_removes_the_bun_global_install_and_leaves_on
     let lines: Vec<&str> = stdout.trim().split('\n').collect();
     assert_eq!(lines, vec![expected.as_str()]);
     assert!(!f.package_dir.exists());
-    assert_eq!(fs::read_to_string(&f.unrelated).expect("unrelated"), "keep\n");
+    assert_eq!(
+        fs::read_to_string(&f.unrelated).expect("unrelated"),
+        "keep\n"
+    );
 }
 
 #[test]
@@ -199,7 +205,10 @@ fn a_non_interactive_run_never_deletes_without_the_explicit_flag() {
     );
     let manifest = fs::read_to_string(f.package_dir.join("package.json")).expect("package.json");
     assert!(manifest.contains("\"name\":\"omo-ai\""), "{manifest}");
-    assert_eq!(fs::read_to_string(&f.unrelated).expect("unrelated"), "keep\n");
+    assert_eq!(
+        fs::read_to_string(&f.unrelated).expect("unrelated"),
+        "keep\n"
+    );
 }
 
 #[test]
@@ -217,8 +226,14 @@ fn the_explicit_flag_removes_only_the_verified_omo_package_and_shim() {
     assert_eq!(output.status.code(), Some(0));
     assert!(fs::symlink_metadata(&f.old_omo).is_err());
     assert!(!f.package_dir.join("package.json").exists());
-    assert_eq!(fs::read_to_string(&lookalike).expect("lookalike"), "unrelated\n");
-    assert_eq!(fs::read_to_string(&f.unrelated).expect("unrelated"), "keep\n");
+    assert_eq!(
+        fs::read_to_string(&lookalike).expect("lookalike"),
+        "unrelated\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&f.unrelated).expect("unrelated"),
+        "keep\n"
+    );
 }
 
 #[test]
@@ -240,7 +255,10 @@ fn declining_the_prompt_changes_nothing_on_disk() {
     );
     let after = fs::read_to_string(f.package_dir.join("package.json")).expect("package.json");
     assert_eq!(after, before);
-    assert_eq!(fs::read_to_string(&f.unrelated).expect("unrelated"), "keep\n");
+    assert_eq!(
+        fs::read_to_string(&f.unrelated).expect("unrelated"),
+        "keep\n"
+    );
 }
 
 #[test]
@@ -289,8 +307,15 @@ fn an_unverified_look_alike_omo_is_never_removed() {
         "{}",
         stderr_of(&output)
     );
-    assert!(fs::read_to_string(&foreign).expect("foreign").contains("look-alike"));
-    assert_eq!(fs::read_to_string(&f.unrelated).expect("unrelated"), "keep\n");
+    assert!(
+        fs::read_to_string(&foreign)
+            .expect("foreign")
+            .contains("look-alike")
+    );
+    assert_eq!(
+        fs::read_to_string(&f.unrelated).expect("unrelated"),
+        "keep\n"
+    );
 }
 
 #[test]

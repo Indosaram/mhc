@@ -18,13 +18,17 @@ fn settings() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn returns_true_when_experimental_default_agent_dir_and_no_settings_json() {
     let (_dir, path) = settings();
-    assert!(should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    assert!(should_run_first_time_setup_with(
+        &OFFICIAL, true, None, &path
+    ));
 }
 
 #[test]
 fn returns_false_when_experimental_features_are_disabled() {
     let (_dir, path) = settings();
-    assert!(!should_run_first_time_setup_with(&OFFICIAL, false, None, &path));
+    assert!(!should_run_first_time_setup_with(
+        &OFFICIAL, false, None, &path
+    ));
 }
 
 #[test]
@@ -42,7 +46,9 @@ fn returns_false_when_a_custom_agent_dir_is_set() {
 fn returns_false_when_settings_json_already_exists() {
     let (_dir, path) = settings();
     std::fs::write(&path, "{}").expect("write settings");
-    assert!(!should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    assert!(!should_run_first_time_setup_with(
+        &OFFICIAL, true, None, &path
+    ));
 }
 
 #[test]
@@ -70,7 +76,10 @@ fn analytics_opt_in_generates_a_tracking_identifier() {
     assert!(manager.get_enable_analytics());
     let id = manager.get_tracking_id().expect("tracking id");
     assert_eq!(id.len(), 36);
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'), "{id}");
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "{id}"
+    );
 }
 
 #[test]

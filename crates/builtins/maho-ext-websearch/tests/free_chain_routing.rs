@@ -40,7 +40,9 @@ struct Engines {
 }
 impl Engines {
     async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture listener");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture listener");
         let address = listener.local_addr().expect("fixture address");
         let routes: Routes = Arc::default();
         let hits: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -57,7 +59,10 @@ impl Engines {
                         {
                             break end + 4;
                         }
-                        let n = socket.read(&mut chunk).await.expect("read fixture request headers");
+                        let n = socket
+                            .read(&mut chunk)
+                            .await
+                            .expect("read fixture request headers");
                         if n == 0 {
                             return;
                         }
@@ -74,7 +79,10 @@ impl Engines {
                         })
                         .unwrap_or(0);
                     while bytes.len() < header_end + length {
-                        let n = socket.read(&mut chunk).await.expect("read fixture request body");
+                        let n = socket
+                            .read(&mut chunk)
+                            .await
+                            .expect("read fixture request body");
                         if n == 0 {
                             break;
                         }
@@ -83,7 +91,11 @@ impl Engines {
                     let target = head.split_whitespace().nth(1).unwrap_or_default();
                     let path = target.split('?').next().unwrap_or_default().to_owned();
                     hits.lock().expect("fixture hits").push(path.clone());
-                    let reply = routes.lock().expect("fixture routes").get(path.as_str()).cloned();
+                    let reply = routes
+                        .lock()
+                        .expect("fixture routes")
+                        .get(path.as_str())
+                        .cloned();
                     let Some(Reply::Html(status, body)) = reply else {
                         return;
                     };

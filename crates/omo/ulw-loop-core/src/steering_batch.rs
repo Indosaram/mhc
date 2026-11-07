@@ -1,14 +1,16 @@
 //! Batch steering application.
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::Path;
 
 use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::paths::UlwLoopScope;
-use crate::plan_commit::{commit, CommitMutation};
-use crate::plan_io::{find_accepted_steering_entry, read_ledger, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
-use crate::runtime::{iso, UlwLoopError};
+use crate::plan_commit::{CommitMutation, commit};
+use crate::plan_io::{
+    find_accepted_steering_entry, read_ledger, read_ulw_loop_plan, with_ulw_loop_mutation_lock,
+};
+use crate::runtime::{UlwLoopError, iso};
 use crate::steering::{apply_steering_mutation, validate_ulw_loop_steering_proposal};
 use crate::steering_snapshot::{build_steering_plan_snapshot, changed_goal_ids_between};
 use crate::steering_types::{UlwLoopSteeringAudit, UlwLoopSteeringProposal};
@@ -58,7 +60,11 @@ fn rejected_ledger_entry(results: &[SteerUlwLoopBatchItemResult]) -> UlwLoopLedg
     }
 }
 
-fn item_ledger_entry(proposal: &UlwLoopSteeringProposal, audit: &UlwLoopSteeringAudit, at: &str) -> UlwLoopLedgerEntry {
+fn item_ledger_entry(
+    proposal: &UlwLoopSteeringProposal,
+    audit: &UlwLoopSteeringAudit,
+    at: &str,
+) -> UlwLoopLedgerEntry {
     let kind = if proposal.kind == "revise_criterion" {
         "criteria_revised".to_string()
     } else {

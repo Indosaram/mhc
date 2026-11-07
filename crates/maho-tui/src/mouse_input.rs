@@ -59,7 +59,12 @@ pub fn parse_sgr_mouse_event(data: &str) -> Option<SgrMouseEvent> {
     if button > 255 || x < 0 || y < 0 {
         return None;
     }
-    Some(SgrMouseEvent { button, x, y, release: terminator })
+    Some(SgrMouseEvent {
+        button,
+        x,
+        y,
+        release: terminator,
+    })
 }
 
 pub fn parse_wheel_event(data: &str) -> Option<WheelEvent> {
@@ -161,14 +166,29 @@ pub struct MouseClickSynthesizer {
 
 impl MouseClickSynthesizer {
     pub fn new() -> Self {
-        Self { pressed: None, last: None }
+        Self {
+            pressed: None,
+            last: None,
+        }
     }
 
     pub fn press(&mut self, raw: SgrMouseEvent, target: usize, epoch: u64, now_ms: i64) {
-        self.pressed = Some(ClickPoint { x: raw.x, y: raw.y, target, epoch, time_ms: now_ms });
+        self.pressed = Some(ClickPoint {
+            x: raw.x,
+            y: raw.y,
+            target,
+            epoch,
+            time_ms: now_ms,
+        });
     }
 
-    pub fn release(&mut self, raw: SgrMouseEvent, target: usize, epoch: u64, now_ms: i64) -> Option<u32> {
+    pub fn release(
+        &mut self,
+        raw: SgrMouseEvent,
+        target: usize,
+        epoch: u64,
+        now_ms: i64,
+    ) -> Option<u32> {
         let press = self.pressed.take()?;
         if press.x != raw.x
             || press.y != raw.y
@@ -192,7 +212,13 @@ impl MouseClickSynthesizer {
             }
             _ => 1,
         };
-        self.last = Some(LastClick { point: ClickPoint { time_ms: now_ms, ..press }, count });
+        self.last = Some(LastClick {
+            point: ClickPoint {
+                time_ms: now_ms,
+                ..press
+            },
+            count,
+        });
         Some(count)
     }
 

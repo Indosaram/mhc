@@ -41,8 +41,16 @@ impl AgentAbortProvenance {
 
     pub fn current_source(&self) -> Option<AbortSource> {
         self.source
-            .or_else(|| self.agent_end_event.as_ref().and_then(|event| event.abort_source))
-            .or_else(|| self.settling_agent_end_event.as_ref().and_then(|event| event.abort_source))
+            .or_else(|| {
+                self.agent_end_event
+                    .as_ref()
+                    .and_then(|event| event.abort_source)
+            })
+            .or_else(|| {
+                self.settling_agent_end_event
+                    .as_ref()
+                    .and_then(|event| event.abort_source)
+            })
     }
 
     pub fn begin(&mut self, source: AbortSource) -> bool {
@@ -55,29 +63,50 @@ impl AgentAbortProvenance {
     }
 
     pub fn join(&mut self, source: AbortSource, is_streaming: bool) -> JoinedAbort {
-        if source == AbortSource::User && (self.agent_end_event.is_some() || self.agent_end_boundary_open) {
+        if source == AbortSource::User
+            && (self.agent_end_event.is_some() || self.agent_end_boundary_open)
+        {
             self.source = Some(AbortSource::User);
             if !self.late_user_join_delivered {
                 self.late_user_join = true;
             }
-            if let Some(event) = self.agent_end_event.as_mut().or(self.settling_agent_end_event.as_mut()) {
+            if let Some(event) = self
+                .agent_end_event
+                .as_mut()
+                .or(self.settling_agent_end_event.as_mut())
+            {
                 event.aborted = true;
                 event.abort_source = Some(AbortSource::User);
             }
-            return JoinedAbort { abort_current_agent: false, user_owned: true };
+            return JoinedAbort {
+                abort_current_agent: false,
+                user_owned: true,
+            };
         }
         if source == AbortSource::User && self.source.is_some() {
             self.source = Some(AbortSource::User);
-            return JoinedAbort { abort_current_agent: false, user_owned: true };
+            return JoinedAbort {
+                abort_current_agent: false,
+                user_owned: true,
+            };
         }
         if self.source.is_none() {
             if !is_streaming {
-                return JoinedAbort { abort_current_agent: false, user_owned: false };
+                return JoinedAbort {
+                    abort_current_agent: false,
+                    user_owned: false,
+                };
             }
             self.source = Some(source);
-            return JoinedAbort { abort_current_agent: true, user_owned: source == AbortSource::User };
+            return JoinedAbort {
+                abort_current_agent: true,
+                user_owned: source == AbortSource::User,
+            };
         }
-        JoinedAbort { abort_current_agent: false, user_owned: false }
+        JoinedAbort {
+            abort_current_agent: false,
+            user_owned: false,
+        }
     }
 
     fn find_provider_abort_source(&self, messages: &[AgentMessage]) -> Option<AbortSource> {
@@ -91,10 +120,22 @@ impl AgentAbortProvenance {
         }
     }
 
-    pub fn begin_agent_end(&mut self, messages: Vec<AgentMessage>, will_retry: bool, aborted_without_source: bool) -> AgentEndEvent {
+    pub fn begin_agent_end(
+        &mut self,
+        messages: Vec<AgentMessage>,
+        will_retry: bool,
+        aborted_without_source: bool,
+    ) -> AgentEndEvent {
         let aborted = self.source.is_some() || aborted_without_source;
-        let abort_source = self.source.or_else(|| self.find_provider_abort_source(&messages));
-        let event = AgentEndEvent { messages, will_retry, aborted, abort_source };
+        let abort_source = self
+            .source
+            .or_else(|| self.find_provider_abort_source(&messages));
+        let event = AgentEndEvent {
+            messages,
+            will_retry,
+            aborted,
+            abort_source,
+        };
         self.agent_end_event = Some(event.clone());
         self.settling_agent_end_event = None;
         self.agent_end_boundary_open = false;
@@ -104,9 +145,9 @@ impl AgentAbortProvenance {
     }
 
     pub fn end_agent_end(&mut self, event: &AgentEndEvent) {
-        if self.agent_end_event.as_ref().is_some_and(|current|
-            current.messages == event.messages && current.will_retry == event.will_retry)
-        {
+        if self.agent_end_event.as_ref().is_some_and(|current| {
+            current.messages == event.messages && current.will_retry == event.will_retry
+        }) {
             self.settling_agent_end_event = self.agent_end_event.take();
             self.agent_end_boundary_open = true;
         }
@@ -169,7 +210,10 @@ mod tests {
         provenance.end_agent_end(&event);
         assert!(provenance.join(AbortSource::User, false).user_owned);
         let settled = provenance.settling_agent_end_event().cloned();
-        assert_eq!(settled.map(|event| (event.aborted, event.abort_source)), Some((true, Some(AbortSource::User))));
+        assert_eq!(
+            settled.map(|event| (event.aborted, event.abort_source)),
+            Some((true, Some(AbortSource::User)))
+        );
         assert_eq!(provenance.current_source(), Some(AbortSource::User));
     }
 

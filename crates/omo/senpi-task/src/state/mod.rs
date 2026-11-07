@@ -1,11 +1,11 @@
 //! Task record model and lifecycle state machine (`state/` in TypeScript).
 
+pub mod host_liveness;
 mod id;
 mod isolation;
 mod record;
-mod run_fence;
-pub mod host_liveness;
 pub mod recovery_presentation;
+mod run_fence;
 mod transitions;
 mod types;
 
@@ -25,16 +25,17 @@ pub use transitions::{
     read_resolved_reasoning, resolved_reasoning_fields, transition_task_record,
 };
 pub use types::{
-    ParentModelFallback, ParentModelFallbackReason, FallbackClosingChild, ProvisionalExit, StartQueued,
-    ReviveDeliveryUncertainty, RecordedRunPause, RunPauseRef, RunPauseKind,
-    COST_REPORT_STATUSES, LiveRunStats, PARENT_MODEL_FALLBACK_REASONS, ParentModelFallbackPhase,
-    AwaitingInputReason, BackgroundMode, CancelRequest, CostReportStatus, DeliverAs,
-    DurationSourceStatus, EffectiveModelRecord, EffectiveModelSource, HostSessionIdentity,
-    Messageability, PendingSteeringEntry, PendingSteeringWorkpoolMetadata, RESIDENCY_STATES,
-    RESOLVED_MODEL_SOURCES, ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind,
-    SpawnSpecV1, SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskNotification, TaskRecord,
-    TaskRecordInput, TaskRunStats, TaskSpawnSpec, TaskStatus, TaskTransition, TaskTransitionAudit,
-    TaskTransitionResult, TokenCoverageStatus, is_spawn_spec_v1,
+    AwaitingInputReason, BackgroundMode, COST_REPORT_STATUSES, CancelRequest, CostReportStatus,
+    DeliverAs, DurationSourceStatus, EffectiveModelRecord, EffectiveModelSource,
+    FallbackClosingChild, HostSessionIdentity, LiveRunStats, Messageability,
+    PARENT_MODEL_FALLBACK_REASONS, ParentModelFallback, ParentModelFallbackPhase,
+    ParentModelFallbackReason, PendingSteeringEntry, PendingSteeringWorkpoolMetadata,
+    ProvisionalExit, RESIDENCY_STATES, RESOLVED_MODEL_SOURCES, RecordedRunPause, ResidencyState,
+    ResolvedModelRecord, ResolvedModelSource, ReviveDeliveryUncertainty, RunPauseKind, RunPauseRef,
+    RunnerKind, SpawnSpecV1, StartQueued, SuspensionReason, TASK_STATUSES, TaskAwaitingInput,
+    TaskNotification, TaskRecord, TaskRecordInput, TaskRunStats, TaskSpawnSpec, TaskStatus,
+    TaskTransition, TaskTransitionAudit, TaskTransitionResult, TokenCoverageStatus,
+    is_spawn_spec_v1,
 };
 
 #[cfg(test)]

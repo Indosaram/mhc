@@ -31,7 +31,13 @@ pub fn exclude_models_of(config: &Value) -> Vec<String> {
     config
         .get("exclude_models")
         .and_then(Value::as_array)
-        .map(|patterns| patterns.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .map(|patterns| {
+            patterns
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -56,7 +62,10 @@ pub fn compose_engine_host_wiring(input: EngineHostWiringInput) -> RunnerBuildCo
 }
 
 /// The runner build options this context feeds, with `exclude_models` carried through.
-pub fn runner_build_options(context: &RunnerBuildContext, rpc_options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions) -> crate::engine_runners::TaskRunnerBuildOptions {
+pub fn runner_build_options(
+    context: &RunnerBuildContext,
+    rpc_options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions,
+) -> crate::engine_runners::TaskRunnerBuildOptions {
     crate::engine_runners::TaskRunnerBuildOptions {
         shared_parent_tools: Vec::new(),
         get_shared_parent_tools: Some(context.shared_parent_tools.clone()),

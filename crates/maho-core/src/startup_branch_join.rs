@@ -27,25 +27,44 @@ mod tests {
 
     #[tokio::test]
     async fn both_successes_are_returned() {
-        let joined = join_startup_branches(async { Ok::<_, ()>(1) }, async { Ok::<_, ()>("two") }).await;
+        let joined =
+            join_startup_branches(async { Ok::<_, ()>(1) }, async { Ok::<_, ()>("two") }).await;
         assert_eq!(joined.expect("joined"), (1, "two"));
     }
 
     #[tokio::test]
     async fn a_primary_rejection_is_returned() {
-        let joined = join_startup_branches(async { Err::<i32, _>("primary") }, async { Ok::<_, &str>("two") }).await;
-        assert_eq!(joined.expect_err("primary error"), StartupBranchError::Primary("primary"));
+        let joined = join_startup_branches(async { Err::<i32, _>("primary") }, async {
+            Ok::<_, &str>("two")
+        })
+        .await;
+        assert_eq!(
+            joined.expect_err("primary error"),
+            StartupBranchError::Primary("primary")
+        );
     }
 
     #[tokio::test]
     async fn a_secondary_rejection_is_returned_when_the_primary_succeeds() {
-        let joined = join_startup_branches(async { Ok::<_, &str>(1) }, async { Err::<i32, _>("secondary") }).await;
-        assert_eq!(joined.expect_err("secondary error"), StartupBranchError::Secondary("secondary"));
+        let joined = join_startup_branches(async { Ok::<_, &str>(1) }, async {
+            Err::<i32, _>("secondary")
+        })
+        .await;
+        assert_eq!(
+            joined.expect_err("secondary error"),
+            StartupBranchError::Secondary("secondary")
+        );
     }
 
     #[tokio::test]
     async fn the_primary_reason_wins_when_both_reject() {
-        let joined = join_startup_branches(async { Err::<i32, _>("primary") }, async { Err::<i32, _>("secondary") }).await;
-        assert_eq!(joined.expect_err("primary wins"), StartupBranchError::Primary("primary"));
+        let joined = join_startup_branches(async { Err::<i32, _>("primary") }, async {
+            Err::<i32, _>("secondary")
+        })
+        .await;
+        assert_eq!(
+            joined.expect_err("primary wins"),
+            StartupBranchError::Primary("primary")
+        );
     }
 }

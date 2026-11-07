@@ -38,7 +38,10 @@ impl std::error::Error for AssistantEditError {}
 
 impl AssistantEditError {
     fn new(reason: AssistantEditReason, message: impl Into<String>) -> Self {
-        Self { reason, message: message.into() }
+        Self {
+            reason,
+            message: message.into(),
+        }
     }
 }
 
@@ -61,7 +64,10 @@ impl SessionStreamingError {
 }
 
 /// Optimistic-concurrency guard: the caller's leaf token must equal the session's current leaf.
-pub fn assert_expected_leaf(expected_leaf_id: Option<&str>, current_leaf_id: Option<&str>) -> Result<(), AssistantEditError> {
+pub fn assert_expected_leaf(
+    expected_leaf_id: Option<&str>,
+    current_leaf_id: Option<&str>,
+) -> Result<(), AssistantEditError> {
     if expected_leaf_id.is_none() || expected_leaf_id == current_leaf_id {
         return Ok(());
     }
@@ -81,13 +87,23 @@ pub fn assistant_text_equals(original: &AssistantMessage, text: &str) -> bool {
 
 /// Text replaces every content block; model identity and usage stay so per-path cost and context
 /// estimates remain accurate.
-pub fn build_edited_assistant_message(original: &AssistantMessage, text: &str) -> Result<AssistantMessage, AssistantEditError> {
+pub fn build_edited_assistant_message(
+    original: &AssistantMessage,
+    text: &str,
+) -> Result<AssistantMessage, AssistantEditError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err(AssistantEditError::new(AssistantEditReason::Empty, "Edited assistant response cannot be empty"));
+        return Err(AssistantEditError::new(
+            AssistantEditReason::Empty,
+            "Edited assistant response cannot be empty",
+        ));
     }
     let mut edited = original.clone();
-    edited.content = vec![ContentBlock::Text(TextContent { text: trimmed.to_owned(), audience: None, text_signature: None })];
+    edited.content = vec![ContentBlock::Text(TextContent {
+        text: trimmed.to_owned(),
+        audience: None,
+        text_signature: None,
+    })];
     edited.stop_reason = StopReason::Stop;
     edited.timestamp = chrono::Utc::now().timestamp_millis();
     Ok(edited)
@@ -123,12 +139,19 @@ mod tests {
     #[test]
     fn an_empty_edit_is_rejected() {
         let message = assistant(json!([{ "type": "text", "text": "hi" }]));
-        assert_eq!(build_edited_assistant_message(&message, "").expect_err("empty").reason.code(), "empty");
+        assert_eq!(
+            build_edited_assistant_message(&message, "")
+                .expect_err("empty")
+                .reason
+                .code(),
+            "empty"
+        );
     }
 
     #[test]
     fn editing_replaces_content_keeps_identity_and_sets_stop() {
-        let message = assistant(json!([{ "type": "toolCall", "id": "1", "name": "edit", "arguments": {} }]));
+        let message =
+            assistant(json!([{ "type": "toolCall", "id": "1", "name": "edit", "arguments": {} }]));
         let edited = build_edited_assistant_message(&message, "new text").expect("edited");
         assert_eq!(edited.content.len(), 1);
         assert!(matches!(edited.content[0], ContentBlock::Text(_)));

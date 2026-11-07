@@ -19,13 +19,18 @@ fn serve_sse(body: String) -> String {
             request.push(byte[0]);
         }
         let request = String::from_utf8(request).expect("request headers UTF-8");
-        let length = request.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().expect("content length"))
-        }).expect("request body length");
+        let length = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("content length"))
+            })
+            .expect("request body length");
         let mut request_body = vec![0; length];
-        socket.read_exact(&mut request_body).expect("complete request body");
+        socket
+            .read_exact(&mut request_body)
+            .expect("complete request body");
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -56,8 +61,14 @@ async fn structured_usage_limit_is_retained_by_proxy() {
     let message = stream_events(vec![serde_json::json!({
         "type": "error", "reason": "error", "errorMessage": "ordinary failure",
         "errorCause": { "type": "usage_limit", "scope": "account" }, "usage": usage_json()
-    })]).await;
-    assert_eq!(message.error_cause, Some(maho_ai::types::AssistantErrorCause::UsageLimit { scope: maho_ai::types::UsageLimitScope::Account }));
+    })])
+    .await;
+    assert_eq!(
+        message.error_cause,
+        Some(maho_ai::types::AssistantErrorCause::UsageLimit {
+            scope: maho_ai::types::UsageLimitScope::Account
+        })
+    );
 }
 
 async fn stream_events(events: Vec<serde_json::Value>) -> AssistantMessage {

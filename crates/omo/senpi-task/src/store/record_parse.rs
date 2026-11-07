@@ -364,8 +364,8 @@ pub(super) fn parse_heavy_fields(
         #[serde(default)]
         final_response: Option<Value>,
     }
-    let heavy: Heavy = serde_json::from_str(text)
-        .map_err(|error| format!("JSON Parse error: {error}"))?;
+    let heavy: Heavy =
+        serde_json::from_str(text).map_err(|error| format!("JSON Parse error: {error}"))?;
     let mut record = Object::new();
     if let Some(spec) = heavy.spawn_spec {
         record.insert("spawn_spec".into(), spec);

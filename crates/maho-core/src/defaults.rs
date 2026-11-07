@@ -2,7 +2,8 @@
 
 pub const DEFAULT_THINKING_LEVEL: &str = "medium";
 
-pub const THINKING_LEVEL_OPTIONS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const THINKING_LEVEL_OPTIONS: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[cfg(test)]
 mod tests {

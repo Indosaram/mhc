@@ -7,7 +7,9 @@ use team_core::types::RuntimeState;
 
 use crate::team::normalize::TEAM_LEAD_SENTINEL;
 use crate::team::runtime_config::TeamCoreConfig;
-use crate::team::shutdown_helpers::{find_latest_shutdown_request_index, find_runtime_member, is_unresolved_request};
+use crate::team::shutdown_helpers::{
+    find_latest_shutdown_request_index, find_runtime_member, is_unresolved_request,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SenpiShutdownErrorCode {
@@ -43,7 +45,12 @@ pub struct SenpiShutdownError {
 }
 
 impl SenpiShutdownError {
-    pub fn new(message: impl Into<String>, code: SenpiShutdownErrorCode, team_run_id: &str, member_name: &str) -> Self {
+    pub fn new(
+        message: impl Into<String>,
+        code: SenpiShutdownErrorCode,
+        team_run_id: &str,
+        member_name: &str,
+    ) -> Self {
         Self {
             message: message.into(),
             code,
@@ -121,7 +128,11 @@ fn current_time(now: Option<&dyn Fn() -> i64>) -> i64 {
     }
 }
 
-fn require_member(state: &RuntimeState, team_run_id: &str, member_name: &str) -> Result<(), SenpiShutdownError> {
+fn require_member(
+    state: &RuntimeState,
+    team_run_id: &str,
+    member_name: &str,
+) -> Result<(), SenpiShutdownError> {
     if find_runtime_member(state, member_name).is_none() {
         return Err(SenpiShutdownError::new(
             format!("unknown team member '{member_name}'"),
@@ -149,7 +160,10 @@ fn require_pending_request_index(
     }
 }
 
-fn send(deps_send: ShutdownMessenger<'_>, message: ShutdownOutboundMessage) -> Result<(), ShutdownFailure> {
+fn send(
+    deps_send: ShutdownMessenger<'_>,
+    message: ShutdownOutboundMessage,
+) -> Result<(), ShutdownFailure> {
     deps_send(&message).map_err(ShutdownFailure::Transport)
 }
 
@@ -161,9 +175,12 @@ fn transition_state(
     mutate: impl FnOnce(&RuntimeState, &mut Map<String, Value>) -> bool,
 ) -> Result<RuntimeState, ShutdownFailure> {
     let current = load_runtime_state(team_run_id, config)?;
-    let mut value = serde_json::to_value(&current).map_err(|error| ShutdownFailure::State(error.to_string()))?;
+    let mut value = serde_json::to_value(&current)
+        .map_err(|error| ShutdownFailure::State(error.to_string()))?;
     let Some(record) = value.as_object_mut() else {
-        return Err(ShutdownFailure::State("runtime state is not an object".to_string()));
+        return Err(ShutdownFailure::State(
+            "runtime state is not an object".to_string(),
+        ));
     };
     if !mutate(&current, record) {
         return Ok(current);
@@ -215,7 +232,9 @@ pub fn request_shutdown(
     let requested_at = current_time(deps.now);
     transition_state(team_run_id, deps.config, |current, record| {
         let current_index = find_latest_shutdown_request_index(current, member_name);
-        if is_unresolved_request(current_index.and_then(|index| current.shutdown_requests.get(index))) {
+        if is_unresolved_request(
+            current_index.and_then(|index| current.shutdown_requests.get(index)),
+        ) {
             return false;
         }
         let Some(requests) = shutdown_requests_mut(record) else {
@@ -264,7 +283,10 @@ pub fn approve_shutdown(
                 if status == Some("completed") || status == Some("errored") {
                     continue;
                 }
-                member.insert("status".to_string(), Value::String("shutdown_approved".to_string()));
+                member.insert(
+                    "status".to_string(),
+                    Value::String("shutdown_approved".to_string()),
+                );
             }
         }
         if let (Some(index), Some(requests)) = (current_index, shutdown_requests_mut(record))
@@ -301,9 +323,12 @@ pub fn reject_shutdown(
     let request_index = require_pending_request_index(&state, team_run_id, member_name)?;
 
     if let Some(existing) = state.shutdown_requests.get(request_index) {
-        let existing_reason = serde_json::to_value(existing)
-            .ok()
-            .and_then(|value| value.get("rejectedReason").and_then(Value::as_str).map(str::to_string));
+        let existing_reason = serde_json::to_value(existing).ok().and_then(|value| {
+            value
+                .get("rejectedReason")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
         if existing.rejected_at.is_some() && existing_reason.as_deref() == Some(reason) {
             return Ok(state);
         }
@@ -325,7 +350,10 @@ pub fn reject_shutdown(
             && let Some(request) = requests.get_mut(index).and_then(Value::as_object_mut)
         {
             request.insert("rejectedAt".to_string(), json!(rejected_at));
-            request.insert("rejectedReason".to_string(), Value::String(reason.to_string()));
+            request.insert(
+                "rejectedReason".to_string(),
+                Value::String(reason.to_string()),
+            );
         }
         true
     })

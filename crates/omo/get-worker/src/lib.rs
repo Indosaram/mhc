@@ -23,29 +23,29 @@ pub use bindings::{
     EdgeCache, FetchError, FetchRequest, FetchResponse, HttpFetcher, HttpMetadata, ObjectMeta,
     ReleaseStore, Row, Statement, StoreError, StoredObject, Value,
 };
-pub use channels::{serve_channel, Resolved, NPM_DIST_TAGS, POINTER_TTL_SECONDS};
+pub use channels::{NPM_DIST_TAGS, POINTER_TTL_SECONDS, Resolved, serve_channel};
 pub use datapoint::{
-    is_qa_install, record_download, request_country, DownloadEvent, RequestKind, ServedFrom,
+    DownloadEvent, RequestKind, ServedFrom, is_qa_install, record_download, request_country,
 };
 pub use download_stats::{
-    read_download_stats, serve_download_stats, DownloadStats, STATS_TTL_SECONDS,
+    DownloadStats, STATS_TTL_SECONDS, read_download_stats, serve_download_stats,
 };
 pub use downloads_rollup::{
-    parse_rollup_rows, query_analytics, rollup_query, run_downloads_rollup, store_rollup,
-    RollupError, RollupRow, ROLLUP_DAYS,
+    ROLLUP_DAYS, RollupError, RollupRow, parse_rollup_rows, query_analytics, rollup_query,
+    run_downloads_rollup, store_rollup,
 };
 pub use env::{Env, RequestContext};
 pub use http::{Body, Headers, Method, Request, Response};
 pub use release_names::{
-    asset_kind, channel_of, channel_pointer_key, completion_marker_key, github_asset_url,
-    is_beta_version, is_channel, is_release_version, release_object_key,
-    release_version_of_npm_version, AssetKind, Channel, CHANNELS, GITHUB_REPOSITORY,
+    AssetKind, CHANNELS, Channel, GITHUB_REPOSITORY, asset_kind, channel_of, channel_pointer_key,
+    completion_marker_key, github_asset_url, is_beta_version, is_channel, is_release_version,
+    release_object_key, release_version_of_npm_version,
 };
 pub use scripts::{
-    docs_redirect, is_script_name, script_for_root, script_named, serve_script, ScriptName,
-    DOCS_URL, INSTALL_PS1, INSTALL_SH, SCRIPT_TTL_SECONDS,
+    DOCS_URL, INSTALL_PS1, INSTALL_SH, SCRIPT_TTL_SECONDS, ScriptName, docs_redirect,
+    is_script_name, script_for_root, script_named, serve_script,
 };
-pub use serve_release::{serve_release_asset, IMMUTABLE};
+pub use serve_release::{IMMUTABLE, serve_release_asset};
 
 /// A failure the upstream handler lets reject; the platform maps it to a 500.
 #[derive(Debug, thiserror::Error)]

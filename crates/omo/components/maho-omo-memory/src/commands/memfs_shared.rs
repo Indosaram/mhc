@@ -16,7 +16,8 @@ pub struct MemfsSubcommandInput<'a> {
     pub identity: &'a MemoryCommandIdentity,
 }
 
-pub type MemfsSubcommand = for<'a> fn(&'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse>;
+pub type MemfsSubcommand =
+    for<'a> fn(&'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse>;
 
 pub fn no_repo_text(identity: &MemoryCommandIdentity) -> String {
     format!(

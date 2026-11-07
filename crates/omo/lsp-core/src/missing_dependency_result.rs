@@ -1,6 +1,6 @@
 use crate::lsp::errors::LspError;
-use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::server_install_state::load_install_decision;
+use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::utils::handle_missing_dependency_error;
 use crate::request_context::lsp_request_context;
 use serde_json::Map;

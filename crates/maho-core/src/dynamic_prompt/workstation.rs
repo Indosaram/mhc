@@ -40,7 +40,10 @@ fn cpu_model() -> Option<String> {
         }
     }
     if cfg!(target_os = "macos") {
-        let output = std::process::Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output().ok()?;
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()?;
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !value.is_empty() {
             return Some(value);
@@ -55,11 +58,21 @@ fn cpu_model() -> Option<String> {
 /// `os.cpus()[0].model` on Windows: libuv reads `ProcessorNameString` from the CPU registry key.
 fn windows_cpu_model() -> Option<String> {
     let output = std::process::Command::new("reg")
-        .args(["query", r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0", "/v", "ProcessorNameString"])
-        .output().ok()?;
+        .args([
+            "query",
+            r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            "/v",
+            "ProcessorNameString",
+        ])
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines().find_map(|line| {
-        let (_, value) = line.trim().strip_prefix("ProcessorNameString")?.trim_start().split_once("REG_SZ")?;
+        let (_, value) = line
+            .trim()
+            .strip_prefix("ProcessorNameString")?
+            .trim_start()
+            .split_once("REG_SZ")?;
         Some(value.trim().to_string()).filter(|value| !value.is_empty())
     })
 }
@@ -67,27 +80,47 @@ fn windows_cpu_model() -> Option<String> {
 /// `os.release()` on Windows: `<major>.<minor>.<build>` from `ver`
 /// (`Microsoft Windows [Version 10.0.22631.4317]` -> `10.0.22631`).
 fn windows_release() -> Option<String> {
-    let output = std::process::Command::new("cmd").args(["/c", "ver"]).output().ok()?;
+    let output = std::process::Command::new("cmd")
+        .args(["/c", "ver"])
+        .output()
+        .ok()?;
     parse_windows_ver(&String::from_utf8_lossy(&output.stdout))
 }
 
 fn parse_windows_ver(text: &str) -> Option<String> {
-    let version = text.split("Version").nth(1)?.trim().trim_end_matches(']').trim();
+    let version = text
+        .split("Version")
+        .nth(1)?
+        .trim()
+        .trim_end_matches(']')
+        .trim();
     let parts: Vec<&str> = version.split('.').take(3).collect();
-    (!parts.is_empty() && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
-        .then(|| parts.join("."))
+    (!parts.is_empty()
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+    .then(|| parts.join("."))
 }
 
 fn terminal_name() -> Option<String> {
-    let program = std::env::var("TERM_PROGRAM").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let program = std::env::var("TERM_PROGRAM")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     if let Some(program) = program {
-        let version = std::env::var("TERM_PROGRAM_VERSION").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        let version = std::env::var("TERM_PROGRAM_VERSION")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         return Some(match version {
             Some(version) => format!("{program} {version}"),
             None => program,
         });
     }
-    std::env::var("TERM").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    std::env::var("TERM")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// `os.platform()` spelled the way Node spells it.
@@ -143,7 +176,9 @@ static CACHED_FACTS: LazyLock<WorkstationFacts> = LazyLock::new(collect_workstat
 
 fn collect_workstation_facts_uncached() -> WorkstationFacts {
     let cpu = cpu_model();
-    let cores = std::thread::available_parallelism().map(|cores| cores.get()).unwrap_or(0);
+    let cores = std::thread::available_parallelism()
+        .map(|cores| cores.get())
+        .unwrap_or(0);
     let gpu = if cfg!(target_os = "macos")
         && std::env::consts::ARCH == "aarch64"
         && cpu.as_deref().is_some_and(|cpu| cpu.starts_with("Apple "))
@@ -170,13 +205,24 @@ pub fn collect_workstation_facts() -> &'static WorkstationFacts {
 
 /// `executorPhrase`.
 pub fn executor_phrase(selected_tools: &[String]) -> String {
-    let executors: Vec<&str> =
-        ["bash", "eval"].iter().copied().filter(|name| selected_tools.iter().any(|tool| tool.as_str() == *name)).collect();
+    let executors: Vec<&str> = ["bash", "eval"]
+        .iter()
+        .copied()
+        .filter(|name| selected_tools.iter().any(|tool| tool.as_str() == *name))
+        .collect();
     if executors.is_empty() {
         return "Everything you run executes".to_string();
     }
-    let names = executors.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" and ");
-    let verb = if executors.len() == 1 { "executes" } else { "execute" };
+    let names = executors
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let verb = if executors.len() == 1 {
+        "executes"
+    } else {
+        "execute"
+    };
     format!("{names} {verb}")
 }
 
@@ -210,9 +256,15 @@ pub struct BuildWorkstationSectionOptions {
 
 /// `buildWorkstationSection`.
 pub fn build_workstation_section(options: &BuildWorkstationSectionOptions) -> String {
-    let facts = options.facts.clone().unwrap_or_else(|| collect_workstation_facts().clone());
+    let facts = options
+        .facts
+        .clone()
+        .unwrap_or_else(|| collect_workstation_facts().clone());
     let dialect = options.dialect.unwrap_or_default();
-    let mut lines: Vec<String> = vec![format!("- OS: {} (kernel {})", facts.os_line, facts.kernel), format!("- Arch: {}", facts.arch)];
+    let mut lines: Vec<String> = vec![
+        format!("- OS: {} (kernel {})", facts.os_line, facts.kernel),
+        format!("- Arch: {}", facts.arch),
+    ];
     if let Some(cpu) = &facts.cpu {
         lines.push(format!("- CPU: {cpu}"));
     }
@@ -223,7 +275,10 @@ pub fn build_workstation_section(options: &BuildWorkstationSectionOptions) -> St
         lines.push(format!("- Terminal: {terminal}"));
     }
     let instruction = instruction(dialect, &executor_phrase(&options.selected_tools));
-    format!("<workstation>\n{}\n</workstation>\n{instruction}", lines.join("\n"))
+    format!(
+        "<workstation>\n{}\n</workstation>\n{instruction}",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -232,7 +287,10 @@ mod tests {
 
     #[test]
     fn windows_ver_output_maps_to_the_node_release() {
-        assert_eq!(parse_windows_ver("\r\nMicrosoft Windows [Version 10.0.22631.4317]\r\n").as_deref(), Some("10.0.22631"));
+        assert_eq!(
+            parse_windows_ver("\r\nMicrosoft Windows [Version 10.0.22631.4317]\r\n").as_deref(),
+            Some("10.0.22631")
+        );
         assert_eq!(parse_windows_ver("no version here"), None);
     }
 
@@ -264,14 +322,21 @@ mod tests {
 
     #[test]
     fn the_executor_phrase_names_the_tools_that_are_selected() {
-        assert_eq!(executor_phrase(&["bash".to_string(), "eval".to_string()]), "`bash` and `eval` execute");
+        assert_eq!(
+            executor_phrase(&["bash".to_string(), "eval".to_string()]),
+            "`bash` and `eval` execute"
+        );
         assert_eq!(executor_phrase(&["bash".to_string()]), "`bash` executes");
-        assert_eq!(executor_phrase(&["read".to_string()]), "Everything you run executes");
+        assert_eq!(
+            executor_phrase(&["read".to_string()]),
+            "Everything you run executes"
+        );
     }
 
     #[test]
     fn every_dialect_keeps_its_own_wording() {
-        let default_section = build_workstation_section(&options(WorkstationDialect::Default, &["bash", "eval"]));
+        let default_section =
+            build_workstation_section(&options(WorkstationDialect::Default, &["bash", "eval"]));
         assert!(default_section.ends_with("**EXECUTION HAPPENS HERE.** `bash` and `eval` execute on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."));
 
         let claude = build_workstation_section(&options(WorkstationDialect::Claude, &["bash"]));

@@ -8,11 +8,11 @@ use senpi_desktop_core::backend::PointerEvent;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::{KeyButMask, Window};
 
-use super::X11Input;
 use super::held::{HeldButton, Route};
 use super::keys::modifiers_mask;
 use super::server::{InputServer, SentEvent, Spot};
-use super::xtest::{CLICK_DELAY, DRAG_STEP_DELAY, button_detail, point, scroll_buttons};
+use super::xtest::{button_detail, point, scroll_buttons, CLICK_DELAY, DRAG_STEP_DELAY};
+use super::X11Input;
 
 impl<S: InputServer> X11Input<S> {
     /// `top` is the requested top-level window; each event goes to its

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::config::config_dir_name;
 use crate::lockfile_policy::{FILE_STORAGE_SYNC_LOCK_BUDGET_MS, acquire_lock_sync};
-use crate::paths::{canonicalize_path, canonicalize_path_strict, resolve_path, PathInputOptions};
+use crate::paths::{PathInputOptions, canonicalize_path, canonicalize_path_strict, resolve_path};
 use crate::text::strip_bom;
 
 pub type ProjectTrustDecision = Option<bool>;
@@ -57,11 +57,17 @@ fn parent_dir(path: &str) -> Option<String> {
     if parent == path { None } else { Some(parent) }
 }
 
-pub fn find_nearest_trust_entry(data: &BTreeMap<String, Option<bool>>, cwd: &str) -> Option<ProjectTrustStoreEntry> {
+pub fn find_nearest_trust_entry(
+    data: &BTreeMap<String, Option<bool>>,
+    cwd: &str,
+) -> Option<ProjectTrustStoreEntry> {
     let mut current_dir = normalize_cwd(cwd);
     loop {
         if let Some(Some(decision)) = data.get(&current_dir) {
-            return Some(ProjectTrustStoreEntry { path: current_dir, decision: *decision });
+            return Some(ProjectTrustStoreEntry {
+                path: current_dir,
+                decision: *decision,
+            });
         }
         match parent_dir(&current_dir) {
             Some(parent) => current_dir = parent,
@@ -80,7 +86,10 @@ pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<P
     let mut options = vec![ProjectTrustOption {
         label: "Trust".to_owned(),
         trusted: true,
-        updates: vec![ProjectTrustUpdate { path: trust_path.clone(), decision: Some(true) }],
+        updates: vec![ProjectTrustUpdate {
+            path: trust_path.clone(),
+            decision: Some(true),
+        }],
         saved_path: Some(trust_path.clone()),
     }];
     if let Some(parent_path) = get_project_trust_parent_path(cwd) {
@@ -88,8 +97,14 @@ pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<P
             label: format!("Trust parent folder ({parent_path})"),
             trusted: true,
             updates: vec![
-                ProjectTrustUpdate { path: parent_path.clone(), decision: Some(true) },
-                ProjectTrustUpdate { path: trust_path.clone(), decision: None },
+                ProjectTrustUpdate {
+                    path: parent_path.clone(),
+                    decision: Some(true),
+                },
+                ProjectTrustUpdate {
+                    path: trust_path.clone(),
+                    decision: None,
+                },
             ],
             saved_path: Some(parent_path),
         });
@@ -105,7 +120,10 @@ pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<P
     options.push(ProjectTrustOption {
         label: "Do not trust".to_owned(),
         trusted: false,
-        updates: vec![ProjectTrustUpdate { path: trust_path.clone(), decision: Some(false) }],
+        updates: vec![ProjectTrustUpdate {
+            path: trust_path.clone(),
+            decision: Some(false),
+        }],
         saved_path: Some(trust_path),
     });
     if include_session_only {
@@ -125,8 +143,10 @@ pub fn read_trust_file(path: &str) -> Result<TrustFile, String> {
     if !Path::new(path).exists() {
         return Ok(TrustFile::new());
     }
-    let content = std::fs::read_to_string(path).map_err(|error| format!("Failed to read trust store {path}: {error}"))?;
-    let parsed: Value = serde_json::from_str(strip_bom(&content)).map_err(|error| format!("Failed to read trust store {path}: {error}"))?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read trust store {path}: {error}"))?;
+    let parsed: Value = serde_json::from_str(strip_bom(&content))
+        .map_err(|error| format!("Failed to read trust store {path}: {error}"))?;
     let Some(object) = parsed.as_object() else {
         return Err(format!("Invalid trust store {path}: expected an object"));
     };
@@ -153,35 +173,55 @@ pub fn write_trust_file(path: &str, data: &TrustFile) -> Result<(), String> {
         sorted.insert(key.clone(), value.map(Value::Bool).unwrap_or(Value::Null));
     }
     if let Some(parent) = Path::new(path).parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("Failed to write trust store {path}: {error}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to write trust store {path}: {error}"))?;
     }
-    let mut serialized = serde_json::to_string_pretty(&Value::Object(sorted)).map_err(|error| format!("Failed to write trust store {path}: {error}"))?;
+    let mut serialized = serde_json::to_string_pretty(&Value::Object(sorted))
+        .map_err(|error| format!("Failed to write trust store {path}: {error}"))?;
     serialized.push('\n');
-    std::fs::write(path, serialized).map_err(|error| format!("Failed to write trust store {path}: {error}"))
+    std::fs::write(path, serialized)
+        .map_err(|error| format!("Failed to write trust store {path}: {error}"))
 }
 
 pub fn with_trust_file_lock<T>(path: &str, action: impl FnOnce() -> T) -> Result<T, String> {
     if let Some(parent) = Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _guard = acquire_lock_sync(path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS).map_err(|error| error.message())?;
+    let _guard = acquire_lock_sync(path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+        .map_err(|error| error.message())?;
     Ok(action())
 }
 
 /// True when cwd has project-local resources that must be gated by project trust.
 pub fn has_trust_requiring_project_resources(cwd: &str, home_dir: Option<&str>) -> bool {
-    let home = home_dir.map(str::to_owned).unwrap_or_else(crate::config::home_dir);
+    let home = home_dir
+        .map(str::to_owned)
+        .unwrap_or_else(crate::config::home_dir);
     let home_dir = canonicalize_path(&resolve(&home));
-    let user_agents_skills_dir = PathBuf::from(&home_dir).join(".agents").join("skills").to_string_lossy().into_owned();
+    let user_agents_skills_dir = PathBuf::from(&home_dir)
+        .join(".agents")
+        .join("skills")
+        .to_string_lossy()
+        .into_owned();
     let mut current_dir = canonicalize_path(&resolve(cwd));
 
-    let config_dir = PathBuf::from(&current_dir).join(config_dir_name()).to_string_lossy().into_owned();
-    if TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.iter().any(|entry| Path::new(&config_dir).join(entry).exists()) {
+    let config_dir = PathBuf::from(&current_dir)
+        .join(config_dir_name())
+        .to_string_lossy()
+        .into_owned();
+    if TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES
+        .iter()
+        .any(|entry| Path::new(&config_dir).join(entry).exists())
+    {
         return true;
     }
 
     loop {
-        let agents_skills_dir = PathBuf::from(&current_dir).join(".agents").join("skills").to_string_lossy().into_owned();
+        let agents_skills_dir = PathBuf::from(&current_dir)
+            .join(".agents")
+            .join("skills")
+            .to_string_lossy()
+            .into_owned();
         if agents_skills_dir != user_agents_skills_dir && Path::new(&agents_skills_dir).exists() {
             return true;
         }
@@ -198,7 +238,12 @@ pub struct ProjectTrustStore {
 
 impl ProjectTrustStore {
     pub fn new(agent_dir: &str) -> Self {
-        Self { trust_path: Path::new(&resolve(agent_dir)).join("trust.json").to_string_lossy().into_owned() }
+        Self {
+            trust_path: Path::new(&resolve(agent_dir))
+                .join("trust.json")
+                .to_string_lossy()
+                .into_owned(),
+        }
     }
 
     pub fn trust_path(&self) -> &str {
@@ -220,7 +265,10 @@ impl ProjectTrustStore {
     }
 
     pub fn set(&self, cwd: &str, decision: ProjectTrustDecision) -> Result<(), String> {
-        self.set_many(&[ProjectTrustUpdate { path: cwd.to_owned(), decision }])
+        self.set_many(&[ProjectTrustUpdate {
+            path: cwd.to_owned(),
+            decision,
+        }])
     }
 
     pub fn set_many(&self, decisions: &[ProjectTrustUpdate]) -> Result<(), String> {
@@ -289,14 +337,23 @@ mod tests {
         let path = tmp.path().join("trust.json");
         let path_string = path.to_string_lossy().into_owned();
         std::fs::write(&path, "[]").expect("write");
-        assert_eq!(read_trust_file(&path_string).expect_err("error"), format!("Invalid trust store {path_string}: expected an object"));
+        assert_eq!(
+            read_trust_file(&path_string).expect_err("error"),
+            format!("Invalid trust store {path_string}: expected an object")
+        );
         std::fs::write(&path, "{\"/x\": 1}").expect("write");
         assert_eq!(
             read_trust_file(&path_string).expect_err("error"),
-            format!("Invalid trust store {path_string}: value for \"/x\" must be true, false, or null")
+            format!(
+                "Invalid trust store {path_string}: value for \"/x\" must be true, false, or null"
+            )
         );
         std::fs::write(&path, "{oops").expect("write");
-        assert!(read_trust_file(&path_string).expect_err("error").starts_with(&format!("Failed to read trust store {path_string}: ")));
+        assert!(
+            read_trust_file(&path_string)
+                .expect_err("error")
+                .starts_with(&format!("Failed to read trust store {path_string}: "))
+        );
     }
 
     #[test]
@@ -354,10 +411,18 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let agent_dir = tmp.path().join("agent").to_string_lossy().into_owned();
         let store = ProjectTrustStore::new(&agent_dir);
-        let missing = tmp.path().join("does-not-exist").to_string_lossy().into_owned();
+        let missing = tmp
+            .path()
+            .join("does-not-exist")
+            .to_string_lossy()
+            .into_owned();
         store.set(&missing, Some(true)).expect("set");
         assert_eq!(store.get(&missing).expect("get"), Some(true));
-        let child = tmp.path().join("does-not-exist/child").to_string_lossy().into_owned();
+        let child = tmp
+            .path()
+            .join("does-not-exist/child")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(store.get(&child).expect("get"), Some(true));
     }
 }

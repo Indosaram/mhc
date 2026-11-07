@@ -162,7 +162,9 @@ impl AtSpiBus for FakeBus {
     }
 
     fn extents(&mut self, node: &u64) -> BusResult<Extents> {
-        self.get(*node)?.extents.ok_or_else(|| "no Component".to_string())
+        self.get(*node)?
+            .extents
+            .ok_or_else(|| "no Component".to_string())
     }
 
     fn contains(&mut self, node: &u64, point: ScreenPoint) -> BusResult<bool> {
@@ -171,7 +173,8 @@ impl AtSpiBus for FakeBus {
     }
 
     fn accessible_at_point(&mut self, node: &u64, point: ScreenPoint) -> BusResult<u64> {
-        self.calls.push(format!("hit {node} @{},{}", point.x, point.y));
+        self.calls
+            .push(format!("hit {node} @{},{}", point.x, point.y));
         Ok(self.get(*node)?.hit.unwrap_or(0))
     }
 

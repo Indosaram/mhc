@@ -231,7 +231,10 @@ impl ModelSelectorComponent {
     }
 
     pub fn filtered_model_ids(&self) -> Vec<String> {
-        self.filtered_models.iter().map(|item| item.full_id.clone()).collect()
+        self.filtered_models
+            .iter()
+            .map(|item| item.full_id.clone())
+            .collect()
     }
 
     pub fn error_message(&self) -> Option<&str> {
@@ -265,7 +268,9 @@ impl ModelSelectorComponent {
             .filter_map(|scoped| {
                 available_models
                     .iter()
-                    .find(|entry| entry.id == scoped.model.id && entry.provider == scoped.model.provider)
+                    .find(|entry| {
+                        entry.id == scoped.model.id && entry.provider == scoped.model.provider
+                    })
                     .map(|entry| ScopedModelItem {
                         model: entry.clone(),
                         thinking_level: scoped.thinking_level.clone(),
@@ -286,7 +291,10 @@ impl ModelSelectorComponent {
             .filtered_models
             .iter()
             .position(|item| item.matches(self.current_model.as_ref()))
-            .unwrap_or_else(|| self.selected_index.min(self.filtered_models.len().saturating_sub(1)));
+            .unwrap_or_else(|| {
+                self.selected_index
+                    .min(self.filtered_models.len().saturating_sub(1))
+            });
         self.rebuild_search_items();
     }
 
@@ -311,13 +319,18 @@ impl ModelSelectorComponent {
         if self.closed {
             return;
         }
-        let result = outcome.unwrap_or(ModelsRefreshResult { aborted: timed_out, errors: Default::default() });
+        let result = outcome.unwrap_or(ModelsRefreshResult {
+            aborted: timed_out,
+            errors: Default::default(),
+        });
         self.refresh_status_message = String::new();
         if result.aborted && timed_out {
             self.error_message = Some("Model refresh timed out; showing cached models.".to_owned());
         } else if result.errors.len() == 1 {
             let provider = result.errors.keys().next().cloned().unwrap_or_default();
-            self.error_message = Some(format!("Could not refresh {provider}; showing cached models."));
+            self.error_message = Some(format!(
+                "Could not refresh {provider}; showing cached models."
+            ));
         } else if result.errors.len() > 1 {
             let providers: Vec<String> = result.errors.keys().cloned().collect();
             self.error_message = Some(format!(
@@ -363,12 +376,20 @@ impl ModelSelectorComponent {
             let a_is_current = a.matches(self.current_model.as_ref());
             let b_is_current = b.matches(self.current_model.as_ref());
             if a_is_current != b_is_current {
-                return if a_is_current { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+                return if a_is_current {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
             }
             let a_is_favorite = is_favorite_model(&self.favorite_ids_at_open, &a.full_id);
             let b_is_favorite = is_favorite_model(&self.favorite_ids_at_open, &b.full_id);
             if a_is_favorite != b_is_favorite {
-                return if a_is_favorite { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+                return if a_is_favorite {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
             }
             a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id))
         });
@@ -421,7 +442,11 @@ impl ModelSelectorComponent {
     }
 
     fn rebuild_search_items(&mut self) {
-        self.search_items = self.active_models.iter().map(ModelItem::as_search_item).collect();
+        self.search_items = self
+            .active_models
+            .iter()
+            .map(ModelItem::as_search_item)
+            .collect();
     }
 
     fn filter_models(&mut self, query: &str) {
@@ -448,7 +473,8 @@ impl ModelSelectorComponent {
         };
         self.filtered_models = ranked;
         self.selected_index = if query.is_empty() {
-            self.selected_index.min(self.filtered_models.len().saturating_sub(1))
+            self.selected_index
+                .min(self.filtered_models.len().saturating_sub(1))
         } else {
             0
         };
@@ -457,7 +483,9 @@ impl ModelSelectorComponent {
 
     /// senpi's `updateList`: it rebuilds the list container; the rows are produced by `render`.
     fn update_list(&mut self) {
-        self.selected_index = self.selected_index.min(self.filtered_models.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.filtered_models.len().saturating_sub(1));
     }
 
     fn max_visible(&self) -> usize {
@@ -491,8 +519,13 @@ impl ModelSelectorComponent {
         let Some(selected) = self.filtered_models.get(self.selected_index).cloned() else {
             return;
         };
-        let all_model_ids: Vec<String> = self.all_models.iter().map(|item| item.full_id.clone()).collect();
-        self.favorite_ids = toggle_favorite_model(&self.favorite_ids, &all_model_ids, &selected.full_id);
+        let all_model_ids: Vec<String> = self
+            .all_models
+            .iter()
+            .map(|item| item.full_id.clone())
+            .collect();
+        self.favorite_ids =
+            toggle_favorite_model(&self.favorite_ids, &all_model_ids, &selected.full_id);
         let query = self.search_input.get_value().to_owned();
         self.filter_models(&query);
         if let Some(index) = self
@@ -527,14 +560,20 @@ impl ModelSelectorComponent {
 
 impl Component for ModelSelectorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![dynamic_border(&self.theme, ThemeColor::Border, width), String::new()];
+        let mut lines = vec![
+            dynamic_border(&self.theme, ThemeColor::Border, width),
+            String::new(),
+        ];
 
         if !self.scoped_models.is_empty() {
             lines.extend(Text::with_padding(self.scope_text(), 0, 0).render(width));
             lines.extend(Text::with_padding(self.scope_hint_text(), 0, 0).render(width));
         } else {
-            let hint = "Only showing models from configured providers. Use /login to add providers.";
-            lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Warning, hint), 0, 0).render(width));
+            let hint =
+                "Only showing models from configured providers. Use /login to add providers.";
+            lines.extend(
+                Text::with_padding(self.theme.fg(ThemeColor::Warning, hint), 0, 0).render(width),
+            );
         }
         lines.push(String::new());
         let hints = format!(
@@ -551,7 +590,8 @@ impl Component for ModelSelectorComponent {
         if start_index > 0 {
             lines.extend(
                 Text::with_padding(
-                    self.theme.fg(ThemeColor::Muted, &format!("  … {start_index} more above")),
+                    self.theme
+                        .fg(ThemeColor::Muted, &format!("  … {start_index} more above")),
                     0,
                     0,
                 )
@@ -568,7 +608,9 @@ impl Component for ModelSelectorComponent {
             } else {
                 self.theme.fg(ThemeColor::Dim, "  ")
             };
-            let provider_badge = self.theme.fg(ThemeColor::Muted, &format!("[{}]", item.provider));
+            let provider_badge = self
+                .theme
+                .fg(ThemeColor::Muted, &format!("[{}]", item.provider));
             let checkmark = if is_current {
                 self.theme.fg(ThemeColor::Success, " ✓")
             } else {
@@ -605,18 +647,30 @@ impl Component for ModelSelectorComponent {
 
         if let Some(error) = &self.error_message {
             for line in error.split('\n') {
-                lines.extend(Text::with_padding(self.theme.fg(ThemeColor::Error, line), 0, 0).render(width));
+                lines.extend(
+                    Text::with_padding(self.theme.fg(ThemeColor::Error, line), 0, 0).render(width),
+                );
             }
         } else if self.filtered_models.is_empty() {
             lines.extend(
-                Text::with_padding(self.theme.fg(ThemeColor::Muted, "  No matching models"), 0, 0).render(width),
+                Text::with_padding(
+                    self.theme.fg(ThemeColor::Muted, "  No matching models"),
+                    0,
+                    0,
+                )
+                .render(width),
             );
         } else {
             lines.push(String::new());
             let name = self.filtered_models[self.selected_index].name.clone();
             lines.extend(
-                Text::with_padding(self.theme.fg(ThemeColor::Muted, &format!("  Model Name: {name}")), 0, 0)
-                    .render(width),
+                Text::with_padding(
+                    self.theme
+                        .fg(ThemeColor::Muted, &format!("  Model Name: {name}")),
+                    0,
+                    0,
+                )
+                .render(width),
             );
         }
         if !self.refresh_status_message.is_empty() {
@@ -628,7 +682,8 @@ impl Component for ModelSelectorComponent {
             };
             lines.extend(
                 Text::with_padding(
-                    self.theme.fg(color, &format!("  {}", self.refresh_status_message)),
+                    self.theme
+                        .fg(color, &format!("  {}", self.refresh_status_message)),
                     0,
                     0,
                 )
@@ -719,7 +774,9 @@ impl Focusable for ModelSelectorComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::favorite_model_ids::{FavoriteModelIds, get_model_full_id, is_favorite_model};
+    use crate::components::favorite_model_ids::{
+        FavoriteModelIds, get_model_full_id, is_favorite_model,
+    };
     use crate::model_search::ModelSearchItem;
     use crate::model_search_rank::rank_model_search_items;
     use maho_tui::tui::Component;
@@ -738,7 +795,8 @@ mod tests {
         scoped: Vec<ScopedModelItem>,
     ) -> ModelSelectorComponent {
         ModelSelectorComponent::new(
-            &crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("dark theme"),
+            &crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor)
+                .expect("dark theme"),
             std::sync::Arc::new(maho_tui::keybindings::KeybindingsManager::new(
                 maho_core::keybindings::keybindings().clone(),
                 maho_tui::keybindings::KeybindingsConfig::default(),
@@ -769,7 +827,11 @@ mod tests {
             })
             .collect();
         if query.is_empty() {
-            return selector.active_models.iter().map(|item| item.full_id.clone()).collect();
+            return selector
+                .active_models
+                .iter()
+                .map(|item| item.full_id.clone())
+                .collect();
         }
         rank_model_search_items(
             &items,
@@ -799,33 +861,70 @@ mod tests {
             entry("Google", "gemini-2.5-pro", "Gemini"),
         ];
         let before_new = conversions();
-        let mut component = selector(models.clone(), Some(vec!["OpenAI/gpt-4o".to_owned()]), Vec::new());
-        assert_eq!(conversions() - before_new, component.active_models.len(), "new() converts the catalog once");
-        let queries = ["", "opus", "GPT", "openai/o3", "gemini pro", "zzz", "  ", "Claude-Opus"];
+        let mut component = selector(
+            models.clone(),
+            Some(vec!["OpenAI/gpt-4o".to_owned()]),
+            Vec::new(),
+        );
+        assert_eq!(
+            conversions() - before_new,
+            component.active_models.len(),
+            "new() converts the catalog once"
+        );
+        let queries = [
+            "",
+            "opus",
+            "GPT",
+            "openai/o3",
+            "gemini pro",
+            "zzz",
+            "  ",
+            "Claude-Opus",
+        ];
         for query in queries {
             // Compute the expected order first: `ranked_ids` converts rows itself, so reset after.
             let expected = ranked_ids(&component, query);
             let before = conversions();
             component.filter_models(query);
-            assert_eq!(conversions(), before, "filtering {query:?} re-converted catalog entries");
+            assert_eq!(
+                conversions(),
+                before,
+                "filtering {query:?} re-converted catalog entries"
+            );
             assert_eq!(component.filtered_model_ids(), expected, "query {query:?}");
         }
         let before = conversions();
         component.handle_input("g");
         component.handle_input("p");
-        assert_eq!(conversions(), before, "keystrokes re-converted catalog entries");
+        assert_eq!(
+            conversions(),
+            before,
+            "keystrokes re-converted catalog entries"
+        );
 
         let scoped = vec![ScopedModelItem {
             model: entry("OpenAI", "gpt-4o", "GPT-4o"),
             thinking_level: None,
         }];
-        let mut narrowed = selector(models.clone(), Some(vec!["OpenAI/gpt-4o".to_owned()]), scoped);
+        let mut narrowed = selector(
+            models.clone(),
+            Some(vec!["OpenAI/gpt-4o".to_owned()]),
+            scoped,
+        );
         assert_eq!(narrowed.scope(), ModelScope::Narrowed);
         let before = conversions();
         narrowed.set_scope(ModelScope::All);
-        assert_eq!(conversions() - before, narrowed.active_models.len(), "a scope change converts the new catalog once");
+        assert_eq!(
+            conversions() - before,
+            narrowed.active_models.len(),
+            "a scope change converts the new catalog once"
+        );
         let before = conversions();
         narrowed.filter_models("opus");
-        assert_eq!(conversions(), before, "filtering after a scope change does not re-convert");
+        assert_eq!(
+            conversions(),
+            before,
+            "filtering after a scope change does not re-convert"
+        );
     }
 }

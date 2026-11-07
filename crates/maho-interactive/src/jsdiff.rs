@@ -27,8 +27,10 @@ const EXTENDED_WORD_CHARS: &str = concat!(
 const JS_WHITESPACE: &str = "\\t\\n\\u{0B}\\u{0C}\\r \\u{A0}\\u{1680}\\u{2000}-\\u{200A}\\u{2028}\\u{2029}\\u{202F}\\u{205F}\\u{3000}\\u{FEFF}";
 
 static TOKENIZE_INCLUDING_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!("[{EXTENDED_WORD_CHARS}]+|[{JS_WHITESPACE}]+|[^{EXTENDED_WORD_CHARS}]"))
-        .expect("tokenize pattern")
+    Regex::new(&format!(
+        "[{EXTENDED_WORD_CHARS}]+|[{JS_WHITESPACE}]+|[^{EXTENDED_WORD_CHARS}]"
+    ))
+    .expect("tokenize pattern")
 });
 
 // PERF-DIVERGENCE(senpi jsdiff 'diff' package): upstream runs whitespace regexes per token; this port uses the equivalent char-class predicate (same code points as JS_WHITESPACE) with no regex or allocation. Output is identical.
@@ -39,20 +41,14 @@ fn is_whitespace(text: &str) -> bool {
 fn is_js_whitespace_char(character: char) -> bool {
     matches!(
         character,
-        '\t' | '\n'
-            | '\u{0B}'
-            | '\u{0C}'
-            | '\r'
-            | ' '
-            | '\u{A0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
+        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
     )
 }
 
@@ -61,7 +57,10 @@ fn js_trim(text: &str) -> &str {
 }
 
 fn tokenize(value: &str) -> Vec<String> {
-    let parts: Vec<String> = TOKENIZE_INCLUDING_WHITESPACE.find_iter(value).map(|m| m.as_str().to_owned()).collect();
+    let parts: Vec<String> = TOKENIZE_INCLUDING_WHITESPACE
+        .find_iter(value)
+        .map(|m| m.as_str().to_owned())
+        .collect();
     let mut tokens: Vec<String> = Vec::new();
     let mut prev_part: Option<&str> = None;
     for part in parts.iter().map(String::as_str) {
@@ -89,7 +88,10 @@ fn tokenize(value: &str) -> Vec<String> {
 }
 
 fn remove_empty(tokens: Vec<String>) -> Vec<String> {
-    tokens.into_iter().filter(|token| !token.is_empty()).collect()
+    tokens
+        .into_iter()
+        .filter(|token| !token.is_empty())
+        .collect()
 }
 
 fn join_tokens(tokens: &[String]) -> String {
@@ -119,7 +121,8 @@ fn longest_common_prefix(left: &str, right: &str) -> String {
 }
 
 fn longest_common_suffix(left: &str, right: &str) -> String {
-    if left.is_empty() || right.is_empty() || left.chars().next_back() != right.chars().next_back() {
+    if left.is_empty() || right.is_empty() || left.chars().next_back() != right.chars().next_back()
+    {
         return String::new();
     }
     let mut length = 0;
@@ -235,8 +238,19 @@ struct Differ {
 }
 
 impl Differ {
-    fn push_component(&mut self, count: usize, added: bool, removed: bool, previous: Option<usize>) -> usize {
-        self.arena.push(Component { count, added, removed, previous });
+    fn push_component(
+        &mut self,
+        count: usize,
+        added: bool,
+        removed: bool,
+        previous: Option<usize>,
+    ) -> usize {
+        self.arena.push(Component {
+            count,
+            added,
+            removed,
+            previous,
+        });
         self.arena.len() - 1
     }
 
@@ -244,7 +258,13 @@ impl Differ {
         js_trim(left) == js_trim(right)
     }
 
-    fn add_to_path(&mut self, path: PathState, added: bool, removed: bool, old_pos_inc: i64) -> PathState {
+    fn add_to_path(
+        &mut self,
+        path: PathState,
+        added: bool,
+        removed: bool,
+        old_pos_inc: i64,
+    ) -> PathState {
         let last = path.last_component;
         if let Some(index) = last
             && self.arena[index].added == added
@@ -253,10 +273,16 @@ impl Differ {
             let previous = self.arena[index].previous;
             let count = self.arena[index].count + 1;
             let component = self.push_component(count, added, removed, previous);
-            return PathState { old_pos: path.old_pos + old_pos_inc, last_component: Some(component) };
+            return PathState {
+                old_pos: path.old_pos + old_pos_inc,
+                last_component: Some(component),
+            };
         }
         let component = self.push_component(1, added, removed, last);
-        PathState { old_pos: path.old_pos + old_pos_inc, last_component: Some(component) }
+        PathState {
+            old_pos: path.old_pos + old_pos_inc,
+            last_component: Some(component),
+        }
     }
 
     fn extract_common(&mut self, mut base_path: PathState, diagonal_path: i64) -> (PathState, i64) {
@@ -278,7 +304,8 @@ impl Differ {
         }
         if common_count > 0 {
             let previous = base_path.last_component;
-            base_path.last_component = Some(self.push_component(common_count, false, false, previous));
+            base_path.last_component =
+                Some(self.push_component(common_count, false, false, previous));
         }
         base_path.old_pos = old_pos;
         (base_path, new_pos)
@@ -310,7 +337,12 @@ impl Differ {
                 }
                 value
             };
-            changes.push(Change { value, added: component.added, removed: component.removed, count: component.count });
+            changes.push(Change {
+                value,
+                added: component.added,
+                removed: component.removed,
+                count: component.count,
+            });
         }
         changes
     }
@@ -320,7 +352,10 @@ impl Differ {
         let old_len = self.old_tokens.len() as i64;
         let mut edit_length = 1i64;
         let max_edit_length = new_len + old_len;
-        let seed = PathState { old_pos: -1, last_component: None };
+        let seed = PathState {
+            old_pos: -1,
+            last_component: None,
+        };
         self.best_path.insert(0, seed);
         let (seed, new_pos) = self.extract_common(seed, 0);
         self.best_path.insert(0, seed);
@@ -386,7 +421,8 @@ fn dedupe_whitespace_in_change_objects(
             let (new_ws_prefix, new_ws_suffix) = leading_and_trailing_ws(&insertion.value);
             if let Some(start_keep) = start_keep {
                 let common_ws_prefix = longest_common_prefix(&old_ws_prefix, &new_ws_prefix);
-                start_keep.value = replace_suffix(&start_keep.value, &new_ws_prefix, &common_ws_prefix);
+                start_keep.value =
+                    replace_suffix(&start_keep.value, &new_ws_prefix, &common_ws_prefix);
                 deletion.value = remove_prefix(&deletion.value, &common_ws_prefix);
                 insertion.value = remove_prefix(&insertion.value, &common_ws_prefix);
             }
@@ -407,35 +443,34 @@ fn dedupe_whitespace_in_change_objects(
                 end_keep.value = end_keep.value[ws.len()..].to_owned();
             }
         }
-        (Some(deletion), None) => {
-            match (start_keep, end_keep) {
-                (Some(start_keep), Some(end_keep)) => {
-                    let new_ws_full = leading_ws(&end_keep.value);
-                    let (del_ws_start, del_ws_end) = leading_and_trailing_ws(&deletion.value);
-                    let new_ws_start = longest_common_prefix(&new_ws_full, &del_ws_start);
-                    deletion.value = remove_prefix(&deletion.value, &new_ws_start);
-                    let remaining = remove_prefix(&new_ws_full, &new_ws_start);
-                    let new_ws_end = longest_common_suffix(&remaining, &del_ws_end);
-                    deletion.value = remove_suffix(&deletion.value, &new_ws_end);
-                    end_keep.value = replace_prefix(&end_keep.value, &new_ws_full, &new_ws_end);
-                    let kept = new_ws_full.len() - new_ws_end.len();
-                    start_keep.value = replace_suffix(&start_keep.value, &new_ws_full, &new_ws_full[..kept]);
-                }
-                (None, Some(end_keep)) => {
-                    let end_keep_ws_prefix = leading_ws(&end_keep.value);
-                    let deletion_ws_suffix = trailing_ws(&deletion.value);
-                    let overlap = maximum_overlap(&deletion_ws_suffix, &end_keep_ws_prefix);
-                    deletion.value = remove_suffix(&deletion.value, &overlap);
-                }
-                (Some(start_keep), None) => {
-                    let start_keep_ws_suffix = trailing_ws(&start_keep.value);
-                    let deletion_ws_prefix = leading_ws(&deletion.value);
-                    let overlap = maximum_overlap(&start_keep_ws_suffix, &deletion_ws_prefix);
-                    deletion.value = remove_prefix(&deletion.value, &overlap);
-                }
-                (None, None) => {}
+        (Some(deletion), None) => match (start_keep, end_keep) {
+            (Some(start_keep), Some(end_keep)) => {
+                let new_ws_full = leading_ws(&end_keep.value);
+                let (del_ws_start, del_ws_end) = leading_and_trailing_ws(&deletion.value);
+                let new_ws_start = longest_common_prefix(&new_ws_full, &del_ws_start);
+                deletion.value = remove_prefix(&deletion.value, &new_ws_start);
+                let remaining = remove_prefix(&new_ws_full, &new_ws_start);
+                let new_ws_end = longest_common_suffix(&remaining, &del_ws_end);
+                deletion.value = remove_suffix(&deletion.value, &new_ws_end);
+                end_keep.value = replace_prefix(&end_keep.value, &new_ws_full, &new_ws_end);
+                let kept = new_ws_full.len() - new_ws_end.len();
+                start_keep.value =
+                    replace_suffix(&start_keep.value, &new_ws_full, &new_ws_full[..kept]);
             }
-        }
+            (None, Some(end_keep)) => {
+                let end_keep_ws_prefix = leading_ws(&end_keep.value);
+                let deletion_ws_suffix = trailing_ws(&deletion.value);
+                let overlap = maximum_overlap(&deletion_ws_suffix, &end_keep_ws_prefix);
+                deletion.value = remove_suffix(&deletion.value, &overlap);
+            }
+            (Some(start_keep), None) => {
+                let start_keep_ws_suffix = trailing_ws(&start_keep.value);
+                let deletion_ws_prefix = leading_ws(&deletion.value);
+                let overlap = maximum_overlap(&start_keep_ws_suffix, &deletion_ws_prefix);
+                deletion.value = remove_prefix(&deletion.value, &overlap);
+            }
+            (None, None) => {}
+        },
         (None, None) => {}
     }
 }
@@ -503,6 +538,11 @@ fn dedupe_at(
 pub fn diff_words(old_value: &str, new_value: &str) -> Vec<Change> {
     let old_tokens = remove_empty(tokenize(old_value));
     let new_tokens = remove_empty(tokenize(new_value));
-    let mut differ = Differ { arena: Vec::new(), best_path: HashMap::new(), new_tokens, old_tokens };
+    let mut differ = Differ {
+        arena: Vec::new(),
+        best_path: HashMap::new(),
+        new_tokens,
+        old_tokens,
+    };
     differ.diff_with_options()
 }

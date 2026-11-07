@@ -13,7 +13,7 @@ fn given_a_cache_slot_without_a_marker_when_checked_then_it_is_not_current() {
 
 #[test]
 fn given_a_recorded_release_when_checked_then_it_is_current_and_the_marker_holds_the_pinned_version()
-{
+ {
     let temp = tempdir().expect("tempdir");
     record_cached_comment_checker_release(temp.path()).expect("record release");
     let current = is_cached_comment_checker_current(temp.path(), None);
@@ -22,18 +22,20 @@ fn given_a_recorded_release_when_checked_then_it_is_current_and_the_marker_holds
         .expect("read version marker");
     assert_eq!(
         marker_content,
-        format!("{COMMENT_CHECKER_RELEASE_VERSION}
-")
+        format!(
+            "{COMMENT_CHECKER_RELEASE_VERSION}
+"
+        )
     );
 }
 
 #[test]
 fn given_a_marker_from_another_release_when_checked_then_it_is_not_current() {
-    let custom_read = |_path: &Path| Ok("0.6.1
-".to_string());
-    let current = is_cached_comment_checker_current(
-        Path::new("/unused"),
-        Some(&custom_read),
-    );
+    let custom_read = |_path: &Path| {
+        Ok("0.6.1
+"
+        .to_string())
+    };
+    let current = is_cached_comment_checker_current(Path::new("/unused"), Some(&custom_read));
     assert!(!current);
 }

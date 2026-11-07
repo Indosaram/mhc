@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::support::{FakeComponent, command_names, manual_runtime_options, new_api};
 use maho_ext_api::{Extension, ExtensionApi};
 use maho_omo::{OmoExtension, OmoRuntimeOptions, OmoSenpiComponent, RecordingLogger};
-use crate::support::{FakeComponent, command_names, manual_runtime_options, new_api};
 
 fn options() -> OmoRuntimeOptions {
     manual_runtime_options(Arc::new(RecordingLogger::new()))
@@ -19,7 +19,12 @@ fn a_factory_slot_registers_again_on_a_second_register() {
     let slot = OmoSenpiComponent::from_factory("memory", move || {
         counter.fetch_add(1, Ordering::SeqCst);
         Box::new(FakeComponent::new(|api: &mut ExtensionApi| {
-            api.register_command("memory_slot", Some("slot".to_owned()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+            api.register_command(
+                "memory_slot",
+                Some("slot".to_owned()),
+                None,
+                Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            );
         }))
     });
     let extension = OmoExtension::with_options(vec![slot], options(), Default::default());
@@ -29,7 +34,11 @@ fn a_factory_slot_registers_again_on_a_second_register() {
     let mut second = new_api();
     extension.register(&mut second);
 
-    assert_eq!(builds.load(Ordering::SeqCst), 2, "a fresh instance per register");
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        2,
+        "a fresh instance per register"
+    );
     assert_eq!(command_names(&first), vec!["memory_slot".to_owned()]);
     assert_eq!(command_names(&second), vec!["memory_slot".to_owned()]);
 }
@@ -39,7 +48,12 @@ fn a_plain_extension_slot_registers_again_on_a_second_register() {
     let slot = OmoSenpiComponent::new(
         "alpha",
         Box::new(FakeComponent::new(|api: &mut ExtensionApi| {
-            api.register_command("alpha", Some("alpha".to_owned()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+            api.register_command(
+                "alpha",
+                Some("alpha".to_owned()),
+                None,
+                Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            );
         })),
     );
     let extension = OmoExtension::with_options(vec![slot], options(), Default::default());

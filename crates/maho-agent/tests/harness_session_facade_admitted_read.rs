@@ -4,19 +4,21 @@
 //! awaits every admitted operation before completing. The native equivalent is `MemorySessionFacade`;
 //! this holds an admitted READ open and asserts `close` does not finish until the read settles.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use maho_ai::types::BoxFuture;
 use tokio::sync::Notify;
 
-use maho_agent::harness::context::{Context, BACKGROUND_CONTEXT};
+use maho_agent::harness::context::{BACKGROUND_CONTEXT, Context};
 use maho_agent::harness::session::testing::StorageDecorator;
 use maho_agent::harness::session::types::{
-    CommitResult, Entry, EntryKind, EntryScan, EntryStructure, NewEntry, SessionMetadata, SessionStats, Storage,
-    StorageBranchScan, UsageRow, UsageScan, Write,
+    CommitResult, Entry, EntryKind, EntryScan, EntryStructure, NewEntry, SessionMetadata,
+    SessionStats, Storage, StorageBranchScan, UsageRow, UsageScan, Write,
 };
-use maho_agent::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
+use maho_agent::harness::session::values::{
+    ListElement, ListReadOptions, StoredValue, Value, ValueList,
+};
 use maho_agent::harness::session::{
     MemorySessionFacade, MemoryStorage, MemoryStorageOptions, Session, SessionReader,
     SessionResult, StorageBackedSession, StorageBackedSessionOptions,
@@ -43,27 +45,52 @@ impl BlockingReadStorage {
 }
 
 impl Storage for BlockingReadStorage {
-    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, SessionResult<CommitResult>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<CommitResult>> {
         self.decorator.commit(writes, context)
     }
 
-    fn get_entries<'a>(&'a self, ids: Vec<String>, context: &'a Context) -> BoxFuture<'a, SessionResult<std::collections::BTreeMap<String, Entry>>> {
+    fn get_entries<'a>(
+        &'a self,
+        ids: Vec<String>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<std::collections::BTreeMap<String, Entry>>> {
         self.decorator.get_entries(ids, context)
     }
 
-    fn get_value<'a>(&'a self, address: &'a Value, context: &'a Context) -> BoxFuture<'a, SessionResult<Option<StoredValue>>> {
+    fn get_value<'a>(
+        &'a self,
+        address: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Option<StoredValue>>> {
         self.decorator.get_value(address, context)
     }
 
-    fn scan_values<'a>(&'a self, prefix: &'a Value, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<StoredValue>>> {
+    fn scan_values<'a>(
+        &'a self,
+        prefix: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<StoredValue>>> {
         self.decorator.scan_values(prefix, context)
     }
 
-    fn read_list<'a>(&'a self, address: &'a ValueList, options: Option<ListReadOptions>, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<ListElement>>> {
+    fn read_list<'a>(
+        &'a self,
+        address: &'a ValueList,
+        options: Option<ListReadOptions>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<ListElement>>> {
         self.decorator.read_list(address, options, context)
     }
 
-    fn scan_branch<'a>(&'a self, query: StorageBranchScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+    fn scan_branch<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
         Box::pin(async move {
             if self.armed.load(Ordering::SeqCst) {
                 self.entered.notify_one();
@@ -73,15 +100,27 @@ impl Storage for BlockingReadStorage {
         })
     }
 
-    fn scan_branch_structure<'a>(&'a self, query: StorageBranchScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<EntryStructure>>> {
+    fn scan_branch_structure<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<EntryStructure>>> {
         self.decorator.scan_branch_structure(query, context)
     }
 
-    fn scan_entries<'a>(&'a self, query: EntryScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+    fn scan_entries<'a>(
+        &'a self,
+        query: EntryScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
         self.decorator.scan_entries(query, context)
     }
 
-    fn scan_usage<'a>(&'a self, query: UsageScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
+    fn scan_usage<'a>(
+        &'a self,
+        query: UsageScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
         self.decorator.scan_usage(query, context)
     }
 
@@ -129,11 +168,16 @@ async fn close_waits_for_an_admitted_read_on_the_storage_backed_session() {
     facade.attach();
     base_storage
         .commit(
-            vec![maho_agent::harness::session::commit::insert_entry(NewEntry {
-                id: "entry".into(),
-                parent_id: None,
-                kind: EntryKind::Custom { custom_type: "fixture".into(), data: None },
-            })],
+            vec![maho_agent::harness::session::commit::insert_entry(
+                NewEntry {
+                    id: "entry".into(),
+                    parent_id: None,
+                    kind: EntryKind::Custom {
+                        custom_type: "fixture".into(),
+                        data: None,
+                    },
+                },
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -144,19 +188,31 @@ async fn close_waits_for_an_admitted_read_on_the_storage_backed_session() {
     let read = tokio::spawn({
         let facade = facade.clone();
         let context = context.clone();
-        async move { facade.scan_branch(StorageBranchScan::new("entry"), &context).await }
+        async move {
+            facade
+                .scan_branch(StorageBranchScan::new("entry"), &context)
+                .await
+        }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), storage.entered.notified())
-        .await
-        .expect("the admitted read reaches storage");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        storage.entered.notified(),
+    )
+    .await
+    .expect("the admitted read reaches storage");
     assert!(!read.is_finished(), "the admitted read is still in flight");
 
     let mut closing = Box::pin(facade.close(&context));
-    assert!(futures::poll!(closing.as_mut()).is_pending(), "close must wait for the admitted read");
+    assert!(
+        futures::poll!(closing.as_mut()).is_pending(),
+        "close must wait for the admitted read"
+    );
     assert!(!closed.load(Ordering::SeqCst));
 
     storage.release.notify_one();
-    read.await.expect("read task completes").expect("read completes");
+    read.await
+        .expect("read task completes")
+        .expect("read completes");
     closing.await;
     assert!(closed.load(Ordering::SeqCst));
 }

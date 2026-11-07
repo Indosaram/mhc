@@ -33,7 +33,9 @@ async fn t2_non_windows_diagnose_reports_disabled_and_lists_two_tools() {
 #[tokio::test]
 async fn t2_non_windows_run_is_windows_only() {
     let server = server(FakeHost::new("darwin"));
-    let reply = server.call_tool("run", Some(&json!({"command": "ls"}))).await;
+    let reply = server
+        .call_tool("run", Some(&json!({"command": "ls"})))
+        .await;
     assert!(reply.is_error);
     assert!(reply.text.contains("Windows-only"), "{}", reply.text);
     assert!(server.host().recorded().is_empty());
@@ -113,7 +115,10 @@ fn t4_program_files_before_x86() {
     let x86 = FakeHost::new("win32").with_file(PROGRAM_FILES_X86_BASH);
     let value = resolve(&x86).to_json();
     assert_eq!(value["source"], "program-files-x86");
-    assert_eq!(value["checkedPaths"], json!([GIT_BASH, PROGRAM_FILES_X86_BASH]));
+    assert_eq!(
+        value["checkedPaths"],
+        json!([GIT_BASH, PROGRAM_FILES_X86_BASH])
+    );
 }
 
 #[test]
@@ -132,7 +137,13 @@ fn t4_where_output_skips_wsl_launchers() {
     assert_eq!(value["path"], git);
     assert_eq!(
         value["checkedPaths"],
-        json!([GIT_BASH, PROGRAM_FILES_X86_BASH, system32, windows_apps, git])
+        json!([
+            GIT_BASH,
+            PROGRAM_FILES_X86_BASH,
+            system32,
+            windows_apps,
+            git
+        ])
     );
 }
 
@@ -145,7 +156,10 @@ async fn t5_missing_git_bash_reports_hint_status_and_run_error() {
     assert!(!which.is_error);
     let value = parse(&which.text);
     assert_eq!(value["found"], false);
-    assert_eq!(value["checkedPaths"], json!([GIT_BASH, PROGRAM_FILES_X86_BASH]));
+    assert_eq!(
+        value["checkedPaths"],
+        json!([GIT_BASH, PROGRAM_FILES_X86_BASH])
+    );
     let hint = value["installHint"].as_str().expect("installHint");
     assert!(hint.contains(WINGET_INSTALL), "{hint}");
     assert!(hint.contains("OMO_CODEX_GIT_BASH_PATH"), "{hint}");
@@ -159,7 +173,9 @@ async fn t5_missing_git_bash_reports_hint_status_and_run_error() {
     assert_eq!(report["status"], "missing-git-bash");
     assert_eq!(report["resolution"], value);
 
-    let run = server.call_tool("run", Some(&json!({"command": "ls"}))).await;
+    let run = server
+        .call_tool("run", Some(&json!({"command": "ls"})))
+        .await;
     assert!(run.is_error);
     assert_eq!(parse(&run.text), value);
     assert!(server.host().recorded().is_empty());
@@ -169,7 +185,9 @@ async fn t5_missing_git_bash_reports_hint_status_and_run_error() {
 #[tokio::test]
 async fn t5_tool_text_is_two_space_pretty_json() {
     let server = server(FakeHost::windows_with_git_bash());
-    let reply = server.call_tool("which_bash", Some(&json!("not an object"))).await;
+    let reply = server
+        .call_tool("which_bash", Some(&json!("not an object")))
+        .await;
     let expected = serde_json::to_string_pretty(&parse(&reply.text)).expect("pretty");
     assert_eq!(reply.text, expected);
     assert!(reply.text.contains("\n  \"found\": true"), "{}", reply.text);
@@ -309,9 +327,8 @@ fn t7_invalid_values_are_skipped() {
 
 #[tokio::test]
 async fn t7_server_uses_host_env_for_the_default() {
-    let server = server(
-        FakeHost::windows_with_git_bash().with_env("CODEX_EXEC_COMMAND_TIMEOUT_MS", "6000"),
-    );
+    let server =
+        server(FakeHost::windows_with_git_bash().with_env("CODEX_EXEC_COMMAND_TIMEOUT_MS", "6000"));
     let reply = run_reply(&server, json!({"command": "ls"})).await;
     assert!(!reply.is_error);
     assert_eq!(server.host().recorded()[0].timeout_ms, 6000);
@@ -321,12 +338,14 @@ async fn t7_server_uses_host_env_for_the_default() {
 
 #[tokio::test]
 async fn t8_non_zero_exit_is_not_a_tool_error() {
-    let server = server(FakeHost::windows_with_git_bash().with_run_result(Ok(RunOutput {
-        exit_code: Some(3),
-        stdout: "out\n".into(),
-        stderr: "err\n".into(),
-        timed_out: false,
-    })));
+    let server = server(
+        FakeHost::windows_with_git_bash().with_run_result(Ok(RunOutput {
+            exit_code: Some(3),
+            stdout: "out\n".into(),
+            stderr: "err\n".into(),
+            timed_out: false,
+        })),
+    );
     let reply = run_reply(&server, json!({"command": "exit 3"})).await;
     assert!(!reply.is_error);
     assert_eq!(
@@ -341,12 +360,14 @@ async fn t8_non_zero_exit_is_not_a_tool_error() {
 
 #[tokio::test]
 async fn t8_missing_exit_code_is_null_and_timeout_is_reported() {
-    let server = server(FakeHost::windows_with_git_bash().with_run_result(Ok(RunOutput {
-        exit_code: None,
-        stdout: "partial".into(),
-        stderr: String::new(),
-        timed_out: true,
-    })));
+    let server = server(
+        FakeHost::windows_with_git_bash().with_run_result(Ok(RunOutput {
+            exit_code: None,
+            stdout: "partial".into(),
+            stderr: String::new(),
+            timed_out: true,
+        })),
+    );
     let reply = run_reply(&server, json!({"command": "sleep 9"})).await;
     assert!(!reply.is_error);
     let value = parse(&reply.text);
@@ -357,12 +378,15 @@ async fn t8_missing_exit_code_is_null_and_timeout_is_reported() {
 
 #[tokio::test]
 async fn t8_runner_error_is_a_tool_error_with_its_text() {
-    let server = server(
-        FakeHost::windows_with_git_bash().with_run_result(Err("The system cannot find the file specified. (os error 2)".into())),
-    );
+    let server = server(FakeHost::windows_with_git_bash().with_run_result(Err(
+        "The system cannot find the file specified. (os error 2)".into(),
+    )));
     let reply = run_reply(&server, json!({"command": "ls"})).await;
     assert!(reply.is_error);
-    assert_eq!(reply.text, "The system cannot find the file specified. (os error 2)");
+    assert_eq!(
+        reply.text,
+        "The system cannot find the file specified. (os error 2)"
+    );
 }
 
 #[tokio::test]

@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -155,8 +155,8 @@ fn py_raises_runtime_error_with_the_result_text_when_the_tool_reports_an_error()
 }
 
 #[test]
-fn py_raises_runtime_error_with_the_computer_permission_required_text_when_a_permission_denial_comes_back_as_an_error()
- {
+fn py_raises_runtime_error_with_the_computer_permission_required_text_when_a_permission_denial_comes_back_as_an_error(
+) {
     let text = "COMPUTER_PERMISSION_REQUIRED: screen recording is not granted. Do not retry until the user says the grant is done and the app was relaunched.";
     let denial = json!({
         "text": text,

@@ -24,13 +24,20 @@ pub enum BareSkillCommandResolution {
 
 /// Upstream `BARE_COMMAND_PATTERN = /^\/([a-z0-9][a-z0-9-]*)(?=\s|$)/`: a leading `/name` whose
 /// name starts alphanumeric and continues in `[a-z0-9-]`, followed by whitespace or end of input.
-pub fn parse_bare_skill_command(text: &str, bundled_skill_names: &BTreeSet<String>) -> Option<BareSkillCommand> {
+pub fn parse_bare_skill_command(
+    text: &str,
+    bundled_skill_names: &BTreeSet<String>,
+) -> Option<BareSkillCommand> {
     let after_slash = text.strip_prefix('/')?;
     let name_len = after_slash
-        .find(|character: char| !(character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'))
+        .find(|character: char| {
+            !(character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        })
         .unwrap_or(after_slash.len());
     let name = &after_slash[..name_len];
-    if !name.starts_with(|character: char| character.is_ascii_lowercase() || character.is_ascii_digit()) {
+    if !name
+        .starts_with(|character: char| character.is_ascii_lowercase() || character.is_ascii_digit())
+    {
         return None;
     }
     let rest = &after_slash[name_len..];
@@ -40,7 +47,10 @@ pub fn parse_bare_skill_command(text: &str, bundled_skill_names: &BTreeSet<Strin
     if !bundled_skill_names.contains(name) {
         return None;
     }
-    Some(BareSkillCommand { name: name.to_owned(), rest: rest.to_owned() })
+    Some(BareSkillCommand {
+        name: name.to_owned(),
+        rest: rest.to_owned(),
+    })
 }
 
 /// Decide what a bare `/<bundled-skill> args` submission becomes.
@@ -62,7 +72,10 @@ pub fn resolve_bare_skill_command(
             return BareSkillCommandResolution::Shadowed;
         }
         let skill_command = format!("{SKILL_COMMAND_PREFIX}{}", command.name);
-        if !host_commands.iter().any(|entry| entry.name == skill_command) {
+        if !host_commands
+            .iter()
+            .any(|entry| entry.name == skill_command)
+        {
             return BareSkillCommandResolution::Unavailable { name: command.name };
         }
     }

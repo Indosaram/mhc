@@ -264,7 +264,10 @@ pub fn apply_claimed(
         recovery
     };
     let mut publish = |effective: &memory_core::facts::mutation_plan::FactsApplyRecovery| {
-        let fields = serde_json::Map::from_iter([("applyRecovery".into(), serde_json::to_value(effective).map_err(|error| error.to_string())?)]);
+        let fields = serde_json::Map::from_iter([(
+            "applyRecovery".into(),
+            serde_json::to_value(effective).map_err(|error| error.to_string())?,
+        )]);
         update_run_ledger(&run_dir.join("ledger.json"), &fields).map_err(|error| error.to_string())
     };
     match memory_core::facts::recovery::apply_facts_recovery_with_agreements(
@@ -276,7 +279,11 @@ pub fn apply_claimed(
             author_name: "Facts Extractor".into(),
             author_email: None,
         },
-        Some(memory_core::facts::recovery::AgreementRecoveryInput { batch: &batch, policy: agreements_policy, publish: &mut publish }),
+        Some(memory_core::facts::recovery::AgreementRecoveryInput {
+            batch: &batch,
+            policy: agreements_policy,
+            publish: &mut publish,
+        }),
     )
     .map_err(FactsApplyError::Recovery)?
     {
@@ -459,58 +466,259 @@ mod tests {
     }
     #[test]
     fn legacy_agreement_recovery_is_published_before_commit() {
-        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");
-        let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
-        let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let mut ledger=ledger();
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let engine = crate::engine_session::prepare_memory_engine_session(
+            "agent",
+            &paths,
+            Default::default(),
+        )
+        .unwrap();
+        let run = root.path().join("run");
+        std::fs::create_dir(&run).unwrap();
+        let mut ledger = ledger();
         let agreements=vec![memory_core::agreements::parse_agreement_record(&serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":"session","messageId":"user"}}),0).unwrap()];
-        let batch=FactsBatch{batch_id:ledger.batch_id.clone(),records:vec![],agreements:Some(agreements.clone())};
-        let policy=AgreementsPolicy::default();let mut recovery=plan_facts_mutation(&engine.repo,&batch,None,None,&policy,None).unwrap();recovery.agreement_event_version=None;ledger.apply_recovery=Some(recovery);
-        crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
-        let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
-        assert!(matches!(apply_claimed(&run,&ledger,&engine.repo,&[],&agreements,&policy,&people,"agent",&mut |_|{}).unwrap(),Applied::Committed{..}));
-        let persisted:FactsRunLedger=crate::worker::run_artifacts::read_run_json(&run.join("ledger.json")).unwrap();assert_eq!(persisted.apply_recovery.unwrap().agreement_event_version,Some(1));
+        let batch = FactsBatch {
+            batch_id: ledger.batch_id.clone(),
+            records: vec![],
+            agreements: Some(agreements.clone()),
+        };
+        let policy = AgreementsPolicy::default();
+        let mut recovery =
+            plan_facts_mutation(&engine.repo, &batch, None, None, &policy, None).unwrap();
+        recovery.agreement_event_version = None;
+        ledger.apply_recovery = Some(recovery);
+        crate::worker::run_artifacts::write_run_json_atomic(
+            &run.join("ledger.json"),
+            &ledger,
+            0o600,
+        )
+        .unwrap();
+        let people = FactsPeopleRouting {
+            enabled: true,
+            max_entries: 40,
+            max_entry_chars: 200,
+        };
+        assert!(matches!(
+            apply_claimed(
+                &run,
+                &ledger,
+                &engine.repo,
+                &[],
+                &agreements,
+                &policy,
+                &people,
+                "agent",
+                &mut |_| {}
+            )
+            .unwrap(),
+            Applied::Committed { .. }
+        ));
+        let persisted: FactsRunLedger =
+            crate::worker::run_artifacts::read_run_json(&run.join("ledger.json")).unwrap();
+        assert_eq!(
+            persisted.apply_recovery.unwrap().agreement_event_version,
+            Some(1)
+        );
     }
     #[test]
     fn suppressed_records_never_apply_and_an_unreadable_store_fails() {
-        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
-        let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let ledger=ledger();crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
-        memory_core::receipts::owner::append_suppressions(&paths.runtime,memory_core::receipts::owner::SUPPRESSION_FORGET,"Project uses a durable journal",None,"forget-1").unwrap();
-        let records=vec![FactsExtractionRecord::Project{receipt:None,text:"Project uses a durable journal.".into(),date:"2026-08-12".into()}];let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
-        let head=engine.repo.head().unwrap();
-        assert_eq!(apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}).unwrap(),Applied::Unchanged);
-        let store=paths.runtime.join(memory_core::receipts::owner::SUPPRESSIONS_FILE);std::fs::remove_file(&store).unwrap();std::fs::create_dir(&store).unwrap();
-        assert!(matches!(apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}),Err(FactsApplyError::Suppression(_))));
-        assert_eq!(engine.repo.head().unwrap(),head);
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let engine = crate::engine_session::prepare_memory_engine_session(
+            "agent",
+            &paths,
+            Default::default(),
+        )
+        .unwrap();
+        let run = root.path().join("run");
+        std::fs::create_dir(&run).unwrap();
+        let ledger = ledger();
+        crate::worker::run_artifacts::write_run_json_atomic(
+            &run.join("ledger.json"),
+            &ledger,
+            0o600,
+        )
+        .unwrap();
+        memory_core::receipts::owner::append_suppressions(
+            &paths.runtime,
+            memory_core::receipts::owner::SUPPRESSION_FORGET,
+            "Project uses a durable journal",
+            None,
+            "forget-1",
+        )
+        .unwrap();
+        let records = vec![FactsExtractionRecord::Project {
+            receipt: None,
+            text: "Project uses a durable journal.".into(),
+            date: "2026-08-12".into(),
+        }];
+        let people = FactsPeopleRouting {
+            enabled: true,
+            max_entries: 40,
+            max_entry_chars: 200,
+        };
+        let head = engine.repo.head().unwrap();
+        assert_eq!(
+            apply_claimed(
+                &run,
+                &ledger,
+                &engine.repo,
+                &records,
+                &[],
+                &AgreementsPolicy::default(),
+                &people,
+                "agent",
+                &mut |_| {}
+            )
+            .unwrap(),
+            Applied::Unchanged
+        );
+        let store = paths
+            .runtime
+            .join(memory_core::receipts::owner::SUPPRESSIONS_FILE);
+        std::fs::remove_file(&store).unwrap();
+        std::fs::create_dir(&store).unwrap();
+        assert!(matches!(
+            apply_claimed(
+                &run,
+                &ledger,
+                &engine.repo,
+                &records,
+                &[],
+                &AgreementsPolicy::default(),
+                &people,
+                "agent",
+                &mut |_| {}
+            ),
+            Err(FactsApplyError::Suppression(_))
+        ));
+        assert_eq!(engine.repo.head().unwrap(), head);
     }
     #[test]
     fn a_forget_between_a_crashed_apply_and_its_retry_rolls_the_stale_plan_back() {
         // The last case changes the records without any suppression: any records-hash mismatch rolls back.
-        for (keep_one,suppress) in [(true,true),(false,true),(true,false)]{
-            let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
-            let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
-            let forgotten=FactsExtractionRecord::Project{receipt:None,text:"Project uses a durable journal".into(),date:"2026-08-12".into()};
-            let kept=FactsExtractionRecord::Project{receipt:None,text:"Project ships nightly builds".into(),date:"2026-08-12".into()};
-            let mut ledger=ledger();
-            let recovery=plan_facts_mutation(&engine.repo,&FactsBatch{batch_id:ledger.batch_id.clone(),records:vec![forgotten.clone(),kept.clone()],agreements:None},Some(&people),None,&AgreementsPolicy::default(),None).unwrap();
+        for (keep_one, suppress) in [(true, true), (false, true), (true, false)] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+            let engine = crate::engine_session::prepare_memory_engine_session(
+                "agent",
+                &paths,
+                Default::default(),
+            )
+            .unwrap();
+            let run = root.path().join("run");
+            std::fs::create_dir(&run).unwrap();
+            let people = FactsPeopleRouting {
+                enabled: true,
+                max_entries: 40,
+                max_entry_chars: 200,
+            };
+            let forgotten = FactsExtractionRecord::Project {
+                receipt: None,
+                text: "Project uses a durable journal".into(),
+                date: "2026-08-12".into(),
+            };
+            let kept = FactsExtractionRecord::Project {
+                receipt: None,
+                text: "Project ships nightly builds".into(),
+                date: "2026-08-12".into(),
+            };
+            let mut ledger = ledger();
+            let recovery = plan_facts_mutation(
+                &engine.repo,
+                &FactsBatch {
+                    batch_id: ledger.batch_id.clone(),
+                    records: vec![forgotten.clone(), kept.clone()],
+                    agreements: None,
+                },
+                Some(&people),
+                None,
+                &AgreementsPolicy::default(),
+                None,
+            )
+            .unwrap();
             {
                 // The crashed attempt applied its post-state and never committed.
-                let boundary=capture_owned_facts_state(&engine.repo,&recovery).unwrap().unwrap();
-                let mut transaction=FactsMutationTransaction::new(&engine.repo,&recovery,&boundary);
-                transaction.restore_pre_state().unwrap();transaction.apply_post_state().unwrap();
+                let boundary = capture_owned_facts_state(&engine.repo, &recovery)
+                    .unwrap()
+                    .unwrap();
+                let mut transaction =
+                    FactsMutationTransaction::new(&engine.repo, &recovery, &boundary);
+                transaction.restore_pre_state().unwrap();
+                transaction.apply_post_state().unwrap();
             }
-            assert!(!engine.repo.status(&[] as &[&str]).unwrap().trim().is_empty(),"the crash left the tree dirty");
-            ledger.head_before_apply=Some(recovery.head_before_apply.clone());ledger.apply_recovery=Some(recovery.clone());
-            crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
-            if suppress{memory_core::receipts::owner::append_suppressions(&paths.runtime,memory_core::receipts::owner::SUPPRESSION_FORGET,"Project uses a durable journal",None,"forget-1").unwrap();}
-            let head=engine.repo.head().unwrap();
+            assert!(
+                !engine
+                    .repo
+                    .status(&[] as &[&str])
+                    .unwrap()
+                    .trim()
+                    .is_empty(),
+                "the crash left the tree dirty"
+            );
+            ledger.head_before_apply = Some(recovery.head_before_apply.clone());
+            ledger.apply_recovery = Some(recovery.clone());
+            crate::worker::run_artifacts::write_run_json_atomic(
+                &run.join("ledger.json"),
+                &ledger,
+                0o600,
+            )
+            .unwrap();
+            if suppress {
+                memory_core::receipts::owner::append_suppressions(
+                    &paths.runtime,
+                    memory_core::receipts::owner::SUPPRESSION_FORGET,
+                    "Project uses a durable journal",
+                    None,
+                    "forget-1",
+                )
+                .unwrap();
+            }
+            let head = engine.repo.head().unwrap();
             // The retry's records were already filtered by the finalize, before the apply.
-            let records=if keep_one{vec![kept.clone()]}else{Vec::new()};
-            let applied=apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}).unwrap();
-            assert!(engine.repo.status(&[] as &[&str]).unwrap().trim().is_empty(),"the stale post-state is rolled back");
-            let memory:String=engine.repo.ls_tree(Some("HEAD"),None).unwrap().iter().filter(|path|path.ends_with(".md")).map(|path|engine.repo.show("HEAD",path).unwrap()).collect();
-            assert!(!memory.contains("durable journal"),"{memory}");
-            if keep_one{assert!(matches!(applied,Applied::Committed{..}),"{applied:?}");assert!(memory.contains("nightly builds"),"{memory}");}
-            else{assert_eq!(applied,Applied::Unchanged);assert_eq!(engine.repo.head().unwrap(),head);}
+            let records = if keep_one {
+                vec![kept.clone()]
+            } else {
+                Vec::new()
+            };
+            let applied = apply_claimed(
+                &run,
+                &ledger,
+                &engine.repo,
+                &records,
+                &[],
+                &AgreementsPolicy::default(),
+                &people,
+                "agent",
+                &mut |_| {},
+            )
+            .unwrap();
+            assert!(
+                engine
+                    .repo
+                    .status(&[] as &[&str])
+                    .unwrap()
+                    .trim()
+                    .is_empty(),
+                "the stale post-state is rolled back"
+            );
+            let memory: String = engine
+                .repo
+                .ls_tree(Some("HEAD"), None)
+                .unwrap()
+                .iter()
+                .filter(|path| path.ends_with(".md"))
+                .map(|path| engine.repo.show("HEAD", path).unwrap())
+                .collect();
+            assert!(!memory.contains("durable journal"), "{memory}");
+            if keep_one {
+                assert!(matches!(applied, Applied::Committed { .. }), "{applied:?}");
+                assert!(memory.contains("nightly builds"), "{memory}");
+            } else {
+                assert_eq!(applied, Applied::Unchanged);
+                assert_eq!(engine.repo.head().unwrap(), head);
+            }
         }
     }
     #[test]

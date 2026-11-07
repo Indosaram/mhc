@@ -13,10 +13,16 @@ use crate::theme::{Theme, ThemeColor};
 use crate::tools::render_utils::{get_text_output, invalid_arg_text, shorten_path, str_value};
 
 fn format_find_call(args: Option<&Value>, theme: &Theme) -> String {
-    let pattern = args.and_then(|args| str_value(args.get("pattern"))).flatten();
+    let pattern = args
+        .and_then(|args| str_value(args.get("pattern")))
+        .flatten();
     let raw_path = args.and_then(|args| str_value(args.get("path"))).flatten();
-    let path = raw_path.as_deref().map(|value| shorten_path(Some(&Value::String(value.to_owned()))));
-    let limit = args.and_then(|args| args.get("limit")).and_then(Value::as_u64);
+    let path = raw_path
+        .as_deref()
+        .map(|value| shorten_path(Some(&Value::String(value.to_owned()))));
+    let limit = args
+        .and_then(|args| args.get("limit"))
+        .and_then(Value::as_u64);
     let invalid_arg = invalid_arg_text(theme);
     let pattern_display = match &pattern {
         None => invalid_arg.clone(),
@@ -55,12 +61,19 @@ fn format_find_result(
         let remaining = lines.len().saturating_sub(max_lines);
         text += &format!(
             "\n{}",
-            display_lines.iter().map(|line| theme.fg(ThemeColor::ToolOutput, line)).collect::<Vec<_>>().join("\n")
+            display_lines
+                .iter()
+                .map(|line| theme.fg(ThemeColor::ToolOutput, line))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         if remaining > 0 {
             text += &format!(
                 "{} {}{}",
-                theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines,")),
+                theme.fg(
+                    ThemeColor::Muted,
+                    &format!("\n... ({remaining} more lines,")
+                ),
                 key_hint("app.tools.expand", "to expand", theme),
                 theme.fg(ThemeColor::Muted, ")")
             );
@@ -70,7 +83,10 @@ fn format_find_result(
     let details = result.details.clone().unwrap_or(Value::Null);
     let result_limit = details.get("resultLimitReached").and_then(Value::as_u64);
     let truncation = details.get("truncation");
-    let truncated = truncation.and_then(|value| value.get("truncated")).and_then(Value::as_bool).unwrap_or(false);
+    let truncated = truncation
+        .and_then(|value| value.get("truncated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if result_limit.is_some() || truncated {
         let mut warnings: Vec<String> = Vec::new();
         if let Some(result_limit) = result_limit {
@@ -83,7 +99,13 @@ fn format_find_result(
                 .map_or(DEFAULT_MAX_BYTES, |value| value as usize);
             warnings.push(format!("{} limit", format_size(max_bytes)));
         }
-        text += &format!("\n{}", theme.fg(ThemeColor::Warning, &format!("[Truncated: {}]", warnings.join(", "))));
+        text += &format!(
+            "\n{}",
+            theme.fg(
+                ThemeColor::Warning,
+                &format!("[Truncated: {}]", warnings.join(", "))
+            )
+        );
     }
     text
 }
@@ -95,7 +117,11 @@ impl ToolRenderers for FindRenderers {
     fn is_built_in(&self) -> bool {
         true
     }
-    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+    fn render_call(
+        &mut self,
+        theme: &Theme,
+        context: &ToolRenderContext<'_>,
+    ) -> Option<RenderedComponent> {
         let text = format_find_call(Some(context.args), theme);
         Some(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))))
     }

@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::Mutation;
 use crate::request::Op;
-use crate::test_support::{Harness, click_window, harness};
+use crate::test_support::{click_window, harness, Harness};
 
 fn click_desktop_mutation() -> Mutation<'static> {
     Mutation::new(

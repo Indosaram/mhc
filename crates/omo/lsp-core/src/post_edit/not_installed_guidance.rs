@@ -25,7 +25,11 @@ pub fn not_installed_guidance(
     if outcome.install_decision_tool {
         return Some(outcome.text.clone());
     }
-    if !state.lock().unwrap_or_else(PoisonError::into_inner).insert(outcome.server_id.clone()) {
+    if !state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(outcome.server_id.clone())
+    {
         return None;
     }
     Some(outcome.text.clone())

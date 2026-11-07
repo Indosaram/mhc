@@ -4,9 +4,13 @@
 //! the upstream JavaScript import: the worker resolves `moduleUrl` in a registry of built modules,
 //! so a session op never loads code at call time.
 
-pub type RegisterStoreExtensionCallback = Arc<dyn Fn(&StoreExtensionRegistration, i64) -> StoreExtensionResult<i64> + Send + Sync>;
-pub type ExtensionCallCallback = Arc<dyn Fn(&str, &str, &Value, i64) -> StoreExtensionResult<Value> + Send + Sync>;
-pub type ExtensionSessionAwaitCallback = Arc<dyn Fn(&str, &str, &Value, &SessionCaller, i64) -> StoreExtensionResult<Value> + Send + Sync>;
+pub type RegisterStoreExtensionCallback =
+    Arc<dyn Fn(&StoreExtensionRegistration, i64) -> StoreExtensionResult<i64> + Send + Sync>;
+pub type ExtensionCallCallback =
+    Arc<dyn Fn(&str, &str, &Value, i64) -> StoreExtensionResult<Value> + Send + Sync>;
+pub type ExtensionSessionAwaitCallback = Arc<
+    dyn Fn(&str, &str, &Value, &SessionCaller, i64) -> StoreExtensionResult<Value> + Send + Sync,
+>;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -135,8 +139,13 @@ impl StoreExtensionRefusalCode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StoreExtensionResult<T> {
-    Ok { value: T },
-    Refused { code: StoreExtensionRefusalCode, message: String },
+    Ok {
+        value: T,
+    },
+    Refused {
+        code: StoreExtensionRefusalCode,
+        message: String,
+    },
 }
 
 impl<T> StoreExtensionResult<T> {
@@ -145,7 +154,10 @@ impl<T> StoreExtensionResult<T> {
     }
 
     pub fn refused(code: StoreExtensionRefusalCode, message: impl Into<String>) -> Self {
-        Self::Refused { code, message: message.into() }
+        Self::Refused {
+            code,
+            message: message.into(),
+        }
     }
 
     pub fn is_ok(&self) -> bool {
@@ -176,8 +188,11 @@ pub struct SessionCaller {
     pub caller_durable_id: String,
 }
 
-pub type TransactionAll<'a> = std::rc::Rc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>;
-pub type TransactionOne<'a> = std::rc::Rc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>;
+pub type TransactionAll<'a> = std::rc::Rc<
+    dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a,
+>;
+pub type TransactionOne<'a> =
+    std::rc::Rc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>;
 pub type TransactionExec<'a> = std::rc::Rc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>;
 pub type TransactionSessions<'a> = std::rc::Rc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>;
 /// The transaction helpers an extension op may call, all inside its own transaction.
@@ -186,12 +201,17 @@ pub struct StoreExtensionTransaction<'a> {
     pub all: TransactionAll<'a>,
     pub one: TransactionOne<'a>,
     pub exec: TransactionExec<'a>,
-    pub enqueue: std::rc::Rc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
-    pub outbox_ack: std::rc::Rc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
+    pub enqueue:
+        std::rc::Rc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
+    pub outbox_ack:
+        std::rc::Rc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
     pub bind: std::rc::Rc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>,
-    pub unbind: std::rc::Rc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
-    pub rebind: std::rc::Rc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
-    pub binding_for: std::rc::Rc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
+    pub unbind:
+        std::rc::Rc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
+    pub rebind:
+        std::rc::Rc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
+    pub binding_for:
+        std::rc::Rc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
     pub bindings_for_session: TransactionSessions<'a>,
     pub outbox_pending: std::rc::Rc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>,
 }
@@ -274,7 +294,9 @@ pub struct ExtensionOutboxRequest {
 }
 
 /// One operation a compiled extension module exports.
-pub type StoreExtensionOperation = Arc<dyn Fn(&StoreExtensionTransaction, Value) -> Result<Value, StoreExtensionError> + Send + Sync>;
+pub type StoreExtensionOperation = Arc<
+    dyn Fn(&StoreExtensionTransaction, Value) -> Result<Value, StoreExtensionError> + Send + Sync,
+>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoreExtensionError {
@@ -284,11 +306,17 @@ pub struct StoreExtensionError {
 
 impl StoreExtensionError {
     pub fn invalid_arguments(message: impl Into<String>) -> Self {
-        Self { code: StoreExtensionRefusalCode::InvalidArguments, message: message.into() }
+        Self {
+            code: StoreExtensionRefusalCode::InvalidArguments,
+            message: message.into(),
+        }
     }
 
     pub fn failed(message: impl Into<String>) -> Self {
-        Self { code: StoreExtensionRefusalCode::ExtensionOperationFailed, message: message.into() }
+        Self {
+            code: StoreExtensionRefusalCode::ExtensionOperationFailed,
+            message: message.into(),
+        }
     }
 }
 
@@ -309,5 +337,8 @@ pub struct StoreExtensionSessionApi {
 
 /// The delivery facts an extension enqueue carries back.
 pub fn binding_ref(binding_id: &str, revision: i64) -> BindingRef {
-    BindingRef { binding_id: binding_id.to_owned(), revision }
+    BindingRef {
+        binding_id: binding_id.to_owned(),
+        revision,
+    }
 }

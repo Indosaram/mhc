@@ -285,7 +285,13 @@ fn given_batch_with_gated_item_when_executed_then_gated_item_fails_and_never_rea
         .find(|item| item.subagent_type.as_deref() == Some("explore"));
     let gated = gated.expect("gated item present");
     assert_eq!(gated.status, "error");
-    assert!(gated.error_message.as_deref().unwrap_or("").contains("ulw-plan"));
+    assert!(
+        gated
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("ulw-plan")
+    );
     let plain = plain.expect("plain item present");
     assert_ne!(plain.status, "error");
 }

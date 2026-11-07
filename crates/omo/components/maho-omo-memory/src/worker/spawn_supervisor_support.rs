@@ -9,13 +9,14 @@ pub fn install_memory_hooks(
 ) -> std::io::Result<Vec<memory_core::memfs::hooks::InstalledHook>> {
     let mut executable = std::env::current_exe()?;
     if executable.file_stem().and_then(|name| name.to_str()) != Some("mhc")
-        && let Some(parent) = executable.parent() {
-            executable = parent.parent().unwrap_or(parent).join(if cfg!(windows) {
-                "mhc.exe"
-            } else {
-                "mhc"
-            });
-        }
+        && let Some(parent) = executable.parent()
+    {
+        executable =
+            parent
+                .parent()
+                .unwrap_or(parent)
+                .join(if cfg!(windows) { "mhc.exe" } else { "mhc" });
+    }
     let path = executable.to_string_lossy().into_owned();
     memory_core::memfs::hooks::install_hooks_with_options(
         repo,

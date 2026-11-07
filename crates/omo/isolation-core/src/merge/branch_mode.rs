@@ -1,13 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::backend::{error_text, IsolationError, Result};
+use crate::backend::{IsolationError, Result, error_text};
 use crate::git::baseline::{RepoBaseline, WorktreeBaseline};
-use crate::git::command::{git_text, run_git, run_git_with_input, str_args, GitOptions};
-use crate::git::delta::{capture_delta_patch, DeltaPatchResult, NestedPatch};
+use crate::git::command::{GitOptions, git_text, run_git, run_git_with_input, str_args};
+use crate::git::delta::{DeltaPatchResult, NestedPatch, capture_delta_patch};
 use crate::git::synthetic_tree::write_synthetic_tree;
 use crate::merge::shared::{
-    stash_pop, stash_push, task_branch, with_repo_lock, LockHook, MergeKind, MergeState,
+    LockHook, MergeKind, MergeState, stash_pop, stash_push, task_branch, with_repo_lock,
 };
 use crate::util::mkdtemp;
 
@@ -57,21 +57,16 @@ fn filtered_tree(repo_root: &Path, base: &str, patch: &str) -> Result<String> {
     let dir = mkdtemp("isolation-replay-")?;
     let index_file = dir.join("index");
     let mut options = git_options(repo_root);
-    options
-        .env
-        .push(("GIT_INDEX_FILE".to_string(), index_file.to_string_lossy().into_owned()));
+    options.env.push((
+        "GIT_INDEX_FILE".to_string(),
+        index_file.to_string_lossy().into_owned(),
+    ));
     let result = (|| {
         run_git(&str_args(&["read-tree", base]), &options)?;
         if !patch.trim().is_empty() {
             let input: Arc<[u8]> = Arc::from(patch.as_bytes());
             let applied = run_git_with_input(
-                &str_args(&[
-                    "apply",
-                    "--cached",
-                    "--binary",
-                    "--whitespace=nowarn",
-                    "-",
-                ]),
+                &str_args(&["apply", "--cached", "--binary", "--whitespace=nowarn", "-"]),
                 &options,
                 Some(Arc::clone(&input)),
             );
@@ -118,11 +113,7 @@ fn commit_tree(
         }
     }
     let sha = String::from_utf8_lossy(
-        &run_git(
-            &str_args(&["commit-tree", tree, "-p", &parent]),
-            &options,
-        )?
-        .stdout,
+        &run_git(&str_args(&["commit-tree", tree, "-p", &parent]), &options)?.stdout,
     )
     .trim()
     .to_string();
@@ -178,7 +169,9 @@ pub fn commit_to_branch_locked(
     .iter()
     .any(|patch| !patch.trim().is_empty());
     let message = |patch: &str| -> Result<String> {
-        if let Some(callback) = &options.commit_message && let Some(text) = callback(patch)? {
+        if let Some(callback) = &options.commit_message
+            && let Some(text) = callback(patch)?
+        {
             return Ok(text);
         }
         Ok(format!("chore(task): {id} leftovers"))
@@ -211,7 +204,11 @@ pub fn commit_to_branch_locked(
         };
         let leftovers = capture_delta_patch(isolation_dir, &empty)?;
         if !leftovers.root_patch.trim().is_empty() {
-            let tree = write_synthetic_tree(repo_root, &head, std::slice::from_ref(&leftovers.root_patch))?;
+            let tree = write_synthetic_tree(
+                repo_root,
+                &head,
+                std::slice::from_ref(&leftovers.root_patch),
+            )?;
             commit_tree(
                 repo_root,
                 &branch_name,
@@ -321,7 +318,10 @@ pub fn merge_task_branch_locked(repo_root: &Path, branch: &TaskBranch) -> Result
         &str_args(&["rev-list", &format!("{}..{}", branch.base_sha, branch_name)]),
     )?;
     if revisions.is_empty() {
-        run_git(&str_args(&["branch", "-D", branch_name]), &git_options(repo_root))?;
+        run_git(
+            &str_args(&["branch", "-D", branch_name]),
+            &git_options(repo_root),
+        )?;
         return Ok(MergeState::new(MergeKind::NoChanges, false));
     }
     let stashed = stash_push(repo_root)?;
@@ -335,7 +335,10 @@ pub fn merge_task_branch_locked(repo_root: &Path, branch: &TaskBranch) -> Result
     let state_result = match pick {
         Ok(_) => Ok(MergeState::new(MergeKind::BranchMerged, true)),
         Err(IsolationError::Git { stderr, .. }) => {
-            let abort = run_git(&str_args(&["cherry-pick", "--abort"]), &git_options(repo_root));
+            let abort = run_git(
+                &str_args(&["cherry-pick", "--abort"]),
+                &git_options(repo_root),
+            );
             match abort {
                 Ok(_) => {
                     let mut state = MergeState::new(MergeKind::BranchMergeFailed, false);
@@ -354,7 +357,10 @@ pub fn merge_task_branch_locked(repo_root: &Path, branch: &TaskBranch) -> Result
     };
     let mut state = state_result?;
     if state.changes_applied {
-        run_git(&str_args(&["branch", "-D", branch_name]), &git_options(repo_root))?;
+        run_git(
+            &str_args(&["branch", "-D", branch_name]),
+            &git_options(repo_root),
+        )?;
     }
     if let Some(warning) = warning {
         state.warning = Some(warning);

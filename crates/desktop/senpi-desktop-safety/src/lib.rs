@@ -12,10 +12,10 @@ mod supervisor;
 pub use action::MutatingAction;
 pub use authority_reset::{AuthorityReset, AuthorityResetError};
 pub use clock::{Clock, FakeClock, MonotonicClock};
-pub use gate::{FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason, gate};
+pub use gate::{gate, FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason};
 pub use reset::{ResumeToken, UserReset};
 pub use stop_path::{Chord, HostRelay, StopPathError, StopPathListener};
 pub use supervisor::{
-    ActiveStopPath, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS, StopPathFailure, StopPathId,
-    StopPolicy, StopSource, Supervisor, SupervisorStatus,
+    ActiveStopPath, StopPathFailure, StopPathId, StopPolicy, StopSource, Supervisor,
+    SupervisorStatus, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS,
 };

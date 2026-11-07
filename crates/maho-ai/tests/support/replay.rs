@@ -23,7 +23,7 @@ use maho_ai::types::AssistantMessageEvent;
 use maho_test_support::golden::fixture_path;
 use serde_json::Value;
 
-use super::mock_server::{with_timeout, MockFixtureServer};
+use super::mock_server::{MockFixtureServer, with_timeout};
 
 /// Path of the golden `tools/golden/ai-replay.mjs` wrote for `case`.
 pub fn golden_path(case: &str) -> PathBuf {
@@ -76,7 +76,9 @@ where
 fn normalize_discriminators(events: &mut Value) {
     let Value::Array(events) = events else { return };
     for event in events {
-        let Value::Object(event) = event else { continue };
+        let Value::Object(event) = event else {
+            continue;
+        };
         for key in ["partial", "message", "error"] {
             if let Some(Value::Object(message)) = event.get_mut(key)
                 && message.contains_key("api")
@@ -106,22 +108,38 @@ fn first_difference(golden: &Value, actual: &Value, path: &str) -> Option<String
                             return Some(difference);
                         }
                     }
-                    None => return Some(format!("{path}.{key}: missing on the maho side\n{}", render(expected))),
+                    None => {
+                        return Some(format!(
+                            "{path}.{key}: missing on the maho side\n{}",
+                            render(expected)
+                        ));
+                    }
                 }
             }
             actual
                 .keys()
                 .find(|key| !golden.contains_key(*key))
-                .map(|key| format!("{path}.{key}: unexpected on the maho side\n{}", render(&actual[key])))
+                .map(|key| {
+                    format!(
+                        "{path}.{key}: unexpected on the maho side\n{}",
+                        render(&actual[key])
+                    )
+                })
         }
         (Value::Array(golden), Value::Array(actual)) => {
             for (index, (expected, produced)) in golden.iter().zip(actual).enumerate() {
-                if let Some(difference) = first_difference(expected, produced, &format!("{path}[{index}]")) {
+                if let Some(difference) =
+                    first_difference(expected, produced, &format!("{path}[{index}]"))
+                {
                     return Some(difference);
                 }
             }
             (golden.len() != actual.len()).then(|| {
-                format!("{path}: senpi recorded {} element(s), maho produced {}", golden.len(), actual.len())
+                format!(
+                    "{path}: senpi recorded {} element(s), maho produced {}",
+                    golden.len(),
+                    actual.len()
+                )
             })
         }
         (Value::Number(golden), Value::Number(actual)) => (!numbers_match(golden, actual))

@@ -117,7 +117,9 @@ impl FactsAgreementTool {
             if params.get("source").is_none() {
                 return self.reject("source user-message identity is required");
             }
-            if let Err(error) = memory_core::agreements::validate_agreement_source(&record, payload, counters.count) {
+            if let Err(error) =
+                memory_core::agreements::validate_agreement_source(&record, payload, counters.count)
+            {
                 return self.reject(&error.to_string());
             }
         }
@@ -191,13 +193,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agreements.jsonl");
         let payload = serde_json::json!({"entries":[{"sessionId":"session-a","lead":{"kind":"user","source_message_id":"lead"},"entries":[{"kind":"user","source_message_id":"u1"},{"kind":"assistant","source_message_id":"a1"}]}]});
-        let tool = create_facts_agreement_tool(FactsAgreementToolInput { extraction_path:path.clone(), payload:Some(payload), known_ids:Default::default(), on_failure:None, state:None });
-        for (message, session) in [("a1","session-a"),("lead","session-a"),("missing","session-a"),("u1","foreign")] {
+        let tool = create_facts_agreement_tool(FactsAgreementToolInput {
+            extraction_path: path.clone(),
+            payload: Some(payload),
+            known_ids: Default::default(),
+            on_failure: None,
+            state: None,
+        });
+        for (message, session) in [
+            ("a1", "session-a"),
+            ("lead", "session-a"),
+            ("missing", "session-a"),
+            ("u1", "foreign"),
+        ] {
             assert!(tool.execute("call", &serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":session,"messageId":message}})).is_error);
         }
         assert!(!path.exists());
         assert!(!tool.execute("call", &serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":"session-a","messageId":"u1"}})).is_error);
-        let record:serde_json::Value = serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
         assert_eq!(record["source"]["messageId"], "u1");
     }
 

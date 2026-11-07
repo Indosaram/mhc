@@ -152,7 +152,9 @@ pub fn modifier_keys(modifiers: Modifiers) -> impl Iterator<Item = KeyName> {
 
 /// The virtual keys of the modifiers a pointer action holds, in press order.
 pub fn modifier_virtual_keys(modifiers: Modifiers) -> Vec<u16> {
-    modifier_keys(modifiers).filter_map(named_virtual_key).collect()
+    modifier_keys(modifiers)
+        .filter_map(named_virtual_key)
+        .collect()
 }
 
 /// The virtual keys of a chord in press order: each stroke's implicit
@@ -171,7 +173,16 @@ pub fn chord_virtual_keys(strokes: &[Stroke]) -> Vec<u16> {
 pub const fn is_extended(vk: u16) -> bool {
     matches!(
         vk,
-        VK_INSERT | VK_DELETE | VK_HOME | VK_END | VK_PRIOR | VK_NEXT | VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN
+        VK_INSERT
+            | VK_DELETE
+            | VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_LEFT
+            | VK_RIGHT
+            | VK_UP
+            | VK_DOWN
     )
 }
 

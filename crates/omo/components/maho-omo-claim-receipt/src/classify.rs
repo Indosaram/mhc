@@ -200,31 +200,45 @@ fn pattern(source: &str) -> FancyRegex {
 }
 
 static NONZERO_FAILURES: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)(?<![0-9])[1-9]\d*\s*(?:failed|failures?|fail)\b|실패\s*:?\s*[1-9]|(?<![0-9])[1-9]\d*\s*(?:건|개)?\s*실패")
+    pattern(
+        r"(?i)(?<![0-9])[1-9]\d*\s*(?:failed|failures?|fail)\b|실패\s*:?\s*[1-9]|(?<![0-9])[1-9]\d*\s*(?:건|개)?\s*실패",
+    )
 });
 static EN_NEGATION: LazyLock<FancyRegex> =
     LazyLock::new(|| pattern(r"(?i)\b(?:not|never|cannot|no longer)\b|n't\b"));
 static EN_FAILURE_AFTER: LazyLock<FancyRegex> =
     LazyLock::new(|| pattern(r"(?i)\b(?:fail(?:s|ed|ing|ures?)?|broken|red)\b"));
 static KO_NEGATION: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"않|못|아니|(?:^|\s)안\s|미(?:통과|완료|구현|검증|반영)|불통과|실패(?:하|했|해|함|입니다|예요|중)|(?:에러|오류)가\s*(?:나|발생)")
+    pattern(
+        r"않|못|아니|(?:^|\s)안\s|미(?:통과|완료|구현|검증|반영)|불통과|실패(?:하|했|해|함|입니다|예요|중)|(?:에러|오류)가\s*(?:나|발생)",
+    )
 });
 static EN_ADMISSION: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)\b(?:not (?:yet )?(?:been )?(?:run|ran|verified|tested|checked|executed)|(?:haven't|have not|hasn't|has not|didn't|did not|couldn't|could not)\s+(?:yet\s+)?(?:run|verify|test|check|execute|re-?run)|untested|unverified|without (?:running|testing|verifying))\b")
+    pattern(
+        r"(?i)\b(?:not (?:yet )?(?:been )?(?:run|ran|verified|tested|checked|executed)|(?:haven't|have not|hasn't|has not|didn't|did not|couldn't|could not)\s+(?:yet\s+)?(?:run|verify|test|check|execute|re-?run)|untested|unverified|without (?:running|testing|verifying))\b",
+    )
 });
 static KO_ADMISSION: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"아직\s*(?:안|못)|안\s*(?:돌렸|돌려|돌림|해\s*봤|실행)|못\s*(?:돌렸|돌려|돌림|해\s*봤|실행)|돌리지\s*(?:않|못)|실행(?:하지|은)?\s*(?:않|못|안)|미검증|미확인|(?:검증|확인)(?:하지|은|도)?\s*(?:전|안|못)|(?:검증|확인)되지\s*않")
+    pattern(
+        r"아직\s*(?:안|못)|안\s*(?:돌렸|돌려|돌림|해\s*봤|실행)|못\s*(?:돌렸|돌려|돌림|해\s*봤|실행)|돌리지\s*(?:않|못)|실행(?:하지|은)?\s*(?:않|못|안)|미검증|미확인|(?:검증|확인)(?:하지|은|도)?\s*(?:전|안|못)|(?:검증|확인)되지\s*않",
+    )
 });
 static HEDGE: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)\b(?:should|would|ought to|expected to|likely|probably|presumably|i think|i believe|i assume|might)\b|거예요|겁니다|거야|것\s*같|거\s*같|듯|아마|예상|(?:할|될|일)\s*(?:거|것)")
+    pattern(
+        r"(?i)\b(?:should|would|ought to|expected to|likely|probably|presumably|i think|i believe|i assume|might)\b|거예요|겁니다|거야|것\s*같|거\s*같|듯|아마|예상|(?:할|될|일)\s*(?:거|것)",
+    )
 });
 static HANDOFF_LINE: LazyLock<FancyRegex> =
     LazyLock::new(|| pattern(r"(?i)^(?:Ask|Now|Next|wanted|For you):"));
 static CONDITIONAL: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)\b(?:if|once|when|whenever|whether|until|unless|as soon as|as each)\b|(?:하|되|으|이|라)면(?=[\s,.]|$)|(?:할|될)\s*때")
+    pattern(
+        r"(?i)\b(?:if|once|when|whenever|whether|until|unless|as soon as|as each)\b|(?:하|되|으|이|라)면(?=[\s,.]|$)|(?:할|될)\s*때",
+    )
 });
 static REPORTED_RESULT: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)(?<![\w.])\d+\s*(?:/\s*\d+|pass(?:ed|ing)?|tests?|fail(?:ed|ures?)?)\b|(?<![\w.])\d+\s+(?:of\s+\d+|(?:[A-Za-z-]+\s+){1,2}tests?)\b|(?<![\w.])\d+\s*(?:개|건)|\bexit(?:s|ed)?\s*(?:code\s*)?0\b|\b[A-Z_]*EXIT=0\b")
+    pattern(
+        r"(?i)(?<![\w.])\d+\s*(?:/\s*\d+|pass(?:ed|ing)?|tests?|fail(?:ed|ures?)?)\b|(?<![\w.])\d+\s+(?:of\s+\d+|(?:[A-Za-z-]+\s+){1,2}tests?)\b|(?<![\w.])\d+\s*(?:개|건)|\bexit(?:s|ed)?\s*(?:code\s*)?0\b|\b[A-Z_]*EXIT=0\b",
+    )
 });
 static LEADING_MARKER: LazyLock<FancyRegex> = LazyLock::new(|| {
     pattern("^[\\s\\x00]*(?:[-*\\u{2022}]|\\d+[.)]|[\\u{2705}\\u{2714}\\u{2611}]\\u{fe0f}?)?\\s*")
@@ -234,31 +248,35 @@ static LEADING_MARKER: LazyLock<FancyRegex> = LazyLock::new(|| {
 // offsets: the answer's own offsets index the original text (`span.start..span.end`), and a mask
 // that replaced a multi-byte character with one NUL would shift every later index.
 static RELAY_HEADER: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"^\s*(?:\[(?:[A-Z][A-Z0-9_-]{2,}|[\w.:@#-]+(?: via [\w.:@#-]+)* -> [\w.:@#-]+[^\]\n]{0,160})\]|[A-Z][\w.-]{0,30} \([^()\s]{1,40}\)(?:, | to )[\w.-]{1,40}:)")
+    pattern(
+        r"^\s*(?:\[(?:[A-Z][A-Z0-9_-]{2,}|[\w.:@#-]+(?: via [\w.:@#-]+)* -> [\w.:@#-]+[^\]\n]{0,160})\]|[A-Z][\w.-]{0,30} \([^()\s]{1,40}\)(?:, | to )[\w.-]{1,40}:)",
+    )
 });
 static INJECTED_BLOCK: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>")
+    pattern(
+        r"(?i)<(omo-[a-z0-9-]+-(?:pointer|mode)|ultrawork-mode|omo-ultrawork-(?:reminder|directive|mass))>[\s\S]*?</\1>",
+    )
 });
 static INLINE_CODE: LazyLock<FancyRegex> =
     LazyLock::new(|| pattern(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));
-static BLOCK_QUOTE_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^ {0,3}>[^\n]*").expect("valid block quote line regex")
-});
+static BLOCK_QUOTE_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^ {0,3}>[^\n]*").expect("valid block quote line regex"));
 static DOUBLE_QUOTED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new("\"[^\"\n]*\"|\u{201C}[^\u{201D}\n]*\u{201D}").expect("valid double quoted regex")
 });
 static SINGLE_QUOTED: LazyLock<FancyRegex> = LazyLock::new(|| {
     pattern("(?<![\\w'])'[^'\\n]{1,200}'(?![\\w])|\u{2018}[^\u{2019}\\n]{1,200}\u{2019}")
 });
-static URL_SPAN: LazyLock<FancyRegex> = LazyLock::new(|| {
-    pattern(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#)
-});
+static URL_SPAN: LazyLock<FancyRegex> =
+    LazyLock::new(|| pattern(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#));
 static FENCE_START: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)").expect("valid fence start regex")
 });
 static EXTRA_QUOTES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("\u{2018}[^\u{2019}\n]*\u{2019}|[\u{300C}\u{300E}][^\u{300D}\u{300F}\n]*[\u{300D}\u{300F}]")
-        .expect("valid extra quotes regex")
+    Regex::new(
+        "\u{2018}[^\u{2019}\n]*\u{2019}|[\u{300C}\u{300E}][^\u{300D}\u{300F}\n]*[\u{300D}\u{300F}]",
+    )
+    .expect("valid extra quotes regex")
 });
 
 const SELF_NEGATING_RULES: [&str; 4] = [
@@ -346,7 +364,9 @@ fn strip_quoted_spans(text: &str) -> String {
 pub fn mask_quoted_prose(text: &str) -> String {
     let spans = strip_quoted_spans(text);
     EXTRA_QUOTES
-        .replace_all(&spans, |captures: &regex::Captures<'_>| mask_region(&captures[0]))
+        .replace_all(&spans, |captures: &regex::Captures<'_>| {
+            mask_region(&captures[0])
+        })
         .into_owned()
 }
 
@@ -560,7 +580,8 @@ fn is_negated(sentence: &str, rule_id: &str, claim_start: usize, claim_end: usiz
     } else {
         sentence.to_owned()
     };
-    if EN_NEGATION.is_match(&rest).unwrap_or(false) || KO_NEGATION.is_match(&rest).unwrap_or(false) {
+    if EN_NEGATION.is_match(&rest).unwrap_or(false) || KO_NEGATION.is_match(&rest).unwrap_or(false)
+    {
         return true;
     }
     EN_FAILURE_AFTER
@@ -598,7 +619,13 @@ pub fn classify_claims(text: &str) -> Vec<Claim> {
             .collect::<Vec<_>>()
             .join(" ");
         let admitted = is_admission(&neighbours);
-        if !admitted && is_negated(sentence, found.rule.id, found.index, found.index + found.length)
+        if !admitted
+            && is_negated(
+                sentence,
+                found.rule.id,
+                found.index,
+                found.index + found.length,
+            )
         {
             continue;
         }
@@ -611,7 +638,11 @@ pub fn classify_claims(text: &str) -> Vec<Claim> {
             },
             admitted,
             reported: REPORTED_RESULT.is_match(sentence).unwrap_or(false),
-            sentence: text.get(span.start..span.end).unwrap_or("").trim().to_owned(),
+            sentence: text
+                .get(span.start..span.end)
+                .unwrap_or("")
+                .trim()
+                .to_owned(),
             rule: found.rule.id,
         });
     }

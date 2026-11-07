@@ -16,7 +16,10 @@ use tokio::sync::Notify;
 fn test_server() -> ResolvedServer {
     ResolvedServer {
         id: "typescript".to_string(),
-        command: vec!["typescript-language-server".to_string(), "--stdio".to_string()],
+        command: vec![
+            "typescript-language-server".to_string(),
+            "--stdio".to_string(),
+        ],
         extensions: vec![".ts".to_string()],
         priority: 1.0,
         env: None,
@@ -75,7 +78,11 @@ impl EventLog {
     }
 
     fn entries(&self) -> Vec<String> {
-        self.state.lock().expect("lifecycle test state lock").entries.clone()
+        self.state
+            .lock()
+            .expect("lifecycle test state lock")
+            .entries
+            .clone()
     }
 }
 
@@ -101,7 +108,11 @@ impl StopGateRegistry {
 
     fn release_all(&self) {
         let mut state = self.state.lock().expect("lifecycle test state lock");
-        let gates: Vec<_> = state.gates.iter().map(|(root, notify)| (root.clone(), notify.clone())).collect();
+        let gates: Vec<_> = state
+            .gates
+            .iter()
+            .map(|(root, notify)| (root.clone(), notify.clone()))
+            .collect();
         for (root, notify) in gates {
             state.released.insert(root.clone());
             notify.notify_one();
@@ -177,7 +188,10 @@ impl ManagedLspClient for RecordingFakeClient {
     }
 
     fn command(&self) -> Vec<String> {
-        vec!["typescript-language-server".to_string(), "--stdio".to_string()]
+        vec![
+            "typescript-language-server".to_string(),
+            "--stdio".to_string(),
+        ]
     }
 
     fn stop(&self) -> ClientFuture<'_, ()> {
@@ -185,7 +199,10 @@ impl ManagedLspClient for RecordingFakeClient {
             self.stop_call_count.fetch_add(1, Ordering::SeqCst);
             self.log.push(&format!("stop-start:{}", self.root));
             if self.options.gated_stop {
-                self.options.stop_registry.wait_for_release(&self.root).await;
+                self.options
+                    .stop_registry
+                    .wait_for_release(&self.root)
+                    .await;
             }
             self.alive.store(false, Ordering::SeqCst);
             self.log.push(&format!("stop-end:{}", self.root));
@@ -259,7 +276,9 @@ fn manager_harness(options: HarnessOptions) -> Harness {
         reaper_interval_ms: Some(60_000),
         idle_timeout_ms: Some(60_000_000),
         init_timeout_ms: Some(60_000),
-        now: Some(Arc::new(move || *clock_clone.lock().expect("lifecycle test state lock"))),
+        now: Some(Arc::new(move || {
+            *clock_clone.lock().expect("lifecycle test state lock")
+        })),
         client_factory: Some(Arc::new(move |root: &str, _server: &ResolvedServer| {
             let mut gen_map = generations.lock().expect("lifecycle test state lock");
             let gen_count = gen_map.entry(root.to_string()).or_insert(0);
@@ -276,7 +295,10 @@ fn manager_harness(options: HarnessOptions) -> Harness {
                     initialize_error: current_gen <= initialize_failures,
                 },
             ));
-            clients_clone.lock().expect("lifecycle test state lock").push(Arc::clone(&client));
+            clients_clone
+                .lock()
+                .expect("lifecycle test state lock")
+                .push(Arc::clone(&client));
             Ok(client as SharedClient)
         })),
     });
@@ -295,7 +317,8 @@ fn manager_harness(options: HarnessOptions) -> Harness {
 // =========================================================================
 
 #[tokio::test]
-async fn given_a_slow_stopping_client_evicted_at_the_resident_cap_when_the_evicted_root_is_re_acquired_while_the_stop_is_pending_then_the_replacement_spawns_only_after_the_old_client_stopped() {
+async fn given_a_slow_stopping_client_evicted_at_the_resident_cap_when_the_evicted_root_is_re_acquired_while_the_stop_is_pending_then_the_replacement_spawns_only_after_the_old_client_stopped()
+ {
     let server = test_server();
     let harness = manager_harness(HarnessOptions {
         max_resident_clients: Some(1),
@@ -349,7 +372,8 @@ async fn given_a_slow_stopping_client_evicted_at_the_resident_cap_when_the_evict
 }
 
 #[tokio::test]
-async fn given_an_invalidated_client_whose_stop_is_still_pending_when_the_same_root_is_re_acquired_then_the_replacement_spawns_only_after_the_invalidated_client_stopped() {
+async fn given_an_invalidated_client_whose_stop_is_still_pending_when_the_same_root_is_re_acquired_then_the_replacement_spawns_only_after_the_invalidated_client_stopped()
+ {
     let server = test_server();
     let harness = manager_harness(HarnessOptions {
         gated_stop: true,
@@ -388,7 +412,8 @@ async fn given_an_invalidated_client_whose_stop_is_still_pending_when_the_same_r
 }
 
 #[tokio::test]
-async fn given_a_client_whose_initialization_failed_while_its_stop_is_pending_when_another_get_client_races_the_stop_then_the_replacement_spawns_only_after_the_failed_client_stopped() {
+async fn given_a_client_whose_initialization_failed_while_its_stop_is_pending_when_another_get_client_races_the_stop_then_the_replacement_spawns_only_after_the_failed_client_stopped()
+ {
     let server = test_server();
     let harness = manager_harness(HarnessOptions {
         gated_stop: true,
@@ -435,7 +460,8 @@ async fn given_a_client_whose_initialization_failed_while_its_stop_is_pending_wh
 // =========================================================================
 
 #[tokio::test]
-async fn given_a_crash_looping_client_that_is_dead_on_every_acquisition_when_get_client_is_called_repeatedly_then_respawn_attempts_stay_within_the_retry_budget() {
+async fn given_a_crash_looping_client_that_is_dead_on_every_acquisition_when_get_client_is_called_repeatedly_then_respawn_attempts_stay_within_the_retry_budget()
+ {
     let server = test_server();
     let harness = manager_harness(HarnessOptions {
         alive_from_generation: usize::MAX,
@@ -446,19 +472,31 @@ async fn given_a_crash_looping_client_that_is_dead_on_every_acquisition_when_get
 
     // when
     for _ in 0..8 {
-        if manager.get_client("/root-crash", &server, None).await.is_ok() {
+        if manager
+            .get_client("/root-crash", &server, None)
+            .await
+            .is_ok()
+        {
             manager.release_client("/root-crash", &server.id);
         }
     }
 
     // then: one initial generation plus at most two budgeted respawns.
-    assert!(harness.clients.lock().expect("lifecycle test state lock").len() <= 3);
+    assert!(
+        harness
+            .clients
+            .lock()
+            .expect("lifecycle test state lock")
+            .len()
+            <= 3
+    );
 
     harness.stop_all().await;
 }
 
 #[tokio::test]
-async fn given_the_respawn_budget_is_exhausted_when_get_client_is_called_again_then_it_rejects_with_a_budget_error_instead_of_respawning() {
+async fn given_the_respawn_budget_is_exhausted_when_get_client_is_called_again_then_it_rejects_with_a_budget_error_instead_of_respawning()
+ {
     let server = test_server();
     let harness = manager_harness(HarnessOptions {
         alive_from_generation: usize::MAX,
@@ -478,7 +516,8 @@ async fn given_the_respawn_budget_is_exhausted_when_get_client_is_called_again_t
 }
 
 #[tokio::test]
-async fn given_the_budget_was_exhausted_but_the_cooldown_elapsed_and_the_server_recovered_when_get_client_is_called_then_it_spawns_again_and_resets_the_budget_on_a_healthy_generation() {
+async fn given_the_budget_was_exhausted_but_the_cooldown_elapsed_and_the_server_recovered_when_get_client_is_called_then_it_spawns_again_and_resets_the_budget_on_a_healthy_generation()
+ {
     let server = test_server();
     // given: generations one and two crash, the third is healthy.
     let harness = manager_harness(HarnessOptions {
@@ -492,14 +531,22 @@ async fn given_the_budget_was_exhausted_but_the_cooldown_elapsed_and_the_server_
     assert_err_contains(first, "respawn budget exhausted");
 
     // when: cooldown elapses (60s default) and the server stays alive again.
-    *harness.clock.lock().expect("lifecycle test state lock") += (CLIENT_RESPAWN_COOLDOWN_MS + 1) as f64;
+    *harness.clock.lock().expect("lifecycle test state lock") +=
+        (CLIENT_RESPAWN_COOLDOWN_MS + 1) as f64;
     let recovered = manager.get_client("/root-crash", &server, None).await;
     assert!(recovered.is_ok());
     let recovered_client = recovered.unwrap();
     manager.release_client("/root-crash", &server.id);
 
     // then
-    assert_eq!(harness.clients.lock().expect("lifecycle test state lock").len(), 3);
+    assert_eq!(
+        harness
+            .clients
+            .lock()
+            .expect("lifecycle test state lock")
+            .len(),
+        3
+    );
     let next = manager.get_client("/root-crash", &server, None).await;
     assert!(next.is_ok());
     let next_client = next.unwrap();

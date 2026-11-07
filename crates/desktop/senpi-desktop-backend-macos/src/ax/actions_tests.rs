@@ -41,8 +41,16 @@ impl AxRequests for ScriptedElement {
 fn assert_unconfirmed(error: &DesktopError, request: &str) {
     assert_eq!(error.code, ErrorCode::AxUnconfirmed, "{error}");
     assert!(error.message.contains(request), "{}", error.message);
-    assert!(error.message.contains("could not be confirmed"), "{}", error.message);
-    assert!(error.message.contains("before retrying"), "{}", error.message);
+    assert!(
+        error.message.contains("could not be confirmed"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("before retrying"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]
@@ -58,10 +66,15 @@ fn only_cannot_complete_reports_the_request_as_unconfirmed() {
         AXError::APIDisabled,
     ];
     // When
-    let unconfirmed = request_result(AXError::CannotComplete, "AX action 'AXPress'", "failed").unwrap_err();
+    let unconfirmed =
+        request_result(AXError::CannotComplete, "AX action 'AXPress'", "failed").unwrap_err();
     let refused: Vec<ErrorCode> = refusals
         .into_iter()
-        .map(|error| request_result(error, "AX action 'AXPress'", "failed").unwrap_err().code)
+        .map(|error| {
+            request_result(error, "AX action 'AXPress'", "failed")
+                .unwrap_err()
+                .code
+        })
         .collect();
     // Then
     assert_unconfirmed(&unconfirmed, "AX action 'AXPress'");
@@ -88,7 +101,11 @@ fn a_refused_perform_stays_failed() {
     let error = perform_requested(&element, "AXShowMenu").unwrap_err();
     // Then
     assert_eq!(error.code, ErrorCode::AxFailed, "{error}");
-    assert!(error.message.contains("AX action 'AXShowMenu' failed"), "{}", error.message);
+    assert!(
+        error.message.contains("AX action 'AXShowMenu' failed"),
+        "{}",
+        error.message
+    );
     assert!(perform_requested(&ScriptedElement::replying(AXError::Success), "press").is_ok());
 }
 
@@ -111,7 +128,11 @@ fn a_refused_value_write_stays_failed() {
     let error = write_value(&element, "hello").unwrap_err();
     // Then
     assert_eq!(error.code, ErrorCode::AxFailed, "{error}");
-    assert!(error.message.contains("AXValue is not settable"), "{}", error.message);
+    assert!(
+        error.message.contains("AXValue is not settable"),
+        "{}",
+        error.message
+    );
     assert!(write_value(&ScriptedElement::replying(AXError::Success), "hello").is_ok());
 }
 
@@ -134,6 +155,10 @@ fn a_refused_focus_write_stays_failed() {
     let error = focus(&element).unwrap_err();
     // Then
     assert_eq!(error.code, ErrorCode::AxFailed, "{error}");
-    assert!(error.message.contains("setting AXFocused=true failed"), "{}", error.message);
+    assert!(
+        error.message.contains("setting AXFocused=true failed"),
+        "{}",
+        error.message
+    );
     assert!(focus(&ScriptedElement::replying(AXError::Success)).is_ok());
 }

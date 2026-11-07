@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::tui::{dispatch_mouse_event, Component, TuiMouseEvent, TuiMouseEventResult};
+use crate::tui::{Component, TuiMouseEvent, TuiMouseEventResult, dispatch_mouse_event};
 use crate::utils::{apply_background_to_line, visible_width};
 
 pub type BackgroundFn = Rc<dyn Fn(&str) -> String>;
@@ -80,9 +80,16 @@ impl Box {
         self.cache = None;
     }
 
-    fn match_cache(&self, width: usize, child_lines: &[String], bg_sample: &Option<String>) -> bool {
+    fn match_cache(
+        &self,
+        width: usize,
+        child_lines: &[String],
+        bg_sample: &Option<String>,
+    ) -> bool {
         self.cache.as_ref().is_some_and(|cache| {
-            cache.width == width && &cache.bg_sample == bg_sample && cache.child_lines == child_lines
+            cache.width == width
+                && &cache.bg_sample == bg_sample
+                && cache.child_lines == child_lines
         })
     }
 

@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::quality_gate::{validate_quality_gate, ValidateQualityGateOptions};
+use crate::quality_gate::{ValidateQualityGateOptions, validate_quality_gate};
 use crate::runtime::UlwLoopError;
 
 pub fn aggregate_quality_gate_defects(

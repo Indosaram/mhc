@@ -1,6 +1,6 @@
 //! Port of `claim-receipt/verdict.ts`: the persisted verdict record and the advisory blocks.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::r#match::{ClaimStatus, ClaimVerdict, UnsupportedReason};
 
@@ -85,14 +85,17 @@ fn describe(verdict: &ClaimVerdict) -> String {
     let reason = verdict
         .reason
         .map_or_else(|| ClaimStatus::Unsupported.as_str(), reason_text);
-    let check = verdict.receipt.as_ref().map_or_else(String::new, |receipt| {
-        format!(
-            " (check entry {}, {} {})",
-            receipt.entry_id,
-            receipt.kind.as_str(),
-            receipt.outcome.as_str()
-        )
-    });
+    let check = verdict
+        .receipt
+        .as_ref()
+        .map_or_else(String::new, |receipt| {
+            format!(
+                " (check entry {}, {} {})",
+                receipt.entry_id,
+                receipt.kind.as_str(),
+                receipt.outcome.as_str()
+            )
+        });
     let edit = verdict
         .invalidated_by
         .as_ref()

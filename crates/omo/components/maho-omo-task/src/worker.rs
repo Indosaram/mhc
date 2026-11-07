@@ -1,5 +1,5 @@
-use std::thread::JoinHandle;
 use maho_ext_api::{AbortSignal, ToolError};
+use std::thread::JoinHandle;
 
 struct OwnedWorker<C: FnOnce() -> Result<(), ToolError>> {
     thread: Option<JoinHandle<()>>,
@@ -8,10 +8,14 @@ struct OwnedWorker<C: FnOnce() -> Result<(), ToolError>> {
 
 impl<C: FnOnce() -> Result<(), ToolError>> Drop for OwnedWorker<C> {
     fn drop(&mut self) {
-        if let Some(cancel) = self.cancel.take() && let Err(error) = cancel() {
+        if let Some(cancel) = self.cancel.take()
+            && let Err(error) = cancel()
+        {
             maho_ext_api::diagnostic(&format!("dropped task worker cancellation failed: {error}"));
         }
-        if let Some(thread) = self.thread.take() && thread.join().is_err() {
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
             maho_ext_api::diagnostic("dropped task worker panicked");
         }
     }
@@ -24,7 +28,10 @@ pub(crate) async fn settle<T>(
     cancel: impl FnOnce() -> Result<(), ToolError>,
     panic_message: &str,
 ) -> Result<T, ToolError> {
-    let mut owner = OwnedWorker { thread: Some(worker), cancel: Some(cancel) };
+    let mut owner = OwnedWorker {
+        thread: Some(worker),
+        cancel: Some(cancel),
+    };
     tokio::pin!(receiver);
     let mut cancellation_error = None;
     let result = tokio::select! {
@@ -36,9 +43,13 @@ pub(crate) async fn settle<T>(
     };
     owner.cancel.take();
     if let Some(worker) = owner.thread.take() {
-        worker.join().map_err(|_| ToolError::Message(panic_message.into()))?;
+        worker
+            .join()
+            .map_err(|_| ToolError::Message(panic_message.into()))?;
     }
-    if let Some(error) = cancellation_error { return Err(error); }
+    if let Some(error) = cancellation_error {
+        return Err(error);
+    }
     result.map_err(|error| ToolError::Message(error.to_string()))
 }
 
@@ -54,19 +65,28 @@ mod tests {
         let (finished, completion) = mpsc::channel();
         let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
         let worker = std::thread::spawn(move || {
-            released.recv_timeout(Duration::from_secs(5)).expect("drop cancellation");
+            released
+                .recv_timeout(Duration::from_secs(5))
+                .expect("drop cancellation");
             drop(sender);
             finished.send(()).expect("completion receiver");
         });
         let signal = AbortSignal::default();
-        let mut future = Box::pin(settle(receiver, worker, &signal, || {
-            release.send(()).expect("release worker");
-            Ok(())
-        }, "worker panicked"));
+        let mut future = Box::pin(settle(
+            receiver,
+            worker,
+            &signal,
+            || {
+                release.send(()).expect("release worker");
+                Ok(())
+            },
+            "worker panicked",
+        ));
         std::future::poll_fn(|context| {
             assert!(future.as_mut().poll(context).is_pending());
             std::task::Poll::Ready(())
-        }).await;
+        })
+        .await;
         drop(future);
         completion.try_recv().expect("drop joined worker");
     }
@@ -77,19 +97,32 @@ mod tests {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let (finished, completion) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            released.recv_timeout(Duration::from_secs(5)).expect("cancel signal");
+            released
+                .recv_timeout(Duration::from_secs(5))
+                .expect("cancel signal");
             sender.send(()).expect("receiver retained until settlement");
             finished.send(()).expect("completion receiver");
         });
         let signal = AbortSignal::default();
         signal.abort();
-        let result = settle(receiver, worker, &signal, || {
-            release.send(()).expect("release worker");
-            Err(ToolError::Message("cancel persistence failed".into()))
-        }, "worker panicked").await;
-        assert!(matches!(result, Err(ToolError::Message(message)) if message == "cancel persistence failed"));
+        let result = settle(
+            receiver,
+            worker,
+            &signal,
+            || {
+                release.send(()).expect("release worker");
+                Err(ToolError::Message("cancel persistence failed".into()))
+            },
+            "worker panicked",
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ToolError::Message(message)) if message == "cancel persistence failed")
+        );
         // A successful join, rather than scheduling luck after send, makes this ready.
-        completion.try_recv().expect("worker joined before error returned");
+        completion
+            .try_recv()
+            .expect("worker joined before error returned");
     }
 
     #[tokio::test]
@@ -99,7 +132,14 @@ mod tests {
             drop(sender);
             panic!("worker failure after receiver closure");
         });
-        let result = settle(receiver, worker, &AbortSignal::default(), || Ok(()), "worker panicked").await;
+        let result = settle(
+            receiver,
+            worker,
+            &AbortSignal::default(),
+            || Ok(()),
+            "worker panicked",
+        )
+        .await;
         assert!(matches!(result, Err(ToolError::Message(message)) if message == "worker panicked"));
     }
 }

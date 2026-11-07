@@ -61,7 +61,9 @@ pub fn select_branch_fork(
         return Ok(ForkCurrentStatePlan::Tree);
     };
     let Some(tip) = &source.tip else {
-        return Err(session_invariant_error(format!("Unknown source branch: {branch}")));
+        return Err(session_invariant_error(format!(
+            "Unknown source branch: {branch}"
+        )));
     };
     let requested = entry_id.clone().or_else(|| tip.clone());
     let mut found = requested.is_none();
@@ -129,7 +131,9 @@ pub fn project_fork_current_state_write(
             if key == branch {
                 Ok(Some(with_value(
                     write,
-                    destination_tip.clone().map_or(serde_json::Value::Null, serde_json::Value::String),
+                    destination_tip
+                        .clone()
+                        .map_or(serde_json::Value::Null, serde_json::Value::String),
                 )))
             } else {
                 Ok(None)
@@ -161,7 +165,11 @@ pub fn project_fork_current_state_write(
                     format!("Unknown reserved fork namespace: {namespace}"),
                 ));
             }
-            Ok(if branch_scope { None } else { Some(write.clone()) })
+            Ok(if branch_scope {
+                None
+            } else {
+                Some(write.clone())
+            })
         }
     }
 }

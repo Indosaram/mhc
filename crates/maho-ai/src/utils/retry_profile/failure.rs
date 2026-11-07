@@ -30,19 +30,32 @@ pub struct RetryErrorShape {
 const MAX_MESSAGE_CHARS: usize = 500;
 
 fn ci(pattern: &str) -> Regex {
-    RegexBuilder::new(pattern).case_insensitive(true).build().unwrap_or_else(|e| panic!("failure pattern: {e}"))
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|e| panic!("failure pattern: {e}"))
 }
 
-static QUOTA_WORDING_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| ci(r"exceeded_current_quota_error|insufficient\s+balance|credits?_required|quota|billing"));
-static IMAGE_FORMAT_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| ci(r"unsupported image format|unsupported media type for base64 image|invalid data url for image"));
+static QUOTA_WORDING_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    ci(r"exceeded_current_quota_error|insufficient\s+balance|credits?_required|quota|billing")
+});
+static IMAGE_FORMAT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    ci(
+        r"unsupported image format|unsupported media type for base64 image|invalid data url for image",
+    )
+});
 
 fn nested_provider_codes(body: Option<&Value>) -> Option<Vec<String>> {
     let inner = body?.as_object()?.get("error")?.as_object()?;
     let codes: Vec<String> = ["type", "code"]
         .iter()
-        .filter_map(|key| inner.get(*key)?.as_str().filter(|v| !v.is_empty()).map(str::to_owned))
+        .filter_map(|key| {
+            inner
+                .get(*key)?
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        })
         .collect();
     (!codes.is_empty()).then_some(codes)
 }
@@ -61,11 +74,20 @@ fn slice_utf16(text: &str, max: usize) -> String {
     String::from_utf16_lossy(&units)
 }
 
-pub fn normalize_anthropic_retry_failure(error: &RetryErrorShape, context: Option<&RetryFailureContext>) -> RetryFailure {
+pub fn normalize_anthropic_retry_failure(
+    error: &RetryErrorShape,
+    context: Option<&RetryFailureContext>,
+) -> RetryFailure {
     let message = error.message.as_str();
     let status = if error.is_error { error.status } else { None };
-    let headers = if error.is_error { error.headers.as_ref() } else { None };
-    let body_text = context.and_then(|c| c.body_text.as_deref()).unwrap_or(message);
+    let headers = if error.is_error {
+        error.headers.as_ref()
+    } else {
+        None
+    };
+    let body_text = context
+        .and_then(|c| c.body_text.as_deref())
+        .unwrap_or(message);
     let class_name = error.class_name.as_deref().filter(|_| error.is_error);
     let mut provider_codes = None;
     let kind = if error.is_error && error.name == "AbortError" {
@@ -78,14 +100,33 @@ pub fn normalize_anthropic_retry_failure(error: &RetryErrorShape, context: Optio
         RetryFailureKind::ImageFormat
     } else if let Some(status) = status {
         provider_codes = nested_provider_codes(error.error.as_ref());
-        let quota = (error.is_error && QUOTA_WORDING_PATTERN.is_match(message)) || QUOTA_WORDING_PATTERN.is_match(body_text);
-        if status == 429 && quota { RetryFailureKind::QuotaExhausted } else { RetryFailureKind::HttpStatus }
+        let quota = (error.is_error && QUOTA_WORDING_PATTERN.is_match(message))
+            || QUOTA_WORDING_PATTERN.is_match(body_text);
+        if status == 429 && quota {
+            RetryFailureKind::QuotaExhausted
+        } else {
+            RetryFailureKind::HttpStatus
+        }
     } else {
         provider_codes = nested_provider_codes(parse_leading_json(body_text).as_ref());
-        if provider_codes.is_some() { RetryFailureKind::Provider } else { RetryFailureKind::Unknown }
+        if provider_codes.is_some() {
+            RetryFailureKind::Provider
+        } else {
+            RetryFailureKind::Unknown
+        }
     };
-    let retry_after_ms = extract_429_retry_after_ms(&RetryHintInput { status, headers, body_text }, None);
-    let should_retry = match headers.and_then(|h| h.get("x-should-retry")).and_then(|v| v.to_str().ok()) {
+    let retry_after_ms = extract_429_retry_after_ms(
+        &RetryHintInput {
+            status,
+            headers,
+            body_text,
+        },
+        None,
+    );
+    let should_retry = match headers
+        .and_then(|h| h.get("x-should-retry"))
+        .and_then(|v| v.to_str().ok())
+    {
         Some("true") => Some(true),
         Some("false") => Some(false),
         _ => None,
@@ -108,17 +149,31 @@ mod tests {
     use serde_json::json;
 
     const SECRET: &str = "sk-ant-TEST-SECRET-DO-NOT-LEAK";
-    const ALLOWED_KEYS: &[&str] =
-        &["origin", "kind", "message", "statusCode", "providerCodes", "finishReason", "retryAfterMs", "shouldRetry"];
+    const ALLOWED_KEYS: &[&str] = &[
+        "origin",
+        "kind",
+        "message",
+        "statusCode",
+        "providerCodes",
+        "finishReason",
+        "retryAfterMs",
+        "shouldRetry",
+    ];
 
     fn error(message: &str) -> RetryErrorShape {
-        RetryErrorShape { is_error: true, name: "Error".into(), message: message.into(), ..Default::default() }
+        RetryErrorShape {
+            is_error: true,
+            name: "Error".into(),
+            message: message.into(),
+            ..Default::default()
+        }
     }
 
     fn headers_from(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut headers = HeaderMap::new();
         for (key, value) in pairs {
-            let name = reqwest::header::HeaderName::from_bytes(key.as_bytes()).expect("header name");
+            let name =
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()).expect("header name");
             let value = reqwest::header::HeaderValue::from_str(value).expect("header value");
             headers.insert(name, value);
         }
@@ -130,8 +185,12 @@ mod tests {
         let shaped = RetryErrorShape {
             status: Some(429),
             headers: Some(headers_from(&[("retry-after", "2")])),
-            error: Some(json!({"type": "error", "error": {"type": "error", "message": "exceeded_current_quota_error"}})),
-            ..error("exceeded_current_quota_error: You exceeded your current quota, please check your plan and billing details")
+            error: Some(
+                json!({"type": "error", "error": {"type": "error", "message": "exceeded_current_quota_error"}}),
+            ),
+            ..error(
+                "exceeded_current_quota_error: You exceeded your current quota, please check your plan and billing details",
+            )
         };
         let failure = normalize_anthropic_retry_failure(&shaped, None);
         assert_eq!(failure.kind, RetryFailureKind::QuotaExhausted);
@@ -141,13 +200,24 @@ mod tests {
 
     #[test]
     fn insufficient_balance_wording_429_maps_to_quota_exhausted() {
-        let shaped = RetryErrorShape { status: Some(429), headers: Some(HeaderMap::new()), ..error("429 This API key has an insufficient balance") };
-        assert_eq!(normalize_anthropic_retry_failure(&shaped, None).kind, RetryFailureKind::QuotaExhausted);
+        let shaped = RetryErrorShape {
+            status: Some(429),
+            headers: Some(HeaderMap::new()),
+            ..error("429 This API key has an insufficient balance")
+        };
+        assert_eq!(
+            normalize_anthropic_retry_failure(&shaped, None).kind,
+            RetryFailureKind::QuotaExhausted
+        );
     }
 
     #[test]
     fn plain_rate_limit_throttle_429_maps_to_http_status() {
-        let shaped = RetryErrorShape { status: Some(429), headers: Some(HeaderMap::new()), ..error("All tokens rate limited") };
+        let shaped = RetryErrorShape {
+            status: Some(429),
+            headers: Some(HeaderMap::new()),
+            ..error("All tokens rate limited")
+        };
         let failure = normalize_anthropic_retry_failure(&shaped, None);
         assert_eq!(failure.kind, RetryFailureKind::HttpStatus);
         assert_eq!(failure.status_code, Some(429));
@@ -155,7 +225,11 @@ mod tests {
 
     #[test]
     fn numeric_status_maps_to_http_status() {
-        let shaped = RetryErrorShape { status: Some(500), headers: Some(HeaderMap::new()), ..error("Internal server error") };
+        let shaped = RetryErrorShape {
+            status: Some(500),
+            headers: Some(HeaderMap::new()),
+            ..error("Internal server error")
+        };
         let failure = normalize_anthropic_retry_failure(&shaped, None);
         assert_eq!(failure.kind, RetryFailureKind::HttpStatus);
         assert_eq!(failure.status_code, Some(500));
@@ -173,17 +247,31 @@ mod tests {
             headers: Some(headers_from(&[("x-should-retry", "false")])),
             ..error("400 invalid")
         };
-        assert_eq!(normalize_anthropic_retry_failure(&retryable, None).should_retry, Some(true));
-        assert_eq!(normalize_anthropic_retry_failure(&terminal, None).should_retry, Some(false));
+        assert_eq!(
+            normalize_anthropic_retry_failure(&retryable, None).should_retry,
+            Some(true)
+        );
+        assert_eq!(
+            normalize_anthropic_retry_failure(&terminal, None).should_retry,
+            Some(false)
+        );
     }
 
     #[test]
     fn sse_plain_error_with_json_body_maps_to_provider_with_codes() {
-        let shaped = error(r#"{"type":"error","error":{"type":"overloaded_error","code":"custom_code","message":"Overloaded"}}"#);
+        let shaped = error(
+            r#"{"type":"error","error":{"type":"overloaded_error","code":"custom_code","message":"Overloaded"}}"#,
+        );
         let failure = normalize_anthropic_retry_failure(&shaped, None);
         assert_eq!(failure.kind, RetryFailureKind::Provider);
         assert_eq!(failure.status_code, None);
-        assert_eq!(failure.provider_codes, Some(vec!["overloaded_error".to_owned(), "custom_code".to_owned()]));
+        assert_eq!(
+            failure.provider_codes,
+            Some(vec![
+                "overloaded_error".to_owned(),
+                "custom_code".to_owned()
+            ])
+        );
     }
 
     #[test]
@@ -198,7 +286,10 @@ mod tests {
 
     #[test]
     fn api_connection_error_shaped_maps_to_connection() {
-        let shaped = RetryErrorShape { class_name: Some("APIConnectionError".into()), ..error("connection failed") };
+        let shaped = RetryErrorShape {
+            class_name: Some("APIConnectionError".into()),
+            ..error("connection failed")
+        };
         let failure = normalize_anthropic_retry_failure(&shaped, None);
         assert_eq!(failure.kind, RetryFailureKind::Connection);
         assert_eq!(failure.status_code, None);
@@ -206,24 +297,41 @@ mod tests {
 
     #[test]
     fn api_connection_timeout_error_shaped_maps_to_timeout_beats_connection() {
-        let shaped = RetryErrorShape { class_name: Some("APIConnectionTimeoutError".into()), ..error("timed out") };
-        assert_eq!(normalize_anthropic_retry_failure(&shaped, None).kind, RetryFailureKind::Timeout);
+        let shaped = RetryErrorShape {
+            class_name: Some("APIConnectionTimeoutError".into()),
+            ..error("timed out")
+        };
+        assert_eq!(
+            normalize_anthropic_retry_failure(&shaped, None).kind,
+            RetryFailureKind::Timeout
+        );
     }
 
     #[test]
     fn abort_error_maps_to_abort() {
-        let shaped = RetryErrorShape { name: "AbortError".into(), ..error("Request aborted") };
-        assert_eq!(normalize_anthropic_retry_failure(&shaped, None).kind, RetryFailureKind::Abort);
+        let shaped = RetryErrorShape {
+            name: "AbortError".into(),
+            ..error("Request aborted")
+        };
+        assert_eq!(
+            normalize_anthropic_retry_failure(&shaped, None).kind,
+            RetryFailureKind::Abort
+        );
     }
 
     #[test]
     fn narrow_image_format_rejection_maps_to_image_format() {
-        assert_eq!(normalize_anthropic_retry_failure(&error("Unsupported image format: image/bmp"), None).kind, RetryFailureKind::ImageFormat);
+        assert_eq!(
+            normalize_anthropic_retry_failure(&error("Unsupported image format: image/bmp"), None)
+                .kind,
+            RetryFailureKind::ImageFormat
+        );
     }
 
     #[test]
     fn unrecognized_plain_error_maps_to_unknown() {
-        let failure = normalize_anthropic_retry_failure(&error("something completely different"), None);
+        let failure =
+            normalize_anthropic_retry_failure(&error("something completely different"), None);
         assert_eq!(failure.kind, RetryFailureKind::Unknown);
         assert_eq!(failure.origin, "anthropic-messages");
     }
@@ -245,7 +353,11 @@ mod tests {
             ])),
             ..error("429 All tokens rate limited")
         };
-        let context = RetryFailureContext { body_text: Some(format!(r#"{{"error":{{"type":"rate_limit_error","message":"throttled for {SECRET}"}}}}"#)) };
+        let context = RetryFailureContext {
+            body_text: Some(format!(
+                r#"{{"error":{{"type":"rate_limit_error","message":"throttled for {SECRET}"}}}}"#
+            )),
+        };
 
         let failure = normalize_anthropic_retry_failure(&shaped, Some(&context));
 

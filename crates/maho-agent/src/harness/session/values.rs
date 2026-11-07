@@ -196,7 +196,10 @@ pub fn value(namespace: impl Into<String>, key: impl Into<String>) -> Result<Val
     Ok(Value { namespace, key })
 }
 
-pub fn list(namespace: impl Into<String>, key: impl Into<String>) -> Result<ValueList, AddressError> {
+pub fn list(
+    namespace: impl Into<String>,
+    key: impl Into<String>,
+) -> Result<ValueList, AddressError> {
     let namespace = namespace.into();
     let key = key.into();
     validate_address(&namespace, &key)?;
@@ -291,11 +294,17 @@ pub fn operation_state(operation_id: &str) -> Value {
 }
 
 pub fn operation_tool_args(operation_id: &str, step_id: &str, source_index: usize) -> Value {
-    bound_value("pi.op.tool_args", format!("{operation_id}:{step_id}:{source_index}"))
+    bound_value(
+        "pi.op.tool_args",
+        format!("{operation_id}:{step_id}:{source_index}"),
+    )
 }
 
 pub fn operation_tool_memo(operation_id: &str, invocation_id: &str, name: &str) -> Value {
-    bound_value("pi.op.tool_memo", format!("{operation_id}:{invocation_id}:{name}"))
+    bound_value(
+        "pi.op.tool_memo",
+        format!("{operation_id}:{invocation_id}:{name}"),
+    )
 }
 
 pub fn operation_preparation(operation_id: &str, task_id: &str) -> Value {
@@ -327,7 +336,10 @@ pub fn pending_entry(entry_id: &str) -> Value {
 }
 
 pub fn pending_tool_output(operation_id: &str, invocation_id: &str) -> Value {
-    bound_value("pi.pending.tool_output", format!("{operation_id}:{invocation_id}"))
+    bound_value(
+        "pi.pending.tool_output",
+        format!("{operation_id}:{invocation_id}"),
+    )
 }
 
 pub fn pending_assistant_frames(operation_id: &str, response_entry_id: &str) -> ValueList {

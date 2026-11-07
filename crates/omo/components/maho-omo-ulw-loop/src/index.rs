@@ -132,13 +132,14 @@ async fn status(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe(Some(plan));
         if let Some(run) = run
-            && let Err(error) = lifecycle.mark_run_completed(&run) {
-                log_warn(
-                    logger,
-                    "omo-senpi ulw-loop run completion failed",
-                    Some(serde_json::json!({"runId":run,"error":error.message})),
-                );
-            }
+            && let Err(error) = lifecycle.mark_run_completed(&run)
+        {
+            log_warn(
+                logger,
+                "omo-senpi ulw-loop run completion failed",
+                Some(serde_json::json!({"runId":run,"error":error.message})),
+            );
+        }
     }
     Some((result.stdout, status_has_active_incomplete_run(&value)))
 }
@@ -186,14 +187,23 @@ impl Extension for UlwLoopComponent {
 
                     let session_id = ctx.session_manager.session_id();
                     let loop_dir = ctx.cwd.join(".omo/ulw-loop").join(session_id);
-                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json")).and_then(|m| m.modified()).ok();
-                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions")).and_then(|m| m.modified()).ok();
+                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json"))
+                        .and_then(|m| m.modified())
+                        .ok();
+                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions"))
+                        .and_then(|m| m.modified())
+                        .ok();
                     {
-                        let mut cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        cache.insert(session_id.to_string(), MtimeCacheEntry {
-                            mtimes: (goals_mtime, revisions_mtime),
-                            active,
-                        });
+                        let mut cache = mtime_cache
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        cache.insert(
+                            session_id.to_string(),
+                            MtimeCacheEntry {
+                                mtimes: (goals_mtime, revisions_mtime),
+                                active,
+                            },
+                        );
                     }
 
                     crate::footer_status::sync_shared(&footer, ctx, active);
@@ -226,9 +236,17 @@ impl Extension for UlwLoopComponent {
                     };
 
                     // Track successful edit|write|apply_patch result for progress
-                    if matches!(e.tool_name.as_str(), "edit" | "write" | "apply_patch") && !e.is_error {
-                        let mut guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard.sessions.entry(ctx.session_manager.session_id().to_string()).or_default().turn_had_successful_edit = true;
+                    if matches!(e.tool_name.as_str(), "edit" | "write" | "apply_patch")
+                        && !e.is_error
+                    {
+                        let mut guard = state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard
+                            .sessions
+                            .entry(ctx.session_manager.session_id().to_string())
+                            .or_default()
+                            .turn_had_successful_edit = true;
                     }
 
                     if !matches!(
@@ -243,8 +261,12 @@ impl Extension for UlwLoopComponent {
                     // if both mtimes equal the last observed pair reuse the cached status.
                     let session_id = ctx.session_manager.session_id();
                     let loop_dir = ctx.cwd.join(".omo/ulw-loop").join(session_id);
-                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json")).and_then(|m| m.modified()).ok();
-                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions")).and_then(|m| m.modified()).ok();
+                    let goals_mtime = std::fs::metadata(loop_dir.join("goals.json"))
+                        .and_then(|m| m.modified())
+                        .ok();
+                    let revisions_mtime = std::fs::metadata(loop_dir.join("revisions"))
+                        .and_then(|m| m.modified())
+                        .ok();
 
                     if goals_mtime.is_none() && revisions_mtime.is_none() {
                         return Ok(EventResult::None);
@@ -252,7 +274,9 @@ impl Extension for UlwLoopComponent {
 
                     let current_pair = (goals_mtime, revisions_mtime);
                     {
-                        let cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let cache = mtime_cache
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if let Some(entry) = cache.get(session_id)
                             && entry.mtimes == current_pair
                         {
@@ -273,11 +297,16 @@ impl Extension for UlwLoopComponent {
                     .is_some_and(|(_, active)| active);
 
                     {
-                        let mut cache = mtime_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        cache.insert(session_id.to_string(), MtimeCacheEntry {
-                            mtimes: current_pair,
-                            active,
-                        });
+                        let mut cache = mtime_cache
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        cache.insert(
+                            session_id.to_string(),
+                            MtimeCacheEntry {
+                                mtimes: current_pair,
+                                active,
+                            },
+                        );
                     }
 
                     crate::footer_status::sync_shared(&footer, ctx, active);

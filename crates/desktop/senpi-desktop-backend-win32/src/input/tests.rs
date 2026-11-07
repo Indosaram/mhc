@@ -6,9 +6,9 @@ use senpi_desktop_core::keys::KeyName;
 
 use super::held::{Held, HeldButton, HeldKey, Route};
 use super::keys::{
-    Stroke, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_F1, VK_LWIN, VK_MENU, VK_SHIFT, WM_KEYDOWN,
-    WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, chord_virtual_keys, key_message, modifier_virtual_keys,
-    named_virtual_key,
+    chord_virtual_keys, key_message, modifier_virtual_keys, named_virtual_key, Stroke, VK_CONTROL,
+    VK_DELETE, VK_ESCAPE, VK_F1, VK_LWIN, VK_MENU, VK_SHIFT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+    WM_SYSKEYUP,
 };
 use super::messages::{
     absolute_coordinate, button_messages, modifier_flags, packed_point, scroll_steps, wheel_wparam,

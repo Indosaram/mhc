@@ -314,14 +314,23 @@ mod tests {
         status.bind("s", &update(0, 0));
         for (revision, count) in [(1, 1), (2, 2), (3, 1)] {
             status.accept(&update(revision, count));
-            assert_eq!(status.snapshot.as_ref().expect("snapshot")["activity"]["outstanding"], count);
+            assert_eq!(
+                status.snapshot.as_ref().expect("snapshot")["activity"]["outstanding"],
+                count
+            );
         }
         let current = status.snapshot.clone();
         let mut older_seq = update(900, 99);
         older_seq["seq"] = json!(99);
         let mut foreign = update(900, 99);
         foreign["activityRevision"]["instanceId"] = json!("foreign");
-        for stale in [update(3, 99), update(2, 99), older_seq, foreign, lifecycle(100, "done")] {
+        for stale in [
+            update(3, 99),
+            update(2, 99),
+            older_seq,
+            foreign,
+            lifecycle(100, "done"),
+        ] {
             status.accept(&stale);
             assert_eq!(status.snapshot, current);
         }
@@ -350,9 +359,19 @@ mod tests {
         status.bind("s", &update("owner", 1));
         assert_eq!(status.activity_revision, 5);
         let mut replacement = update("replacement", 0);
-        replacement.as_object_mut().expect("snapshot object").remove("activity");
+        replacement
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("activity");
         status.bind("s", &replacement);
-        assert!(status.snapshot.as_ref().expect("snapshot").get("activity").is_none());
+        assert!(
+            status
+                .snapshot
+                .as_ref()
+                .expect("snapshot")
+                .get("activity")
+                .is_none()
+        );
         status.accept(&update("replacement", 1));
         let current = status.snapshot.clone();
         status.accept(&update("owner", 900));

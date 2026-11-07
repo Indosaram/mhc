@@ -78,7 +78,10 @@ pub(crate) fn load_entries_from_file_with_identity_prepared(
         return (Vec::new(), None);
     };
     let Ok(identity_handle) = file.try_clone() else {
-        return (accept_session_entries(read_raw_entries_prepared(file, prepare)), None);
+        return (
+            accept_session_entries(read_raw_entries_prepared(file, prepare)),
+            None,
+        );
     };
     let entries = read_raw_entries_prepared(file, prepare);
     let identity = capture_and_close_file_identity(identity_handle, &resolved);

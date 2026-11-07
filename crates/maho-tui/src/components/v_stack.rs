@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::stack::{allocate_stack_sizes, visible_stack_entries, Stack, StackChild, StackEntryOptions, StackOptions};
+use super::stack::{
+    Stack, StackChild, StackEntryOptions, StackOptions, allocate_stack_sizes, visible_stack_entries,
+};
 use crate::layout_node::{LayoutNode, LayoutViewport, StackDirection, StackLayoutNode};
 use crate::tui::{Component, Container, TuiMouseEvent, TuiMouseEventResult};
 

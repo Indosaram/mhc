@@ -245,7 +245,8 @@ async fn summary_request_drops_conversation_bound_thinking_blocks() {
         let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
         response.stop_reason = maho_ai::types::StopReason::Stop;
         response.error_message = None;
-        response.content = serde_json::from_value(json!([{"type":"text","text":"summary"}])).unwrap();
+        response.content =
+            serde_json::from_value(json!([{"type":"text","text":"summary"}])).unwrap();
         stream.push(maho_ai::types::AssistantMessageEvent::Done {
             reason: maho_ai::types::DoneReason::Stop,
             message: response,

@@ -568,10 +568,12 @@ mod tests {
             consecutive_length_recoveries: BTreeMap::from([("g".into(), 2), ("other".into(), 1)]),
             ..Default::default()
         };
-        let message =
-            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
-                maho_ai::providers::faux::faux_assistant_message("done", Default::default()),
-            )));
+        let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
+            std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
+                "done",
+                Default::default(),
+            )),
+        ));
         monitor.reset_length_recovery_after_clean_stop(None, std::slice::from_ref(&message));
         assert_eq!(monitor.consecutive_length_recoveries["g"], 2);
         monitor.reset_length_recovery_after_clean_stop(Some(&goal), &[]);

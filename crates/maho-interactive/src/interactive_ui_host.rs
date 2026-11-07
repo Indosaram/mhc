@@ -30,14 +30,17 @@ impl ReadonlyFooterDataProvider for InteractiveFooterData {
         self.provider.git_branch()
     }
     fn get_extension_statuses(&self) -> BTreeMap<String, String> {
-        let mut statuses = self.ui
+        let mut statuses = self
+            .ui
             .statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(text) = crate::components::footer::background_task_text(&statuses, 0) {
             for key in ["omo-task", "omo-dag"] {
-                if statuses.get(key).is_some_and(|value| serde_json::from_str::<maho_ext_api::BackgroundTaskStatus>(value).is_ok()) {
+                if statuses.get(key).is_some_and(|value| {
+                    serde_json::from_str::<maho_ext_api::BackgroundTaskStatus>(value).is_ok()
+                }) {
                     statuses.remove(key);
                 }
             }

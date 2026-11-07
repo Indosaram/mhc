@@ -17,25 +17,43 @@ fn call() -> ToolCall {
 #[test]
 fn nested_records_survive_result_materialization_and_persistence() {
     use maho_agent::harness::execution::tools::{FinalizedToolCall, create_tool_result_message};
-    use maho_ai::types::{NestedToolCallRecord, NestedToolCalls, NestedToolCallStatus, ToolResultMessage};
+    use maho_ai::types::{
+        NestedToolCallRecord, NestedToolCallStatus, NestedToolCalls, ToolResultMessage,
+    };
     let nested_calls = Some(NestedToolCalls {
         calls: vec![NestedToolCallRecord {
-            id: "call/1".into(), name: "read".into(), arguments: Some(serde_json::Map::new()),
-            arguments_bytes: None, status: NestedToolCallStatus::Ok, duration_ms: Some(1), error: None,
+            id: "call/1".into(),
+            name: "read".into(),
+            arguments: Some(serde_json::Map::new()),
+            arguments_bytes: None,
+            status: NestedToolCallStatus::Ok,
+            duration_ms: Some(1),
+            error: None,
         }],
         complete: true,
     });
     let mut result = AgentToolResult::text("done");
     result.nested_calls = nested_calls.clone();
-    let finalized = FinalizedToolCall { tool_call: call(), result, is_error: false, terminate: false };
+    let finalized = FinalizedToolCall {
+        tool_call: call(),
+        result,
+        is_error: false,
+        terminate: false,
+    };
     let message = create_tool_result_message(&finalized);
     assert_eq!(message.nested_calls, nested_calls);
     let persisted = serde_json::to_value(&message).expect("serialize message");
     let restored: ToolResultMessage = serde_json::from_value(persisted).expect("restore message");
     assert_eq!(restored.nested_calls, nested_calls);
-    let checkpoint = maho_agent::harness::execution::tools::tool_result_from_message(&restored, false);
+    let checkpoint =
+        maho_agent::harness::execution::tools::tool_result_from_message(&restored, false);
     assert_eq!(checkpoint.nested_calls, nested_calls);
-    assert_eq!(interrupted_outcome(call(), Some(&checkpoint), 10).message.nested_calls, nested_calls);
+    assert_eq!(
+        interrupted_outcome(call(), Some(&checkpoint), 10)
+            .message
+            .nested_calls,
+        nested_calls
+    );
 }
 
 #[test]
@@ -193,21 +211,84 @@ async fn publishes_intent_before_effect_and_persists_arguments() {
 #[tokio::test]
 async fn replay_clears_old_checkpoint_and_returns_persisted_arguments() {
     use maho_agent::harness::context::BACKGROUND_CONTEXT;
-    use maho_agent::harness::session::types::{Control, Session, ToolCall as DurableCall, ToolCallReplay, Write};
+    use maho_agent::harness::session::types::{
+        Control, Session, ToolCall as DurableCall, ToolCallReplay, Write,
+    };
     use maho_agent::harness::session::values::{pending_tool_output, set_value};
     let lane = lane(Control::Running);
-    let pending = DurableCall::EffectPending { source_index: 0, result_entry_id: "result".into(), replay: ToolCallReplay::Safe };
-    publish_tool_intent(&lane, pending.clone(), &call(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, false, &BACKGROUND_CONTEXT).await.unwrap();
-    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), structured_content: None, usage: None, nested_calls: None, added_tool_names: None, terminate: None, is_error: None };
-    let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();
-    mutation.commit(vec![Write::Value(set_value(&pending_tool_output("op", "result"), serde_json::to_value(&checkpoint).unwrap()))], &BACKGROUND_CONTEXT).await.unwrap();
+    let pending = DurableCall::EffectPending {
+        source_index: 0,
+        result_entry_id: "result".into(),
+        replay: ToolCallReplay::Safe,
+    };
+    publish_tool_intent(
+        &lane,
+        pending.clone(),
+        &call(),
+        serde_json::json!({"path":"saved"}),
+        ToolCallReplay::Safe,
+        false,
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .unwrap();
+    let checkpoint = maho_agent::types::AgentToolResult {
+        content: vec![maho_ai::types::ContentBlock::text("durable")],
+        details: serde_json::json!({"offset":2}),
+        structured_content: None,
+        usage: None,
+        nested_calls: None,
+        added_tool_names: None,
+        terminate: None,
+        is_error: None,
+    };
+    let mutation = lane
+        .session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    mutation
+        .commit(
+            vec![Write::Value(set_value(
+                &pending_tool_output("op", "result"),
+                serde_json::to_value(&checkpoint).unwrap(),
+            ))],
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap();
     mutation.end(&BACKGROUND_CONTEXT).await;
-    let drive = maho_agent::harness::runtime::types::Drive::new(&maho_agent::harness::agent_harness::DriveOptions { operation_id: "op".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
-    assert_eq!(read_checkpoint(&lane, &drive, &pending).await.unwrap().unwrap().details, checkpoint.details);
-    let maho_agent::harness::session::types::OperationState::Tools(run) = lane.state().operation.unwrap().state else { panic!("tools"); };
-    let arguments = clear_replay_checkpoint(&lane, &drive, &run.batch, &pending, &call()).await.unwrap();
+    let drive = maho_agent::harness::runtime::types::Drive::new(
+        &maho_agent::harness::agent_harness::DriveOptions {
+            operation_id: "op".into(),
+            wait_for_retry: None,
+            poll_deferred: None,
+        },
+        &BACKGROUND_CONTEXT,
+    );
+    assert_eq!(
+        read_checkpoint(&lane, &drive, &pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .details,
+        checkpoint.details
+    );
+    let maho_agent::harness::session::types::OperationState::Tools(run) =
+        lane.state().operation.unwrap().state
+    else {
+        panic!("tools");
+    };
+    let arguments = clear_replay_checkpoint(&lane, &drive, &run.batch, &pending, &call())
+        .await
+        .unwrap();
     assert_eq!(arguments, serde_json::json!({"path":"saved"}));
-    assert!(read_checkpoint(&lane, &drive, &pending).await.unwrap().is_none());
+    assert!(
+        read_checkpoint(&lane, &drive, &pending)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -330,18 +411,26 @@ async fn settling_planned_call_emits_tool_start_with_args_then_tool_end_with_res
     let mut subscriptions = Vec::new();
     for kind in ["tool_start", "tool_end"] {
         let sender = sender.clone();
-        subscriptions.push(lane.events.on(kind, Arc::new(move |event, _| {
-            let _ = sender.send(event);
-            Box::pin(async {})
-        })));
+        subscriptions.push(lane.events.on(
+            kind,
+            Arc::new(move |event, _| {
+                let _ = sender.send(event);
+                Box::pin(async {})
+            }),
+        ));
     }
     let mut tool_call = call();
-    tool_call.arguments.insert("path".into(), serde_json::json!("a.txt"));
+    tool_call
+        .arguments
+        .insert("path".into(), serde_json::json!("a.txt"));
     let outcome = truncated_outcome(tool_call, 10);
     let expected_content = outcome.message.content.clone();
     publish_tool_outcome(
         &lane,
-        DurableCall::Planned { source_index: 0, result_entry_id: "result".into() },
+        DurableCall::Planned {
+            source_index: 0,
+            result_entry_id: "result".into(),
+        },
         outcome,
         false,
         &BACKGROUND_CONTEXT,
@@ -349,12 +438,31 @@ async fn settling_planned_call_emits_tool_start_with_args_then_tool_end_with_res
     .await
     .unwrap();
     let timeout = std::time::Duration::from_secs(5);
-    let start = tokio::time::timeout(timeout, receiver.recv()).await.unwrap().unwrap();
-    let HarnessEventPayload::ToolStart { tool_call_id, args, .. } = start.payload else { panic!("expected tool_start, got {:?}", start.payload) };
+    let start = tokio::time::timeout(timeout, receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let HarnessEventPayload::ToolStart {
+        tool_call_id, args, ..
+    } = start.payload
+    else {
+        panic!("expected tool_start, got {:?}", start.payload)
+    };
     assert_eq!(tool_call_id, "call");
     assert_eq!(args, serde_json::json!({"path": "a.txt"}));
-    let end = tokio::time::timeout(timeout, receiver.recv()).await.unwrap().unwrap();
-    let HarnessEventPayload::ToolEnd { result, is_error, terminate, .. } = end.payload else { panic!("expected tool_end, got {:?}", end.payload) };
+    let end = tokio::time::timeout(timeout, receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let HarnessEventPayload::ToolEnd {
+        result,
+        is_error,
+        terminate,
+        ..
+    } = end.payload
+    else {
+        panic!("expected tool_end, got {:?}", end.payload)
+    };
     assert_eq!(result.content, expected_content);
     assert!(is_error);
     assert!(!terminate);

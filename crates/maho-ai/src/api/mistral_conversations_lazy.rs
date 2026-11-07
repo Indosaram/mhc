@@ -2,14 +2,22 @@
 
 use std::sync::Arc;
 
-use crate::api::lazy::{lazy_api, LazyApiCapabilities};
+use crate::api::lazy::{LazyApiCapabilities, lazy_api};
 use crate::api::mistral_conversations;
-use crate::types::{AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions,
+    StreamOptions,
+};
 
 struct MistralConversationsModule;
 
 impl ProviderStreams for MistralConversationsModule {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         mistral_conversations::stream(model, context, options)
     }
 
@@ -37,8 +45,9 @@ mod tests {
     #[tokio::test]
     async fn lazy_wrapper_forwards_to_the_concrete_module() {
         let api = mistral_conversations_api();
-        let mut model =
-            crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
         model.provider = "mistral".into();
         model.api = "mistral-conversations".into();
         let stream = api.stream(&model, &Context::default(), None);
@@ -46,6 +55,9 @@ mod tests {
             .await
             .expect("bounded wait")
             .expect("result");
-        assert_eq!(message.error_message.as_deref(), Some("No API key for provider: mistral"));
+        assert_eq!(
+            message.error_message.as_deref(),
+            Some("No API key for provider: mistral")
+        );
     }
 }

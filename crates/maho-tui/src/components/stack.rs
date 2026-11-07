@@ -48,7 +48,9 @@ impl Stack {
         };
         for child in children {
             match child {
-                StackChild::Component(component) => stack.add_child(component, StackEntryOptions::default()),
+                StackChild::Component(component) => {
+                    stack.add_child(component, StackEntryOptions::default())
+                }
                 StackChild::Entry { component, options } => stack.add_child(component, options),
             }
         }
@@ -90,7 +92,10 @@ impl Component for Stack {
         self.container.render(width)
     }
 
-    fn handle_mouse(&mut self, event: &crate::tui::TuiMouseEvent) -> Option<crate::tui::TuiMouseEventResult> {
+    fn handle_mouse(
+        &mut self,
+        event: &crate::tui::TuiMouseEvent,
+    ) -> Option<crate::tui::TuiMouseEventResult> {
         self.container.handle_mouse(event)
     }
 
@@ -112,10 +117,18 @@ impl Component for Stack {
 }
 
 /// senpi's `visibleStackEntries`.
-pub fn visible_stack_entries(entries: &[StackLayoutEntry], viewport: LayoutViewport) -> Vec<StackLayoutEntry> {
+pub fn visible_stack_entries(
+    entries: &[StackLayoutEntry],
+    viewport: LayoutViewport,
+) -> Vec<StackLayoutEntry> {
     entries
         .iter()
-        .filter(|entry| entry.visible.as_ref().is_none_or(|visible| visible(viewport)))
+        .filter(|entry| {
+            entry
+                .visible
+                .as_ref()
+                .is_none_or(|visible| visible(viewport))
+        })
         .cloned()
         .collect()
 }
@@ -133,7 +146,8 @@ fn distribute(sizes: &mut [usize], entries: &[StackLayoutEntry], amount: usize, 
             .filter(|&index| {
                 let entry = &entries[index];
                 if grow {
-                    entry.grow.unwrap_or(0) > 0 && sizes[index] < entry.max_size.unwrap_or(usize::MAX)
+                    entry.grow.unwrap_or(0) > 0
+                        && sizes[index] < entry.max_size.unwrap_or(usize::MAX)
                 } else {
                     entry.shrink.unwrap_or(1) > 0 && sizes[index] > entry.min_size.unwrap_or(0)
                 }
@@ -165,9 +179,14 @@ fn distribute(sizes: &mut [usize], entries: &[StackLayoutEntry], amount: usize, 
             } else {
                 entry.shrink.unwrap_or(1) as f64 * (sizes[index].max(1) as f64)
             };
-            let proposed = ((remaining as f64 * weight) / total_weight).floor().max(1.0) as usize;
+            let proposed = ((remaining as f64 * weight) / total_weight)
+                .floor()
+                .max(1.0) as usize;
             let capacity = if grow {
-                entry.max_size.unwrap_or(usize::MAX).saturating_sub(sizes[index])
+                entry
+                    .max_size
+                    .unwrap_or(usize::MAX)
+                    .saturating_sub(sizes[index])
             } else {
                 sizes[index].saturating_sub(entry.min_size.unwrap_or(0))
             };
@@ -175,7 +194,11 @@ fn distribute(sizes: &mut [usize], entries: &[StackLayoutEntry], amount: usize, 
             if delta == 0 {
                 continue;
             }
-            sizes[index] = if grow { sizes[index] + delta } else { sizes[index] - delta };
+            sizes[index] = if grow {
+                sizes[index] + delta
+            } else {
+                sizes[index] - delta
+            };
             remaining -= delta;
             distributed += delta;
         }

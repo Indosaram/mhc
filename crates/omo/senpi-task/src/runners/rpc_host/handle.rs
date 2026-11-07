@@ -306,11 +306,18 @@ impl HostSessionHandle {
         self.liveness_step_at(now_ms())
     }
     pub(crate) fn liveness_step_at(&self, now: i64) -> Result<(), HostError> {
-        self.liveness_step_with_deadline(now, std::time::Duration::from_millis(
-            crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
-        ))
+        self.liveness_step_with_deadline(
+            now,
+            std::time::Duration::from_millis(
+                crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
+            ),
+        )
     }
-    pub(crate) fn liveness_step_with_deadline(&self, now: i64, deadline: std::time::Duration) -> Result<(), HostError> {
+    pub(crate) fn liveness_step_with_deadline(
+        &self,
+        now: i64,
+        deadline: std::time::Duration,
+    ) -> Result<(), HostError> {
         use super::handle_heartbeat::HeartbeatStep;
         use super::session_wire::is_host_session_missing;
         if self.stopped() {
@@ -612,19 +619,26 @@ impl ManagedChildHandle for HostSessionHandle {
         self.listeners.on_event(listener)
     }
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        if self.forced_outcome.lock().expect("hosted child state lock poisoned").is_none()
+        if self
+            .forced_outcome
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .is_none()
             && matches!(
-            self.liveness.status(),
-            crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
-        ) {
+                self.liveness.status(),
+                crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
+            )
+        {
             let (generation, changed) = &*self.outcome_changed;
-            let mut generation = generation
-                .lock()
-                .expect("outcome generation lock poisoned");
+            let mut generation = generation.lock().expect("outcome generation lock poisoned");
             let observed = *generation;
             while observed == *generation
                 && !self.stopped()
-                && self.forced_outcome.lock().expect("hosted child state lock poisoned").is_none()
+                && self
+                    .forced_outcome
+                    .lock()
+                    .expect("hosted child state lock poisoned")
+                    .is_none()
                 && matches!(
                     self.liveness.status(),
                     crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
@@ -635,12 +649,22 @@ impl ManagedChildHandle for HostSessionHandle {
                     .expect("outcome generation lock poisoned");
             }
         }
-        let forced = self.forced_outcome
+        let forced = self
+            .forced_outcome
             .lock()
             .expect("hosted child state lock poisoned")
             .clone();
-        let outcome = forced.unwrap_or_else(|| self.current_port().wait_for_outcome().unwrap_or_else(|| (self.outcome)()));
-        let outcome = self.forced_outcome.lock().expect("hosted child state lock poisoned").clone().unwrap_or(outcome);
+        let outcome = forced.unwrap_or_else(|| {
+            self.current_port()
+                .wait_for_outcome()
+                .unwrap_or_else(|| (self.outcome)())
+        });
+        let outcome = self
+            .forced_outcome
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clone()
+            .unwrap_or(outcome);
         self.settled
             .store(true, std::sync::atomic::Ordering::Release);
         outcome

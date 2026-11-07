@@ -4,7 +4,7 @@
 //! Nothing here posts events; it only hands back atomically resolved,
 //! exact-signature function pointers (see the per-field types).
 
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::mem;
 use std::sync::LazyLock;
 

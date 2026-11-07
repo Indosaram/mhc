@@ -1,4 +1,4 @@
-use isolation_core::{resolve_candidates, BackendKind, IsolationError};
+use isolation_core::{BackendKind, IsolationError, resolve_candidates};
 
 fn kinds(platform: &str) -> Vec<BackendKind> {
     resolve_candidates(platform, None).candidates

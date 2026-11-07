@@ -22,7 +22,10 @@ fn canonical_path(path: &Path) -> Result<String, SessionError> {
 }
 
 /// senpi repo.ts `repositoryPathForMetadata`: writable metadata must name this repository's own database file.
-fn repository_path_for_metadata(expected: &Path, metadata: &SessionMetadata) -> Result<String, SessionError> {
+fn repository_path_for_metadata(
+    expected: &Path,
+    metadata: &SessionMetadata,
+) -> Result<String, SessionError> {
     let expected = canonical_path(expected)?;
     let Some(path) = &metadata.path else {
         return Ok(expected);
@@ -57,7 +60,7 @@ pub struct SqliteSessionRepo {
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     sessions: Arc<Mutex<BTreeMap<String, Arc<StorageBackedSession>>>>,
     facades: Arc<Mutex<BTreeMap<String, Arc<MemorySessionFacade>>>>,
-    storages: Arc<Mutex<BTreeMap<String,Arc<SqliteStorage>>>>,
+    storages: Arc<Mutex<BTreeMap<String, Arc<SqliteStorage>>>>,
     closed: AtomicBool,
 }
 impl SqliteSessionRepo {
@@ -147,7 +150,10 @@ impl SqliteSessionRepo {
         let facade_tracking_on_facade_close = facade_tracking.clone();
         let storage_tracking_on_facade_close = storage_tracking.clone();
         let close_id_on_facade_close = close_id.clone();
-        self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
+        self.storages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.clone(), storage.clone());
         let session_tracking = Arc::downgrade(&self.sessions);
         let storage_for_session_close = storage.clone();
         let storage_for_facade_close = storage.clone();
@@ -162,8 +168,18 @@ impl SqliteSessionRepo {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .remove(&session_close_id);
                     }
-                    if let Some(tracking)=facade_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
-                    if let Some(tracking)=storage_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
+                    if let Some(tracking) = facade_tracking_on_session_close.upgrade() {
+                        tracking
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&close_id_on_session_close);
+                    }
+                    if let Some(tracking) = storage_tracking_on_session_close.upgrade() {
+                        tracking
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&close_id_on_session_close);
+                    }
                     storage_for_session_close.close_sync();
                 })),
                 ..Default::default()
@@ -171,20 +187,35 @@ impl SqliteSessionRepo {
         ));
         session.attach();
         sessions.insert(session.metadata().id.clone(), session.clone());
-        let facade = Arc::new(MemorySessionFacade::new(session.clone(), Arc::new(move || {
-            if let Some(tracking) = session_tracking.upgrade() {
-                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&facade_close_id);
-            }
-            if let Some(tracking) = facade_tracking_on_facade_close.upgrade() {
-                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_facade_close);
-            }
-            if let Some(tracking) = storage_tracking_on_facade_close.upgrade() {
-                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_facade_close);
-            }
-            storage_for_facade_close.close_sync();
-        })));
+        let facade = Arc::new(MemorySessionFacade::new(
+            session.clone(),
+            Arc::new(move || {
+                if let Some(tracking) = session_tracking.upgrade() {
+                    tracking
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&facade_close_id);
+                }
+                if let Some(tracking) = facade_tracking_on_facade_close.upgrade() {
+                    tracking
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&close_id_on_facade_close);
+                }
+                if let Some(tracking) = storage_tracking_on_facade_close.upgrade() {
+                    tracking
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&close_id_on_facade_close);
+                }
+                storage_for_facade_close.close_sync();
+            }),
+        ));
         facade.attach();
-        self.facades.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, facade.clone());
+        self.facades
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, facade.clone());
         Box::new(facade)
     }
     fn writable(path: &Path, create: bool) -> Result<rusqlite::Connection, SessionError> {
@@ -335,17 +366,25 @@ impl SessionRepo for SqliteSessionRepo {
             };
             let mut metadata = Vec::new();
             for path in paths {
-                let discovered=||->Result<Vec<SessionMetadata>,SessionError> {
-                    let canonical=canonical_path(&path)?;
-                    let db=super::open_read_only(Path::new(&canonical)).map_err(error)?;
-                    db.execute_batch("PRAGMA busy_timeout=5000;").map_err(error)?;
-                    session_row::read_all_sessions(&db).map_err(error)?.into_iter().map(|row|session_row::metadata_from_row(&canonical,row,SQLITE_STORAGE_VERSION).map_err(error)).collect()
+                let discovered = || -> Result<Vec<SessionMetadata>, SessionError> {
+                    let canonical = canonical_path(&path)?;
+                    let db = super::open_read_only(Path::new(&canonical)).map_err(error)?;
+                    db.execute_batch("PRAGMA busy_timeout=5000;")
+                        .map_err(error)?;
+                    session_row::read_all_sessions(&db)
+                        .map_err(error)?
+                        .into_iter()
+                        .map(|row| {
+                            session_row::metadata_from_row(&canonical, row, SQLITE_STORAGE_VERSION)
+                                .map_err(error)
+                        })
+                        .collect()
                 };
-                if let Ok(sessions)=discovered() {
+                if let Ok(sessions) = discovered() {
                     metadata.extend(sessions);
                 }
             }
-            metadata.sort_by_key(|session|std::cmp::Reverse(session.created_at));
+            metadata.sort_by_key(|session| std::cmp::Reverse(session.created_at));
             Ok(metadata)
         })
     }
@@ -363,7 +402,10 @@ impl SessionRepo for SqliteSessionRepo {
                     metadata.id
                 )));
             }
-            let path = PathBuf::from(repository_path_for_metadata(&self.path(&metadata.id), &metadata)?);
+            let path = PathBuf::from(repository_path_for_metadata(
+                &self.path(&metadata.id),
+                &metadata,
+            )?);
             let mut db = Self::writable(&path, false)?;
             session_row::metadata_from_row(
                 &path.to_string_lossy(),
@@ -413,12 +455,16 @@ impl SessionRepo for SqliteSessionRepo {
                 None => true,
             };
             let active = if same_identity {
-                self.storages.lock().map_err(error)?.get(&source.id).cloned()
+                self.storages
+                    .lock()
+                    .map_err(error)?
+                    .get(&source.id)
+                    .cloned()
             } else {
                 None
             };
-            let snapshot = if let Some(storage)=active {
-                create_fork_snapshot(storage.snapshot(&options)?,&options)?
+            let snapshot = if let Some(storage) = active {
+                create_fork_snapshot(storage.snapshot(&options)?, &options)?
             } else {
                 let source_path = match &source.path {
                     Some(path) => canonical_path(Path::new(path))?,
@@ -441,20 +487,45 @@ impl SessionRepo for SqliteSessionRepo {
                 snapshot
             };
             let mut sessions = self.sessions.lock().map_err(error)?;
-            let id = options.id().map(str::to_owned).unwrap_or_else(||uuid::Uuid::now_v7().to_string());
-            if sessions.contains_key(&id) {return Err(session_invariant_error(format!("Session is already open: {id}")));}
+            let id = options
+                .id()
+                .map(str::to_owned)
+                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+            if sessions.contains_key(&id) {
+                return Err(session_invariant_error(format!(
+                    "Session is already open: {id}"
+                )));
+            }
             let path = self.path(&id);
-            std::fs::create_dir_all(path.parent().ok_or_else(||error("Missing database parent"))?).map_err(error)?;
+            std::fs::create_dir_all(
+                path.parent()
+                    .ok_or_else(|| error("Missing database parent"))?,
+            )
+            .map_err(error)?;
             let reserved = self.database_path.is_none();
-            if reserved {std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(error)?;}
-            let initialize = || -> Result<_,SessionError> {
+            if reserved {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(error)?;
+            }
+            let initialize = || -> Result<_, SessionError> {
                 let mut db = Self::writable(&path, true)?;
                 super::apply_initial_schema(&db).map_err(error)?;
-                let metadata = SessionMetadata {id:id.clone(),created_at:(self.now)(),storage_version:SQLITE_STORAGE_VERSION,parent_session_id:Some(source.id),cwd:None,legacy_parent_session_path:None,path:Some(canonical_path(&path)?)};
+                let metadata = SessionMetadata {
+                    id: id.clone(),
+                    created_at: (self.now)(),
+                    storage_version: SQLITE_STORAGE_VERSION,
+                    parent_session_id: Some(source.id),
+                    cwd: None,
+                    legacy_parent_session_path: None,
+                    path: Some(canonical_path(&path)?),
+                };
                 let tx = db
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(error)?;
-                session_row::insert_session(&tx,&metadata,snapshot.next_seq).map_err(error)?;
+                session_row::insert_session(&tx, &metadata, snapshot.next_seq).map_err(error)?;
                 let mut copied = snapshot.entries.into_values().collect::<Vec<_>>();
                 copied.sort_by_key(|e| e.seq);
                 let messages = copied
@@ -486,22 +557,26 @@ impl SessionRepo for SqliteSessionRepo {
                 )
                 .map_err(error)?;
                 tx.commit().map_err(error)?;
-                Ok((metadata,db))
+                Ok((metadata, db))
             };
             match initialize() {
-                Ok((metadata,db))=>Ok(self.session(metadata,db,&mut sessions)),
-                Err(failure)=>{
+                Ok((metadata, db)) => Ok(self.session(metadata, db, &mut sessions)),
+                Err(failure) => {
                     if reserved {
                         for suffix in ["", "-wal", "-shm"] {
-                            match std::fs::remove_file(format!("{}{suffix}",path.display())) {
-                                Ok(())=>{},
-                                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound=>{},
-                                Err(cleanup)=>return Err(error(format!("{failure}; failed fork cleanup: {cleanup}"))),
+                            match std::fs::remove_file(format!("{}{suffix}", path.display())) {
+                                Ok(()) => {}
+                                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(cleanup) => {
+                                    return Err(error(format!(
+                                        "{failure}; failed fork cleanup: {cleanup}"
+                                    )));
+                                }
                             }
                         }
                     }
                     Err(failure)
-                },
+                }
             }
         })
     }

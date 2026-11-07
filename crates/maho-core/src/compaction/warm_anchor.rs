@@ -25,23 +25,31 @@ pub fn latest_compaction_entry_id(entries: &[Value]) -> Option<String> {
 }
 
 /// `createWarmAnchorSnapshot`.
-pub fn create_warm_anchor_snapshot(first_kept_entry_id: &str, branch_entries: &[Value]) -> Option<WarmAnchorSnapshot> {
+pub fn create_warm_anchor_snapshot(
+    first_kept_entry_id: &str,
+    branch_entries: &[Value],
+) -> Option<WarmAnchorSnapshot> {
     let anchor_index = branch_entries
         .iter()
         .position(|entry| entry_id(entry).as_deref() == Some(first_kept_entry_id))?;
     Some(WarmAnchorSnapshot {
         first_kept_entry_id: first_kept_entry_id.to_string(),
-        prefix_entry_ids: branch_entries[..anchor_index].iter().filter_map(entry_id).collect(),
+        prefix_entry_ids: branch_entries[..anchor_index]
+            .iter()
+            .filter_map(entry_id)
+            .collect(),
         latest_compaction_entry_id: latest_compaction_entry_id(branch_entries),
     })
 }
 
 /// `isWarmSummaryAnchorValid`.
-pub fn is_warm_summary_anchor_valid(snapshot: &WarmAnchorSnapshot, current_branch_entries: &[Value]) -> bool {
-    let Some(anchor_index) = current_branch_entries
-        .iter()
-        .position(|entry| entry_id(entry).as_deref() == Some(snapshot.first_kept_entry_id.as_str()))
-    else {
+pub fn is_warm_summary_anchor_valid(
+    snapshot: &WarmAnchorSnapshot,
+    current_branch_entries: &[Value],
+) -> bool {
+    let Some(anchor_index) = current_branch_entries.iter().position(|entry| {
+        entry_id(entry).as_deref() == Some(snapshot.first_kept_entry_id.as_str())
+    }) else {
         return false;
     };
     if latest_compaction_entry_id(current_branch_entries) != snapshot.latest_compaction_entry_id {
@@ -78,10 +86,17 @@ mod tests {
 
     #[test]
     fn the_snapshot_records_the_prefix_and_the_latest_compaction() {
-        let entries = vec![entry("a", "message"), entry("c1", "compaction"), entry("b", "message")];
+        let entries = vec![
+            entry("a", "message"),
+            entry("c1", "compaction"),
+            entry("b", "message"),
+        ];
         let snapshot = create_warm_anchor_snapshot("b", &entries).expect("snapshot");
         assert_eq!(snapshot.first_kept_entry_id, "b");
-        assert_eq!(snapshot.prefix_entry_ids, vec!["a".to_string(), "c1".to_string()]);
+        assert_eq!(
+            snapshot.prefix_entry_ids,
+            vec!["a".to_string(), "c1".to_string()]
+        );
         assert_eq!(snapshot.latest_compaction_entry_id.as_deref(), Some("c1"));
     }
 
@@ -119,7 +134,11 @@ mod tests {
 
     #[test]
     fn the_latest_compaction_id_scans_backwards() {
-        let entries = vec![entry("c1", "compaction"), entry("m", "message"), entry("c2", "compaction")];
+        let entries = vec![
+            entry("c1", "compaction"),
+            entry("m", "message"),
+            entry("c2", "compaction"),
+        ];
         assert_eq!(latest_compaction_entry_id(&entries).as_deref(), Some("c2"));
         assert_eq!(latest_compaction_entry_id(&branch()), None);
     }

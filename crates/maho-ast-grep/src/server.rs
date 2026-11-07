@@ -17,7 +17,8 @@ pub const IDLE_TIMEOUT_ENV: &str = "MHC_AST_GREP_IDLE_TIMEOUT_MS";
 pub const LEGACY_IDLE_TIMEOUT_ENV: &str = "OMO_AST_GREP_IDLE_TIMEOUT_MS";
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
 /// One-line usage message for a bad command line.
-pub const USAGE: &str = "usage: mhc-ast-grep mcp  (serves the structural search tools on stdin/stdout)";
+pub const USAGE: &str =
+    "usage: mhc-ast-grep mcp  (serves the structural search tools on stdin/stdout)";
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
@@ -56,7 +57,11 @@ pub fn idle_timeout(env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
     let raw = env(IDLE_TIMEOUT_ENV)
         .filter(|value| !value.trim().is_empty())
         .or_else(|| env(LEGACY_IDLE_TIMEOUT_ENV).filter(|value| !value.trim().is_empty()));
-    let ms = match raw.as_deref().map(str::trim).and_then(|text| text.parse::<f64>().ok()) {
+    let ms = match raw
+        .as_deref()
+        .map(str::trim)
+        .and_then(|text| text.parse::<f64>().ok())
+    {
         Some(number) if number.is_finite() => number,
         _ => DEFAULT_IDLE_TIMEOUT_MS as f64,
     };
@@ -103,7 +108,8 @@ impl Server {
     ) -> ToolReply {
         let outcome = call(&self.options.context, name, arguments, abort).await;
         ToolReply {
-            text: serde_json::to_string(&outcome.value).unwrap_or_else(|_| outcome.value.to_string()),
+            text: serde_json::to_string(&outcome.value)
+                .unwrap_or_else(|_| outcome.value.to_string()),
             is_error: outcome.is_error,
         }
     }
@@ -120,7 +126,11 @@ pub async fn handle_message(server: &Server, line: &str, abort: &mut AbortSignal
         return None;
     }
     let Ok(message) = serde_json::from_str::<Value>(text) else {
-        return Some(error_reply(Value::Null, PARSE_ERROR, "Parse error: the line is not valid JSON"));
+        return Some(error_reply(
+            Value::Null,
+            PARSE_ERROR,
+            "Parse error: the line is not valid JSON",
+        ));
     };
     let Some(object) = message.as_object() else {
         return Some(error_reply(
@@ -151,7 +161,9 @@ pub async fn handle_message(server: &Server, line: &str, abort: &mut AbortSignal
             }})
         }
         "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
-        "tools/list" => json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tool_definitions() } }),
+        "tools/list" => {
+            json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tool_definitions() } })
+        }
         "tools/call" => match params.and_then(|p| p.get("name")).and_then(Value::as_str) {
             Some(name) if !name.is_empty() => {
                 let arguments = params.and_then(|p| p.get("arguments"));

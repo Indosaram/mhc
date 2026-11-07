@@ -45,15 +45,24 @@ mod tests {
     #[test]
     fn preserves_nonblank_string_segments_and_nested_paths() {
         let input = ModelFormatInput::String(" provider / model/path ".to_string());
-        assert_eq!(normalize_model_format(Some(&input)), Some(ModelFormat {
-            provider_id: " provider ".to_string(),
-            model_id: " model/path ".to_string(),
-        }));
+        assert_eq!(
+            normalize_model_format(Some(&input)),
+            Some(ModelFormat {
+                provider_id: " provider ".to_string(),
+                model_id: " model/path ".to_string(),
+            })
+        );
     }
 
     #[test]
     fn preserves_object_segments_even_when_blank() {
-        let pair = ModelFormat { provider_id: String::new(), model_id: " ".to_string() };
-        assert_eq!(normalize_model_format(Some(&ModelFormatInput::Pair(pair.clone()))), Some(pair));
+        let pair = ModelFormat {
+            provider_id: String::new(),
+            model_id: " ".to_string(),
+        };
+        assert_eq!(
+            normalize_model_format(Some(&ModelFormatInput::Pair(pair.clone()))),
+            Some(pair)
+        );
     }
 }

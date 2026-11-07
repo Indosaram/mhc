@@ -4,7 +4,10 @@ use crate::config::app_name;
 
 /// `buildIdentitySection`.
 pub fn build_identity_section() -> String {
-    format!("You are {}, a coding agent. Your work should be indistinguishable from a careful senior engineer's.", app_name())
+    format!(
+        "You are {}, a coding agent. Your work should be indistinguishable from a careful senior engineer's.",
+        app_name()
+    )
 }
 
 #[cfg(test)]

@@ -46,7 +46,9 @@ impl MemoryUserActivity {
         if !self.has(session_id) || self.has_reconciled(session_id) {
             return;
         }
-        let task = self.next_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let task = self
+            .next_task
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut in_flight = lock(&self.in_flight);
             if in_flight.contains_key(session_id) {

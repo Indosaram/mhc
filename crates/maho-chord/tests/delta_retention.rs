@@ -1,6 +1,6 @@
-use maho_chord::{delta::*, JsonValue};
-use std::result::Result;
+use maho_chord::{JsonValue, delta::*};
 use serde_json::json;
+use std::result::Result;
 use std::sync::{Arc, Weak};
 
 fn weak_rows(value: &JsonValue) -> Result<Weak<Vec<JsonValue>>, DeltaError> {
@@ -110,8 +110,8 @@ fn lifecycle_churn_leaves_authority_usable() -> Result<(), DeltaError> {
 }
 
 #[test]
-fn abort_after_prepare_and_retained_placements_keep_only_their_owned_values(
-) -> Result<(), DeltaError> {
+fn abort_after_prepare_and_retained_placements_keep_only_their_owned_values()
+-> Result<(), DeltaError> {
     let tracker = track(initial())?;
     let mut change = tracker.begin_change();
     let held = change.state()?.at(&["rows".into()])?;
@@ -128,8 +128,8 @@ fn abort_after_prepare_and_retained_placements_keep_only_their_owned_values(
 }
 
 #[test]
-fn repeated_revisions_do_not_accumulate_accessed_or_folded_overlay_ownership(
-) -> Result<(), DeltaError> {
+fn repeated_revisions_do_not_accumulate_accessed_or_folded_overlay_ownership()
+-> Result<(), DeltaError> {
     let mut tracker = track(JsonValue::object(vec![(
         "rows".into(),
         JsonValue::array(
@@ -167,7 +167,10 @@ fn repeated_revisions_do_not_accumulate_accessed_or_folded_overlay_ownership(
         let mut change = tracker.begin_change();
         let root = change.state()?;
         for index in 0..5000 {
-            root.set(Seg::Key(format!("field{index}").into()), &json!(value).into())?;
+            root.set(
+                Seg::Key(format!("field{index}").into()),
+                &json!(value).into(),
+            )?;
         }
         let prepared = change.prepare()?;
         assert!(matches!(prepared.ops(), [Op::Replace(_)]));

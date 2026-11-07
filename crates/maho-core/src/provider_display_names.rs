@@ -45,11 +45,20 @@ pub fn built_in_provider_display_names() -> &'static Map<String, Value> {
             ("zai-coding-cn", "ZAI Coding Plan (China)"),
             ("xiaomi", "Xiaomi MiMo"),
             ("xiaomi-token-plan-cn", "Xiaomi MiMo Token Plan (China)"),
-            ("xiaomi-token-plan-ams", "Xiaomi MiMo Token Plan (Amsterdam)"),
-            ("xiaomi-token-plan-sgp", "Xiaomi MiMo Token Plan (Singapore)"),
+            (
+                "xiaomi-token-plan-ams",
+                "Xiaomi MiMo Token Plan (Amsterdam)",
+            ),
+            (
+                "xiaomi-token-plan-sgp",
+                "Xiaomi MiMo Token Plan (Singapore)",
+            ),
             ("alibaba-token-plan", "Alibaba Token Plan"),
         ];
-        entries.into_iter().map(|(key, value)| (key.to_owned(), Value::String(value.to_owned()))).collect()
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), Value::String(value.to_owned())))
+            .collect()
     })
 }
 
@@ -60,9 +69,15 @@ mod tests {
     #[test]
     fn known_providers_have_display_names() {
         let names = built_in_provider_display_names();
-        assert_eq!(names.get("anthropic"), Some(&Value::String("Anthropic".into())));
+        assert_eq!(
+            names.get("anthropic"),
+            Some(&Value::String("Anthropic".into()))
+        );
         assert_eq!(names.get("openai"), Some(&Value::String("OpenAI".into())));
-        assert_eq!(names.get("xiaomi-token-plan-sgp"), Some(&Value::String("Xiaomi MiMo Token Plan (Singapore)".into())));
+        assert_eq!(
+            names.get("xiaomi-token-plan-sgp"),
+            Some(&Value::String("Xiaomi MiMo Token Plan (Singapore)".into()))
+        );
     }
 
     #[test]

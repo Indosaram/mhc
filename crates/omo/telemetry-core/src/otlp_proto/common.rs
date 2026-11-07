@@ -153,11 +153,7 @@ pub fn encode_instrumentation_scope(scope: &InstrumentationScope) -> Vec<u8> {
     for pair in &scope.attributes {
         write_message(&mut out, 3, &encode_key_value(pair));
     }
-    write_uint(
-        &mut out,
-        4,
-        u64::from(scope.dropped_attributes_count),
-    );
+    write_uint(&mut out, 4, u64::from(scope.dropped_attributes_count));
     out
 }
 
@@ -171,7 +167,8 @@ pub fn decode_instrumentation_scope(bytes: &[u8]) -> Result<InstrumentationScope
             (2, WIRE_LEN) => scope.version = reader.read_string()?,
             (3, WIRE_LEN) => scope.attributes.push(decode_key_value(reader.read_len()?)?),
             (4, WIRE_VARINT) => {
-                scope.dropped_attributes_count = u32::try_from(reader.read_varint()?).unwrap_or(u32::MAX);
+                scope.dropped_attributes_count =
+                    u32::try_from(reader.read_varint()?).unwrap_or(u32::MAX);
             }
             (_, wire) => reader.skip(wire)?,
         }

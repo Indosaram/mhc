@@ -407,26 +407,46 @@ mod tests {
         let result = prime_stream_until_content(input, |_| false, 2).await;
 
         // Then
-        let Ok(stream) = result else { panic!("events beyond the bound must not be primed"); };
-        assert_eq!(stream.collect::<Vec<_>>().await, vec![Ok(0), Ok(0), Err("later refusal")]);
+        let Ok(stream) = result else {
+            panic!("events beyond the bound must not be primed");
+        };
+        assert_eq!(
+            stream.collect::<Vec<_>>().await,
+            vec![Ok(0), Ok(0), Err("later refusal")]
+        );
     }
 
     #[tokio::test]
     async fn explicit_server_failure_is_not_reclassified_as_a_request_refusal() {
         // Given
-        let mut model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
         model.id = "forced-choice-in-band-server-status".into();
-        let params = serde_json::json!({"tool_choice":"required"}).as_object().expect("params").clone();
+        let params = serde_json::json!({"tool_choice":"required"})
+            .as_object()
+            .expect("params")
+            .clone();
         let mut calls = 0;
 
         // When
-        let result = send_with_forced_tool_choice_fallback(&model, params, true, |_| true, |_| {
-            calls += 1;
-            std::future::ready(Err::<(), _>(ForcedToolChoiceFailure {
-                failure: HttpFailure { status: Some(503), message: "tool_choice not supported".into() },
-                in_band_before_content: true,
-            }))
-        }).await;
+        let result = send_with_forced_tool_choice_fallback(
+            &model,
+            params,
+            true,
+            |_| true,
+            |_| {
+                calls += 1;
+                std::future::ready(Err::<(), _>(ForcedToolChoiceFailure {
+                    failure: HttpFailure {
+                        status: Some(503),
+                        message: "tool_choice not supported".into(),
+                    },
+                    in_band_before_content: true,
+                }))
+            },
+        )
+        .await;
 
         // Then
         assert!(matches!(result, Err(error) if error.failure.status == Some(503)));

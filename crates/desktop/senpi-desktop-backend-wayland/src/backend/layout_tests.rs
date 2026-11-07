@@ -11,13 +11,13 @@ use senpi_desktop_core::error::{DesktopError, ErrorCode};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{CaptureCaps, Target};
 
-use super::WaylandBackend;
 use super::tests::FR;
-use crate::capture::PORTAL_DISPLAY_ID;
+use super::WaylandBackend;
 use crate::capture::layout::EisRegion;
+use crate::capture::PORTAL_DISPLAY_ID;
 use crate::test_support::fake_eis::{EisConfig, FakeEis, Recorded};
-use crate::test_support::fake_portal::{Mode, Reply, Shot, fake_bus};
-use crate::test_support::{LibeiSocketEnv, env_lock};
+use crate::test_support::fake_portal::{fake_bus, Mode, Reply, Shot};
+use crate::test_support::{env_lock, LibeiSocketEnv};
 
 const HIDPI_SHOT: Shot = Shot::Png {
     width: 128,

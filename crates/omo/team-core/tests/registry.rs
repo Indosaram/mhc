@@ -15,13 +15,14 @@ use serde_json::{Value, json};
 use team_core::TeamCoreError;
 use team_core::TeamModeConfig;
 use team_core::resolve_caller_team_lead::resolve_caller_team_lead;
+use team_core::team_registry::{
+    NormalizeTeamSpecInputOptions, TeamSpecEntry, discover_team_specs_with, get_inbox_dir,
+    get_runtime_state_dir, get_tasks_dir, get_worktree_dir, load_all_team_specs, load_team_spec,
+    normalize_team_spec_input, resolve_base_dir, validate_dual_support,
+    validate_member_eligibility, validate_spec,
+};
 #[cfg(unix)]
 use team_core::team_registry::{PathDeps, ensure_base_dirs, ensure_base_dirs_with};
-use team_core::team_registry::{
-    NormalizeTeamSpecInputOptions, TeamSpecEntry, discover_team_specs_with, get_inbox_dir, get_runtime_state_dir, get_tasks_dir,
-    get_worktree_dir, load_all_team_specs, load_team_spec, normalize_team_spec_input,
-    resolve_base_dir, validate_dual_support, validate_member_eligibility, validate_spec,
-};
 use team_core::types::{Member, SpecSource, TeamSpec, agent_eligibility};
 use tempfile::TempDir;
 
@@ -910,10 +911,13 @@ fn adversarial_plan_spec(name: &str, members: Vec<Member>) -> TeamSpec {
 #[test]
 fn validator_rejects_adversarial_plan_teams_missing_adversarial_categories() {
     for name in ["adversarial-plan", "hyperplan"] {
-        let spec = adversarial_plan_spec(name, vec![
-            adversarial_plan_member("researcher", "deep"),
-            adversarial_plan_member("architect", "ultrabrain"),
-        ]);
+        let spec = adversarial_plan_spec(
+            name,
+            vec![
+                adversarial_plan_member("researcher", "deep"),
+                adversarial_plan_member("architect", "ultrabrain"),
+            ],
+        );
         assert_eq!(
             validate_spec(&spec).expect_err("missing").to_string(),
             "Adversarial-plan team must include category 'unspecified-low'."
@@ -923,12 +927,15 @@ fn validator_rejects_adversarial_plan_teams_missing_adversarial_categories() {
 
 #[test]
 fn validator_accepts_adversarial_plan_teams_with_required_categories() {
-    let spec = adversarial_plan_spec("adversarial-plan", vec![
-        adversarial_plan_member("skeptic", "unspecified-low"),
-        adversarial_plan_member("validator", "unspecified-high"),
-        adversarial_plan_member("architect", "ultrabrain"),
-        adversarial_plan_member("creative", "artistry"),
-    ]);
+    let spec = adversarial_plan_spec(
+        "adversarial-plan",
+        vec![
+            adversarial_plan_member("skeptic", "unspecified-low"),
+            adversarial_plan_member("validator", "unspecified-high"),
+            adversarial_plan_member("architect", "ultrabrain"),
+            adversarial_plan_member("creative", "artistry"),
+        ],
+    );
     validate_spec(&spec).expect("adversarial-plan valid");
 }
 

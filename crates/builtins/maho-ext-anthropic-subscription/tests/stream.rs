@@ -45,7 +45,8 @@ async fn turn_after(
     frame["user_message_uuid"] = serde_json::Value::Null;
     let script = format!(
         "#!/usr/bin/python3\nimport json,sys\nf=json.loads(sys.stdin.readline())\nassert f['request']['subtype']=='initialize'\nprint(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\nf=json.loads(sys.stdin.readline())\nassert f['message']['content'][-1]['text']=='hello'\nif f.get('uuid'):\n print(json.dumps({{'type':'user','isReplay':True,'uuid':f['uuid']}}),flush=True)\nfor p in json.loads({}): print(json.dumps(p),flush=True)\nr=json.loads({})\nr['user_message_uuid']=f.get('uuid')\nprint(json.dumps(r),flush=True)\nfor line in sys.stdin: pass\n",
-        serde_json::to_string(&serde_json::Value::from(prelude.to_vec()).to_string()).expect("literal"),
+        serde_json::to_string(&serde_json::Value::from(prelude.to_vec()).to_string())
+            .expect("literal"),
         serde_json::to_string(&frame.to_string()).expect("literal")
     );
     std::fs::write(&executable, script).expect("script");

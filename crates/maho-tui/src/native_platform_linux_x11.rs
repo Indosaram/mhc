@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropertyNotifyEvent, SelectionNotifyEvent, Window, WindowClass,
+    Atom, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, PropertyNotifyEvent,
+    SelectionNotifyEvent, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -22,8 +23,21 @@ const CLIPBOARD_TIMEOUT_MS: u64 = 2000;
 /// `clipboard-worker.h`: allow the two-second transfer deadline to report its own error first.
 const WORKER_TIMEOUT_MS: u64 = 3000;
 
-const TEXT_TYPES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain;charset=UTF-8", "UTF8_STRING", "text/plain", "STRING"];
-const IMAGE_TYPES: [&str; 6] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff"];
+const TEXT_TYPES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "text/plain;charset=UTF-8",
+    "UTF8_STRING",
+    "text/plain",
+    "STRING",
+];
+const IMAGE_TYPES: [&str; 6] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+    "image/tiff",
+];
 
 pub struct LinuxX11PlatformHelper;
 
@@ -69,11 +83,21 @@ impl X11Clipboard {
             if remaining.is_zero() {
                 return false;
             }
-            let Ok(timeout) = rustix::event::Timespec::try_from(remaining) else { return false };
+            let Ok(timeout) = rustix::event::Timespec::try_from(remaining) else {
+                return false;
+            };
             let stream = self.connection.stream();
-            let mut descriptors = [rustix::event::PollFd::new(stream, rustix::event::PollFlags::IN)];
+            let mut descriptors = [rustix::event::PollFd::new(
+                stream,
+                rustix::event::PollFlags::IN,
+            )];
             match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-                Ok(ready) => return ready > 0 && descriptors[0].revents().contains(rustix::event::PollFlags::IN),
+                Ok(ready) => {
+                    return ready > 0
+                        && descriptors[0]
+                            .revents()
+                            .contains(rustix::event::PollFlags::IN);
+                }
                 Err(rustix::io::Errno::INTR) => {}
                 Err(_) => return false,
             }
@@ -103,8 +127,19 @@ impl X11Clipboard {
 
     fn read_property(&self, remove: bool, result: &mut PropertyData) -> bool {
         let max_items = u32::try_from(MAX_CLIPBOARD_BYTES / 4).unwrap_or(u32::MAX);
-        let Ok(cookie) = self.connection.get_property(remove, self.window, self.property, AtomEnum::ANY, 0, max_items) else { return false };
-        let Ok(reply) = cookie.reply() else { return false };
+        let Ok(cookie) = self.connection.get_property(
+            remove,
+            self.window,
+            self.property,
+            AtomEnum::ANY,
+            0,
+            max_items,
+        ) else {
+            return false;
+        };
+        let Ok(reply) = cookie.reply() else {
+            return false;
+        };
         let valid_format = matches!(reply.format, 8 | 16 | 32);
         let length = u64::from(reply.value_len) * u64::from(reply.format / 8);
         if reply.bytes_after == 0
@@ -123,8 +158,20 @@ impl X11Clipboard {
 
     fn request_selection(&self, target: Atom, result: &mut PropertyData) -> bool {
         *result = PropertyData::default();
-        if self.connection.delete_property(self.window, self.property).is_err()
-            || self.connection.convert_selection(self.window, self.clipboard, target, self.property, x11rb::CURRENT_TIME).is_err()
+        if self
+            .connection
+            .delete_property(self.window, self.property)
+            .is_err()
+            || self
+                .connection
+                .convert_selection(
+                    self.window,
+                    self.clipboard,
+                    target,
+                    self.property,
+                    x11rb::CURRENT_TIME,
+                )
+                .is_err()
         {
             return false;
         }
@@ -135,7 +182,12 @@ impl X11Clipboard {
             }) else {
                 return false;
             };
-            let SelectionNotifyEvent { selection, target: event_target, property, .. } = event;
+            let SelectionNotifyEvent {
+                selection,
+                target: event_target,
+                property,
+                ..
+            } = event;
             if selection != self.clipboard || event_target != target {
                 continue;
             }
@@ -153,7 +205,11 @@ impl X11Clipboard {
         }
 
         *result = PropertyData::default();
-        if self.connection.delete_property(self.window, self.property).is_err() {
+        if self
+            .connection
+            .delete_property(self.window, self.property)
+            .is_err()
+        {
             return false;
         }
         loop {
@@ -208,12 +264,24 @@ impl X11Clipboard {
                 &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
             )
             .ok()?;
-        let mut clipboard = Self { connection, window, clipboard: 0, property: 0, targets: 0, incr: 0, deadline };
+        let mut clipboard = Self {
+            connection,
+            window,
+            clipboard: 0,
+            property: 0,
+            targets: 0,
+            incr: 0,
+            deadline,
+        };
         clipboard.clipboard = clipboard.intern_atom("CLIPBOARD");
         clipboard.property = clipboard.intern_atom("PI_CLIPBOARD");
         clipboard.targets = clipboard.intern_atom("TARGETS");
         clipboard.incr = clipboard.intern_atom("INCR");
-        (clipboard.clipboard != 0 && clipboard.property != 0 && clipboard.targets != 0 && clipboard.incr != 0).then_some(clipboard)
+        (clipboard.clipboard != 0
+            && clipboard.property != 0
+            && clipboard.targets != 0
+            && clipboard.incr != 0)
+            .then_some(clipboard)
     }
 
     /// `preferred_target`: `Some(None)` when the owner offers none of the wanted types.
@@ -258,7 +326,9 @@ impl X11Clipboard {
         let mut result = PropertyData::default();
         match target {
             None => Some(result),
-            Some(target) => self.request_selection(target, &mut result).then_some(result),
+            Some(target) => self
+                .request_selection(target, &mut result)
+                .then_some(result),
         }
     }
 }
@@ -267,7 +337,8 @@ fn append_property(result: &mut PropertyData, chunk: &PropertyData) -> bool {
     if !matches!(chunk.format, 8 | 16 | 32)
         || chunk.type_ == u32::from(AtomEnum::NONE)
         || u64::from(chunk.items) * u64::from(chunk.format / 8) != chunk.data.len() as u64
-        || (result.type_ != u32::from(AtomEnum::NONE) && (result.type_ != chunk.type_ || result.format != chunk.format))
+        || (result.type_ != u32::from(AtomEnum::NONE)
+            && (result.type_ != chunk.type_ || result.format != chunk.format))
         || chunk.items > u32::MAX - result.items
     {
         return false;
@@ -305,31 +376,43 @@ fn clipboard_execute(image: bool) -> Option<Result<ClipboardContents, String>> {
         return None;
     }
     let (sender, receiver) = std::sync::mpsc::channel();
-    let spawned = std::thread::Builder::new().name("x11-clipboard".into()).spawn(move || {
-        let result = read_clipboard(image);
-        WORKER_BUSY.store(false, Ordering::SeqCst);
-        let _ = sender.send(result);
-    });
+    let spawned = std::thread::Builder::new()
+        .name("x11-clipboard".into())
+        .spawn(move || {
+            let result = read_clipboard(image);
+            WORKER_BUSY.store(false, Ordering::SeqCst);
+            let _ = sender.send(result);
+        });
     if spawned.is_err() {
         WORKER_BUSY.store(false, Ordering::SeqCst);
         return None;
     }
-    receiver.recv_timeout(Duration::from_millis(WORKER_TIMEOUT_MS)).ok()
+    receiver
+        .recv_timeout(Duration::from_millis(WORKER_TIMEOUT_MS))
+        .ok()
 }
 
 impl NativeClipboard for LinuxX11PlatformHelper {
     fn get_text(&self) -> Result<Option<String>, String> {
         match clipboard_execute(false).transpose()? {
             None | Some(ClipboardContents::Empty) => Ok(None),
-            Some(ClipboardContents::Latin1(bytes)) => Ok(Some(bytes.into_iter().map(char::from).collect())),
-            Some(ClipboardContents::Utf8(bytes) | ClipboardContents::Buffer(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+            Some(ClipboardContents::Latin1(bytes)) => {
+                Ok(Some(bytes.into_iter().map(char::from).collect()))
+            }
+            Some(ClipboardContents::Utf8(bytes) | ClipboardContents::Buffer(bytes)) => {
+                Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+            }
         }
     }
 
     fn get_image(&self) -> Result<Option<Vec<u8>>, String> {
         match clipboard_execute(true).transpose()? {
             None | Some(ClipboardContents::Empty) => Ok(None),
-            Some(ClipboardContents::Buffer(bytes) | ClipboardContents::Latin1(bytes) | ClipboardContents::Utf8(bytes)) => Ok(Some(bytes)),
+            Some(
+                ClipboardContents::Buffer(bytes)
+                | ClipboardContents::Latin1(bytes)
+                | ClipboardContents::Utf8(bytes),
+            ) => Ok(Some(bytes)),
         }
     }
 }

@@ -58,18 +58,42 @@ pub enum ThrownProviderError {
 pub fn normalize_provider_error(error: &ThrownProviderError) -> NormalizedProviderError {
     let sdk = match error {
         ThrownProviderError::Other(value) => {
-            return NormalizedProviderError { status: None, body: None, message: safe_json_stringify(value), message_carries_body: false, retry_after_ms: None };
+            return NormalizedProviderError {
+                status: None,
+                body: None,
+                message: safe_json_stringify(value),
+                message_carries_body: false,
+                retry_after_ms: None,
+            };
         }
         ThrownProviderError::Error(sdk) => sdk.as_ref(),
     };
     let status = extract_status(sdk);
     let body = extract_body(sdk);
-    let message_carries_body = body.as_ref().is_none_or(|body| sdk.message.contains(body.as_str()));
+    let message_carries_body = body
+        .as_ref()
+        .is_none_or(|body| sdk.message.contains(body.as_str()));
     let retry_after_ms = if matches!(status, Some(429 | 503)) {
-        sdk.headers.as_ref().and_then(|headers| crate::utils::retry_hint::extract_429_retry_after_ms(
-            &crate::utils::retry_hint::RetryHintInput { status: Some(429), headers: Some(headers), body_text: "" }, None))
-    } else { None };
-    NormalizedProviderError { status, body, message: sdk.message.clone(), message_carries_body, retry_after_ms }
+        sdk.headers.as_ref().and_then(|headers| {
+            crate::utils::retry_hint::extract_429_retry_after_ms(
+                &crate::utils::retry_hint::RetryHintInput {
+                    status: Some(429),
+                    headers: Some(headers),
+                    body_text: "",
+                },
+                None,
+            )
+        })
+    } else {
+        None
+    };
+    NormalizedProviderError {
+        status,
+        body,
+        message: sdk.message.clone(),
+        message_carries_body,
+        retry_after_ms,
+    }
 }
 
 fn number(value: Option<&Value>) -> Option<u16> {
@@ -97,12 +121,18 @@ fn pick_body_text(error: &SdkErrorShape) -> Option<String> {
     if let Some(Value::String(body)) = &error.body {
         return Some(body.clone());
     }
-    if let Some(SdkFieldValue::Plain(inner)) = error.error.as_ref().filter(|v| matches!(v, SdkFieldValue::Plain(value) if is_plain_non_empty_object(value))) {
+    if let Some(SdkFieldValue::Plain(inner)) = error
+        .error
+        .as_ref()
+        .filter(|v| matches!(v, SdkFieldValue::Plain(value) if is_plain_non_empty_object(value)))
+    {
         return Some(safe_json_stringify(inner));
     }
     match &error.response_body {
         Some(SdkResponseBody::Value(Value::String(body))) => Some(body.clone()),
-        Some(SdkResponseBody::Value(body)) if is_plain_non_empty_object(body) => Some(safe_json_stringify(body)),
+        Some(SdkResponseBody::Value(body)) if is_plain_non_empty_object(body) => {
+            Some(safe_json_stringify(body))
+        }
         _ => None,
     }
 }
@@ -119,8 +149,11 @@ pub fn format_provider_error(norm: &NormalizedProviderError, prefix: Option<&str
         },
     };
     match norm.retry_after_ms {
-        Some(delay) if crate::utils::retry_hint::parse_retry_after_ms_marker(&message).is_none() =>
-            crate::utils::retry_hint::append_retry_after_ms_marker(&message, delay),
+        Some(delay)
+            if crate::utils::retry_hint::parse_retry_after_ms_marker(&message).is_none() =>
+        {
+            crate::utils::retry_hint::append_retry_after_ms_marker(&message, delay)
+        }
         _ => message,
     }
 }
@@ -132,7 +165,11 @@ pub fn truncate_error_text(text: &str, max_chars: usize) -> String {
         return text.to_owned();
     }
     let head: Vec<u16> = text.encode_utf16().take(max_chars).collect();
-    format!("{}... [truncated {} chars]", String::from_utf16_lossy(&head), length - max_chars)
+    format!(
+        "{}... [truncated {} chars]",
+        String::from_utf16_lossy(&head),
+        length - max_chars
+    )
 }
 
 pub fn safe_json_stringify(value: &Value) -> String {
@@ -149,12 +186,22 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("retry-after", "7".parse().expect("header"));
         for status in [429, 503, 400, 500] {
-            let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(SdkErrorShape {
-                message: "unavailable".into(), status: Some(json!(status)), headers: Some(headers.clone()), ..Default::default()
-            })));
+            let norm =
+                normalize_provider_error(&ThrownProviderError::Error(Box::new(SdkErrorShape {
+                    message: "unavailable".into(),
+                    status: Some(json!(status)),
+                    headers: Some(headers.clone()),
+                    ..Default::default()
+                })));
             let expected = matches!(status, 429 | 503).then_some(7_000);
             assert_eq!(norm.retry_after_ms, expected);
-            assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(&norm, Some("API"))), expected);
+            assert_eq!(
+                crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(
+                    &norm,
+                    Some("API")
+                )),
+                expected
+            );
         }
     }
 
@@ -163,11 +210,17 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("retry-after", "7".parse().expect("header"));
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(SdkErrorShape {
-            message: "unavailable (retry-after-ms: 0)".into(), status: Some(json!(503)), headers: Some(headers), ..Default::default()
+            message: "unavailable (retry-after-ms: 0)".into(),
+            status: Some(json!(503)),
+            headers: Some(headers),
+            ..Default::default()
         })));
         let formatted = format_provider_error(&norm, None);
         assert_eq!(formatted.matches("retry-after-ms:").count(), 1);
-        assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&formatted), Some(0));
+        assert_eq!(
+            crate::utils::retry_hint::parse_retry_after_ms_marker(&formatted),
+            Some(0)
+        );
     }
 
     #[test]
@@ -175,10 +228,17 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("retry-after-ms", "125".parse().expect("header"));
         let error = crate::api::google_shared::GoogleRequestError::Sdk {
-            message: "unavailable".into(), status: Some(503), headers: Some(headers),
+            message: "unavailable".into(),
+            status: Some(503),
+            headers: Some(headers),
         };
         let norm = normalize_provider_error(&error.to_thrown());
-        assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(&norm, None)), Some(125));
+        assert_eq!(
+            crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(
+                &norm, None
+            )),
+            Some(125)
+        );
     }
 
     #[test]
@@ -191,7 +251,10 @@ mod tests {
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         assert_eq!(norm.status, Some(403));
-        assert_eq!(norm.body.as_deref(), Some("{\"error\":\"blocked by gateway WAF\"}"));
+        assert_eq!(
+            norm.body.as_deref(),
+            Some("{\"error\":\"blocked by gateway WAF\"}")
+        );
         assert!(!norm.message_carries_body);
     }
 
@@ -200,12 +263,17 @@ mod tests {
         let error = SdkErrorShape {
             message: "403 status code (no body)".into(),
             status: Some(json!(403)),
-            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            error: Some(SdkFieldValue::Plain(
+                json!({"error": "blocked by gateway WAF"}),
+            )),
             ..Default::default()
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         assert_eq!(norm.status, Some(403));
-        assert_eq!(norm.body.as_deref(), Some("{\"error\":\"blocked by gateway WAF\"}"));
+        assert_eq!(
+            norm.body.as_deref(),
+            Some("{\"error\":\"blocked by gateway WAF\"}")
+        );
         assert!(!norm.message_carries_body);
     }
 
@@ -213,7 +281,11 @@ mod tests {
     fn preserves_the_message_when_google_genai_already_folds_the_body_into_it() {
         let body = json!({"error": {"code": 403, "message": "Permission denied"}});
         let message = serde_json::to_string(&body).unwrap();
-        let error = SdkErrorShape { message: message.clone(), status: Some(json!(403)), ..Default::default() };
+        let error = SdkErrorShape {
+            message: message.clone(),
+            status: Some(json!(403)),
+            ..Default::default()
+        };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         assert_eq!(norm.status, Some(403));
         assert!(norm.message_carries_body);
@@ -226,12 +298,17 @@ mod tests {
             message: "UnknownError".into(),
             metadata_http_status_code: Some(json!(403)),
             response_status_code: Some(json!(403)),
-            response_body: Some(SdkResponseBody::Value(json!("{\"message\":\"blocked by gateway WAF\"}"))),
+            response_body: Some(SdkResponseBody::Value(json!(
+                "{\"message\":\"blocked by gateway WAF\"}"
+            ))),
             ..Default::default()
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         assert_eq!(norm.status, Some(403));
-        assert_eq!(norm.body.as_deref(), Some("{\"message\":\"blocked by gateway WAF\"}"));
+        assert_eq!(
+            norm.body.as_deref(),
+            Some("{\"message\":\"blocked by gateway WAF\"}")
+        );
         assert!(!norm.message_carries_body);
     }
 
@@ -247,7 +324,10 @@ mod tests {
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         assert_eq!(norm.status, Some(400));
         assert_eq!(norm.body, None);
-        assert!(norm.message.contains("on-demand throughput isn't supported"));
+        assert!(
+            norm.message
+                .contains("on-demand throughput isn't supported")
+        );
         assert!(norm.message_carries_body);
     }
 
@@ -292,11 +372,16 @@ mod tests {
         let error = SdkErrorShape {
             message: "400 status code (no body)".into(),
             status: Some(json!(400)),
-            error: Some(SdkFieldValue::Plain(json!({"message": "schema validation failed", "field": "tools[0]"}))),
+            error: Some(SdkFieldValue::Plain(
+                json!({"message": "schema validation failed", "field": "tools[0]"}),
+            )),
             ..Default::default()
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
-        assert_eq!(norm.body.as_deref(), Some("{\"message\":\"schema validation failed\",\"field\":\"tools[0]\"}"));
+        assert_eq!(
+            norm.body.as_deref(),
+            Some("{\"message\":\"schema validation failed\",\"field\":\"tools[0]\"}")
+        );
         assert!(!norm.message_carries_body);
     }
 
@@ -325,7 +410,12 @@ mod tests {
     #[test]
     fn truncates_the_body_at_the_cap() {
         let long_body = "x".repeat(MAX_PROVIDER_ERROR_BODY_CHARS + 50);
-        let error = SdkErrorShape { message: "failed".into(), status_code: Some(json!(500)), body: Some(json!(long_body.clone())), ..Default::default() };
+        let error = SdkErrorShape {
+            message: "failed".into(),
+            status_code: Some(json!(500)),
+            body: Some(json!(long_body.clone())),
+            ..Default::default()
+        };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
         let body = norm.body.expect("body");
         assert!(body.contains("... [truncated 50 chars]"));
@@ -349,7 +439,9 @@ mod tests {
         let error = SdkErrorShape {
             message: "403 status code (no body)".into(),
             status: Some(json!(403)),
-            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            error: Some(SdkFieldValue::Plain(
+                json!({"error": "blocked by gateway WAF"}),
+            )),
             ..Default::default()
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
@@ -364,7 +456,9 @@ mod tests {
         let error = SdkErrorShape {
             message: "403 status code (no body)".into(),
             status: Some(json!(403)),
-            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            error: Some(SdkFieldValue::Plain(
+                json!({"error": "blocked by gateway WAF"}),
+            )),
             ..Default::default()
         };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
@@ -376,10 +470,18 @@ mod tests {
 
     #[test]
     fn preserves_the_message_with_prefix_plus_status_when_it_already_carries_the_body() {
-        let body = serde_json::to_string(&json!({"error": {"message": "Permission denied"}})).unwrap();
-        let error = SdkErrorShape { message: body.clone(), status: Some(json!(403)), ..Default::default() };
+        let body =
+            serde_json::to_string(&json!({"error": {"message": "Permission denied"}})).unwrap();
+        let error = SdkErrorShape {
+            message: body.clone(),
+            status: Some(json!(403)),
+            ..Default::default()
+        };
         let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
-        assert_eq!(format_provider_error(&norm, Some("OpenAI API error")), format!("OpenAI API error (403): {body}"));
+        assert_eq!(
+            format_provider_error(&norm, Some("OpenAI API error")),
+            format!("OpenAI API error (403): {body}")
+        );
     }
 
     #[test]
@@ -390,7 +492,10 @@ mod tests {
 
     #[test]
     fn truncates_by_utf16_units() {
-        assert_eq!(truncate_error_text("abcdef", 4), "abcd... [truncated 2 chars]");
+        assert_eq!(
+            truncate_error_text("abcdef", 4),
+            "abcd... [truncated 2 chars]"
+        );
         assert_eq!(truncate_error_text("abc", 4), "abc");
     }
 }

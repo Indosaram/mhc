@@ -93,6 +93,9 @@ pub struct TaskDagEngine {
     recovery_task_subscriptions: Arc<Mutex<BTreeMap<String, senpi_task::manager::Unsubscribe>>>,
     lease_watch: DagLeaseWatch,
     lease_watches: Mutex<BTreeMap<DagRunId, DagLeaseWatchCancel>>,
+    /// The session-start retention sweep writes into the store, so it must settle before a
+    /// dispose lets the owner reclaim the store directory.
+    retention_sweep: Mutex<Option<crate::dag_retention_sweep::DagRetentionSweep>>,
     rpc: Mutex<Option<Arc<crate::dag_rpc_bridge::DagRpcBridge>>>,
     surfaces: Mutex<Option<Arc<DagSurfaces>>>,
     active_session: Mutex<Option<String>>,
@@ -431,7 +434,7 @@ impl TaskDagEngine {
             },
             Default::default(),
         )?);
-        crate::dag_retention_sweep::schedule_dag_retention_sweep(
+        let retention_sweep = crate::dag_retention_sweep::schedule_dag_retention_sweep(
             store.clone(),
             crate::dag_retention_sweep::DagRetentionSweepOptions {
                 schedule: scheduling.retention_sweep.clone(),
@@ -521,6 +524,7 @@ impl TaskDagEngine {
             recovery_task_subscriptions,
             lease_watch,
             lease_watches: Mutex::new(BTreeMap::new()),
+            retention_sweep: Mutex::new(Some(retention_sweep)),
             rpc: Mutex::new(None),
             surfaces: Mutex::new(None),
             active_session: Mutex::new(None),
@@ -1083,7 +1087,9 @@ impl TaskDagEngine {
         let owned = lock(&self.schedulers)
             .get(run)
             .map(|owned| owned.scheduler.clone());
-        if result.status.is_terminal() && let Some(scheduler) = owned {
+        if result.status.is_terminal()
+            && let Some(scheduler) = owned
+        {
             scheduler.when_idle();
         }
         Ok(serde_json::json!({
@@ -1571,6 +1577,23 @@ impl TaskDagEngine {
     pub fn dispose(&self) {
         if let Some(stop) = lock(&self.stop_observing).take() {
             stop();
+        }
+        // Settle the deferred retention sweep before the owner may remove the store directory.
+        if let Some(sweep) = lock(&self.retention_sweep).take() {
+            sweep.join();
+        }
+        // A scheduler thread publishes checkpoints, results and events for as long as it runs, so
+        // dispose must drain the map and join those threads before the owner reclaims the store.
+        let owned: Vec<DagOwnedScheduler> = std::mem::take(&mut *lock(&self.schedulers))
+            .into_values()
+            .collect();
+        for scheduler in &owned {
+            scheduler.scheduler.when_idle();
+        }
+        for scheduler in owned {
+            if let Some(running) = scheduler.running {
+                let _ = running.join();
+            }
         }
         self.cancel_lease_watches();
         if let Some(bridge) = lock(&self.rpc).clone() {

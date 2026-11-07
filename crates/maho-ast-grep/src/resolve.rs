@@ -163,7 +163,9 @@ type CacheKey = (String, String, Vec<PathBuf>);
 static CACHE: Mutex<Option<(CacheKey, PathBuf)>> = Mutex::new(None);
 
 fn cache_get(key: &CacheKey) -> Option<PathBuf> {
-    let guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard
         .as_ref()
         .filter(|(cached_key, path)| cached_key == key && path.is_file())
@@ -171,7 +173,9 @@ fn cache_get(key: &CacheKey) -> Option<PathBuf> {
 }
 
 fn cache_put(key: CacheKey, path: PathBuf) {
-    *CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, path));
+    *CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, path));
 }
 
 /// A candidate passes when it is a non-empty file whose `--version` output names ast-grep.
@@ -208,7 +212,11 @@ pub async fn probe(candidate: &Path) -> bool {
 /// Resolve the program for one call. A success is cached per (platform, arch, candidates).
 pub async fn resolve(toolchain: &Toolchain) -> Result<PathBuf, ToolError> {
     let candidates = toolchain.candidates();
-    let key = (toolchain.platform.clone(), toolchain.arch.clone(), candidates.clone());
+    let key = (
+        toolchain.platform.clone(),
+        toolchain.arch.clone(),
+        candidates.clone(),
+    );
     if let Some(path) = cache_get(&key) {
         return Ok(path);
     }

@@ -8,12 +8,18 @@ fn given_a_command_when_harvested_then_path_words_precede_the_command_name() {
     assert!(texts.contains(&"git".to_string()));
     let mirror = texts.iter().position(|text| text == "mirror.rs").unwrap();
     let git = texts.iter().position(|text| text == "git").unwrap();
-    assert!(mirror < git, "path words precede the command name: {texts:?}");
+    assert!(
+        mirror < git,
+        "path words precede the command name: {texts:?}"
+    );
 }
 
 #[test]
 fn given_secret_like_material_when_harvested_then_it_is_dropped() {
-    let texts = tool_arg_texts("bash", &json!({ "command": "curl -H 'Authorization: Bearer sk-abc123' https://x" }));
+    let texts = tool_arg_texts(
+        "bash",
+        &json!({ "command": "curl -H 'Authorization: Bearer sk-abc123' https://x" }),
+    );
     assert!(texts.iter().all(|text| !text.contains("sk-abc123")));
 }
 
@@ -34,14 +40,20 @@ fn given_an_array_key_when_harvested_then_each_item_contributes_words() {
 
 #[test]
 fn given_a_summary_when_harvested_then_the_value_and_its_path_words_are_used() {
-    let texts = tool_arg_texts("eval", &json!({ "summary": "checking src/recall/gate.rs now" }));
+    let texts = tool_arg_texts(
+        "eval",
+        &json!({ "summary": "checking src/recall/gate.rs now" }),
+    );
     assert!(texts.contains(&"checking src/recall/gate.rs now".to_string()));
     assert!(texts.contains(&"gate.rs".to_string()));
 }
 
 #[test]
 fn given_more_than_the_cap_when_harvested_then_the_result_is_capped() {
-    let command = (0..64).map(|index| format!("src/f{index}.rs")).collect::<Vec<_>>().join(" ");
+    let command = (0..64)
+        .map(|index| format!("src/f{index}.rs"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let texts = tool_arg_texts("bash", &json!({ "command": command }));
     assert!(texts.len() <= 32);
 }

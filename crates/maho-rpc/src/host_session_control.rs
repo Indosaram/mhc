@@ -208,7 +208,9 @@ impl HostSessionControl {
 
     fn dispose_state(state: &Mutex<State>, registration: u64) {
         let released = {
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state
                 .active
                 .as_ref()
@@ -458,7 +460,9 @@ mod tests {
         ));
         async fn next(started: &mut tokio::sync::mpsc::UnboundedReceiver<Value>) -> Value {
             tokio::time::timeout(std::time::Duration::from_secs(30), started.recv())
-                .await.expect("drain starts").expect("drain channel open")
+                .await
+                .expect("drain starts")
+                .expect("drain channel open")
         }
         assert_eq!(next(&mut started).await, "inbox");
         release_tx.send(()).unwrap();

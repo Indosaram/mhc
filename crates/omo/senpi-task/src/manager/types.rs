@@ -391,7 +391,7 @@ pub type ChildLivenessCallback =
 
 /// Schedules a debounced liveness notice; the closure notifies only if no newer status arrived.
 pub type LivenessNoticeTimer = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
-pub type ExitConfirmationWait = Arc<dyn Fn(u64) + Send + Sync>;
+pub type ExitConfirmationWait = Arc<dyn Fn(&str, u64) + Send + Sync>;
 
 pub struct TaskManagerOptions {
     pub exit_confirmation_wait: Option<ExitConfirmationWait>,

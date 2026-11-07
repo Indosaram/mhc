@@ -3,10 +3,7 @@ use crate::support;
 use std::sync::Arc;
 
 use maho_ai::types::ModelThinkingLevel;
-use maho_ext_api::{
-    EventKind, ExtensionEvent, ExtensionMode, ProviderAuthStatus,
-    SessionReason,
-};
+use maho_ext_api::{EventKind, ExtensionEvent, ExtensionMode, ProviderAuthStatus, SessionReason};
 use maho_omo_model_profile::index::{
     MODEL_PROFILE_APPLIED_TYPE, MODEL_PROFILE_UNAVAILABLE_TYPE, MODEL_PROFILE_UNKNOWN_TYPE,
     ModelProfileComponent,
@@ -30,11 +27,16 @@ const ASTRA: (&str, &str) = ("chatgpt-subscription", "gpt-6-astra");
 const UNRELATED: (&str, &str) = ("example", "nothing-in-any-chain");
 
 fn fixture(pairs: &[(&str, &str)]) -> Vec<maho_ai::model::Model> {
-    pairs.iter().map(|(provider, id)| model(provider, id)).collect()
+    pairs
+        .iter()
+        .map(|(provider, id)| model(provider, id))
+        .collect()
 }
 
 fn component(config: serde_json::Value) -> ModelProfileComponent {
-    ModelProfileComponent::with_load_config(Arc::new(move |_| support::config_result(config.clone())))
+    ModelProfileComponent::with_load_config(Arc::new(move |_| {
+        support::config_result(config.clone())
+    }))
 }
 
 fn harness_for(
@@ -44,7 +46,14 @@ fn harness_for(
     mode: ExtensionMode,
 ) -> support::Harness {
     let dir = tempfile::tempdir().expect("temp dir");
-    support::harness_in(component(config), registry, session_id, mode, "/project", dir)
+    support::harness_in(
+        component(config),
+        registry,
+        session_id,
+        mode,
+        "/project",
+        dir,
+    )
 }
 
 async fn start(
@@ -61,7 +70,10 @@ async fn start(
 }
 
 fn selectors(models: &[maho_ai::model::Model]) -> Vec<String> {
-    models.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect()
+    models
+        .iter()
+        .map(|model| format!("{}/{}", model.provider, model.id))
+        .collect()
 }
 
 const STARTUP: SessionReason = SessionReason::Startup;
@@ -70,37 +82,75 @@ const STARTUP: SessionReason = SessionReason::Startup;
 async fn default_walk_shares_failures_across_lanes_and_keeps_all_failures() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, FABLE, SOL_61, ASTRA]))
-            .dead_provider("anthropic")
-            .dead_provider("chatgpt-subscription")),
-        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
-    ).await;
+        Arc::new(
+            TestRegistry::new(fixture(&[OPUS, FABLE, SOL_61, ASTRA]))
+                .dead_provider("anthropic")
+                .dead_provider("chatgpt-subscription"),
+        ),
+        "session-default",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
     assert!(harness.session_models().is_empty());
-    assert_eq!(harness.registry.calls(), ["anthropic", "chatgpt-subscription"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic", "chatgpt-subscription"]
+    );
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
-    assert_eq!(harness.first_details()["authFailed"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        harness.first_details()["authFailed"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
 }
 
 #[tokio::test]
 async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, FABLE]))
-            .broken_model("anthropic", "claude-opus-5-5")),
-        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
-    ).await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
+        Arc::new(
+            TestRegistry::new(fixture(&[OPUS, FABLE])).broken_model("anthropic", "claude-opus-5-5"),
+        ),
+        "session-default",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-1"]
+    );
     assert_eq!(harness.first_details()["profile"], json!("daily-heavy"));
-    assert_eq!(harness.registry.calls(), ["anthropic", "anthropic/claude-opus-5-5", "anthropic", "anthropic/claude-fable-5-1"]);
+    assert_eq!(
+        harness.registry.calls(),
+        [
+            "anthropic",
+            "anthropic/claude-opus-5-5",
+            "anthropic",
+            "anthropic/claude-fable-5-1"
+        ]
+    );
 }
 
 #[tokio::test]
 async fn unset_chatgpt_only_uses_geeky_normal() {
     let harness = start(
-        json!({}), Arc::new(TestRegistry::new(fixture(&[SOL_61, UNRELATED]))),
-        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
-    ).await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6.1-sol"]);
+        json!({}),
+        Arc::new(TestRegistry::new(fixture(&[SOL_61, UNRELATED]))),
+        "session-default",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["chatgpt-subscription/gpt-6.1-sol"]
+    );
     assert_eq!(harness.first_details()["profile"], json!("geeky-normal"));
 }
 
@@ -109,16 +159,32 @@ async fn retired_profile_defaults_on_each_session_and_logs_once_per_registration
     let mut harness = harness_for(
         json!({"model_profile": "recommended"}),
         Arc::new(TestRegistry::new(fixture(&[SOL_61, GLM]))),
-        "session-1", ExtensionMode::Rpc,
+        "session-1",
+        ExtensionMode::Rpc,
     );
     harness.start(STARTUP, Some("settings")).await;
     harness.ctx = support::context_with(
-        harness.registry.clone(), "session-2", ExtensionMode::Rpc,
-        "/project", harness.agent_dir.clone(), harness.logger.clone(),
+        harness.registry.clone(),
+        "session-2",
+        ExtensionMode::Rpc,
+        "/project",
+        harness.agent_dir.clone(),
+        harness.logger.clone(),
     );
     harness.start(STARTUP, Some("settings")).await;
-    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3", "zai/glm-5.3"]);
-    assert_eq!(harness.logger.lines().iter().filter(|line| line.contains("is retired")).count(), 1);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["zai/glm-5.3", "zai/glm-5.3"]
+    );
+    assert_eq!(
+        harness
+            .logger
+            .lines()
+            .iter()
+            .filter(|line| line.contains("is retired"))
+            .count(),
+        1
+    );
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
 }
 
@@ -131,12 +197,22 @@ async fn user_defined_recommended_is_not_retired() {
     ).await;
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
     assert_eq!(harness.first_details()["profile"], json!("recommended"));
-    assert!(!harness.logger.lines().iter().any(|line| line.contains("is retired")));
+    assert!(
+        !harness
+            .logger
+            .lines()
+            .iter()
+            .any(|line| line.contains("is retired"))
+    );
 }
 
 #[tokio::test]
 async fn a_tui_session_applies_nothing_for_unset_lane_and_pin_configs() {
-    for config in [json!({}), json!({"model_profile": "daily-heavy"}), json!({"model_profile": "anthropic/claude-opus-5-5"})] {
+    for config in [
+        json!({}),
+        json!({"model_profile": "daily-heavy"}),
+        json!({"model_profile": "anthropic/claude-opus-5-5"}),
+    ] {
         let harness = start(
             config,
             Arc::new(TestRegistry::new(fixture(&[SUBSCRIPTION_OPUS, KIMI]))),
@@ -163,18 +239,28 @@ async fn an_unset_model_profile_applies_daily_normal() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::Medium]
+    );
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
-    assert_eq!(harness.first_details()["model"], json!("anthropic/claude-opus-5-5"));
+    assert_eq!(
+        harness.first_details()["model"],
+        json!("anthropic/claude-opus-5-5")
+    );
     assert_eq!(harness.first_details()["reasoning"], json!("medium"));
 }
 
 // index.test.ts (#11365 review): the resolver saw the model as available, but the registry lookup
 // that sets it returns nothing; the session keeps its model and the user is warned.
 #[tokio::test]
-async fn a_resolved_model_the_registry_no_longer_finds_keeps_the_session_model_and_warns_the_user() {
+async fn a_resolved_model_the_registry_no_longer_finds_keeps_the_session_model_and_warns_the_user()
+{
     let registry = TestRegistry::new(fixture(&[OPUS, FABLE, KIMI]))
         .dropped_from_find("anthropic", "claude-opus-5-5")
         .dropped_from_find("anthropic-subscription", "claude-opus-5-5");
@@ -189,7 +275,11 @@ async fn a_resolved_model_the_registry_no_longer_finds_keeps_the_session_model_a
     .await;
     assert!(harness.session_models().is_empty());
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
-    let kinds: Vec<_> = harness.notices().into_iter().map(|(_, kind)| kind).collect();
+    let kinds: Vec<_> = harness
+        .notices()
+        .into_iter()
+        .map(|(_, kind)| kind)
+        .collect();
     assert_eq!(kinds, [maho_ext_api::NotificationType::Warning]);
 }
 
@@ -204,7 +294,10 @@ async fn a_blank_model_profile_applies_daily_normal() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
 }
 
@@ -219,9 +312,15 @@ async fn a_gateway_only_opus_is_skipped_for_the_next_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3.1-pro"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["kimi-coding/kimi-k3.1-pro"]
+    );
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
-    assert_eq!(harness.first_details()["model"], json!("kimi-coding/kimi-k3.1-pro"));
+    assert_eq!(
+        harness.first_details()["model"],
+        json!("kimi-coding/kimi-k3.1-pro")
+    );
 }
 
 #[tokio::test]
@@ -235,7 +334,10 @@ async fn the_claude_subscription_lane_wins_over_the_api_lane() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic-subscription/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic-subscription/claude-opus-5-5"]
+    );
 }
 
 #[tokio::test]
@@ -278,7 +380,10 @@ async fn daily_normal_skips_a_gateway_for_its_next_listed_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3.1-pro"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["kimi-coding/kimi-k3.1-pro"]
+    );
 }
 
 #[tokio::test]
@@ -309,9 +414,15 @@ async fn daily_normal_with_only_the_third_rung_applies_kimi_max_and_names_the_sk
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3.1-pro"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
-    assert_eq!(harness.first_details()["skipped"], json!(["anthropic-subscription/claude-opus-5-5"]));
+    assert_eq!(
+        harness.first_details()["skipped"],
+        json!(["anthropic-subscription/claude-opus-5-5"])
+    );
     assert!(!harness.agent_dir.join("settings.json").exists());
 }
 
@@ -326,51 +437,82 @@ async fn daily_heavy_applies_fable_xhigh() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Xhigh]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-1"]
+    );
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::Xhigh]
+    );
 }
 
 #[tokio::test]
 async fn geeky_normal_applies_gpt_61_sol_fast_medium() {
     let harness = start(
         json!({"model_profile": "geeky-normal"}),
-        Arc::new(TestRegistry::new(fixture(&[SOL_61, SOL_61_FAST, SOL_56_COPILOT, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[
+            SOL_61,
+            SOL_61_FAST,
+            SOL_56_COPILOT,
+            UNRELATED,
+        ]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6.1-sol-fast"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["chatgpt-subscription/gpt-6.1-sol-fast"]
+    );
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::Medium]
+    );
 }
 
 #[tokio::test]
 async fn geeky_normal_without_the_fast_tier_applies_gpt_61_sol_medium() {
     let harness = start(
         json!({"model_profile": "geeky-normal"}),
-        Arc::new(TestRegistry::new(fixture(&[SOL_56_COPILOT, SOL_61, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[
+            SOL_56_COPILOT,
+            SOL_61,
+            UNRELATED,
+        ]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6.1-sol"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["chatgpt-subscription/gpt-6.1-sol"]
+    );
 }
 
 #[tokio::test]
 async fn geeky_normal_with_only_copilot_applies_gpt_56_sol_medium() {
     let harness = start(
         json!({"model_profile": "geeky-normal"}),
-        Arc::new(TestRegistry::new(fixture(&[SOL_56_COPILOT, SOL, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[
+            SOL_56_COPILOT,
+            SOL,
+            UNRELATED,
+        ]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["github-copilot/gpt-5.6-sol"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["github-copilot/gpt-5.6-sol"]
+    );
 }
 
 #[tokio::test]
@@ -384,8 +526,14 @@ async fn geeky_heavy_applies_astra_high() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6-astra"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::High]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["chatgpt-subscription/gpt-6-astra"]
+    );
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::High]
+    );
 }
 
 #[tokio::test]
@@ -399,7 +547,10 @@ async fn a_literal_provider_model_pin_is_applied_for_the_session() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert!(harness.session_thinking_levels().is_empty());
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
     assert!(harness.registry.calls().is_empty(), "a pin is never probed");
@@ -436,7 +587,13 @@ async fn an_unknown_profile_name_emits_the_resolver_diagnostic_and_applies_nothi
     assert!(harness.session_models().is_empty());
     assert_eq!(harness.messages().len(), 1);
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNKNOWN_TYPE);
-    assert!(harness.logger.lines().iter().any(|line| line.starts_with("warn:")));
+    assert!(
+        harness
+            .logger
+            .lines()
+            .iter()
+            .any(|line| line.starts_with("warn:"))
+    );
 }
 
 #[tokio::test]
@@ -451,13 +608,17 @@ async fn retired_capable_and_deep_work_ids_are_unknown() {
             Some("settings"),
         )
         .await;
-        assert!(harness.session_models().is_empty(), "{name} applies nothing");
+        assert!(
+            harness.session_models().is_empty(),
+            "{name} applies nothing"
+        );
         assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNKNOWN_TYPE);
     }
 }
 
 #[tokio::test]
-async fn a_user_overlay_with_an_openai_model_applies_that_provider_and_reasoning_without_merging_builtin_rungs() {
+async fn a_user_overlay_with_an_openai_model_applies_that_provider_and_reasoning_without_merging_builtin_rungs()
+ {
     let harness = start(
         json!({
             "model_profile": "geeky-normal",
@@ -471,7 +632,10 @@ async fn a_user_overlay_with_an_openai_model_applies_that_provider_and_reasoning
     )
     .await;
     assert_eq!(selectors(&harness.session_models()), ["openai/gpt-6-sol"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::High]);
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::High]
+    );
     assert_eq!(harness.first_details()["skipped"], json!([]));
 }
 
@@ -489,7 +653,10 @@ async fn a_custom_user_profile_chain_is_applied() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3.1-pro"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["moonshotai/kimi-k3.1-pro"]
+    );
     assert_eq!(harness.first_details()["profile"], json!("night-shift"));
 }
 
@@ -585,13 +752,20 @@ async fn a_rejected_refresh_on_desktop_skips_the_provider_and_applies_the_next_h
     )
     .await;
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic", "zai", "zai/glm-5.3"]
+    );
     assert_eq!(
         harness.first_details()["authFailed"],
         json!([{"provider": "anthropic", "model": "claude-opus-5-5", "reason": "refresh"}])
     );
     let lines = harness.logger.lines();
-    assert!(lines.iter().any(|line| line.starts_with("warn:") && line.contains("skipped anthropic/")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("warn:") && line.contains("skipped anthropic/"))
+    );
     assert!(!lines.iter().any(|line| line.contains(PRIVATE_MARKER)));
 }
 
@@ -628,7 +802,10 @@ async fn two_distinct_rejected_providers_are_skipped_before_a_healthy_one() {
     )
     .await;
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic", "moonshotai", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic", "moonshotai", "zai", "zai/glm-5.3"]
+    );
     assert_eq!(
         harness.first_details()["authFailed"],
         json!([
@@ -642,7 +819,11 @@ async fn two_distinct_rejected_providers_are_skipped_before_a_healthy_one() {
 async fn every_provider_failing_credentials_emits_one_unavailable_notice_listing_each() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, KIMI])).dead_provider("anthropic").dead_provider("moonshotai")),
+        Arc::new(
+            TestRegistry::new(fixture(&[OPUS, KIMI]))
+                .dead_provider("anthropic")
+                .dead_provider("moonshotai"),
+        ),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -654,15 +835,28 @@ async fn every_provider_failing_credentials_emits_one_unavailable_notice_listing
     assert_eq!(harness.registry.calls(), ["anthropic", "moonshotai"]);
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
-    assert_eq!(harness.first_details()["authFailed"].as_array().map(Vec::len), Some(2));
-    assert!(!harness.logger.lines().iter().any(|line| line.contains(PRIVATE_MARKER)));
+    assert_eq!(
+        harness.first_details()["authFailed"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert!(
+        !harness
+            .logger
+            .lines()
+            .iter()
+            .any(|line| line.contains(PRIVATE_MARKER))
+    );
 }
 
 #[tokio::test]
 async fn a_failing_model_request_configuration_skips_only_that_candidate_and_the_walk_continues() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, GLM])).broken_model("anthropic", "claude-opus-5-5")),
+        Arc::new(
+            TestRegistry::new(fixture(&[OPUS, GLM])).broken_model("anthropic", "claude-opus-5-5"),
+        ),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -670,7 +864,15 @@ async fn a_failing_model_request_configuration_skips_only_that_candidate_and_the
     )
     .await;
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic", "anthropic/claude-opus-5-5", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        [
+            "anthropic",
+            "anthropic/claude-opus-5-5",
+            "zai",
+            "zai/glm-5.3"
+        ]
+    );
     assert_eq!(
         harness.first_details()["authFailed"],
         json!([{"provider": "anthropic", "model": "claude-opus-5-5", "reason": "request"}])
@@ -690,7 +892,13 @@ async fn rotation_disabled_in_models_json_probes_only_the_flat_credential() {
         Arc::new(
             TestRegistry::new(fixture(&[OPUS, GLM]))
                 .dead_provider("anthropic")
-                .with_accounts("anthropic", vec![support::account("expired", false), support::account("healthy", false)]),
+                .with_accounts(
+                    "anthropic",
+                    vec![
+                        support::account("expired", false),
+                        support::account("healthy", false),
+                    ],
+                ),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -699,11 +907,15 @@ async fn rotation_disabled_in_models_json_probes_only_the_flat_credential() {
     );
     harness.start(STARTUP, Some("settings")).await;
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic", "zai", "zai/glm-5.3"]
+    );
 }
 
 #[tokio::test]
-async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider_and_one_model_probe() {
+async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider_and_one_model_probe()
+ {
     let harness = start(
         json!({"model_profile": "daily-heavy"}),
         Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS, KIMI]))),
@@ -713,8 +925,14 @@ async fn a_lane_whose_first_rung_resolves_credentials_applies_after_one_provider
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
-    assert_eq!(harness.registry.calls(), ["anthropic", "anthropic/claude-fable-5-1"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-1"]
+    );
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic", "anthropic/claude-fable-5-1"]
+    );
     assert_eq!(harness.first_details()["authFailed"], json!(null));
 }
 
@@ -729,7 +947,10 @@ async fn a_literal_pin_with_failing_credentials_is_applied_unprobed() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert!(harness.registry.calls().is_empty());
 }
 
@@ -756,9 +977,22 @@ async fn other_events_never_touch_the_model() {
         "session-1",
         ExtensionMode::Rpc,
     );
-    assert_eq!(harness.api.registered.handlers.keys().copied().collect::<Vec<_>>(), [EventKind::SessionStart]);
+    assert_eq!(
+        harness
+            .api
+            .registered
+            .handlers
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [EventKind::SessionStart]
+    );
     let mut model_select = ExtensionEvent::AgentStart;
-    let _ = harness.api.registered.handlers[&EventKind::SessionStart][0](&mut model_select, &harness.ctx).await;
+    let _ = harness.api.registered.handlers[&EventKind::SessionStart][0](
+        &mut model_select,
+        &harness.ctx,
+    )
+    .await;
     assert!(harness.session_models().is_empty());
 }
 
@@ -777,7 +1011,10 @@ async fn the_applied_notice_carries_the_profile_model_and_skipped_selector_detai
     assert_eq!(details["profile"], json!("daily-normal"));
     assert_eq!(details["model"], json!("moonshotai/kimi-k3.1-pro"));
     assert_eq!(details["reasoning"], json!("max"));
-    assert_eq!(details["skipped"], json!(["anthropic-subscription/claude-opus-5-5"]));
+    assert_eq!(
+        details["skipped"],
+        json!(["anthropic-subscription/claude-opus-5-5"])
+    );
 }
 
 #[tokio::test]
@@ -791,7 +1028,10 @@ async fn reasoning_none_maps_to_the_off_session_level() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Off]);
 }
 
@@ -806,7 +1046,10 @@ async fn reasoning_auto_leaves_the_session_level_alone() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert!(harness.session_thinking_levels().is_empty());
 }
 
@@ -821,7 +1064,10 @@ async fn an_unknown_reasoning_token_leaves_the_session_level_alone() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     assert!(harness.session_thinking_levels().is_empty());
 }
 
@@ -836,7 +1082,10 @@ async fn the_session_only_setter_is_used_and_the_durable_thinking_level_is_untou
         Some("settings"),
     )
     .await;
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Xhigh]);
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::Xhigh]
+    );
     assert!(harness.durable_thinking_levels().is_empty());
     assert!(!harness.agent_dir.join("settings.json").exists());
 }
@@ -845,7 +1094,11 @@ async fn the_session_only_setter_is_used_and_the_durable_thinking_level_is_untou
 async fn the_default_logger_records_skipped_candidates_without_raw_error_text() {
     let harness = start(
         json!({}),
-        Arc::new(TestRegistry::new(fixture(&[OPUS, GLM])).dead_provider("anthropic").broken_model("zai", "glm-5.3")),
+        Arc::new(
+            TestRegistry::new(fixture(&[OPUS, GLM]))
+                .dead_provider("anthropic")
+                .broken_model("zai", "glm-5.3"),
+        ),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
@@ -853,7 +1106,9 @@ async fn the_default_logger_records_skipped_candidates_without_raw_error_text() 
     )
     .await;
     let lines = harness.logger.lines();
-    assert!(lines.iter().any(|line| line.starts_with("warn:") && line.contains("skipped anthropic/") && line.contains("refresh")));
+    assert!(lines.iter().any(|line| line.starts_with("warn:")
+        && line.contains("skipped anthropic/")
+        && line.contains("refresh")));
     assert!(!lines.iter().any(|line| line.contains(PRIVATE_MARKER)));
     assert!(!format!("{:?}", harness.messages()).contains(PRIVATE_MARKER));
 }
@@ -880,7 +1135,13 @@ async fn a_pool_rotates_onto_its_healthy_slot_and_applies_the_provider() {
             TestRegistry::new(fixture(&[OPUS, GLM]))
                 .dead_provider("anthropic")
                 .dead_slot("anthropic", "expired")
-                .with_accounts("anthropic", vec![support::account("expired", false), support::account("healthy", false)]),
+                .with_accounts(
+                    "anthropic",
+                    vec![
+                        support::account("expired", false),
+                        support::account("healthy", false),
+                    ],
+                ),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -888,15 +1149,28 @@ async fn a_pool_rotates_onto_its_healthy_slot_and_applies_the_provider() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-opus-5-5"]
+    );
     // The flat credential is never probed: the walk rotates expired -> healthy and carries the
     // resolved slot into the model scope.
     assert_eq!(
         harness.registry.calls(),
-        ["anthropic#expired", "anthropic#healthy", "anthropic/claude-opus-5-5#healthy"]
+        [
+            "anthropic#expired",
+            "anthropic#healthy",
+            "anthropic/claude-opus-5-5#healthy"
+        ]
     );
     assert_eq!(harness.first_details()["authFailed"], json!(null));
-    assert!(!harness.logger.lines().iter().any(|line| line.contains(PRIVATE_MARKER)));
+    assert!(
+        !harness
+            .logger
+            .lines()
+            .iter()
+            .any(|line| line.contains(PRIVATE_MARKER))
+    );
 }
 
 #[tokio::test]
@@ -906,7 +1180,13 @@ async fn a_pinned_pool_honors_the_pin_and_skips_the_provider_when_the_pin_fails(
         Arc::new(
             TestRegistry::new(fixture(&[OPUS, GLM]))
                 .dead_slot("anthropic", "expired")
-                .with_accounts("anthropic", vec![support::account("healthy", false), support::account("expired", true)]),
+                .with_accounts(
+                    "anthropic",
+                    vec![
+                        support::account("healthy", false),
+                        support::account("expired", true),
+                    ],
+                ),
         ),
         "session-1",
         ExtensionMode::Rpc,
@@ -917,25 +1197,46 @@ async fn a_pinned_pool_honors_the_pin_and_skips_the_provider_when_the_pin_fails(
     // The pin is the ONLY slot rotation may use, so the healthy sibling and the flat credential are
     // both ignored.
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic#expired", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic#expired", "zai", "zai/glm-5.3"]
+    );
     assert_eq!(
         harness.first_details()["authFailed"],
         json!([{"provider": "anthropic", "model": "claude-opus-5-5", "reason": "refresh"}])
     );
-    assert!(!harness.logger.lines().iter().any(|line| line.contains(PRIVATE_MARKER)));
+    assert!(
+        !harness
+            .logger
+            .lines()
+            .iter()
+            .any(|line| line.contains(PRIVATE_MARKER))
+    );
 }
 
 #[tokio::test]
-async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_probes_only_the_flat_credential() {
+async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_probes_only_the_flat_credential()
+ {
     let harness = start(
         json!({}),
         Arc::new(
             TestRegistry::new(fixture(&[SUBSCRIPTION_OPUS, GLM]))
                 .dead_provider("anthropic-subscription")
-                .with_accounts("anthropic-subscription", vec![support::account("expired", false), support::account("healthy", false)])
+                .with_accounts(
+                    "anthropic-subscription",
+                    vec![
+                        support::account("expired", false),
+                        support::account("healthy", false),
+                    ],
+                )
                 .with_auth_status(
                     "anthropic-subscription",
-                    ProviderAuthStatus { ambient: false, configured: true, source: Some("runtime".into()), label: None },
+                    ProviderAuthStatus {
+                        ambient: false,
+                        configured: true,
+                        source: Some("runtime".into()),
+                        label: None,
+                    },
                 ),
         ),
         "session-1",
@@ -948,7 +1249,10 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
     // sibling is NOT probed and the flat credential decides. The host must map a REAL runtime API key
     // onto this source; this fixture proves only that the hook honors the port.
     assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
-    assert_eq!(harness.registry.calls(), ["anthropic-subscription", "zai", "zai/glm-5.3"]);
+    assert_eq!(
+        harness.registry.calls(),
+        ["anthropic-subscription", "zai", "zai/glm-5.3"]
+    );
 }
 
 #[tokio::test]
@@ -1002,7 +1306,10 @@ async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic/claude-fable-5-1"]
+    );
 }
 
 #[tokio::test]
@@ -1018,7 +1325,10 @@ async fn a_provider_removed_by_a_failure_never_returns_on_a_later_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic-subscription/claude-opus-5-5"]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["anthropic-subscription/claude-opus-5-5"]
+    );
 }
 
 #[tokio::test]
@@ -1048,25 +1358,47 @@ fn notice_text(harness: &support::Harness) -> String {
 /// The exclude pattern that hides the whole Fable family, derived from the id instead of restating
 /// it: `<family>-*`, the same wildcard shape upstream's `exclude_models` test uses.
 fn fable_family_pattern() -> String {
-    format!("{}-*", FABLE.1.rsplit_once('-').expect("versioned model id").0)
+    format!(
+        "{}-*",
+        FABLE.1.rsplit_once('-').expect("versioned model id").0
+    )
 }
 
 #[tokio::test]
-async fn geeky_normal_with_gpt_6_astra_beside_the_sol_tiers_applies_astra_medium_with_the_bold_caution() {
+async fn geeky_normal_with_gpt_6_astra_beside_the_sol_tiers_applies_astra_medium_with_the_bold_caution()
+ {
     let harness = start(
         json!({"model_profile": "geeky-normal"}),
-        Arc::new(TestRegistry::new(fixture(&[ASTRA, SOL_61, SOL_61_FAST, SOL_56_COPILOT, UNRELATED]))),
+        Arc::new(TestRegistry::new(fixture(&[
+            ASTRA,
+            SOL_61,
+            SOL_61_FAST,
+            SOL_56_COPILOT,
+            UNRELATED,
+        ]))),
         "session-1",
         ExtensionMode::Rpc,
         STARTUP,
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6-astra"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        ["chatgpt-subscription/gpt-6-astra"]
+    );
+    assert_eq!(
+        harness.session_thinking_levels(),
+        [ModelThinkingLevel::Medium]
+    );
     let text = notice_text(&harness);
-    assert!(text.contains("chatgpt-subscription/gpt-6-astra medium"), "{text}");
-    assert!(text.contains("**NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.**"), "{text}");
+    assert!(
+        text.contains("chatgpt-subscription/gpt-6-astra medium"),
+        "{text}"
+    );
+    assert!(
+        text.contains("**NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.**"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -1102,9 +1434,15 @@ async fn an_excluded_first_rung_makes_the_session_apply_the_next_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), [format!("{}/{}", OPUS.0, OPUS.1)]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        [format!("{}/{}", OPUS.0, OPUS.1)]
+    );
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
-    assert_eq!(harness.first_details()["model"], json!(format!("{}/{}", OPUS.0, OPUS.1)));
+    assert_eq!(
+        harness.first_details()["model"],
+        json!(format!("{}/{}", OPUS.0, OPUS.1))
+    );
 }
 
 #[tokio::test]
@@ -1139,19 +1477,27 @@ async fn a_models_json_declared_provider_serves_a_builtin_lane_through_the_compo
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(
         dir.path().join("models.json"),
-        format!(r#"{{ "providers": {{ "my-claude-proxy": {{ "models": [{{ "id": "{opus}" }}] }} }} }}"#),
+        format!(
+            r#"{{ "providers": {{ "my-claude-proxy": {{ "models": [{{ "id": "{opus}" }}] }} }} }}"#
+        ),
     )
     .expect("models.json");
     let harness = support::harness_in(
         component(json!({})),
-        Arc::new(TestRegistry::new(fixture(&[("my-claude-proxy", opus.as_str())]))),
+        Arc::new(TestRegistry::new(fixture(&[(
+            "my-claude-proxy",
+            opus.as_str(),
+        )]))),
         "session-1",
         ExtensionMode::Rpc,
         "/project",
         dir,
     );
     harness.start(STARTUP, Some("settings")).await;
-    assert_eq!(selectors(&harness.session_models()), [format!("my-claude-proxy/{opus}")]);
+    assert_eq!(
+        selectors(&harness.session_models()),
+        [format!("my-claude-proxy/{opus}")]
+    );
     assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
 }

@@ -63,7 +63,10 @@ fn given_batch_task_parameters_when_inspected_then_finite_maximum_is_enforced() 
 #[test]
 fn given_schema_when_task_summary_inspected_then_it_follows_prompt_with_length_limit() {
     let keys = property_keys(&TASK_TOOL_PARAMS);
-    assert_eq!(index_of(&keys, "task_summary"), index_of(&keys, "prompt") + 1);
+    assert_eq!(
+        index_of(&keys, "task_summary"),
+        index_of(&keys, "prompt") + 1
+    );
     assert_eq!(
         TASK_TOOL_PARAMS["properties"]["task_summary"]["maxLength"],
         json!(TASK_SUMMARY_MAX_LENGTH)
@@ -74,7 +77,10 @@ fn given_schema_when_task_summary_inspected_then_it_follows_prompt_with_length_l
 fn given_batch_item_schema_when_task_summary_inspected_then_it_follows_prompt_with_length_limit() {
     let item_schema = &TASK_TOOL_PARAMS["properties"]["tasks"]["items"];
     let keys = property_keys(item_schema);
-    assert_eq!(index_of(&keys, "task_summary"), index_of(&keys, "prompt") + 1);
+    assert_eq!(
+        index_of(&keys, "task_summary"),
+        index_of(&keys, "prompt") + 1
+    );
     assert_eq!(
         item_schema["properties"]["task_summary"]["maxLength"],
         json!(TASK_SUMMARY_MAX_LENGTH)

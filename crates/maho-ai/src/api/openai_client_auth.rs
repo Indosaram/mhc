@@ -6,8 +6,14 @@
 
 use crate::types::ProviderHeaders;
 
-const CREDENTIAL_HEADER_SUFFIXES: &[&str] =
-    &["api-key", "api-token", "auth-token", "access-token", "authorization", "client-secret"];
+const CREDENTIAL_HEADER_SUFFIXES: &[&str] = &[
+    "api-key",
+    "api-token",
+    "auth-token",
+    "access-token",
+    "authorization",
+    "client-secret",
+];
 
 fn is_credential_header_name(name: &str) -> bool {
     let normalized = name.to_lowercase();
@@ -16,8 +22,13 @@ fn is_credential_header_name(name: &str) -> bool {
         .any(|suffix| normalized == *suffix || normalized.ends_with(&format!("-{suffix}")))
 }
 
-fn effective_headers(headers: &ProviderHeaders) -> std::collections::BTreeMap<String, Option<String>> {
-    headers.iter().map(|(name, value)| (name.to_lowercase(), value.clone())).collect()
+fn effective_headers(
+    headers: &ProviderHeaders,
+) -> std::collections::BTreeMap<String, Option<String>> {
+    headers
+        .iter()
+        .map(|(name, value)| (name.to_lowercase(), value.clone()))
+        .collect()
 }
 
 pub fn has_header(headers: Option<&ProviderHeaders>, name: &str) -> bool {
@@ -34,7 +45,9 @@ pub fn has_credential_headers(headers: Option<&ProviderHeaders>) -> bool {
         if !is_credential_header_name(&name) {
             continue;
         }
-        let Some(normalized) = value.as_ref().map(|value| value.trim().to_owned()) else { continue };
+        let Some(normalized) = value.as_ref().map(|value| value.trim().to_owned()) else {
+            continue;
+        };
         if normalized.is_empty() {
             continue;
         }
@@ -61,20 +74,29 @@ pub fn resolve_openai_client_auth(
     headers: Option<&ProviderHeaders>,
 ) -> Result<OpenAiClientAuth, String> {
     if let Some(api_key) = api_key.filter(|key| !key.is_empty()) {
-        return Ok(OpenAiClientAuth { api_key: api_key.to_owned(), headers: headers.cloned() });
+        return Ok(OpenAiClientAuth {
+            api_key: api_key.to_owned(),
+            headers: headers.cloned(),
+        });
     }
     if !has_credential_headers(headers) {
         return Err(format!("No API key for provider: {provider}"));
     }
     if has_header(headers, "authorization") || has_header(headers, "cf-aig-authorization") {
-        return Ok(OpenAiClientAuth { api_key: "unused".into(), headers: headers.cloned() });
+        return Ok(OpenAiClientAuth {
+            api_key: "unused".into(),
+            headers: headers.cloned(),
+        });
     }
     let mut with_authorization: ProviderHeaders = ProviderHeaders::new();
     with_authorization.insert("Authorization".into(), None);
     for (name, value) in headers.unwrap_or(&ProviderHeaders::new()) {
         with_authorization.insert(name.clone(), value.clone());
     }
-    Ok(OpenAiClientAuth { api_key: "unused".into(), headers: Some(with_authorization) })
+    Ok(OpenAiClientAuth {
+        api_key: "unused".into(),
+        headers: Some(with_authorization),
+    })
 }
 
 #[cfg(test)]
@@ -82,7 +104,10 @@ mod tests {
     use super::*;
 
     fn headers(entries: &[(&str, Option<&str>)]) -> ProviderHeaders {
-        entries.iter().map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned))).collect()
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned)))
+            .collect()
     }
 
     #[test]
@@ -99,7 +124,11 @@ mod tests {
             Err("No API key for provider: openai".into())
         );
         assert_eq!(
-            resolve_openai_client_auth("openai", Some(""), Some(&headers(&[("x-other", Some("1"))]))),
+            resolve_openai_client_auth(
+                "openai",
+                Some(""),
+                Some(&headers(&[("x-other", Some("1"))]))
+            ),
             Err("No API key for provider: openai".into())
         );
     }
@@ -114,8 +143,9 @@ mod tests {
 
     #[test]
     fn other_credential_headers_get_an_explicit_authorization_deletion() {
-        let auth = resolve_openai_client_auth("openai", None, Some(&headers(&[("x-api-key", Some("k"))])))
-            .expect("auth");
+        let auth =
+            resolve_openai_client_auth("openai", None, Some(&headers(&[("x-api-key", Some("k"))])))
+                .expect("auth");
         let resolved = auth.headers.expect("headers");
         assert_eq!(resolved.get("Authorization"), Some(&None));
         assert_eq!(resolved.get("x-api-key"), Some(&Some("k".to_owned())));
@@ -123,7 +153,13 @@ mod tests {
 
     #[test]
     fn bare_basic_or_bearer_values_do_not_count_as_credentials() {
-        assert!(!has_credential_headers(Some(&headers(&[("Authorization", Some("Bearer"))]))));
-        assert!(has_credential_headers(Some(&headers(&[("Authorization", Some("Bearer t"))]))));
+        assert!(!has_credential_headers(Some(&headers(&[(
+            "Authorization",
+            Some("Bearer")
+        )]))));
+        assert!(has_credential_headers(Some(&headers(&[(
+            "Authorization",
+            Some("Bearer t")
+        )]))));
     }
 }

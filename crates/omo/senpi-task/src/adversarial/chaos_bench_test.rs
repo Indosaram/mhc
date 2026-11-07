@@ -22,7 +22,8 @@ const ITERATIONS: u32 = 200;
 const INVARIANT_IDS: [u8; 13] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
 #[test]
-fn given_200_randomized_event_interleavings_when_each_is_driven_to_quiescence_then_all_thirteen_invariants_hold() {
+fn given_200_randomized_event_interleavings_when_each_is_driven_to_quiescence_then_all_thirteen_invariants_hold()
+ {
     let mut failures: Vec<String> = Vec::new();
     assert_eq!(INVARIANT_IDS.len(), 13);
 
@@ -51,7 +52,11 @@ fn given_200_randomized_event_interleavings_when_each_is_driven_to_quiescence_th
     }
 
     if !failures.is_empty() {
-        eprintln!("[chaos] {} violation(s):\n{}", failures.len(), failures.join("\n"));
+        eprintln!(
+            "[chaos] {} violation(s):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
     assert_eq!(failures, Vec::<String>::new());
 }

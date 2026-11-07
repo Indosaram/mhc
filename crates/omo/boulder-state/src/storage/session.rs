@@ -57,7 +57,9 @@ pub fn append_session_id(
         doc.set("session_origins", Js::Object(origins));
     }
     let state = BoulderState::from_doc(doc);
-    Ok(write_boulder_state(directory, &state).is_ok().then_some(state))
+    Ok(write_boulder_state(directory, &state)
+        .is_ok()
+        .then_some(state))
 }
 
 /// Attach a session to `work_id` (recording `origin`, overwriting a previous one) and
@@ -107,5 +109,7 @@ pub fn append_session_id_for_work(
         project_work_to_mirror(&mut next_state, &updated);
     }
     let next_state = BoulderState::from_doc(next_state);
-    Ok(write_boulder_state(directory, &next_state).is_ok().then_some(next_state))
+    Ok(write_boulder_state(directory, &next_state)
+        .is_ok()
+        .then_some(next_state))
 }

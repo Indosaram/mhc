@@ -34,21 +34,29 @@ pub fn transplant_content(target: &LoroDoc, merged: &LoroDoc) -> Result<(), Item
             let Some(have) = have.as_object() else {
                 continue;
             };
-            let added: Vec<_> = want.keys().filter(|tag| !have.contains_key(*tag))
-                .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            let added: Vec<_> = want
+                .keys()
+                .filter(|tag| !have.contains_key(*tag))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let mut renames = BTreeMap::new();
             for (i, tag) in added.iter().enumerate() {
                 let value = &want[*tag];
                 let salt = if let Some(object) = value.as_object() {
-                    serde_json::to_string(&object.iter().collect::<BTreeMap<_, _>>()).map_err(crdt)?
+                    serde_json::to_string(&object.iter().collect::<BTreeMap<_, _>>())
+                        .map_err(crdt)?
                 } else {
                     value.to_string()
                 };
                 renames.insert((*tag).clone(), new_tag(target, &salt, i + 1));
             }
             let map = target.get_map(name.as_str());
-            for tag in have.keys().filter(|tag| !want.contains_key(*tag))
-                .collect::<std::collections::BTreeSet<_>>() {
+            for tag in have
+                .keys()
+                .filter(|tag| !want.contains_key(*tag))
+                .collect::<std::collections::BTreeSet<_>>()
+            {
                 map.delete(tag).map_err(crdt)?;
             }
             for tag in added {

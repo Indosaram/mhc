@@ -18,8 +18,18 @@ impl CombinedAbortSignal {
 pub fn combine_abort_signals(signals: &[Option<AbortSignal>]) -> CombinedAbortSignal {
     let active: Vec<&AbortSignal> = signals.iter().flatten().collect();
     match active.as_slice() {
-        [] => return CombinedAbortSignal { signal: None, listeners: Vec::new() },
-        [only] => return CombinedAbortSignal { signal: Some((*only).clone()), listeners: Vec::new() },
+        [] => {
+            return CombinedAbortSignal {
+                signal: None,
+                listeners: Vec::new(),
+            };
+        }
+        [only] => {
+            return CombinedAbortSignal {
+                signal: Some((*only).clone()),
+                listeners: Vec::new(),
+            };
+        }
         _ => {}
     }
 
@@ -35,7 +45,10 @@ pub fn combine_abort_signals(signals: &[Option<AbortSignal>]) -> CombinedAbortSi
         listeners.push((signal.clone(), id));
     }
 
-    CombinedAbortSignal { signal: Some(controller.signal()), listeners }
+    CombinedAbortSignal {
+        signal: Some(controller.signal()),
+        listeners,
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +88,9 @@ mod tests {
         a.abort(Some(AbortReason::new("Error", "early")));
         let b = AbortController::new();
         let combined = combine_abort_signals(&[Some(a.signal()), Some(b.signal())]);
-        assert_eq!(combined.signal.and_then(|s| s.reason()), Some(AbortReason::new("Error", "early")));
+        assert_eq!(
+            combined.signal.and_then(|s| s.reason()),
+            Some(AbortReason::new("Error", "early"))
+        );
     }
 }

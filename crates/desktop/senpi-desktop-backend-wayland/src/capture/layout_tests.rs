@@ -1,6 +1,6 @@
 use senpi_desktop_core::frame::FrameGeometry;
 
-use super::layout::{EisRegion, derive_displays, monitor_size};
+use super::layout::{derive_displays, monitor_size, EisRegion};
 
 const fn region(x: u32, y: u32, width: u32, height: u32, scale: f32) -> EisRegion {
     EisRegion {

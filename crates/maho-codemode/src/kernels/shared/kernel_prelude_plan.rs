@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use maho_tools::definition::KernelPrelude;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KernelPreludePlan {

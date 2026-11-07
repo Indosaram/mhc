@@ -124,7 +124,13 @@ pub fn computer_failure(
     ComputerFailure {
         code: mapped,
         message,
-        permission: permission.map(|p| match p.permission { senpi_desktop_protocol::TccPermission::ScreenRecording => "screen_recording", senpi_desktop_protocol::TccPermission::Accessibility => "accessibility" }.to_string()),
+        permission: permission.map(|p| {
+            match p.permission {
+                senpi_desktop_protocol::TccPermission::ScreenRecording => "screen_recording",
+                senpi_desktop_protocol::TccPermission::Accessibility => "accessibility",
+            }
+            .to_string()
+        }),
         settings_url: permission.map(|p| p.settings_url.clone()),
         app: permission.map(|p| p.app.clone()),
         relaunch_required: permission.map(|p| p.relaunch_required),

@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use crate::context::MemoryIdentityContext;
 use crate::kibitzer_notice::{
-    KibitzerGateRecord, KibitzerNudgedRecord, NUDGED_ENTRY_TYPE,
-    kibitzer_gate_spec, kibitzer_nudged_spec,
+    KibitzerGateRecord, KibitzerNudgedRecord, NUDGED_ENTRY_TYPE, kibitzer_gate_spec,
+    kibitzer_nudged_spec,
 };
 use crate::recall_consumer::{build_recall_injection, mark_recall_surfaced, recall_drain_union};
 use crate::recall_notice::{MemoryRecallRecord, recall_notice_spec};
@@ -29,7 +29,8 @@ pub trait PendingNudgesPort: Send + Sync {
 /// The injected environment lookup (`options.env`).
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 /// The pending-nudge port for one identity (`options.pendingFor`).
-pub type DrainPendingFor = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
+pub type DrainPendingFor =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
 /// The in-memory queued-nudge drain for one session (`options.drainQueued`).
 pub type DrainQueued = Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<RecallNudge> + Send + Sync>;
 
@@ -57,13 +58,19 @@ impl RecallDrain {
         crate::kibitzer_notice::register_kibitzer_notice_renderers(api, theme.clone());
         // Legacy read aliases keep stored sessions renderable; new entries use Kibitzer only.
         register_spec_alias(api, "omo-memorian:recall", theme.clone(), |data| {
-            serde_json::from_value::<MemoryRecallRecord>(data).ok().and_then(|record| recall_notice_spec(&record))
+            serde_json::from_value::<MemoryRecallRecord>(data)
+                .ok()
+                .and_then(|record| recall_notice_spec(&record))
         });
         register_spec_alias(api, "omo-memorian:nudged", theme.clone(), |data| {
-            serde_json::from_value::<KibitzerNudgedRecord>(data).ok().and_then(|record| kibitzer_nudged_spec(&record))
+            serde_json::from_value::<KibitzerNudgedRecord>(data)
+                .ok()
+                .and_then(|record| kibitzer_nudged_spec(&record))
         });
         register_spec_alias(api, "omo-memorian:gate", theme, |data| {
-            serde_json::from_value::<KibitzerGateRecord>(data).ok().and_then(|record| kibitzer_gate_spec(&record))
+            serde_json::from_value::<KibitzerGateRecord>(data)
+                .ok()
+                .and_then(|record| kibitzer_gate_spec(&record))
         });
 
         let options = Arc::new(RecallDrainOptionsView {
@@ -76,7 +83,11 @@ impl RecallDrain {
             warn: self.options.warn.clone(),
         });
         let actions = Arc::new(maho_ext_api::ExtensionApi::new(
-            maho_ext_api::LoadedExtension::new("memory-recall-drain", api.cwd.clone(), Default::default()),
+            maho_ext_api::LoadedExtension::new(
+                "memory-recall-drain",
+                api.cwd.clone(),
+                Default::default(),
+            ),
             api.profile.clone(),
             api.events.clone(),
             api.runtime.clone(),
@@ -101,10 +112,13 @@ impl RecallDrain {
                         let _ = actions.append_entry(NUDGED_ENTRY_TYPE, Some(value));
                     }
                     Ok(maho_ext_api::EventResult::BeforeAgentStart(
-                        maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None,
+                        maho_ext_api::BeforeAgentStartEventResult {
+                            system_prompt_parts: None,
                             message: Some(maho_ext_api::CustomMessage {
                                 custom_type: RECALL_CUSTOM_TYPE.into(),
-                                content: vec![maho_tools::definition::ToolContent::text(injection.message_content)],
+                                content: vec![maho_tools::definition::ToolContent::text(
+                                    injection.message_content,
+                                )],
                                 display: false,
                                 details: None,
                             }),
@@ -144,8 +158,17 @@ fn deliver(options: &RecallDrainOptionsView, session_id: &str) -> Option<Deliver
     }
     let context = (options.resolve_context)(session_id)?;
     let settings = (options.resolve_settings)();
-    let recall = crate::reflection_settings::resolve_agent_recall_settings(Some(&settings), &context.identity);
-    if recall.as_ref().ok().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool) == Some(false) {
+    let recall = crate::reflection_settings::resolve_agent_recall_settings(
+        Some(&settings),
+        &context.identity,
+    );
+    if recall
+        .as_ref()
+        .ok()
+        .and_then(|settings| settings.get("enabled"))
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
         return None;
     }
 
@@ -156,7 +179,8 @@ fn deliver(options: &RecallDrainOptionsView, session_id: &str) -> Option<Deliver
     };
     let nudges = recall_drain_union(&from_queue, &from_file);
     // Pending nudges written before a forget are filtered again at delivery.
-    let nudges = crate::owner_memory::drop_suppressed_nudges(&context, "recall", &nudges, &*options.warn);
+    let nudges =
+        crate::owner_memory::drop_suppressed_nudges(&context, "recall", &nudges, &*options.warn);
     let injection = build_recall_injection(&nudges, session_id)?;
     if let Err(error) = mark_recall_surfaced(&(options.ledger_for)(&context), session_id, &nudges) {
         (options.warn)(&format!("memory recall ledger mark skipped: {error}"));
@@ -167,7 +191,10 @@ fn deliver(options: &RecallDrainOptionsView, session_id: &str) -> Option<Deliver
             version: 1,
             nudges: nudges
                 .iter()
-                .map(|nudge| crate::kibitzer_notice::KibitzerNudge { path: nudge.path.clone(), hint: nudge.hint.clone() })
+                .map(|nudge| crate::kibitzer_notice::KibitzerNudge {
+                    path: nudge.path.clone(),
+                    hint: nudge.hint.clone(),
+                })
                 .collect(),
             via: Some("prompt".into()),
         },
@@ -192,7 +219,11 @@ fn register_spec_alias(
         Arc::new(move |entry, options, native_theme| {
             let data = entry.data.get("data")?.clone();
             let spec = spec_of(data)?;
-            Some(Box::new(NoticeComponent { spec, expanded: options.expanded, theme: theme(native_theme) }) as Box<dyn maho_ext_api::Component>)
+            Some(Box::new(NoticeComponent {
+                spec,
+                expanded: options.expanded,
+                theme: theme(native_theme),
+            }) as Box<dyn maho_ext_api::Component>)
         }),
         Default::default(),
     );

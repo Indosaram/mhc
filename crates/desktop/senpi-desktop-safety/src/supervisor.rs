@@ -14,8 +14,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
     },
 };
 

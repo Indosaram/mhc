@@ -18,7 +18,9 @@ pub fn repair_unicode_escapes(json: &str) -> String {
     let mut i = 0usize;
     while i < chars.len() {
         if chars[i] == '\\' && chars.get(i + 1) == Some(&'u') {
-            let has_four_hex = chars.get(i + 2..i + 6).is_some_and(|hex| hex.iter().all(|c| c.is_ascii_hexdigit()));
+            let has_four_hex = chars
+                .get(i + 2..i + 6)
+                .is_some_and(|hex| hex.iter().all(|c| c.is_ascii_hexdigit()));
             if !has_four_hex {
                 if is_escaped_backslash_run(&chars, i) {
                     result.push('\\');
@@ -51,7 +53,9 @@ pub fn repair_lone_surrogates(value: &str) -> String {
     while i < units.len() {
         let unit = units[i] as u32;
         if is_high_surrogate(unit) {
-            let next_is_low = units.get(i + 1).is_some_and(|&next| is_low_surrogate(next as u32));
+            let next_is_low = units
+                .get(i + 1)
+                .is_some_and(|&next| is_low_surrogate(next as u32));
             if next_is_low {
                 result.push(units[i]);
                 result.push(units[i + 1]);
@@ -94,7 +98,7 @@ pub fn repair_strings_deep(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn repairs_broken_unicode_escapes_but_keeps_valid_ones() {
@@ -123,14 +127,20 @@ mod tests {
         let broken_json = r#"{"text":"bad\uZZZZescape"}"#;
         assert!(serde_json::from_str::<Value>(broken_json).is_err());
         let repaired = repair_unicode_escapes(broken_json);
-        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": r"bad\uZZZZescape"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&repaired).expect("repaired"),
+            json!({"text": r"bad\uZZZZescape"})
+        );
     }
 
     #[test]
     fn escapes_a_truncated_unicode_sequence_with_fewer_than_four_hex_digits() {
         let broken_json = r#"{"text":"cut\u12"}"#;
         let repaired = repair_unicode_escapes(broken_json);
-        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": r"cut\u12"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&repaired).expect("repaired"),
+            json!({"text": r"cut\u12"})
+        );
     }
 
     #[test]
@@ -138,7 +148,10 @@ mod tests {
         let valid_json = r#"{"text":"ok\u0041"}"#;
         let repaired = repair_unicode_escapes(valid_json);
         assert_eq!(repaired, valid_json);
-        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": "okA"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&repaired).expect("repaired"),
+            json!({"text": "okA"})
+        );
     }
 
     #[test]
@@ -146,7 +159,10 @@ mod tests {
         let valid_json = r#"{"path":"C:\\users"}"#;
         let repaired = repair_unicode_escapes(valid_json);
         assert_eq!(repaired, valid_json);
-        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"path": r"C:\users"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&repaired).expect("repaired"),
+            json!({"path": r"C:\users"})
+        );
     }
 
     #[test]
@@ -165,8 +181,11 @@ mod tests {
 
     #[test]
     fn replaces_a_reversed_surrogate_pair_entirely() {
-        let reversed = format!("x{}{}y", String::from_utf16_lossy(&[0xDC00]), String::from_utf16_lossy(&[0xD800]));
+        let reversed = format!(
+            "x{}{}y",
+            String::from_utf16_lossy(&[0xDC00]),
+            String::from_utf16_lossy(&[0xD800])
+        );
         assert_eq!(repair_lone_surrogates(&reversed), "x\u{FFFD}\u{FFFD}y");
     }
-
 }

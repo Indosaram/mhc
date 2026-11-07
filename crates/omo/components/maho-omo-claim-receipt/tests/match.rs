@@ -1,13 +1,13 @@
 //! Port of `claim-receipt/match.test.ts`.
 
 use crate::support::{
-    answer, edit_result, eval_run, failing_test, passing_test, tool_call, tool_result, user_input,
-    CellFixture,
+    CellFixture, answer, edit_result, eval_run, failing_test, passing_test, tool_call, tool_result,
+    user_input,
 };
 use maho_omo_claim_receipt::classify::classify_claims;
 use maho_omo_claim_receipt::evidence::build_timeline;
-use maho_omo_claim_receipt::r#match::{match_claims, ClaimStatus, ClaimVerdict, UnsupportedReason};
-use serde_json::{json, Value};
+use maho_omo_claim_receipt::r#match::{ClaimStatus, ClaimVerdict, UnsupportedReason, match_claims};
+use serde_json::{Value, json};
 
 fn verdict_for(before: Vec<Value>, text: &str, after: Vec<Value>) -> ClaimVerdict {
     let answer_at = before.len() as f64 + 1.0;
@@ -90,11 +90,7 @@ fn a_later_failure_outweighs_an_earlier_pass() {
 
 #[test]
 fn a_pass_after_the_claim_cannot_erase_the_failure_visible_when_it_was_made() {
-    let verdict = verdict_for(
-        failing_test("t1"),
-        "All tests pass.",
-        passing_test("t2"),
-    );
+    let verdict = verdict_for(failing_test("t1"), "All tests pass.", passing_test("t2"));
     assert_eq!(verdict.status, ClaimStatus::Unsupported);
     assert_eq!(verdict.reason, Some(UnsupportedReason::LastCheckFailed));
 }
@@ -160,7 +156,8 @@ fn a_done_claim_with_no_code_edit_is_not_a_code_completion_claim() {
 }
 
 #[test]
-fn a_concrete_result_report_with_no_recognised_check_is_unknown_but_a_visible_contradiction_flags_it() {
+fn a_concrete_result_report_with_no_recognised_check_is_unknown_but_a_visible_contradiction_flags_it()
+ {
     assert_eq!(
         verdict_for(
             edit_result("e1", "src/a.ts"),
@@ -198,7 +195,11 @@ fn an_exists_claim_is_supported_by_a_lookup_and_never_failed_by_an_unrelated_che
         tool_call("k1", "read", json!({ "path": "src/config.ts" })),
         tool_result("k1", "read", "flag", json!({}), false),
     ];
-    let verdict = verdict_for(read.clone(), "That flag already exists in config.ts.", Vec::new());
+    let verdict = verdict_for(
+        read.clone(),
+        "That flag already exists in config.ts.",
+        Vec::new(),
+    );
     assert_eq!(verdict.status, ClaimStatus::Supported);
     assert_eq!(verdict.receipt.expect("receipt").kind.as_str(), "lookup");
     assert_eq!(
@@ -210,7 +211,11 @@ fn an_exists_claim_is_supported_by_a_lookup_and_never_failed_by_an_unrelated_che
         .status,
         ClaimStatus::Unknown
     );
-    let verdict = verdict_for(Vec::new(), "That flag already exists in config.ts.", Vec::new());
+    let verdict = verdict_for(
+        Vec::new(),
+        "That flag already exists in config.ts.",
+        Vec::new(),
+    );
     assert_eq!(verdict.status, ClaimStatus::Unsupported);
     assert_eq!(verdict.reason, Some(UnsupportedReason::NoCheck));
 }

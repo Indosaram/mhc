@@ -11,13 +11,20 @@ use crate::sensitive_output::redact_sensitive_output;
 /// senpi `appendDebugLogEntry(header, text)`.
 pub fn append_debug_log_entry(header: &str, text: &str) {
     let debug_log_path = get_debug_log_path();
-    let prefix = format!("[{}] {header}\n", Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+    let prefix = format!(
+        "[{}] {header}\n",
+        Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    );
     let redacted = redact_sensitive_output(text);
     let suffix = if redacted.ends_with('\n') { "" } else { "\n" };
     if let Some(parent) = Path::new(&debug_log_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&debug_log_path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&debug_log_path)
+    {
         let _ = file.write_all(format!("{prefix}{redacted}{suffix}").as_bytes());
     }
     set_private_mode(&debug_log_path);
@@ -47,7 +54,10 @@ pub fn append_hidden_tui_stdout(text: &str) {
 /// Records a fatal uncaught crash in the brand debug log. Callers invoke this BEFORE the terminal
 /// handoff and swallow any failure: writing telemetry may never alter the crash path.
 pub fn append_uncaught_crash_log(origin: &str, error: &str) {
-    append_debug_log_entry(&format!("uncaught crash ({origin})"), &describe_crash(error));
+    append_debug_log_entry(
+        &format!("uncaught crash ({origin})"),
+        &describe_crash(error),
+    );
 }
 
 /// senpi accepts an unknown; the Rust port takes the already-stringified crash text.

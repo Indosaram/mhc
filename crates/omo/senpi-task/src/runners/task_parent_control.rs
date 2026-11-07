@@ -218,11 +218,11 @@ impl TaskParentControl {
                 && let Some(revision) = message
                     .rsplit_once(" at revision ")
                     .and_then(|(_, r)| r.parse().ok())
-                {
-                    return Ok(EngineHoldInputResult::InputIdConflict {
-                        held_revision: revision,
-                    });
-                }
+            {
+                return Ok(EngineHoldInputResult::InputIdConflict {
+                    held_revision: revision,
+                });
+            }
             return Err(if message.starts_with("wrong_parent:") {
                 TaskParentControlError::new("wrong_parent")
             } else {

@@ -18,9 +18,7 @@ pub fn without_comment(line: &str) -> String {
             }
         } else if character == '\'' || character == '"' {
             quote = Some(character);
-        } else if character == '#'
-            && (index == 0 || previous.is_some_and(char::is_whitespace))
-        {
+        } else if character == '#' && (index == 0 || previous.is_some_and(char::is_whitespace)) {
             return line[..index].to_owned();
         }
         previous = Some(character);
@@ -77,10 +75,12 @@ fn heredoc_terminator(line: &str) -> Option<String> {
         if bytes[index] == b'<' && bytes[index + 1] == b'<' {
             let previous_is_angle = index > 0 && bytes[index - 1] == b'<';
             let next_is_angle = bytes.get(index + 2) == Some(&b'<');
-            if !previous_is_angle && !next_is_angle
-                && let Some(terminator) = terminator_at(line, index + 2) {
-                    return Some(terminator);
-                }
+            if !previous_is_angle
+                && !next_is_angle
+                && let Some(terminator) = terminator_at(line, index + 2)
+            {
+                return Some(terminator);
+            }
         }
         index += 1;
     }
@@ -121,7 +121,13 @@ fn terminator_at(line: &str, mut cursor: usize) -> Option<String> {
     }
     let name = line.get(start..cursor)?.to_owned();
     match quote {
-        Some(quote) if !line.get(cursor..).is_some_and(|rest| rest.starts_with(quote)) => None,
+        Some(quote)
+            if !line
+                .get(cursor..)
+                .is_some_and(|rest| rest.starts_with(quote)) =>
+        {
+            None
+        }
         _ => Some(name),
     }
 }
@@ -253,10 +259,7 @@ mod tests {
         assert_eq!(without_comment("echo hi # it's a note"), "echo hi ");
         assert_eq!(
             shell_segments("read a <<< foo\nbun test x"),
-            vec![
-                vec!["read", "a", "<<<", "foo"],
-                vec!["bun", "test", "x"]
-            ]
+            vec![vec!["read", "a", "<<<", "foo"], vec!["bun", "test", "x"]]
         );
         assert_eq!(
             shell_segments("echo \"<<EOF\"\nbun test x"),

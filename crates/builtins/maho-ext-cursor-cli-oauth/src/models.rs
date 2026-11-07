@@ -28,7 +28,9 @@ fn cached_catalog(contents: &str, now: f64, ttl: f64) -> Option<(bool, Vec<Provi
         return (!rebuilt.is_empty()).then_some((true, rebuilt));
     }
     // PERF-DIVERGENCE(senpi cursor-cli models): upstream uses regex literals compiled once; this port compiled them per call, so we hoist them into LazyLocks. Matches are identical.
-    static VALID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex"));
+    static VALID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex")
+    });
     let valid = &*VALID;
     let mut seen = BTreeSet::new();
     let mut raw = Vec::new();
@@ -130,7 +132,8 @@ fn normalize(raw: &[CursorCatalogRawEntry]) -> Vec<ProviderModelConfig> {
                 reasoning: entry.reasoning,
                 thinking_level_map: entry.thinking_level_map,
                 input: vec![InputModality::Text],
-                cost: ModelCost { unknown: None,
+                cost: ModelCost {
+                    unknown: None,
                     effective_rates: None,
                     input: 0.0,
                     output: 0.0,
@@ -151,10 +154,18 @@ fn normalize(raw: &[CursorCatalogRawEntry]) -> Vec<ProviderModelConfig> {
 }
 pub fn parse_models_listing(listing: &str) -> Vec<ProviderModelConfig> {
     // PERF-DIVERGENCE(senpi cursor-cli models): upstream uses regex literals compiled once; this port compiled them per call, so we hoist them into LazyLocks. Matches are identical.
-    static ANSI: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new("\u{1b}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])").expect("constant ANSI regex"));
-    static ERROR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)^\s*(?:error|failed|failure)(?:\s|:|-|$)").expect("constant error regex"));
-    static LINE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^(\S+)\s+-\s+(.+)$").expect("constant model regex"));
-    static ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex"));
+    static ANSI: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new("\u{1b}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])").expect("constant ANSI regex")
+    });
+    static ERROR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)^\s*(?:error|failed|failure)(?:\s|:|-|$)").expect("constant error regex")
+    });
+    static LINE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^(\S+)\s+-\s+(.+)$").expect("constant model regex")
+    });
+    static ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex")
+    });
     let ansi = &*ANSI;
     let plain = ansi.replace_all(listing, "");
     let error = &*ERROR;

@@ -112,8 +112,26 @@ fn is_control_or_tab(ch: char) -> bool {
 fn has_unsafe_lead(value: &str) -> bool {
     matches!(
         value.chars().next(),
-        Some('-' | '?' | ':' | ',' | '[' | ']' | '{' | '}' | '#' | '&' | '*' | '!' | '|' | '>'
-            | '\'' | '"' | '%' | '@' | '`')
+        Some(
+            '-' | '?'
+                | ':'
+                | ','
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '#'
+                | '&'
+                | '*'
+                | '!'
+                | '|'
+                | '>'
+                | '\''
+                | '"'
+                | '%'
+                | '@'
+                | '`'
+        )
     )
 }
 
@@ -125,16 +143,17 @@ fn is_core_schema_special(value: &str) -> bool {
 }
 
 fn is_core_schema_number(value: &str) -> bool {
-    let unsigned = value
-        .strip_prefix(['-', '+'])
-        .unwrap_or(value);
+    let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value);
     if let Some(octal) = unsigned.strip_prefix("0o") {
         return !octal.is_empty() && octal.bytes().all(|byte| (b'0'..=b'7').contains(&byte));
     }
     if let Some(hex) = unsigned.strip_prefix("0x") {
         return !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit());
     }
-    if matches!(unsigned, ".inf" | ".Inf" | ".INF" | ".nan" | ".NaN" | ".NAN") {
+    if matches!(
+        unsigned,
+        ".inf" | ".Inf" | ".INF" | ".nan" | ".NaN" | ".NAN"
+    ) {
         return true;
     }
     is_decimal_number(unsigned)

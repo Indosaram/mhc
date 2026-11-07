@@ -70,7 +70,10 @@ impl GatingStorage {
                 return Ok(());
             }
             let (sender, receiver) = oneshot::channel();
-            state.waiters.push(PendingWaiter { count, resolve: sender });
+            state.waiters.push(PendingWaiter {
+                count,
+                resolve: sender,
+            });
             receiver
         };
         receiver
@@ -124,7 +127,11 @@ impl GatingStorage {
 }
 
 impl Storage for GatingStorage {
-    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, SessionResult<CommitResult>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<CommitResult>> {
         Box::pin(async move {
             let armed = {
                 let state = self.state.lock().expect("gating state");
@@ -169,7 +176,10 @@ impl Storage for GatingStorage {
         &'a self,
         ids: Vec<String>,
         context: &'a Context,
-    ) -> BoxFuture<'a, SessionResult<std::collections::BTreeMap<String, crate::harness::session::types::Entry>>> {
+    ) -> BoxFuture<
+        'a,
+        SessionResult<std::collections::BTreeMap<String, crate::harness::session::types::Entry>>,
+    > {
         self.decorator.get_entries(ids, context)
     }
 

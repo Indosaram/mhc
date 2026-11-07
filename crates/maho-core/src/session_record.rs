@@ -18,19 +18,30 @@ impl NestedCallRecorder {
         }
         let bytes = arguments.to_string().len();
         let retained = bytes <= 8 * 1024 && self.argument_bytes.saturating_add(bytes) <= 32 * 1024;
-        if retained { self.argument_bytes += bytes; } else { self.incomplete = true; }
+        if retained {
+            self.argument_bytes += bytes;
+        } else {
+            self.incomplete = true;
+        }
         let index = self.calls.len();
         self.calls.push(maho_ai::types::NestedToolCallRecord {
-            id: id.to_owned(), name: name.to_owned(),
+            id: id.to_owned(),
+            name: name.to_owned(),
             arguments: retained.then(|| arguments.as_object().cloned().unwrap_or_default()),
             arguments_bytes: (!retained).then_some(bytes),
             status: maho_ai::types::NestedToolCallStatus::Unfinished,
-            duration_ms: None, error: None,
+            duration_ms: None,
+            error: None,
         });
         Some(index)
     }
 
-    pub(crate) fn finish(&mut self, index: Option<usize>, elapsed: std::time::Duration, result: &maho_agent::types::AgentToolResult) {
+    pub(crate) fn finish(
+        &mut self,
+        index: Option<usize>,
+        elapsed: std::time::Duration,
+        result: &maho_agent::types::AgentToolResult,
+    ) {
         if let Some(usage) = &result.usage {
             self.usage = Some(match &self.usage {
                 Some(previous) => crate::compaction::combine_usage(previous, usage),
@@ -40,20 +51,32 @@ impl NestedCallRecorder {
         if let Some(index) = index {
             let record = &mut self.calls[index];
             let failed = result.is_error == Some(true);
-            record.status = if failed { maho_ai::types::NestedToolCallStatus::Error } else { maho_ai::types::NestedToolCallStatus::Ok };
+            record.status = if failed {
+                maho_ai::types::NestedToolCallStatus::Error
+            } else {
+                maho_ai::types::NestedToolCallStatus::Ok
+            };
             record.duration_ms = Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
             if failed {
                 let text = maho_ai::utils::text::content_text(&result.content, "\n");
-                if !text.is_empty() { record.error = Some(text.chars().take(500).collect()); }
+                if !text.is_empty() {
+                    record.error = Some(text.chars().take(500).collect());
+                }
             }
         }
     }
 
     pub(crate) fn snapshot(&self) -> Option<maho_ai::types::NestedToolCalls> {
-        if self.calls.is_empty() && !self.incomplete { return None; }
+        if self.calls.is_empty() && !self.incomplete {
+            return None;
+        }
         Some(maho_ai::types::NestedToolCalls {
-            calls: self.calls.clone(), complete: !self.incomplete && self.calls.iter()
-                .all(|call| call.status != maho_ai::types::NestedToolCallStatus::Unfinished),
+            calls: self.calls.clone(),
+            complete: !self.incomplete
+                && self
+                    .calls
+                    .iter()
+                    .all(|call| call.status != maho_ai::types::NestedToolCallStatus::Unfinished),
         })
     }
 }
@@ -104,7 +127,11 @@ pub fn visible_message(entry: &Value) -> Option<VisibleMessage> {
         .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
         .map(|parsed| parsed.timestamp_millis());
     let time = message_time.or(entry_time);
-    Some(VisibleMessage { text: extract_text_content(message), role: role.to_owned(), time })
+    Some(VisibleMessage {
+        text: extract_text_content(message),
+        role: role.to_owned(),
+        time,
+    })
 }
 
 /// The record's display name, or None when the record is not a session_info entry.
@@ -140,7 +167,11 @@ mod tests {
         // Then
         let snapshot = recorder.snapshot().expect("nested calls");
         assert_eq!(snapshot.calls.len(), 5);
-        assert!(snapshot.calls[..4].iter().all(|call| call.arguments.is_some()));
+        assert!(
+            snapshot.calls[..4]
+                .iter()
+                .all(|call| call.arguments.is_some())
+        );
         assert!(snapshot.calls[4].arguments.is_none());
         assert!(!snapshot.complete);
     }
@@ -156,7 +187,9 @@ mod tests {
         result.is_error = Some(true);
         // When
         recorder.finish(first, std::time::Duration::from_millis(23), &result);
-        for index in 1..257 { recorder.start(&format!("parent/{index}"), "read", &json!({})); }
+        for index in 1..257 {
+            recorder.start(&format!("parent/{index}"), "read", &json!({}));
+        }
         // Then
         let snapshot = recorder.snapshot().expect("calls were made");
         assert!(!snapshot.complete);
@@ -167,7 +200,10 @@ mod tests {
         assert_eq!(first.duration_ms, Some(23));
         assert_eq!(first.error.as_ref().expect("bounded error").len(), 500);
         assert_eq!(first.status, maho_ai::types::NestedToolCallStatus::Error);
-        assert_eq!(snapshot.calls[1].status, maho_ai::types::NestedToolCallStatus::Unfinished);
+        assert_eq!(
+            snapshot.calls[1].status,
+            maho_ai::types::NestedToolCallStatus::Unfinished
+        );
     }
 
     #[test]
@@ -175,7 +211,10 @@ mod tests {
         assert!(parse_entry_line("").is_none());
         assert!(parse_entry_line("   ").is_none());
         assert!(parse_entry_line("not json").is_none());
-        assert_eq!(parse_entry_line(r#"{"type":"message"}"#).and_then(|v| v.get("type").cloned()), Some(json!("message")));
+        assert_eq!(
+            parse_entry_line(r#"{"type":"message"}"#).and_then(|v| v.get("type").cloned()),
+            Some(json!("message"))
+        );
     }
 
     #[test]
@@ -188,7 +227,8 @@ mod tests {
 
     #[test]
     fn a_tool_result_is_not_visible() {
-        let entry = json!({ "type": "message", "message": { "role": "toolResult", "content": [] } });
+        let entry =
+            json!({ "type": "message", "message": { "role": "toolResult", "content": [] } });
         assert!(visible_message(&entry).is_none());
     }
 
@@ -207,7 +247,13 @@ mod tests {
     #[test]
     fn session_info_name_returns_none_for_other_entries() {
         assert!(session_info_name(&json!({ "type": "message" })).is_none());
-        assert_eq!(session_info_name(&json!({ "type": "session_info", "name": "  " })), Some(None));
-        assert_eq!(session_info_name(&json!({ "type": "session_info", "name": "named" })), Some(Some("named".into())));
+        assert_eq!(
+            session_info_name(&json!({ "type": "session_info", "name": "  " })),
+            Some(None)
+        );
+        assert_eq!(
+            session_info_name(&json!({ "type": "session_info", "name": "named" })),
+            Some(Some("named".into()))
+        );
     }
 }

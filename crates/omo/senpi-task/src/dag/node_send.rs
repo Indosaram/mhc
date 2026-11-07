@@ -73,11 +73,27 @@ pub fn send_to_dag_node(
         ));
     }
     if record.status == crate::dag::types::DagRunStatus::Paused
-        && record.pause.as_ref().is_some_and(|pause| pause.reason == "user_stop")
+        && record
+            .pause
+            .as_ref()
+            .is_some_and(|pause| pause.reason == "user_stop")
     {
         let pauses = crate::dag::paused_controls::DagPauseStore::from_store(options.store.clone());
-        let guidance = crate::dag::paused_controls::guide_paused_dag(options, run_id, message, Some(node_id.clone()), &pauses)?;
-        return Ok(DagNodeSendResult { node_id: node_id.clone(), task_id: None, guidance_id: Some(guidance.id), delivery: DagNodeDeliveryResult::Guidance, queue_position: None, settled: None });
+        let guidance = crate::dag::paused_controls::guide_paused_dag(
+            options,
+            run_id,
+            message,
+            Some(node_id.clone()),
+            &pauses,
+        )?;
+        return Ok(DagNodeSendResult {
+            node_id: node_id.clone(),
+            task_id: None,
+            guidance_id: Some(guidance.id),
+            delivery: DagNodeDeliveryResult::Guidance,
+            queue_position: None,
+            settled: None,
+        });
     }
     let task_id = node.task_id.clone().ok_or_else(|| {
         control_error(

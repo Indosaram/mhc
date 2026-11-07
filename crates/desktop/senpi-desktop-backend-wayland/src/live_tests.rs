@@ -14,7 +14,7 @@ use senpi_desktop_safety::{Chord, MonotonicClock, StopPathListener, Supervisor};
 
 use crate::capture::screenshot_portal::UNAVAILABLE as CAPTURE_UNAVAILABLE;
 use crate::portal::remote_desktop::INPUT_PATH_REQUIRED;
-use crate::{GlobalShortcutsListener, STOP_PATH_UNAVAILABLE, WaylandBackend};
+use crate::{GlobalShortcutsListener, WaylandBackend, STOP_PATH_UNAVAILABLE};
 
 fn preconditions() {
     assert!(

@@ -8,16 +8,16 @@ use std::thread;
 use senpi_desktop_safety::StopPathError;
 use x11rb::connection::Connection;
 use x11rb::errors::ConnectionError;
-use x11rb::protocol::Event;
 use x11rb::protocol::xinput::{self, ConnectionExt as _, Device, XIEventMask};
 use x11rb::protocol::xproto::{
     AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, Window,
     WindowClass,
 };
+use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
-use super::Shared;
 use super::chord::{ChordCodes, Hotkey, Pressed};
+use super::Shared;
 use crate::input::Keymap;
 
 pub const CONNECTION_FAILED: &str = "x11-connection-failed";

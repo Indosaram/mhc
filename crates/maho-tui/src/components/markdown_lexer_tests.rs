@@ -27,11 +27,31 @@ fn lexes_emphasis_and_strong() {
 fn strong_raw_slices_count_utf16_units_for_non_ascii_text() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("- **장점:** 알림이 PirateTalk 이름으로 옵니다.\n");
-    let Token::List { items, .. } = &tokens[0] else { panic!("list expected: {tokens:?}") };
-    let Token::ListItem { tokens: item, .. } = &items[0] else { panic!("list item expected: {items:?}") };
-    let Token::Text { tokens: Some(inner), .. } = &item[0] else { panic!("text expected: {item:?}") };
-    let actual: Vec<(&str, &str)> = inner.tokens().iter().map(|t| (t.type_name(), t.raw())).collect();
-    assert_eq!(actual, vec![("strong", "**장점:**"), ("text", " 알림이 PirateTalk 이름으로 옵니다.")]);
+    let Token::List { items, .. } = &tokens[0] else {
+        panic!("list expected: {tokens:?}")
+    };
+    let Token::ListItem { tokens: item, .. } = &items[0] else {
+        panic!("list item expected: {items:?}")
+    };
+    let Token::Text {
+        tokens: Some(inner),
+        ..
+    } = &item[0]
+    else {
+        panic!("text expected: {item:?}")
+    };
+    let actual: Vec<(&str, &str)> = inner
+        .tokens()
+        .iter()
+        .map(|t| (t.type_name(), t.raw()))
+        .collect();
+    assert_eq!(
+        actual,
+        vec![
+            ("strong", "**장점:**"),
+            ("text", " 알림이 PirateTalk 이름으로 옵니다.")
+        ]
+    );
 }
 
 #[test]
@@ -40,7 +60,14 @@ fn inline_math_clip_counts_utf16_units_for_non_ascii_text() {
     let tokens = lexer.lex("그리고 $x$ 끝\n");
     let inline = inline_of(&tokens[0]);
     let actual: Vec<(&str, &str)> = inline.iter().map(|t| (t.type_name(), t.raw())).collect();
-    assert_eq!(actual, vec![("text", "그리고 "), ("latex_inline", "$x$"), ("text", " 끝")]);
+    assert_eq!(
+        actual,
+        vec![
+            ("text", "그리고 "),
+            ("latex_inline", "$x$"),
+            ("text", " 끝")
+        ]
+    );
 }
 
 #[test]
@@ -58,9 +85,18 @@ fn preserves_inline_raw_slices_around_code() {
     let tokens = lexer.lex("A paragraph with *emphasis*, **strong**, `code`.");
     let inline = inline_of(&tokens[0]);
     let actual: Vec<(&str, &str)> = inline.iter().map(|t| (t.type_name(), t.raw())).collect();
-    assert_eq!(actual, vec![("text", "A paragraph with "), ("em", "*emphasis*"),
-        ("text", ", "), ("strong", "**strong**"), ("text", ", "),
-        ("codespan", "`code`"), ("text", ".")]);
+    assert_eq!(
+        actual,
+        vec![
+            ("text", "A paragraph with "),
+            ("em", "*emphasis*"),
+            ("text", ", "),
+            ("strong", "**strong**"),
+            ("text", ", "),
+            ("codespan", "`code`"),
+            ("text", ".")
+        ]
+    );
 }
 
 #[test]
@@ -68,7 +104,10 @@ fn lexes_headings_paragraphs_and_fences() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("# Title\n\nBody text.\n\n```rust\nlet x = 1;\n```\n");
     let kinds: Vec<&str> = tokens.iter().map(Token::type_name).collect();
-    assert_eq!(kinds, vec!["heading", "space", "paragraph", "space", "code"]);
+    assert_eq!(
+        kinds,
+        vec!["heading", "space", "paragraph", "space", "code"]
+    );
     assert_eq!(tokens[0].raw(), "# Title");
     assert_eq!(tokens[2].raw(), "Body text.");
 }
@@ -87,7 +126,13 @@ fn lexes_codespans_and_strikethrough() {
 fn lexes_tables_with_alignment() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("| a | b |\n| --- | ---: |\n| 1 | 2 |\n");
-    let Token::Table { header, align, rows, .. } = &tokens[0] else {
+    let Token::Table {
+        header,
+        align,
+        rows,
+        ..
+    } = &tokens[0]
+    else {
         panic!("expected a table, got {}", tokens[0].type_name());
     };
     assert_eq!(header.len(), 2);
@@ -118,12 +163,17 @@ fn lexes_nested_lists() {
 fn resolves_inline_slots_for_blockquote_children() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("> quoted `code` text\n");
-    let Token::Blockquote { tokens: children, .. } = &tokens[0] else {
+    let Token::Blockquote {
+        tokens: children, ..
+    } = &tokens[0]
+    else {
         panic!("expected a blockquote, got {}", tokens[0].type_name());
     };
     let inline = children.iter().flat_map(inline_of).collect::<Vec<_>>();
     assert!(
-        inline.iter().any(|token| matches!(token, Token::Codespan { .. })),
+        inline
+            .iter()
+            .any(|token| matches!(token, Token::Codespan { .. })),
         "blockquote inline tokens were not resolved: {inline:?}"
     );
 }

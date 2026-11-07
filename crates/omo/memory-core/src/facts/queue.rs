@@ -355,7 +355,9 @@ impl FactsQueue {
             self.publish(&entry, &at_iso, request.signal.as_ref())?;
 
             if aborted_now() {
-                return Ok(FactsEnqueueResult::Enqueued { entry: Box::new(entry) });
+                return Ok(FactsEnqueueResult::Enqueued {
+                    entry: Box::new(entry),
+                });
             }
 
             self.advance_enqueued(
@@ -363,7 +365,9 @@ impl FactsQueue {
                 &entry.range,
                 request.signal.as_ref(),
             )?;
-            Ok(FactsEnqueueResult::Enqueued { entry: Box::new(entry) })
+            Ok(FactsEnqueueResult::Enqueued {
+                entry: Box::new(entry),
+            })
         })
     }
 

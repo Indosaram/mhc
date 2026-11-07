@@ -9,7 +9,10 @@ fn main() -> std::io::Result<()> {
     use std::io::Write;
 
     println!("pid={}", std::process::id());
-    println!("(TCC identity: {})", responsible::suffix_with(responsible::current));
+    println!(
+        "(TCC identity: {})",
+        responsible::suffix_with(responsible::current)
+    );
     std::io::stdout().flush()?;
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;

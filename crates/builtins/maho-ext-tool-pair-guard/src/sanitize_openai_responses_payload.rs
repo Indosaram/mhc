@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 const SYNTHETIC_OUTPUT: &str = "Tool output unavailable (interrupted before result)";
 
 fn call_id(item: &Value) -> Option<&str> {
-    item.get("call_id").and_then(Value::as_str).filter(|id| !id.is_empty())
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
 }
 
 pub fn sanitize_openai_responses_payload(payload: &Value) -> Value {
@@ -16,7 +18,13 @@ pub fn sanitize_openai_responses_payload(payload: &Value) -> Value {
 /// `None` when the payload needs no change, so callers can skip copying it.
 pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<Value> {
     let input = payload.get("input").and_then(Value::as_array)?;
-    if payload.get("previous_response_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty()) { return None; }
+    if payload
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return None;
+    }
     let mut seen_functions = BTreeSet::new();
     let mut seen_custom = BTreeSet::new();
     let mut function_outputs = BTreeSet::new();
@@ -24,10 +32,18 @@ pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<V
     for item in input {
         let Some(id) = call_id(item) else { continue };
         match item.get("type").and_then(Value::as_str) {
-            Some("function_call" | "local_shell_call") => { seen_functions.insert(id); }
-            Some("custom_tool_call") => { seen_custom.insert(id); }
-            Some("function_call_output") if seen_functions.contains(id) => { function_outputs.insert(id); }
-            Some("custom_tool_call_output") if seen_custom.contains(id) => { custom_outputs.insert(id); }
+            Some("function_call" | "local_shell_call") => {
+                seen_functions.insert(id);
+            }
+            Some("custom_tool_call") => {
+                seen_custom.insert(id);
+            }
+            Some("function_call_output") if seen_functions.contains(id) => {
+                function_outputs.insert(id);
+            }
+            Some("custom_tool_call_output") if seen_custom.contains(id) => {
+                custom_outputs.insert(id);
+            }
             _ => {}
         }
     }
@@ -39,22 +55,38 @@ pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<V
         let id = call_id(item);
         match item.get("type").and_then(Value::as_str) {
             Some("function_call_output") => {
-                if id.is_some_and(|id| function_outputs.contains(id) && emitted_functions.insert(id)) { sanitized.push(Cow::Borrowed(item)); }
-                else { changed = true; }
+                if id
+                    .is_some_and(|id| function_outputs.contains(id) && emitted_functions.insert(id))
+                {
+                    sanitized.push(Cow::Borrowed(item));
+                } else {
+                    changed = true;
+                }
             }
             Some("custom_tool_call_output") => {
-                if id.is_some_and(|id| custom_outputs.contains(id) && emitted_custom.insert(id)) { sanitized.push(Cow::Borrowed(item)); }
-                else { changed = true; }
+                if id.is_some_and(|id| custom_outputs.contains(id) && emitted_custom.insert(id)) {
+                    sanitized.push(Cow::Borrowed(item));
+                } else {
+                    changed = true;
+                }
             }
             kind => {
                 sanitized.push(Cow::Borrowed(item));
                 if let Some(id) = id {
-                    if matches!(kind, Some("function_call" | "local_shell_call")) && !function_outputs.contains(id) {
+                    if matches!(kind, Some("function_call" | "local_shell_call"))
+                        && !function_outputs.contains(id)
+                    {
                         sanitized.push(Cow::Owned(json!({"type":"function_call_output", "call_id":id, "output":SYNTHETIC_OUTPUT})));
                         changed = true;
                     } else if kind == Some("custom_tool_call") && !custom_outputs.contains(id) {
                         let mut output = json!({"type":"custom_tool_call_output", "call_id":id, "output":SYNTHETIC_OUTPUT});
-                        if let Some(name) = item.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) { output["name"] = json!(name); }
+                        if let Some(name) = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty())
+                        {
+                            output["name"] = json!(name);
+                        }
                         sanitized.push(Cow::Owned(output));
                         changed = true;
                     }
@@ -62,7 +94,9 @@ pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<V
             }
         }
     }
-    if !changed { return None; }
+    if !changed {
+        return None;
+    }
     let mut result = payload.clone();
     result["input"] = Value::Array(sanitized.into_iter().map(Cow::into_owned).collect());
     Some(result)

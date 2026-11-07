@@ -66,7 +66,11 @@ fn format_wait(delta_ms: i64) -> String {
 fn round_div(value: i64, divisor: i64) -> i64 {
     let quotient = value / divisor;
     let remainder = value % divisor;
-    if remainder.abs() * 2 >= divisor { quotient + value.signum() } else { quotient }
+    if remainder.abs() * 2 >= divisor {
+        quotient + value.signum()
+    } else {
+        quotient
+    }
 }
 
 fn failure_detail(detail: Option<&str>) -> Option<String> {
@@ -219,13 +223,23 @@ pub fn read_facts_overview(input: ReadFactsOverviewInput<'_>) -> FactsOverview {
         lock_wait_ms: None,
     });
     match store.read_failures() {
-        Ok(failures) => FactsOverview { pending, records: failures.entries, now_ms, corrupt: None },
+        Ok(failures) => FactsOverview {
+            pending,
+            records: failures.entries,
+            now_ms,
+            corrupt: None,
+        },
         Err(error) => {
             let corrupt = match &error {
                 FactsFailureStoreError::Corrupt(corrupt) => corrupt.to_string(),
                 other => format!("failure ledger unreadable: {other}"),
             };
-            FactsOverview { pending, records: Vec::new(), now_ms, corrupt: Some(corrupt) }
+            FactsOverview {
+                pending,
+                records: Vec::new(),
+                now_ms,
+                corrupt: Some(corrupt),
+            }
         }
     }
 }
@@ -272,18 +286,27 @@ mod tests {
     }
 
     fn overview(records: Vec<FactsFailureRecord>) -> FactsOverview {
-        FactsOverview { pending: 0, records, now_ms: NOW_MS, corrupt: None }
+        FactsOverview {
+            pending: 0,
+            records,
+            now_ms: NOW_MS,
+            corrupt: None,
+        }
     }
 
     #[test]
-    fn given_parked_and_backoff_records_when_rendering_the_advisory_then_one_bounded_line_names_both_counts() {
+    fn given_parked_and_backoff_records_when_rendering_the_advisory_then_one_bounded_line_names_both_counts()
+     {
         let state = overview(vec![
             parked_record("msg-b"),
             parked_record("msg-c"),
             parked_record("msg-d"),
             backoff_record("msg-a"),
         ]);
-        assert_eq!(format_facts_advisory(&state).as_deref(), Some("facts: 3 parked / 1 backoff (next 12m)"));
+        assert_eq!(
+            format_facts_advisory(&state).as_deref(),
+            Some("facts: 3 parked / 1 backoff (next 12m)")
+        );
     }
 
     #[test]
@@ -304,7 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn given_a_corrupt_ledger_when_rendering_the_status_view_then_it_reports_corruption_and_no_counts() {
+    fn given_a_corrupt_ledger_when_rendering_the_status_view_then_it_reports_corruption_and_no_counts()
+     {
         let mut state = overview(Vec::new());
         state.pending = 3;
         state.corrupt = Some("unexpected token } in JSON at position 4".to_owned());
@@ -317,14 +341,16 @@ mod tests {
     }
 
     #[test]
-    fn given_failing_conversations_when_rendering_the_status_view_then_counts_and_bounded_reasons_appear() {
+    fn given_failing_conversations_when_rendering_the_status_view_then_counts_and_bounded_reasons_appear()
+     {
         let mut many: Vec<FactsFailureRecord> = Vec::new();
         for index in 0..7i64 {
             let mut record = parked_record(&format!("msg-{index}"));
             record.conversation_id = format!("conv-{index}");
-            record.last_failure_at = chrono::DateTime::from_timestamp_millis(NOW_MS - index * 60_000)
-                .map(|instant| instant.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-                .unwrap_or_default();
+            record.last_failure_at =
+                chrono::DateTime::from_timestamp_millis(NOW_MS - index * 60_000)
+                    .map(|instant| instant.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                    .unwrap_or_default();
             record.last_detail = Some(format!("boom {index}\nsecond line"));
             many.push(record);
         }
@@ -338,7 +364,9 @@ mod tests {
         assert!(text.contains("parked: 7"));
         assert!(text.contains("backoff: 1 (next eligible 12m)"));
         assert_eq!(
-            text.lines().filter(|line| line.starts_with("- conv-")).count(),
+            text.lines()
+                .filter(|line| line.starts_with("- conv-"))
+                .count(),
             5
         );
         assert!(text.contains("boom 0"));
@@ -370,12 +398,15 @@ mod tests {
         let state = overview(vec![parked_record("msg-b"), parked_record("msg-z")]);
         assert_eq!(
             facts_remediation_hint(&state).as_deref(),
-            Some("2 parked facts batches need a manual unpark; run /facts retry after fixing the cause")
+            Some(
+                "2 parked facts batches need a manual unpark; run /facts retry after fixing the cause"
+            )
         );
     }
 
     #[test]
-    fn given_only_backoff_records_when_asking_for_the_hint_then_it_reports_the_wait_instead_of_a_remedy() {
+    fn given_only_backoff_records_when_asking_for_the_hint_then_it_reports_the_wait_instead_of_a_remedy()
+     {
         let state = overview(vec![backoff_record("msg-a")]);
         assert_eq!(
             facts_remediation_hint(&state).as_deref(),
@@ -390,7 +421,8 @@ mod tests {
     }
 
     #[test]
-    fn given_consumed_failures_claims_and_two_batch_files_when_counting_pending_then_queue_depth_is_two() {
+    fn given_consumed_failures_claims_and_two_batch_files_when_counting_pending_then_queue_depth_is_two()
+     {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("consumed.json"), "{}").unwrap();
         std::fs::write(dir.path().join("failures.json"), "{}").unwrap();

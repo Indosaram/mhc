@@ -6,11 +6,11 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::keys::KeyName;
 use xkeysym::Keysym;
 
-use super::fake::{KEY_A, KEY_ALT_L, KEY_ESCAPE, KEY_SHIFT_L, keymap};
+use super::fake::{keymap, KEY_A, KEY_ALT_L, KEY_ESCAPE, KEY_SHIFT_L};
 use super::held::{Held, HeldButton, HeldKey, Route};
-use super::keys::{Stroke, keysym, keysym_variants, modifier_keys, modifiers_mask};
+use super::keys::{keysym, keysym_variants, modifier_keys, modifiers_mask, Stroke};
 use super::server::Spot;
-use super::toolkit_filter::{Toolkit, filtering_toolkit};
+use super::toolkit_filter::{filtering_toolkit, Toolkit};
 
 #[test]
 fn key_names_map_to_their_x_keysyms() {

@@ -2,20 +2,20 @@ use senpi_desktop_core::backend::{MouseButton, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use windows_sys::Win32::Foundation::{LPARAM, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NCHITTEST,
+    SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_NCHITTEST,
 };
 
 use super::background::{post, refusal};
-use super::dispatch::{Via, Win32Input, to_physical};
+use super::dispatch::{to_physical, Via, Win32Input};
 use super::held::{HeldButton, Route};
 use super::keys::modifier_virtual_keys;
 use super::messages::{
-    WHEEL_DELTA, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, button_messages, modifier_flags,
-    packed_point, scroll_steps, wheel_wparam,
+    button_messages, modifier_flags, packed_point, scroll_steps, wheel_wparam, WHEEL_DELTA,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
 };
 use super::native::Window;
 use crate::ax::Win32Ax;
-use crate::delivery::{EventKind, is_chromium_class, non_client_drag_region, posts_double_click};
+use crate::delivery::{is_chromium_class, non_client_drag_region, posts_double_click, EventKind};
 
 fn screen_point(x: f64, y: f64) -> CoreResult<POINT> {
     let (x, y) = to_physical(x, y)?;

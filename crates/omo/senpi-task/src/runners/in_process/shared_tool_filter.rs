@@ -10,7 +10,9 @@ use crate::host::HostError;
 pub trait ChildTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> Option<Value> { None }
+    fn parameters(&self) -> Option<Value> {
+        None
+    }
     /// Runs the tool; the result is the host's `{ content: [...] }` tool-result JSON.
     fn execute(&self, tool_call_id: &str, input: &Value) -> Result<Value, HostError>;
 
@@ -19,28 +21,37 @@ pub trait ChildTool: Send + Sync {
         tool_call_id: &'a str,
         input: &'a Value,
         signal: Option<maho_ai::utils::abort::AbortSignal>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, HostError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, HostError>> + Send + 'a>>
+    {
         Box::pin(async move {
             if let Some(signal) = signal {
-                signal.throw_if_aborted().map_err(|error| HostError { message: error.to_string() })?;
+                signal.throw_if_aborted().map_err(|error| HostError {
+                    message: error.to_string(),
+                })?;
             }
             self.execute(tool_call_id, input)
         })
     }
-
 }
 
 pub type ChildToolRef = Arc<dyn ChildTool>;
 
 pub fn is_task_or_team_family_tool(name: &str) -> bool {
-    name == "dag" || name == "workflow" || name == "task" || name.starts_with("task_") || name.starts_with("team_") || name == "workpool"
+    name == "dag"
+        || name == "workflow"
+        || name == "task"
+        || name.starts_with("task_")
+        || name.starts_with("team_")
+        || name == "workpool"
 }
 
 /// Provider tool-name grammar (Gemini and Anthropic): a letter or underscore, then letters, digits,
 /// underscores or dashes, at most 128 characters in total.
 pub fn is_provider_safe_tool_name(name: &str) -> bool {
     let mut chars = name.chars();
-    chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && name.len() <= 128
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
