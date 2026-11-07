@@ -75,6 +75,33 @@ cargo nextest run -p <crate>
 cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
+## REMOTE BUILDS: CODESPACES / CIRCLECI
+
+Prefer these two over Google Cloud Shell for any out-of-machine Linux build. Cloud Shell is not suitable: its persistent home is 4.8 GB while a full cargo `target/` is multi-GB, so every run is a cold rebuild, and its 40 min inactivity cap cuts long builds.
+
+Both backends run `recipes/mhc.sh` (cargo `-p maho-cli --locked`, then `mhc --version`).
+
+```bash
+# Codespaces — 32 GB persistent /workspaces, ssh, sudo, protoc installed from source.
+# The hub codespace is basicLinux32gb (2 vCPU / 8 GB) unless a larger one already exists
+# in the hub repo. Backend verified 2026-11-06 (STATUS: exit 0, smoke run).
+~/code/project/build-farm/bin/remote-build codespace --project mhc
+~/code/project/build-farm/bin/remote-build codespace --project mhc --release
+
+# CircleCI — fresh container per run, 30,000 free credits/month. Full build verified
+# 2026-11-06: `Compiling maho-cli` → `Finished dev profile [unoptimized] target(s) in 7m 39s`,
+# producing `mhc` (482 MB) (STATUS: success). `--project` defaults to resource_class `large`
+# (4 vCPU / 8 GB, measured): the 2 GB `small` gets OOM-killed (SIGKILL, exit 101) partway
+# through `maho-ai`. CIRCLECI_RESOURCE=small forces it down anyway.
+~/code/project/build-farm/bin/remote-build circleci --project mhc
+CIRCLECI_RESOURCE=small ~/code/project/build-farm/bin/remote-build circleci --project mhc
+```
+
+- Neither sees uncommitted local work: they clone `Indosaram/mhc` at the given ref. Use instabox (below) when the working tree itself must be built.
+- Both backends send the **local** `recipes/` (uncommitted edits included). CircleCI cannot carry them as a pipeline parameter — it rejects values past ~500 chars, measured — so the backend stages the recipe as a gist and passes the raw URL; the gist is deleted after the run.
+- The CircleCI job has `no_output_timeout: 60m`; keep long builds quiet-free or they are cancelled.
+- mhc is a public repo, so hosted runners are not billed — spend the free quota generously rather than queueing work on this machine.
+
 ## REMOTE BUILD ON GITHUB ACTIONS
 The repo is public, so GitHub-hosted runners are unmetered. `.github/workflows/ci.yml` runs `cargo clippy --workspace --all-targets -D warnings` on Linux, macOS and Windows, builds `maho-cli`, and runs the whole nextest suite in 6 Linux crate shards and 3 Windows crate shards in parallel (`scripts/ci-shard.py` puts every workspace member in exactly one shard, balanced by test-file count), each on a fresh VM. Nothing is shared with other sessions.
 
