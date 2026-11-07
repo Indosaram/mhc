@@ -36,12 +36,19 @@ fn serve_shares_one_session_across_successive_clients_and_exits_when_idle() {
     let dir = std::env::temp_dir().join(format!("senpi-desktop-serve-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let socket = dir.join("engine.sock");
+    // Keep the engine's screenshot GC out of the shared `/tmp/senpi-desktop`: a workspace-wide
+    // run has several engines sweeping that one directory, and each removes files the others are
+    // about to remove, which surfaces as an `ENOENT` warning on the stderr this test reads.
+    let artifacts = dir.join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("artifact dir");
     let mut child = Command::new(BINARY)
         .args([
             "--serve",
             socket.to_str().expect("utf-8 path"),
             "--idle-ms",
             "300",
+            "--artifact-dir",
+            artifacts.to_str().expect("utf-8 path"),
         ])
         .env("SENPI_DESKTOP_BACKEND", format!("fake:{TWO_DISPLAYS}"))
         .stderr(Stdio::piped())
